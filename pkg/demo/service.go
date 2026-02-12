@@ -208,6 +208,7 @@ func (s *Service) startWithCompose(ctx context.Context, composePath string) erro
 	s.logger.Info("🐳 Starting demo (compose + app container)")
 
 	stack := NewStack(DemoProjectName, composePath, DemoNetworkName)
+	stack.StripPorts = true // Deps-only: no host port bindings needed, prevents conflicts
 	if s.commandRunner != nil {
 		stack.CommandRunner = s.commandRunner
 	}
@@ -491,7 +492,7 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 
 	// If we mapped a port, get the assigned host port
 	if containerPort > 0 {
-		if err := s.updatePublishedPort(ctx); err != nil {
+		if _, err := s.updatePublishedPort(ctx); err != nil {
 			s.logger.Warn("⚠️ Could not determine published port: %v", err)
 		}
 	}
@@ -580,8 +581,12 @@ func (s *Service) verifyPortWithProbe(ctx context.Context) error {
 	time.Sleep(2 * time.Second)
 
 	// Get the actual host port
-	if err := s.updatePublishedPort(ctx); err != nil {
+	found, err := s.updatePublishedPort(ctx)
+	if err != nil {
 		return err
+	}
+	if !found {
+		return fmt.Errorf("no published port found for container %s", DemoContainerName)
 	}
 
 	// TCP probe
@@ -634,8 +639,9 @@ func (s *Service) removeExistingContainer(ctx context.Context) {
 }
 
 // updatePublishedPort queries Docker to find the actual published port.
-func (s *Service) updatePublishedPort(ctx context.Context) error {
-	// Use docker port to find the published port
+// Returns (true, nil) if a port was found, (false, nil) if no port mappings exist,
+// or (false, err) on docker command failure.
+func (s *Service) updatePublishedPort(ctx context.Context) (bool, error) {
 	var cmd *exec.Cmd
 	if s.commandRunner != nil {
 		cmd = s.commandRunner(ctx, "docker", "port", DemoContainerName)
@@ -645,7 +651,7 @@ func (s *Service) updatePublishedPort(ctx context.Context) error {
 
 	output, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("docker port failed: %w", err)
+		return false, fmt.Errorf("docker port failed: %w", err)
 	}
 
 	// Parse output like "8080/tcp -> 0.0.0.0:32768"
@@ -672,13 +678,12 @@ func (s *Service) updatePublishedPort(ctx context.Context) error {
 		if _, err := fmt.Sscanf(portStr, "%d", &port); err == nil {
 			s.port = port
 			s.logger.Info("   Published port: %d", port)
-			return nil
+			return true, nil
 		}
 	}
 
-	// No port found - use default
-	s.port = DefaultDemoPort
-	return nil
+	// No port mappings found
+	return false, nil
 }
 
 // Stop stops the demo.

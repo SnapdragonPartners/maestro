@@ -89,6 +89,7 @@ Container and compose tools are available when you encounter genuine environment
 - **container_list**: List available containers and their status
 - **compose_up**: Bring up Docker Compose services defined in .maestro/compose.yml
   - **IMPORTANT**: Never use `container_name` in compose.yml - let Docker generate unique names to avoid collisions
+  - **IMPORTANT**: Never use `ports:` in compose.yml - services are reachable via Docker network DNS (e.g., db:5432). Host port bindings cause conflicts when multiple agents share the same compose file.
 
 **Use these when** you discover missing dependencies (linters, packages, database services) that block your work.
 **For typical application development**, these tools are unnecessary - focus on code changes.

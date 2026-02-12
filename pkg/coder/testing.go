@@ -626,12 +626,18 @@ func (c *Coder) ensureComposeStackRunning(ctx context.Context, workspacePath str
 	composePath := demo.ComposeFilePath(workspacePath)
 	projectName := "maestro-" + c.GetAgentID() // e.g., "maestro-coder-001"
 	stack := demo.NewStack(projectName, composePath, "")
+	stack.StripPorts = true // Deps accessed via Docker network DNS, not host ports
 
 	// Start compose and attach this coder's container to the compose network.
 	// This enables the dev container to reach compose services (db, redis, etc.) by hostname.
 	containerName := c.GetContainerName()
 	if err := stack.UpAndAttach(ctx, containerName); err != nil {
 		return fmt.Errorf("failed to start compose stack: %w", err)
+	}
+
+	// Warn if ports were stripped (informational for logs)
+	if len(stack.StrippedPortServices) > 0 {
+		c.logger.Info("📋 Stripped host port bindings from compose services %v (accessed via Docker network DNS)", stack.StrippedPortServices)
 	}
 
 	c.logger.Info("✅ Compose stack %s started successfully (container %s attached to network)", projectName, containerName)

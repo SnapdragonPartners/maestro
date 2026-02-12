@@ -401,6 +401,7 @@ If your application requires external services like PostgreSQL, Redis, or other 
 - **Network constraint bypass**: Compose networking is separate from `--network=none` - containers on the compose network CAN communicate with each other
 - **Do NOT downgrade technology choices**: If the spec says PostgreSQL, use PostgreSQL via compose - don't substitute SQLite
 - **Do NOT use `container_name`**: Never hardcode `container_name` in compose.yml - let Docker Compose generate unique names automatically. Hardcoded names cause collisions when multiple agents use the same compose file.
+- **Do NOT use `ports:`**: Never include `ports:` mappings in compose.yml. Dependencies are accessed via Docker network DNS (e.g., `db:5432`), not host ports. Host port bindings cause collisions when multiple agents run the same compose file.
 
 ### Required Tools in Container
 The container must include these tools for Maestro operations:
