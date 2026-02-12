@@ -153,6 +153,21 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions, tm *TimeoutManager) 
 	duration := time.Since(startTime)
 
 	if err != nil {
+		// Log any captured output for diagnostics (especially important when process is killed).
+		if execResult.Stderr != "" {
+			r.logger.Warn("Claude Code stderr output:\n%s", execResult.Stderr)
+		}
+		if execResult.Stdout == "" {
+			r.logger.Warn("Claude Code produced no stdout output before exit")
+		} else {
+			// Log first 500 chars of stdout for context.
+			preview := execResult.Stdout
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			r.logger.Info("Claude Code stdout (first 500 chars): %s", preview)
+		}
+
 		// Check if it was a context cancellation (timeout or inactivity)
 		if ctx.Err() != nil {
 			signal := SignalTimeout

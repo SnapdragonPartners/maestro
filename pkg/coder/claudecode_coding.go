@@ -183,11 +183,11 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 
 	case claude.SignalTimeout:
 		c.logger.Warn("⏰ Claude Code coding timed out after %s", result.Duration)
-		return StateBudgetReview, false, nil
+		return proto.StateError, false, logx.Errorf("Claude Code coding timed out after %s with %d responses", result.Duration, result.ResponseCount)
 
 	case claude.SignalInactivity:
-		c.logger.Warn("⏰ Claude Code coding stalled (no output)")
-		return StateBudgetReview, false, nil
+		c.logger.Warn("⏰ Claude Code coding stalled (no output for inactivity timeout)")
+		return proto.StateError, false, logx.Errorf("Claude Code coding stalled - no output received (%d responses before stall)", result.ResponseCount)
 
 	case claude.SignalError:
 		errMsg := "unknown error"
