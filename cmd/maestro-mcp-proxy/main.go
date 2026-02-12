@@ -1,12 +1,17 @@
 // maestro-mcp-proxy is a tiny stdio proxy that forwards MCP traffic
 // between Claude Code and the Maestro MCP server via TCP.
 //
-// Usage: maestro-mcp-proxy <host:port>
+// Usage:
 //
-// The proxy connects to the TCP address, authenticates using the MCP_AUTH_TOKEN
-// environment variable, then bidirectionally forwards stdin/stdout traffic.
-// This allows Claude Code running inside a container to communicate with
-// the Maestro MCP server running on the host.
+//	maestro-mcp-proxy <host:port>          # Normal proxy mode
+//	maestro-mcp-proxy --check <host:port>  # Health check mode
+//
+// In normal mode, the proxy connects to the TCP address, authenticates using
+// the MCP_AUTH_TOKEN environment variable, then bidirectionally forwards
+// stdin/stdout traffic.
+//
+// In check mode (--check), the proxy connects, authenticates, and exits
+// with code 0 on success or 1 on failure. No stdin/stdout forwarding.
 //
 // TCP is used instead of Unix sockets because Unix sockets don't work through
 // Docker Desktop's file sharing on macOS (gRPC-FUSE limitation).
@@ -20,6 +25,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 )
 
 // authTokenEnvVar is the environment variable containing the auth token.
@@ -27,11 +33,21 @@ const authTokenEnvVar = "MCP_AUTH_TOKEN"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: maestro-mcp-proxy <host:port>")
+		fmt.Fprintln(os.Stderr, "usage: maestro-mcp-proxy [--check] <host:port>")
 		os.Exit(1)
 	}
 
+	// Parse args: --check mode or normal proxy mode.
+	checkMode := false
 	tcpAddr := os.Args[1]
+	if os.Args[1] == "--check" {
+		checkMode = true
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: maestro-mcp-proxy --check <host:port>")
+			os.Exit(1)
+		}
+		tcpAddr = os.Args[2]
+	}
 
 	// Get auth token from environment
 	authToken := os.Getenv(authTokenEnvVar)
@@ -40,6 +56,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	if checkMode {
+		runCheck(tcpAddr, authToken)
+	} else {
+		runProxy(tcpAddr, authToken)
+	}
+}
+
+// runCheck connects, authenticates, and exits with status code indicating success/failure.
+func runCheck(tcpAddr, authToken string) {
+	// Use a short timeout for health checks.
+	conn, err := net.DialTimeout("tcp", tcpAddr, 5*time.Second)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "connect failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := authenticate(conn, authToken); err != nil {
+		_ = conn.Close()
+		fmt.Fprintf(os.Stderr, "auth failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	_ = conn.Close()
+	fmt.Println("ok")
+}
+
+// runProxy runs the normal bidirectional proxy mode.
+func runProxy(tcpAddr, authToken string) {
 	// Connect to TCP server
 	conn, err := net.Dial("tcp", tcpAddr)
 	if err != nil {

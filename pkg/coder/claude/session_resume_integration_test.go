@@ -128,7 +128,7 @@ func TestSessionResumeIntegration_NewSession(t *testing.T) {
 	opts.SystemPrompt = "You are a coder"
 	opts.TotalTimeout = 10 * time.Second
 
-	result, err := runner.Run(ctx, &opts)
+	result, err := runner.Run(ctx, &opts, nil)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestSessionResumeIntegration_ResumeSession(t *testing.T) {
 	opts.InitialInput = "This should also be ignored"
 	opts.TotalTimeout = 10 * time.Second
 
-	result, err := runner.Run(ctx, &opts)
+	result, err := runner.Run(ctx, &opts, nil)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -266,7 +266,7 @@ func TestSessionResumeIntegration_SequentialSessions(t *testing.T) {
 	opts1.SystemPrompt = "You are helpful"
 	opts1.TotalTimeout = 10 * time.Second
 
-	result1, err := runner.Run(ctx, &opts1)
+	result1, err := runner.Run(ctx, &opts1, nil)
 	if err != nil {
 		t.Fatalf("First run failed: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestSessionResumeIntegration_SequentialSessions(t *testing.T) {
 	opts2.ResumeInput = "Build failed. Fix the errors."
 	opts2.TotalTimeout = 10 * time.Second
 
-	result2, err := runner.Run(ctx, &opts2)
+	result2, err := runner.Run(ctx, &opts2, nil)
 	if err != nil {
 		t.Fatalf("Second run failed: %v", err)
 	}

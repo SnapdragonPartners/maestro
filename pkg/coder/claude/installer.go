@@ -93,40 +93,34 @@ func (i *Installer) isNpmInstalled(ctx context.Context) (bool, string) {
 	return version != "", version
 }
 
-// isClaudeCodeInstalled checks if Claude Code is available.
-// Note: We use "which claude" instead of "claude --version" because running
-// claude --version as root creates /tmp/.claude owned by root, which prevents
-// Claude Code from running as user 1000 later.
+// isClaudeCodeInstalled checks if Claude Code is available by actually running it.
+// We run "claude --version" as user 1000:1000 with HOME=/tmp to avoid creating
+// /tmp/.claude owned by root (which prevents Claude Code from running later).
 func (i *Installer) isClaudeCodeInstalled(ctx context.Context) (bool, string) {
-	// First check if claude binary exists
-	whichResult, err := i.runCommand(ctx, []string{"which", "claude"}, 10*time.Second)
-	if err != nil || whichResult.ExitCode != 0 {
+	result, err := i.runCommandAsUser(ctx, []string{"claude", "--version"}, 15*time.Second)
+	if err != nil || result.ExitCode != 0 {
 		return false, ""
 	}
+	version := strings.TrimSpace(result.Stdout)
+	if version == "" {
+		return false, ""
+	}
+	return true, version
+}
 
-	// Get version without running claude directly to avoid creating /tmp/.claude as root
-	// Use npm list to get the installed version
-	npmResult, err := i.runCommand(ctx, []string{"npm", "list", "-g", "@anthropic-ai/claude-code", "--depth=0"}, 30*time.Second)
+// runCommandAsUser executes a command as the coder user (UID 1000) with HOME=/tmp.
+// This prevents tools from creating state files owned by root.
+func (i *Installer) runCommandAsUser(ctx context.Context, cmd []string, timeout time.Duration) (exec.Result, error) {
+	opts := &exec.Opts{
+		Timeout: timeout,
+		User:    CoderUserID + ":" + CoderUserID,
+		Env:     []string{"HOME=/tmp"},
+	}
+	result, err := i.executor.Run(ctx, cmd, opts)
 	if err != nil {
-		return true, "unknown" // claude exists but couldn't get version
+		return result, fmt.Errorf("command %v failed: %w", cmd, err)
 	}
-	// If npm list returns non-zero, the package isn't installed properly
-	// (e.g., stale binary on PATH, broken symlink) - trigger reinstall
-	if npmResult.ExitCode != 0 {
-		return false, ""
-	}
-
-	// Parse version from npm list output (format: "@anthropic-ai/claude-code@X.Y.Z")
-	output := npmResult.Stdout
-	if idx := strings.Index(output, "@anthropic-ai/claude-code@"); idx != -1 {
-		versionPart := output[idx+len("@anthropic-ai/claude-code@"):]
-		if endIdx := strings.IndexAny(versionPart, " \n\t"); endIdx != -1 {
-			return true, strings.TrimSpace(versionPart[:endIdx])
-		}
-		return true, strings.TrimSpace(versionPart)
-	}
-
-	return true, "unknown"
+	return result, nil
 }
 
 // installNode installs Node.js using the system package manager.

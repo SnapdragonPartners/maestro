@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -19,6 +20,11 @@ type TimeoutManager struct {
 	stopCh     chan struct{}
 	inactivity chan struct{}
 	running    bool
+
+	// cancelFunc, when set, is called when inactivity timeout fires.
+	// This allows inactivity detection to actively kill the running process
+	// rather than just setting a flag for post-hoc checking.
+	cancelFunc context.CancelFunc
 }
 
 // NewTimeoutManager creates a new timeout manager.
@@ -144,6 +150,15 @@ func (tm *TimeoutManager) RemainingInactivity() time.Duration {
 	return remaining
 }
 
+// SetCancelFunc sets a context cancel function that will be called when
+// inactivity timeout fires. This turns inactivity from a diagnostic into
+// an active interrupt that kills the running process.
+func (tm *TimeoutManager) SetCancelFunc(cancel context.CancelFunc) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.cancelFunc = cancel
+}
+
 // InactivityCh returns a channel that will be closed when inactivity timeout is reached.
 func (tm *TimeoutManager) InactivityCh() <-chan struct{} {
 	return tm.inactivity
@@ -167,6 +182,15 @@ func (tm *TimeoutManager) monitorInactivity() {
 				default:
 					close(tm.inactivity)
 				}
+
+				// Cancel the running process if a cancel func was provided.
+				tm.mu.RLock()
+				cancel := tm.cancelFunc
+				tm.mu.RUnlock()
+				if cancel != nil {
+					cancel()
+				}
+
 				return
 			}
 		}

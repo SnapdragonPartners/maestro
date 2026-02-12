@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -284,6 +285,16 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	containerID := strings.TrimSpace(string(output))
 	d.logger.Info("Started container %s with ID: %s", containerName, containerID)
 
+	// Fix ownership of Claude Code persistent volume.
+	// Docker creates named volumes as root-owned, but Claude Code runs as user 1000
+	// and silently hangs if it can't write to ~/.claude (HOME=/tmp → /tmp/.claude).
+	if opts.ClaudeCodeMode && d.agentID != "" {
+		chownCmd := exec.CommandContext(ctx, d.dockerCmd, "exec", "--user", "root", containerName, "chown", "1000:1000", "/tmp/.claude")
+		if chownOut, chownErr := chownCmd.CombinedOutput(); chownErr != nil {
+			d.logger.Warn("Failed to chown /tmp/.claude: %v (output: %s)", chownErr, string(chownOut))
+		}
+	}
+
 	// Store container info.
 	d.activeContainers[containerName] = &ContainerInfo{
 		ID:        containerID,
@@ -449,6 +460,184 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 	d.updateContainerActivity(containerName)
 
 	return result, nil
+}
+
+// RunStreaming executes a command in a container with line-by-line output streaming.
+// This enables real-time activity tracking for long-running processes like Claude Code.
+// onStdout/onStderr callbacks are invoked for each line; either may be nil.
+func (d *LongRunningDockerExec) RunStreaming(ctx context.Context, cmd []string, opts *Opts, onStdout, onStderr func(line string)) (Result, error) {
+	start := time.Now()
+
+	if len(cmd) == 0 {
+		return Result{}, fmt.Errorf("command cannot be empty")
+	}
+
+	if opts == nil {
+		return Result{}, fmt.Errorf("opts cannot be nil")
+	}
+
+	// Resolve container name (same logic as Run).
+	storyID := d.getStoryIDFromContext(ctx)
+	var containerName string
+
+	if storyID != "" {
+		containerName = fmt.Sprintf("%s%s", d.containerPrefix, storyID)
+	} else {
+		d.mu.RLock()
+		for name := range d.activeContainers {
+			containerName = name
+			break
+		}
+		d.mu.RUnlock()
+
+		if containerName == "" {
+			return Result{}, fmt.Errorf("no active containers found and no story ID in context")
+		}
+	}
+
+	// Check if container exists.
+	d.mu.RLock()
+	info, exists := d.activeContainers[containerName]
+	d.mu.RUnlock()
+
+	if !exists {
+		return Result{}, fmt.Errorf("container %s not found - call StartContainer first", containerName)
+	}
+
+	d.mu.Lock()
+	info.LastUsed = time.Now()
+	d.mu.Unlock()
+
+	// Set up context with timeout.
+	execCtx := ctx
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+		defer cancel()
+	}
+
+	// Build docker exec command args.
+	// Note: we intentionally omit -i (stdin) for streaming mode. Claude Code in
+	// --print mode blocks when stdin is open (waiting for EOF), producing zero output.
+	// Since the prompt is passed via command-line args, stdin is not needed.
+	execArgs := []string{"exec"}
+	if opts.User != "" {
+		execArgs = append(execArgs, "--user", opts.User)
+	}
+	if opts.WorkDir != "" {
+		execArgs = append(execArgs, "--workdir", "/workspace")
+	}
+	for _, envVar := range opts.Env {
+		execArgs = append(execArgs, "-e", envVar)
+	}
+	execArgs = append(execArgs, containerName)
+	execArgs = append(execArgs, cmd...)
+
+	dockerCmd := exec.CommandContext(execCtx, d.dockerCmd, execArgs...)
+	d.logger.Debug("Executing streaming docker command: %s", strings.Join(dockerCmd.Args, " "))
+
+	stdout, stderr, err := d.executeCommandStreaming(dockerCmd, onStdout, onStderr)
+
+	duration := time.Since(start)
+	result := Result{
+		Stdout:       stdout,
+		Stderr:       stderr,
+		Duration:     duration,
+		ExecutorUsed: string(d.Name()),
+	}
+
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = 1
+		}
+		return result, fmt.Errorf("docker exec failed: %w", err)
+	}
+
+	result.ExitCode = 0
+	d.updateContainerActivity(containerName)
+
+	return result, nil
+}
+
+// executeCommandStreaming runs a docker command with streaming stdout/stderr.
+// Output is streamed line-by-line via callbacks while also being accumulated.
+func (d *LongRunningDockerExec) executeCommandStreaming(cmd *exec.Cmd, onStdout, onStderr func(line string)) (string, string, error) {
+	var stdoutBuf, stderrBuf strings.Builder
+
+	// Set up stdout pipe for streaming.
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	// Set up stderr pipe for streaming.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	if startErr := cmd.Start(); startErr != nil {
+		return "", "", fmt.Errorf("failed to start command: %w", startErr)
+	}
+
+	// Read stdout and stderr concurrently.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		// Use bufio.Reader with large buffer for potentially large JSON lines.
+		reader := bufio.NewReaderSize(stdoutPipe, 256*1024)
+		for {
+			line, readErr := reader.ReadString('\n')
+			if line != "" {
+				stdoutBuf.WriteString(line)
+				if onStdout != nil {
+					// Trim trailing newline for callback.
+					onStdout(strings.TrimRight(line, "\n"))
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		reader := bufio.NewReaderSize(stderrPipe, 64*1024)
+		for {
+			line, readErr := reader.ReadString('\n')
+			if line != "" {
+				stderrBuf.WriteString(line)
+				if onStderr != nil {
+					onStderr(strings.TrimRight(line, "\n"))
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+	}()
+
+	// Wait for all readers to finish before calling Wait.
+	wg.Wait()
+
+	waitErr := cmd.Wait()
+
+	if waitErr != nil {
+		cmdString := strings.Join(cmd.Args, " ")
+		if cmdString == "" {
+			cmdString = "<empty exec command args>"
+		}
+		d.logger.Warn("Docker streaming exec command failed: %s", cmdString)
+		d.logger.Warn("Docker streaming exec error: %v", waitErr)
+	}
+
+	return stdoutBuf.String(), stderrBuf.String(), waitErr
 }
 
 // executeCommand runs the docker command and captures output.

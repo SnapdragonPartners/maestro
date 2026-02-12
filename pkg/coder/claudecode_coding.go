@@ -25,8 +25,14 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	storyTitle := "Story " + storyID // Simple title from ID
 	plan := utils.GetStateValueOr[string](sm, string(stateDataKeyPlan), "")
 
+	// Express/hotfix stories skip planning, so use the task content as the plan.
 	if plan == "" {
-		return proto.StateError, false, logx.Errorf("no approved plan available for coding")
+		taskContent := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
+		if taskContent == "" {
+			return proto.StateError, false, logx.Errorf("no plan or task content available for coding")
+		}
+		plan = taskContent
+		c.logger.Info("📋 Using story content as plan (express/hotfix story)")
 	}
 
 	// Check for pending container switch (from SignalContainerSwitch)
@@ -183,11 +189,11 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 
 	case claude.SignalTimeout:
 		c.logger.Warn("⏰ Claude Code coding timed out after %s", result.Duration)
-		return StateBudgetReview, false, nil
+		return proto.StateError, false, logx.Errorf("Claude Code coding timed out after %s with %d responses", result.Duration, result.ResponseCount)
 
 	case claude.SignalInactivity:
-		c.logger.Warn("⏰ Claude Code coding stalled (no output)")
-		return StateBudgetReview, false, nil
+		c.logger.Warn("⏰ Claude Code coding stalled (no output for inactivity timeout)")
+		return proto.StateError, false, logx.Errorf("Claude Code coding stalled - no output received (%d responses before stall)", result.ResponseCount)
 
 	case claude.SignalError:
 		errMsg := "unknown error"

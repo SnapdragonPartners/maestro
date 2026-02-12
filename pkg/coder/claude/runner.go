@@ -1,10 +1,12 @@
 package claude
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -57,7 +59,8 @@ func NewRunner(executor exec.Executor, containerName string, toolProvider *tools
 
 // Run executes Claude Code with the given options and returns the result.
 // This is the main entry point for running Claude Code sessions.
-func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
+// If tm is non-nil, streaming output is used for real-time activity tracking.
+func (r *Runner) Run(ctx context.Context, opts *RunOptions, tm *TimeoutManager) (Result, error) {
 	startTime := time.Now()
 
 	// Determine session ID: use provided one for resume, or generate new one
@@ -120,6 +123,17 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 		}, err
 	}
 
+	// Verify MCP connectivity before launching Claude Code.
+	// This catches networking/auth issues early instead of silently hanging.
+	if err := r.verifyMCPConnectivity(ctx); err != nil {
+		return Result{
+			Signal:    SignalError,
+			Error:     fmt.Errorf("MCP connectivity check failed: %w", err),
+			Duration:  time.Since(startTime),
+			SessionID: sessionID,
+		}, err
+	}
+
 	// Build the command
 	cmd := r.buildCommand(opts)
 
@@ -134,15 +148,34 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 			sessionID, opts.Mode, opts.Model, opts.TotalTimeout, r.mcpServer.Port())
 	}
 
-	// Execute Claude Code
-	execResult, err := r.executor.Run(ctx, cmd, execOpts)
+	// Execute Claude Code - prefer streaming for real-time activity tracking.
+	execResult, err := r.executeWithStreaming(ctx, cmd, execOpts, tm)
 	duration := time.Since(startTime)
 
 	if err != nil {
-		// Check if it was a timeout
-		if ctx.Err() == context.DeadlineExceeded {
+		// Log any captured output for diagnostics (especially important when process is killed).
+		if execResult.Stderr != "" {
+			r.logger.Warn("Claude Code stderr output:\n%s", execResult.Stderr)
+		}
+		if execResult.Stdout == "" {
+			r.logger.Warn("Claude Code produced no stdout output before exit")
+		} else {
+			// Log first 500 chars of stdout for context.
+			preview := execResult.Stdout
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			r.logger.Info("Claude Code stdout (first 500 chars): %s", preview)
+		}
+
+		// Check if it was a context cancellation (timeout or inactivity)
+		if ctx.Err() != nil {
+			signal := SignalTimeout
+			if tm != nil && tm.IsInactivityExpired() {
+				signal = SignalInactivity
+			}
 			return Result{
-				Signal:    SignalTimeout,
+				Signal:    signal,
 				Error:     err,
 				Duration:  duration,
 				SessionID: sessionID,
@@ -164,6 +197,41 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions) (Result, error) {
 	r.logger.Info("Claude Code completed: session=%s signal=%s responses=%d duration=%s",
 		sessionID, result.Signal, result.ResponseCount, duration)
 
+	return result, nil
+}
+
+// executeWithStreaming tries to use streaming execution for real-time output.
+// Falls back to buffered execution if the executor doesn't support streaming.
+func (r *Runner) executeWithStreaming(ctx context.Context, cmd []string, execOpts *exec.Opts, tm *TimeoutManager) (exec.Result, error) {
+	// Try streaming executor for real-time activity tracking.
+	if streamExec, ok := r.executor.(exec.StreamingExecutor); ok && tm != nil {
+		r.logger.Debug("Using streaming executor for real-time output")
+
+		onStdout := func(line string) {
+			tm.RecordActivity()
+			r.logger.Debug("Claude Code: %s", line)
+		}
+		onStderr := func(line string) {
+			// Stderr also counts as activity (Node.js/proxy logs).
+			tm.RecordActivity()
+			r.logger.Debug("Claude Code stderr: %s", line)
+		}
+
+		result, streamErr := streamExec.RunStreaming(ctx, cmd, execOpts, onStdout, onStderr)
+		if streamErr != nil {
+			return result, fmt.Errorf("streaming execution failed: %w", streamErr)
+		}
+		return result, nil
+	}
+
+	// Fallback: buffered execution (inactivity timeout less reliable).
+	if tm != nil {
+		r.logger.Warn("Executor does not support streaming; inactivity timeout may be less reliable")
+	}
+	result, runErr := r.executor.Run(ctx, cmd, execOpts)
+	if runErr != nil {
+		return result, fmt.Errorf("execution failed: %w", runErr)
+	}
 	return result, nil
 }
 
@@ -222,6 +290,72 @@ func (r *Runner) writeMCPConfig(ctx context.Context) error {
 	}
 
 	r.logger.Debug("Wrote MCP config to %s", MCPConfigPath)
+	return nil
+}
+
+// verifyMCPConnectivity checks that the MCP server is reachable and
+// accepting authenticated connections before launching Claude Code.
+// This catches networking/auth issues early instead of silently hanging.
+func (r *Runner) verifyMCPConnectivity(ctx context.Context) error {
+	if r.mcpServer == nil {
+		return fmt.Errorf("MCP server not started")
+	}
+
+	port := r.mcpServer.Port()
+	token := r.mcpServer.Token()
+
+	// Phase 1: Host-side check - verify TCP server is accepting connections.
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("cannot connect to MCP server at %s: %w", addr, err)
+	}
+
+	// Send auth message and verify response.
+	authMsg := fmt.Sprintf("{\"auth\":%q}\n", token)
+	if _, writeErr := conn.Write([]byte(authMsg)); writeErr != nil {
+		_ = conn.Close()
+		return fmt.Errorf("failed to send auth to MCP server: %w", writeErr)
+	}
+
+	// Read auth response.
+	reader := bufio.NewReader(conn)
+	line, readErr := reader.ReadString('\n')
+	_ = conn.Close()
+
+	if readErr != nil {
+		return fmt.Errorf("failed to read MCP server auth response: %w", readErr)
+	}
+
+	var authResp struct {
+		Authenticated bool   `json:"authenticated"`
+		Error         string `json:"error,omitempty"`
+	}
+	if jsonErr := json.Unmarshal([]byte(line), &authResp); jsonErr != nil {
+		return fmt.Errorf("invalid MCP server auth response: %w", jsonErr)
+	}
+	if !authResp.Authenticated {
+		return fmt.Errorf("MCP server rejected authentication: %s", authResp.Error)
+	}
+
+	// Phase 2: Container-side check - verify proxy can reach host from inside container.
+	proxyCheckCmd := []string{MCPProxyPath, "--check", fmt.Sprintf("%s:%d", DockerHostFromContainer, port)}
+	proxyOpts := &exec.Opts{
+		Timeout: 10 * time.Second,
+		Env:     []string{"MCP_AUTH_TOKEN=" + token},
+	}
+	proxyResult, proxyErr := r.executor.Run(ctx, proxyCheckCmd, proxyOpts)
+	if proxyErr != nil || proxyResult.ExitCode != 0 {
+		errDetail := ""
+		if proxyErr != nil {
+			errDetail = proxyErr.Error()
+		} else {
+			errDetail = proxyResult.Stderr
+		}
+		return fmt.Errorf("MCP proxy cannot reach host from container (host.docker.internal:%d): %s", port, errDetail)
+	}
+
+	r.logger.Info("✅ MCP connectivity verified (host-side + container-side)")
 	return nil
 }
 
@@ -404,34 +538,37 @@ func (r *Runner) parseOutput(stdout, stderr string) Result {
 }
 
 // RunWithInactivityTimeout executes Claude Code with inactivity detection.
-// This wraps Run() with additional monitoring for stalled sessions.
+// This wraps Run() with streaming output and active inactivity cancellation.
+// When no output is received for InactivityTimeout, the context is cancelled
+// and the docker exec process is killed.
 func (r *Runner) RunWithInactivityTimeout(ctx context.Context, opts *RunOptions) (Result, error) {
 	// Create a timeout manager
 	tm := NewTimeoutManager(opts.TotalTimeout, opts.InactivityTimeout)
 
-	// Create a context with the total timeout
-	ctx, cancel := context.WithTimeout(ctx, opts.TotalTimeout)
-	defer cancel()
+	// Create a context with the total timeout, then wrap with cancel for inactivity.
+	ctx, totalCancel := context.WithTimeout(ctx, opts.TotalTimeout)
+	defer totalCancel()
+
+	ctx, inactivityCancel := context.WithCancel(ctx)
+	defer inactivityCancel()
+
+	// Wire inactivity detection to context cancellation.
+	tm.SetCancelFunc(inactivityCancel)
 
 	// Start the timeout manager
 	tm.Start()
 	defer tm.Stop()
 
-	// Run Claude Code
-	result, err := r.Run(ctx, opts)
+	// Run Claude Code with streaming (tm enables streaming callbacks).
+	result, err := r.Run(ctx, opts, tm)
 
-	// If the run produced output (responses > 0), record activity to prevent
-	// false inactivity detection. The session wasn't stalled - it was working.
-	if result.ResponseCount > 0 {
-		tm.RecordActivity()
-	}
-
-	// Check if we hit inactivity timeout (only relevant if no output was produced)
-	if tm.IsInactivityExpired() && result.ResponseCount == 0 {
+	// If inactivity triggered the cancellation, ensure the signal is set.
+	if tm.IsInactivityExpired() {
 		result.Signal = SignalInactivity
 		if result.Error == nil {
 			result.Error = &streamError{message: "Claude Code session stalled - no output for " + opts.InactivityTimeout.String()}
 		}
+		r.logger.Warn("⏰ Claude Code killed due to inactivity (no output for %s)", opts.InactivityTimeout)
 	}
 
 	return result, err

@@ -190,7 +190,7 @@ See [AIRPLANE_MODE.md](AIRPLANE_MODE.md) for detailed specification.
 
 **When**: Enabled via configuration. An alternative to standard coder agents.
 
-**Purpose**: Uses Anthropic's [Claude Code](https://claude.ai/code) tool instead of Maestro's built-in coder implementation. This leverages Claude Code's highly optimized tooling while Maestro handles orchestration.
+**Purpose**: Uses Anthropic's [Claude Code](https://claude.ai/code) CLI instead of Maestro's built-in coder implementation. This leverages Claude Code's highly optimized tooling while Maestro handles orchestration.
 
 ### How It Differs
 
@@ -199,6 +199,7 @@ See [AIRPLANE_MODE.md](AIRPLANE_MODE.md) for detailed specification.
 | Tool execution | Maestro's MCP tools | Claude Code's built-in tools |
 | File operations | Custom file tools | Claude Code file operations |
 | Context management | Maestro context manager | Claude Code's context |
+| Output visibility | Tool-level results | Streaming line-by-line output |
 | Orchestration | Maestro | Maestro (unchanged) |
 
 ### Configuration
@@ -211,13 +212,43 @@ See [AIRPLANE_MODE.md](AIRPLANE_MODE.md) for detailed specification.
 }
 ```
 
+Container resources for Claude Code mode are taken from the standard container config:
+
+```json
+{
+  "container": {
+    "cpus": "2",
+    "memory": "2g",
+    "pids_limit": 1024
+  }
+}
+```
+
+These values apply to both planning and coding containers when Claude Code mode is enabled. Standard mode planning containers use reduced resources (1 CPU, 512MB) since they don't run Node.js.
+
 ### How It Works
 
-1. Coder containers run Claude Code as a subprocess
-2. Maestro injects custom MCP tools for signaling (plan submission, completion, questions)
-3. Stream parser detects tool calls in real-time
-4. Q&A flow allows Claude Code to ask the architect questions
-5. All orchestration benefits remain (architect review, PR workflow, persistence)
+1. **Container setup**: Installer ensures Node.js, npm, and Claude Code CLI are available. Claude Code availability is verified by running `claude --version` as the coder user (UID 1000).
+2. **MCP proxy installation**: An embedded `maestro-mcp-proxy` binary is copied into the container (architecture-aware: amd64/arm64). This bridges Claude Code's stdio MCP transport to Maestro's TCP-based MCP server on the host.
+3. **MCP health check**: Before launching Claude Code, connectivity is verified in two phases:
+   - **Host-side**: TCP dial to the MCP server, authenticate, confirm `{"authenticated": true}`
+   - **Container-side**: Run `maestro-mcp-proxy --check host.docker.internal:<port>` inside the container to verify end-to-end connectivity through Docker networking
+4. **Claude Code launch**: Claude Code runs as a subprocess via `docker exec` with `--dangerously-skip-permissions` (as non-root user 1000).
+5. **Streaming output**: Docker exec output is streamed line-by-line via `RunStreaming()` rather than buffered until process exit. Each output line is logged and counts as activity for timeout tracking.
+6. **MCP tool signaling**: Maestro injects custom MCP tools for signaling (plan submission, completion, questions). Stream parser detects tool calls in real-time.
+7. **Q&A flow**: Claude Code can ask the architect questions via MCP tools, with answers routed back through the proxy.
+8. **Inactivity detection**: A `TimeoutManager` monitors output activity. If no output is received within the inactivity threshold, the docker exec process is actively cancelled via context cancellation (not just flagged post-hoc).
+
+### Timeout and Stall Detection
+
+Claude Code mode uses active timeout management to prevent silent stalls:
+
+- **Total timeout**: Maximum wall-clock time for the entire Claude Code session
+- **Inactivity timeout**: Maximum time with no stdout/stderr output before the process is killed
+- **Streaming activity**: Every line of output (stdout and stderr) resets the inactivity timer
+- **Active cancellation**: When inactivity is detected, the underlying `docker exec` context is cancelled, terminating the process immediately rather than waiting for the total timeout
+
+If the executor supports the `StreamingExecutor` interface, output is streamed line-by-line. If not, a warning is logged and the system falls back to buffered execution (inactivity detection is less reliable in this mode).
 
 ### When to Use It
 
