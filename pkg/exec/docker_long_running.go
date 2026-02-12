@@ -289,7 +289,7 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	// Docker creates named volumes as root-owned, but Claude Code runs as user 1000
 	// and silently hangs if it can't write to ~/.claude (HOME=/tmp → /tmp/.claude).
 	if opts.ClaudeCodeMode && d.agentID != "" {
-		chownCmd := exec.CommandContext(ctx, d.dockerCmd, "exec", containerName, "chown", "1000:1000", "/tmp/.claude")
+		chownCmd := exec.CommandContext(ctx, d.dockerCmd, "exec", "--user", "root", containerName, "chown", "1000:1000", "/tmp/.claude")
 		if chownOut, chownErr := chownCmd.CombinedOutput(); chownErr != nil {
 			d.logger.Warn("Failed to chown /tmp/.claude: %v (output: %s)", chownErr, string(chownOut))
 		}
