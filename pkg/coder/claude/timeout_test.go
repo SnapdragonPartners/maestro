@@ -1,6 +1,7 @@
 package claude
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -321,4 +322,56 @@ func TestTimeoutManager_DoubleStop(_ *testing.T) {
 	// Double stop should not panic
 	tm.Stop()
 	tm.Stop()
+}
+
+func TestTimeoutManager_SetCancelFunc(t *testing.T) {
+	// Inactivity timeout of 100ms, total of 5s.
+	tm := NewTimeoutManager(5*time.Second, 100*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tm.SetCancelFunc(cancel)
+	tm.Start()
+	defer tm.Stop()
+
+	// Wait for inactivity to fire (monitor checks every 1s, plus 100ms threshold).
+	select {
+	case <-ctx.Done():
+		// Good - cancel was called by the timeout manager.
+	case <-time.After(3 * time.Second):
+		t.Error("expected context to be cancelled by inactivity timeout")
+	}
+
+	if !tm.IsInactivityExpired() {
+		t.Error("expected inactivity to be expired")
+	}
+}
+
+func TestTimeoutManager_CancelFuncNotCalledWithActivity(t *testing.T) {
+	tm := NewTimeoutManager(5*time.Second, 200*time.Millisecond)
+
+	cancelled := make(chan struct{})
+	cancelFunc := func() { close(cancelled) }
+
+	tm.SetCancelFunc(context.CancelFunc(cancelFunc))
+	tm.Start()
+	defer tm.Stop()
+
+	// Keep recording activity faster than the inactivity timeout.
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 8; i++ {
+			time.Sleep(50 * time.Millisecond)
+			tm.RecordActivity()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-cancelled:
+		t.Error("cancel should not be called while activity is being recorded")
+	case <-done:
+		// Good - activity prevented inactivity timeout.
+	}
 }

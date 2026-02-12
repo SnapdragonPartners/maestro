@@ -183,17 +183,27 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		Timeout:         0,                     // No timeout for long-running container
 		ClaudeCodeMode:  isClaudeCodeConfigured,
 		ResourceLimits: &execpkg.ResourceLimits{
-			CPUs:   "1",    // Limited CPU for planning
-			Memory: "512m", // Limited memory for planning
-			PIDs:   256,    // Limited processes for planning
+			CPUs:   "1",    // Limited CPU for planning (standard mode)
+			Memory: "512m", // Limited memory for planning (standard mode)
+			PIDs:   256,    // Limited processes for planning (standard mode)
 		},
+	}
+
+	// Claude Code mode needs full resources even for planning because it runs
+	// a Node.js subprocess (Claude Code CLI) that needs significant RAM and CPU.
+	if isClaudeCodeConfigured && readonly {
+		execOpts.ResourceLimits.CPUs = config.GetContainerCPUs()
+		execOpts.ResourceLimits.Memory = config.GetContainerMemory()
+		execOpts.ResourceLimits.PIDs = config.GetContainerPIDs()
+		c.logger.Info("Claude Code planning container resources: cpus=%s memory=%s pids=%d",
+			execOpts.ResourceLimits.CPUs, execOpts.ResourceLimits.Memory, execOpts.ResourceLimits.PIDs)
 	}
 
 	// For coding phase, allow more resources and network access.
 	if !readonly {
-		execOpts.ResourceLimits.CPUs = "2"
-		execOpts.ResourceLimits.Memory = "2g"
-		execOpts.ResourceLimits.PIDs = 1024
+		execOpts.ResourceLimits.CPUs = config.GetContainerCPUs()
+		execOpts.ResourceLimits.Memory = config.GetContainerMemory()
+		execOpts.ResourceLimits.PIDs = config.GetContainerPIDs()
 		execOpts.NetworkDisabled = false
 		// SECURITY: No GITHUB_TOKEN injection into container.
 		// Git push operations run on the HOST (not in container) to prevent

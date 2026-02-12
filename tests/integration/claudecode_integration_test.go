@@ -182,7 +182,7 @@ Do NOT do anything else - just read the file and call done immediately.`
 		runOpts.TotalTimeout = 2 * time.Minute
 		runOpts.InactivityTimeout = 30 * time.Second
 
-		result, err := runner.Run(ctx, &runOpts)
+		result, err := runner.Run(ctx, &runOpts, nil)
 		if err != nil {
 			t.Fatalf("Runner.Run failed: %v", err)
 		}

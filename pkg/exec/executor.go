@@ -28,6 +28,19 @@ type Executor interface {
 	Available() bool
 }
 
+// StreamingExecutor extends Executor with line-by-line output streaming.
+// This is used by Claude Code integration to enable real-time activity
+// tracking and inactivity detection during long-running subprocess execution.
+type StreamingExecutor interface {
+	Executor
+
+	// RunStreaming executes a command and streams output line-by-line via callbacks.
+	// onStdout is called for each line of stdout, onStderr for each line of stderr.
+	// Both callbacks may be nil (falls back to buffered capture).
+	// The Result still contains the full accumulated stdout/stderr.
+	RunStreaming(ctx context.Context, cmd []string, opts *Opts, onStdout, onStderr func(line string)) (Result, error)
+}
+
 // Mount represents a volume mount for container execution.
 type Mount struct {
 	// Source is the host path to mount.

@@ -776,6 +776,42 @@ func GetContainerTmpfsSize() string {
 	return DefaultTmpfsSize
 }
 
+// GetContainerCPUs returns the configured CPU limit for containers.
+func GetContainerCPUs() string {
+	cfg, err := GetConfig()
+	if err != nil {
+		return DefaultDockerCPUs
+	}
+	if cfg.Container != nil && cfg.Container.CPUs != "" {
+		return cfg.Container.CPUs
+	}
+	return DefaultDockerCPUs
+}
+
+// GetContainerMemory returns the configured memory limit for containers.
+func GetContainerMemory() string {
+	cfg, err := GetConfig()
+	if err != nil {
+		return DefaultDockerMemory
+	}
+	if cfg.Container != nil && cfg.Container.Memory != "" {
+		return cfg.Container.Memory
+	}
+	return DefaultDockerMemory
+}
+
+// GetContainerPIDs returns the configured PID limit for containers.
+func GetContainerPIDs() int64 {
+	cfg, err := GetConfig()
+	if err != nil {
+		return DefaultDockerPIDs
+	}
+	if cfg.Container != nil && cfg.Container.PIDs > 0 {
+		return cfg.Container.PIDs
+	}
+	return DefaultDockerPIDs
+}
+
 // GetDockerfilePath returns the configured Dockerfile path, or the default if not set.
 // The path is always relative to the project/workspace root.
 // Must call LoadConfig first to initialize config.

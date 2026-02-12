@@ -280,7 +280,7 @@ func TestClaudeCodeMCPToolCallWithRunner(t *testing.T) {
 		},
 	}
 
-	result, err := runner.Run(ctx, runOpts)
+	result, err := runner.Run(ctx, runOpts, nil)
 	if err != nil {
 		t.Fatalf("Runner.Run failed: %v", err)
 	}
