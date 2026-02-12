@@ -40,7 +40,7 @@ type TemplateData struct {
 	BinarySizeFailures     []workspace.BootstrapFailure            `json:"binary_size_failures"`     // Large file issues
 	GitAccessFailures      []workspace.BootstrapFailure            `json:"git_access_failures"`      // Git repository issues
 	InfrastructureFailures []workspace.BootstrapFailure            `json:"infrastructure_failures"`  // Maestro infrastructure issues
-	ExternalToolFailures   []workspace.BootstrapFailure            `json:"external_tool_failures"`   // Missing external tools
+	ClaudeCodeFailures     []workspace.BootstrapFailure            `json:"claude_code_failures"`     // Claude Code CLI missing
 	TotalFailures          int                                     `json:"total_failures"`           // Total number of failures
 	HasCriticalFailures    bool                                    `json:"has_critical_failures"`    // True if any priority 1 failures exist
 	RequiresNetworkAccess  bool                                    `json:"requires_network_access"`  // True if container needs network for setup
@@ -78,7 +78,7 @@ func NewTemplateData(projectName, platform, platformDisplayName, containerImage,
 		BinarySizeFailures:     []workspace.BootstrapFailure{},
 		GitAccessFailures:      []workspace.BootstrapFailure{},
 		InfrastructureFailures: []workspace.BootstrapFailure{},
-		ExternalToolFailures:   []workspace.BootstrapFailure{},
+		ClaudeCodeFailures:     []workspace.BootstrapFailure{},
 		TotalFailures:          len(failures),
 		RequiresNetworkAccess:  false,
 		NeedsContainerUpgrade:  false,
@@ -116,8 +116,8 @@ func NewTemplateData(projectName, platform, platformDisplayName, containerImage,
 			data.GitAccessFailures = append(data.GitAccessFailures, *failure)
 		case workspace.BootstrapFailureInfrastructure:
 			data.InfrastructureFailures = append(data.InfrastructureFailures, *failure)
-		case workspace.BootstrapFailureExternalTools:
-			data.ExternalToolFailures = append(data.ExternalToolFailures, *failure)
+		case workspace.BootstrapFailureClaudeCode:
+			data.ClaudeCodeFailures = append(data.ClaudeCodeFailures, *failure)
 		}
 	}
 

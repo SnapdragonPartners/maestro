@@ -211,17 +211,18 @@ digraph ProjectKnowledge {
 - Deprecated patterns (status="deprecated") agents should avoid
 {{- end}}
 
-{{- if .HasFailuresOfType "external_tools"}}
+{{- if .HasFailuresOfType "claude_code"}}
 
-### External Dependencies
-{{- range .ExternalToolFailures}}
-- [ ] Install missing tool: {{.Description}}
+### Claude Code Setup
+{{- range .ClaudeCodeFailures}}
+- [ ] Verify or install: {{.Description}}
 {{- end}}
-- [ ] Verify all required tools are in PATH
-- [ ] Check GITHUB_TOKEN environment variable
+- [ ] Verify Claude Code is accessible in the container: `claude --version`
+- [ ] If not installed, add to Dockerfile: `RUN npm install -g @anthropic-ai/claude-code`
+- [ ] Rebuild container after Dockerfile changes: use `container_build` tool
 {{- end}}
 
-{{- if and .Pack .Pack.TemplateSections.ModuleSetup}}
+{{- if and (.HasFailuresOfType "build_system") .Pack .Pack.TemplateSections.ModuleSetup}}
 
 {{.Pack.TemplateSections.ModuleSetup}}
 {{- end}}
@@ -264,6 +265,8 @@ digraph ProjectKnowledge {
 *No critical infrastructure issues found.*
 {{- end}}
 
+{{- if .HasFailuresOfType "build_system"}}
+
 ### Phase 2: Development Quality Setup
 
 {{- if and .Pack .Pack.TemplateSections.LintConfig}}
@@ -285,6 +288,7 @@ digraph ProjectKnowledge {
 
 {{.Pack.TemplateSections.QualitySetup}}
 {{- end}}
+{{- end}}
 
 ### Phase 3: High Priority Infrastructure Fixes (Priority 2+)
 {{- $hasHighPriority := false}}
@@ -305,14 +309,22 @@ digraph ProjectKnowledge {
 {{- end}}
 
 ### Phase 4: Validation
-1. Run full verification suite: `maestro init --verify`
-2. Test complete development workflow:
-   - `make build` - should compile successfully
-   - `make test` - should run tests
-   - `make lint` - should pass linting
-   - `make run` - should start application
-3. Verify container security constraints
-4. Test git operations (clone, worktree, PR creation)
+{{- if .HasFailuresOfType "build_system"}}
+- Verify build/test/lint pipeline: `make build && make test && make lint`
+{{- end}}
+{{- if .HasFailuresOfType "container"}}
+- Verify container security constraints (rootless, read-only, network-disabled)
+{{- end}}
+{{- if .HasFailuresOfType "git_access"}}
+- Test git operations (clone, worktree, PR creation)
+{{- end}}
+{{- if .HasFailuresOfType "claude_code"}}
+- Verify Claude Code is accessible in the container: `claude --version`
+{{- end}}
+{{- if .HasFailuresOfType "binary_size"}}
+- Verify no files exceed size limits
+{{- end}}
+- Run full verification suite: `maestro init --verify`
 
 ## Technical Notes
 
@@ -336,7 +348,7 @@ digraph ProjectKnowledge {
 - **Git User**: {{.GitUserName}} <{{.GitUserEmail}}>
 {{- end}}
 
-{{- if and .Pack .Pack.MakefileTargets.Build}}
+{{- if and (.HasFailuresOfType "build_system") .Pack .Pack.MakefileTargets.Build}}
 
 ### Makefile Targets
 The following targets should be configured in your Makefile:
@@ -367,6 +379,8 @@ clean:
 ```
 {{- end}}
 
+{{- if or (.HasFailuresOfType "container") (.HasFailuresOfType "claude_code")}}
+
 ### Container Configuration
 {{- if .RequiresNetworkAccess}}
 - **Network Access**: Required during setup phase for image pull/build
@@ -376,6 +390,9 @@ clean:
 {{- end}}
 - **User**: Non-root (`--user=1000:1000`)
 - **Filesystem**: Read-only with writable `/tmp`
+{{- end}}
+
+{{- if .HasFailuresOfType "container"}}
 
 ### External Services (Databases, Caches, etc.)
 If your application requires external services like PostgreSQL, Redis, or other infrastructure:
@@ -401,20 +418,35 @@ RUN apt-get update && apt-get install -y git make curl && rm -rf /var/lib/apt/li
 ```
 
 **Note**: GitHub CLI (`gh`) is NOT required in the container. All PR creation, merge operations, and GitHub API access run on the host orchestrator, not inside containers.
+{{- end}}
+
+{{- if .HasFailuresOfType "binary_size"}}
 
 ### File System Constraints
 - **Large File Limit**: 100MB (GitHub push limit)
 - **Warning Threshold**: 50MB (recommend Git LFS)
-- **Git LFS**: {{if .HasFailuresOfType "binary_size"}}Required for large files{{else}}Not currently needed{{end}}
+- **Git LFS**: Required for large files
+{{- end}}
 
 ## Success Criteria
 
 - [ ] All acceptance criteria completed
-- [ ] Full verification suite passes
+{{- if .HasFailuresOfType "container"}}
 - [ ] Container security constraints validated
+{{- end}}
+{{- if .HasFailuresOfType "build_system"}}
 - [ ] Build/test/lint pipeline functional
+{{- end}}
+{{- if .HasFailuresOfType "git_access"}}
 - [ ] Git operations working
+{{- end}}
+{{- if .HasFailuresOfType "binary_size"}}
 - [ ] No files exceed size limits
+{{- end}}
+{{- if .HasFailuresOfType "claude_code"}}
+- [ ] Claude Code accessible in container
+{{- end}}
+- [ ] Full verification suite passes
 
 Upon completion, the bootstrap detector will automatically recognize the completed work on the next run and allow normal development workflow to proceed.
 
