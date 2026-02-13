@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -658,8 +657,7 @@ func TestStack_SanitizedComposeFile_StripPorts(t *testing.T) {
 		t.Errorf("sanitized file still contains port number 6379:\n%s", sanitizedContent)
 	}
 
-	// Verify stripped service names returned
-	sort.Strings(strippedServices)
+	// Verify stripped service names returned (sorted by production code)
 	if len(strippedServices) != 2 {
 		t.Fatalf("expected 2 stripped services, got %d: %v", len(strippedServices), strippedServices)
 	}

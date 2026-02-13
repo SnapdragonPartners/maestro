@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -404,6 +405,9 @@ func (s *Stack) sanitizedComposeFile() (string, []string, error) {
 			}
 		}
 	}
+
+	// Sort for deterministic output in logs and tool results
+	sort.Strings(strippedPortServices)
 
 	if !modified {
 		return "", nil, nil // No changes needed, use original file

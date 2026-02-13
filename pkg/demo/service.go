@@ -492,8 +492,11 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 
 	// If we mapped a port, get the assigned host port
 	if containerPort > 0 {
-		if _, err := s.updatePublishedPort(ctx); err != nil {
+		found, err := s.updatePublishedPort(ctx)
+		if err != nil {
 			s.logger.Warn("⚠️ Could not determine published port: %v", err)
+		} else if !found {
+			s.logger.Warn("⚠️ No published port mapping found for container port %d", containerPort)
 		}
 	}
 
