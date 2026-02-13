@@ -93,3 +93,4 @@ When a story requires external services like databases (PostgreSQL, MySQL), cach
 - **Use the compose_up tool**: Instruct coders to use the `compose_up` tool to start required services
 - **Example guidance in story**: "Use Docker Compose (`.maestro/compose.yml`) to run PostgreSQL. Call `compose_up` to start the database before running tests."
 - **Do NOT assume services are pre-running**: Each story that needs services must explicitly manage them via compose
+- **Do NOT include host port bindings**: Compose services must not use `ports:` - agents access services via Docker network hostnames (e.g., db:5432). Host port bindings cause conflicts between concurrent agents.

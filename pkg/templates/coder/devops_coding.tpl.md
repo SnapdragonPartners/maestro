@@ -43,6 +43,7 @@
 - **container_list**: Check available containers and registry status. Use BEFORE building new containers.
 - **container_switch**: Change execution environment between containers when needed.
 - **compose_up**: Bring up Docker Compose services defined in .maestro/compose.yml. Use for multi-container setups requiring databases or other services.
+  - **IMPORTANT**: Do not use `ports:` in compose.yml - services are reachable by hostname on the Docker network (e.g., db:5432). Host port bindings cause conflicts between agents.
 
 ### Shell Commands
 - **shell**: Use for running tests, listing files, checking infrastructure status. Be explicit with commands:

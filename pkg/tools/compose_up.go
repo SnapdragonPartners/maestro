@@ -114,6 +114,7 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 		projectName = "maestro-dev" // Fallback if no agent ID
 	}
 	stack := demo.NewStack(projectName, composePath, "")
+	stack.StripPorts = true // Deps accessed via Docker network DNS, not host ports
 
 	// Start compose and attach this agent's container to the compose network.
 	// UpAndAttach is idempotent — safe to call on every compose_up invocation.
@@ -152,6 +153,14 @@ func (c *ComposeUpTool) Exec(ctx context.Context, _ map[string]any) (*ExecResult
 
 	if c.containerName != "" {
 		statusMsg += fmt.Sprintf("\nYour container (%s) is connected to the compose network. Services are reachable by hostname.\n", c.containerName)
+	}
+
+	// Surface warning about stripped ports so the coder agent can learn
+	if len(stack.StrippedPortServices) > 0 {
+		statusMsg += fmt.Sprintf("\nNote: Host port bindings were removed from services %v. "+
+			"Dependencies are reachable via Docker network DNS (e.g., db:5432). "+
+			"Host ports cause conflicts when multiple agents share the same compose file. "+
+			"Do not use `ports:` in compose.yml.\n", stack.StrippedPortServices)
 	}
 
 	return &ExecResult{

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,15 @@ type Stack struct {
 	ProjectName string // e.g., "coder-001", "demo"
 	ComposeFile string // Path to compose file
 	Network     string // Network name
+
+	// StripPorts removes host port bindings from all services in the compose file.
+	// Dependencies are accessed via Docker network DNS (e.g., db:5432), not host ports.
+	// Host port bindings cause conflicts when multiple stacks share the same compose file.
+	StripPorts bool
+
+	// StrippedPortServices is populated after Up() with the names of services
+	// that had their ports stripped. Empty if StripPorts is false or no services had ports.
+	StrippedPortServices []string
 
 	// CommandRunner allows injecting a mock for testing.
 	// If nil, uses exec.CommandContext.
@@ -72,15 +82,16 @@ func (s *Stack) Up(ctx context.Context) error {
 		return fmt.Errorf("project name cannot be empty")
 	}
 
-	// Create sanitized compose file (strips container_name to prevent collisions)
+	// Create sanitized compose file (strips container_name and optionally ports)
 	composeFile := s.ComposeFile
 	if s.ComposeFile != "" {
-		sanitized, sanitizeErr := s.sanitizedComposeFile()
+		sanitized, strippedServices, sanitizeErr := s.sanitizedComposeFile()
 		if sanitizeErr == nil && sanitized != "" {
 			composeFile = sanitized
 			defer func() { _ = os.Remove(sanitized) }() // Clean up temp file after compose up
 		}
 		// If sanitization fails, fall back to original file
+		s.StrippedPortServices = strippedServices
 	}
 
 	args := []string{"compose", "-p", s.ProjectName}
@@ -344,33 +355,36 @@ type composeFile struct {
 	Services map[string]any `yaml:"services"`
 }
 
-// sanitizedComposeFile creates a sanitized copy of the compose file with container_name removed.
-// Returns the path to the temp file, or empty string if no sanitization was needed.
+// sanitizedComposeFile creates a sanitized copy of the compose file with container_name removed
+// and optionally host port bindings stripped (when StripPorts is true).
+// Returns the path to the temp file, the list of services that had ports stripped,
+// or empty string if no sanitization was needed.
 // The caller is responsible for removing the temp file when done.
-func (s *Stack) sanitizedComposeFile() (string, error) {
+func (s *Stack) sanitizedComposeFile() (string, []string, error) {
 	if s.ComposeFile == "" {
-		return "", nil
+		return "", nil, nil
 	}
 
 	data, err := os.ReadFile(s.ComposeFile)
 	if err != nil {
-		return "", fmt.Errorf("failed to read compose file: %w", err)
+		return "", nil, fmt.Errorf("failed to read compose file: %w", err)
 	}
 
 	// Parse as generic map to preserve structure
 	var compose map[string]any
 	if unmarshalErr := yaml.Unmarshal(data, &compose); unmarshalErr != nil {
-		return "", fmt.Errorf("failed to parse compose file: %w", unmarshalErr)
+		return "", nil, fmt.Errorf("failed to parse compose file: %w", unmarshalErr)
 	}
 
 	services, ok := utils.SafeAssert[map[string]any](compose["services"])
 	if !ok {
-		return "", nil // No services to modify
+		return "", nil, nil // No services to modify
 	}
 
-	// Strip container_name from all services
+	// Strip container_name from all services, and optionally strip ports
 	modified := false
-	for _, svcRaw := range services {
+	var strippedPortServices []string
+	for svcName, svcRaw := range services {
 		svc, ok := utils.SafeAssert[map[string]any](svcRaw)
 		if !ok {
 			continue
@@ -380,26 +394,39 @@ func (s *Stack) sanitizedComposeFile() (string, error) {
 			delete(svc, "container_name")
 			modified = true
 		}
+
+		// Strip host port bindings to prevent conflicts between stacks.
+		// Dependencies are accessed via Docker network DNS (e.g., db:5432), not host ports.
+		if s.StripPorts {
+			if _, exists := svc["ports"]; exists {
+				delete(svc, "ports")
+				modified = true
+				strippedPortServices = append(strippedPortServices, svcName)
+			}
+		}
 	}
 
+	// Sort for deterministic output in logs and tool results
+	sort.Strings(strippedPortServices)
+
 	if !modified {
-		return "", nil // No changes needed, use original file
+		return "", nil, nil // No changes needed, use original file
 	}
 
 	// Write sanitized version to temp file
 	newData, err := yaml.Marshal(compose)
 	if err != nil {
-		return "", fmt.Errorf("failed to marshal compose file: %w", err)
+		return "", nil, fmt.Errorf("failed to marshal compose file: %w", err)
 	}
 
 	tmpFile := filepath.Join(os.TempDir(),
 		fmt.Sprintf("%s-sanitized-%d.yml", s.ProjectName, time.Now().UnixNano()))
 
 	if err := os.WriteFile(tmpFile, newData, 0600); err != nil {
-		return "", fmt.Errorf("failed to write sanitized compose file: %w", err)
+		return "", nil, fmt.Errorf("failed to write sanitized compose file: %w", err)
 	}
 
-	return tmpFile, nil
+	return tmpFile, strippedPortServices, nil
 }
 
 // ComposeFileExists checks if a compose file exists at the given workspace path.

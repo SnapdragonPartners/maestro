@@ -408,7 +408,7 @@ func TestStack_SanitizedComposeFile_StripsContainerName(t *testing.T) {
 	s := NewStack("test-project", composePath, "test-network")
 
 	// Call sanitizedComposeFile
-	sanitizedPath, err := s.sanitizedComposeFile()
+	sanitizedPath, _, err := s.sanitizedComposeFile()
 	if err != nil {
 		t.Fatalf("sanitizedComposeFile failed: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestStack_SanitizedComposeFile_NoChangesNeeded(t *testing.T) {
 	s := NewStack("test-project", composePath, "test-network")
 
 	// Call sanitizedComposeFile - should return empty string (no changes needed)
-	sanitizedPath, err := s.sanitizedComposeFile()
+	sanitizedPath, _, err := s.sanitizedComposeFile()
 	if err != nil {
 		t.Fatalf("sanitizedComposeFile failed: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestStack_SanitizedComposeFile_EmptyComposeFile(t *testing.T) {
 	s := NewStack("test-project", "", "test-network")
 
 	// Call sanitizedComposeFile with empty path
-	sanitizedPath, err := s.sanitizedComposeFile()
+	sanitizedPath, _, err := s.sanitizedComposeFile()
 	if err != nil {
 		t.Fatalf("sanitizedComposeFile failed: %v", err)
 	}
@@ -605,5 +605,192 @@ func TestStack_UpAndAttach_UpFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "compose up failed") {
 		t.Errorf("expected compose up error, got: %v", err)
+	}
+}
+
+func TestStack_SanitizedComposeFile_StripPorts(t *testing.T) {
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	composeContent := `services:
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: test
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+  worker:
+    image: myapp-worker:latest
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatalf("failed to write compose file: %v", err)
+	}
+
+	s := NewStack("test-project", composePath, "test-network")
+	s.StripPorts = true
+
+	sanitizedPath, strippedServices, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	if sanitizedPath == "" {
+		t.Fatal("expected sanitized file path, got empty string")
+	}
+	defer os.Remove(sanitizedPath)
+
+	// Verify ports are stripped
+	sanitizedContent, err := os.ReadFile(sanitizedPath)
+	if err != nil {
+		t.Fatalf("failed to read sanitized file: %v", err)
+	}
+	if strings.Contains(string(sanitizedContent), "ports") {
+		t.Errorf("sanitized file still contains ports:\n%s", sanitizedContent)
+	}
+	if strings.Contains(string(sanitizedContent), "5432") {
+		t.Errorf("sanitized file still contains port number 5432:\n%s", sanitizedContent)
+	}
+	if strings.Contains(string(sanitizedContent), "6379") {
+		t.Errorf("sanitized file still contains port number 6379:\n%s", sanitizedContent)
+	}
+
+	// Verify stripped service names returned (sorted by production code)
+	if len(strippedServices) != 2 {
+		t.Fatalf("expected 2 stripped services, got %d: %v", len(strippedServices), strippedServices)
+	}
+	if strippedServices[0] != "db" || strippedServices[1] != "redis" {
+		t.Errorf("expected stripped services [db, redis], got %v", strippedServices)
+	}
+
+	// Verify other content preserved
+	if !strings.Contains(string(sanitizedContent), "postgres:15-alpine") {
+		t.Error("sanitized file missing postgres image")
+	}
+	if !strings.Contains(string(sanitizedContent), "redis:7-alpine") {
+		t.Error("sanitized file missing redis image")
+	}
+	if !strings.Contains(string(sanitizedContent), "POSTGRES_USER") {
+		t.Error("sanitized file missing environment variable")
+	}
+	if !strings.Contains(string(sanitizedContent), "myapp-worker") {
+		t.Error("sanitized file missing worker service")
+	}
+}
+
+func TestStack_SanitizedComposeFile_NoStripPortsByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	// File with container_name (to trigger sanitization) AND ports
+	composeContent := `services:
+  db:
+    image: postgres:15-alpine
+    container_name: my-db
+    ports:
+      - "5432:5432"
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatalf("failed to write compose file: %v", err)
+	}
+
+	s := NewStack("test-project", composePath, "test-network")
+	// StripPorts defaults to false
+
+	sanitizedPath, strippedServices, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	if sanitizedPath == "" {
+		t.Fatal("expected sanitized file (container_name removed)")
+	}
+	defer os.Remove(sanitizedPath)
+
+	// Verify ports are PRESERVED (StripPorts is false)
+	sanitizedContent, err := os.ReadFile(sanitizedPath)
+	if err != nil {
+		t.Fatalf("failed to read sanitized file: %v", err)
+	}
+	if !strings.Contains(string(sanitizedContent), "5432") {
+		t.Error("ports should be preserved when StripPorts is false")
+	}
+
+	// Verify container_name is still stripped
+	if strings.Contains(string(sanitizedContent), "container_name") {
+		t.Error("container_name should still be stripped")
+	}
+
+	// Verify no services reported as stripped
+	if len(strippedServices) != 0 {
+		t.Errorf("expected no stripped services, got %v", strippedServices)
+	}
+}
+
+func TestStack_SanitizedComposeFile_StripPortsNoPortsPresent(t *testing.T) {
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	// File with no ports and no container_name — no sanitization needed
+	composeContent := `services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: test
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatalf("failed to write compose file: %v", err)
+	}
+
+	s := NewStack("test-project", composePath, "test-network")
+	s.StripPorts = true
+
+	sanitizedPath, strippedServices, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	// No changes needed — should return empty path
+	if sanitizedPath != "" {
+		os.Remove(sanitizedPath)
+		t.Error("expected no sanitization when no ports or container_name present")
+	}
+	if len(strippedServices) != 0 {
+		t.Errorf("expected no stripped services, got %v", strippedServices)
+	}
+}
+
+func TestStack_SanitizedComposeFile_OriginalFileUnchanged(t *testing.T) {
+	tmpDir := t.TempDir()
+	composePath := filepath.Join(tmpDir, "compose.yml")
+
+	composeContent := `services:
+  db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+`
+	if err := os.WriteFile(composePath, []byte(composeContent), 0644); err != nil {
+		t.Fatalf("failed to write compose file: %v", err)
+	}
+
+	s := NewStack("test-project", composePath, "test-network")
+	s.StripPorts = true
+
+	sanitizedPath, _, err := s.sanitizedComposeFile()
+	if err != nil {
+		t.Fatalf("sanitizedComposeFile failed: %v", err)
+	}
+	if sanitizedPath != "" {
+		defer os.Remove(sanitizedPath)
+	}
+
+	// Verify original file is NOT modified
+	originalContent, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("failed to read original file: %v", err)
+	}
+	if !strings.Contains(string(originalContent), "5432:5432") {
+		t.Error("original file should not be modified by sanitization")
 	}
 }
