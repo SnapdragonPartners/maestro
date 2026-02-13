@@ -247,6 +247,9 @@ func (q *Queue) AllStoriesCompleted() bool {
 // AllNonMaintenanceStoriesCompleted checks if all non-maintenance stories are completed.
 // Used to notify PM that spec work is done before maintenance stories are dispatched.
 func (q *Queue) AllNonMaintenanceStoriesCompleted() bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
 	for _, story := range q.stories {
 		if story.IsMaintenance {
 			continue
