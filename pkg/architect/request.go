@@ -629,6 +629,7 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 }
 
 // checkSpecCompletion checks if a story's spec is complete and triggers maintenance if needed.
+// Sends PM "all stories complete" notification BEFORE maintenance adds new stories to the queue.
 func (d *Driver) checkSpecCompletion(ctx context.Context, storyID string) {
 	if d.queue == nil {
 		return
@@ -652,6 +653,16 @@ func (d *Driver) checkSpecCompletion(ctx context.Context, storyID string) {
 	if d.queue.CheckSpecComplete(specID) {
 		total, completed := d.queue.GetSpecStoryCount(specID)
 		d.logger.Info("📊 Spec %s complete: %d/%d stories done", specID, completed, total)
+
+		// Notify PM that all non-maintenance stories are done BEFORE onSpecComplete
+		// adds maintenance stories to the queue. This lets the user start testing immediately.
+		if d.queue.AllNonMaintenanceStoriesCompleted() {
+			if err := d.notifyPMAllStoriesComplete(ctx); err != nil {
+				d.logger.Warn("⚠️ Failed to notify PM of all stories complete: %v", err)
+			}
+		}
+
+		// onSpecComplete runs synchronously — may add maintenance stories to queue
 		d.onSpecComplete(ctx, specID)
 	} else {
 		total, completed := d.queue.GetSpecStoryCount(specID)

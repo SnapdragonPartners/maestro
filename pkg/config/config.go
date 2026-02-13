@@ -604,11 +604,13 @@ type PortInfo struct {
 // MaintenanceConfig defines automated maintenance mode settings.
 // Maintenance mode runs periodic housekeeping tasks between specs to manage technical debt.
 type MaintenanceConfig struct {
-	Enabled       bool                   `json:"enabled"`        // Whether maintenance mode is enabled (default: true)
-	AfterSpecs    int                    `json:"after_specs"`    // Number of specs before triggering maintenance (default: 1)
-	Tasks         MaintenanceTasksConfig `json:"tasks"`          // Which maintenance tasks to run
-	BranchCleanup BranchCleanupConfig    `json:"branch_cleanup"` // Branch cleanup configuration
-	TodoScan      TodoScanConfig         `json:"todo_scan"`      // TODO/deprecated scan configuration
+	Enabled                    bool                   `json:"enabled"`                       // Whether maintenance mode is enabled (default: true)
+	AfterSpecs                 int                    `json:"after_specs"`                   // Deprecated: superseded by MinSpecPoints + MaxSpecsWithoutMaintenance
+	MinSpecPoints              int                    `json:"min_spec_points"`               // Minimum total estimated points for a spec to trigger maintenance (default: 6)
+	MaxSpecsWithoutMaintenance int                    `json:"max_specs_without_maintenance"` // Force maintenance after this many specs regardless of size (default: 3)
+	Tasks                      MaintenanceTasksConfig `json:"tasks"`                         // Which maintenance tasks to run
+	BranchCleanup              BranchCleanupConfig    `json:"branch_cleanup"`                // Branch cleanup configuration
+	TodoScan                   TodoScanConfig         `json:"todo_scan"`                     // TODO/deprecated scan configuration
 }
 
 // MaintenanceTasksConfig defines which maintenance tasks are enabled.
@@ -1415,8 +1417,10 @@ func createDefaultConfig() *Config {
 			LLMMessages: false, // Disabled by default
 		},
 		Maintenance: &MaintenanceConfig{
-			Enabled:    true, // Enabled by default
-			AfterSpecs: 1,    // Trigger after every spec
+			Enabled:                    true, // Enabled by default
+			AfterSpecs:                 1,    // Deprecated: kept for backward compat
+			MinSpecPoints:              6,    // Specs with 6+ estimated points trigger maintenance
+			MaxSpecsWithoutMaintenance: 3,    // Force maintenance after 3 specs regardless of size
 			Tasks: MaintenanceTasksConfig{
 				BranchCleanup:    true,
 				KnowledgeSync:    true,
@@ -1752,6 +1756,12 @@ func applyDefaults(config *Config) {
 	// This is handled in createDefaultConfig for new configs
 	if config.Maintenance.AfterSpecs == 0 {
 		config.Maintenance.AfterSpecs = 1
+	}
+	if config.Maintenance.MinSpecPoints == 0 {
+		config.Maintenance.MinSpecPoints = 6
+	}
+	if config.Maintenance.MaxSpecsWithoutMaintenance == 0 {
+		config.Maintenance.MaxSpecsWithoutMaintenance = 3
 	}
 	// Apply task defaults - all enabled by default for new sections without explicit false
 	// Note: For existing configs with tasks section, we don't override explicit false values
