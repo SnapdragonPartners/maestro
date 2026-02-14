@@ -57,6 +57,10 @@ type MaintenanceTracker struct {
 	StoryResults       map[string]*MaintenanceStoryResult // Story ID -> result
 	ProgrammaticReport *ProgrammaticReport                // Results from programmatic tasks (branch cleanup)
 	Metrics            MaintenanceMetrics                 // Aggregated metrics for the cycle
+
+	// Container upgrade signaling (set by coder when Claude Code upgraded in-place)
+	NeedsContainerUpgrade  bool   // True if container image needs rebuild
+	ContainerUpgradeReason string // What triggered the upgrade (e.g., "claude_code")
 }
 
 // MaintenanceStoryResult tracks the result of a single maintenance story.

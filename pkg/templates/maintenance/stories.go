@@ -3,6 +3,8 @@ package maintenance
 import (
 	"fmt"
 	"strings"
+
+	"orchestrator/pkg/config"
 )
 
 // KnowledgeSyncStory returns the story template for knowledge graph synchronization.
@@ -125,6 +127,39 @@ to determine if they can be promoted, updated, or removed.
 - Do not change node descriptions or other attributes
 - Document reasoning for each status change in PR description`,
 		Express:       false,
+		IsMaintenance: true,
+	}
+}
+
+// ContainerUpgradeStory returns the story template for upgrading the development container image.
+// This is generated when the runtime detects Claude Code was upgraded in-place because the
+// container image shipped a version below MinClaudeCodeVersion. The story instructs the coder
+// to update the Dockerfile so future containers ship the correct version.
+func ContainerUpgradeStory(reason string) Story {
+	minVersion := config.MinClaudeCodeVersion
+	return Story{
+		ID:    "maint-container-upgrade",
+		Title: "Upgrade Claude Code in Development Container",
+		Content: fmt.Sprintf(`The runtime detected that Claude Code in the development container was below
+the minimum required version (%s) and performed an in-place upgrade. This story
+permanently fixes the container image so the runtime workaround is no longer needed.
+
+## Trigger
+Component requiring upgrade: %s
+
+## Acceptance Criteria
+- Find the Dockerfile used to build the development container image
+- Update the Claude Code installation line to use version constraint >=%s
+  Example: npm install -g "@anthropic-ai/claude-code@>=%s"
+- Rebuild the container image to verify it builds successfully
+- Verify claude --version in the new image reports >= %s
+
+## Constraints
+- Only modify the Dockerfile's Claude Code installation line
+- Do not change other packages or base image
+- Use >= constraint (not exact pin) so future patch versions are accepted
+- If multiple Dockerfiles install Claude Code, update all of them`, minVersion, reason, minVersion, minVersion, minVersion),
+		Express:       true, // Straightforward change, skip planning
 		IsMaintenance: true,
 	}
 }

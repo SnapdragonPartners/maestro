@@ -39,6 +39,13 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		return StateError, fmt.Errorf("no current request found")
 	}
 
+	// Check for container upgrade signal from coder
+	if upgradeType, ok := requestMsg.GetMetadata("container_upgrade_needed"); ok && upgradeType != "" {
+		d.logger.Info("📦 Container upgrade needed: %s (reported by %s)", upgradeType, requestMsg.FromAgent)
+		d.maintenance.NeedsContainerUpgrade = true
+		d.maintenance.ContainerUpgradeReason = upgradeType
+	}
+
 	// Persist request to database (fire-and-forget)
 	if d.persistenceChannel != nil {
 		agentRequest := buildAgentRequestFromMsg(requestMsg)

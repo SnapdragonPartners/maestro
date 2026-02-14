@@ -74,6 +74,7 @@ type Coder struct {
 	pendingContainerImageID    string
 	pendingDockerfileHash      string // SHA256 hash of Dockerfile when container was built
 	hasPendingContainerConfig  bool
+	containerUpgradeNeeded     bool // True if Claude Code was upgraded in-place (container image needs rebuild)
 }
 
 // Runtime extends BaseRuntime with coder-specific capabilities.

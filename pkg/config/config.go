@@ -480,6 +480,10 @@ const (
 
 	// Container image constants.
 	BootstrapContainerTag = "maestro-bootstrap:latest"
+
+	// MinClaudeCodeVersion is the minimum required Claude Code CLI version.
+	// v2.1.27-2.1.30 had a /resume bug causing sessions to hang with 0 responses.
+	MinClaudeCodeVersion  = "2.1.42"
 	ModelOpenAIO3Mini     = "o3-mini"
 	ModelOpenAIO4Mini     = "o4-mini"
 	ModelOpenAIO3Latest   = ModelOpenAIO3

@@ -50,7 +50,8 @@ RUN apk add --no-cache \
 COPY --from=builder /maestro-mcp-proxy /usr/local/bin/maestro-mcp-proxy
 
 # Install Claude Code globally for Claude Code mode support
-RUN npm install -g @anthropic-ai/claude-code
+# Minimum version constraint: v2.1.27-2.1.30 had /resume session hang bugs
+RUN npm install -g "@anthropic-ai/claude-code@>=2.1.42"
 
 # Set bash as default shell
 SHELL ["/bin/bash", "-c"]

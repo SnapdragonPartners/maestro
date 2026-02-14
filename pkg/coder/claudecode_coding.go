@@ -149,6 +149,11 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 		sm.SetStateData(KeyCodingSessionID, result.SessionID)
 	}
 
+	// Track if Claude Code was upgraded in-place (container image needs rebuild)
+	if result.ContainerUpgradeNeeded {
+		c.containerUpgradeNeeded = true
+	}
+
 	// Process result based on signal
 	return c.processClaudeCodeCodingResult(sm, &result, storyID)
 }

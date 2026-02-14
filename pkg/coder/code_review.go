@@ -91,6 +91,13 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCode))
 	}
 
+	// Signal to architect if Claude Code was upgraded in-place (container image needs rebuild)
+	if c.containerUpgradeNeeded {
+		approvalEff.ExtraMetadata = map[string]string{
+			"container_upgrade_needed": "claude_code",
+		}
+	}
+
 	// Execute approval effect - blocks until architect responds
 	result, err := c.ExecuteEffect(ctx, approvalEff)
 	if err != nil {

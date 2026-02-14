@@ -209,6 +209,35 @@ func TestStoryTemplates(t *testing.T) {
 	}
 }
 
+func TestContainerUpgradeStory(t *testing.T) {
+	story := ContainerUpgradeStory("claude_code")
+
+	if story.ID != "maint-container-upgrade" {
+		t.Errorf("expected ID 'maint-container-upgrade', got %s", story.ID)
+	}
+	if !story.Express {
+		t.Error("expected ContainerUpgrade story to have Express=true")
+	}
+	if !story.IsMaintenance {
+		t.Error("expected ContainerUpgrade story to have IsMaintenance=true")
+	}
+
+	// Should reference the reason
+	if !strings.Contains(story.Content, "claude_code") {
+		t.Error("expected content to include the upgrade reason")
+	}
+
+	// Should reference minimum version
+	if !strings.Contains(story.Content, config.MinClaudeCodeVersion) {
+		t.Errorf("expected content to reference minimum version %s", config.MinClaudeCodeVersion)
+	}
+
+	// Should have acceptance criteria
+	if !strings.Contains(story.Content, "Acceptance Criteria") {
+		t.Error("expected content to have Acceptance Criteria section")
+	}
+}
+
 func TestDefaultMarkersUsed(t *testing.T) {
 	cfg := &config.MaintenanceConfig{
 		Enabled:    true,
