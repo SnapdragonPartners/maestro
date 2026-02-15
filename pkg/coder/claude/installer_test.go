@@ -25,9 +25,9 @@ func TestParseVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseVersion(tt.input)
+			got := ParseVersion(tt.input)
 			if got != tt.expected {
-				t.Errorf("parseVersion(%q) = %q, want %q", tt.input, got, tt.expected)
+				t.Errorf("ParseVersion(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
 	}
@@ -57,9 +57,9 @@ func TestCompareVersions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := compareVersions(tt.a, tt.b)
+			got := CompareVersions(tt.a, tt.b)
 			if got != tt.expected {
-				t.Errorf("compareVersions(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.expected)
+				t.Errorf("CompareVersions(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.expected)
 			}
 		})
 	}
