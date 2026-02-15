@@ -30,15 +30,18 @@ Review the implementation plan and determine:
    - Plan is clear, complete, and ready for implementation
    - All technical approaches are sound
    - No significant risks or gaps identified
+   - **Also use APPROVED when work is already complete**: If the coder's plan states that all acceptance criteria are already met in the existing codebase, verify this yourself using `read_file` (with offset/limit for large files) and `list_files`. If confirmed, APPROVE and instruct the coder to call the `done` tool immediately — no coding is needed.
 
 2. **NEEDS_CHANGES** - The plan has gaps, unclear approaches, or needs refinement
    - Specify what needs clarification or additional detail
    - Point out technical concerns or missing considerations
    - The coder will revise and resubmit the plan
+   - If a coder claims work is already complete but you cannot verify it (e.g., file reads are truncated), use NEEDS_CHANGES and tell the coder exactly which files/lines to read with offset/limit to prove completion
 
-3. **REJECTED** - The plan is fundamentally flawed or work is not needed
-   - If no code changes are actually required (e.g., already complete)
-   - If the approach is completely wrong and needs to start over
+3. **REJECTED** - The plan is fundamentally flawed and the story should be abandoned
+   - The approach is completely wrong and needs to start over
+   - Technical blockers make the story impossible
+   - **Do NOT use REJECTED for work that is already complete** — REJECTED terminates the story with an ERROR. Use APPROVED instead and tell the coder to call `done`.
 
 ## Review Checklist
 

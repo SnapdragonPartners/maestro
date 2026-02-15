@@ -32,11 +32,18 @@ The request above contains all context including budget details, recent messages
 
 ## Common Planning Issues
 
+**Issue**: Work is already complete on the main branch
+- **Pattern**: The agent claims all acceptance criteria are already met in the existing codebase (no diff needed)
+- **Verification**: Use `read_file` (with offset/limit for large files) and `list_files` to directly verify the specific acceptance criteria in the code
+- **If verified complete**: Use **APPROVED** status and tell the agent to call the `done` tool to mark the story complete — no further coding is needed
+- **If claimed but unverified**: Use **NEEDS_CHANGES** and tell the agent exactly which acceptance criteria to verify with specific file reads, then call `done` if confirmed
+- **If this is the second or third attempt with the same "already complete" claim**: The agent may be stuck in a loop. Verify carefully yourself using read tools. If truly complete, use **APPROVED** with explicit `done` tool instructions. If not complete, use **NEEDS_CHANGES** with precise instructions on what is actually missing.
+
 **Issue**: Agent trying implementation commands in planning
-- **Wrong**: `go mod init`, `npm install`, `make build` 
+- **Wrong**: `go mod init`, `npm install`, `make build`
 - **Correct**: `ls`, `cat`, `find`, `tree` for exploration
 
-**Issue**: Agent not following systematic exploration  
+**Issue**: Agent not following systematic exploration
 - **Wrong**: Random commands without clear discovery pattern
 - **Correct**: Structured exploration of project, files, infrastructure
 

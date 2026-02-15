@@ -37,6 +37,13 @@ The request above contains all context including budget details, recent messages
 
 ## Common Coding Issues
 
+**Issue**: Work is already complete (no changes needed)
+- **Pattern**: The agent claims all acceptance criteria are already met in the existing codebase — the diff is empty because the work was done by a previous story or already exists on main
+- **Verification**: Use `read_file` (with offset/limit for large files) and `list_files` to directly verify the specific acceptance criteria in the code
+- **If verified complete**: Use **APPROVED** status and tell the agent to call the `done` tool to mark the story complete — no further coding is needed
+- **If this is the second or third attempt with the same "already complete" claim**: The agent is stuck in a loop. Verify carefully yourself. If truly complete, APPROVE with explicit `done` tool instructions. If not, use NEEDS_CHANGES with precise details on what is missing.
+- **IMPORTANT**: Do NOT use REJECTED for work that is genuinely complete. REJECTED means "abandon the story" — use it only for stories that are impossible or fundamentally blocked.
+
 **Issue**: Work appears complete but agent hasn't called 'done' tool
 - **Pattern**: Agent has created all required files, code compiles/runs successfully, but continues refining or rewriting working code
 - **Correct Response**: Use APPROVED status with empty feedback field. The budget approval message will automatically remind the agent to call 'done' if work is substantially complete.
