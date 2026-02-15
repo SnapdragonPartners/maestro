@@ -123,16 +123,22 @@ func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *c
 	// Generate maintenance spec with stories based on config (synchronous, in-memory)
 	spec := maintenance.GenerateSpecWithID(cfg, cycleID)
 
-	// Append container upgrade story if runtime detected an outdated container image
-	if d.maintenance.NeedsContainerUpgrade {
-		reason := d.maintenance.ContainerUpgradeReason
-		if reason == "" {
-			reason = "unknown"
+	// Snapshot and reset container upgrade flag under lock (may be set concurrently by coder)
+	d.maintenance.mutex.Lock()
+	needsUpgrade := d.maintenance.NeedsContainerUpgrade
+	upgradeReason := d.maintenance.ContainerUpgradeReason
+	if needsUpgrade {
+		if upgradeReason == "" {
+			upgradeReason = "unknown"
 		}
-		spec.Stories = append(spec.Stories, maintenance.ContainerUpgradeStory(reason))
-		d.maintenance.NeedsContainerUpgrade = false // Reset so we don't re-queue next cycle
+		d.maintenance.NeedsContainerUpgrade = false
 		d.maintenance.ContainerUpgradeReason = ""
-		d.logger.Info("🔧 Added container upgrade story (reason: %s)", reason)
+	}
+	d.maintenance.mutex.Unlock()
+
+	if needsUpgrade {
+		spec.Stories = append(spec.Stories, maintenance.ContainerUpgradeStory(upgradeReason))
+		d.logger.Info("🔧 Added container upgrade story (reason: %s)", upgradeReason)
 	}
 
 	d.logger.Info("🔧 Generated maintenance spec with %d stories", len(spec.Stories))

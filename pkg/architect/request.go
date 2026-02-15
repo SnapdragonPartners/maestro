@@ -721,8 +721,14 @@ func (d *Driver) notifyPMOfCompletion(ctx context.Context, storyID string, compl
 }
 
 // notifyPMAllStoriesComplete sends an all-stories-complete notification to PM.
-// This is called when all stories in the queue have been completed.
+// This may be called from multiple locations (checkSpecCompletion, dispatching, monitoring)
+// but the notification is only sent once per spec lifecycle.
 func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
+	if d.pmAllCompleteNotified {
+		d.logger.Debug("PM all-stories-complete notification already sent, skipping")
+		return nil
+	}
+
 	// Get spec ID and total stories from queue
 	specID := ""
 	totalStories := 0
@@ -754,6 +760,7 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 		return fmt.Errorf("failed to send all-stories-complete notification: %w", err)
 	}
 
+	d.pmAllCompleteNotified = true
 	d.logger.Info("🎉 Notified PM that all %d stories are complete (spec=%s)", totalStories, specID)
 	return nil
 }

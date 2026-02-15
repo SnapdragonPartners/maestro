@@ -109,6 +109,7 @@ type Driver struct {
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
+	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
 }
 
 // GitHubMergeClient defines the subset of GitHub operations needed for merge requests.
