@@ -63,12 +63,32 @@ The request above contains all context including budget details, recent messages
 
 **Issue**: Not using appropriate tools
 - **Wrong**: Using shell for operations that have dedicated tools
-- **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test` for container operations
+- **Correct**: Use the coder's purpose-built tools (see list below) instead of shell equivalents
+
+**Issue**: Using `sed`/`awk` for file editing instead of `file_edit`
+- **Wrong**: `sed -i '42s/old/new/' file.go`, `awk` scripts that insert/replace blocks, line-number-based edits
+- **Correct**: The coder has a `file_edit` tool that does exact string matching and replacement — far more reliable than line-number addressing
+- **Why**: Line-number-based edits are fragile and break when file contents shift. This is one of the most common causes of coder churn loops, especially in test files.
 
 **Issue**: Using direct Docker commands instead of container tools
 - **Wrong**: `docker build`, `docker run`, `docker exec`, `docker ps`, etc. in shell commands
 - **Correct**: Use `container_build`, `container_update`, `container_exec`, `container_boot_test`, `container_list` tools
 - **Why**: Container tools provide proper integration, error handling, and container registration
+
+## Coder's Available Tools
+
+The coder has access to the following purpose-built tools. When providing feedback, recommend specific tools by name rather than generic shell approaches:
+
+- **`file_edit`**: Targeted string replacement in files (exact match, not line-number based). Preferred over `sed`/`awk` for code modifications.
+- **`file_read`** / **`file_write`**: Read and write files. Coder should read before modifying.
+- **`shell`**: General-purpose command execution for builds, tests, listing files, etc.
+- **`build`** / **`test`** / **`lint`**: Dedicated build, test, and lint commands (project-configured).
+- **`container_build`** / **`container_test`** / **`container_switch`** / **`container_update`** / **`container_list`**: Container lifecycle management. Preferred over direct `docker` commands.
+- **`compose_up`**: Bring up Docker Compose services.
+- **`ask_question`**: Ask the architect for clarification.
+- **`chat_post`**: Post status updates visible to humans and other agents.
+- **`done`**: Mark story as complete (only when all acceptance criteria are met).
+- **`todo_complete`** / **`todos_add`**: Todo tracking during implementation.
 
 ## Automated Pattern Analysis
 

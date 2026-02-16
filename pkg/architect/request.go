@@ -1018,13 +1018,19 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		if status == reviewStatusNeedsChanges {
 			newStreak := d.incrementReviewStreak(agentID, ReviewTypeBudget)
 			d.logger.Info("📊 Budget review streak for %s: %d consecutive NEEDS_CHANGES", agentID, newStreak)
-		} else {
+		} else if status == reviewStatusRejected {
 			// On REJECTED: give the architect a chance to annotate the story before requeue.
 			// Without story edit, the next coder gets the identical story and (at low temperature)
 			// is likely to fail in the same way.
-			if status == reviewStatusRejected {
-				streak := d.getReviewStreak(agentID, ReviewTypeBudget)
-				d.attemptStoryEdit(ctx, cm, agentID, storyID, streak)
+			streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+			d.logger.Info("📊 Budget review for %s: REJECTED (after %d consecutive NEEDS_CHANGES). Story will be requeued.", agentID, streak)
+			d.attemptStoryEdit(ctx, cm, agentID, storyID, streak)
+			d.resetReviewStreak(agentID, ReviewTypeBudget)
+		} else {
+			// APPROVED — log streak reset if there was one
+			streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+			if streak > 0 {
+				d.logger.Info("📊 Budget review for %s: APPROVED (resetting streak from %d consecutive NEEDS_CHANGES)", agentID, streak)
 			}
 			d.resetReviewStreak(agentID, ReviewTypeBudget)
 		}
