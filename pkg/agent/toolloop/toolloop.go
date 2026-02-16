@@ -314,8 +314,22 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 		}
 
-		tl.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d",
-			duration.Seconds(), len(resp.Content), len(resp.ToolCalls))
+		tl.logger.Info("✅ LLM call completed in %.3gs, response length: %d chars, tool calls: %d, stop_reason: %s",
+			duration.Seconds(), len(resp.Content), len(resp.ToolCalls), resp.StopReason)
+
+		// Detect max_tokens truncation with tool calls — parameters are likely incomplete/empty
+		if resp.StopReason == "max_tokens" && len(resp.ToolCalls) > 0 {
+			tl.logger.Warn("⚠️  Response truncated (stop_reason=max_tokens) with %d tool calls — parameters may be incomplete", len(resp.ToolCalls))
+			// Don't process truncated tool calls. Instead, inject a guidance message
+			// so the LLM knows what happened and can retry with a shorter response.
+			cfg.ContextManager.AddAssistantMessage(resp.Content)
+			cfg.ContextManager.AddMessage("user",
+				"Your previous response was truncated due to the output token limit (max_tokens). "+
+					"Your tool call parameters were incomplete and could not be processed. "+
+					"Please retry with a more concise response. If you are submitting a large document, "+
+					"try to shorten it while keeping all essential content.")
+			continue
+		}
 
 		// Add assistant response to context with structured tool calls
 		if len(resp.ToolCalls) > 0 {

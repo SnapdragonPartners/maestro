@@ -29,8 +29,8 @@ const (
 
 	// PMMaxTokens defines the maximum tokens for PM LLM responses.
 	// Used for interview questions, spec generation, and user communication.
-	// Set to 4000 - PM responses are typically shorter than architect's.
-	PMMaxTokens = 4000
+	// Set to 16000 - spec generation via tool call parameters can require 5000+ tokens.
+	PMMaxTokens = 16000
 )
 
 // CacheControl represents prompt caching configuration for a message.
