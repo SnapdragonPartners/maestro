@@ -82,13 +82,27 @@ func (t *ReadFileTool) Definition() ToolDefinition {
 }
 
 // intArgOrDefault extracts an integer argument from the args map, returning defaultVal if missing or invalid.
+// Handles float64 (from JSON unmarshal), int, and int64 value types.
 func intArgOrDefault(args map[string]any, key string, defaultVal int) int {
-	if v, exists := args[key]; exists {
-		if f, ok := v.(float64); ok && f >= 1 {
-			return int(f)
-		}
+	v, exists := args[key]
+	if !exists {
+		return defaultVal
 	}
-	return defaultVal
+	var n int
+	switch val := v.(type) {
+	case float64:
+		n = int(val)
+	case int:
+		n = val
+	case int64:
+		n = int(val)
+	default:
+		return defaultVal
+	}
+	if n < 1 {
+		return defaultVal
+	}
+	return n
 }
 
 // Exec executes the tool with the given arguments.
@@ -118,17 +132,21 @@ func (t *ReadFileTool) Exec(ctx context.Context, args map[string]any) (*ExecResu
 	// 4. Counts total lines to detect truncation
 	endLine := offset + limit - 1
 	awkScript := fmt.Sprintf(
-		`awk 'NR>=%d && NR<=%d { printf "%%6d\t%%s\n", NR, substr($0, 1, %d) } END { printf "\n__TOTAL_LINES__%%d\n", NR }' %s 2>&1`,
-		offset, endLine, maxLineLength, containerPath,
+		`awk 'NR>=%d && NR<=%d { printf "%%6d\t%%s\n", NR, substr($0, 1, %d) } END { printf "\n__TOTAL_LINES__%%d\n", NR }' '%s'`,
+		offset, endLine, maxLineLength, strings.ReplaceAll(containerPath, "'", "'\"'\"'"),
 	)
 	cmd := []string{"sh", "-c", awkScript}
 
-	result, err := t.executor.Run(ctx, cmd, nil)
+	result, err := t.executor.Run(ctx, cmd, &execpkg.Opts{})
 	if err != nil {
 		return t.errorResult(fmt.Sprintf("file not found or not readable: %s (error: %v)", path, err))
 	}
 	if result.ExitCode != 0 {
-		return t.errorResult(fmt.Sprintf("file not found or not readable: %s (exit code: %d, stderr: %s)", path, result.ExitCode, result.Stderr))
+		errDetail := result.Stderr
+		if errDetail == "" {
+			errDetail = result.Stdout
+		}
+		return t.errorResult(fmt.Sprintf("file not found or not readable: %s (exit code: %d, output: %s)", path, result.ExitCode, errDetail))
 	}
 
 	// Parse output to separate content from total line count
