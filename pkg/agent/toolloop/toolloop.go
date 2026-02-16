@@ -501,7 +501,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 
 			// Check hard limit (stops execution immediately)
 			if cfg.Escalation.HardLimit > 0 && currentIteration >= cfg.Escalation.HardLimit {
-				tl.logger.Error("❌ Hard iteration limit (%d) reached for key '%s' - escalating", cfg.Escalation.HardLimit, cfg.Escalation.Key)
+				tl.logger.Warn("⚠️  Hard iteration limit (%d) reached for key '%s' - escalating", cfg.Escalation.HardLimit, cfg.Escalation.Key)
 				if cfg.Escalation.OnHardLimit != nil {
 					err := cfg.Escalation.OnHardLimit(ctx, cfg.Escalation.Key, currentIteration)
 					if err != nil {
