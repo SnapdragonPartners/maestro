@@ -96,7 +96,7 @@ func (t *FileEditTool) Exec(ctx context.Context, args map[string]any) (*ExecResu
 
 	// Read the file using argv form to avoid shell metacharacter issues
 	readCmd := []string{"cat", containerPath}
-	result, err := t.executor.Run(ctx, readCmd, nil)
+	result, err := t.executor.Run(ctx, readCmd, &execpkg.Opts{})
 	if err != nil {
 		return t.errorResult(fmt.Sprintf("file not found or not readable: %s (error: %v)", path, err)), nil //nolint:nilerr // returning structured error to LLM
 	}
@@ -122,7 +122,7 @@ func (t *FileEditTool) Exec(ctx context.Context, args map[string]any) (*ExecResu
 	// Path is single-quoted to prevent shell metacharacter interpretation.
 	encoded := base64.StdEncoding.EncodeToString([]byte(newContent))
 	writeCmd := []string{"sh", "-c", fmt.Sprintf("echo '%s' | base64 -d > '%s'", encoded, strings.ReplaceAll(containerPath, "'", "'\"'\"'"))}
-	writeResult, err := t.executor.Run(ctx, writeCmd, nil)
+	writeResult, err := t.executor.Run(ctx, writeCmd, &execpkg.Opts{})
 	if err != nil || writeResult.ExitCode != 0 {
 		errMsg := "failed to write file"
 		if err != nil {
