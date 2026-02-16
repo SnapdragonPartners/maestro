@@ -143,6 +143,15 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		// Response sent and persisted to database
 	}
 
+	// Now that the response is sent, check if the completed story's spec is done.
+	// This may trigger maintenance (which adds stories to the queue synchronously).
+	// We do this AFTER sending the response so the coder doesn't wait on maintenance.
+	if acceptedStoryID, exists := d.GetStateData()[StateKeyAcceptedStoryID]; exists {
+		if storyIDStr, ok := acceptedStoryID.(string); ok && storyIDStr != "" {
+			d.checkSpecCompletion(ctx, storyIDStr)
+		}
+	}
+
 	// Get fresh state data after processing to see any changes made during request handling
 	// (GetStateData returns a copy, so the stateData variable from line 35 is stale)
 	stateData = d.GetStateData()
@@ -621,15 +630,14 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	// 3. Notify PM of story completion (if PM is enabled)
 	d.notifyPMOfCompletion(ctx, storyID, completionSummary)
 
-	// 4. Check if spec is complete (for maintenance tracking)
-	d.checkSpecCompletion(ctx, storyID)
-
-	// 5. Set state data to signal that work was accepted (for DISPATCHING transition)
+	// 4. Set state data to signal that work was accepted (for DISPATCHING transition)
+	// NOTE: checkSpecCompletion (maintenance) is called in handleRequest() AFTER
+	// the response is sent to the coder, so the coder doesn't wait on maintenance.
 	d.SetStateData(StateKeyWorkAccepted, true)
 	d.SetStateData(StateKeyAcceptedStoryID, storyID)
 	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
 
-	// 6. Checkpoint state for crash recovery (story completion is a stable boundary)
+	// 5. Checkpoint state for crash recovery (story completion is a stable boundary)
 	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
 		d.Checkpoint(cfg.SessionID)
 	}

@@ -15,14 +15,15 @@ import (
 // Called from checkSpecCompletion when a story completes and queue detects spec completion.
 // Runs synchronously so maintenance stories are in the queue before the state machine continues.
 func (d *Driver) onSpecComplete(ctx context.Context, specID string) {
+	// Lock only for counter/tracking updates, then unlock before calling triggerMaintenanceCycle
+	// (which needs to acquire the lock itself). Go mutexes are not reentrant.
 	d.maintenance.mutex.Lock()
-	defer d.maintenance.mutex.Unlock()
-
-	// Track completed spec
 	d.maintenance.SpecsCompleted++
 	d.maintenance.CompletedSpecIDs = append(d.maintenance.CompletedSpecIDs, specID)
+	specsCompleted := d.maintenance.SpecsCompleted
+	d.maintenance.mutex.Unlock()
 
-	d.logger.Info("📊 Spec %s completed. Total specs since last maintenance: %d", specID, d.maintenance.SpecsCompleted)
+	d.logger.Info("📊 Spec %s completed. Total specs since last maintenance: %d", specID, specsCompleted)
 
 	// Check if maintenance should be triggered
 	cfg, err := config.GetConfig()
@@ -39,7 +40,7 @@ func (d *Driver) onSpecComplete(ctx context.Context, specID string) {
 	// Heuristic: only trigger maintenance for significant specs or after enough small ones accumulate
 	specPoints := d.queue.GetSpecTotalPoints(specID)
 	meetsPointsThreshold := specPoints >= cfg.Maintenance.MinSpecPoints
-	meetsSpecCountBackstop := d.maintenance.SpecsCompleted >= cfg.Maintenance.MaxSpecsWithoutMaintenance
+	meetsSpecCountBackstop := specsCompleted >= cfg.Maintenance.MaxSpecsWithoutMaintenance
 
 	if meetsPointsThreshold {
 		d.logger.Info("🔧 Spec %s has %d estimated points (threshold: %d) — triggering maintenance",
@@ -47,22 +48,24 @@ func (d *Driver) onSpecComplete(ctx context.Context, specID string) {
 		d.triggerMaintenanceCycle(ctx, cfg.Maintenance)
 	} else if meetsSpecCountBackstop {
 		d.logger.Info("🔧 %d specs completed without maintenance (backstop: %d) — triggering maintenance",
-			d.maintenance.SpecsCompleted, cfg.Maintenance.MaxSpecsWithoutMaintenance)
+			specsCompleted, cfg.Maintenance.MaxSpecsWithoutMaintenance)
 		d.triggerMaintenanceCycle(ctx, cfg.Maintenance)
 	} else {
 		d.logger.Info("🔧 Spec %s has %d estimated points (threshold: %d), %d/%d specs since last maintenance — skipping maintenance",
-			specID, specPoints, cfg.Maintenance.MinSpecPoints, d.maintenance.SpecsCompleted, cfg.Maintenance.MaxSpecsWithoutMaintenance)
+			specID, specPoints, cfg.Maintenance.MinSpecPoints, specsCompleted, cfg.Maintenance.MaxSpecsWithoutMaintenance)
 	}
 }
 
 // triggerMaintenanceCycle initiates a new maintenance cycle.
-// Must be called with maintenance.mutex held.
 // Runs synchronously so maintenance stories are in the queue before the state machine
 // continues to DISPATCHING. Branch cleanup (GitHub API) runs as a background goroutine
 // since it's a nice-to-have that shouldn't block story dispatch.
 func (d *Driver) triggerMaintenanceCycle(ctx context.Context, cfg *config.MaintenanceConfig) {
+	d.maintenance.mutex.Lock()
+
 	if d.maintenance.InProgress {
 		d.logger.Info("🔧 Maintenance already in progress (cycle %s), skipping", d.maintenance.CurrentCycleID)
+		d.maintenance.mutex.Unlock()
 		return
 	}
 
@@ -78,16 +81,31 @@ func (d *Driver) triggerMaintenanceCycle(ctx context.Context, cfg *config.Mainte
 	d.maintenance.ProgrammaticReport = nil
 	d.maintenance.Metrics = MaintenanceMetrics{}
 
+	// Snapshot and reset container upgrade flag while we hold the lock
+	needsUpgrade := d.maintenance.NeedsContainerUpgrade
+	upgradeReason := d.maintenance.ContainerUpgradeReason
+	if needsUpgrade {
+		if upgradeReason == "" {
+			upgradeReason = "unknown"
+		}
+		d.maintenance.NeedsContainerUpgrade = false
+		d.maintenance.ContainerUpgradeReason = ""
+	}
+
+	// Unlock before runMaintenanceTasks (which calls dispatchMaintenanceSpec, also locks)
+	d.maintenance.mutex.Unlock()
+
 	d.logger.Info("🔧 Triggering maintenance cycle: %s", cycleID)
 
 	// Run maintenance tasks synchronously so stories are queued before state machine continues
-	d.runMaintenanceTasks(ctx, cycleID, cfg)
+	d.runMaintenanceTasks(ctx, cycleID, cfg, needsUpgrade, upgradeReason)
 }
 
 // runMaintenanceTasks executes all maintenance tasks for a cycle.
 // Branch cleanup (GitHub API) runs as a background goroutine since it's a nice-to-have.
 // Story generation and dispatch run synchronously so stories are queued immediately.
-func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *config.MaintenanceConfig) {
+// needsUpgrade/upgradeReason are snapshotted by triggerMaintenanceCycle under lock.
+func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *config.MaintenanceConfig, needsUpgrade bool, upgradeReason string) {
 	d.logger.Info("🔧 Starting maintenance tasks for cycle %s", cycleID)
 
 	// Run branch cleanup in background — it's a GitHub API call that shouldn't block story dispatch.
@@ -122,19 +140,6 @@ func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *c
 
 	// Generate maintenance spec with stories based on config (synchronous, in-memory)
 	spec := maintenance.GenerateSpecWithID(cfg, cycleID)
-
-	// Snapshot and reset container upgrade flag under lock (may be set concurrently by coder)
-	d.maintenance.mutex.Lock()
-	needsUpgrade := d.maintenance.NeedsContainerUpgrade
-	upgradeReason := d.maintenance.ContainerUpgradeReason
-	if needsUpgrade {
-		if upgradeReason == "" {
-			upgradeReason = "unknown"
-		}
-		d.maintenance.NeedsContainerUpgrade = false
-		d.maintenance.ContainerUpgradeReason = ""
-	}
-	d.maintenance.mutex.Unlock()
 
 	if needsUpgrade {
 		spec.Stories = append(spec.Stories, maintenance.ContainerUpgradeStory(upgradeReason))
