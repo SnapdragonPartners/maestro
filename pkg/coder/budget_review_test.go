@@ -308,6 +308,180 @@ func TestBudgetReviewContentRendering(t *testing.T) {
 	t.Logf("ExtraPayload keys: %v", getMapKeys(budgetEff.ExtraPayload))
 }
 
+// TestFormatMessageForBudgetReview_AssistantWithToolCalls verifies tool calls appear in output.
+func TestFormatMessageForBudgetReview_AssistantWithToolCalls(t *testing.T) {
+	msg := contextmgr.Message{
+		Role:    "assistant",
+		Content: "Let me check the file...",
+		ToolCalls: []contextmgr.ToolCall{
+			{
+				ID:         "call_1",
+				Name:       "read_file",
+				Parameters: map[string]any{"path": "src/main.go"},
+			},
+		},
+	}
+
+	result := formatMessageForBudgetReview(&msg)
+
+	if !strings.Contains(result, "[assistant]") {
+		t.Error("Expected [assistant] role prefix")
+	}
+	if !strings.Contains(result, `[tool: read_file(path="src/main.go")]`) {
+		t.Errorf("Expected tool call summary, got: %s", result)
+	}
+	if !strings.Contains(result, "Let me check the file...") {
+		t.Error("Expected text content to be preserved")
+	}
+}
+
+// TestFormatMessageForBudgetReview_UserWithToolResults verifies placeholder is replaced.
+func TestFormatMessageForBudgetReview_UserWithToolResults(t *testing.T) {
+	msg := contextmgr.Message{
+		Role:    "user",
+		Content: "Tool results:",
+		ToolResults: []contextmgr.ToolResult{
+			{
+				ToolCallID: "call_1",
+				Content:    "package main\n\nimport \"fmt\"\n\nfunc main() {\n    fmt.Println(\"Hello\")\n}",
+				IsError:    false,
+			},
+		},
+	}
+
+	result := formatMessageForBudgetReview(&msg)
+
+	if strings.Contains(result, "Tool results:") {
+		t.Errorf("Should NOT contain placeholder 'Tool results:', got: %s", result)
+	}
+	if !strings.Contains(result, "[result]") {
+		t.Error("Expected [result] prefix for tool result")
+	}
+	if !strings.Contains(result, "package main") {
+		t.Errorf("Expected actual tool output content, got: %s", result)
+	}
+}
+
+// TestFormatMessageForBudgetReview_PlainTextMessage verifies backwards compat.
+func TestFormatMessageForBudgetReview_PlainTextMessage(t *testing.T) {
+	msg := contextmgr.Message{
+		Role:    "user",
+		Content: "Please implement the feature",
+	}
+
+	result := formatMessageForBudgetReview(&msg)
+	expected := "[user]: Please implement the feature"
+	if result != expected {
+		t.Errorf("Expected %q, got %q", expected, result)
+	}
+}
+
+// TestFormatToolResultSummary_Truncation verifies long results are truncated.
+func TestFormatToolResultSummary_Truncation(t *testing.T) {
+	longContent := strings.Repeat("x", 300)
+	tr := &contextmgr.ToolResult{
+		ToolCallID: "call_1",
+		Content:    longContent,
+		IsError:    false,
+	}
+
+	result := formatToolResultSummary(tr)
+
+	// Should be truncated: "[result] " (9) + 150 chars + "..." (3)
+	if len(result) > 9+maxToolResultPreview+3 {
+		t.Errorf("Result too long (%d chars), expected max %d: %s", len(result), 9+maxToolResultPreview+3, result)
+	}
+	if !strings.HasSuffix(result, "...") {
+		t.Error("Expected truncated result to end with '...'")
+	}
+}
+
+// TestFormatToolResultSummary_ErrorFlag verifies error prefix.
+func TestFormatToolResultSummary_ErrorFlag(t *testing.T) {
+	tr := &contextmgr.ToolResult{
+		ToolCallID: "call_1",
+		Content:    "command not found",
+		IsError:    true,
+	}
+
+	result := formatToolResultSummary(tr)
+
+	if !strings.HasPrefix(result, "[error]") {
+		t.Errorf("Expected [error] prefix, got: %s", result)
+	}
+	if !strings.Contains(result, "command not found") {
+		t.Error("Expected error content to be included")
+	}
+}
+
+// TestDetectIssuePattern_WithNativeToolCalls verifies detectIssuePattern works with ToolCalls/ToolResults.
+func TestDetectIssuePattern_WithNativeToolCalls(t *testing.T) {
+	logger := logx.NewLogger("coder-test")
+	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil, CoderTransitions)
+	c := &Coder{
+		BaseStateMachine: sm,
+		logger:           logger,
+		contextManager:   contextmgr.NewContextManager(),
+	}
+
+	// Seed context with system prompt and initial messages
+	c.contextManager.ResetSystemPrompt("You are a coding agent.")
+	c.contextManager.AddMessage("user", "Please implement the feature")
+	c.contextManager.AddMessage("assistant", "I'll start working on it")
+
+	// Simulate native LLM tool calling: assistant makes tool call, then tool result is flushed
+	// Iteration 1: shell(go test ./...) -> error
+	c.contextManager.AddAssistantMessageWithTools("I'll run the tests", []contextmgr.ToolCall{
+		{ID: "call_1", Name: "shell", Parameters: map[string]any{"cmd": "go test ./..."}},
+	})
+	c.contextManager.AddToolResult("call_1", "FAIL: TestFoo", true)
+	if err := c.contextManager.FlushUserBuffer(context.Background()); err != nil {
+		t.Fatalf("FlushUserBuffer failed: %v", err)
+	}
+
+	// Iteration 2: same shell(go test ./...) -> error again
+	c.contextManager.AddAssistantMessageWithTools("Let me try again", []contextmgr.ToolCall{
+		{ID: "call_2", Name: "shell", Parameters: map[string]any{"cmd": "go test ./..."}},
+	})
+	c.contextManager.AddToolResult("call_2", "FAIL: TestFoo", true)
+	if err := c.contextManager.FlushUserBuffer(context.Background()); err != nil {
+		t.Fatalf("FlushUserBuffer failed: %v", err)
+	}
+
+	result := c.detectIssuePattern()
+
+	// Should find tool calls (not "No tool calls to analyze")
+	if strings.Contains(result, "No tool calls to analyze") {
+		t.Errorf("detectIssuePattern should find native tool calls, got: %s", result)
+	}
+	// Should detect repeated failing commands
+	if !strings.Contains(result, "Repeated failing") && !strings.Contains(result, "failure rate") {
+		t.Errorf("Expected failure detection, got: %s", result)
+	}
+	t.Logf("Pattern analysis result: %s", result)
+}
+
+// TestFormatMessageForBudgetReview_MultipleToolCalls verifies multiple tool calls in one message.
+func TestFormatMessageForBudgetReview_MultipleToolCalls(t *testing.T) {
+	msg := contextmgr.Message{
+		Role:    "assistant",
+		Content: "I need to read two files",
+		ToolCalls: []contextmgr.ToolCall{
+			{ID: "call_1", Name: "read_file", Parameters: map[string]any{"path": "a.go"}},
+			{ID: "call_2", Name: "read_file", Parameters: map[string]any{"path": "b.go"}},
+		},
+	}
+
+	result := formatMessageForBudgetReview(&msg)
+
+	if !strings.Contains(result, `[tool: read_file(path="a.go")]`) {
+		t.Errorf("Expected first tool call, got: %s", result)
+	}
+	if !strings.Contains(result, `[tool: read_file(path="b.go")]`) {
+		t.Errorf("Expected second tool call, got: %s", result)
+	}
+}
+
 // getMapKeys returns the keys of a map for debugging.
 func getMapKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))

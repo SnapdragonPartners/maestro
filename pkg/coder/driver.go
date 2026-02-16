@@ -32,11 +32,19 @@ import (
 const (
 	// roleToolMessage represents tool message role in context manager.
 	roleToolMessage = "tool"
+	roleUser        = "user"
+	roleAssistant   = "assistant"
 
 	// budgetReviewContextTokenLimit limits the context messages included in budget review requests.
 	// Budget reviews need: story, plan, todos, and ~10 tool calls with 2-4k token responses each.
 	// Total: ~2k (story) + ~3k (plan) + ~1k (todos) + ~30k (tool calls) = ~36k, so 100k gives headroom.
 	budgetReviewContextTokenLimit = 100000
+
+	// maxToolResultPreview is the max chars of tool result content shown in budget review context.
+	maxToolResultPreview = 150
+
+	// maxToolCallParamLen is the max chars for a single tool call parameter value.
+	maxToolCallParamLen = 80
 )
 
 // Coder implements the v2 FSM using agent foundation.
@@ -183,7 +191,7 @@ func (c *Coder) buildMessagesWithContext(initialPrompt string) []agent.Completio
 
 		// Map context roles to LLM client roles.
 		role := agent.RoleAssistant
-		if msg.Role == "user" || msg.Role == "system" {
+		if msg.Role == roleUser || msg.Role == "system" {
 			role = agent.RoleUser
 		} else if msg.Role == roleToolMessage {
 			role = agent.RoleUser // Tool messages appear as user messages to Claude
@@ -606,6 +614,8 @@ func (c *Coder) getRecentToolActivity(limit int) string {
 }
 
 // detectIssuePattern analyzes recent activity using universal, platform-agnostic metrics.
+// It extracts tool call data from both legacy "tool" role messages AND native LLM tool calling
+// (where tool calls live in assistant ToolCalls and results live in user ToolResults).
 func (c *Coder) detectIssuePattern() string {
 	if c.contextManager == nil {
 		return "Cannot analyze - no context manager"
@@ -618,19 +628,20 @@ func (c *Coder) detectIssuePattern() string {
 
 	var toolCalls []toolCall
 
-	// Look at last 10 messages for patterns
-	start := len(messages) - 10
+	// Look at last 20 messages for patterns (increased from 10 since tool calls
+	// are split across assistant+user message pairs)
+	start := len(messages) - 20
 	if start < 0 {
 		start = 0
 	}
 
-	// Extract tool calls with success/failure status
+	// Extract tool calls from all sources
 	for i := start; i < len(messages); i++ {
 		msg := messages[i]
+
+		// Source 1: Legacy "tool" role messages (non-LLM tool execution path)
 		if msg.Role == roleToolMessage {
 			content := msg.Content
-
-			// Extract command if present
 			var command string
 			if strings.Contains(content, "Command:") || strings.Contains(content, "command:") {
 				lines := strings.Split(content, "\n")
@@ -644,8 +655,6 @@ func (c *Coder) detectIssuePattern() string {
 					}
 				}
 			}
-
-			// Determine if this tool call failed
 			failed := strings.Contains(content, "exit_code: 1") ||
 				strings.Contains(content, "exit_code: 127") ||
 				strings.Contains(content, "exit_code: 255") ||
@@ -657,6 +666,40 @@ func (c *Coder) detectIssuePattern() string {
 				failed:  failed,
 				content: content,
 			})
+		}
+
+		// Source 2: Native LLM tool calling - assistant messages contain ToolCalls,
+		// and the following user message contains corresponding ToolResults.
+		if msg.Role == roleAssistant && len(msg.ToolCalls) > 0 {
+			// Find matching user message with tool results (typically the next message)
+			var results []contextmgr.ToolResult
+			if i+1 < len(messages) && messages[i+1].Role == "user" {
+				results = messages[i+1].ToolResults
+			}
+
+			for j := range msg.ToolCalls {
+				tc := &msg.ToolCalls[j]
+				// Build command identifier from tool name + key params
+				command := tc.Name
+				for _, key := range []string{"cmd", "command", "path"} {
+					if val, ok := tc.Parameters[key]; ok {
+						command = fmt.Sprintf("%s(%s=%v)", tc.Name, key, val)
+						break
+					}
+				}
+
+				// Check if this tool call's result was an error
+				failed := false
+				if j < len(results) {
+					failed = results[j].IsError
+				}
+
+				toolCalls = append(toolCalls, toolCall{
+					command: command,
+					failed:  failed,
+					content: command,
+				})
+			}
 		}
 	}
 
@@ -1424,6 +1467,76 @@ func (c *Coder) getBudgetReviewContent(sm *agent.BaseStateMachine, origin proto.
 	return content
 }
 
+// formatMessageForBudgetReview serializes a context message for budget review,
+// including tool call names/parameters and truncated tool result content.
+// This replaces the bare "[role]: content" format that lost all tool data.
+func formatMessageForBudgetReview(msg *contextmgr.Message) string {
+	var parts []string
+
+	// For assistant messages: include tool calls before text content
+	if msg.Role == roleAssistant && len(msg.ToolCalls) > 0 {
+		for i := range msg.ToolCalls {
+			parts = append(parts, formatToolCallSummary(&msg.ToolCalls[i]))
+		}
+	}
+
+	// Include text content, but skip the "Tool results:" placeholder when we have actual results
+	if msg.Content != "" && !(msg.Content == "Tool results:" && len(msg.ToolResults) > 0) {
+		parts = append(parts, msg.Content)
+	}
+
+	// For user messages: include tool results with truncated content
+	if msg.Role == roleUser && len(msg.ToolResults) > 0 {
+		for i := range msg.ToolResults {
+			parts = append(parts, formatToolResultSummary(&msg.ToolResults[i]))
+		}
+	}
+
+	content := strings.Join(parts, "\n")
+	if content == "" {
+		content = "(no content)"
+	}
+
+	return fmt.Sprintf("[%s]: %s", msg.Role, content)
+}
+
+// formatToolCallSummary produces a brief summary of a tool call for budget review.
+func formatToolCallSummary(tc *contextmgr.ToolCall) string {
+	var paramParts []string
+	for _, key := range []string{"path", "cmd", "command", "cwd"} {
+		if val, ok := tc.Parameters[key]; ok {
+			valStr := fmt.Sprintf("%v", val)
+			if len(valStr) > maxToolCallParamLen {
+				valStr = valStr[:maxToolCallParamLen] + "..."
+			}
+			paramParts = append(paramParts, fmt.Sprintf("%s=%q", key, valStr))
+		}
+	}
+
+	if len(paramParts) > 0 {
+		return fmt.Sprintf("[tool: %s(%s)]", tc.Name, strings.Join(paramParts, ", "))
+	}
+	return fmt.Sprintf("[tool: %s]", tc.Name)
+}
+
+// formatToolResultSummary produces a brief summary of a tool result for budget review.
+func formatToolResultSummary(tr *contextmgr.ToolResult) string {
+	prefix := "[result]"
+	if tr.IsError {
+		prefix = "[error]"
+	}
+
+	content := strings.TrimRight(tr.Content, " \t\n\r")
+	if len(content) > maxToolResultPreview {
+		content = content[:maxToolResultPreview] + "..."
+	}
+
+	if content == "" {
+		return prefix
+	}
+	return fmt.Sprintf("%s %s", prefix, content)
+}
+
 // ContextMessages represents extracted context messages with metadata.
 //
 //nolint:govet // fieldalignment: struct is not performance critical
@@ -1478,7 +1591,7 @@ func (c *Coder) getContextMessagesWithTokenLimit(tokenLimit int) *ContextMessage
 			continue
 		}
 
-		msgContent := fmt.Sprintf("[%s]: %s", msg.Role, msg.Content)
+		msgContent := formatMessageForBudgetReview(&msg)
 		msgTokens := tokenCounter.CountTokens(msgContent)
 
 		// Check if adding this message would exceed limit
