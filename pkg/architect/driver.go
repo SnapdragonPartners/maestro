@@ -57,6 +57,10 @@ type MaintenanceTracker struct {
 	StoryResults       map[string]*MaintenanceStoryResult // Story ID -> result
 	ProgrammaticReport *ProgrammaticReport                // Results from programmatic tasks (branch cleanup)
 	Metrics            MaintenanceMetrics                 // Aggregated metrics for the cycle
+
+	// Container upgrade signaling (set by coder when Claude Code upgraded in-place)
+	NeedsContainerUpgrade  bool   // True if container image needs rebuild
+	ContainerUpgradeReason string // What triggered the upgrade (e.g., "claude_code")
 }
 
 // MaintenanceStoryResult tracks the result of a single maintenance story.
@@ -105,6 +109,7 @@ type Driver struct {
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
+	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
 }
 
 // GitHubMergeClient defines the subset of GitHub operations needed for merge requests.

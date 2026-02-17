@@ -31,12 +31,22 @@
 
 **When to call each tool:**
 
+### Prefer Purpose-Built Tools
+
+When a dedicated tool exists for an operation, **prefer it over shell equivalents**. Purpose-built tools have better error handling, validation, and integration with the orchestrator. There may be cases where shell is still the right choice (e.g., complex multi-step transformations, bulk operations across many files, or piping output between commands), but default to the dedicated tool first.
+
+Key examples:
+- **File editing**: Use `file_edit` for targeted code changes instead of `sed`, `awk`, or line-number-based shell edits. `file_edit` uses exact string matching, which is far more reliable than line-number addressing (which breaks when file contents shift). Reserve `sed`/`awk` for cases where you genuinely need regex transformations or bulk operations.
+- **Container operations**: Use `container_build`, `container_test`, `container_switch` instead of direct `docker` commands.
+- **File reading**: Use `file_read` instead of `cat` in shell when you need to inspect file contents before editing.
+
 ### File Operations
 - **file_read**: ALWAYS call this first to inspect existing files before modifying them. Never assume file contents.
-- **file_write**: Use ONLY after calling file_read or when creating a brand new file. Specify the exact full path.
+- **file_edit**: Use for targeted modifications to existing files. Provide the exact string to find and its replacement. This is more reliable than shell-based editing (`sed -i`, `awk`) because it matches exact content rather than fragile line numbers. If `file_edit` reports multiple matches, include more surrounding context to make the match unique.
+- **file_write**: Use ONLY for creating brand new files or when you need to replace an entire file's contents. Call file_read first for existing files.
 
 ### Shell Commands
-- **shell**: Use for running tests, listing files, compiling, checking status. Be explicit with commands:
+- **shell**: Use for running tests, listing files, compiling, checking status, and operations where no dedicated tool exists. Be explicit with commands:
 {{- if .TestCommand}}
   - To run tests: `shell({{"{"}}{{printf "\"command\": \"%s\"" .TestCommand}}}})`
 {{- else}}

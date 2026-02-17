@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -147,6 +148,11 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	// Store session ID for potential resume (always store, even on error, for debugging)
 	if result.SessionID != "" {
 		sm.SetStateData(KeyCodingSessionID, result.SessionID)
+	}
+
+	// Track if Claude Code was upgraded in-place (container image needs rebuild)
+	if result.ContainerUpgradeNeeded {
+		c.containerUpgradeNeeded = true
 	}
 
 	// Process result based on signal
@@ -320,13 +326,13 @@ func (c *Coder) isClaudeCodeMode(ctx context.Context) bool {
 		return false
 	}
 
-	// Check if Claude Code is available (cache this check per-story)
+	// Check if Claude Code is available and meets minimum version (cache per-story)
 	if !c.claudeCodeAvailabilityChecked {
 		c.claudeCodeAvailable = c.checkClaudeCodeAvailable(ctx)
 		c.claudeCodeAvailabilityChecked = true
 
 		if !c.claudeCodeAvailable {
-			c.logger.Warn("⚠️ Claude Code not found in container %s. Will run in standard mode to install it and continue using Claude Code after installation is complete.",
+			c.logger.Warn("⚠️ Claude Code unavailable in container %s — falling back to standard mode",
 				c.containerName)
 		}
 	}
@@ -334,7 +340,10 @@ func (c *Coder) isClaudeCodeMode(ctx context.Context) bool {
 	return c.claudeCodeAvailable
 }
 
-// checkClaudeCodeAvailable probes the container to see if Claude Code is installed.
+// checkClaudeCodeAvailable probes the container to see if Claude Code is installed
+// and meets the minimum version requirement. If installed but below minimum, attempts
+// an in-place upgrade. Returns false (triggering standard mode fallback) if Claude Code
+// is missing or below minimum and upgrade fails.
 func (c *Coder) checkClaudeCodeAvailable(ctx context.Context) bool {
 	if c.longRunningExecutor == nil || c.containerName == "" {
 		c.logger.Debug("No container available for Claude Code check")
@@ -357,6 +366,42 @@ func (c *Coder) checkClaudeCodeAvailable(ctx context.Context) bool {
 		return false
 	}
 
-	c.logger.Info("✅ Claude Code available: %s", result.Stdout)
+	versionOutput := strings.TrimSpace(result.Stdout)
+	c.logger.Info("✅ Claude Code available: %s", versionOutput)
+
+	// Check version against minimum requirement
+	installedVer := claude.ParseVersion(versionOutput)
+	if installedVer == "" {
+		c.logger.Warn("⚠️ Could not parse Claude Code version from: %s", versionOutput)
+		return true // Can't parse — assume OK, EnsureClaudeCode will recheck
+	}
+
+	if claude.CompareVersions(installedVer, config.MinClaudeCodeVersion) >= 0 {
+		return true // Version meets minimum
+	}
+
+	// Below minimum — attempt in-place upgrade
+	c.logger.Warn("⚠️ Claude Code %s is below minimum %s", installedVer, config.MinClaudeCodeVersion)
+
+	installer := claude.NewInstaller(c.longRunningExecutor, c.containerName, c.logger)
+	upgradeCtx, upgradeCancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer upgradeCancel()
+
+	if upgradeErr := installer.UpgradeClaudeCode(upgradeCtx); upgradeErr != nil {
+		// Upgrade failed — fall back to standard mode, signal maintenance
+		c.logger.Warn("⚠️ In-place upgrade failed — falling back to standard mode: %v", upgradeErr)
+		c.containerUpgradeNeeded = true
+		return false
+	}
+
+	// Upgrade succeeded — verify new version
+	c.containerUpgradeNeeded = true // Signal maintenance to permanently fix image
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer verifyCancel()
+	verifyResult, verifyErr := c.longRunningExecutor.Run(verifyCtx, []string{"claude", "--version"}, &exec.Opts{})
+	if verifyErr == nil && verifyResult.ExitCode == 0 {
+		newVer := claude.ParseVersion(strings.TrimSpace(verifyResult.Stdout))
+		c.logger.Info("✅ Claude Code upgraded: %s → %s", installedVer, newVer)
+	}
 	return true
 }

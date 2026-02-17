@@ -6,19 +6,22 @@ import (
 	"context"
 	"fmt"
 	goexec "os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/coder/claude/embedded"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 )
 
 // Installer handles automatic installation of Claude Code and its dependencies.
 type Installer struct {
-	executor      exec.Executor
-	containerName string
-	logger        *logx.Logger
+	executor        exec.Executor
+	containerName   string
+	logger          *logx.Logger
+	upgradedInPlace bool // true if an in-place version upgrade was performed
 }
 
 // NewInstaller creates a new Installer for the given container.
@@ -33,11 +36,32 @@ func NewInstaller(executor exec.Executor, containerName string, logger *logx.Log
 	}
 }
 
-// EnsureClaudeCode ensures Claude Code is installed, installing dependencies as needed (Node.js → npm → Claude Code).
+// EnsureClaudeCode ensures Claude Code is installed and meets the minimum version requirement.
+// If installed but below MinClaudeCodeVersion, attempts an in-place upgrade.
+// Upgrade failure is non-fatal — Claude Code will run with the existing version and the
+// containerUpgradeNeeded flag signals the maintenance cycle to permanently fix the image.
 func (i *Installer) EnsureClaudeCode(ctx context.Context) error {
 	// Check if Claude Code is already installed
-	if installed, _ := i.isClaudeCodeInstalled(ctx); installed {
-		i.logger.Info("Claude Code already installed")
+	if installed, versionStr := i.isClaudeCodeInstalled(ctx); installed {
+		// Check if version meets minimum requirement
+		installedVer := ParseVersion(versionStr)
+		if installedVer != "" && CompareVersions(installedVer, config.MinClaudeCodeVersion) < 0 {
+			i.logger.Warn("Claude Code %s is below minimum %s, attempting in-place upgrade...",
+				installedVer, config.MinClaudeCodeVersion)
+			if err := i.UpgradeClaudeCode(ctx); err != nil {
+				// Non-fatal: continue with existing version, signal maintenance cycle
+				i.logger.Warn("⚠️ In-place upgrade failed (will continue with %s): %v", installedVer, err)
+				i.upgradedInPlace = true // Signal maintenance even though upgrade failed
+			} else {
+				i.upgradedInPlace = true
+				// Verify upgrade
+				if _, newVer := i.isClaudeCodeInstalled(ctx); newVer != "" {
+					i.logger.Info("✅ Claude Code upgraded: %s → %s", installedVer, ParseVersion(newVer))
+				}
+			}
+		} else {
+			i.logger.Info("Claude Code already installed: %s", versionStr)
+		}
 		return nil
 	}
 
@@ -71,6 +95,12 @@ func (i *Installer) EnsureClaudeCode(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// UpgradedInPlace returns true if EnsureClaudeCode performed an in-place version upgrade.
+// This indicates the container image should be rebuilt to include the newer version.
+func (i *Installer) UpgradedInPlace() bool {
+	return i.upgradedInPlace
 }
 
 // isNodeInstalled checks if Node.js is available.
@@ -193,12 +223,22 @@ func (i *Installer) installNpm(ctx context.Context) error {
 	return fmt.Errorf("no supported package manager found for npm installation")
 }
 
-// installClaudeCode installs Claude Code globally via npm.
+// installClaudeCode installs Claude Code globally via npm with minimum version constraint.
 func (i *Installer) installClaudeCode(ctx context.Context) error {
-	// Install Claude Code globally
-	result, err := i.runCommand(ctx, []string{"npm", "install", "-g", "@anthropic-ai/claude-code"}, 5*time.Minute)
+	pkg := fmt.Sprintf("@anthropic-ai/claude-code@>=%s", config.MinClaudeCodeVersion)
+	result, err := i.runCommand(ctx, []string{"npm", "install", "-g", pkg}, 5*time.Minute)
 	if err != nil {
 		return fmt.Errorf("npm install failed: %w (stderr: %s)", err, result.Stderr)
+	}
+	return nil
+}
+
+// UpgradeClaudeCode upgrades an existing Claude Code installation to meet the minimum version.
+func (i *Installer) UpgradeClaudeCode(ctx context.Context) error {
+	pkg := fmt.Sprintf("@anthropic-ai/claude-code@>=%s", config.MinClaudeCodeVersion)
+	result, err := i.runCommand(ctx, []string{"npm", "install", "-g", pkg}, 5*time.Minute)
+	if err != nil {
+		return fmt.Errorf("npm upgrade failed: %w (stderr: %s)", err, result.Stderr)
 	}
 	return nil
 }
@@ -345,6 +385,59 @@ func (i *Installer) EnsureMCPProxy(ctx context.Context) error {
 func (i *Installer) isMCPProxyInstalled(ctx context.Context) bool {
 	result, err := i.runCommand(ctx, []string{"test", "-x", MCPProxyPath}, 10*time.Second)
 	return err == nil && result.ExitCode == 0
+}
+
+// ParseVersion extracts the semver portion from a Claude Code version string.
+// Input examples: "2.1.42 (Claude Code)", "2.1.42", "2.1.42\n"
+// Returns the semver string (e.g., "2.1.42") or empty string if unparseable.
+func ParseVersion(versionStr string) string {
+	// Trim whitespace and take the first word (before any space/parenthetical)
+	v := strings.TrimSpace(versionStr)
+	if idx := strings.IndexByte(v, ' '); idx > 0 {
+		v = v[:idx]
+	}
+	// Validate it looks like a semver (at least X.Y.Z)
+	parts := strings.Split(v, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	for _, p := range parts {
+		if _, err := strconv.Atoi(p); err != nil {
+			return ""
+		}
+	}
+	return v
+}
+
+// CompareVersions compares two semver version strings.
+// Returns -1 if a < b, 0 if a == b, 1 if a > b.
+// Versions are compared numerically by each dot-separated component.
+func CompareVersions(a, b string) int {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+
+	// Compare up to the length of the longer version
+	maxLen := len(partsA)
+	if len(partsB) > maxLen {
+		maxLen = len(partsB)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var numA, numB int
+		if i < len(partsA) {
+			numA, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			numB, _ = strconv.Atoi(partsB[i])
+		}
+		if numA < numB {
+			return -1
+		}
+		if numA > numB {
+			return 1
+		}
+	}
+	return 0
 }
 
 // getContainerArch returns the architecture of the container (e.g., "aarch64" or "x86_64").

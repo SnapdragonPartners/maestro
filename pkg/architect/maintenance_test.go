@@ -643,6 +643,144 @@ func TestMaintenanceTrackerFull_CycleWorkflow(t *testing.T) {
 	}
 }
 
+// Tests for AllNonMaintenanceStoriesCompleted and GetSpecTotalPoints
+
+func TestQueue_AllNonMaintenanceStoriesCompleted(t *testing.T) {
+	q := NewQueue(nil)
+
+	// All non-maintenance stories done, maintenance story still pending
+	q.stories["story-1"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:     "story-1",
+			SpecID: "spec-1",
+			Status: string(StatusDone),
+		},
+	}
+	q.stories["story-2"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:     "story-2",
+			SpecID: "spec-1",
+			Status: string(StatusDone),
+		},
+	}
+	q.stories["maint-1"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:            "maint-1",
+			SpecID:        "maintenance-cycle",
+			Status:        string(StatusPending),
+			IsMaintenance: true,
+		},
+	}
+
+	if !q.AllNonMaintenanceStoriesCompleted() {
+		t.Error("expected AllNonMaintenanceStoriesCompleted to return true when only maintenance stories are pending")
+	}
+
+	// AllStoriesCompleted should still be false
+	if q.AllStoriesCompleted() {
+		t.Error("expected AllStoriesCompleted to return false when maintenance stories are pending")
+	}
+}
+
+func TestQueue_AllNonMaintenanceStoriesCompleted_WithPendingNonMaintenance(t *testing.T) {
+	q := NewQueue(nil)
+
+	q.stories["story-1"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:     "story-1",
+			SpecID: "spec-1",
+			Status: string(StatusDone),
+		},
+	}
+	q.stories["story-2"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:     "story-2",
+			SpecID: "spec-1",
+			Status: string(StatusCoding), // Not done
+		},
+	}
+
+	if q.AllNonMaintenanceStoriesCompleted() {
+		t.Error("expected AllNonMaintenanceStoriesCompleted to return false when non-maintenance stories are pending")
+	}
+}
+
+func TestQueue_AllNonMaintenanceStoriesCompleted_Empty(t *testing.T) {
+	q := NewQueue(nil)
+
+	// Empty queue: vacuously true
+	if !q.AllNonMaintenanceStoriesCompleted() {
+		t.Error("expected AllNonMaintenanceStoriesCompleted to return true for empty queue")
+	}
+}
+
+func TestQueue_GetSpecTotalPoints(t *testing.T) {
+	q := NewQueue(nil)
+
+	q.stories["story-1"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:              "story-1",
+			SpecID:          "spec-1",
+			EstimatedPoints: 3,
+		},
+	}
+	q.stories["story-2"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:              "story-2",
+			SpecID:          "spec-1",
+			EstimatedPoints: 2,
+		},
+	}
+	q.stories["story-3"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:              "story-3",
+			SpecID:          "spec-2", // Different spec
+			EstimatedPoints: 5,
+		},
+	}
+
+	points := q.GetSpecTotalPoints("spec-1")
+	if points != 5 {
+		t.Errorf("expected 5 total points for spec-1, got %d", points)
+	}
+
+	points = q.GetSpecTotalPoints("spec-2")
+	if points != 5 {
+		t.Errorf("expected 5 total points for spec-2, got %d", points)
+	}
+
+	points = q.GetSpecTotalPoints("nonexistent")
+	if points != 0 {
+		t.Errorf("expected 0 points for nonexistent spec, got %d", points)
+	}
+}
+
+func TestQueue_GetSpecTotalPoints_ExcludesMaintenance(t *testing.T) {
+	q := NewQueue(nil)
+
+	q.stories["story-1"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:              "story-1",
+			SpecID:          "spec-1",
+			EstimatedPoints: 3,
+		},
+	}
+	q.stories["maint-1"] = &QueuedStory{
+		Story: persistence.Story{
+			ID:              "maint-1",
+			SpecID:          "spec-1",
+			EstimatedPoints: 1,
+			IsMaintenance:   true,
+		},
+	}
+
+	// Should only count non-maintenance stories
+	points := q.GetSpecTotalPoints("spec-1")
+	if points != 3 {
+		t.Errorf("expected 3 total points (excluding maintenance), got %d", points)
+	}
+}
+
 func TestMaintenanceStatus_FromTracker(t *testing.T) {
 	testTime := time.Now()
 	lastMaintTime := testTime.Add(-24 * time.Hour)

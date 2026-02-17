@@ -5,7 +5,7 @@ go 1.24.1
 toolchain go1.24.3
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.22.0
+	github.com/anthropics/anthropic-sdk-go v1.22.1
 	github.com/google/uuid v1.6.0
 	github.com/ollama/ollama v0.15.6
 	github.com/openai/openai-go v1.12.0

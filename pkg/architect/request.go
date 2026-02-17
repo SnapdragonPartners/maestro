@@ -39,6 +39,15 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		return StateError, fmt.Errorf("no current request found")
 	}
 
+	// Check for container upgrade signal from coder
+	if upgradeType, ok := requestMsg.GetMetadata("container_upgrade_needed"); ok && upgradeType != "" {
+		d.logger.Info("📦 Container upgrade needed: %s (reported by %s)", upgradeType, requestMsg.FromAgent)
+		d.maintenance.mutex.Lock()
+		d.maintenance.NeedsContainerUpgrade = true
+		d.maintenance.ContainerUpgradeReason = upgradeType
+		d.maintenance.mutex.Unlock()
+	}
+
 	// Persist request to database (fire-and-forget)
 	if d.persistenceChannel != nil {
 		agentRequest := buildAgentRequestFromMsg(requestMsg)
@@ -134,6 +143,15 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			}
 		}
 		// Response sent and persisted to database
+	}
+
+	// Now that the response is sent, check if the completed story's spec is done.
+	// This may trigger maintenance (which adds stories to the queue synchronously).
+	// We do this AFTER sending the response so the coder doesn't wait on maintenance.
+	if acceptedStoryID, exists := d.GetStateData()[StateKeyAcceptedStoryID]; exists {
+		if storyIDStr, ok := acceptedStoryID.(string); ok && storyIDStr != "" {
+			d.checkSpecCompletion(ctx, storyIDStr)
+		}
 	}
 
 	// Get fresh state data after processing to see any changes made during request handling
@@ -614,21 +632,21 @@ func (d *Driver) handleWorkAccepted(ctx context.Context, storyID, acceptanceType
 	// 3. Notify PM of story completion (if PM is enabled)
 	d.notifyPMOfCompletion(ctx, storyID, completionSummary)
 
-	// 4. Check if spec is complete (for maintenance tracking)
-	d.checkSpecCompletion(ctx, storyID)
-
-	// 5. Set state data to signal that work was accepted (for DISPATCHING transition)
+	// 4. Set state data to signal that work was accepted (for DISPATCHING transition)
+	// NOTE: checkSpecCompletion (maintenance) is called in handleRequest() AFTER
+	// the response is sent to the coder, so the coder doesn't wait on maintenance.
 	d.SetStateData(StateKeyWorkAccepted, true)
 	d.SetStateData(StateKeyAcceptedStoryID, storyID)
 	d.SetStateData(StateKeyAcceptanceType, acceptanceType)
 
-	// 6. Checkpoint state for crash recovery (story completion is a stable boundary)
+	// 5. Checkpoint state for crash recovery (story completion is a stable boundary)
 	if cfg, err := config.GetConfig(); err == nil && cfg.SessionID != "" {
 		d.Checkpoint(cfg.SessionID)
 	}
 }
 
 // checkSpecCompletion checks if a story's spec is complete and triggers maintenance if needed.
+// Sends PM "all stories complete" notification BEFORE maintenance adds new stories to the queue.
 func (d *Driver) checkSpecCompletion(ctx context.Context, storyID string) {
 	if d.queue == nil {
 		return
@@ -652,6 +670,16 @@ func (d *Driver) checkSpecCompletion(ctx context.Context, storyID string) {
 	if d.queue.CheckSpecComplete(specID) {
 		total, completed := d.queue.GetSpecStoryCount(specID)
 		d.logger.Info("📊 Spec %s complete: %d/%d stories done", specID, completed, total)
+
+		// Notify PM that all non-maintenance stories are done BEFORE onSpecComplete
+		// adds maintenance stories to the queue. This lets the user start testing immediately.
+		if d.queue.AllNonMaintenanceStoriesCompleted() {
+			if err := d.notifyPMAllStoriesComplete(ctx); err != nil {
+				d.logger.Warn("⚠️ Failed to notify PM of all stories complete: %v", err)
+			}
+		}
+
+		// onSpecComplete runs synchronously — may add maintenance stories to queue
 		d.onSpecComplete(ctx, specID)
 	} else {
 		total, completed := d.queue.GetSpecStoryCount(specID)
@@ -703,8 +731,14 @@ func (d *Driver) notifyPMOfCompletion(ctx context.Context, storyID string, compl
 }
 
 // notifyPMAllStoriesComplete sends an all-stories-complete notification to PM.
-// This is called when all stories in the queue have been completed.
+// This may be called from multiple locations (checkSpecCompletion, dispatching, monitoring)
+// but the notification is only sent once per spec lifecycle.
 func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
+	if d.pmAllCompleteNotified {
+		d.logger.Debug("PM all-stories-complete notification already sent, skipping")
+		return nil
+	}
+
 	// Get spec ID and total stories from queue
 	specID := ""
 	totalStories := 0
@@ -736,6 +770,7 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 		return fmt.Errorf("failed to send all-stories-complete notification: %w", err)
 	}
 
+	d.pmAllCompleteNotified = true
 	d.logger.Info("🎉 Notified PM that all %d stories are complete (spec=%s)", totalStories, specID)
 	return nil
 }
@@ -985,13 +1020,19 @@ func (d *Driver) handleSingleTurnReview(ctx context.Context, requestMsg *proto.A
 		if status == reviewStatusNeedsChanges {
 			newStreak := d.incrementReviewStreak(agentID, ReviewTypeBudget)
 			d.logger.Info("📊 Budget review streak for %s: %d consecutive NEEDS_CHANGES", agentID, newStreak)
-		} else {
+		} else if status == reviewStatusRejected {
 			// On REJECTED: give the architect a chance to annotate the story before requeue.
 			// Without story edit, the next coder gets the identical story and (at low temperature)
 			// is likely to fail in the same way.
-			if status == reviewStatusRejected {
-				streak := d.getReviewStreak(agentID, ReviewTypeBudget)
-				d.attemptStoryEdit(ctx, cm, agentID, storyID, streak)
+			streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+			d.logger.Info("📊 Budget review for %s: REJECTED (after %d consecutive NEEDS_CHANGES). Story will be requeued.", agentID, streak)
+			d.attemptStoryEdit(ctx, cm, agentID, storyID, streak)
+			d.resetReviewStreak(agentID, ReviewTypeBudget)
+		} else {
+			// APPROVED — log streak reset if there was one
+			streak := d.getReviewStreak(agentID, ReviewTypeBudget)
+			if streak > 0 {
+				d.logger.Info("📊 Budget review for %s: APPROVED (resetting streak from %d consecutive NEEDS_CHANGES)", agentID, streak)
 			}
 			d.resetReviewStreak(agentID, ReviewTypeBudget)
 		}

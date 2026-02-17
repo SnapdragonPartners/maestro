@@ -263,7 +263,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				// Disabled - was causing premature user prompts
 			},
 			OnHardLimit: func(_ context.Context, key string, count int) error {
-				d.logger.Error("❌ PM iteration hard limit reached (%d iterations) - must call await_user with status", count)
+				d.logger.Warn("⚠️  PM iteration hard limit reached (%d iterations) - must call await_user with status", count)
 				d.SetStateData("iteration_limit_reached", true)
 				d.SetStateData("iteration_limit_key", key)
 				// Return nil so toolloop returns IterationLimitError (not this error)
