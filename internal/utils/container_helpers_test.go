@@ -80,6 +80,48 @@ func TestContextCancellation(t *testing.T) {
 	}
 }
 
+// TestGenerateRuntimeBootstrapDockerfile verifies the runtime Dockerfile is correctly
+// derived from the embedded bootstrap Dockerfile.
+func TestGenerateRuntimeBootstrapDockerfile(t *testing.T) {
+	dockerfile := GenerateRuntimeBootstrapDockerfile()
+
+	// Must start with a FROM instruction (stage 2, not the builder stage)
+	if !strings.HasPrefix(strings.TrimSpace(dockerfile), "FROM alpine:") {
+		t.Errorf("expected runtime Dockerfile to start with 'FROM alpine:', got: %s",
+			strings.SplitN(dockerfile, "\n", 2)[0])
+	}
+
+	// Must NOT contain multi-stage builder references
+	if strings.Contains(dockerfile, "COPY --from=builder") {
+		t.Error("runtime Dockerfile should not contain COPY --from=builder")
+	}
+	if strings.Contains(dockerfile, "golang:") {
+		t.Error("runtime Dockerfile should not reference golang builder image")
+	}
+
+	// Must contain the proxy COPY from build context
+	if !strings.Contains(dockerfile, "COPY maestro-mcp-proxy /usr/local/bin/maestro-mcp-proxy") {
+		t.Error("runtime Dockerfile should COPY maestro-mcp-proxy from build context")
+	}
+
+	// Must contain Claude Code installation
+	if !strings.Contains(dockerfile, "claude-code") {
+		t.Error("runtime Dockerfile should install Claude Code")
+	}
+
+	// Must contain essential packages
+	for _, pkg := range []string{"docker-cli", "git", "nodejs", "npm"} {
+		if !strings.Contains(dockerfile, pkg) {
+			t.Errorf("runtime Dockerfile should install %s", pkg)
+		}
+	}
+
+	// Must create the coder user
+	if !strings.Contains(dockerfile, "adduser") {
+		t.Error("runtime Dockerfile should create coder user")
+	}
+}
+
 // TestContextTimeout tests that functions respect context timeout.
 func TestContextTimeout(t *testing.T) {
 	// Create context with very short timeout
