@@ -3,9 +3,9 @@
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
 
-# Install git hooks from hooks/ directory
+# Install git hooks from hooks/ directory (non-fatal for read-only checkouts / CI)
 install-hooks:
-	@if [ -d .git ]; then \
+	@if [ -d .git ] && [ -w .git/hooks ]; then \
 		cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit; \
 		cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push; \
 		echo "✅ Git hooks installed"; \

@@ -102,8 +102,7 @@ func TestMCPTCPIntegration(t *testing.T) {
 	result, err := executor.Run(ctx, proxyCheck, &exec.Opts{})
 	if err != nil || result.ExitCode != 0 {
 		t.Skipf("maestro-mcp-proxy not found in bootstrap container. "+
-			"Run maestro to auto-build, or: go build -o maestro-mcp-proxy ./cmd/maestro-mcp-proxy && "+
-			"docker build -t maestro-bootstrap -f pkg/dockerfiles/bootstrap.dockerfile . "+
+			"Run maestro to auto-build, or see pkg/dockerfiles/bootstrap.dockerfile for manual build instructions. "+
 			"err=%v, exit=%d, stderr=%s", err, result.ExitCode, result.Stderr)
 	}
 	t.Logf("Proxy binary found: %s", strings.TrimSpace(result.Stdout))

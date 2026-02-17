@@ -3,7 +3,8 @@
 #
 # Build context must contain a pre-compiled maestro-mcp-proxy binary.
 # At runtime, BuildBootstrapImage() writes the embedded proxy binary to the build context.
-# For manual builds: go build -o maestro-mcp-proxy ./cmd/maestro-mcp-proxy && \
+# For manual builds: make build-mcp-proxy && \
+#   cp pkg/coder/claude/embedded/proxy-linux-$(go env GOARCH) maestro-mcp-proxy && \
 #   docker build -t maestro-bootstrap -f pkg/dockerfiles/bootstrap.dockerfile .
 FROM alpine:3.19
 

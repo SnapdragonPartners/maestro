@@ -23,7 +23,7 @@ func TestValidateContainerCapabilities_SafeContainer(t *testing.T) {
 	// Check if maestro-bootstrap image exists locally
 	checkResult, err := executor.Run(ctx, []string{"docker", "image", "inspect", "maestro-bootstrap"}, &exec.Opts{Timeout: 10 * time.Second})
 	if err != nil || checkResult.ExitCode != 0 {
-		t.Skip("maestro-bootstrap image not available locally - skipping test. Run maestro to auto-build, or: go build -o maestro-mcp-proxy ./cmd/maestro-mcp-proxy && docker build -t maestro-bootstrap -f pkg/dockerfiles/bootstrap.dockerfile .")
+		t.Skip("maestro-bootstrap image not available locally - skipping test. Run maestro to auto-build, or see pkg/dockerfiles/bootstrap.dockerfile for manual build instructions.")
 	}
 
 	result := ValidateContainerCapabilities(ctx, executor, "maestro-bootstrap")

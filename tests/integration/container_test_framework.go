@@ -92,8 +92,7 @@ func (f *ContainerTestFramework) StartContainer(ctx context.Context) error {
 		// Docker CLI not available in container - this is expected if bootstrap image
 		// wasn't built from the Dockerfile (e.g., using a different base image)
 		f.t.Skipf("Docker CLI not available in bootstrap container (docker-in-docker not supported). "+
-			"Run maestro to auto-build, or: go build -o maestro-mcp-proxy ./cmd/maestro-mcp-proxy && "+
-			"docker build -t maestro-bootstrap -f pkg/dockerfiles/bootstrap.dockerfile . "+
+			"Run maestro to auto-build, or see pkg/dockerfiles/bootstrap.dockerfile for manual build instructions. "+
 			"stdout: %s, stderr: %s", result.Stdout, result.Stderr)
 		// t.Skipf calls runtime.Goexit(), so this return is only reached in tests
 		return nil //nolint:nilerr // t.Skipf terminates the test, return is unreachable
