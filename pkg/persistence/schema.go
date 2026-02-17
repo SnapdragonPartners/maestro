@@ -2,6 +2,7 @@
 package persistence
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 17
+const CurrentSchemaVersion = 18
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -124,6 +125,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion16(db)
 	case 17:
 		return migrateToVersion17(db)
+	case 18:
+		return migrateToVersion18(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -713,6 +716,83 @@ func migrateToVersion17(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion18 adds 'maintenance' to the story_type CHECK constraint.
+// Maintenance stories are tracked separately for querying when maintenance last ran.
+// Uses a single connection to ensure PRAGMA foreign_keys state is consistent,
+// since database/sql connection pooling can route statements to different connections.
+func migrateToVersion18(db *sql.DB) error {
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection for migration: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Disable FK checks on this specific connection
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("failed to disable foreign keys: %w", err)
+	}
+
+	// Ensure FK checks are re-enabled when we're done
+	defer func() {
+		_, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	}()
+
+	migrations := []string{
+		// Create new table with updated constraint
+		`CREATE TABLE IF NOT EXISTS stories_new (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			spec_id TEXT REFERENCES specs(id),
+			title TEXT NOT NULL,
+			content TEXT NOT NULL,
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done')),
+			priority INTEGER DEFAULT 0,
+			approved_plan TEXT,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			started_at DATETIME,
+			completed_at DATETIME,
+			assigned_agent TEXT,
+			tokens_used BIGINT DEFAULT 0,
+			cost_usd DECIMAL(10,4) DEFAULT 0.0,
+			metadata TEXT,
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app', 'maintenance')),
+			pr_id TEXT,
+			commit_hash TEXT,
+			completion_summary TEXT
+		)`,
+		// Copy data using explicit column mapping to avoid relying on physical column order
+		`INSERT INTO stories_new (
+			id, session_id, spec_id, title, content, status, priority, approved_plan,
+			created_at, started_at, completed_at, assigned_agent,
+			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
+		) SELECT
+			id, session_id, spec_id, title, content, status, priority, approved_plan,
+			created_at, started_at, completed_at, assigned_agent,
+			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
+		FROM stories`,
+		// Drop old table
+		`DROP TABLE stories`,
+		// Rename new table
+		`ALTER TABLE stories_new RENAME TO stories`,
+		// Recreate indices
+		`CREATE INDEX IF NOT EXISTS idx_stories_session ON stories(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_status ON stories(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_agent ON stories(assigned_agent)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_type ON stories(story_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_spec ON stories(spec_id)`,
+	}
+
+	for _, migration := range migrations {
+		if _, err := conn.ExecContext(ctx, migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 //
 //nolint:maintidx // Schema definition is inherently large; keeping it together aids comprehension.
@@ -763,7 +843,7 @@ func createSchema(db *sql.DB) error {
 			tokens_used BIGINT DEFAULT 0,
 			cost_usd DECIMAL(10,4) DEFAULT 0.0,
 			metadata TEXT,
-			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app')),
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app', 'maintenance')),
 			pr_id TEXT,
 			commit_hash TEXT,
 			completion_summary TEXT
