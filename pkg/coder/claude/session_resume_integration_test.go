@@ -248,6 +248,100 @@ func TestSessionResumeIntegration_ResumeSession(t *testing.T) {
 	}
 }
 
+// TestSessionResumeIntegration_LongFeedbackViaDoubleDash is a regression test for a production
+// issue where Claude Code hangs (0 responses, inactivity timeout) when receiving long
+// NEEDS_CHANGES feedback via the -- trailing argument on resume.
+func TestSessionResumeIntegration_LongFeedbackViaDoubleDash(t *testing.T) {
+	mockExec := newMockCaptureExecutor()
+	logger := logx.NewLogger("test")
+	toolProvider := minimalToolProvider()
+
+	runner := NewRunner(mockExec, "test-container", toolProvider, logger)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Reproduce the exact feedback text pattern from the production failure.
+	// This is a ~1600 char multi-paragraph review with backticks, numbered lists,
+	// and code references — the exact kind of content that caused Claude Code to hang.
+	longFeedback := `Plan review feedback - changes requested:
+
+NEEDS_CHANGES. The plan mostly matches the story, but it introduces requirements/changes that are not in scope and also contains a likely mismatch with the already-implemented templates/feedback.html.
+
+Issues to address:
+1) Template/data contract mismatch (Acceptance: handler passes correct FeedbackData fields). Your plan says the template expects a Percentage field and that FeedbackData includes Percentage. However, the existing templates/feedback.html (from the prior story) computes the percentage internally from .TimesCorrect/.TimesAnswered and does not reference .Percentage. Either:
+   - update the feedback template to use .Percentage (and adjust acceptance accordingly in this story's scope), or
+   - remove Percentage from FeedbackData and still compute it in the handler only if you need it for session/logging, but don't claim it's required by the template.
+
+2) Unnecessary rename: The story requirement says "Modify handlers/quiz.go SubmitAnswerHandler", implying that function already exists. Your plan proposes renaming AnswerHandler to SubmitAnswerHandler and updating references/tests. Prefer: modify the existing SubmitAnswerHandler (or, if it doesn't exist, clarify with repo evidence).
+
+3) Out-of-scope work: Adding a new /quiz/next route and NextQuestionHandler is not in the stated task/acceptance criteria.
+
+4) Guard placement: The guard should occur immediately after session retrieval/validation and before parsing form / computing correctness / any db call.
+
+Please revise your plan and resubmit.`
+
+	opts := DefaultRunOptions()
+	opts.Mode = ModePlanning
+	opts.Model = "claude-sonnet-4-20250514"
+	opts.SessionID = "0aef24cc-8f11-4b3f-b13f-4e99222c2560"
+	opts.Resume = true
+	opts.ResumeInput = longFeedback
+	opts.TotalTimeout = 10 * time.Second
+
+	result, err := runner.Run(ctx, &opts, nil)
+	if err != nil {
+		t.Fatalf("Run with long feedback failed: %v", err)
+	}
+
+	// Verify session ID is preserved
+	if result.SessionID != "0aef24cc-8f11-4b3f-b13f-4e99222c2560" {
+		t.Errorf("expected session ID preserved, got %q", result.SessionID)
+	}
+
+	claudeCmd := mockExec.GetClaudeCommand()
+	if len(claudeCmd) == 0 {
+		t.Fatal("expected claude command to be captured")
+	}
+
+	cmdStr := strings.Join(claudeCmd, " ")
+
+	// Verify --resume is present with session ID
+	if !strings.Contains(cmdStr, "--resume 0aef24cc-8f11-4b3f-b13f-4e99222c2560") {
+		t.Errorf("expected --resume with session ID, got: %s", cmdStr)
+	}
+
+	// Verify the long feedback is present in the command
+	if !strings.Contains(cmdStr, "NEEDS_CHANGES") {
+		t.Errorf("expected feedback text in command, got: %s", cmdStr)
+	}
+	if !strings.Contains(cmdStr, "Guard placement") {
+		t.Errorf("expected all feedback sections in command, got: %s", cmdStr)
+	}
+
+	// Verify the feedback is passed after -- separator (current behavior)
+	// NOTE: This test documents the CURRENT behavior. If we switch to passing
+	// the feedback as a positional argument to -p instead of after --, this
+	// assertion should be updated.
+	doubleDashIdx := -1
+	for i, arg := range claudeCmd {
+		if arg == "--" {
+			doubleDashIdx = i
+			break
+		}
+	}
+	if doubleDashIdx == -1 {
+		t.Error("expected -- separator in command for resume input")
+	} else if doubleDashIdx+1 >= len(claudeCmd) {
+		t.Error("expected feedback text after -- separator")
+	} else {
+		feedbackArg := claudeCmd[doubleDashIdx+1]
+		if len(feedbackArg) < 500 {
+			t.Errorf("expected long feedback text (>500 chars) after --, got %d chars", len(feedbackArg))
+		}
+	}
+}
+
 // TestSessionResumeIntegration_SequentialSessions tests the full flow of new session followed by resume.
 func TestSessionResumeIntegration_SequentialSessions(t *testing.T) {
 	mockExec := newMockCaptureExecutor()

@@ -509,11 +509,10 @@ func createFileEditTool(ctx *AgentContext) (Tool, error) {
 	if ctx.Executor == nil {
 		return nil, fmt.Errorf("file_edit tool requires an executor")
 	}
-	workspaceRoot := ctx.WorkDir
-	if workspaceRoot == "" {
-		workspaceRoot = DefaultWorkspaceDir
-	}
-	return NewFileEditTool(ctx.Executor, workspaceRoot), nil
+	// Always use the container-internal workspace path (/workspace), not the host path.
+	// ctx.WorkDir is the host path (e.g., /Users/.../coder-001) which doesn't exist inside
+	// the Docker container where file_edit executes.
+	return NewFileEditTool(ctx.Executor, DefaultWorkspaceDir), nil
 }
 
 func getFileEditSchema() InputSchema {

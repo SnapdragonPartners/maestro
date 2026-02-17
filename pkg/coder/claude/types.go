@@ -125,6 +125,11 @@ type Result struct {
 	// SessionID is the Claude Code session ID for potential resume.
 	// This can be used to continue the conversation if needed.
 	SessionID string
+
+	// ContainerUpgradeNeeded is true if Claude Code was upgraded in-place because
+	// the container image had a version below MinClaudeCodeVersion. The container
+	// image should be rebuilt to include the newer version permanently.
+	ContainerUpgradeNeeded bool
 }
 
 // Question represents a question to be asked to the architect.

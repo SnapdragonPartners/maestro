@@ -9,13 +9,16 @@ import (
 )
 
 // ApprovalEffect represents an approval request effect that blocks until architect responds.
+//
+//nolint:govet // Field order optimized for readability, not memory alignment
 type ApprovalEffect struct {
-	Content      string             // The content to be reviewed (code diff, plan, etc.)
-	Reason       string             // Human-readable reason for the approval request
-	ApprovalType proto.ApprovalType // Type of approval (CODE, PLAN, BUDGET_REVIEW, COMPLETION) - renamed to avoid method conflict
-	StoryID      string             // Story ID for this approval request (required by architect)
-	TargetAgent  string             // Target agent (typically "architect")
-	Timeout      time.Duration      // Timeout for waiting for response
+	Content       string             // The content to be reviewed (code diff, plan, etc.)
+	Reason        string             // Human-readable reason for the approval request
+	ApprovalType  proto.ApprovalType // Type of approval (CODE, PLAN, BUDGET_REVIEW, COMPLETION) - renamed to avoid method conflict
+	StoryID       string             // Story ID for this approval request (required by architect)
+	TargetAgent   string             // Target agent (typically "architect")
+	Timeout       time.Duration      // Timeout for waiting for response
+	ExtraMetadata map[string]string  // Optional additional metadata to include in the REQUEST message
 }
 
 // Execute sends an approval request and blocks waiting for the architect's response.
@@ -45,6 +48,9 @@ func (e *ApprovalEffect) Execute(ctx context.Context, runtime Runtime) (any, err
 	approvalMsg.SetMetadata("approval_id", approvalID)
 	if e.StoryID != "" {
 		approvalMsg.SetMetadata("story_id", e.StoryID)
+	}
+	for k, v := range e.ExtraMetadata {
+		approvalMsg.SetMetadata(k, v)
 	}
 
 	runtime.Info("📤 Sending %s approval request %s to %s", e.ApprovalType.String(), approvalID, e.TargetAgent)

@@ -84,7 +84,7 @@ func (d *Driver) handleIterativeApproval(ctx context.Context, requestMsg *proto.
 				d.logger.Warn("⚠️  Approval iteration soft limit reached (%d iterations) for story %s", count, storyID)
 			},
 			OnHardLimit: func(_ context.Context, key string, count int) error {
-				d.logger.Error("❌ Approval iteration hard limit reached (%d iterations) for story %s - escalating", count, storyID)
+				d.logger.Warn("⚠️  Approval iteration hard limit reached (%d iterations) for story %s - escalating", count, storyID)
 				d.logger.Info("Escalation key: %s", key)
 				// Set escalation state data for state machine (all required by handleEscalated)
 				d.SetStateData(StateKeyEscalationOriginState, string(StateRequest))
