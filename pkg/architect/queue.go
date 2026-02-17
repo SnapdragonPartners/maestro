@@ -9,6 +9,7 @@ import (
 
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/proto"
 )
 
 // StoryStatus represents the status of a story (canonical source of truth).
@@ -394,7 +395,7 @@ func (q *Queue) AddMaintenanceStory(storyID, specID, title, content string, expr
 			CompletedAt:   nil,
 			LastUpdated:   now,
 			CreatedAt:     now,
-			StoryType:     "maintenance",
+			StoryType:     string(proto.StoryTypeMaintenance),
 		},
 	}
 	_ = queuedStory.SetStatus(StatusPending) // New story, cannot fail

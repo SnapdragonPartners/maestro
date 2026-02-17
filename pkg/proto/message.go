@@ -58,7 +58,7 @@ const (
 	ConfidenceHigh Confidence = "HIGH"
 )
 
-// StoryType represents the type of story (DevOps or App).
+// StoryType represents the type of story (DevOps, App, or Maintenance).
 type StoryType string
 
 const (
@@ -67,6 +67,10 @@ const (
 
 	// StoryTypeApp represents application development stories.
 	StoryTypeApp StoryType = "app"
+
+	// StoryTypeMaintenance represents maintenance cycle stories (test coverage, cleanup, etc.).
+	// Coders treat these identically to app stories; the distinction exists for tracking/querying.
+	StoryTypeMaintenance StoryType = "maintenance"
 )
 
 // Common payload and metadata keys used in agent messages.
@@ -593,6 +597,7 @@ func ValidStoryTypes() []string {
 	return []string{
 		string(StoryTypeDevOps),
 		string(StoryTypeApp),
+		string(StoryTypeMaintenance),
 	}
 }
 
