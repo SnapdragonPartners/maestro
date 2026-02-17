@@ -244,6 +244,38 @@ func (q *Queue) AllStoriesCompleted() bool {
 	return true
 }
 
+// AllNonMaintenanceStoriesCompleted checks if all non-maintenance stories are completed.
+// Used to notify PM that spec work is done before maintenance stories are dispatched.
+func (q *Queue) AllNonMaintenanceStoriesCompleted() bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, story := range q.stories {
+		if story.IsMaintenance {
+			continue
+		}
+		if story.GetStatus() != StatusDone {
+			return false
+		}
+	}
+	return true
+}
+
+// GetSpecTotalPoints returns the sum of EstimatedPoints for all stories in a spec.
+// Used by the maintenance heuristic to decide if a spec is significant enough to trigger maintenance.
+func (q *Queue) GetSpecTotalPoints(specID string) int {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	total := 0
+	for _, story := range q.stories {
+		if story.SpecID == specID && !story.IsMaintenance {
+			total += story.EstimatedPoints
+		}
+	}
+	return total
+}
+
 // CheckSpecComplete returns true if all stories for a spec are done.
 // Used by maintenance tracking to detect when a spec's work is complete.
 func (q *Queue) CheckSpecComplete(specID string) bool {

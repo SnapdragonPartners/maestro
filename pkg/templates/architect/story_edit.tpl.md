@@ -8,6 +8,16 @@ The coder working on **{{.Extra.StoryTitle}}** ({{.Extra.StoryID}}) has been rej
 
 **Critical: The next coder has NO memory of this attempt.** They will see only the story content you provide here.
 
+## Coder's Available Tools
+
+When writing notes or rewriting the story, you can recommend specific tools by name. The coder has these purpose-built tools available (note: these are the *coder's* tools, not yours):
+
+- **`file_edit`**: Targeted string replacement using exact content matching. Far more reliable than `sed`/`awk` for code modifications — if the failing coder was stuck in edit churn using shell-based `sed -i` or `awk` scripts, recommend `file_edit` instead.
+- **`file_read`** / **`file_write`**: Read and write files.
+- **`shell`**: General-purpose command execution (builds, tests, listing files).
+- **`container_build`** / **`container_test`** / **`container_switch`**: Container lifecycle tools (preferred over direct `docker` commands).
+- **`ask_question`**: Ask the architect for clarification when requirements are ambiguous.
+
 ## Your Task
 
 Review the conversation history above — it contains all the budget review feedback you provided to the failing coder. Decide which approach to take:

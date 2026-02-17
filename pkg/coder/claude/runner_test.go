@@ -133,6 +133,74 @@ func TestBuildCommand_ResumeWithoutSessionID(t *testing.T) {
 	}
 }
 
+// TestBuildCommand_ResumeWithLongFeedback tests that long multi-paragraph feedback
+// with special characters is correctly included in the command.
+// Regression test: Claude Code hangs when receiving long NEEDS_CHANGES feedback
+// via `--` trailing argument on resume (0 responses, inactivity timeout kill).
+func TestBuildCommand_ResumeWithLongFeedback(t *testing.T) {
+	r := &Runner{}
+	longFeedback := `Plan review feedback - changes requested:
+
+NEEDS_CHANGES. The plan mostly matches the story, but it introduces requirements/changes not in scope.
+
+Issues to address:
+1) Template/data contract mismatch. Your plan says the template expects a ` + "`Percentage`" + ` field.
+   However, the existing ` + "`templates/feedback.html`" + ` computes percentage internally.
+2) Unnecessary rename: ` + "`AnswerHandler`" + ` to ` + "`SubmitAnswerHandler`" + ` is out of scope.
+3) Out-of-scope: Adding /quiz/next route is not in acceptance criteria.
+4) Guard placement: should occur before any side effects.
+
+Please revise your plan and resubmit.`
+
+	opts := &RunOptions{
+		SessionID:   "session-abc-123",
+		Resume:      true,
+		ResumeInput: longFeedback,
+	}
+
+	cmd := r.buildCommand(opts)
+
+	// Verify the command structure
+	if cmd[0] != "claude" {
+		t.Errorf("expected first arg 'claude', got %q", cmd[0])
+	}
+
+	// Find -- separator
+	doubleDashIdx := -1
+	for i, arg := range cmd {
+		if arg == "--" {
+			doubleDashIdx = i
+			break
+		}
+	}
+	if doubleDashIdx == -1 {
+		t.Fatal("expected -- separator in command")
+	}
+
+	// The feedback should be a single argument after --
+	if doubleDashIdx+1 >= len(cmd) {
+		t.Fatal("expected argument after -- separator")
+	}
+	feedbackArg := cmd[doubleDashIdx+1]
+
+	// Verify it's the complete feedback (not truncated or split)
+	if feedbackArg != longFeedback {
+		t.Errorf("feedback arg doesn't match input.\nExpected length: %d\nGot length: %d",
+			len(longFeedback), len(feedbackArg))
+	}
+
+	// Verify special characters survived (backticks, newlines, slashes)
+	if !strings.Contains(feedbackArg, "NEEDS_CHANGES") {
+		t.Error("feedback missing NEEDS_CHANGES marker")
+	}
+	if !strings.Contains(feedbackArg, "`Percentage`") {
+		t.Error("feedback missing backtick-wrapped text")
+	}
+	if !strings.Contains(feedbackArg, "/quiz/next") {
+		t.Error("feedback missing URL path")
+	}
+}
+
 // TestBuildCommand_NoSessionID tests buildCommand without a session ID.
 func TestBuildCommand_NoSessionID(t *testing.T) {
 	r := &Runner{}

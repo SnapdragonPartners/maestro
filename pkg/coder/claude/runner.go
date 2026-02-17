@@ -193,6 +193,7 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions, tm *TimeoutManager) 
 	result := r.parseOutput(execResult.Stdout, execResult.Stderr)
 	result.Duration = duration
 	result.SessionID = sessionID
+	result.ContainerUpgradeNeeded = r.installer.UpgradedInPlace()
 
 	r.logger.Info("Claude Code completed: session=%s signal=%s responses=%d duration=%s",
 		sessionID, result.Signal, result.ResponseCount, duration)

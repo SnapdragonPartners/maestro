@@ -361,8 +361,9 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
+	// Handle nil opts - consistent with LocalExec, ArchitectExecutor, PMExecutor
 	if opts == nil {
-		return Result{}, fmt.Errorf("opts cannot be nil")
+		opts = &Opts{}
 	}
 
 	// We need a story ID to identify the container.
@@ -472,8 +473,9 @@ func (d *LongRunningDockerExec) RunStreaming(ctx context.Context, cmd []string, 
 		return Result{}, fmt.Errorf("command cannot be empty")
 	}
 
+	// Handle nil opts - consistent with LocalExec, ArchitectExecutor, PMExecutor
 	if opts == nil {
-		return Result{}, fmt.Errorf("opts cannot be nil")
+		opts = &Opts{}
 	}
 
 	// Resolve container name (same logic as Run).

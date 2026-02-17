@@ -145,6 +145,9 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 // This is called during spec review in REQUEST state (after PM spec approval).
 // Returns spec ID, story IDs, and error.
 func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdown string, effectData map[string]any) (string, []string, error) {
+	// Reset PM notification flag so new spec lifecycle can re-notify
+	d.pmAllCompleteNotified = false
+
 	// Convert ProcessEffect.Data directly to Requirements (no JSON round-trip)
 	requirements, err := d.convertToolResultToRequirements(effectData)
 	if err != nil {
