@@ -99,9 +99,8 @@ func GetImageID(ctx context.Context, imageName string) (string, error) {
 }
 
 // BuildBootstrapImage builds the maestro-bootstrap container image from the embedded
-// Dockerfile and pre-compiled MCP proxy binary. This works at runtime without access to
-// the source tree by generating a Dockerfile that copies the proxy from the build context
-// instead of compiling it from source.
+// Dockerfile and pre-compiled MCP proxy binary. The Dockerfile expects the proxy binary
+// to be present in the build context; this function writes the embedded binary there.
 func BuildBootstrapImage(ctx context.Context) error {
 	// Create temporary build context directory
 	buildDir, err := os.MkdirTemp("", "maestro-bootstrap-build-*")
@@ -123,13 +122,10 @@ func BuildBootstrapImage(ctx context.Context) error {
 		return fmt.Errorf("failed to write proxy binary: %w", writeErr)
 	}
 
-	// Generate a runtime Dockerfile that uses the pre-built proxy instead of compiling
-	// from source. This is stage 2 of the embedded bootstrap.dockerfile with the
-	// COPY --from=builder line replaced by a COPY from the build context.
-	runtimeDockerfile := GenerateRuntimeBootstrapDockerfile()
+	// Write the embedded Dockerfile to the build context
 	dockerfilePath := filepath.Join(buildDir, "Dockerfile")
-	if writeErr := os.WriteFile(dockerfilePath, []byte(runtimeDockerfile), 0644); writeErr != nil {
-		return fmt.Errorf("failed to write runtime Dockerfile: %w", writeErr)
+	if writeErr := os.WriteFile(dockerfilePath, []byte(dockerfiles.GetBootstrapDockerfile()), 0644); writeErr != nil {
+		return fmt.Errorf("failed to write Dockerfile: %w", writeErr)
 	}
 
 	// Build the image
@@ -140,38 +136,4 @@ func BuildBootstrapImage(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-// GenerateRuntimeBootstrapDockerfile creates a Dockerfile for building the bootstrap
-// image at runtime. It mirrors stage 2 of the embedded bootstrap.dockerfile but copies
-// the MCP proxy from the build context (where the embedded binary has been written)
-// instead of from a builder stage that compiles from source.
-func GenerateRuntimeBootstrapDockerfile() string {
-	fullDockerfile := dockerfiles.GetBootstrapDockerfile()
-
-	var result strings.Builder
-	inStage2 := false
-	for _, line := range strings.Split(fullDockerfile, "\n") {
-		trimmed := strings.TrimSpace(line)
-
-		// Skip everything until "# Stage 2" or the second FROM
-		if strings.HasPrefix(trimmed, "# Stage 2") {
-			inStage2 = true
-			continue
-		}
-		if !inStage2 {
-			continue
-		}
-
-		// Replace the COPY --from=builder line with a COPY from build context
-		if strings.Contains(trimmed, "COPY --from=builder") {
-			result.WriteString("COPY maestro-mcp-proxy /usr/local/bin/maestro-mcp-proxy\n")
-			continue
-		}
-
-		result.WriteString(line)
-		result.WriteString("\n")
-	}
-
-	return result.String()
 }

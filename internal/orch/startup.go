@@ -78,8 +78,8 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 			return fmt.Errorf("failed to build bootstrap container: %w", buildErr)
 		}
 
-		// Verify the newly built image is healthy
-		if verifyErr := utils.IsImageHealthy(ctx, safeImageID); verifyErr != nil {
+		// Verify the newly built image is healthy using the tag we just built
+		if verifyErr := utils.IsImageHealthy(ctx, config.BootstrapContainerTag); verifyErr != nil {
 			return fmt.Errorf("newly built bootstrap container is not healthy: %w", verifyErr)
 		}
 	}

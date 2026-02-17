@@ -102,7 +102,8 @@ func TestMCPTCPIntegration(t *testing.T) {
 	result, err := executor.Run(ctx, proxyCheck, &exec.Opts{})
 	if err != nil || result.ExitCode != 0 {
 		t.Skipf("maestro-mcp-proxy not found in bootstrap container. "+
-			"This test requires rebuilding maestro-bootstrap:latest from pkg/dockerfiles/bootstrap.dockerfile. "+
+			"Run maestro to auto-build, or: go build -o maestro-mcp-proxy ./cmd/maestro-mcp-proxy && "+
+			"docker build -t maestro-bootstrap -f pkg/dockerfiles/bootstrap.dockerfile . "+
 			"err=%v, exit=%d, stderr=%s", err, result.ExitCode, result.Stderr)
 	}
 	t.Logf("Proxy binary found: %s", strings.TrimSpace(result.Stdout))
@@ -291,7 +292,8 @@ func TestMCPTCPConcurrentAgents(t *testing.T) {
 	preCheckExecutor.StopContainer(preCheckCtx, preCheckContainer)
 	if proxyErr != nil || proxyCheck.ExitCode != 0 {
 		t.Skipf("maestro-mcp-proxy not found in bootstrap container. " +
-			"This test requires rebuilding maestro-bootstrap:latest from pkg/dockerfiles/bootstrap.dockerfile.")
+			"Run maestro to auto-build, or: go build -o maestro-mcp-proxy ./cmd/maestro-mcp-proxy && " +
+			"docker build -t maestro-bootstrap -f pkg/dockerfiles/bootstrap.dockerfile .")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

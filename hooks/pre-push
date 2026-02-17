@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Git pre-push hook for Maestro
+# Runs integration tests before allowing push to remote
+
+echo "Running pre-push checks..."
+
+# Check if integration test API keys are set
+if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$GOOGLE_GENAI_API_KEY" ]; then
+    echo "⚠️  Warning: No API keys set (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENAI_API_KEY)"
+    echo "   Skipping integration tests. To run them, set at least one API key."
+    exit 0
+fi
+
+echo "Running integration tests (this may take a minute)..."
+if ! make test-integration; then
+    echo "❌ Integration tests failed!"
+    echo "   Fix the failures or use 'git push --no-verify' to skip this hook."
+    exit 1
+fi
+
+echo "✅ All integration tests passed!"
+exit 0

@@ -400,6 +400,11 @@ func ensureBootstrapContainer() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	// Skip build if image is already healthy
+	if err := iutils.IsImageHealthy(ctx, config.BootstrapContainerTag); err == nil {
+		return nil
+	}
+
 	logx.Infof("🔨 Building bootstrap container: %s", config.BootstrapContainerTag)
 	if err := iutils.BuildBootstrapImage(ctx); err != nil {
 		return fmt.Errorf("failed to build bootstrap container: %w", err)
