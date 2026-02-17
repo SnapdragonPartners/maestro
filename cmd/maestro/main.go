@@ -12,6 +12,7 @@ import (
 
 	"orchestrator/internal/kernel"
 	"orchestrator/internal/state"
+	iutils "orchestrator/internal/utils"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/demo"
 	"orchestrator/pkg/forge"
@@ -272,6 +273,23 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 		}
 	}
 	config.LogInfo("✅ Created %d agent workspace directories", len(agentDirs))
+
+	// 5. Ensure the bootstrap container image exists (build if missing).
+	// Use a generous timeout — pulling base images + npm install can be slow,
+	// but the app cannot start without this so a timeout is effectively fatal.
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer bootstrapCancel()
+
+	config.LogInfo("🐳 Verifying bootstrap container image...")
+	if healthErr := iutils.IsImageHealthy(bootstrapCtx, config.BootstrapContainerTag); healthErr != nil {
+		config.LogInfo("🔨 Bootstrap container not found, building from embedded Dockerfile...")
+		if buildErr := iutils.BuildBootstrapImage(bootstrapCtx); buildErr != nil {
+			return fmt.Errorf("failed to build bootstrap container: %w", buildErr)
+		}
+		config.LogInfo("✅ Bootstrap container built successfully")
+	} else {
+		config.LogInfo("✅ Bootstrap container image verified")
+	}
 
 	config.LogInfo("✅ Project infrastructure verification completed for %s", projectDir)
 	return nil

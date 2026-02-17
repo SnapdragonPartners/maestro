@@ -2,14 +2,12 @@ package coder
 
 import (
 	"context"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	iutils "orchestrator/internal/utils"
 	"orchestrator/pkg/config"
 	execpkg "orchestrator/pkg/exec"
 )
@@ -210,46 +208,10 @@ func ensureBootstrapImageExists(t *testing.T, ctx context.Context) error {
 
 	t.Logf("Bootstrap image %s not found, building it now...", config.BootstrapContainerTag)
 
-	// Find repo root by looking for go.mod
-	repoRoot, err := findRepoRoot()
-	if err != nil {
-		return fmt.Errorf("failed to find repo root: %w", err)
-	}
-
-	// Build using the Dockerfile from pkg/dockerfiles with repo root as context
-	// This is needed because the Dockerfile builds the MCP proxy from source
-	dockerfilePath := filepath.Join(repoRoot, "pkg", "dockerfiles", "bootstrap.dockerfile")
-
-	// Build the image with repo root as context (needed for go.mod, go.sum, and source files)
-	buildCmd := exec.CommandContext(ctx, "docker", "build", "-t", config.BootstrapContainerTag, "-f", dockerfilePath, repoRoot)
-	buildCmd.Stdout = os.Stdout
-	buildCmd.Stderr = os.Stderr
-
-	t.Logf("Building bootstrap image: docker build -t %s ...", config.BootstrapContainerTag)
-	if err := buildCmd.Run(); err != nil {
-		return fmt.Errorf("failed to build bootstrap image: %w", err)
+	if err := iutils.BuildBootstrapImage(ctx); err != nil {
+		return err
 	}
 
 	t.Logf("✅ Successfully built bootstrap image %s", config.BootstrapContainerTag)
 	return nil
-}
-
-// findRepoRoot walks up the directory tree to find the repo root (directory containing go.mod).
-func findRepoRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir, nil
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", fmt.Errorf("could not find go.mod in any parent directory")
-		}
-		dir = parent
-	}
 }

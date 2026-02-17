@@ -6,8 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
+
+	"orchestrator/pkg/coder/claude/embedded"
+	"orchestrator/pkg/config"
+	"orchestrator/pkg/dockerfiles"
 )
 
 // CreateTempRepoClone creates a temporary clone of the repository for building.
@@ -90,4 +96,44 @@ func GetImageID(ctx context.Context, imageName string) (string, error) {
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+// BuildBootstrapImage builds the maestro-bootstrap container image from the embedded
+// Dockerfile and pre-compiled MCP proxy binary. The Dockerfile expects the proxy binary
+// to be present in the build context; this function writes the embedded binary there.
+func BuildBootstrapImage(ctx context.Context) error {
+	// Create temporary build context directory
+	buildDir, err := os.MkdirTemp("", "maestro-bootstrap-build-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp build directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(buildDir) }()
+
+	// Write the pre-compiled MCP proxy binary for the host architecture.
+	// runtime.GOARCH returns "arm64" or "amd64" which maps to the embedded binary names.
+	proxyBinary, proxyErr := embedded.GetProxyBinary(runtime.GOARCH)
+	if proxyErr != nil {
+		return fmt.Errorf("failed to get embedded proxy binary for %s: %w", runtime.GOARCH, proxyErr)
+	}
+
+	proxyPath := filepath.Join(buildDir, "maestro-mcp-proxy")
+	//nolint:gosec // Proxy binary must be executable
+	if writeErr := os.WriteFile(proxyPath, proxyBinary, 0755); writeErr != nil {
+		return fmt.Errorf("failed to write proxy binary: %w", writeErr)
+	}
+
+	// Write the embedded Dockerfile to the build context
+	dockerfilePath := filepath.Join(buildDir, "Dockerfile")
+	if writeErr := os.WriteFile(dockerfilePath, []byte(dockerfiles.GetBootstrapDockerfile()), 0644); writeErr != nil {
+		return fmt.Errorf("failed to write Dockerfile: %w", writeErr)
+	}
+
+	// Build the image
+	cmd := exec.CommandContext(ctx, "docker", "build", "-t", config.BootstrapContainerTag, buildDir)
+	output, buildErr := cmd.CombinedOutput()
+	if buildErr != nil {
+		return fmt.Errorf("docker build failed: %w\nOutput: %s", buildErr, string(output))
+	}
+
+	return nil
 }

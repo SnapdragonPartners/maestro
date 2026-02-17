@@ -6,19 +6,18 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"orchestrator/internal/state"
+	iutils "orchestrator/internal/utils"
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
-	"orchestrator/pkg/dockerfiles"
 	"orchestrator/pkg/effect"
 	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
@@ -395,53 +394,22 @@ func getDockerImageForAgent(_ string) string {
 }
 
 // ensureBootstrapContainer builds the bootstrap container if it doesn't exist or if force rebuild is needed.
+//
+//nolint:contextcheck // This is a fallback path; the primary build happens in verifyProject at startup.
 func ensureBootstrapContainer() error {
-	// Get project directory to write the Dockerfile
-	projectDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// Skip build if image is already healthy
+	if err := iutils.IsImageHealthy(ctx, config.BootstrapContainerTag); err == nil {
+		return nil
 	}
 
-	// Ensure .maestro directory exists
-	maestroDir := filepath.Join(projectDir, config.ProjectConfigDir)
-	if mkdirErr := os.MkdirAll(maestroDir, 0755); mkdirErr != nil {
-		return fmt.Errorf("failed to create .maestro directory: %w", mkdirErr)
-	}
-
-	// Write bootstrap Dockerfile to .maestro/Dockerfile.bootstrap
-	dockerfilePath := filepath.Join(maestroDir, "Dockerfile.bootstrap")
-	dockerfileContent := dockerfiles.GetBootstrapDockerfile()
-	if writeErr := os.WriteFile(dockerfilePath, []byte(dockerfileContent), 0644); writeErr != nil {
-		return fmt.Errorf("failed to write bootstrap Dockerfile: %w", writeErr)
-	}
-
-	// Build the bootstrap container (Docker handles caching automatically)
 	logx.Infof("🔨 Building bootstrap container: %s", config.BootstrapContainerTag)
-	logx.Infof("📋 Using Dockerfile: %s", dockerfilePath)
-	logx.Infof("📁 Build context: %s", maestroDir)
-
-	cmd := exec.Command("docker", "build", "-t", config.BootstrapContainerTag, "-f", dockerfilePath, maestroDir)
-	cmd.Dir = projectDir
-
-	// Capture output for debugging
-	output, err := cmd.CombinedOutput()
-	outputStr := string(output)
-
-	if err != nil {
-		_ = logx.Errorf("❌ Bootstrap container build failed: %v", err)
-		_ = logx.Errorf("📋 Docker build output:\n%s", outputStr)
-		return fmt.Errorf("failed to build bootstrap container: %w (output: %s)", err, outputStr)
+	if err := iutils.BuildBootstrapImage(ctx); err != nil {
+		return fmt.Errorf("failed to build bootstrap container: %w", err)
 	}
-
 	logx.Infof("✅ Bootstrap container built successfully: %s", config.BootstrapContainerTag)
-
-	// Log some build details
-	if strings.Contains(outputStr, "Successfully tagged") {
-		logx.Infof("🏷️ Container tagged and ready for use")
-	}
-	if strings.Contains(outputStr, "CACHED") {
-		logx.Infof("🗂️ Used cached layers for faster build")
-	}
 	return nil
 }
 

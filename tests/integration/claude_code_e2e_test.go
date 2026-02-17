@@ -107,7 +107,7 @@ func TestClaudeCodeMCPToolCall(t *testing.T) {
 	result, err := executor.Run(ctx, claudeCheck, &exec.Opts{})
 	if err != nil || result.ExitCode != 0 {
 		t.Skipf("Claude Code not found in bootstrap container. "+
-			"This test requires rebuilding maestro-bootstrap:latest from pkg/dockerfiles/bootstrap.dockerfile. "+
+			"Run maestro to auto-build, or see pkg/dockerfiles/bootstrap.dockerfile for manual build instructions. "+
 			"err=%v, exit=%d, stderr=%s", err, result.ExitCode, result.Stderr)
 	}
 	t.Logf("Claude CLI found: %s", strings.TrimSpace(result.Stdout))

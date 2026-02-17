@@ -54,6 +54,8 @@ func (o *StartupOrchestrator) OnStart(ctx context.Context) error {
 }
 
 // ensureSafeContainerHealthy ensures the safe/bootstrap container exists and is healthy.
+// If the image is missing, it builds it automatically from the embedded Dockerfile and
+// pre-compiled MCP proxy binary.
 func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) error {
 	// Get safe container configuration
 	cfg, err := config.GetConfig()
@@ -69,7 +71,17 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 
 	// Check if safe container is healthy
 	if err := utils.IsImageHealthy(ctx, safeImageID); err != nil {
-		return fmt.Errorf("safe container %s is not healthy: %w", safeImageID, err)
+		o.logger.Warn("⚠️ Safe container %s is not available: %v", safeImageID, err)
+		o.logger.Info("🔨 Building bootstrap container from embedded Dockerfile...")
+
+		if buildErr := utils.BuildBootstrapImage(ctx); buildErr != nil {
+			return fmt.Errorf("failed to build bootstrap container: %w", buildErr)
+		}
+
+		// Verify the newly built image is healthy using the tag we just built
+		if verifyErr := utils.IsImageHealthy(ctx, config.BootstrapContainerTag); verifyErr != nil {
+			return fmt.Errorf("newly built bootstrap container is not healthy: %w", verifyErr)
+		}
 	}
 
 	o.logger.Info("✅ Safe container %s is healthy", safeImageID)
