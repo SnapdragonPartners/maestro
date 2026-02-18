@@ -255,6 +255,14 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		return StateBudgetReview, false, nil
 
 	case toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
+		// Check for service unavailability → SUSPEND instead of ERROR
+		if llmerrors.IsServiceUnavailable(out.Err) {
+			c.logger.Warn("⏸️  Service unavailable, entering SUSPEND from CODING")
+			if err := sm.EnterSuspend(ctx); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to enter SUSPEND")
+			}
+			return proto.StateSuspend, false, nil
+		}
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(out.Err) {
 			req := agent.CompletionRequest{MaxTokens: 8192}

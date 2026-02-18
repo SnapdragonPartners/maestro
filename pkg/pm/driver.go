@@ -337,6 +337,12 @@ func (d *Driver) executeState(ctx context.Context) (proto.State, error) {
 		return d.handlePreview(ctx)
 	case StateAwaitArchitect:
 		return d.handleAwaitArchitect(ctx)
+	case proto.StateSuspend:
+		nextState, _, err := d.HandleSuspend(ctx)
+		if err != nil {
+			return proto.StateError, fmt.Errorf("suspend handling failed: %w", err)
+		}
+		return nextState, nil
 	default:
 		return proto.StateError, fmt.Errorf("unknown state: %s", currentState)
 	}

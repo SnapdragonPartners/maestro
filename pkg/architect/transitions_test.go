@@ -139,6 +139,11 @@ func TestTransitionTableCompleteness(t *testing.T) {
 
 	for _, state := range allStates {
 		t.Run("state_"+state.String(), func(t *testing.T) {
+			// SUSPEND transitions are handled dynamically by BaseStateMachine (returns to originating state)
+			if state == proto.StateSuspend {
+				return
+			}
+
 			validNextStates := ValidNextStates(state)
 
 			// All states should have at least one valid transition

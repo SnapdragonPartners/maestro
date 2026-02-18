@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"orchestrator/pkg/agent/middleware/resilience/circuit"
+	"orchestrator/pkg/agent/llmerrors"
 )
 
 // Config defines configuration for retry behavior.
@@ -36,6 +36,9 @@ var DefaultConfig = Config{
 type Classifier func(error) bool
 
 // ShouldRetry is the default error classifier that determines retry behavior.
+// Uses a blocklist approach: everything is retryable UNLESS explicitly non-retryable.
+// This ensures unknown/unclassified errors (like network timeouts classified as "unknown")
+// are retried, eventually producing ServiceUnavailableError to trigger SUSPEND.
 func ShouldRetry(err error) bool {
 	if err == nil {
 		return false
@@ -46,46 +49,35 @@ func ShouldRetry(err error) bool {
 		return false
 	}
 
-	// Never retry circuit breaker errors - let the circuit breaker handle recovery
-	var circuitErr *circuit.Error
-	if errors.As(err, &circuitErr) {
+	// Check if this is a classified LLM error with explicit non-retryable type
+	var llmErr *llmerrors.Error
+	if errors.As(err, &llmErr) {
+		switch llmErr.Type {
+		case llmerrors.ErrorTypeAuth, llmerrors.ErrorTypeBadPrompt:
+			return false // Explicitly non-retryable
+		case llmerrors.ErrorTypeServiceUnavailable:
+			return false // Already exhausted retries
+		default:
+			return true // Everything else: retry
+		}
+	}
+
+	// For unclassified errors, check for non-retryable patterns
+	errStr := strings.ToLower(err.Error())
+
+	// Don't retry auth errors
+	if strings.Contains(errStr, "401") || strings.Contains(errStr, "403") ||
+		strings.Contains(errStr, "unauthorized") || strings.Contains(errStr, "invalid api key") {
 		return false
 	}
 
-	// Check error string for retry patterns
-	errStr := err.Error()
-
-	// Retry on network/timeout errors
-	if strings.Contains(errStr, "timeout") ||
-		strings.Contains(errStr, "connection") ||
-		strings.Contains(errStr, "network") ||
-		strings.Contains(errStr, "temporary") {
-		return true
-	}
-
-	// Retry on rate limiting
-	if strings.Contains(errStr, "rate") || strings.Contains(errStr, "429") {
-		return true
-	}
-
-	// Retry on server errors (5xx)
-	if strings.Contains(errStr, "500") ||
-		strings.Contains(errStr, "502") ||
-		strings.Contains(errStr, "503") ||
-		strings.Contains(errStr, "504") {
-		return true
-	}
-
-	// Don't retry on client errors (4xx) except rate limiting
-	if strings.Contains(errStr, "400") ||
-		strings.Contains(errStr, "401") ||
-		strings.Contains(errStr, "403") ||
-		strings.Contains(errStr, "404") {
+	// Don't retry bad request errors
+	if strings.Contains(errStr, "400") || strings.Contains(errStr, "404") {
 		return false
 	}
 
-	// Default to not retrying unknown errors
-	return false
+	// Default: retry everything else (including unknown errors, circuit breaker errors, etc.)
+	return true
 }
 
 // Policy encapsulates retry configuration and logic.

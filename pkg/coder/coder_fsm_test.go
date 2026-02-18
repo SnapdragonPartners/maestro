@@ -38,6 +38,7 @@ func TestGetValidStates(t *testing.T) {
 		StateBudgetReview,
 		StateAwaitMerge,
 		StateQuestion,
+		proto.StateSuspend,
 		proto.StateDone,
 		proto.StateError,
 	}

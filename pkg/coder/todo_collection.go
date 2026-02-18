@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
@@ -133,6 +134,14 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		return proto.StateError, false, logx.Errorf("LLM failed to provide todos after %d attempts", out.Iteration)
 
 	case toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError, toolloop.OutcomeNoToolTwice:
+		// Check for service unavailability → SUSPEND instead of ERROR
+		if llmerrors.IsServiceUnavailable(out.Err) {
+			c.logger.Warn("⏸️  Service unavailable, entering SUSPEND from TODO_COLLECTION")
+			if err := sm.EnterSuspend(ctx); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to enter SUSPEND")
+			}
+			return proto.StateSuspend, false, nil
+		}
 		return proto.StateError, false, logx.Wrap(out.Err, "failed to collect todo list")
 
 	default:

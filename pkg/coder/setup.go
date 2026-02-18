@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -65,6 +66,15 @@ func (c *Coder) handleSetup(ctx context.Context, sm *agent.BaseStateMachine) (pr
 	fsafeAgentID := utils.SanitizeIdentifier(agentID)
 	cloneResult, err := c.cloneManager.SetupWorkspace(ctx, fsafeAgentID, storyIDStr, c.workDir)
 	if err != nil {
+		// Check if this is a git network error → SUSPEND instead of ERROR
+		var gitNetErr *GitNetworkError
+		if errors.As(err, &gitNetErr) {
+			c.logger.Warn("⏸️  Git network unavailable, entering SUSPEND from SETUP")
+			if suspendErr := sm.EnterSuspend(ctx); suspendErr != nil {
+				return proto.StateError, false, logx.Wrap(suspendErr, "failed to enter SUSPEND")
+			}
+			return proto.StateSuspend, false, nil
+		}
 		c.logger.Error("Failed to setup workspace: %v", err)
 		return proto.StateError, false, logx.Wrap(err, "workspace setup failed")
 	}

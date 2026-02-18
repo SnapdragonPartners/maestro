@@ -573,7 +573,7 @@ func TestHandleSetup_InvalidStoryIDType(t *testing.T) {
 func TestHandleSetup_GitCloneFailure(t *testing.T) {
 	mockGit := mocks.NewMockGitRunner()
 	// Configure mock to fail clone operations
-	mockGit.FailCommandWith("clone", fmt.Errorf("clone failed: network error"))
+	mockGit.FailCommandWith("clone", fmt.Errorf("clone failed: repository not found"))
 
 	cloneManager := createMockCloneManager(t, mockGit)
 

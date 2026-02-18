@@ -115,7 +115,8 @@ func ValidateState(state proto.State) error {
 func GetValidStates() []proto.State {
 	return []proto.State{
 		proto.StateWaiting, StateSetup, StatePlanning, StateCoding, StateTesting,
-		StatePlanReview, StateCodeReview, StatePrepareMerge, StateBudgetReview, StateAwaitMerge, StateQuestion, proto.StateDone, proto.StateError,
+		StatePlanReview, StateCodeReview, StatePrepareMerge, StateBudgetReview, StateAwaitMerge, StateQuestion,
+		proto.StateSuspend, proto.StateDone, proto.StateError,
 	}
 }
 

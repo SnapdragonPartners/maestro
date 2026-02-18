@@ -51,7 +51,7 @@ func ValidateState(state proto.State) error {
 func GetValidStates() []proto.State {
 	return []proto.State{
 		StateWaiting, StateSetup, StateDispatching, StateMonitoring,
-		StateRequest, StateEscalated, StateDone, StateError,
+		StateRequest, StateEscalated, proto.StateSuspend, StateDone, StateError,
 	}
 }
 
@@ -122,6 +122,7 @@ func GetAllArchitectStates() []proto.State {
 		StateMonitoring,
 		StateRequest,
 		StateEscalated,
+		proto.StateSuspend,
 		StateDone,
 		StateError,
 	}

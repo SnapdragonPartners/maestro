@@ -666,6 +666,12 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	case StateDone:
 		// DONE is a terminal state - should not continue processing.
 		return StateDone, nil
+	case proto.StateSuspend:
+		nextState, _, err := d.HandleSuspend(ctx)
+		if err != nil {
+			return StateError, fmt.Errorf("suspend handling failed: %w", err)
+		}
+		return nextState, nil
 	case StateError:
 		// ERROR is a terminal state - should not continue processing.
 		return StateError, nil

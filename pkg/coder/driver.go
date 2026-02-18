@@ -849,6 +849,8 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 		nextState, done, err = c.handleQuestion(ctx, sm)
 	case proto.StateDone:
 		nextState, done, err = c.handleDone(ctx, sm)
+	case proto.StateSuspend:
+		nextState, done, err = sm.HandleSuspend(ctx)
 	case proto.StateError:
 		nextState, done, err = c.handleError(ctx, sm)
 	default:

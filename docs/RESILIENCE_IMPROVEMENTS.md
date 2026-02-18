@@ -119,7 +119,26 @@ Natural Backpressure:
    - Poll every 30 seconds during suspension
    - Require ALL APIs healthy before restore broadcast
 
-**Status**: READY FOR IMPLEMENTATION
+**Status**: COMPLETED — Infrastructure (commit `326b9f5`) + agent integration ([#127](https://github.com/SnapdragonPartners/maestro/issues/127))
+
+**Implementation Progress**:
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| `StateSuspend` constant | Done | `pkg/proto/message.go` |
+| `EnterSuspend()` / `HandleSuspend()` | Done | `pkg/agent/internal/core/machine.go` |
+| Transition validation (any→SUSPEND, SUSPEND→origin) | Done | `pkg/agent/internal/core/validation.go` |
+| `IsServiceUnavailable()` error classification | Done | `pkg/agent/llmerrors/errors.go` |
+| Retry middleware → `ServiceUnavailableError` | Done | `pkg/agent/middleware/resilience/retry/middleware.go` |
+| Restore channel plumbing (factory→agents) | Done | `internal/factory/agent_factory.go` |
+| Supervisor: suspend detection, API polling, broadcast restore | Done | `internal/supervisor/supervisor.go` |
+| Suspend unit tests | Done | `pkg/agent/internal/core/suspend_test.go` |
+| Coder: detect ServiceUnavailable → EnterSuspend | Done | `pkg/coder/planning.go`, `coding.go`, `todo_collection.go` |
+| Coder: `case proto.StateSuspend` in ProcessState | Done | `pkg/coder/driver.go` |
+| Architect: detect ServiceUnavailable → EnterSuspend | Done | `pkg/architect/request.go` |
+| Architect: `case proto.StateSuspend` in processCurrentState | Done | `pkg/architect/driver.go` |
+| PM: detect ServiceUnavailable → EnterSuspend | Done | `pkg/pm/working.go` |
+| PM: `case proto.StateSuspend` in executeState | Done | `pkg/pm/driver.go` |
 
 ---
 
@@ -204,6 +223,6 @@ Mirror may be using SSH even when HTTPS is configured. Need to verify mirror rem
 | Item | Priority | Status | Notes |
 |------|----------|--------|-------|
 | Fix 1: Container requirements | HIGH | COMPLETED | Commits `611b75d`, `6254666` |
-| Improvement 2: SUSPEND state | HIGH | COMPLETED | Commit `326b9f5` - Preserves in-flight work during outages |
+| Improvement 2: SUSPEND state | HIGH | COMPLETED | Infrastructure (commit `326b9f5`) + agent integration ([#127](https://github.com/SnapdragonPartners/maestro/issues/127)) |
 | Improvement 3: Story retry limit | MEDIUM | COMPLETED | MaxStoryAttempts=3, architect→ERROR on limit |
 | Schema migration | LOW | TODO | Minor issue |

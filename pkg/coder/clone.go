@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
@@ -235,8 +236,8 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 			return "", logx.Wrap(err, "failed to create mirror directory")
 		}
 
-		// Clone bare repository as object pool.
-		_, err := c.gitRunner.Run(ctx, "", "clone", "--bare", c.getRepoURL(), mirrorPath)
+		// Clone bare repository as object pool (with retry for network resilience).
+		_, err := c.retryGitNetworkOp(ctx, "", "clone", "--bare", c.getRepoURL(), mirrorPath)
 		if err != nil {
 			return "", logx.Wrap(err, fmt.Sprintf("failed to clone mirror from %s to %s", c.getRepoURL(), mirrorPath))
 		}
@@ -258,7 +259,7 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 		}
 		defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }() // Release lock
 
-		_, err = c.gitRunner.Run(ctx, mirrorPath, "remote", "update", "--prune")
+		_, err = c.retryGitNetworkOp(ctx, mirrorPath, "remote", "update", "--prune")
 		if err != nil {
 			return "", logx.Wrap(err, fmt.Sprintf("failed to update mirror %s", mirrorPath))
 		}
@@ -337,7 +338,7 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 	// The mirror may be stale if origin was updated between mirror update and clone creation.
 	// This prevents conflicts when pushing later (agent would be based on old refs).
 	c.logger.Debug("Fetching latest from origin to ensure fresh refs")
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "fetch", "origin")
+	_, err = c.retryGitNetworkOp(ctx, agentWorkDir, "fetch", "origin")
 	if err != nil {
 		c.logger.Warn("Failed to fetch from origin (non-fatal, may cause push conflicts): %v", err)
 		// Continue anyway - the mirror data may still be sufficient
@@ -429,7 +430,7 @@ func (c *CloneManager) getExistingBranches(ctx context.Context, agentWorkDir str
 
 	// Query remote branches directly via ls-remote (doesn't require fetch).
 	// This ensures we see branches that exist on the remote even if not fetched.
-	remoteOutput, err := c.gitRunner.Run(ctx, agentWorkDir, "ls-remote", "--heads", "origin")
+	remoteOutput, err := c.retryGitNetworkOp(ctx, agentWorkDir, "ls-remote", "--heads", "origin")
 	if err != nil {
 		// Log warning but don't fail - we can still check local branches.
 		c.logger.Warn("Failed to query remote branches via ls-remote: %v", err)
@@ -556,4 +557,69 @@ func (c *CloneManager) configureGitIdentity(ctx context.Context, agentWorkDir, a
 
 	c.logger.Info("🔧 Configured git user identity on host: %s <%s>", userName, userEmail)
 	return nil
+}
+
+// GitNetworkError is a sentinel error returned when git network operations
+// exhaust all retry attempts. Used by setup.go to trigger SUSPEND.
+type GitNetworkError struct {
+	Err      error
+	Attempts int
+}
+
+func (e *GitNetworkError) Error() string {
+	return fmt.Sprintf("git network unavailable after %d attempts: %v", e.Attempts, e.Err)
+}
+
+func (e *GitNetworkError) Unwrap() error { return e.Err }
+
+// retryGitNetworkOp retries a git operation that may fail due to network issues.
+// Uses backoff delays: 0s, 5s, 15s, 30s between attempts.
+// Returns GitNetworkError when all network retries are exhausted.
+func (c *CloneManager) retryGitNetworkOp(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	delays := []time.Duration{0, 5 * time.Second, 15 * time.Second, 30 * time.Second}
+	var lastErr error
+
+	for attempt, delay := range delays {
+		if delay > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("git retry cancelled: %w", ctx.Err())
+			case <-time.After(delay):
+			}
+		}
+
+		result, err := c.gitRunner.Run(ctx, dir, args...)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+
+		if !isGitNetworkError(err) {
+			return nil, fmt.Errorf("git %s failed: %w", args[0], err)
+		}
+
+		c.logger.Warn("Git network error (attempt %d/%d): %v", attempt+1, len(delays), err)
+	}
+
+	return nil, &GitNetworkError{Attempts: len(delays), Err: lastErr}
+}
+
+// isGitNetworkError checks if a git error is caused by network/connectivity issues.
+func isGitNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := strings.ToLower(err.Error())
+	patterns := []string{
+		"ssh:", "could not read from remote", "connection",
+		"timeout", "network", "name or service not known",
+		"no route to host", "operation timed out", "connection refused",
+		"unable to access", "couldn't resolve host",
+	}
+	for _, p := range patterns {
+		if strings.Contains(errStr, p) {
+			return true
+		}
+	}
+	return false
 }

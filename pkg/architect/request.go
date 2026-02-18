@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
@@ -97,6 +98,14 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	}
 
 	if err != nil {
+		// Check for service unavailability → SUSPEND instead of ERROR
+		if llmerrors.IsServiceUnavailable(err) {
+			d.logger.Warn("⏸️  Service unavailable, entering SUSPEND from REQUEST")
+			if suspendErr := d.EnterSuspend(ctx); suspendErr != nil {
+				return StateError, fmt.Errorf("failed to enter SUSPEND: %w (original: %w)", suspendErr, err)
+			}
+			return proto.StateSuspend, nil
+		}
 		return StateError, err
 	}
 

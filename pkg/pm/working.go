@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
@@ -82,6 +83,14 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	// No need to render a new prompt every turn
 	signal, err := d.callLLMWithTools(ctx, "")
 	if err != nil {
+		// Check for service unavailability → SUSPEND instead of ERROR
+		if llmerrors.IsServiceUnavailable(err) {
+			d.logger.Warn("⏸️  Service unavailable, entering SUSPEND from WORKING")
+			if suspendErr := d.EnterSuspend(ctx); suspendErr != nil {
+				return proto.StateError, fmt.Errorf("failed to enter SUSPEND: %w (original: %w)", suspendErr, err)
+			}
+			return proto.StateSuspend, nil
+		}
 		d.logger.Error("❌ PM LLM call failed: %v", err)
 		return proto.StateError, fmt.Errorf("LLM call failed: %w", err)
 	}

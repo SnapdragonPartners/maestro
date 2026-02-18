@@ -160,12 +160,13 @@ func (e *Error) Unwrap() error {
 }
 
 // IsRetryable returns whether this error type should be retried.
+// Uses blocklist approach: everything is retryable UNLESS explicitly non-retryable.
 func (e *Error) IsRetryable() bool {
 	switch e.Type {
-	case ErrorTypeRateLimit, ErrorTypeTransient, ErrorTypeEmptyResponse:
-		return true
-	default:
+	case ErrorTypeAuth, ErrorTypeBadPrompt, ErrorTypeServiceUnavailable:
 		return false
+	default:
+		return true
 	}
 }
 
