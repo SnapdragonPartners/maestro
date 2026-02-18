@@ -106,6 +106,11 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			}
 			return proto.StateSuspend, nil
 		}
+		// Check for graceful shutdown (SIGTERM/SIGINT) — exit cleanly
+		if errors.Is(err, toolloop.ErrGracefulShutdown) {
+			d.logger.Info("🛑 Graceful shutdown during REQUEST, exiting cleanly")
+			return StateMonitoring, nil
+		}
 		return StateError, err
 	}
 

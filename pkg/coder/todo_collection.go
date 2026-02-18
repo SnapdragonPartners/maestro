@@ -144,6 +144,11 @@ Use the todos_add tool NOW to submit your implementation todos.`, plan, taskCont
 		}
 		return proto.StateError, false, logx.Wrap(out.Err, "failed to collect todo list")
 
+	case toolloop.OutcomeGracefulShutdown:
+		// Real shutdown (SIGTERM/SIGINT) — exit cleanly without ERROR or SUSPEND
+		c.logger.Info("🛑 Graceful shutdown during TODO_COLLECTION, exiting cleanly")
+		return StatePlanning, true, nil
+
 	default:
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}

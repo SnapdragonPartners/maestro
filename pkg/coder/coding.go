@@ -274,6 +274,11 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		// LLM failed to use tools - treat as error
 		return proto.StateError, false, logx.Wrap(out.Err, "LLM did not use tools in coding")
 
+	case toolloop.OutcomeGracefulShutdown:
+		// Real shutdown (SIGTERM/SIGINT) — exit cleanly without ERROR or SUSPEND
+		c.logger.Info("🛑 Graceful shutdown during CODING, exiting cleanly")
+		return StateCoding, true, nil
+
 	default:
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}

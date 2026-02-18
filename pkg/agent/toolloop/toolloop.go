@@ -4,7 +4,6 @@ package toolloop
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -289,8 +288,12 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		duration := time.Since(start)
 
 		if err != nil {
-			// Check if this is a context cancellation (graceful shutdown during LLM call)
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Check if the PARENT context is actually cancelled (graceful shutdown).
+			// Important: only check ctx.Err(), NOT errors.Is(err, context.DeadlineExceeded),
+			// because per-request HTTP timeouts wrap context.DeadlineExceeded in the error
+			// chain but don't cancel the parent context. The retry middleware handles those
+			// timeouts and wraps them as ServiceUnavailableError.
+			if ctx.Err() != nil {
 				tl.logger.Info("🛑 Graceful shutdown requested during LLM call at iteration %d", currentIteration)
 				if cfg.OnShutdown != nil {
 					cfg.OnShutdown(currentIteration)

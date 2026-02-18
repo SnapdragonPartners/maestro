@@ -287,6 +287,11 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		// LLM failed to use tools - treat as error
 		return proto.StateError, false, logx.Wrap(out.Err, "LLM did not use tools in planning")
 
+	case toolloop.OutcomeGracefulShutdown:
+		// Real shutdown (SIGTERM/SIGINT) — exit cleanly without ERROR or SUSPEND
+		c.logger.Info("🛑 Graceful shutdown during PLANNING, exiting cleanly")
+		return StatePlanning, true, nil
+
 	default:
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
