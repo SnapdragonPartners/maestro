@@ -44,8 +44,11 @@ func ShouldRetry(err error) bool {
 		return false
 	}
 
-	// Never retry context cancellation or deadline exceeded
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// Never retry context cancellation (real shutdown).
+	// Note: Do NOT check context.DeadlineExceeded here — per-request HTTP timeouts
+	// wrap DeadlineExceeded but should be retried so the retry middleware can exhaust
+	// attempts and emit ServiceUnavailableError to trigger SUSPEND.
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 

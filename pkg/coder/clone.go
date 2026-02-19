@@ -605,18 +605,33 @@ func (c *CloneManager) retryGitNetworkOp(ctx context.Context, dir string, args .
 }
 
 // isGitNetworkError checks if a git error is caused by network/connectivity issues.
+// Uses positive network patterns with negative exclusions for non-network failures
+// that share similar error strings (e.g., "unable to access" in 404/auth errors).
 func isGitNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	patterns := []string{
-		"ssh:", "could not read from remote", "connection",
-		"timeout", "network", "name or service not known",
-		"no route to host", "operation timed out", "connection refused",
-		"unable to access", "couldn't resolve host",
+
+	// Exclude non-network errors that contain network-like substrings
+	nonNetworkPatterns := []string{
+		"repository not found", "authentication failed", "permission denied",
+		"invalid username", "could not find remote branch",
 	}
-	for _, p := range patterns {
+	for _, p := range nonNetworkPatterns {
+		if strings.Contains(errStr, p) {
+			return false
+		}
+	}
+
+	networkPatterns := []string{
+		"could not read from remote", "connection refused", "connection reset",
+		"connection timed out", "no route to host", "operation timed out",
+		"name or service not known", "couldn't resolve host",
+		"unable to access", "network is unreachable",
+		"ssh_exchange_identification", "broken pipe",
+	}
+	for _, p := range networkPatterns {
 		if strings.Contains(errStr, p) {
 			return true
 		}
