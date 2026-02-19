@@ -604,10 +604,11 @@ func (d *Driver) Run(ctx context.Context) error {
 
 	// Run the state machine loop.
 	for {
-		// Check context cancellation.
+		// Check context cancellation — exit cleanly on graceful shutdown.
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("architect context cancelled: %w", ctx.Err())
+			d.logger.Info("🛑 Graceful shutdown, exiting cleanly from %s", d.GetCurrentState())
+			return nil
 		default:
 		}
 
@@ -621,6 +622,13 @@ func (d *Driver) Run(ctx context.Context) error {
 
 		// Process current state.
 		nextState, err := d.processCurrentState(ctx)
+
+		// If the context is cancelled, exit cleanly — don't try to transition
+		// to ERROR or log noisy errors during graceful shutdown.
+		if err != nil && ctx.Err() != nil {
+			d.logger.Info("🛑 Graceful shutdown, exiting cleanly from %s", currentState)
+			return nil //nolint:nilerr // intentional: clean exit on shutdown
+		}
 		if err != nil {
 			// Transition to error state.
 			if transErr := d.TransitionTo(ctx, StateError, map[string]any{
@@ -666,6 +674,12 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	case StateDone:
 		// DONE is a terminal state - should not continue processing.
 		return StateDone, nil
+	case proto.StateSuspend:
+		nextState, _, err := d.HandleSuspend(ctx)
+		if err != nil {
+			return StateError, fmt.Errorf("suspend handling failed: %w", err)
+		}
+		return nextState, nil
 	case StateError:
 		// ERROR is a terminal state - should not continue processing.
 		return StateError, nil

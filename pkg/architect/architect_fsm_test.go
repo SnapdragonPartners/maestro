@@ -171,6 +171,7 @@ func TestGetAllArchitectStates(t *testing.T) {
 		StateMonitoring,
 		StateRequest,
 		StateEscalated,
+		proto.StateSuspend,
 		StateDone,
 		StateError,
 	}
@@ -254,6 +255,10 @@ func TestTransitionMapCompleteness(t *testing.T) {
 
 	for _, state := range allStates {
 		t.Run(state.String(), func(t *testing.T) {
+			// SUSPEND transitions are handled dynamically by BaseStateMachine (returns to originating state)
+			if state == proto.StateSuspend {
+				return
+			}
 			nextStates := ValidNextStates(state)
 			if nextStates == nil {
 				t.Errorf("State %s has no valid next states defined", state)

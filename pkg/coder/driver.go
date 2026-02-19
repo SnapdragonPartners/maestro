@@ -849,6 +849,8 @@ func (c *Coder) ProcessState(ctx context.Context) (proto.State, bool, error) {
 		nextState, done, err = c.handleQuestion(ctx, sm)
 	case proto.StateDone:
 		nextState, done, err = c.handleDone(ctx, sm)
+	case proto.StateSuspend:
+		nextState, done, err = sm.HandleSuspend(ctx)
 	case proto.StateError:
 		nextState, done, err = c.handleError(ctx, sm)
 	default:
@@ -1028,6 +1030,13 @@ func (c *Coder) Run(ctx context.Context) error {
 		c.logger.Debug("🧑‍💻 Coder processing state: %s", c.BaseStateMachine.GetCurrentState())
 
 		done, err := c.Step(ctx)
+
+		// If the context is cancelled, exit cleanly — don't try to transition
+		// to ERROR or log noisy errors during graceful shutdown.
+		if err != nil && ctx.Err() != nil {
+			c.logger.Info("🛑 Graceful shutdown, exiting cleanly from %s", c.BaseStateMachine.GetCurrentState())
+			return nil //nolint:nilerr // intentional: clean exit on shutdown
+		}
 		if err != nil {
 			c.logger.Error("🧑‍💻 Coder state machine error: %v", err)
 			return err

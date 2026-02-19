@@ -2,11 +2,13 @@ package pm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
@@ -82,8 +84,7 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 	// No need to render a new prompt every turn
 	signal, err := d.callLLMWithTools(ctx, "")
 	if err != nil {
-		d.logger.Error("❌ PM LLM call failed: %v", err)
-		return proto.StateError, fmt.Errorf("LLM call failed: %w", err)
+		return d.handleLLMError(ctx, err)
 	}
 
 	// Increment turn count
@@ -427,14 +428,33 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			// All other errors are treated as toolloop failures
 			return "", fmt.Errorf("toolloop execution failed: %w", out.Err)
 
+		case toolloop.OutcomeGracefulShutdown:
+			return "", fmt.Errorf("context cancelled: %w", out.Err)
+
 		default:
 			return "", fmt.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 		}
 	}
 }
 
-// handleIterationLimit is called when max iterations is reached.
-// Asks LLM to provide update to user and returns AWAIT_USER signal.
+// handleLLMError classifies LLM errors and returns the appropriate state transition.
+func (d *Driver) handleLLMError(ctx context.Context, err error) (proto.State, error) {
+	// Check for graceful shutdown (SIGTERM/SIGINT) — exit cleanly
+	if errors.Is(err, toolloop.ErrGracefulShutdown) {
+		d.logger.Info("🛑 Graceful shutdown during WORKING, exiting cleanly")
+		return StateWorking, nil
+	}
+	// Check for service unavailability → SUSPEND instead of ERROR
+	if llmerrors.IsServiceUnavailable(err) {
+		d.logger.Warn("⏸️  Service unavailable, entering SUSPEND from WORKING")
+		if suspendErr := d.EnterSuspend(ctx); suspendErr != nil {
+			return proto.StateError, fmt.Errorf("failed to enter SUSPEND: %w (original: %w)", suspendErr, err)
+		}
+		return proto.StateSuspend, nil
+	}
+	d.logger.Error("❌ PM LLM call failed: %v", err)
+	return proto.StateError, fmt.Errorf("LLM call failed: %w", err)
+}
 
 // sendSpecApprovalRequest sends an approval REQUEST message to the architect.
 func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {

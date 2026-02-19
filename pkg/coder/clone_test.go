@@ -3,6 +3,7 @@ package coder
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -840,6 +841,221 @@ func TestSetupWorkspace_InvalidProjectDir(t *testing.T) {
 
 	if err == nil {
 		t.Error("Expected error for non-existent project directory")
+	}
+}
+
+// =============================================================================
+// isGitNetworkError tests
+// =============================================================================
+
+func TestIsGitNetworkError_NilError(t *testing.T) {
+	if isGitNetworkError(nil) {
+		t.Error("Expected false for nil error")
+	}
+}
+
+func TestIsGitNetworkError_NetworkErrors(t *testing.T) {
+	networkErrors := []string{
+		"fatal: Could not read from remote repository",
+		"Connection refused",
+		"Connection reset by peer",
+		"Connection timed out",
+		"No route to host",
+		"Operation timed out",
+		"Name or service not known",
+		"Couldn't resolve host 'github.com'",
+		"fatal: unable to access 'https://github.com/user/repo.git/'",
+		"Network is unreachable",
+		"ssh_exchange_identification: Connection closed",
+		"Broken pipe",
+	}
+
+	for _, msg := range networkErrors {
+		if !isGitNetworkError(&gitError{msg: msg}) {
+			t.Errorf("Expected true for network error: %q", msg)
+		}
+	}
+}
+
+func TestIsGitNetworkError_NonNetworkErrors(t *testing.T) {
+	nonNetworkErrors := []string{
+		"repository not found",
+		"authentication failed for 'https://github.com/user/repo.git/'",
+		"Permission denied (publickey)",
+		"invalid username or password",
+		"could not find remote branch 'feature-xyz'",
+		"not a git repository",
+		"already exists",
+		"merge conflict in file.go",
+	}
+
+	for _, msg := range nonNetworkErrors {
+		if isGitNetworkError(&gitError{msg: msg}) {
+			t.Errorf("Expected false for non-network error: %q", msg)
+		}
+	}
+}
+
+func TestIsGitNetworkError_NegativeExclusionPrecedence(t *testing.T) {
+	// "unable to access" is a network pattern, but "repository not found"
+	// should take precedence as a negative exclusion
+	err := &gitError{msg: "unable to access: repository not found"}
+	if isGitNetworkError(err) {
+		t.Error("Expected false: negative exclusion should take precedence over network patterns")
+	}
+}
+
+// =============================================================================
+// retryGitNetworkOp tests
+// =============================================================================
+
+func TestRetryGitNetworkOp_SuccessOnFirstAttempt(t *testing.T) {
+	cm, mockGit := setupCloneManagerTest(t)
+
+	mockGit.OnRun(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte("success"), nil
+	})
+
+	ctx := context.Background()
+	result, err := cm.retryGitNetworkOp(ctx, "/workspace", "fetch", "origin")
+
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+	if string(result) != "success" {
+		t.Errorf("Expected 'success', got: %s", string(result))
+	}
+}
+
+func TestRetryGitNetworkOp_NonNetworkErrorNoRetry(t *testing.T) {
+	cm, mockGit := setupCloneManagerTest(t)
+
+	callCount := 0
+	mockGit.OnRun(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		callCount++
+		return nil, &gitError{msg: "repository not found"}
+	})
+
+	ctx := context.Background()
+	_, err := cm.retryGitNetworkOp(ctx, "/workspace", "clone", "https://example.com/repo.git")
+
+	if err == nil {
+		t.Error("Expected error for non-network failure")
+	}
+	if callCount != 1 {
+		t.Errorf("Expected exactly 1 attempt for non-network error, got: %d", callCount)
+	}
+	// Should NOT be a GitNetworkError
+	var gitNetErr *GitNetworkError
+	if errors.As(err, &gitNetErr) {
+		t.Error("Expected non-GitNetworkError for non-network failure")
+	}
+}
+
+func TestRetryGitNetworkOp_NetworkErrorExhaustsRetries(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping slow retry test in short mode")
+	}
+
+	cm, mockGit := setupCloneManagerTest(t)
+
+	callCount := 0
+	mockGit.OnRun(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		callCount++
+		return nil, &gitError{msg: "connection refused"}
+	})
+
+	ctx := context.Background()
+	_, err := cm.retryGitNetworkOp(ctx, "/workspace", "fetch", "origin")
+
+	if err == nil {
+		t.Error("Expected error after exhausting retries")
+	}
+	// Should exhaust all 4 retry slots (0s, 5s, 15s, 30s)
+	if callCount != 4 {
+		t.Errorf("Expected 4 attempts, got: %d", callCount)
+	}
+	// Should be a GitNetworkError sentinel
+	var gitNetErr *GitNetworkError
+	if !errors.As(err, &gitNetErr) {
+		t.Errorf("Expected GitNetworkError, got: %T: %v", err, err)
+	}
+	if gitNetErr.Attempts != 4 {
+		t.Errorf("Expected 4 attempts in GitNetworkError, got: %d", gitNetErr.Attempts)
+	}
+}
+
+func TestRetryGitNetworkOp_SuccessOnSecondAttempt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping slow retry test in short mode")
+	}
+
+	cm, mockGit := setupCloneManagerTest(t)
+
+	callCount := 0
+	mockGit.OnRun(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		callCount++
+		if callCount < 2 {
+			return nil, &gitError{msg: "connection refused"}
+		}
+		return []byte("recovered"), nil
+	})
+
+	ctx := context.Background()
+	result, err := cm.retryGitNetworkOp(ctx, "/workspace", "fetch", "origin")
+
+	if err != nil {
+		t.Errorf("Expected no error after recovery, got: %v", err)
+	}
+	if string(result) != "recovered" {
+		t.Errorf("Expected 'recovered', got: %s", string(result))
+	}
+	if callCount != 2 {
+		t.Errorf("Expected 2 attempts before success, got: %d", callCount)
+	}
+}
+
+func TestRetryGitNetworkOp_CancelledContext(t *testing.T) {
+	cm, mockGit := setupCloneManagerTest(t)
+
+	mockGit.OnRun(func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return nil, &gitError{msg: "connection refused"}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := cm.retryGitNetworkOp(ctx, "/workspace", "fetch", "origin")
+
+	if err == nil {
+		t.Error("Expected error for cancelled context")
+	}
+}
+
+// =============================================================================
+// GitNetworkError tests
+// =============================================================================
+
+func TestGitNetworkError_ErrorMessage(t *testing.T) {
+	inner := &gitError{msg: "connection refused"}
+	netErr := &GitNetworkError{Err: inner, Attempts: 4}
+
+	msg := netErr.Error()
+	if !strings.Contains(msg, "4 attempts") {
+		t.Errorf("Expected error message to contain attempt count, got: %s", msg)
+	}
+	if !strings.Contains(msg, "connection refused") {
+		t.Errorf("Expected error message to contain inner error, got: %s", msg)
+	}
+}
+
+func TestGitNetworkError_Unwrap(t *testing.T) {
+	inner := &gitError{msg: "connection refused"}
+	netErr := &GitNetworkError{Err: inner, Attempts: 4}
+
+	unwrapped := netErr.Unwrap()
+	if !errors.Is(unwrapped, inner) {
+		t.Error("Expected Unwrap to return inner error")
 	}
 }
 

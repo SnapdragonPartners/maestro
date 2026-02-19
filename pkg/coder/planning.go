@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/effect"
@@ -267,6 +268,14 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		return StateBudgetReview, false, nil
 
 	case toolloop.OutcomeLLMError, toolloop.OutcomeMaxIterations, toolloop.OutcomeExtractionError:
+		// Check for service unavailability → SUSPEND instead of ERROR
+		if llmerrors.IsServiceUnavailable(out.Err) {
+			c.logger.Warn("⏸️  Service unavailable, entering SUSPEND from PLANNING")
+			if err := sm.EnterSuspend(ctx); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to enter SUSPEND")
+			}
+			return proto.StateSuspend, false, nil
+		}
 		// Check if this is an empty response error
 		if c.isEmptyResponseError(out.Err) {
 			req := agent.CompletionRequest{MaxTokens: 8192}
@@ -277,6 +286,11 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	case toolloop.OutcomeNoToolTwice:
 		// LLM failed to use tools - treat as error
 		return proto.StateError, false, logx.Wrap(out.Err, "LLM did not use tools in planning")
+
+	case toolloop.OutcomeGracefulShutdown:
+		// Real shutdown (SIGTERM/SIGINT) — exit cleanly without ERROR or SUSPEND
+		c.logger.Info("🛑 Graceful shutdown during PLANNING, exiting cleanly")
+		return StatePlanning, true, nil
 
 	default:
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
