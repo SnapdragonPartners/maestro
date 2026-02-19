@@ -363,8 +363,9 @@ func (i *Installer) EnsureMCPProxy(ctx context.Context) error {
 	// Instead, we pipe the binary through stdin and use cat/sh to write it.
 	dstPath := MCPProxyPath
 
-	// Use sh -c to write stdin to file and make it executable
-	// This writes to /tmp which is a mounted tmpfs, not the read-only rootfs
+	// Pipe the binary via stdin into the container and make it executable.
+	// This writes to /tmp which is a mounted tmpfs, not the read-only rootfs.
+	// agentsh v0.10.2+ detects non-interactive stdin and bypasses the shim automatically.
 	cmd := goexec.CommandContext(ctx, "docker", "exec", "-i", i.containerName,
 		"sh", "-c", fmt.Sprintf("cat > %s && chmod +x %s", dstPath, dstPath))
 	cmd.Stdin = bytes.NewReader(binary)

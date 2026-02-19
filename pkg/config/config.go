@@ -638,6 +638,16 @@ type TodoScanConfig struct {
 	Markers []string `json:"markers"` // Comment markers to scan for (default: TODO, FIXME, HACK, XXX, deprecated, DEPRECATED, @deprecated)
 }
 
+// AgentshConfig defines agentsh security gateway settings.
+// Bootstrap containers always run with agentsh enforcement unconditionally — these
+// fields are NOT checked for bootstrap. This config is reserved for future phases
+// where custom dev containers (coder target images) may optionally enable agentsh.
+// See docs/AGENTSH_INTEGRATION_SPEC.md for architecture details.
+type AgentshConfig struct {
+	Enabled    bool   `json:"enabled"`               // Reserved for future Phase 2: enable agentsh in custom dev containers (default: false)
+	PolicyPath string `json:"policy_path,omitempty"` // Reserved for future Phase 2: host path to project-specific policy YAML
+}
+
 // Config represents the main configuration for the orchestrator system.
 //
 // IMPORTANT: This structure contains only user-configurable project settings.
@@ -667,6 +677,7 @@ type Config struct {
 	Debug       *DebugConfig       `json:"debug"`       // Debug settings
 	Demo        *DemoConfig        `json:"demo"`        // Demo mode settings
 	Maintenance *MaintenanceConfig `json:"maintenance"` // Automated maintenance mode settings
+	Agentsh     *AgentshConfig     `json:"agentsh"`     // Agentsh security gateway settings
 
 	// === RUNTIME-ONLY STATE (NOT PERSISTED) ===
 	SessionID        string `json:"-"` // Current orchestrator session UUID (generated at startup or loaded for restarts)
@@ -817,6 +828,30 @@ func GetContainerPIDs() int64 {
 		return cfg.Container.PIDs
 	}
 	return DefaultDockerPIDs
+}
+
+// IsAgentshEnabled returns whether the agentsh security gateway is enabled in config.
+// Note: this is for future Phase 2 (custom dev containers). Bootstrap containers
+// always run with agentsh enforcement regardless of this setting.
+// Returns false if config is not loaded or agentsh section is nil.
+func IsAgentshEnabled() bool {
+	cfg, err := GetConfig()
+	if err != nil {
+		return false
+	}
+	return cfg.Agentsh != nil && cfg.Agentsh.Enabled
+}
+
+// GetAgentshConfig returns the agentsh configuration, or a disabled default if not configured.
+func GetAgentshConfig() AgentshConfig {
+	cfg, err := GetConfig()
+	if err != nil {
+		return AgentshConfig{}
+	}
+	if cfg.Agentsh == nil {
+		return AgentshConfig{}
+	}
+	return *cfg.Agentsh
 }
 
 // GetDockerfilePath returns the configured Dockerfile path, or the default if not set.
@@ -1421,6 +1456,9 @@ func createDefaultConfig() *Config {
 		Debug: &DebugConfig{
 			LLMMessages: false, // Disabled by default
 		},
+		Agentsh: &AgentshConfig{
+			Enabled: false, // Reserved for future Phase 2 (custom dev containers); bootstrap is always-on
+		},
 		Maintenance: &MaintenanceConfig{
 			Enabled:                    true, // Enabled by default
 			AfterSpecs:                 1,    // Deprecated: kept for backward compat
@@ -1545,6 +1583,9 @@ func applyDefaults(config *Config) {
 	}
 	if config.Debug == nil {
 		config.Debug = &DebugConfig{}
+	}
+	if config.Agentsh == nil {
+		config.Agentsh = &AgentshConfig{}
 	}
 
 	// Apply container defaults

@@ -1,0 +1,73 @@
+# Agentsh server configuration for maestro bootstrap containers.
+# Minimal config — most features disabled for lightweight container use.
+
+server:
+  http:
+    addr: "127.0.0.1:18080"
+    read_timeout: 30s
+    write_timeout: 5m
+    max_request_size: 10MB
+  unix_socket:
+    enabled: false
+  tls:
+    enabled: false
+
+auth:
+  type: "none"
+
+logging:
+  level: "warn"
+  format: "json"
+  output: "stderr"
+
+audit:
+  enabled: true
+  output: "/tmp/agentsh-audit.jsonl"
+  include:
+    allowed_operations: false
+    denied_operations: true
+    approved_operations: true
+    session_lifecycle: true
+    command_stdout: false
+    command_stderr: true
+    file_content: false
+
+sessions:
+  base_dir: "/tmp/agentsh-sessions"
+  max_sessions: 10
+  default_timeout: "8h"
+  default_idle_timeout: "2h"
+  cleanup_interval: "5m"
+  metadata_retention: "1h"
+
+sandbox:
+  fuse:
+    enabled: false
+  network:
+    enabled: false
+  unix_sockets:
+    enabled: false
+  seccomp:
+    enabled: false
+  cgroups:
+    enabled: false
+
+proxy:
+  mode: "disabled"
+
+dlp:
+  mode: "disabled"
+
+policies:
+  dir: "/etc/agentsh/policies"
+  default: "default"
+  reload_interval: "0s"
+
+approvals:
+  enabled: false
+
+metrics:
+  enabled: false
+
+development:
+  debug: false

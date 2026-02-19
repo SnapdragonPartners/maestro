@@ -59,5 +59,34 @@ RUN adduser -D -u 1000 -h /home/coder coder && \
     chown -R coder:coder /workspace && \
     chown -R coder:coder /home/coder
 
+# --- Agentsh security gateway (always active in bootstrap containers) ---
+# We install the agentsh BINARIES and config but do NOT install the shell shim here.
+# The shim replaces /bin/bash and has no true passthrough mode — if installed at build
+# time, it intercepts subsequent RUN commands and fails (server not running during build).
+# Instead, the shim is installed at container startup via the entrypoint script.
+COPY agentsh/config.yaml /etc/agentsh/config.yaml
+ARG TARGETARCH
+# Always fetch the latest agentsh release (minimum v0.10.2 for non-interactive stdin bypass).
+# Version is resolved at build time via GitHub API so rebuilds pick up new releases automatically.
+RUN AGENTSH_VERSION=$(curl -sL https://api.github.com/repos/canyonroad/agentsh/releases/latest | jq -r .tag_name | tr -d v) && \
+    echo "Installing agentsh v${AGENTSH_VERSION}" && \
+    curl -sL "https://github.com/canyonroad/agentsh/releases/download/v${AGENTSH_VERSION}/agentsh_${AGENTSH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+      -o /tmp/agentsh.tar.gz && \
+    mkdir -p /etc/agentsh/policies /usr/lib/agentsh && \
+    tar -xzf /tmp/agentsh.tar.gz -C /usr/local/bin/ agentsh agentsh-shell-shim libenvshim.so && \
+    tar -xzf /tmp/agentsh.tar.gz -C /etc/agentsh/policies/ --strip-components=1 policies/ && \
+    tar -xzf /tmp/agentsh.tar.gz -C /usr/lib/agentsh/ --strip-components=1 packaging/ 2>/dev/null; \
+    chmod 0755 /usr/local/bin/agentsh /usr/local/bin/agentsh-shell-shim && \
+    rm -f /tmp/agentsh.tar.gz
+
+# Maestro-specific policy (placeholder — uses maestro-internal YAML schema that does not
+# yet match agentsh v0.10.x expected schema. Needs schema alignment before activation.
+# The server config still points to the bundled "default" policy extracted from the tarball.)
+COPY agentsh/maestro-policy.yaml /etc/agentsh/policies/maestro.yaml
+
+# Entrypoint script: installs the shim and starts the agentsh server, then execs the CMD.
+COPY agentsh/entrypoint.sh /usr/local/bin/maestro-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/maestro-entrypoint.sh"]
+
 # Default command
 CMD ["sleep", "infinity"]

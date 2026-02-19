@@ -69,7 +69,7 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 		return fmt.Errorf("safe container image ID not configured")
 	}
 
-	// Check if safe container is healthy
+	// Check if safe container is healthy and up to date
 	if err := utils.IsImageHealthy(ctx, safeImageID); err != nil {
 		o.logger.Warn("⚠️ Safe container %s is not available: %v", safeImageID, err)
 		o.logger.Info("🔨 Building bootstrap container from embedded Dockerfile...")
@@ -81,6 +81,11 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 		// Verify the newly built image is healthy using the tag we just built
 		if verifyErr := utils.IsImageHealthy(ctx, config.BootstrapContainerTag); verifyErr != nil {
 			return fmt.Errorf("newly built bootstrap container is not healthy: %w", verifyErr)
+		}
+	} else if utils.IsBootstrapStale(ctx) {
+		o.logger.Info("🔨 Bootstrap container is stale, rebuilding...")
+		if buildErr := utils.BuildBootstrapImage(ctx); buildErr != nil {
+			return fmt.Errorf("failed to rebuild bootstrap container: %w", buildErr)
 		}
 	}
 

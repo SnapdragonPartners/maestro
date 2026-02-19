@@ -3,6 +3,8 @@ package utils
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +17,8 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dockerfiles"
 )
+
+const bootstrapHashLabel = "com.maestro.content-hash"
 
 // CreateTempRepoClone creates a temporary clone of the repository for building.
 // Returns the temporary directory path and a cleanup function.
@@ -98,6 +102,36 @@ func GetImageID(ctx context.Context, imageName string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// BootstrapContentHash computes a deterministic hash of all inputs to the bootstrap
+// image (Dockerfile, embedded configs, proxy binary). Used to detect when the image
+// needs rebuilding after code updates.
+func BootstrapContentHash() string {
+	h := sha256.New()
+	h.Write([]byte(dockerfiles.GetBootstrapDockerfile()))
+	h.Write([]byte(dockerfiles.GetAgentshServerConfig()))
+	h.Write([]byte(dockerfiles.GetAgentshEntrypoint()))
+	h.Write([]byte(dockerfiles.GetAgentshDefaultPolicy()))
+	if proxy, err := embedded.GetProxyBinary(runtime.GOARCH); err == nil {
+		h.Write(proxy)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// IsBootstrapStale checks whether the existing bootstrap image was built from
+// different inputs than the current binary. Returns true if the image should be rebuilt.
+// Returns false if the image doesn't exist (caller should use IsImageHealthy for that).
+func IsBootstrapStale(ctx context.Context) bool {
+	cmd := exec.CommandContext(ctx, "docker", "image", "inspect",
+		"--format", fmt.Sprintf("{{index .Config.Labels %q}}", bootstrapHashLabel),
+		config.BootstrapContainerTag)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false // Image doesn't exist or no label — not "stale", just missing
+	}
+	imageHash := strings.TrimSpace(string(output))
+	return imageHash != BootstrapContentHash()
+}
+
 // BuildBootstrapImage builds the maestro-bootstrap container image from the embedded
 // Dockerfile and pre-compiled MCP proxy binary. The Dockerfile expects the proxy binary
 // to be present in the build context; this function writes the embedded binary there.
@@ -128,8 +162,30 @@ func BuildBootstrapImage(ctx context.Context) error {
 		return fmt.Errorf("failed to write Dockerfile: %w", writeErr)
 	}
 
-	// Build the image
-	cmd := exec.CommandContext(ctx, "docker", "build", "-t", config.BootstrapContainerTag, buildDir)
+	// Write agentsh config and entrypoint to the build context.
+	// The Dockerfile COPYs config.yaml into /etc/agentsh/ and entrypoint.sh into /usr/local/bin/.
+	// Policies are extracted from the agentsh release tarball at build time (not embedded).
+	agentshDir := filepath.Join(buildDir, "agentsh")
+	if mkdirErr := os.MkdirAll(agentshDir, 0755); mkdirErr != nil {
+		return fmt.Errorf("failed to create agentsh config directory: %w", mkdirErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(agentshDir, "config.yaml"), []byte(dockerfiles.GetAgentshServerConfig()), 0644); writeErr != nil {
+		return fmt.Errorf("failed to write agentsh server config: %w", writeErr)
+	}
+	//nolint:gosec // Entrypoint script must be executable
+	if writeErr := os.WriteFile(filepath.Join(agentshDir, "entrypoint.sh"), []byte(dockerfiles.GetAgentshEntrypoint()), 0755); writeErr != nil {
+		return fmt.Errorf("failed to write agentsh entrypoint: %w", writeErr)
+	}
+	if writeErr := os.WriteFile(filepath.Join(agentshDir, "maestro-policy.yaml"), []byte(dockerfiles.GetAgentshDefaultPolicy()), 0644); writeErr != nil {
+		return fmt.Errorf("failed to write agentsh maestro policy: %w", writeErr)
+	}
+
+	// Build the image with a content hash label for staleness detection.
+	contentHash := BootstrapContentHash()
+	cmd := exec.CommandContext(ctx, "docker", "build",
+		"-t", config.BootstrapContainerTag,
+		"--label", fmt.Sprintf("%s=%s", bootstrapHashLabel, contentHash),
+		buildDir)
 	output, buildErr := cmd.CombinedOutput()
 	if buildErr != nil {
 		return fmt.Errorf("docker build failed: %w\nOutput: %s", buildErr, string(output))
