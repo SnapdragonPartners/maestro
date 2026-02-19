@@ -262,14 +262,21 @@ func (d *Driver) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			d.logger.Info("🎯 PM agent %s received shutdown signal", d.GetAgentID())
-			return fmt.Errorf("pm agent shutdown: %w", ctx.Err())
+			d.logger.Info("🛑 Graceful shutdown, exiting cleanly from %s", d.GetCurrentState())
+			return nil
 		default:
 			// Capture state before executing handler
 			stateBefore := d.GetCurrentState()
 
 			// Execute current state
 			nextState, err := d.executeState(ctx)
+
+			// If the context is cancelled, exit cleanly — don't try to transition
+			// to ERROR or log noisy errors during graceful shutdown.
+			if err != nil && ctx.Err() != nil {
+				d.logger.Info("🛑 Graceful shutdown, exiting cleanly from %s", stateBefore)
+				return nil //nolint:nilerr // intentional: clean exit on shutdown
+			}
 			if err != nil {
 				d.logger.Error("❌ PM agent state machine failed: %v", err)
 				nextState = proto.StateError
