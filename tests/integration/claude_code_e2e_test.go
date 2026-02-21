@@ -155,7 +155,7 @@ This is a test - just call the shell tool once with the echo command and report 
 	// Use -- to separate options from the positional prompt argument
 	// Use --allowedTools to allow the MCP tool (can't use --dangerously-skip-permissions as root)
 	scriptPath := "/tmp/run-claude.sh"
-	scriptContent := fmt.Sprintf(`#!/bin/sh
+	scriptContent := fmt.Sprintf(`#!/bin/bash
 exec claude --print --output-format json --allowedTools "mcp__maestro__shell" --mcp-config '%s' -- '%s'
 `, mcpConfig, strings.ReplaceAll(prompt, "'", "'\\''"))
 

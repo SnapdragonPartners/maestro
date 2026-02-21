@@ -287,6 +287,12 @@ Generate focused, well-scoped stories with clear acceptance criteria.
 			return fmt.Errorf("failed to build bootstrap container: %w", buildErr)
 		}
 		config.LogInfo("✅ Bootstrap container built successfully")
+	} else if iutils.IsBootstrapStale(bootstrapCtx) {
+		config.LogInfo("🔨 Bootstrap container is stale, rebuilding...")
+		if buildErr := iutils.BuildBootstrapImage(bootstrapCtx); buildErr != nil {
+			return fmt.Errorf("failed to rebuild bootstrap container: %w", buildErr)
+		}
+		config.LogInfo("✅ Bootstrap container rebuilt successfully")
 	} else {
 		config.LogInfo("✅ Bootstrap container image verified")
 	}

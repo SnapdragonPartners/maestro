@@ -279,7 +279,7 @@ func (r *Runner) stopMCPServer() {
 func (r *Runner) writeMCPConfig(ctx context.Context) error {
 	configJSON := BuildMCPConfigJSON(r.mcpServer.Port())
 
-	// Write the config file using a heredoc to handle JSON escaping
+	// Write the config file using a heredoc to handle JSON escaping.
 	cmd := []string{"sh", "-c", fmt.Sprintf("cat > %s << 'MCPEOF'\n%s\nMCPEOF", MCPConfigPath, configJSON)}
 
 	result, err := r.executor.Run(ctx, cmd, &exec.Opts{})

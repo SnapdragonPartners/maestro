@@ -1,0 +1,104 @@
+# Agentsh default policy for maestro coder agents.
+# This is a permissive baseline — projects should customize via .maestro/agentsh-policy.yaml.
+#
+# Decision types:
+#   allow    — execute normally
+#   deny     — block with message
+#   audit    — allow + log the event
+#   redirect — substitute a different command
+#
+# First matching rule wins.
+
+rules:
+  commands:
+    # Standard development tools
+    - match: ["git", "make", "go", "npm", "node", "npx", "python*", "pip*", "cargo", "rustc"]
+      decision: allow
+
+    # File inspection
+    - match: ["cat", "ls", "find", "grep", "rg", "head", "tail", "wc", "diff", "tree", "file", "stat"]
+      decision: allow
+
+    # Text processing and build utilities
+    - match: ["sed", "awk", "sort", "uniq", "xargs", "tee", "tr", "cut", "paste", "comm", "join"]
+      decision: allow
+
+    # Shell utilities
+    - match: ["bash", "sh", "echo", "printf", "test", "true", "false", "env", "which", "whoami", "pwd", "cd", "mkdir", "cp", "mv", "rm", "touch", "chmod", "chown", "ln"]
+      decision: allow
+
+    # Curl/wget for downloading dependencies
+    - match: ["curl", "wget"]
+      decision: audit
+      message: "Network download by agent"
+
+    # Audit Docker CLI usage (for container self-management)
+    - match: ["docker"]
+      decision: audit
+      message: "Docker command executed by agent"
+
+    # Deny package manager installs (agents should use container_build tool)
+    - match: ["apt", "apt-get", "apk", "yum", "dnf", "pacman"]
+      decision: deny
+      message: "Package installation blocked — use container_build tool to modify the container image"
+
+    # Deny destructive system commands
+    - match: ["mkfs*", "fdisk*", "mount", "umount", "shutdown", "reboot", "init", "systemctl"]
+      decision: deny
+      message: "System administration command blocked by policy"
+
+    # Default: allow (permissive baseline)
+    - match: ["*"]
+      decision: allow
+
+  network:
+    # Allow GitHub for git operations
+    - match: ["github.com", "*.github.com"]
+      decision: allow
+
+    # Allow common package registries
+    - match: ["registry.npmjs.org", "*.npmjs.org"]
+      decision: allow
+    - match: ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com"]
+      decision: allow
+    - match: ["pypi.org", "files.pythonhosted.org"]
+      decision: allow
+    - match: ["crates.io", "static.crates.io"]
+      decision: allow
+
+    # Allow localhost (for test servers, databases in compose)
+    - match: ["localhost", "127.0.0.1", "host.docker.internal"]
+      decision: allow
+
+    # Default: deny outbound network
+    - match: ["*"]
+      decision: deny
+      message: "Network access blocked by policy — use an allowed registry or request an alternative approach"
+
+  files:
+    # Protect maestro internals from agent modification
+    - match: ["/workspace/.maestro/database/*"]
+      operation: write
+      decision: deny
+      message: "Cannot modify maestro database files"
+
+    # Allow workspace writes
+    - match: ["/workspace/*"]
+      decision: allow
+
+    # Allow tmp (always writable)
+    - match: ["/tmp/*"]
+      decision: allow
+
+    # Allow home directory
+    - match: ["/home/coder/*"]
+      decision: allow
+
+    # Default: read-only for everything else
+    - match: ["*"]
+      operation: read
+      decision: allow
+    - match: ["*"]
+      operation: write
+      decision: deny
+      message: "Write outside workspace blocked by policy"
