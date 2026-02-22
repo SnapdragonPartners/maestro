@@ -50,6 +50,19 @@ archives:
       - goos: linux
         formats: ['tar.gz']
 
+nfpms:
+  - id: maestro-deb
+    package_name: maestro
+    file_name_template: "{{ .ConventionalFileName }}"
+    vendor: Snapdragon Partners LLC
+    homepage: https://github.com/SnapdragonPartners/maestro
+    maintainer: Snapdragon Partners <maestro@snapdragonpartners.com>
+    description: Multi-agent AI coding system orchestrator
+    license: MIT
+    formats:
+      - deb
+    bindir: /usr/local/bin
+
 release:
   github:
     owner: SnapdragonPartners

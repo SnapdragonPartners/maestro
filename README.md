@@ -235,6 +235,16 @@ See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
 > **Option B: Direct download**
 > Download the binary for your platform from [releases](https://github.com/SnapdragonPartners/maestro/releases) and install it somewhere in your path.
 >
+> **Option C: APT (Debian/Ubuntu)**
+> ```bash
+> # Add the Maestro APT repository (one-time setup)
+> curl -fsSL https://snapdragonpartners.github.io/maestro/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/maestro.gpg
+> echo "deb [signed-by=/usr/share/keyrings/maestro.gpg] https://snapdragonpartners.github.io/maestro stable main" | sudo tee /etc/apt/sources.list.d/maestro.list
+>
+> # Install (or upgrade)
+> sudo apt update && sudo apt install maestro
+> ```
+>
 > **Step 2:** Export your API keys as environment variables for the models you want to use and Github.
 ```bash
 export OPENAI_API_KEY=sk-...

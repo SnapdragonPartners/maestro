@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  pages: write
 
 jobs:
   goreleaser:
@@ -69,4 +70,68 @@ jobs:
               --wait
           done
 
+  publish-apt-repo:
+    needs: goreleaser
+    runs-on: ubuntu-latest
 
+    steps:
+      - name: Download .deb files from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p debs
+          gh release download "$TAG" \
+            --repo SnapdragonPartners/maestro \
+            --pattern '*.deb' \
+            --dir debs
+
+      - name: Build APT repository structure
+        run: |
+          mkdir -p repo/pool/main
+
+          # Copy .deb files into pool
+          cp debs/*.deb repo/pool/main/
+
+          # Create binary index directories
+          for arch in amd64 arm64; do
+            dir="repo/dists/stable/main/binary-${arch}"
+            mkdir -p "$dir"
+
+            # Generate Packages index (scoped to this architecture)
+            dpkg-scanpackages --arch "$arch" repo/pool/main /dev/null \
+              | sed "s|repo/||" > "$dir/Packages"
+            gzip -9 -k "$dir/Packages"
+          done
+
+          # Generate Release file
+          cd repo/dists/stable
+          apt-ftparchive release . > Release
+
+      - name: Import GPG key and sign repository
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
+        run: |
+          echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+
+          # Sign the Release file
+          gpg --batch --yes --default-key "$APT_GPG_KEY_ID" \
+            --armor --detach-sign \
+            --output repo/dists/stable/Release.gpg \
+            repo/dists/stable/Release
+
+          gpg --batch --yes --default-key "$APT_GPG_KEY_ID" \
+            --armor --clearsign \
+            --output repo/dists/stable/InRelease \
+            repo/dists/stable/Release
+
+          # Export public key for users
+          gpg --armor --export "$APT_GPG_KEY_ID" > repo/key.gpg
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./repo
+          keep_files: true
