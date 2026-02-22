@@ -162,7 +162,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/shutdown", s.requireAuth(s.handleShutdown))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
-	mux.HandleFunc("/api/healthz", s.requireAuth(s.handleHealth))
+	mux.HandleFunc("/api/healthz", s.handleHealth) // No auth — used by load balancers and monitoring
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
 
 	// PM agent endpoints - specification development
