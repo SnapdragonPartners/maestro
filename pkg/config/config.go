@@ -53,6 +53,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1747,11 +1748,17 @@ func applyDefaults(config *Config) {
 		config.Agents.StateTimeout = 10 * time.Minute
 	}
 
-	// Apply WebUI defaults
-	if config.WebUI.Host == "" {
+	// Apply WebUI defaults (env vars override config file, matching MAESTRO_PASSWORD pattern)
+	if host := os.Getenv("MAESTRO_HOST"); host != "" {
+		config.WebUI.Host = host
+	} else if config.WebUI.Host == "" {
 		config.WebUI.Host = "localhost"
 	}
-	if config.WebUI.Port == 0 {
+	if portStr := os.Getenv("MAESTRO_PORT"); portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			config.WebUI.Port = p
+		}
+	} else if config.WebUI.Port == 0 {
 		config.WebUI.Port = 8080
 	}
 	// Note: Enabled defaults to false (zero value), but we want true by default
