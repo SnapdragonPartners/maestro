@@ -186,7 +186,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return response, nil
 	}
 
-	// SECOND TOOLLOOP: Single-pass story generation with submit_stories
+	// SECOND TOOLLOOP: Story generation with submit_stories (with retry on validation failure)
 	d.logger.Info("📝 Spec approved, starting story generation loop")
 
 	// Get submit_stories tool
@@ -223,45 +223,84 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Add story generation prompt to context
 	cm.AddMessage("user", storyGenPrompt)
 
-	// Wrap submit_stories as terminal tool
-	storiesTerminal := submitStoriesTool
+	// Retry loop for story generation: re-run toolloop if dependency validation fails
+	const maxStoryGenRetries = 2
+	var specID string
+	var storyIDs []string
+	var loadErr error
 
-	// Run second toolloop: single-pass story generation
-	storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
-		ContextManager:     cm,
-		GeneralTools:       nil, // No general tools - just generate and submit
-		TerminalTool:       storiesTerminal,
-		MaxIterations:      5,    // Should complete quickly
-		SingleTurn:         true, // Enforce single-turn completion
-		MaxTokens:          agent.ArchitectMaxTokens,
-		Temperature:        config.GetTemperature(config.TempRoleArchitect),
-		AgentID:            d.GetAgentID(),
-		DebugLogging:       config.GetDebugLLMMessages(),
-		PersistenceChannel: d.persistenceChannel,
-		OnLLMError:         d.makeOnLLMErrorCallback("story_generation"),
-	})
+	for attempt := 0; attempt <= maxStoryGenRetries; attempt++ {
+		if attempt > 0 {
+			// Feed validation error back to LLM for correction
+			cm.AddMessage("user", fmt.Sprintf(
+				"Your previous story submission had dependency issues: %s\n"+
+					"Please regenerate stories with valid dependencies (no cycles, valid ordinal IDs).",
+				loadErr.Error()))
+			d.logger.Warn("🔄 Story generation retry %d/%d: %v", attempt, maxStoryGenRetries, loadErr)
+		}
 
-	// Handle story generation outcome
-	if storiesOut.Kind != toolloop.OutcomeProcessEffect {
-		return nil, fmt.Errorf("story generation failed: %w", storiesOut.Err)
+		// Run toolloop: single-pass story generation per attempt
+		storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
+			ContextManager:     cm,
+			GeneralTools:       nil, // No general tools - just generate and submit
+			TerminalTool:       submitStoriesTool,
+			MaxIterations:      5,    // Should complete quickly
+			SingleTurn:         true, // Enforce single-turn completion per attempt
+			MaxTokens:          agent.ArchitectMaxTokens,
+			Temperature:        config.GetTemperature(config.TempRoleArchitect),
+			AgentID:            d.GetAgentID(),
+			DebugLogging:       config.GetDebugLLMMessages(),
+			PersistenceChannel: d.persistenceChannel,
+			OnLLMError:         d.makeOnLLMErrorCallback("story_generation"),
+		})
+
+		// Handle story generation outcome
+		if storiesOut.Kind != toolloop.OutcomeProcessEffect {
+			return nil, fmt.Errorf("story generation failed: %w", storiesOut.Err)
+		}
+
+		if storiesOut.Signal != tools.SignalStoriesSubmitted {
+			return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
+		}
+
+		// Extract stories data from ProcessEffect.Data
+		storyEffectData, dataOk := storiesOut.EffectData.(map[string]any)
+		if !dataOk {
+			return nil, fmt.Errorf("STORIES_SUBMITTED effect data is not map[string]any: %T", storiesOut.EffectData)
+		}
+
+		d.logger.Info("✅ Stories generated, validating dependencies (attempt %d)", attempt+1)
+
+		// Load stories into queue with dependency validation
+		specID, storyIDs, loadErr = d.loadStoriesFromSubmitResultData(ctx, completeSpec, storyEffectData)
+		if loadErr == nil {
+			break // Success — valid DAG
+		}
+		d.logger.Warn("⚠️ Story generation attempt %d failed validation: %v", attempt+1, loadErr)
+		d.queue.ClearAll() // Clear invalid stories before retry
 	}
 
-	if storiesOut.Signal != tools.SignalStoriesSubmitted {
-		return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
-	}
-
-	// Extract stories data from ProcessEffect.Data
-	effectData, ok = storiesOut.EffectData.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("STORIES_SUBMITTED effect data is not map[string]any: %T", storiesOut.EffectData)
-	}
-
-	d.logger.Info("✅ Stories generated successfully")
-
-	// Load stories into queue (pass effectData and complete spec instead of out.Value)
-	specID, storyIDs, loadErr := d.loadStoriesFromSubmitResultData(ctx, completeSpec, effectData)
 	if loadErr != nil {
-		return nil, fmt.Errorf("failed to load stories after approval: %w", loadErr)
+		// All retries exhausted — return NEEDS_CHANGES to PM
+		d.logger.Error("❌ Story generation failed after %d attempts: %v", maxStoryGenRetries+1, loadErr)
+
+		response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
+		response.ParentMsgID = requestMsg.ID
+
+		approvalResult := &proto.ApprovalResult{
+			ID:         proto.GenerateApprovalID(),
+			RequestID:  requestMsg.Metadata["approval_id"],
+			Type:       proto.ApprovalTypeSpec,
+			Status:     proto.ApprovalStatusNeedsChanges,
+			Feedback:   fmt.Sprintf("Story generation failed due to dependency issues: %s. Please simplify the specification.", loadErr.Error()),
+			ReviewedBy: d.GetAgentID(),
+			ReviewedAt: response.Timestamp,
+		}
+
+		response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+		response.SetMetadata("approval_id", approvalResult.ID)
+
+		return response, nil
 	}
 
 	feedback = fmt.Sprintf("Spec approved - %d stories generated successfully (spec_id: %s)", len(storyIDs), specID)

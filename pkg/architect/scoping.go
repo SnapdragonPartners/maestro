@@ -3,10 +3,8 @@ package architect
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
@@ -64,6 +62,7 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 		}
 
 		// Extract fields using generic helpers with defaults
+		id := utils.GetMapFieldOr(reqMap, "id", "")
 		title := utils.GetMapFieldOr(reqMap, "title", "")
 		description := utils.GetMapFieldOr(reqMap, "description", "")
 		storyType := utils.GetMapFieldOr(reqMap, "story_type", "")
@@ -99,6 +98,7 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 		}
 
 		requirement := Requirement{
+			ID:                 id,
 			Title:              title,
 			Description:        description,
 			AcceptanceCriteria: acceptanceCriteria,
@@ -144,7 +144,11 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 // loadStoriesFromSubmitResultData loads stories into the queue from ProcessEffect.Data.
 // This is called during spec review in REQUEST state (after PM spec approval).
 // Returns spec ID, story IDs, and error.
-func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdown string, effectData map[string]any) (string, []string, error) {
+//
+// Dependency resolution uses ordinal IDs (req_001, req_002, etc.) from the LLM output.
+// A bootstrap gate ensures all app stories depend on the last devops story (if any).
+// The resulting DAG is validated for cycles before returning.
+func (d *Driver) loadStoriesFromSubmitResultData(_ context.Context, specMarkdown string, effectData map[string]any) (string, []string, error) {
 	// Reset PM notification flag so new spec lifecycle can re-notify
 	d.pmAllCompleteNotified = false
 
@@ -154,7 +158,7 @@ func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdo
 		return "", nil, fmt.Errorf("failed to convert tool result to requirements: %w", err)
 	}
 
-	// 3. Create and persist spec record
+	// Create and persist spec record
 	specID := persistence.GenerateSpecID()
 	spec := &persistence.Spec{
 		ID:        specID,
@@ -167,50 +171,92 @@ func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdo
 		Response:  nil,
 	}
 
-	// 4. Convert requirements to stories and add to queue
+	// First pass: create all stories and build ordinalID → storyID map
+	ordinalToStory := make(map[string]string, len(requirements))
 	storyIDs := make([]string, 0, len(requirements))
+
+	type storyEntry struct {
+		storyID string
+		req     *Requirement
+		title   string
+		content string
+	}
+
+	entries := make([]storyEntry, 0, len(requirements))
 	for i := range requirements {
 		req := &requirements[i]
-		// Generate unique story ID
-		storyID, err := persistence.GenerateStoryID()
-		if err != nil {
-			return "", nil, fmt.Errorf("failed to generate story ID: %w", err)
+		storyID, genErr := persistence.GenerateStoryID()
+		if genErr != nil {
+			return "", nil, fmt.Errorf("failed to generate story ID: %w", genErr)
 		}
 
-		// Calculate dependencies based on order (simple dependency model)
-		var dependencies []string
-		if len(req.Dependencies) > 0 {
-			// Simple implementation: depend on all previous stories
-			for j := 0; j < i; j++ {
-				dependencies = append(dependencies, storyIDs[j])
-			}
-		}
-
-		// Convert requirement to rich story content
 		title, content := d.requirementToStoryContent(req)
 
-		// Add story to internal queue
-		d.queue.AddStory(storyID, specID, title, content, req.StoryType, dependencies, req.EstimatedPoints)
+		// Map ordinal ID to story ID
+		if req.ID != "" {
+			ordinalToStory[req.ID] = storyID
+		}
+
+		entries = append(entries, storyEntry{storyID: storyID, req: req, title: title, content: content})
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// 5. Container validation and dependency fixing
-	if err := d.validateAndFixContainerDependencies(ctx, specID); err != nil {
-		// Check if this is a retry request
-		if strings.Contains(err.Error(), "retry_needed") {
-			// During spec review, this would trigger a retry
-			// In REQUEST state after approval, we can't retry, so just log warning
-			d.logger.Warn("⚠️  Container validation would retry, but continuing with current stories")
-			// Clear the error and continue
-		} else {
-			return "", nil, fmt.Errorf("container validation failed: %w", err)
+	// Second pass: resolve ordinal dependencies to real story IDs and add stories to queue
+	var lastDevopsStoryID string
+	for i := range entries {
+		entry := &entries[i]
+		var resolvedDeps []string
+		for _, depOrdinal := range entry.req.Dependencies {
+			depStoryID, found := ordinalToStory[depOrdinal]
+			if !found {
+				return "", nil, fmt.Errorf("unresolvable dependency: requirement %q (story %q) references unknown ordinal %q",
+					entry.req.ID, entry.title, depOrdinal)
+			}
+			resolvedDeps = append(resolvedDeps, depStoryID)
+		}
+
+		d.queue.AddStory(entry.storyID, specID, entry.title, entry.content, entry.req.StoryType, resolvedDeps, entry.req.EstimatedPoints)
+
+		// Track the last devops story for bootstrap gate
+		if entry.req.StoryType == "devops" {
+			lastDevopsStoryID = entry.storyID
 		}
 	}
 
-	// 6. Flush stories to database
+	// Bootstrap gate: all app stories depend on the last devops story (if one exists)
+	if lastDevopsStoryID != "" {
+		allStories := d.queue.GetAllStories()
+		for _, story := range allStories {
+			if story.SpecID != specID || story.StoryType != "app" {
+				continue
+			}
+			// Add last devops story as dependency if not already present
+			alreadyDepends := false
+			for _, dep := range story.DependsOn {
+				if dep == lastDevopsStoryID {
+					alreadyDepends = true
+					break
+				}
+			}
+			if !alreadyDepends {
+				story.DependsOn = append(story.DependsOn, lastDevopsStoryID)
+			}
+		}
+		d.logger.Info("🔧 Bootstrap gate: all app stories depend on last devops story %s", lastDevopsStoryID)
+	}
+
+	// Validate DAG — detect cycles before persisting
+	cycles := d.queue.DetectCycles()
+	if len(cycles) > 0 {
+		// Clear the invalid stories so caller can retry
+		d.queue.ClearAll()
+		return "", nil, fmt.Errorf("dependency cycle detected in generated stories: %v", cycles)
+	}
+
+	// Flush stories to database
 	d.queue.FlushToDatabase()
 
-	// 7. Mark spec as processed
+	// Mark spec as processed
 	spec.ProcessedAt = &[]time.Time{time.Now()}[0]
 	d.persistenceChannel <- &persistence.Request{
 		Operation: persistence.OpUpsertSpec,
@@ -218,7 +264,7 @@ func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdo
 		Response:  nil,
 	}
 
-	// 8. Store completion state
+	// Store completion state
 	d.SetStateData(StateKeySpecID, specID)
 	d.SetStateData(StateKeyStoryIDs, storyIDs)
 	d.SetStateData(StateKeyStoriesGenerated, true)
@@ -226,104 +272,4 @@ func (d *Driver) loadStoriesFromSubmitResultData(ctx context.Context, specMarkdo
 
 	d.logger.Info("✅ Loaded %d stories from spec (spec_id: %s)", len(storyIDs), specID)
 	return specID, storyIDs, nil
-}
-
-// validateAndFixContainerDependencies implements hybrid container validation.
-// 1. If validateTargetContainer fails and DevOps story exists → fix DAG
-// 2. If validateTargetContainer fails and no DevOps story → retry LLM
-// 3. If LLM retry still has no DevOps story → fatal error.
-func (d *Driver) validateAndFixContainerDependencies(ctx context.Context, specID string) error {
-	// Check if we have a valid target container
-	if config.IsValidTargetImage() {
-		d.logger.Info("✅ Valid target container exists, no dependency fixes needed")
-		return nil
-	}
-
-	d.logger.Warn("⚠️  No valid target container - checking story dependencies")
-
-	// Get all stories from the queue
-	allStories := d.queue.GetAllStories()
-	if len(allStories) == 0 {
-		return fmt.Errorf("no stories found in queue")
-	}
-
-	// Filter to stories for this spec and categorize by type
-	var devopsStories, appStories []*QueuedStory
-	for _, story := range allStories {
-		if story.SpecID == specID {
-			if story.StoryType == "devops" {
-				devopsStories = append(devopsStories, story)
-			} else if story.StoryType == "app" {
-				appStories = append(appStories, story)
-			}
-		}
-	}
-
-	if len(devopsStories) > 0 {
-		// Option 1: DevOps story exists - fix DAG to make app stories depend on DevOps
-		d.logger.Info("🔧 DevOps story exists (%d found) - fixing dependencies to block app stories", len(devopsStories))
-		return d.fixContainerDependencies(devopsStories, appStories)
-	} else {
-		// Option 2: No DevOps story - retry with LLM
-		d.logger.Warn("❌ No DevOps story found - requesting LLM retry with container guidance")
-		return d.retryWithContainerGuidance(ctx, specID)
-	}
-}
-
-// fixContainerDependencies adds dependencies so app stories are blocked by DevOps stories.
-func (d *Driver) fixContainerDependencies(devopsStories, appStories []*QueuedStory) error {
-	d.logger.Info("🔄 Adding DevOps→App dependencies: %d app stories will depend on %d devops stories",
-		len(appStories), len(devopsStories))
-
-	// Make each app story depend on all DevOps stories
-	for _, appStory := range appStories {
-		for _, devopsStory := range devopsStories {
-			// Add DevOps story ID to app story's dependencies if not already present
-			dependencyExists := false
-			for _, existingDep := range appStory.DependsOn {
-				if existingDep == devopsStory.ID {
-					dependencyExists = true
-					break
-				}
-			}
-
-			if !dependencyExists {
-				d.logger.Debug("📌 Adding dependency: %s depends on %s", appStory.ID, devopsStory.ID)
-				appStory.DependsOn = append(appStory.DependsOn, devopsStory.ID)
-			}
-		}
-	}
-
-	d.logger.Info("✅ Container dependencies fixed - app stories now blocked until DevOps completes")
-	return nil
-}
-
-// retryWithContainerGuidance retries LLM with enhanced container guidance following the empty response retry pattern.
-func (d *Driver) retryWithContainerGuidance(_ context.Context, _ string) error {
-	// Get state data
-	stateData := d.GetStateData()
-
-	// Get retry counter from state data (0 if not set)
-	retryCount := 0
-	if retryData, exists := stateData[StateKeyContainerRetryCount]; exists {
-		if count, ok := retryData.(int); ok {
-			retryCount = count
-		}
-	}
-
-	// Maximum 1 retry (attempt 0 + attempt 1)
-	if retryCount >= 1 {
-		d.logger.Error("❌ RETRY EXHAUSTED: LLM failed to generate DevOps story after guidance")
-		d.logger.Error("🏗️  REQUIRED: Manually add container setup requirements to your specification")
-		d.logger.Error("💡 GUIDANCE: DevOps stories handle container setup, build environment, infrastructure")
-		return fmt.Errorf("no DevOps story generated after retry - manual intervention required")
-	}
-
-	d.logger.Warn("🔄 RETRY ATTEMPT %d: Re-running story generation with enhanced container guidance", retryCount+1)
-
-	// Increment retry counter for enhanced guidance in the next iteration
-	d.SetStateData(StateKeyContainerRetryCount, retryCount+1)
-
-	// Return special error that triggers retry flow
-	return fmt.Errorf("retry_needed: no DevOps story found, triggering enhanced guidance retry")
 }

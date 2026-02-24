@@ -544,6 +544,37 @@ func (q *Queue) detectCyclesDFS(storyID string, visited, recStack map[string]boo
 	return nil
 }
 
+// RemoveCyclicEdges removes dependency edges that participate in cycles.
+// For each cycle, it removes the last edge (back-edge) to break the cycle.
+func (q *Queue) RemoveCyclicEdges(cycles [][]string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	for _, cycle := range cycles {
+		if len(cycle) < 2 {
+			continue
+		}
+		// Remove the back-edge: last node depends on first node in the cycle
+		// cycle is [A, B, C, A] — remove C→A edge
+		fromID := cycle[len(cycle)-2]
+		toID := cycle[len(cycle)-1]
+
+		story, exists := q.stories[fromID]
+		if !exists {
+			continue
+		}
+
+		// Remove toID from story's DependsOn
+		filtered := make([]string, 0, len(story.DependsOn))
+		for _, dep := range story.DependsOn {
+			if dep != toID {
+				filtered = append(filtered, dep)
+			}
+		}
+		story.DependsOn = filtered
+	}
+}
+
 // ToJSON serializes the queue to JSON.
 func (q *Queue) ToJSON() ([]byte, error) {
 	stories := q.GetAllStories()
