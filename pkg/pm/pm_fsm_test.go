@@ -220,7 +220,7 @@ func TestValidNextStates(t *testing.T) {
 	}{
 		{StateWaiting, []proto.State{StateWaiting, StateSetup, StateWorking, StateAwaitUser, StatePreview, proto.StateDone}},
 		{StateSetup, []proto.State{StateWaiting, proto.StateError}},
-		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, proto.StateError, proto.StateDone}},
+		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, StateAwaitArchitect, proto.StateError, proto.StateDone}},
 		{StateAwaitUser, []proto.State{StateAwaitUser, StateWorking, proto.StateError, proto.StateDone}},
 		{StatePreview, []proto.State{StatePreview, StateAwaitUser, StateAwaitArchitect, proto.StateError, proto.StateDone}},
 		{StateAwaitArchitect, []proto.State{StateAwaitArchitect, StateWorking, proto.StateError, proto.StateDone}},

@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/specrender"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/tools"
 	"orchestrator/pkg/utils"
@@ -78,6 +79,13 @@ const (
 	// StateKeyMaestroMdContent stores MAESTRO.md content for prompt inclusion.
 	// Loaded from repo at session start, updated when PM generates or updates it.
 	StateKeyMaestroMdContent = "maestro_md_content"
+
+	// StateKeyBootstrapSpecSent indicates whether Spec 0 (bootstrap spec) has been sent
+	// to the architect. Prevents duplicate sends on re-entry to WORKING.
+	StateKeyBootstrapSpecSent = "bootstrap_spec_sent"
+	// StateKeyAwaitingSpecType tracks which type of spec the PM is awaiting
+	// architect response for. Values: "bootstrap", "user", "hotfix".
+	StateKeyAwaitingSpecType = "awaiting_spec_type"
 )
 
 // Driver implements the PM (Product Manager) agent.
@@ -630,6 +638,62 @@ func logBootstrapComponent(logger *logx.Logger, name string, needed bool) {
 	}
 }
 
+// sendBootstrapSpecRequest renders and sends a bootstrap spec (Spec 0) to the architect.
+// This allows infrastructure work to begin while the user interview continues.
+func (d *Driver) sendBootstrapSpecRequest(_ context.Context) error {
+	reqs := d.GetBootstrapRequirements()
+	if reqs == nil {
+		return fmt.Errorf("no bootstrap requirements available")
+	}
+
+	reqIDs := reqs.ToRequirementIDs()
+	if len(reqIDs) == 0 {
+		return fmt.Errorf("no bootstrap requirement IDs to send")
+	}
+
+	// Render the bootstrap spec
+	rendered, err := specrender.RenderBootstrapSpec(reqIDs, d.logger)
+	if err != nil {
+		return fmt.Errorf("failed to render bootstrap spec: %w", err)
+	}
+
+	// Create approval request payload with bootstrap spec as Content
+	approvalPayload := &proto.ApprovalRequestPayload{
+		ApprovalType: proto.ApprovalTypeSpec,
+		Content:      rendered, // The complete rendered bootstrap spec
+		Reason:       "Bootstrap infrastructure spec (Spec 0) - can be implemented while user interview continues",
+		Context:      "Bootstrap spec submitted before user feature spec",
+		Confidence:   proto.ConfidenceHigh,
+		Metadata: map[string]string{
+			"spec_type": "bootstrap",
+		},
+		// Empty BootstrapRequirements - Content IS the complete spec
+	}
+
+	// Create REQUEST message
+	requestMsg := &proto.AgentMsg{
+		ID:        fmt.Sprintf("pm-bootstrap-spec-%d", time.Now().UnixNano()),
+		Type:      proto.MsgTypeREQUEST,
+		FromAgent: d.GetAgentID(),
+		ToAgent:   "architect",
+		Payload:   proto.NewApprovalRequestPayload(approvalPayload),
+	}
+
+	// Send via dispatcher
+	if err := d.dispatcher.DispatchMessage(requestMsg); err != nil {
+		return fmt.Errorf("failed to dispatch bootstrap spec REQUEST: %w", err)
+	}
+
+	// Mark bootstrap spec as sent
+	d.SetStateData(StateKeyBootstrapSpecSent, true)
+	d.SetStateData(StateKeyAwaitingSpecType, "bootstrap")
+
+	d.logger.Info("📤 Sent bootstrap spec (Spec 0) to architect (%d bytes, %d requirements, id: %s)",
+		len(rendered), len(reqIDs), requestMsg.ID)
+
+	return nil
+}
+
 // updateDemoAvailable updates the demo availability flag based on bootstrap requirements.
 // Called after bootstrap detection to update the flag.
 // Demo requires: working container + Makefile with run target.
@@ -676,6 +740,8 @@ func (d *Driver) GetDraftSpecMetadata() map[string]any {
 // StartInterview initiates an interview session with the specified expertise level.
 // This is called by the WebUI when the user clicks "Start Interview".
 // Idempotent: succeeds if already in AWAIT_USER with same expertise (handles double-clicks).
+//
+//nolint:cyclop // Complexity from bootstrap spec detection and state transition logic is inherent
 func (d *Driver) StartInterview(expertise string) error {
 	// Idempotency check: if already in AWAIT_USER or WORKING with same expertise, succeed silently
 	currentState := d.GetCurrentState()
@@ -714,9 +780,27 @@ func (d *Driver) StartInterview(expertise string) error {
 				fmt.Sprintf("Project setup needed. Please gather: %s. "+
 					"After collecting this info, call the bootstrap tool.", strings.Join(configDeficits, ", ")))
 		} else {
-			// Config is complete but technical prerequisites are missing - PM doesn't need to know details
-			d.contextManager.AddMessage("system",
-				"Project configuration is complete. Technical setup is in progress.")
+			// Config is complete but technical prerequisites are missing.
+			// Send bootstrap spec (Spec 0) to architect immediately.
+			bootstrapSpecSent := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyBootstrapSpecSent, false)
+			if !bootstrapSpecSent {
+				if sendErr := d.sendBootstrapSpecRequest(ctx); sendErr != nil {
+					d.logger.Warn("⚠️ Failed to send bootstrap spec at interview start: %v", sendErr)
+					d.contextManager.AddMessage("system",
+						"Project configuration is complete. Technical setup is in progress.")
+				} else {
+					// Bootstrap spec sent - block in AWAIT_ARCHITECT until acknowledged
+					d.logger.Info("📤 Bootstrap spec (Spec 0) sent at interview start, blocking in AWAIT_ARCHITECT")
+					if err := d.TransitionTo(ctx, StateAwaitArchitect, nil); err != nil {
+						d.logger.Error("❌ Failed to transition to AWAIT_ARCHITECT: %v", err)
+						return fmt.Errorf("failed to transition to AWAIT_ARCHITECT: %w", err)
+					}
+					return nil
+				}
+			} else {
+				d.contextManager.AddMessage("system",
+					"Project configuration is complete. Technical setup is in progress.")
+			}
 		}
 	}
 

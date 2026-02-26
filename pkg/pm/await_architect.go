@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // handleAwaitArchitect handles the AWAIT_ARCHITECT state where PM blocks waiting for architect's response.
@@ -16,6 +17,8 @@ import (
 //
 // May also receive story completion notifications while waiting - these are processed and
 // injected into context, then we continue waiting for the spec review result.
+//
+//nolint:cyclop // Complexity from spec type differentiation (bootstrap/user/hotfix) is inherent
 func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) {
 	d.logger.Info("⏳ PM in AWAIT_ARCHITECT state - waiting for architect response")
 
@@ -75,9 +78,35 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 				return proto.StateError, fmt.Errorf("failed to parse approval response: %w", err)
 			}
 
+			// Determine which spec type we're awaiting (default "user" for backward compat)
+			awaitingSpecType := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyAwaitingSpecType, "user")
+
 			// Check approval status
 			if approvalResult.Status == proto.ApprovalStatusApproved {
-				// Spec approved - stay engaged for tweaks/hotfixes
+				if awaitingSpecType == "bootstrap" {
+					// Bootstrap spec (Spec 0) approved - stories being generated/dispatched
+					d.logger.Info("✅ Bootstrap spec (Spec 0) APPROVED by architect")
+
+					// Do NOT set in_flight - no user spec submitted yet
+					// Do NOT clear spec data - there's no user spec yet
+					// Inject system message so PM knows bootstrap is proceeding
+					d.contextManager.AddMessage("system",
+						"Bootstrap infrastructure spec approved by architect. Infrastructure stories are being "+
+							"implemented in parallel while you continue the user interview. "+
+							"Continue gathering user requirements.")
+
+					// Re-detect bootstrap requirements (may have changed)
+					//nolint:contextcheck // Bootstrap detection is a quick local operation
+					d.detectAndStoreBootstrapRequirements(context.Background())
+
+					// Clear awaiting spec type
+					d.SetStateData(StateKeyAwaitingSpecType, nil)
+
+					// Return to WORKING to continue interview
+					return StateWorking, nil
+				}
+
+				// User or hotfix spec approved - stay engaged for tweaks/hotfixes
 				d.logger.Info("✅ Spec APPROVED by architect - staying engaged for tweaks")
 				if approvalResult.Feedback != "" {
 					d.logger.Info("📝 Approval feedback: %s", approvalResult.Feedback)
@@ -92,6 +121,7 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 				d.SetStateData(StateKeyBootstrapParams, nil)
 				d.SetStateData(StateKeyIsHotfix, nil)
 				d.SetStateData(StateKeyTurnCount, nil)
+				d.SetStateData(StateKeyAwaitingSpecType, nil)
 
 				// Re-run bootstrap detection to refresh bootstrap state.
 				// This will either regenerate bootstrap spec (if something's still missing)
@@ -115,14 +145,28 @@ func (d *Driver) handleAwaitArchitect(ctx context.Context) (proto.State, error) 
 			}
 
 			// Architect provided feedback - inject as system message and transition to WORKING
-			d.logger.Info("📝 Spec requires changes - feedback from architect (status=%s)", approvalResult.Status)
+			d.logger.Info("📝 Spec requires changes - feedback from architect (status=%s, spec_type=%s)", approvalResult.Status, awaitingSpecType)
 
 			if approvalResult.Feedback == "" {
 				d.logger.Error("❌ Missing feedback in NEEDS_CHANGES response")
 				return proto.StateError, fmt.Errorf("missing feedback in NEEDS_CHANGES response")
 			}
 
-			// Inject system message with architect feedback
+			if awaitingSpecType == "bootstrap" {
+				// Bootstrap spec feedback - inject as system guidance (not user-facing)
+				// Clear bootstrap_spec_sent so it can be re-rendered and resubmitted
+				d.SetStateData(StateKeyBootstrapSpecSent, nil)
+				d.SetStateData(StateKeyAwaitingSpecType, nil)
+
+				d.contextManager.AddMessage("system",
+					fmt.Sprintf("The architect provided feedback on the bootstrap infrastructure spec. "+
+						"This is internal guidance - the user does not need to see this. Feedback: %s",
+						approvalResult.Feedback))
+
+				return StateWorking, nil
+			}
+
+			// User/hotfix spec feedback
 			systemMessage := fmt.Sprintf(
 				"The architect provided the following feedback on your spec. Address these issues and resubmit "+
 					"or ask the user for any needed clarifications. The user has not seen the raw feedback. %s",

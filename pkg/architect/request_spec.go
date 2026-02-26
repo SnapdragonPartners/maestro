@@ -19,25 +19,29 @@ import (
 func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	d.logger.Info("🔍 Architect reviewing spec from PM")
 
-	// Extract spec markdown from Content (user requirements)
+	// Extract spec markdown from Content
 	userSpec := approvalPayload.Content
 	if userSpec == "" {
-		return nil, fmt.Errorf("user spec not found in approval request Content field")
+		return nil, fmt.Errorf("spec not found in approval request Content field")
 	}
 
-	// Render infrastructure spec from bootstrap requirements (architect owns technical details)
-	// This converts requirement IDs to full technical specification using language pack
+	// Detect if this is a bootstrap spec (Spec 0) sent separately from user spec
+	isBootstrapSpec := approvalPayload.Metadata != nil && approvalPayload.Metadata["spec_type"] == "bootstrap"
+
+	// Handle infrastructure spec rendering based on spec type
 	var infrastructureSpec string
-	if len(approvalPayload.BootstrapRequirements) > 0 {
-		// Convert string IDs back to typed IDs
+	if isBootstrapSpec {
+		// Bootstrap spec: Content IS the complete rendered spec, no additional rendering needed
+		d.logger.Info("📋 Received bootstrap spec (Spec 0) - Content contains complete spec (%d bytes)", len(userSpec))
+	} else if len(approvalPayload.BootstrapRequirements) > 0 {
+		// DEPRECATED: Legacy bundled bootstrap requirements in user spec
+		// Convert string IDs back to typed IDs and render
+		d.logger.Warn("⚠️ Received bundled BootstrapRequirements (deprecated) - use Spec 0 instead")
 		reqIDs := make([]workspace.BootstrapRequirementID, 0, len(approvalPayload.BootstrapRequirements))
 		for _, id := range approvalPayload.BootstrapRequirements {
 			reqIDs = append(reqIDs, workspace.BootstrapRequirementID(id))
 		}
 
-		d.logger.Info("📋 Received bootstrap requirements from PM: %v", reqIDs)
-
-		// Render the full technical spec
 		rendered, err := RenderBootstrapSpec(reqIDs, d.logger)
 		if err != nil {
 			d.logger.Warn("Failed to render bootstrap spec: %v (continuing without bootstrap)", err)
@@ -50,7 +54,8 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		infrastructureSpec = approvalPayload.InfrastructureSpec
 	}
 
-	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes", len(userSpec), len(infrastructureSpec))
+	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes, bootstrap: %v",
+		len(userSpec), len(infrastructureSpec), isBootstrapSpec)
 
 	// Get agent-specific context (PM agent)
 	agentID := requestMsg.FromAgent
@@ -63,12 +68,22 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Only add spec review prompt for initial submission
 	if !isResubmission {
 		// Prepare template data for spec review
+		extra := map[string]any{
+			"reason":              approvalPayload.Reason,
+			"infrastructure_spec": infrastructureSpec, // Infrastructure requirements (bootstrap) if any
+		}
+
+		// Add bootstrap-specific guidance when reviewing a bootstrap spec (Spec 0)
+		if isBootstrapSpec {
+			extra["bootstrap_guidance"] = "This is a **bootstrap infrastructure spec (Spec 0)** submitted " +
+				"separately from the user feature spec. It contains only infrastructure requirements " +
+				"(Dockerfile, Makefile, build targets, etc.). Review these for correctness and completeness, " +
+				"then generate stories. The user feature spec will arrive separately as Spec 1."
+		}
+
 		templateData := &templates.TemplateData{
-			TaskContent: userSpec, // User requirements in main content
-			Extra: map[string]any{
-				"reason":              approvalPayload.Reason,
-				"infrastructure_spec": infrastructureSpec, // Infrastructure requirements (bootstrap) if any
-			},
+			TaskContent: userSpec, // Spec content (bootstrap or user requirements)
+			Extra:       extra,
 		}
 
 		// Render spec review template (first toolloop phase)
@@ -202,9 +217,11 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("submit_stories tool not found")
 	}
 
-	// For story generation, concatenate infrastructure + user specs (stories need complete spec)
+	// For story generation, build the complete spec:
+	// - Bootstrap spec: Content IS the complete spec (no concatenation needed)
+	// - User spec with bundled bootstrap: concatenate infrastructure + user specs
 	completeSpec := userSpec
-	if infrastructureSpec != "" {
+	if !isBootstrapSpec && infrastructureSpec != "" {
 		completeSpec = infrastructureSpec + "\n\n" + userSpec
 	}
 
