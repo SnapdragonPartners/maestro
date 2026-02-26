@@ -196,6 +196,12 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	}
 	retryPolicy := retry.NewPolicy(retryConfig, nil) // Use default classifier
 
+	// Ensure logger is available for retry middleware
+	retryLogger := logger
+	if retryLogger == nil {
+		retryLogger = logx.NewLogger("retry")
+	}
+
 	// Build the full middleware chain
 
 	// Convert agentTypeStr to validation.AgentType
@@ -218,7 +224,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		validator.Middleware(), // Agent-aware empty response validation
 		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger),
 		circuit.Middleware(circuitBreaker),
-		retry.Middleware(retryPolicy),
+		retry.Middleware(retryPolicy, retryLogger),
 		logging.EmptyResponseLoggingMiddleware(),                 // Log empty responses after retry exhaustion
 		ratelimit.Middleware(f.rateLimitMap, nil, stateProvider), // Real token bucket with concurrency limiting
 		timeout.Middleware(f.config.Agents.Resilience.Timeout),

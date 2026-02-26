@@ -2393,9 +2393,10 @@ func GetGitBranchPattern() string {
 // This accounts for token estimation inaccuracies (tiktoken vs actual).
 const RateLimitBufferFactor = 0.9
 
-// validateRateLimitCapacity checks that rate limits are sufficient for model context sizes.
-// If a model's MaxContextTokens exceeds the effective bucket capacity (TPM * 0.9),
-// requests could block forever. This function warns about such configurations.
+// validateRateLimitCapacity checks that configured rate limits can handle the maximum
+// context size of each selected model. If a model's MaxContextTokens exceeds the
+// provider's effective bucket capacity (TPM * buffer), a single max-context request
+// would permanently block in the rate limiter.
 func validateRateLimitCapacity(cfg *Config) {
 	if cfg == nil || cfg.Agents == nil {
 		return
@@ -2409,27 +2410,34 @@ func validateRateLimitCapacity(cfg *Config) {
 		ProviderOllama:    cfg.Agents.Resilience.RateLimit.Ollama.TokensPerMinute,
 	}
 
-	// Check each known model
-	for modelName := range KnownModels {
-		modelInfo := KnownModels[modelName]
+	// Only check models actually selected in config (not all known models)
+	selectedModels := []string{
+		cfg.Agents.CoderModel,
+		cfg.Agents.ArchitectModel,
+		cfg.Agents.PMModel,
+	}
+
+	for _, modelName := range selectedModels {
+		if modelName == "" {
+			continue
+		}
+		modelInfo, known := KnownModels[modelName]
+		if !known {
+			continue
+		}
 		tpm := providerTPM[modelInfo.Provider]
 		if tpm == 0 {
 			continue
 		}
 
-		// Effective capacity is TPM * 0.9 (the buffer factor used in limiter.go)
 		effectiveCapacity := int(float64(tpm) * RateLimitBufferFactor)
-
 		if modelInfo.MaxContextTokens > effectiveCapacity {
-			logx.Warnf("CONFIG: Model %s has MaxContextTokens (%d) > effective rate limit capacity (%d = %d * %.1f). "+
-				"Large contexts may block forever. Consider increasing %s tokens_per_minute to at least %d.",
-				modelName,
-				modelInfo.MaxContextTokens,
-				effectiveCapacity,
-				tpm,
-				RateLimitBufferFactor,
+			_ = logx.Errorf("CONFIG: Model %s (MaxContextTokens %d) exceeds %s rate limit bucket capacity "+
+				"(%d = %d TPM * %.1f buffer). A max-context request will block forever. "+
+				"Increase %s tokens_per_minute.",
+				modelName, modelInfo.MaxContextTokens,
+				modelInfo.Provider, effectiveCapacity, tpm, RateLimitBufferFactor,
 				modelInfo.Provider,
-				int(float64(modelInfo.MaxContextTokens)/RateLimitBufferFactor)+1,
 			)
 		}
 	}

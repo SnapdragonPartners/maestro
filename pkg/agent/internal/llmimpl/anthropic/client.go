@@ -28,7 +28,10 @@ type ClaudeClient struct {
 
 // NewClaudeClient creates a new Claude client wrapper (raw client, middleware applied at higher level).
 func NewClaudeClient(apiKey string) llm.LLMClient {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	client := anthropic.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithMaxRetries(0), // Retries handled by our middleware layer
+	)
 	return &ClaudeClient{
 		client: client,
 		model:  config.ModelClaudeSonnetLatest, // Default model
@@ -37,7 +40,10 @@ func NewClaudeClient(apiKey string) llm.LLMClient {
 
 // NewClaudeClientWithModel creates a new Claude client with specific model (raw client, middleware applied at higher level).
 func NewClaudeClientWithModel(apiKey, model string) llm.LLMClient {
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	client := anthropic.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithMaxRetries(0), // Retries handled by our middleware layer
+	)
 	return &ClaudeClient{
 		client: client,
 		model:  anthropic.Model(model),
@@ -450,8 +456,6 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 	resp, err := c.client.Messages.New(ctx, params)
 
 	if err != nil {
-		// Log the raw error for debugging
-		fmt.Printf("[DEBUG] Raw Anthropic API error: %v\n", err)
 		// Classify the error for proper retry handling
 		classifiedErr := c.classifyError(err, nil)
 		return llm.CompletionResponse{}, classifiedErr
