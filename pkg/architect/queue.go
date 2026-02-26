@@ -722,6 +722,19 @@ func (q *Queue) ClearAll() {
 	q.stories = make(map[string]*QueuedStory)
 }
 
+// ClearSpec removes only stories belonging to the given spec from the queue.
+// Preserves stories from other specs (e.g., bootstrap stories).
+func (q *Queue) ClearSpec(specID string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	for id, story := range q.stories {
+		if story.SpecID == specID {
+			delete(q.stories, id)
+		}
+	}
+}
+
 // LoadStoriesFromDB loads the complete story graph from the database into the in-memory queue.
 // This is used during resume to restore the architect's story state.
 // All stories are loaded (including done ones) so dependency checks work correctly.

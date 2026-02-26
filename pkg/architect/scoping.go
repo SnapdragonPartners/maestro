@@ -146,7 +146,7 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 // Returns spec ID, story IDs, and error.
 //
 // Dependency resolution uses ordinal IDs (req_001, req_002, etc.) from the LLM output.
-// A bootstrap gate ensures all app stories depend on the last devops story (if any).
+// New stories are gated on any pre-existing stories already in the queue (bootstrap stories).
 // The resulting DAG is validated for cycles before returning.
 func (d *Driver) loadStoriesFromSubmitResultData(_ context.Context, specMarkdown string, effectData map[string]any) (string, []string, error) {
 	// Reset PM notification flag so new spec lifecycle can re-notify
@@ -201,8 +201,14 @@ func (d *Driver) loadStoriesFromSubmitResultData(_ context.Context, specMarkdown
 		storyIDs = append(storyIDs, storyID)
 	}
 
-	// Second pass: resolve ordinal dependencies to real story IDs and add stories to queue
-	var lastDevopsStoryID string
+	// Second pass: resolve ordinal dependencies to real story IDs and add stories to queue.
+	// Collect IDs of any stories already in the queue (from prior specs) so new stories
+	// can be gated on them.
+	preExistingIDs := make([]string, 0)
+	for _, s := range d.queue.GetAllStories() {
+		preExistingIDs = append(preExistingIDs, s.ID)
+	}
+
 	for i := range entries {
 		entry := &entries[i]
 		var resolvedDeps []string
@@ -215,41 +221,22 @@ func (d *Driver) loadStoriesFromSubmitResultData(_ context.Context, specMarkdown
 			resolvedDeps = append(resolvedDeps, depStoryID)
 		}
 
-		d.queue.AddStory(entry.storyID, specID, entry.title, entry.content, entry.req.StoryType, resolvedDeps, entry.req.EstimatedPoints)
+		// Gate: new stories depend on all pre-existing stories (e.g., bootstrap stories
+		// from a prior spec). The LLM has no visibility into these, so we add them here.
+		resolvedDeps = append(resolvedDeps, preExistingIDs...)
 
-		// Track the last devops story for bootstrap gate
-		if entry.req.StoryType == "devops" {
-			lastDevopsStoryID = entry.storyID
-		}
+		d.queue.AddStory(entry.storyID, specID, entry.title, entry.content, entry.req.StoryType, resolvedDeps, entry.req.EstimatedPoints)
 	}
 
-	// Bootstrap gate: all app stories depend on the last devops story (if one exists)
-	if lastDevopsStoryID != "" {
-		allStories := d.queue.GetAllStories()
-		for _, story := range allStories {
-			if story.SpecID != specID || story.StoryType != "app" {
-				continue
-			}
-			// Add last devops story as dependency if not already present
-			alreadyDepends := false
-			for _, dep := range story.DependsOn {
-				if dep == lastDevopsStoryID {
-					alreadyDepends = true
-					break
-				}
-			}
-			if !alreadyDepends {
-				story.DependsOn = append(story.DependsOn, lastDevopsStoryID)
-			}
-		}
-		d.logger.Info("🔧 Bootstrap gate: all app stories depend on last devops story %s", lastDevopsStoryID)
+	if len(preExistingIDs) > 0 {
+		d.logger.Info("🔧 Bootstrap gate: %d new stories gated on %d pre-existing stories", len(entries), len(preExistingIDs))
 	}
 
 	// Validate DAG — detect cycles before persisting
 	cycles := d.queue.DetectCycles()
 	if len(cycles) > 0 {
-		// Clear the invalid stories so caller can retry
-		d.queue.ClearAll()
+		// Clear only this spec's stories so caller can retry (preserves bootstrap stories)
+		d.queue.ClearSpec(specID)
 		return "", nil, fmt.Errorf("dependency cycle detected in generated stories: %v", cycles)
 	}
 

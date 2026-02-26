@@ -277,7 +277,8 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 			break // Success — valid DAG
 		}
 		d.logger.Warn("⚠️ Story generation attempt %d failed validation: %v", attempt+1, loadErr)
-		d.queue.ClearAll() // Clear invalid stories before retry
+		// No need to clear queue here — loadStoriesFromSubmitResultData clears its own
+		// spec's stories on cycle detection, and dependency errors happen before queue insertion.
 	}
 
 	if loadErr != nil {

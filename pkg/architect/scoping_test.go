@@ -118,9 +118,12 @@ func TestLoadStories_UnresolvableOrdinal(t *testing.T) {
 	assert.Contains(t, err.Error(), "req_999")
 }
 
-// TestLoadStories_BootstrapGate verifies app stories depend on last devops story.
+// TestLoadStories_BootstrapGate verifies new stories depend on pre-existing stories in the queue.
 func TestLoadStories_BootstrapGate(t *testing.T) {
 	driver := newTestDriver()
+
+	// Pre-populate queue with a bootstrap story (simulates stories from a prior spec)
+	driver.queue.AddStory("bootstrap-1", "bootstrap-spec", "Bootstrap setup", "Setup containers", "devops", nil, 1)
 
 	effectData := map[string]any{
 		"requirements": []any{
@@ -134,65 +137,44 @@ func TestLoadStories_BootstrapGate(t *testing.T) {
 			},
 			map[string]any{
 				"id":                  "req_002",
-				"title":               "Setup containers",
-				"description":         "DevOps setup",
-				"acceptance_criteria": []any{"containers run"},
-				"story_type":          "devops",
-				"dependencies":        []any{},
-			},
-			map[string]any{
-				"id":                  "req_003",
 				"title":               "App feature B",
 				"description":         "Second app feature",
 				"acceptance_criteria": []any{"works"},
 				"story_type":          "app",
-				"dependencies":        []any{},
+				"dependencies":        []any{"req_001"},
 			},
 		},
 	}
 
 	_, storyIDs, err := driver.loadStoriesFromSubmitResultData(context.Background(), "test spec", effectData)
 	require.NoError(t, err)
-	require.Len(t, storyIDs, 3)
+	require.Len(t, storyIDs, 2)
 
-	devopsStoryID := storyIDs[1] // req_002 is the devops story
-
-	// Both app stories should depend on the devops story
-	appStoryA, exists := driver.queue.GetStory(storyIDs[0])
+	// Both new stories should depend on the bootstrap story
+	storyA, exists := driver.queue.GetStory(storyIDs[0])
 	require.True(t, exists)
-	assert.Contains(t, appStoryA.DependsOn, devopsStoryID, "app story A should depend on devops story")
+	assert.Contains(t, storyA.DependsOn, "bootstrap-1", "new story A should depend on bootstrap story")
 
-	appStoryB, exists := driver.queue.GetStory(storyIDs[2])
+	storyB, exists := driver.queue.GetStory(storyIDs[1])
 	require.True(t, exists)
-	assert.Contains(t, appStoryB.DependsOn, devopsStoryID, "app story B should depend on devops story")
-
-	// DevOps story should NOT depend on itself
-	devopsStory, exists := driver.queue.GetStory(devopsStoryID)
-	require.True(t, exists)
-	assert.NotContains(t, devopsStory.DependsOn, devopsStoryID)
+	assert.Contains(t, storyB.DependsOn, "bootstrap-1", "new story B should depend on bootstrap story")
+	// B should also keep its LLM-specified dependency on A
+	assert.Contains(t, storyB.DependsOn, storyIDs[0], "story B should still depend on story A")
 }
 
-// TestLoadStories_BootstrapGateNoDuplicateDeps verifies bootstrap gate doesn't add duplicate dependencies.
-func TestLoadStories_BootstrapGateNoDuplicateDeps(t *testing.T) {
+// TestLoadStories_NoBootstrapStories verifies no extra deps added when queue is empty.
+func TestLoadStories_NoBootstrapStories(t *testing.T) {
 	driver := newTestDriver()
 
 	effectData := map[string]any{
 		"requirements": []any{
 			map[string]any{
 				"id":                  "req_001",
-				"title":               "Setup containers",
-				"description":         "DevOps setup",
-				"acceptance_criteria": []any{"containers run"},
-				"story_type":          "devops",
-				"dependencies":        []any{},
-			},
-			map[string]any{
-				"id":                  "req_002",
 				"title":               "App feature",
-				"description":         "Feature already depends on devops",
+				"description":         "A feature",
 				"acceptance_criteria": []any{"works"},
 				"story_type":          "app",
-				"dependencies":        []any{"req_001"}, // Already depends on devops
+				"dependencies":        []any{},
 			},
 		},
 	}
@@ -200,17 +182,9 @@ func TestLoadStories_BootstrapGateNoDuplicateDeps(t *testing.T) {
 	_, storyIDs, err := driver.loadStoriesFromSubmitResultData(context.Background(), "test spec", effectData)
 	require.NoError(t, err)
 
-	appStory, exists := driver.queue.GetStory(storyIDs[1])
+	story, exists := driver.queue.GetStory(storyIDs[0])
 	require.True(t, exists)
-
-	// Count how many times the devops story ID appears in dependencies
-	devopsCount := 0
-	for _, dep := range appStory.DependsOn {
-		if dep == storyIDs[0] {
-			devopsCount++
-		}
-	}
-	assert.Equal(t, 1, devopsCount, "devops dependency should appear exactly once (no duplicates)")
+	assert.Empty(t, story.DependsOn, "story should have no dependencies when queue was empty")
 }
 
 // TestLoadStories_CycleDetection verifies cycles are caught during story loading.
