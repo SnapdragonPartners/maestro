@@ -828,6 +828,8 @@ func (d *Driver) StartInterview(expertise string) error {
 // This is called by the WebUI when the user uploads a spec file.
 // Always transitions to WORKING so PM can validate the spec before preview.
 // Idempotent: succeeds if already processing same spec (handles double-submissions).
+//
+//nolint:cyclop // Complexity from bootstrap spec detection and upload handling is inherent
 func (d *Driver) UploadSpec(markdown string) error {
 	// Idempotency check: if already in WORKING or PREVIEW with same spec, succeed silently
 	currentState := d.GetCurrentState()
@@ -852,8 +854,26 @@ func (d *Driver) UploadSpec(markdown string) error {
 	d.SetStateData(StateKeySpecUploaded, true)
 
 	// Detect bootstrap requirements using shared helper
-	_, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
+	reqs, needsBootstrap := d.detectAndStoreBootstrapRequirements(context.Background())
 	if needsBootstrap {
+		// Check if config is complete but infrastructure is missing — send Spec 0 and block
+		if reqs != nil && !reqs.NeedsBootstrapGate() && reqs.HasAnyMissingComponents() {
+			bootstrapSpecSent := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyBootstrapSpecSent, false)
+			if !bootstrapSpecSent {
+				if sendErr := d.sendBootstrapSpecRequest(context.Background()); sendErr != nil {
+					d.logger.Warn("⚠️ Failed to send bootstrap spec on spec upload: %v", sendErr)
+				} else {
+					// Block in AWAIT_ARCHITECT so architect can review/ask questions
+					d.logger.Info("📤 Bootstrap spec (Spec 0) sent on spec upload, blocking in AWAIT_ARCHITECT")
+					if err := d.TransitionTo(context.Background(), StateAwaitArchitect, nil); err != nil {
+						d.logger.Error("❌ Failed to transition to AWAIT_ARCHITECT: %v", err)
+						return fmt.Errorf("failed to transition to AWAIT_ARCHITECT: %w", err)
+					}
+					return nil
+				}
+			}
+		}
+
 		// Add uploaded spec content and bootstrap instructions to context
 		// Note: Infrastructure requirements (Dockerfile, Makefile, etc.) are opaque to PM LLM
 		specMessage := fmt.Sprintf(`# User Uploaded Specification File
