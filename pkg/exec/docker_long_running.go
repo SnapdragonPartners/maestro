@@ -222,6 +222,22 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode), "--workdir", workspaceDir)
 	}
 
+	// Process extra mounts (e.g., mirror repository RO mount for coder containers).
+	for i := range opts.ExtraMounts {
+		mount := &opts.ExtraMounts[i]
+		mountMode := "rw"
+		if mount.ReadOnly {
+			mountMode = "ro"
+		}
+		hostPath := d.normalizePath(mount.Source)
+		if resolvedPath, err := filepath.EvalSymlinks(hostPath); err == nil && resolvedPath != hostPath {
+			d.logger.Info("Resolved extra mount symlink: %s -> %s", hostPath, resolvedPath)
+			hostPath = resolvedPath
+		}
+		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, mount.Destination, mountMode))
+		d.logger.Debug("Added extra mount: %s -> %s (%s)", hostPath, mount.Destination, mountMode)
+	}
+
 	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
 	// Set HOME=/tmp so Claude Code uses /tmp/.claude (already writable via tmpfs).
 	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m", "--env", "HOME=/tmp")

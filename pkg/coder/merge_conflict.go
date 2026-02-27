@@ -143,16 +143,22 @@ func (c *Coder) detectGitWorkspaceState(ctx context.Context) (*GitWorkspaceState
 	return state, nil
 }
 
-// getRemoteHEAD fetches and returns the current SHA of the remote target branch.
+// getRemoteHEAD refreshes the mirror and returns the current SHA of the target branch.
+// Uses refreshMirrorOnHost to sync the mirror from GitHub, then fetches from origin (mirror)
+// inside the container to get the latest refs.
 func (c *Coder) getRemoteHEAD(ctx context.Context, targetBranch string) (string, error) {
 	opts := &execpkg.Opts{
 		WorkDir: c.workDir,
 		Timeout: 30 * time.Second,
 	}
 
-	// First fetch to ensure we have latest refs
-	// SECURITY: Run fetch on HOST (not in container) because containers don't have GITHUB_TOKEN.
-	_ = c.fetchFromOriginOnHost(ctx, targetBranch)
+	// Refresh mirror from GitHub (host-side) to get latest changes
+	_ = c.refreshMirrorOnHost(ctx)
+
+	// Fetch from origin (mirror) inside the container to pick up mirror changes
+	_, _ = c.longRunningExecutor.Run(ctx, []string{
+		"git", "fetch", "origin", targetBranch,
+	}, opts)
 
 	// Get the SHA of origin/targetBranch
 	result, err := c.longRunningExecutor.Run(ctx, []string{

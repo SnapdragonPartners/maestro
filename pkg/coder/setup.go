@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -183,6 +184,23 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		isClaudeCodeConfigured = cfg.Agents.CoderMode == config.CoderModeClaudeCode
 	}
 
+	// Build extra mounts for the container (e.g., mirror repository)
+	var extraMounts []execpkg.Mount
+	projectDir := config.GetProjectDir()
+	if projectDir != "" {
+		mirrorsPath := filepath.Join(projectDir, ".mirrors")
+		if _, statErr := os.Stat(mirrorsPath); statErr == nil {
+			extraMounts = append(extraMounts, execpkg.Mount{
+				Source:      mirrorsPath,
+				Destination: "/mirrors",
+				ReadOnly:    true,
+			})
+			c.logger.Debug("Added RO mirror mount: %s -> /mirrors", mirrorsPath)
+		} else {
+			c.logger.Warn("Mirror directory %s does not exist, skipping mount", mirrorsPath)
+		}
+	}
+
 	// Create execution options for new container
 	execOpts := execpkg.Opts{
 		WorkDir:         c.workDir,
@@ -192,6 +210,7 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		Env:             []string{"HOME=/tmp"}, // Set HOME to writable location for git config
 		Timeout:         0,                     // No timeout for long-running container
 		ClaudeCodeMode:  isClaudeCodeConfigured,
+		ExtraMounts:     extraMounts,
 		ResourceLimits: &execpkg.ResourceLimits{
 			CPUs:   "1",    // Limited CPU for planning (standard mode)
 			Memory: "512m", // Limited memory for planning (standard mode)
@@ -247,6 +266,14 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	c.containerName = containerName
 	c.logger.Info("Started %s container: %s (readonly=%v)", purpose, containerName, readonly)
 
+	// Remap origin from host mirror path to container-visible /mirrors/<repo>.git path.
+	// During clone (host-side), origin points to the host absolute path.
+	// Inside the container, the mirror is mounted at /mirrors/<repo>.git via the RO mount.
+	if err := c.remapOriginToContainerMirror(ctx); err != nil {
+		c.logger.Warn("Failed to remap origin to container mirror path (non-fatal): %v", err)
+		// Continue anyway — git fetch origin will fail but pushes use 'github' remote
+	}
+
 	// Configure build service to use this container for execution.
 	// This ensures build/test/lint commands run inside the container, not on the host.
 	if c.buildService != nil {
@@ -268,6 +295,40 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		// Continue anyway - this shouldn't block the story
 	}
 
+	return nil
+}
+
+// remapOriginToContainerMirror remaps the 'origin' remote URL from the host mirror path
+// to the container-visible /mirrors/<repo>.git path. This is called after the container starts
+// because the initial clone happens on the host where origin points to the host absolute path.
+func (c *Coder) remapOriginToContainerMirror(ctx context.Context) error {
+	if c.longRunningExecutor == nil || c.containerName == "" {
+		return nil // No container to remap in
+	}
+
+	// Extract repo name from config to build container mirror path
+	repoURL := config.GetGitRepoURL()
+	if repoURL == "" {
+		return fmt.Errorf("no git repo URL configured")
+	}
+	repoName := filepath.Base(repoURL)
+	repoName = strings.TrimSuffix(repoName, ".git")
+	containerMirrorPath := fmt.Sprintf("/mirrors/%s.git", repoName)
+
+	opts := &execpkg.Opts{
+		WorkDir: "/workspace",
+		Timeout: 10 * time.Second,
+	}
+
+	// Remap origin to container-visible mirror path
+	result, err := c.longRunningExecutor.Run(ctx, []string{
+		"git", "remote", "set-url", "origin", containerMirrorPath,
+	}, opts)
+	if err != nil {
+		return fmt.Errorf("git remote set-url origin failed: %w (stderr: %s)", err, result.Stderr)
+	}
+
+	c.logger.Info("Remapped origin to container mirror path: %s", containerMirrorPath)
 	return nil
 }
 

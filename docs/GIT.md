@@ -70,29 +70,43 @@ Configurable git identity system with agent-specific templates:
 
 ## Clone Strategy
 
-### Self-Contained Clones
+### Two-Remote Architecture
 
-**Previous Approach (Deprecated):**
-- Used git worktrees with `--shared --reference` flags
-- Lightweight but caused issues in containerized environments
-- Dependencies on external object stores
+Coder containers are designed to never talk to GitHub directly (no GITHUB_TOKEN). All git operations inside containers use the local mirror, while host-side operations handle GitHub authentication.
 
-**Current Approach:**
+Every coder workspace has two remotes:
+- **`origin`** → local mirror (mounted RO at `/mirrors/<repo>.git` in container)
+- **`github`** → GitHub URL (used only by host-side push/fetch operations)
+
+**Clone Flow:**
 ```bash
 # Step 1: Create/update bare mirror (shared across agents)
 git clone --bare {REPO_URL} {MIRROR_PATH}
 git remote update --prune  # For existing mirrors
 
-# Step 2: Create self-contained clone (per agent)
-git clone {MIRROR_PATH} {AGENT_WORKSPACE}
-git remote set-url origin {REPO_URL}
+# Step 2: Create self-contained clone (per agent, on host)
+git init {AGENT_WORKSPACE}
+git remote add origin {HOST_MIRROR_PATH}
+git fetch origin --tags
+git checkout -b {BASE_BRANCH} origin/{BASE_BRANCH}
+git remote add github {REPO_URL}
+
+# Step 3: After container starts, remap origin to container path
+git remote set-url origin /mirrors/<repo>.git
 ```
 
+**Remote Usage:**
+- `git fetch origin` — runs in container, hits local mirror (fast, no creds)
+- `git rebase origin/main` — runs in container, uses mirror refs
+- `git push github ...` — runs on HOST only, uses GITHUB_TOKEN
+- `git fetch github ...` — runs on HOST only, uses GITHUB_TOKEN
+
 **Benefits:**
-- **Fast**: Local cloning from mirrors
+- **No GitHub auth in containers**: Containers never need GITHUB_TOKEN
+- **Fast**: Local mirror operations are instant (no network)
 - **Self-contained**: Works in Docker containers without external dependencies
 - **Isolated**: Safe for concurrent agents
-- **Complete**: All objects included for full git functionality
+- **Debuggable**: `git remote -v` shows exactly where operations go
 
 ### Directory Structure
 
@@ -264,33 +278,27 @@ if strings.Contains(err.Error(), "already exists") {
 
 ## Authentication Strategy
 
-### Current Implementation (Personal Access Token)
+### Security Model: Host-Only GitHub Access
 
-The system currently uses **Personal Access Token (PAT)** authentication for GitHub operations:
+The system enforces a strict authentication boundary:
+- **Container**: Pure git operations against local mirror — no GITHUB_TOKEN, no network auth needed
+- **Host**: All GitHub operations (push, fetch from GitHub, PR creation) run on the host with GITHUB_TOKEN
 
-**Design Decisions:**
-- **Token Injection**: `GITHUB_TOKEN` environment variable injected during CODING phase transition
-- **URL Conversion**: SSH URLs automatically converted to HTTPS format for container compatibility
-- **Scope Management**: Token injected only in read-write containers, not during planning phase
-- **Security Model**: Single-tenant, ephemeral containers with time-limited exposure
+This design prevents coders from pushing unapproved code, since containers have no git credentials.
 
-**Implementation Details:**
-```go
-// Container configuration during CODING phase
-if githubToken := os.Getenv("GITHUB_TOKEN"); githubToken != "" {
-    execOpts.Env = append(execOpts.Env, "GITHUB_TOKEN="+githubToken)
-}
-
-// URL conversion: git@github.com:user/repo.git -> https://github.com/user/repo.git
-httpsURL := c.convertToHTTPSURL(c.repoURL)
-git.Run(ctx, workDir, "remote", "set-url", "origin", httpsURL)
-```
+**Key Invariants:**
+1. **Containers never talk to GitHub** — origin=mirror, no GITHUB_TOKEN
+2. **Mirror freshness before rebase** — `refreshMirrorOnHost()` syncs mirror from GitHub before any rebase
+3. **GitHub freshness before push** — `fetchFromGitHubOnHost()` updates tracking refs for `--force-with-lease` safety
+4. **Mirror is recoverable** — reclone-on-failure if refresh fails
+5. **RO mount prevents corruption** — containers cannot push to mirror
 
 **Authentication Flow:**
 1. Host environment provides `GITHUB_TOKEN` (PAT)
-2. During SETUP → CODING transition, token injected into container
-3. Git remote URLs converted from SSH to HTTPS format
-4. Container git operations use token via HTTPS: `https://x-access-token:$GITHUB_TOKEN@github.com/org/repo.git`
+2. Mirror is cloned from GitHub on host (has token access)
+3. Coder containers mount mirror read-only at `/mirrors/<repo>.git`
+4. Container `origin` points to mirror — all in-container git operations are local
+5. Host-side `pushBranch()` and `fetchFromGitHubOnHost()` use `github` remote with GITHUB_TOKEN
 
 ### Future Security Enhancement (Recommended)
 

@@ -643,7 +643,8 @@ func TestCreateFreshClone_Success(t *testing.T) {
 	mirrorPath := t.TempDir()
 	agentWorkDir := filepath.Join(t.TempDir(), "agent")
 
-	// Mock git commands for fresh clone
+	// Mock git commands for fresh clone (two-remote strategy: origin=mirror, github=GitHub)
+	var remoteAddCalls []string
 	mockGit.OnRun(func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if len(args) == 0 {
 			return []byte{}, nil
@@ -652,13 +653,14 @@ func TestCreateFreshClone_Success(t *testing.T) {
 		case "init":
 			return []byte("Initialized empty Git repository\n"), nil
 		case "remote":
+			if len(args) >= 3 && args[1] == "add" {
+				remoteAddCalls = append(remoteAddCalls, args[2])
+			}
 			return []byte{}, nil
 		case "fetch":
 			return []byte{}, nil
 		case "checkout":
 			return []byte("Switched to a new branch 'main'\n"), nil
-		case "reset":
-			return []byte{}, nil
 		}
 		return []byte{}, nil
 	})
@@ -674,6 +676,18 @@ func TestCreateFreshClone_Success(t *testing.T) {
 	if _, statErr := os.Stat(agentWorkDir); os.IsNotExist(statErr) {
 		t.Error("Expected agent work directory to be created")
 	}
+
+	// Verify two-remote strategy: first origin (mirror), then github
+	if len(remoteAddCalls) != 2 {
+		t.Errorf("Expected 2 remote add calls (origin, github), got: %d %v", len(remoteAddCalls), remoteAddCalls)
+	} else {
+		if remoteAddCalls[0] != "origin" {
+			t.Errorf("Expected first remote add to be 'origin', got: %s", remoteAddCalls[0])
+		}
+		if remoteAddCalls[1] != "github" {
+			t.Errorf("Expected second remote add to be 'github', got: %s", remoteAddCalls[1])
+		}
+	}
 }
 
 func TestCreateFreshClone_CleansExistingDirectory(t *testing.T) {
@@ -687,7 +701,7 @@ func TestCreateFreshClone_CleansExistingDirectory(t *testing.T) {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 
-	// Mock git commands
+	// Mock git commands (no more "reset" in new flow)
 	mockGit.OnRun(func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if len(args) == 0 {
 			return []byte{}, nil
@@ -695,7 +709,7 @@ func TestCreateFreshClone_CleansExistingDirectory(t *testing.T) {
 		switch args[0] {
 		case "init":
 			return []byte("Reinitialized existing Git repository\n"), nil
-		case "remote", "fetch", "checkout", "reset":
+		case "remote", "fetch", "checkout":
 			return []byte{}, nil
 		}
 		return []byte{}, nil
@@ -738,14 +752,14 @@ func TestCreateFreshClone_GitInitFails(t *testing.T) {
 	}
 }
 
-func TestCreateFreshClone_AddRemoteFails(t *testing.T) {
+func TestCreateFreshClone_AddOriginRemoteFails(t *testing.T) {
 	cm, mockGit := setupCloneManagerTest(t)
 	mirrorPath := t.TempDir()
 	agentWorkDir := t.TempDir()
 
-	// Mock git commands - remote add fails
+	// Mock git commands - first remote add (origin) fails
 	mockGit.OnRun(func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if len(args) >= 2 && args[0] == "remote" && args[1] == "add" {
+		if len(args) >= 3 && args[0] == "remote" && args[1] == "add" && args[2] == "origin" {
 			return nil, &gitError{msg: "remote add failed"}
 		}
 		return []byte{}, nil
@@ -755,7 +769,28 @@ func TestCreateFreshClone_AddRemoteFails(t *testing.T) {
 	err := cm.createFreshClone(ctx, mirrorPath, agentWorkDir)
 
 	if err == nil {
-		t.Error("Expected error when remote add fails")
+		t.Error("Expected error when origin remote add fails")
+	}
+}
+
+func TestCreateFreshClone_AddGitHubRemoteFails(t *testing.T) {
+	cm, mockGit := setupCloneManagerTest(t)
+	mirrorPath := t.TempDir()
+	agentWorkDir := t.TempDir()
+
+	// Mock git commands - second remote add (github) fails
+	mockGit.OnRun(func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if len(args) >= 3 && args[0] == "remote" && args[1] == "add" && args[2] == "github" {
+			return nil, &gitError{msg: "remote add failed"}
+		}
+		return []byte{}, nil
+	})
+
+	ctx := context.Background()
+	err := cm.createFreshClone(ctx, mirrorPath, agentWorkDir)
+
+	if err == nil {
+		t.Error("Expected error when github remote add fails")
 	}
 }
 
@@ -785,20 +820,12 @@ func TestCreateFreshClone_CheckoutFails(t *testing.T) {
 	mirrorPath := t.TempDir()
 	agentWorkDir := t.TempDir()
 
-	fetchCount := 0
 	// Mock git commands - checkout fails
 	mockGit.OnRun(func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if len(args) == 0 {
 			return []byte{}, nil
 		}
 		switch args[0] {
-		case "fetch":
-			fetchCount++
-			if fetchCount == 1 {
-				// First fetch (from mirror) succeeds
-				return []byte{}, nil
-			}
-			return []byte{}, nil
 		case "checkout":
 			return nil, &gitError{msg: "checkout failed"}
 		}
