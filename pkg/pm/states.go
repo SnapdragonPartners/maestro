@@ -32,11 +32,11 @@ const (
 //nolint:gochecknoglobals // Intentional package-level constant for state machine definition
 var validTransitions = map[proto.State][]proto.State{
 	StateWaiting: {
-		StateWaiting,   // Stay in waiting while polling for state changes
-		StateSetup,     // Bootstrap detection needed - run setup first
-		StateWorking,   // User starts interview - PM begins working
-		StateAwaitUser, // User starts interview - wait for first message
-		StatePreview,   // User uploads spec file - go directly to preview
+		StateWaiting,        // Stay in waiting while polling for state changes
+		StateSetup,          // Bootstrap detection needed - run setup first
+		StateWorking,        // User starts interview - PM begins working
+		StateAwaitUser,      // User starts interview - wait for first message
+		StateAwaitArchitect, // Bootstrap spec (Spec 0) sent at interview start
 		proto.StateDone,
 	},
 	StateSetup: {

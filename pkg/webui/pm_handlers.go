@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -28,9 +27,12 @@ type PMStartResponse struct {
 }
 
 // PMChatRequest represents a message sent to the PM agent.
+// Supports optional file attachment (inline spec upload via paperclip button).
 type PMChatRequest struct {
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
+	SessionID   string `json:"session_id"`
+	Message     string `json:"message"`
+	FileContent string `json:"file_content,omitempty"` // Full file text (bypasses chat 4096 limit via context injection)
+	FileName    string `json:"file_name,omitempty"`    // Original filename (must be .md)
 }
 
 // PMChatResponse represents the PM agent's reply.
@@ -125,10 +127,18 @@ func (s *Server) handlePMStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Choose initialization message based on PM state after StartInterview
+	// Bootstrap paths → WORKING or AWAIT_ARCHITECT; normal path → AWAIT_USER
+	initMessage := "Please describe what you want to work on and I'll help define it for implementation."
+	pmState, _ := s.getPMState()
+	if pmState == "WORKING" || pmState == "AWAIT_ARCHITECT" {
+		initMessage = "Give me a minute to check the environment and bootstrap Maestro's basic requirements before we get started."
+	}
+
 	// Return session ID
 	response := PMStartResponse{
 		SessionID: sessionID,
-		Message:   "Please describe what you want to work on and I'll help define it for implementation.",
+		Message:   initMessage,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -138,6 +148,9 @@ func (s *Server) handlePMStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePMChat implements POST /api/pm/chat - Send a message to the PM agent.
+// Supports optional file attachment (file_content + file_name fields).
+//
+//nolint:cyclop // Complexity from file validation + text handling in single endpoint is inherent
 func (s *Server) handlePMChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -157,25 +170,81 @@ func (s *Server) handlePMChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_id is required", http.StatusBadRequest)
 		return
 	}
-	if req.Message == "" {
-		http.Error(w, "message is required", http.StatusBadRequest)
+	// Require either a text message or a file attachment
+	if req.Message == "" && req.FileContent == "" {
+		http.Error(w, "message or file_content is required", http.StatusBadRequest)
 		return
-	}
-
-	// Post user message to product chat channel
-	s.logger.Info("PM chat message received (session: %s): %s", req.SessionID, req.Message)
-
-	postReq := &chat.PostRequest{
-		Author:  "@human",
-		Text:    req.Message,
-		Channel: "product",
 	}
 
 	ctx := r.Context()
-	if _, err := s.chatService.Post(ctx, postReq); err != nil {
-		s.logger.Error("Failed to post message to product chat: %v", err)
-		http.Error(w, "Failed to send message", http.StatusInternalServerError)
-		return
+
+	// Handle file attachment: inject full content into PM context, post short notification to chat
+	if req.FileContent != "" {
+		// Validate file extension
+		if req.FileName == "" || len(req.FileName) < 4 || req.FileName[len(req.FileName)-3:] != ".md" {
+			http.Error(w, "Only .md files are allowed", http.StatusBadRequest)
+			return
+		}
+		// Validate file size (100KB max)
+		if len(req.FileContent) > 100<<10 {
+			http.Error(w, "File too large (max 100KB)", http.StatusBadRequest)
+			return
+		}
+
+		// Get PM agent to inject file content directly into its context
+		pmAgent := s.dispatcher.GetAgent("pm-001")
+		if pmAgent == nil {
+			http.Error(w, "PM agent not found", http.StatusNotFound)
+			return
+		}
+
+		type SpecFileInjector interface {
+			InjectSpecFile(fileName, content string) error
+		}
+
+		pmDriver, ok := pmAgent.(SpecFileInjector)
+		if !ok {
+			s.logger.Error("PM agent does not implement SpecFileInjector interface")
+			http.Error(w, "PM agent does not support file injection", http.StatusInternalServerError)
+			return
+		}
+
+		if err := pmDriver.InjectSpecFile(req.FileName, req.FileContent); err != nil {
+			s.logger.Error("Failed to inject spec file to PM: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to process file: %s", err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		// Post short notification to chat so user sees confirmation
+		notification := fmt.Sprintf("Uploaded %s (%d bytes)", req.FileName, len(req.FileContent))
+		notifReq := &chat.PostRequest{
+			Author:  "@human",
+			Text:    notification,
+			Channel: "product",
+		}
+		if _, err := s.chatService.Post(ctx, notifReq); err != nil {
+			s.logger.Warn("Failed to post file notification to chat: %v", err)
+			// Non-fatal: file was already injected into PM context
+		}
+
+		s.logger.Info("PM file injected: %s (%d bytes, session: %s)", req.FileName, len(req.FileContent), req.SessionID)
+	}
+
+	// Post user text message to product chat channel (if present)
+	if req.Message != "" {
+		s.logger.Info("PM chat message received (session: %s): %s", req.SessionID, req.Message)
+
+		postReq := &chat.PostRequest{
+			Author:  "@human",
+			Text:    req.Message,
+			Channel: "product",
+		}
+
+		if _, err := s.chatService.Post(ctx, postReq); err != nil {
+			s.logger.Error("Failed to post message to product chat: %v", err)
+			http.Error(w, "Failed to send message", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Return success response (PM will see message via chat injection)
@@ -194,106 +263,6 @@ func (s *Server) handlePMChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePMPreview(w http.ResponseWriter, r *http.Request) {
 	// Redirect to the new /api/pm/preview/spec endpoint
 	s.handlePMPreviewGet(w, r)
-}
-
-// handlePMUpload implements POST /api/pm/upload - Upload a spec file directly to PM (bypass interview).
-//
-//nolint:cyclop // HTTP handler with validation steps, acceptable complexity
-func (s *Server) handlePMUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse multipart form
-	if err := r.ParseMultipartForm(100 << 10); err != nil { // 100KB max
-		s.logger.Warn("Failed to parse multipart form: %v", err)
-		http.Error(w, "Invalid multipart form", http.StatusBadRequest)
-		return
-	}
-
-	// Get the uploaded file
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		s.logger.Warn("No file found in upload: %v", err)
-		http.Error(w, "No file provided", http.StatusBadRequest)
-		return
-	}
-	defer func() {
-		if cerr := file.Close(); cerr != nil {
-			s.logger.Warn("Failed to close uploaded file: %v", cerr)
-		}
-	}()
-
-	// Validate file extension
-	if header.Filename == "" || len(header.Filename) < 4 || header.Filename[len(header.Filename)-3:] != ".md" {
-		http.Error(w, "Only .md files are allowed", http.StatusBadRequest)
-		return
-	}
-
-	// Validate file size
-	if header.Size > 100<<10 { // 100KB max
-		http.Error(w, "File too large (max 100KB)", http.StatusBadRequest)
-		return
-	}
-
-	// Check PM availability
-	if errCheck := s.checkPMAvailability(); errCheck != nil {
-		s.logger.Warn("PM availability check failed: %v", errCheck)
-		if errCheck.Error() == errDispatcherNotAvailable {
-			http.Error(w, "Dispatcher not available", http.StatusServiceUnavailable)
-		} else {
-			http.Error(w, "PM agent not available", http.StatusConflict)
-		}
-		return
-	}
-
-	// Read file content
-	content, err := io.ReadAll(file)
-	if err != nil {
-		s.logger.Error("Failed to read uploaded file: %v", err)
-		http.Error(w, "Failed to read file", http.StatusInternalServerError)
-		return
-	}
-
-	// Get PM agent from dispatcher
-	pmAgent := s.dispatcher.GetAgent("pm-001")
-	if pmAgent == nil {
-		http.Error(w, "PM agent not found", http.StatusNotFound)
-		return
-	}
-
-	// Type assert to PM driver to access UploadSpec method
-	type SpecUploader interface {
-		UploadSpec(markdown string) error
-	}
-
-	pmDriver, ok := pmAgent.(SpecUploader)
-	if !ok {
-		s.logger.Error("PM agent does not implement SpecUploader interface")
-		http.Error(w, "PM agent does not support spec upload", http.StatusInternalServerError)
-		return
-	}
-
-	// Call PM's UploadSpec method directly
-	s.logger.Info("Uploading spec to PM: %s (%d bytes)", header.Filename, header.Size)
-	if err := pmDriver.UploadSpec(string(content)); err != nil {
-		s.logger.Error("Failed to upload spec to PM: %v", err)
-		http.Error(w, "Failed to send spec to PM", http.StatusInternalServerError)
-		return
-	}
-
-	// Return success
-	w.WriteHeader(http.StatusCreated)
-	response := map[string]any{
-		"message":  "Spec file uploaded successfully and sent to PM for validation",
-		"filename": header.Filename,
-		"size":     header.Size,
-	}
-
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.logger.Error("Failed to encode upload response: %v", err)
-	}
 }
 
 // PMPreviewActionRequest represents a preview action request (continue interview or submit).

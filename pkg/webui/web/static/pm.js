@@ -8,6 +8,8 @@ class PMController {
         this.messageCount = 0;
         this.pmState = 'UNKNOWN';
         this.previewLoaded = false; // Track if preview has been loaded
+        this.attachedFile = null; // Currently attached file metadata
+        this.attachedFileContent = null; // File content as text
         this.initializeEventListeners();
         this.startStatusPolling();
         // Activate interview tab on load
@@ -20,34 +22,58 @@ class PMController {
             tab.addEventListener('click', (e) => this.switchTab(e.target.id.replace('tab-', '')));
         });
 
-        // Upload tab
-        const uploadArea = document.getElementById('upload-area');
-        const fileInput = document.getElementById('pm-spec-file');
-
-        uploadArea.addEventListener('click', () => fileInput.click());
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('border-maestro-blue', 'bg-blue-50');
-        });
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('border-maestro-blue', 'bg-blue-50');
-        });
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('border-maestro-blue', 'bg-blue-50');
-            const file = e.dataTransfer.files[0];
-            if (file) this.uploadSpec(file);
-        });
-        fileInput.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (file) this.uploadSpec(file);
-        });
-
         // Interview tab
         document.getElementById('start-interview-btn').addEventListener('click', () => this.startInterview());
         document.getElementById('interview-send-btn').addEventListener('click', () => this.sendInterviewMessage());
-        document.getElementById('interview-input').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.sendInterviewMessage();
+
+        // Textarea: Enter sends, Shift+Enter inserts newline
+        const textarea = document.getElementById('interview-input');
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendInterviewMessage();
+            }
+        });
+
+        // Auto-expand textarea on input (up to ~6 rows)
+        textarea.addEventListener('input', () => {
+            textarea.style.height = 'auto';
+            const maxHeight = 6 * 24; // ~6 rows at ~24px line height
+            textarea.style.height = Math.min(textarea.scrollHeight, maxHeight) + 'px';
+        });
+
+        // File upload button (paperclip)
+        document.getElementById('interview-file-btn').addEventListener('click', () => {
+            document.getElementById('interview-file-input').click();
+        });
+
+        // File input change handler
+        document.getElementById('interview-file-input').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) this.attachFile(file);
+            // Reset input so the same file can be re-selected
+            e.target.value = '';
+        });
+
+        // Remove attachment button
+        document.getElementById('interview-attachment-remove').addEventListener('click', () => {
+            this.clearAttachment();
+        });
+
+        // Drag-and-drop on the chat area
+        const chatSection = document.getElementById('interview-chat-section');
+        chatSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            chatSection.classList.add('ring-2', 'ring-maestro-blue', 'ring-opacity-50');
+        });
+        chatSection.addEventListener('dragleave', () => {
+            chatSection.classList.remove('ring-2', 'ring-maestro-blue', 'ring-opacity-50');
+        });
+        chatSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            chatSection.classList.remove('ring-2', 'ring-maestro-blue', 'ring-opacity-50');
+            const file = e.dataTransfer.files[0];
+            if (file) this.attachFile(file);
         });
 
         // Preview tab
@@ -115,18 +141,12 @@ class PMController {
                 break;
             case 'WORKING':
                 badge.classList.add('bg-blue-100', 'text-blue-800');
-                // Auto-switch to interview tab when PM transitions from upload to WORKING for bootstrap questions
-                // But respect user's demo tab selection
-                if (!skipAutoSwitch && this.currentTab === 'upload' && status.has_session) {
-                    this.switchTab('interview');
-                    // Show chat interface (session is already started by upload)
+                // Ensure chat interface is visible when PM is working with a session
+                if (!skipAutoSwitch && status.has_session && this.currentTab === 'interview') {
                     document.getElementById('interview-start-section').classList.add('hidden');
                     document.getElementById('interview-chat-section').classList.remove('hidden');
-
-                    // Set session ID for spec upload workflow (both local and maestro.js)
-                    // Use a pseudo-session ID since spec upload doesn't go through /api/pm/start
                     if (!this.sessionID) {
-                        this.sessionID = `pm_upload_${Date.now()}`;
+                        this.sessionID = `pm_session_${Date.now()}`;
                         window.maestroUI.pmSessionId = this.sessionID;
                     }
                 }
@@ -192,76 +212,51 @@ class PMController {
         }
     }
 
-    async uploadSpec(file) {
+    attachFile(file) {
+        // Validate .md extension
         if (!file.name.endsWith('.md')) {
-            this.showUploadStatus('Only .md files are allowed', 'error');
+            alert('Only .md files are supported.');
             return;
         }
 
+        // Validate size (100KB max)
         if (file.size > 100 * 1024) {
-            this.showUploadStatus('File too large (max 100KB)', 'error');
+            alert('File too large (max 100KB).');
             return;
         }
 
-        // Allow upload in WAITING (before interview) and AWAIT_USER (during interview)
-        // Block upload in WORKING (actively processing)
-        if (this.pmState !== 'WAITING' && this.pmState !== 'AWAIT_USER') {
-            this.showUploadStatus(`PM is busy (state: ${this.pmState})`, 'error');
-            return;
-        }
-
-        const formData = new FormData();
-        formData.append('file', file);
-
-        try {
-            this.showUploadStatus('Uploading...', 'loading');
-
-            const response = await fetch('/api/pm/upload', {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) {
-                const error = await response.text();
-                throw new Error(error);
-            }
-
-            const result = await response.json();
-            this.showUploadStatus(result.message, 'success');
-
-            // Clear file input
-            document.getElementById('pm-spec-file').value = '';
-        } catch (error) {
-            this.showUploadStatus(`Upload failed: ${error.message}`, 'error');
-        }
+        // Read file content
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            this.attachedFile = { name: file.name, size: file.size };
+            this.attachedFileContent = e.target.result;
+            this.showAttachment(file.name, file.size);
+        };
+        reader.readAsText(file);
     }
 
-    showUploadStatus(message, type) {
-        const statusDiv = document.getElementById('upload-status');
-        const statusText = document.getElementById('upload-status-text');
+    showAttachment(name, size) {
+        const sizeStr = size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+        document.getElementById('interview-attachment-name').textContent = name;
+        document.getElementById('interview-attachment-size').textContent = `(${sizeStr})`;
+        document.getElementById('interview-attachment').classList.remove('hidden');
+    }
 
-        statusDiv.classList.remove('hidden', 'bg-green-100', 'border-green-300', 'bg-red-100', 'border-red-300', 'bg-blue-100', 'border-blue-300');
-        statusText.classList.remove('text-green-800', 'text-red-800', 'text-blue-800');
-
-        statusText.textContent = message;
-        statusDiv.classList.remove('hidden');
-
-        if (type === 'success') {
-            statusDiv.classList.add('bg-green-100', 'border-green-300');
-            statusText.classList.add('text-green-800');
-        } else if (type === 'error') {
-            statusDiv.classList.add('bg-red-100', 'border-red-300');
-            statusText.classList.add('text-red-800');
-        } else if (type === 'loading') {
-            statusDiv.classList.add('bg-blue-100', 'border-blue-300');
-            statusText.classList.add('text-blue-800');
-        }
+    clearAttachment() {
+        this.attachedFile = null;
+        this.attachedFileContent = null;
+        document.getElementById('interview-attachment').classList.add('hidden');
     }
 
     async startInterview() {
         const expertise = document.getElementById('expertise-level').value;
+        const btn = document.getElementById('start-interview-btn');
 
         try {
+            // Disable button and show spinner during the POST
+            btn.disabled = true;
+            btn.textContent = 'Starting...';
+
             const response = await fetch('/api/pm/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -283,31 +278,56 @@ class PMController {
             this.addInterviewMessage('system', result.message);
         } catch (error) {
             alert(`Failed to start interview: ${error.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Start Interview';
         }
     }
 
     async sendInterviewMessage() {
-        const input = document.getElementById('interview-input');
-        const message = input.value.trim();
+        const textarea = document.getElementById('interview-input');
+        const message = textarea.value.trim();
+        const hasFile = this.attachedFile !== null;
 
-        if (!message || !this.sessionID) {
-            console.log('[PM] sendInterviewMessage blocked:', { message: !!message, sessionID: this.sessionID });
+        // Need either a message or a file
+        if (!message && !hasFile) return;
+        if (!this.sessionID) {
+            console.log('[PM] sendInterviewMessage blocked: no session');
             return;
         }
-        console.log('[PM] sendInterviewMessage sending:', { sessionID: this.sessionID, message: message.substring(0, 50) });
+
+        // Default message when only a file is attached
+        const textToSend = message || "I've uploaded a specification file.";
+
+        console.log('[PM] sendInterviewMessage sending:', {
+            sessionID: this.sessionID,
+            message: textToSend.substring(0, 50),
+            hasFile: hasFile
+        });
 
         try {
             // Clear input immediately
-            input.value = '';
+            textarea.value = '';
+            textarea.style.height = 'auto';
+
+            // Build request body
+            const body = {
+                session_id: this.sessionID,
+                message: textToSend
+            };
+            if (hasFile) {
+                body.file_content = this.attachedFileContent;
+                body.file_name = this.attachedFile.name;
+            }
+
+            // Clear attachment after capturing content
+            if (hasFile) this.clearAttachment();
 
             // Post message to chat API - maestro.js polling will display it
             const response = await fetch('/api/pm/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    session_id: this.sessionID,
-                    message: message
-                })
+                body: JSON.stringify(body)
             });
 
             if (!response.ok) {

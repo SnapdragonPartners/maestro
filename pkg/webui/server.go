@@ -157,7 +157,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/queues", s.requireAuth(s.handleQueues))
 	mux.HandleFunc("/api/stories", s.requireAuth(s.handleStories))
 	// NOTE: /api/upload removed - all specs must go through PM for validation
-	// Use /api/pm/upload instead
+	// Specs are uploaded inline via /api/pm/chat with file_content field
 	mux.HandleFunc("/api/answer", s.requireAuth(s.handleAnswer))
 	mux.HandleFunc("/api/shutdown", s.requireAuth(s.handleShutdown))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
@@ -171,7 +171,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pm/preview", s.requireAuth(s.handlePMPreview))
 	mux.HandleFunc("/api/pm/preview/action", s.requireAuth(s.handlePMPreviewAction))
 	mux.HandleFunc("/api/pm/preview/spec", s.requireAuth(s.handlePMPreviewGet))
-	mux.HandleFunc("/api/pm/upload", s.requireAuth(s.handlePMUpload))
 	mux.HandleFunc("/api/pm/status", s.requireAuth(s.handlePMStatus))
 
 	// Demo endpoints - application demo mode

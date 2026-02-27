@@ -938,6 +938,37 @@ The user has uploaded a specification file (%d bytes). Bootstrap requirements ar
 	return nil
 }
 
+// InjectSpecFile stores an uploaded spec file into PM state and injects it into the LLM context.
+// This is used by the chat handler when a user attaches a .md file during the interview.
+// Unlike UploadSpec(), this does NOT transition state — StartInterview() already handled that.
+// The full file content bypasses the chat 4096-char limit via direct context injection.
+func (d *Driver) InjectSpecFile(fileName, content string) error {
+	currentState := d.GetCurrentState()
+	// Reject file injection in terminal/error states
+	if currentState == proto.StateDone || currentState == proto.StateError {
+		return fmt.Errorf("cannot accept files in state %s", currentState)
+	}
+
+	// Store in state (same keys as UploadSpec)
+	d.SetStateData(StateKeyUserSpecMd, content)
+	d.SetStateData(StateKeySpecUploaded, true)
+
+	// Inject full content into context so the LLM can see it (bypasses chat truncation)
+	specMessage := fmt.Sprintf(`# User Uploaded Specification File
+
+The user has uploaded a specification file: %s (%d bytes).
+Review this spec for completeness. If it looks good, use spec_submit to prepare it for preview.
+If clarification is needed, use chat_ask_user to ask the user.
+
+**The uploaded specification:**
+`+"```markdown\n%s\n```", fileName, len(content), content)
+
+	d.contextManager.AddMessage("system", specMessage)
+	d.logger.Info("📎 Spec file injected into context: %s (%d bytes)", fileName, len(content))
+
+	return nil
+}
+
 // PreviewAction handles preview actions from the WebUI.
 // This is called when the user clicks "Continue Interview" or "Submit for Development".
 // Valid actions: "continue_interview", "submit_to_architect".
