@@ -235,6 +235,19 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			c.logger.Info("🧑‍💻 Done tool detected: %s", summary)
 			c.logger.Info("🧑‍💻 Advancing to TESTING state")
 			return StateTesting, false, nil
+		case tools.SignalStoryComplete:
+			// story_complete was called from CODING - story already implemented
+			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
+			if !ok {
+				return proto.StateError, false, logx.Errorf("STORY_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to process story complete data")
+			}
+
+			c.logger.Info("✅ Story completion claim submitted from CODING, transitioning to PLAN_REVIEW")
+			return StatePlanReview, false, nil
 		case tools.SignalCoding:
 			// todos_add was called during coding - add todos and continue coding
 			// This handles the case where LLM calls todos_add during CODING state

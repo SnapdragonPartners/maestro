@@ -208,6 +208,33 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 		}
 		return proto.StateError, false, logx.Errorf("Claude Code coding error: %s", errMsg)
 
+	case claude.SignalStoryComplete:
+		// story_complete called from coding - story already implemented
+		sm.SetStateData(KeyCodingCompletedAt, time.Now().UTC())
+
+		// Store evidence from Claude Code result
+		if result.Evidence != "" {
+			sm.SetStateData(KeyCompletionDetails, result.Evidence)
+		}
+
+		// Build effect data for processStoryCompleteDataFromEffect
+		effectData := map[string]any{
+			"evidence":            result.Evidence,
+			"exploration_summary": result.ExplorationSummary,
+		}
+		// Confidence is required by processStoryCompleteDataFromEffect but
+		// Claude Code may not provide it; default to HIGH since the coder is confident
+		if result.Evidence != "" {
+			effectData["confidence"] = "HIGH"
+		}
+
+		if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to process story complete data from Claude Code")
+		}
+
+		c.logger.Info("✅ Story completion claim from Claude Code coding, transitioning to PLAN_REVIEW")
+		return StatePlanReview, false, nil
+
 	case claude.SignalPlanComplete:
 		// Unexpected - we're in coding mode, not planning
 		c.logger.Warn("Claude Code sent plan_complete signal during coding mode")

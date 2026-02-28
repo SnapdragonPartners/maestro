@@ -60,9 +60,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 			summary = "Story requirements already satisfied during analysis"
 		}
 
-		confidence := "high - no changes needed"
-
-		codeContent := c.getCompletionRequestContent(summary, evidence, confidence, originalStory, plan)
+		codeContent := c.getCompletionRequestContent(summary, evidence, originalStory)
 
 		approvalEff = effect.NewApprovalEffect(codeContent, "Story completion verified with evidence", proto.ApprovalTypeCompletion)
 		approvalEff.StoryID = storyID
@@ -309,57 +307,27 @@ The following plan was already approved in PLAN_REVIEW and is immutable. Use it 
 }
 
 // getCompletionRequestContent generates completion request content using templates (for no-work scenarios).
-func (c *Coder) getCompletionRequestContent(summary, evidence, confidence, originalStory, plan string) string {
+func (c *Coder) getCompletionRequestContent(summary, evidence, originalStory string) string {
 	// Build template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
 			"Summary":       summary,
 			"Evidence":      evidence,
-			"Confidence":    confidence,
 			"OriginalStory": originalStory,
-			"ApprovedPlan":  plan,
 		},
 	}
 
+	fallback := fmt.Sprintf("## Completion Summary\n\n%s\n\n## Evidence\n\n%s\n\n## Original Story\n\n%s", summary, evidence, originalStory)
+
 	// Render template
 	if c.renderer == nil {
-		return fmt.Sprintf(`## Completion Summary
-%s
-
-## Evidence
-%s
-
-## Confidence
-%s
-
-## Original Story
-%s
-
-## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
-The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the completion matches what was approved:
-
-%s`, summary, evidence, confidence, originalStory, plan)
+		return fallback
 	}
 
 	content, err := c.renderer.Render(templates.CompletionRequestTemplate, templateData)
 	if err != nil {
 		c.logger.Warn("Failed to render completion request template: %v", err)
-		return fmt.Sprintf(`## Completion Summary
-%s
-
-## Evidence
-%s
-
-## Confidence
-%s
-
-## Original Story
-%s
-
-## Reference: Approved Plan (DO NOT EVALUATE - ALREADY APPROVED)
-The following plan was already approved in PLAN_REVIEW and is immutable. Use it only as context to verify the completion matches what was approved:
-
-%s`, summary, evidence, confidence, originalStory, plan)
+		return fallback
 	}
 
 	return content

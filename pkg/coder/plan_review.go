@@ -3,7 +3,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -76,11 +75,12 @@ func (c *Coder) handlePlanReview(ctx context.Context, sm *agent.BaseStateMachine
 
 		// Return to appropriate state based on approval type
 		if approvalType == proto.ApprovalTypeCompletion {
-			// Set resume input for coding session resume (if using Claude Code mode)
+			// Completion claim rejected - return to PLANNING to re-analyze
+			// Going to CODING would be a dead end since the coder determined no work was needed
 			if approvalResult.Feedback != "" {
-				sm.SetStateData(KeyResumeInput, fmt.Sprintf("Code review feedback - changes requested:\n\n%s\n\nPlease address these issues and continue implementation.", approvalResult.Feedback))
+				sm.SetStateData(KeyResumeInput, fmt.Sprintf("Completion claim feedback - changes requested:\n\n%s\n\nPlease re-analyze the story and either submit a revised completion claim with better evidence, or create an implementation plan.", approvalResult.Feedback))
 			}
-			return StateCoding, false, nil // Completion needs changes, go back to coding
+			return StatePlanning, false, nil // Completion needs changes, go back to planning
 		}
 		// Plan needs changes - set resume input for planning session resume (if using Claude Code mode)
 		// Note: We reuse KeyResumeInput since planning and coding never run simultaneously
@@ -211,40 +211,38 @@ func (c *Coder) getPlanApprovalContent(sm *agent.BaseStateMachine) string {
 
 // getCompletionContent generates completion request content using templates.
 func (c *Coder) getCompletionContent(sm *agent.BaseStateMachine) string {
+	// Get completion evidence from state (stored by processStoryCompleteDataFromEffect)
+	evidence := utils.GetStateValueOr[string](sm, KeyCompletionDetails, "")
+
 	// Get completion summary from context
 	summary := c.getLastAssistantMessage()
 	if summary == "" {
-		summary = "Story implementation completed. Ready for final review."
+		summary = "Story requirements already satisfied during analysis"
 	}
 
-	// Get files created
-	filesCreated := utils.GetStateValueOr[[]string](sm, KeyFilesCreated, []string{})
-	filesCreatedStr := "No files created information available"
-	if len(filesCreated) > 0 {
-		filesCreatedStr = strings.Join(filesCreated, ", ")
-	}
-
-	// Get story ID
-	storyID := c.GetStoryID()
+	// Get original story for architect convenience
+	originalStory := utils.GetStateValueOr[string](sm, string(stateDataKeyTaskContent), "")
 
 	// Build template data
 	templateData := &templates.TemplateData{
 		Extra: map[string]any{
-			"StoryID":      storyID,
-			"Summary":      summary,
-			"FilesCreated": filesCreatedStr,
+			"Summary":       summary,
+			"Evidence":      evidence,
+			"OriginalStory": originalStory,
 		},
 	}
 
+	fallback := fmt.Sprintf("## Completion Summary\n\n%s\n\n## Evidence\n\n%s\n\n## Original Story\n\n%s", summary, evidence, originalStory)
+
 	// Render template
 	if c.renderer == nil {
-		return fmt.Sprintf("## Completion Summary\n\n%s\n\n## Files Created\n\n%s", summary, filesCreatedStr)
+		return fallback
 	}
 
 	content, err := c.renderer.Render(templates.CompletionRequestTemplate, templateData)
 	if err != nil {
 		c.logger.Warn("Failed to render completion request template: %v", err)
-		return fmt.Sprintf("## Completion Summary\n\n%s\n\n## Files Created\n\n%s", summary, filesCreatedStr)
+		return fallback
 	}
 
 	return content
