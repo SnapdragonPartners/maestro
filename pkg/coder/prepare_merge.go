@@ -527,15 +527,16 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 
 	c.logger.Info("🔀 Rebase successful, pushing with --force-with-lease")
 
-	// Step 4: Fetch from GitHub to get fresh tracking refs for --force-with-lease safety.
-	// Without this, --force-with-lease fails with "stale info" because the local 'github'
-	// tracking ref doesn't match what's actually on GitHub.
-	c.logger.Debug("🔀 Fetching github/%s and github/%s for --force-with-lease safety", targetBranch, remoteBranch)
+	// Step 4: Fetch from forge remote to get fresh tracking refs for --force-with-lease safety.
+	// Without this, --force-with-lease fails with "stale info" because the local tracking
+	// ref doesn't match what's actually on the remote.
+	remote := c.getPushRemote(ctx)
+	c.logger.Debug("🔀 Fetching %s/%s and %s/%s for --force-with-lease safety", remote, targetBranch, remote, remoteBranch)
 	if err := c.fetchFromForgeOnHost(ctx, targetBranch, remoteBranch); err != nil {
 		// If the remote branch doesn't exist yet, that's OK - just fetch target branch
 		c.logger.Debug("🔀 Fetch of both branches failed, trying just target branch: %v", err)
 		if err := c.fetchFromForgeOnHost(ctx, targetBranch); err != nil {
-			c.logger.Warn("🔀 GitHub fetch failed (continuing anyway): %v", err)
+			c.logger.Warn("🔀 Forge fetch failed (continuing anyway): %v", err)
 		}
 	}
 

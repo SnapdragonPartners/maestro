@@ -232,6 +232,11 @@ class PMController {
             this.attachedFileContent = e.target.result;
             this.showAttachment(file.name, file.size);
         };
+        reader.onerror = () => {
+            this.attachedFile = null;
+            this.attachedFileContent = null;
+            alert('Failed to read file. Please try again.');
+        };
         reader.readAsText(file);
     }
 

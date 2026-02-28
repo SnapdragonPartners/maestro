@@ -192,8 +192,11 @@ func (d *Driver) loadStoriesFromSubmitResultData(_ context.Context, specMarkdown
 
 		title, content := d.requirementToStoryContent(req)
 
-		// Map ordinal ID to story ID
+		// Map ordinal ID to story ID, detecting duplicates which would corrupt dependency resolution
 		if req.ID != "" {
+			if _, exists := ordinalToStory[req.ID]; exists {
+				return "", nil, fmt.Errorf("duplicate requirement ID %q; IDs must be unique within a spec", req.ID)
+			}
 			ordinalToStory[req.ID] = storyID
 		}
 

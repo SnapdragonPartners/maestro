@@ -40,10 +40,11 @@ func RenderBootstrapSpec(requirements []workspace.BootstrapRequirementID, logger
 		platform = cfg.Project.PrimaryPlatform
 	}
 
-	// Load language pack
-	pack, warnings, err := packs.Get(platform)
-	if err != nil {
-		return "", fmt.Errorf("failed to load pack for platform %s: %w", platform, err)
+	// Log pack warnings (if any) for diagnostics
+	_, warnings, packErr := packs.Get(platform)
+	if packErr != nil {
+		logger.Warn("Failed to load pack for platform %s: %v", platform, packErr)
+		// Continue — RenderBootstrapSpecWithConfig will also try and degrade gracefully
 	}
 	for _, w := range warnings {
 		logger.Warn("Pack warning: %s", w)
@@ -72,24 +73,8 @@ func RenderBootstrapSpec(requirements []workspace.BootstrapRequirementID, logger
 		gitRepoURL = cfg.Git.RepoURL
 	}
 
-	// Build template data from config
-	data := bootstraptpl.NewTemplateDataWithConfig(
-		projectName,
-		platform,
-		pack.DisplayName,
-		containerName,
-		gitRepoURL,
-		dockerfilePath,
-		failures,
-	)
-
-	// Set the language pack on the template data
-	if _, packErr := data.SetPack(); packErr != nil {
-		logger.Warn("Failed to set pack on template data: %v", packErr)
-		// Continue without pack - template will render with defaults
-	}
-
-	// Render the template
+	// Render the template — RenderBootstrapSpecWithConfig handles template data
+	// construction and pack loading internally
 	renderer, err := bootstraptpl.NewRenderer()
 	if err != nil {
 		return "", fmt.Errorf("failed to create bootstrap renderer: %w", err)
