@@ -17,6 +17,7 @@ import (
 	_ "orchestrator/pkg/forge/gitea"  // Auto-register Gitea client.
 	_ "orchestrator/pkg/forge/github" // Auto-register GitHub client.
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/utils"
@@ -298,36 +299,66 @@ func (c *Coder) getTargetBranch() (string, error) {
 	return targetBranch, nil
 }
 
-// pushBranch pushes the local branch to remote origin.
-// SECURITY: This runs on the HOST (not in container) to prevent coders from pushing unapproved code.
-// The container has no git credentials - only the host can push.
-func (c *Coder) pushBranch(ctx context.Context, localBranch, remoteBranch string) error {
-	c.logger.Debug("🔀 Pushing branch %s to origin as %s (host-side)", localBranch, remoteBranch)
+// getPushRemote returns the remote name to use for host-side push/fetch operations.
+// Returns "forge" if it exists (airplane mode with Gitea), otherwise "github".
+func (c *Coder) getPushRemote(ctx context.Context) string {
+	// Check if 'forge' remote exists (airplane mode)
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "forge")
+	cmd.Dir = c.workDir
+	if err := cmd.Run(); err == nil {
+		return "forge"
+	}
+	return "github"
+}
 
-	// GITHUB_TOKEN is required for push authentication
+// validatePushCredentials checks that the appropriate credentials are available
+// for the push remote. In standard mode, requires GITHUB_TOKEN.
+// In airplane mode with 'forge' remote, credentials are embedded in the remote URL.
+func (c *Coder) validatePushCredentials(remote string) error {
+	if remote == "forge" {
+		// Forge remote has auth token embedded in the URL — no env var needed
+		return nil
+	}
+	// Standard mode: GITHUB_TOKEN required for GitHub push
 	if !config.HasGitHubToken() {
 		return fmt.Errorf("GITHUB_TOKEN not found - cannot push without authentication")
 	}
+	return nil
+}
+
+// pushBranch pushes the local branch to the active push remote (github or forge).
+// SECURITY: This runs on the HOST (not in container) to prevent coders from pushing unapproved code.
+// The container has no git credentials - only the host can push.
+func (c *Coder) pushBranch(ctx context.Context, localBranch, remoteBranch string) error {
+	remote := c.getPushRemote(ctx)
+	c.logger.Debug("🔀 Pushing branch %s to %s as %s (host-side)", localBranch, remote, remoteBranch)
+
+	if err := c.validatePushCredentials(remote); err != nil {
+		return err
+	}
+
+	// Log push invariants for forensic debugging
+	c.logPushInvariants(ctx, localBranch)
 
 	// Create context with timeout for the push operation
 	pushCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	// Run git push on the HOST (not in container) using the workspace path
-	// The workspace is bind-mounted, so host-side git operations work on the same files
-	cmd := exec.CommandContext(pushCtx, "git", "push", "-u", "origin", fmt.Sprintf("%s:%s", localBranch, remoteBranch))
+	// Run git push on the HOST (not in container) using the workspace path.
+	// Push to active remote ('forge' in airplane mode, 'github' in standard mode).
+	cmd := exec.CommandContext(pushCtx, "git", "push", "-u", remote, fmt.Sprintf("%s:%s", localBranch, remoteBranch))
 	cmd.Dir = c.workDir
 
-	// Inherit environment and ensure GITHUB_TOKEN is available for git credential helper
+	// Inherit environment and ensure credentials are available for git credential helper
 	cmd.Env = os.Environ()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		c.logger.Error("🔀 git push failed: %v, output: %s", err, string(output))
+		c.logger.Error("🔀 git push to %s failed: %v, output: %s", remote, err, string(output))
 		return fmt.Errorf("git push failed: %w (output: %s)", err, string(output))
 	}
 
-	c.logger.Info("🔀 Branch pushed successfully (host-side)")
+	c.logger.Info("🔀 Branch pushed successfully (host-side, %s remote)", remote)
 	return nil
 }
 
@@ -453,23 +484,22 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 		Env:     []string{},
 	}
 
-	// Step 1: Fetch latest from origin (both target branch and our remote branch)
-	// We need to fetch the remote branch too so --force-with-lease has an up-to-date reference.
-	// Without this, --force-with-lease fails with "stale info" because the local tracking ref
-	// doesn't match what's actually on the remote.
-	// SECURITY: Run fetch on HOST (not in container) because containers don't have GITHUB_TOKEN.
-	c.logger.Debug("🔀 Fetching latest from origin/%s and origin/%s", targetBranch, remoteBranch)
-	err := c.fetchFromOriginOnHost(ctx, targetBranch, remoteBranch)
-	if err != nil {
-		// If the remote branch doesn't exist yet, that's OK - just fetch target branch
-		c.logger.Debug("🔀 Fetch of both branches failed, trying just target branch: %v", err)
-		err = c.fetchFromOriginOnHost(ctx, targetBranch)
-		if err != nil {
-			return fmt.Errorf("git fetch failed: %w", err)
-		}
+	// Step 1: Refresh mirror from GitHub (host-side) to get latest changes.
+	c.logger.Debug("🔀 Refreshing mirror from GitHub before rebase")
+	if err := c.refreshMirrorOnHost(ctx); err != nil {
+		c.logger.Warn("🔀 Mirror refresh failed (continuing with stale mirror): %v", err)
+		// Continue anyway — mirror may still have sufficient data
 	}
 
-	// Step 2: Attempt rebase onto origin/targetBranch
+	// Step 2: Fetch latest from origin (mirror) inside the container.
+	// Now that mirror is refreshed, container can pick up changes via the RO mount.
+	c.logger.Debug("🔀 Fetching latest from origin (mirror) in container")
+	if _, err := c.longRunningExecutor.Run(ctx, []string{"git", "fetch", "origin", targetBranch}, opts); err != nil {
+		c.logger.Warn("🔀 Container fetch from origin (mirror) failed: %v", err)
+		// Continue anyway — rebase will use whatever refs are available
+	}
+
+	// Step 3: Attempt rebase onto origin/targetBranch
 	c.logger.Debug("🔀 Rebasing onto origin/%s", targetBranch)
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "rebase", fmt.Sprintf("origin/%s", targetBranch)}, opts)
 	if err != nil {
@@ -497,7 +527,20 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 
 	c.logger.Info("🔀 Rebase successful, pushing with --force-with-lease")
 
-	// Step 3: Push with --force-with-lease (safer than --force, prevents overwriting others' work)
+	// Step 4: Fetch from forge remote to get fresh tracking refs for --force-with-lease safety.
+	// Without this, --force-with-lease fails with "stale info" because the local tracking
+	// ref doesn't match what's actually on the remote.
+	remote := c.getPushRemote(ctx)
+	c.logger.Debug("🔀 Fetching %s/%s and %s/%s for --force-with-lease safety", remote, targetBranch, remote, remoteBranch)
+	if err := c.fetchFromForgeOnHost(ctx, targetBranch, remoteBranch); err != nil {
+		// If the remote branch doesn't exist yet, that's OK - just fetch target branch
+		c.logger.Debug("🔀 Fetch of both branches failed, trying just target branch: %v", err)
+		if err := c.fetchFromForgeOnHost(ctx, targetBranch); err != nil {
+			c.logger.Warn("🔀 Forge fetch failed (continuing anyway): %v", err)
+		}
+	}
+
+	// Step 5: Push with --force-with-lease (safer than --force, prevents overwriting others' work)
 	// SECURITY: Run on HOST (not in container) to prevent coders from pushing unapproved code
 	if err := c.pushBranchForceWithLease(ctx, localBranch, remoteBranch); err != nil {
 		return err
@@ -507,15 +550,15 @@ func (c *Coder) attemptRebaseAndRetryPush(ctx context.Context, localBranch, remo
 	return nil
 }
 
-// fetchFromOriginOnHost fetches from origin on the HOST (not in container).
-// This is required because containers don't have GITHUB_TOKEN for private repo authentication.
-// Runs fetch on host where git credential helper has access to GITHUB_TOKEN.
-func (c *Coder) fetchFromOriginOnHost(ctx context.Context, branches ...string) error {
-	c.logger.Debug("🔀 Fetching from origin (host-side): %v", branches)
+// fetchFromForgeOnHost fetches from the active push remote on the HOST (not in container).
+// Uses 'forge' remote in airplane mode, 'github' otherwise.
+// Used to keep tracking refs fresh for --force-with-lease safety.
+func (c *Coder) fetchFromForgeOnHost(ctx context.Context, branches ...string) error {
+	remote := c.getPushRemote(ctx)
+	c.logger.Debug("🔀 Fetching from %s remote (host-side): %v", remote, branches)
 
-	// GITHUB_TOKEN is required for fetch authentication on private repos
-	if !config.HasGitHubToken() {
-		return fmt.Errorf("GITHUB_TOKEN not found - cannot fetch without authentication")
+	if err := c.validatePushCredentials(remote); err != nil {
+		return err
 	}
 
 	// Create context with timeout for the fetch operation
@@ -523,53 +566,109 @@ func (c *Coder) fetchFromOriginOnHost(ctx context.Context, branches ...string) e
 	defer cancel()
 
 	// Build git fetch command with branches
-	args := []string{"fetch", "origin"}
+	args := []string{"fetch", remote}
 	args = append(args, branches...)
 
 	// Run git fetch on the HOST (not in container)
 	cmd := exec.CommandContext(fetchCtx, "git", args...)
 	cmd.Dir = c.workDir
 
-	// Inherit environment and ensure GITHUB_TOKEN is available for git credential helper
+	// Inherit environment and ensure credentials are available for git credential helper
 	cmd.Env = os.Environ()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		c.logger.Error("🔀 git fetch failed: %v, output: %s", err, string(output))
-		return fmt.Errorf("git fetch failed: %w (output: %s)", err, string(output))
+		c.logger.Error("🔀 git fetch %s failed: %v, output: %s", remote, err, string(output))
+		return fmt.Errorf("git fetch %s failed: %w (output: %s)", remote, err, string(output))
 	}
 
 	return nil
 }
 
-// pushBranchForceWithLease pushes the local branch to remote with --force-with-lease.
+// pushBranchForceWithLease pushes the local branch to the active push remote with --force-with-lease.
 // SECURITY: This runs on the HOST (not in container) to prevent coders from pushing unapproved code.
 func (c *Coder) pushBranchForceWithLease(ctx context.Context, localBranch, remoteBranch string) error {
-	c.logger.Debug("🔀 Pushing branch %s with --force-with-lease (host-side)", localBranch)
+	remote := c.getPushRemote(ctx)
+	c.logger.Debug("🔀 Pushing branch %s with --force-with-lease to %s (host-side)", localBranch, remote)
 
-	// GITHUB_TOKEN is required for push authentication
-	if !config.HasGitHubToken() {
-		return fmt.Errorf("GITHUB_TOKEN not found - cannot push without authentication")
+	if err := c.validatePushCredentials(remote); err != nil {
+		return err
 	}
+
+	// Log push invariants for forensic debugging
+	c.logPushInvariants(ctx, localBranch)
 
 	// Create context with timeout for the push operation
 	pushCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	// Run git push on the HOST (not in container)
-	cmd := exec.CommandContext(pushCtx, "git", "push", "--force-with-lease", "-u", "origin",
+	// Run git push on the HOST (not in container).
+	cmd := exec.CommandContext(pushCtx, "git", "push", "--force-with-lease", "-u", remote,
 		fmt.Sprintf("%s:%s", localBranch, remoteBranch))
 	cmd.Dir = c.workDir
 
-	// Inherit environment and ensure GITHUB_TOKEN is available for git credential helper
+	// Inherit environment and ensure credentials are available for git credential helper
 	cmd.Env = os.Environ()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		c.logger.Error("🔀 git push --force-with-lease failed: %v, output: %s", err, string(output))
+		c.logger.Error("🔀 git push --force-with-lease to %s failed: %v, output: %s", remote, err, string(output))
 		return fmt.Errorf("git push --force-with-lease failed: %w (output: %s)", err, string(output))
 	}
 
+	return nil
+}
+
+// logPushInvariants logs the local HEAD, origin/<target>, and github/<target> SHAs
+// before a push operation. Provides a forensic trail for debugging push safety issues.
+func (c *Coder) logPushInvariants(ctx context.Context, localBranch string) {
+	targetBranch, _ := c.getTargetBranch()
+
+	// Helper to get SHA quietly
+	getSHA := func(ref string) string {
+		cmd := exec.CommandContext(ctx, "git", "rev-parse", "--short", ref)
+		cmd.Dir = c.workDir
+		out, err := cmd.Output()
+		if err != nil {
+			return "<unknown>"
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	remote := c.getPushRemote(ctx)
+	localHEAD := getSHA("HEAD")
+	originTarget := getSHA(fmt.Sprintf("origin/%s", targetBranch))
+	remoteTarget := getSHA(fmt.Sprintf("%s/%s", remote, targetBranch))
+	remoteBranch := getSHA(fmt.Sprintf("%s/%s", remote, localBranch))
+
+	c.logger.Info("🔀 Push invariants: HEAD=%s origin/%s=%s %s/%s=%s %s/%s=%s",
+		localHEAD, targetBranch, originTarget, remote, targetBranch, remoteTarget, remote, localBranch, remoteBranch)
+}
+
+// refreshMirrorOnHost refreshes the local mirror from GitHub (host-side).
+// This ensures the mirror has the latest changes before any rebase operation.
+// Includes recovery-on-failure: if refresh fails, deletes and reclones the mirror.
+func (c *Coder) refreshMirrorOnHost(ctx context.Context) error {
+	projectDir := config.GetProjectDir()
+	if projectDir == "" {
+		return fmt.Errorf("project directory not configured")
+	}
+
+	mirrorMgr := mirror.NewManager(projectDir)
+	if err := mirrorMgr.RefreshFromForge(ctx); err != nil {
+		c.logger.Warn("Mirror refresh failed, attempting reclone: %v", err)
+		mirrorPath, pathErr := mirrorMgr.GetMirrorPath()
+		if pathErr != nil {
+			return fmt.Errorf("mirror recovery failed (cannot get path): %w", pathErr)
+		}
+		if removeErr := os.RemoveAll(mirrorPath); removeErr != nil {
+			return fmt.Errorf("mirror recovery failed (cannot remove): %w", removeErr)
+		}
+		if _, recloneErr := mirrorMgr.EnsureMirror(ctx); recloneErr != nil {
+			return fmt.Errorf("mirror recovery failed (reclone): %w", recloneErr)
+		}
+		c.logger.Info("Mirror recovered via reclone")
+	}
 	return nil
 }
 

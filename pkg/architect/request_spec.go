@@ -19,25 +19,29 @@ import (
 func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) (*proto.AgentMsg, error) {
 	d.logger.Info("🔍 Architect reviewing spec from PM")
 
-	// Extract spec markdown from Content (user requirements)
+	// Extract spec markdown from Content
 	userSpec := approvalPayload.Content
 	if userSpec == "" {
-		return nil, fmt.Errorf("user spec not found in approval request Content field")
+		return nil, fmt.Errorf("spec not found in approval request Content field")
 	}
 
-	// Render infrastructure spec from bootstrap requirements (architect owns technical details)
-	// This converts requirement IDs to full technical specification using language pack
+	// Detect if this is a bootstrap spec (Spec 0) sent separately from user spec
+	isBootstrapSpec := approvalPayload.Metadata != nil && approvalPayload.Metadata["spec_type"] == "bootstrap"
+
+	// Handle infrastructure spec rendering based on spec type
 	var infrastructureSpec string
-	if len(approvalPayload.BootstrapRequirements) > 0 {
-		// Convert string IDs back to typed IDs
+	if isBootstrapSpec {
+		// Bootstrap spec: Content IS the complete rendered spec, no additional rendering needed
+		d.logger.Info("📋 Received bootstrap spec (Spec 0) - Content contains complete spec (%d bytes)", len(userSpec))
+	} else if len(approvalPayload.BootstrapRequirements) > 0 {
+		// DEPRECATED: Legacy bundled bootstrap requirements in user spec
+		// Convert string IDs back to typed IDs and render
+		d.logger.Warn("⚠️ Received bundled BootstrapRequirements (deprecated) - use Spec 0 instead")
 		reqIDs := make([]workspace.BootstrapRequirementID, 0, len(approvalPayload.BootstrapRequirements))
 		for _, id := range approvalPayload.BootstrapRequirements {
 			reqIDs = append(reqIDs, workspace.BootstrapRequirementID(id))
 		}
 
-		d.logger.Info("📋 Received bootstrap requirements from PM: %v", reqIDs)
-
-		// Render the full technical spec
 		rendered, err := RenderBootstrapSpec(reqIDs, d.logger)
 		if err != nil {
 			d.logger.Warn("Failed to render bootstrap spec: %v (continuing without bootstrap)", err)
@@ -50,7 +54,8 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		infrastructureSpec = approvalPayload.InfrastructureSpec
 	}
 
-	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes", len(userSpec), len(infrastructureSpec))
+	d.logger.Info("📄 Spec content - user: %d bytes, infrastructure: %d bytes, bootstrap: %v",
+		len(userSpec), len(infrastructureSpec), isBootstrapSpec)
 
 	// Get agent-specific context (PM agent)
 	agentID := requestMsg.FromAgent
@@ -63,12 +68,22 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Only add spec review prompt for initial submission
 	if !isResubmission {
 		// Prepare template data for spec review
+		extra := map[string]any{
+			"reason":              approvalPayload.Reason,
+			"infrastructure_spec": infrastructureSpec, // Infrastructure requirements (bootstrap) if any
+		}
+
+		// Add bootstrap-specific guidance when reviewing a bootstrap spec (Spec 0)
+		if isBootstrapSpec {
+			extra["bootstrap_guidance"] = "This is a **bootstrap infrastructure spec (Spec 0)** submitted " +
+				"separately from the user feature spec. It contains only infrastructure requirements " +
+				"(Dockerfile, Makefile, build targets, etc.). Review these for correctness and completeness, " +
+				"then generate stories. The user feature spec will arrive separately as Spec 1."
+		}
+
 		templateData := &templates.TemplateData{
-			TaskContent: userSpec, // User requirements in main content
-			Extra: map[string]any{
-				"reason":              approvalPayload.Reason,
-				"infrastructure_spec": infrastructureSpec, // Infrastructure requirements (bootstrap) if any
-			},
+			TaskContent: userSpec, // Spec content (bootstrap or user requirements)
+			Extra:       extra,
 		}
 
 		// Render spec review template (first toolloop phase)
@@ -186,7 +201,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return response, nil
 	}
 
-	// SECOND TOOLLOOP: Single-pass story generation with submit_stories
+	// SECOND TOOLLOOP: Story generation with submit_stories (with retry on validation failure)
 	d.logger.Info("📝 Spec approved, starting story generation loop")
 
 	// Get submit_stories tool
@@ -202,9 +217,11 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		return nil, fmt.Errorf("submit_stories tool not found")
 	}
 
-	// For story generation, concatenate infrastructure + user specs (stories need complete spec)
+	// For story generation, build the complete spec:
+	// - Bootstrap spec: Content IS the complete spec (no concatenation needed)
+	// - User spec with bundled bootstrap: concatenate infrastructure + user specs
 	completeSpec := userSpec
-	if infrastructureSpec != "" {
+	if !isBootstrapSpec && infrastructureSpec != "" {
 		completeSpec = infrastructureSpec + "\n\n" + userSpec
 	}
 
@@ -223,45 +240,85 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	// Add story generation prompt to context
 	cm.AddMessage("user", storyGenPrompt)
 
-	// Wrap submit_stories as terminal tool
-	storiesTerminal := submitStoriesTool
+	// Retry loop for story generation: re-run toolloop if dependency validation fails
+	const maxStoryGenRetries = 2
+	var specID string
+	var storyIDs []string
+	var loadErr error
 
-	// Run second toolloop: single-pass story generation
-	storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
-		ContextManager:     cm,
-		GeneralTools:       nil, // No general tools - just generate and submit
-		TerminalTool:       storiesTerminal,
-		MaxIterations:      5,    // Should complete quickly
-		SingleTurn:         true, // Enforce single-turn completion
-		MaxTokens:          agent.ArchitectMaxTokens,
-		Temperature:        config.GetTemperature(config.TempRoleArchitect),
-		AgentID:            d.GetAgentID(),
-		DebugLogging:       config.GetDebugLLMMessages(),
-		PersistenceChannel: d.persistenceChannel,
-		OnLLMError:         d.makeOnLLMErrorCallback("story_generation"),
-	})
+	for attempt := 0; attempt <= maxStoryGenRetries; attempt++ {
+		if attempt > 0 {
+			// Feed validation error back to LLM for correction
+			cm.AddMessage("user", fmt.Sprintf(
+				"Your previous story submission had dependency issues: %s\n"+
+					"Please regenerate stories with valid dependencies (no cycles, valid ordinal IDs).",
+				loadErr.Error()))
+			d.logger.Warn("🔄 Story generation retry %d/%d: %v", attempt, maxStoryGenRetries, loadErr)
+		}
 
-	// Handle story generation outcome
-	if storiesOut.Kind != toolloop.OutcomeProcessEffect {
-		return nil, fmt.Errorf("story generation failed: %w", storiesOut.Err)
+		// Run toolloop: single-pass story generation per attempt
+		storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
+			ContextManager:     cm,
+			GeneralTools:       nil, // No general tools - just generate and submit
+			TerminalTool:       submitStoriesTool,
+			MaxIterations:      5,    // Should complete quickly
+			SingleTurn:         true, // Enforce single-turn completion per attempt
+			MaxTokens:          agent.ArchitectMaxTokens,
+			Temperature:        config.GetTemperature(config.TempRoleArchitect),
+			AgentID:            d.GetAgentID(),
+			DebugLogging:       config.GetDebugLLMMessages(),
+			PersistenceChannel: d.persistenceChannel,
+			OnLLMError:         d.makeOnLLMErrorCallback("story_generation"),
+		})
+
+		// Handle story generation outcome
+		if storiesOut.Kind != toolloop.OutcomeProcessEffect {
+			return nil, fmt.Errorf("story generation failed: %w", storiesOut.Err)
+		}
+
+		if storiesOut.Signal != tools.SignalStoriesSubmitted {
+			return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
+		}
+
+		// Extract stories data from ProcessEffect.Data
+		storyEffectData, dataOk := storiesOut.EffectData.(map[string]any)
+		if !dataOk {
+			return nil, fmt.Errorf("STORIES_SUBMITTED effect data is not map[string]any: %T", storiesOut.EffectData)
+		}
+
+		d.logger.Info("✅ Stories generated, validating dependencies (attempt %d)", attempt+1)
+
+		// Load stories into queue with dependency validation
+		specID, storyIDs, loadErr = d.loadStoriesFromSubmitResultData(ctx, completeSpec, storyEffectData)
+		if loadErr == nil {
+			break // Success — valid DAG
+		}
+		d.logger.Warn("⚠️ Story generation attempt %d failed validation: %v", attempt+1, loadErr)
+		// No need to clear queue here — loadStoriesFromSubmitResultData clears its own
+		// spec's stories on cycle detection, and dependency errors happen before queue insertion.
 	}
 
-	if storiesOut.Signal != tools.SignalStoriesSubmitted {
-		return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
-	}
-
-	// Extract stories data from ProcessEffect.Data
-	effectData, ok = storiesOut.EffectData.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("STORIES_SUBMITTED effect data is not map[string]any: %T", storiesOut.EffectData)
-	}
-
-	d.logger.Info("✅ Stories generated successfully")
-
-	// Load stories into queue (pass effectData and complete spec instead of out.Value)
-	specID, storyIDs, loadErr := d.loadStoriesFromSubmitResultData(ctx, completeSpec, effectData)
 	if loadErr != nil {
-		return nil, fmt.Errorf("failed to load stories after approval: %w", loadErr)
+		// All retries exhausted — return NEEDS_CHANGES to PM
+		d.logger.Error("❌ Story generation failed after %d attempts: %v", maxStoryGenRetries+1, loadErr)
+
+		response := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), requestMsg.FromAgent)
+		response.ParentMsgID = requestMsg.ID
+
+		approvalResult := &proto.ApprovalResult{
+			ID:         proto.GenerateApprovalID(),
+			RequestID:  requestMsg.Metadata["approval_id"],
+			Type:       proto.ApprovalTypeSpec,
+			Status:     proto.ApprovalStatusNeedsChanges,
+			Feedback:   fmt.Sprintf("Story generation failed due to dependency issues: %s. Please simplify the specification.", loadErr.Error()),
+			ReviewedBy: d.GetAgentID(),
+			ReviewedAt: response.Timestamp,
+		}
+
+		response.SetTypedPayload(proto.NewApprovalResponsePayload(approvalResult))
+		response.SetMetadata("approval_id", approvalResult.ID)
+
+		return response, nil
 	}
 
 	feedback = fmt.Sprintf("Spec approved - %d stories generated successfully (spec_id: %s)", len(storyIDs), specID)

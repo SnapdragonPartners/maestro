@@ -70,29 +70,49 @@ Configurable git identity system with agent-specific templates:
 
 ## Clone Strategy
 
-### Self-Contained Clones
+### Multi-Remote Architecture
 
-**Previous Approach (Deprecated):**
-- Used git worktrees with `--shared --reference` flags
-- Lightweight but caused issues in containerized environments
-- Dependencies on external object stores
+Coder containers are designed to never talk to any forge directly (no GITHUB_TOKEN). All git operations inside containers use the local mirror, while host-side operations handle forge authentication.
 
-**Current Approach:**
+Every coder workspace has these remotes:
+- **`origin`** → local mirror (mounted RO at `/mirrors/<repo>.git` in container)
+- **`github`** → GitHub URL (always present, used for standard mode push and sync-back)
+- **`forge`** → Gitea URL with embedded auth (airplane mode only, used for push/fetch)
+
+Push/fetch helpers use `forge` when it exists (airplane mode), otherwise `github`.
+
+**Clone Flow:**
 ```bash
 # Step 1: Create/update bare mirror (shared across agents)
 git clone --bare {REPO_URL} {MIRROR_PATH}
 git remote update --prune  # For existing mirrors
 
-# Step 2: Create self-contained clone (per agent)
-git clone {MIRROR_PATH} {AGENT_WORKSPACE}
-git remote set-url origin {REPO_URL}
+# Step 2: Create self-contained clone (per agent, on host)
+git init {AGENT_WORKSPACE}
+git remote add origin {HOST_MIRROR_PATH}
+git fetch origin --tags
+git checkout -b {BASE_BRANCH} origin/{BASE_BRANCH}
+git remote add github {REPO_URL}
+# In airplane mode only:
+git remote add forge http://user:token@localhost:3000/org/repo.git
+
+# Step 3: After container starts, remap origin to container path
+git remote set-url origin /mirrors/<repo>.git
 ```
 
+**Remote Usage:**
+- `git fetch origin` — runs in container, hits local mirror (fast, no creds)
+- `git rebase origin/main` — runs in container, uses mirror refs
+- `git push {forge|github} ...` — runs on HOST only, mode-aware credentials
+- `git fetch {forge|github} ...` — runs on HOST only, mode-aware credentials
+
 **Benefits:**
-- **Fast**: Local cloning from mirrors
+- **No forge auth in containers**: Containers never need tokens
+- **Fast**: Local mirror operations are instant (no network)
 - **Self-contained**: Works in Docker containers without external dependencies
 - **Isolated**: Safe for concurrent agents
-- **Complete**: All objects included for full git functionality
+- **Debuggable**: `git remote -v` shows exactly where operations go
+- **Sync-ready**: `github` remote always present for airplane→GitHub sync-back
 
 ### Directory Structure
 
@@ -264,33 +284,31 @@ if strings.Contains(err.Error(), "already exists") {
 
 ## Authentication Strategy
 
-### Current Implementation (Personal Access Token)
+### Security Model: Host-Only Forge Access
 
-The system currently uses **Personal Access Token (PAT)** authentication for GitHub operations:
+The system enforces a strict authentication boundary:
+- **Container**: Pure git operations against local mirror — no tokens, no network auth needed
+- **Host**: All forge operations (push, fetch, PR creation) run on the host with proper credentials
 
-**Design Decisions:**
-- **Token Injection**: `GITHUB_TOKEN` environment variable injected during CODING phase transition
-- **URL Conversion**: SSH URLs automatically converted to HTTPS format for container compatibility
-- **Scope Management**: Token injected only in read-write containers, not during planning phase
-- **Security Model**: Single-tenant, ephemeral containers with time-limited exposure
+This design prevents coders from pushing unapproved code, since containers have no git credentials.
 
-**Implementation Details:**
-```go
-// Container configuration during CODING phase
-if githubToken := os.Getenv("GITHUB_TOKEN"); githubToken != "" {
-    execOpts.Env = append(execOpts.Env, "GITHUB_TOKEN="+githubToken)
-}
+**Key Invariants:**
+1. **Containers never talk to any forge** — origin=mirror, no tokens
+2. **Mirror freshness before rebase** — `refreshMirrorOnHost()` syncs mirror from forge before any rebase
+3. **Forge freshness before push** — `fetchFromForgeOnHost()` updates tracking refs for `--force-with-lease` safety
+4. **Mirror is recoverable** — reclone-on-failure if refresh fails
+5. **RO mount prevents corruption** — containers cannot push to mirror
 
-// URL conversion: git@github.com:user/repo.git -> https://github.com/user/repo.git
-httpsURL := c.convertToHTTPSURL(c.repoURL)
-git.Run(ctx, workDir, "remote", "set-url", "origin", httpsURL)
-```
-
-**Authentication Flow:**
+**Standard Mode Authentication:**
 1. Host environment provides `GITHUB_TOKEN` (PAT)
-2. During SETUP → CODING transition, token injected into container
-3. Git remote URLs converted from SSH to HTTPS format
-4. Container git operations use token via HTTPS: `https://x-access-token:$GITHUB_TOKEN@github.com/org/repo.git`
+2. Push/fetch uses `github` remote with GITHUB_TOKEN via credential helper
+3. PR creation via mode-aware `forge.NewClient()`
+
+**Airplane Mode Authentication:**
+1. Gitea runs locally with auto-generated API token (stored in `forge_state.json`)
+2. `forge` remote has auth token embedded in URL (`http://user:token@localhost:3000/...`)
+3. Push/fetch uses `forge` remote — no env var needed, credentials in URL
+4. `github` remote preserved for sync-back when online
 
 ### Future Security Enhancement (Recommended)
 

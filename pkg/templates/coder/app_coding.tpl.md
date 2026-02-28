@@ -68,6 +68,11 @@ Key examples:
 - **todos_add**: Use ONLY when you discover additional work not in the original plan (e.g., missing edge case tests, forgotten error handling)
 
 ### Story Completion
+- **story_complete**: Call ONLY if you discover the story is already implemented and no code changes are needed. Before calling:
+  - Verify existing files match all acceptance criteria using `file_read` and `shell`
+  - Confirm `git diff` is empty (no changes to commit)
+  - Provide detailed evidence in the `evidence` parameter (file paths, test results, relevant file contents)
+  - This signals that the work was already done (e.g., by a prior merge or another story)
 - **done**: Call ONLY when ALL completion criteria are met (see below). Before calling:
   - Verify all required files exist using `shell({{"{"}}{{printf "\"command\": \"ls\""}}}})`
 {{- if .TestCommand}}

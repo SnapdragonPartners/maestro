@@ -612,9 +612,18 @@ func (d *Driver) Run(ctx context.Context) error {
 		default:
 		}
 
-		// Check if we're already in a terminal state.
+		// Check current state for recycling or terminal exit.
 		currentState := d.GetCurrentState()
-		if currentState == StateDone || currentState == StateError {
+		if currentState == StateDone {
+			// Recycle to WAITING for new specs instead of exiting
+			d.logger.Info("✅ All stories completed - recycling to WAITING for new specs")
+			if err := d.TransitionTo(ctx, StateWaiting, nil); err != nil {
+				d.logger.Error("Failed to transition from DONE to WAITING: %v", err)
+				break
+			}
+			continue
+		}
+		if currentState == StateError {
 			break
 		}
 
@@ -672,8 +681,8 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	case StateEscalated:
 		return d.handleEscalated(ctx)
 	case StateDone:
-		// DONE is a terminal state - should not continue processing.
-		return StateDone, nil
+		// Recycle to WAITING for new specs (handled in Run loop above)
+		return StateWaiting, nil
 	case proto.StateSuspend:
 		nextState, _, err := d.HandleSuspend(ctx)
 		if err != nil {

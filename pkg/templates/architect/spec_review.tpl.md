@@ -2,6 +2,12 @@
 
 The PM has submitted or resubmitted the following specification for your review.
 
+{{if .Extra.bootstrap_guidance}}
+## Bootstrap Spec Notice
+
+{{.Extra.bootstrap_guidance}}
+
+{{end}}
 {{if .Extra.infrastructure_spec}}
 ## Infrastructure Prerequisites (Minimum Baseline)
 

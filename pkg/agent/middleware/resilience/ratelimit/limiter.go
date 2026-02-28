@@ -134,8 +134,17 @@ func NewTokenBucketLimiter(provider string, cfg Config, requestTimeout time.Dura
 //   - Worst case FIFO: each agent ahead drains bucket, you wait for their refill cycle.
 //   - If waiting longer than this, something is fundamentally wrong (config error or impossible request).
 func (l *TokenBucketLimiter) Acquire(ctx context.Context, tokens int, agentID string) (func(), error) {
-	firstAttempt := true
+	// Fast-fail: if requested tokens exceed max bucket capacity, the request can never succeed
+	if tokens > l.maxCapacity {
+		_ = logx.Errorf("RATELIMIT: %s impossible request — need %d tokens but max bucket capacity is %d (provider: %s, agent: %s). "+
+			"Increase tokens_per_minute or reduce request size.",
+			l.provider, tokens, l.maxCapacity, l.provider, agentID)
+		return nil, fmt.Errorf("rate limit impossible: requested %d tokens exceeds max bucket capacity %d "+
+			"(provider: %s, agent: %s)", tokens, l.maxCapacity, l.provider, agentID)
+	}
+
 	startTime := time.Now()
+	lastLogTime := startTime
 
 	// Calculate maximum wait time: agent_count × 1 minute
 	// This provides a safety net for impossible requests or configuration errors
@@ -183,19 +192,20 @@ func (l *TokenBucketLimiter) Acquire(ctx context.Context, tokens int, agentID st
 				elapsed.Round(time.Second), tokens, l.maxCapacity, l.provider, agentID)
 		}
 
-		// Can't acquire - record what blocked us (only on first attempt to avoid log spam)
-		if firstAttempt {
+		// Log throttling: on first attempt and every 30 seconds while waiting
+		now := time.Now()
+		if now.Sub(lastLogTime) >= 30*time.Second || lastLogTime.Equal(startTime) {
 			if !hasTokens {
 				l.tokenLimitHits++
-				logx.Infof("RATELIMIT: %s token limit hit, waiting for refill (need %d, have %d, agent: %s)",
-					l.provider, tokens, l.availableTokens, agentID)
+				logx.Warnf("RATELIMIT: %s throttled — waiting for tokens (need %d, have %d, waited %v, agent: %s)",
+					l.provider, tokens, l.availableTokens, elapsed.Round(time.Second), agentID)
 			}
 			if !hasSlot {
 				l.concurrencyHits++
-				logx.Infof("RATELIMIT: %s concurrency limit hit, waiting for slot (active: %d/%d, agent: %s)",
-					l.provider, l.activeRequests, l.maxConcurrency, agentID)
+				logx.Warnf("RATELIMIT: %s throttled — waiting for concurrency slot (active: %d/%d, waited %v, agent: %s)",
+					l.provider, l.activeRequests, l.maxConcurrency, elapsed.Round(time.Second), agentID)
 			}
-			firstAttempt = false
+			lastLogTime = now
 		}
 
 		l.mu.Unlock()

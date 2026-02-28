@@ -250,7 +250,7 @@ func (f *AgentFactory) createPM(ctx context.Context, agentID string) (dispatch.A
 	f.chatService.RegisterAgent(agentID, []string{"product"})
 
 	// Create PM with shared LLM factory and chat service
-	// PM now uses direct methods (StartInterview, UploadSpec) called by WebUI handlers
+	// PM now uses direct methods (StartInterview, InjectSpecFile) called by WebUI handlers
 	pmAgent, err := pm.NewPM(
 		ctx,
 		agentID,

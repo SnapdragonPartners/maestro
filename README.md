@@ -228,8 +228,7 @@ See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
 >
 > **Option A: Homebrew (macOS)**
 > ```bash
-> brew tap SnapdragonPartners/tap
-> brew install --cask maestro
+> brew install --cask SnapdragonPartners/tap/maestro
 > ```
 >
 > **Option B: APT (Debian/Ubuntu)**

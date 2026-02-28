@@ -30,7 +30,7 @@ stateDiagram-v2
     %% ---------- MAIN WORKFLOW ----------
     WAITING       --> WORKING             : interview request (bootstrap needed)
     WAITING       --> AWAIT_USER          : interview request (no bootstrap)
-    WAITING       --> PREVIEW             : spec upload (bypass interview)
+    WAITING       --> AWAIT_ARCHITECT     : bootstrap spec (Spec 0) sent at startup
     WAITING       --> DONE                : shutdown signal
 
     AWAIT_USER    --> AWAIT_USER          : still waiting for user input
@@ -41,6 +41,7 @@ stateDiagram-v2
     WORKING       --> WORKING             : continue working (tool calls)
     WORKING       --> AWAIT_USER          : await_user tool called
     WORKING       --> PREVIEW             : spec_submit tool called (spec ready)
+    WORKING       --> AWAIT_ARCHITECT     : bootstrap spec (Spec 0) sent from WORKING
     WORKING       --> ERROR               : unrecoverable error
     WORKING       --> DONE                : shutdown signal
 
@@ -65,7 +66,7 @@ stateDiagram-v2
     %% ---------- NOTES ----------
     %% WAITING state monitors three channels:
     %% 1. interviewRequestCh - new interview requests from WebUI
-    %% 2. specCh - direct spec file uploads (bypass interview)
+    %% 2. specCh - spec file content injected via InjectSpecFile() during interview
     %% 3. replyCh - RESULT messages from architect (spec review outcomes)
     %%
     %% PREVIEW state provides user review before architect submission:
@@ -80,7 +81,7 @@ stateDiagram-v2
 
 | State                  | Purpose                                                                              |
 | ---------------------- | ------------------------------------------------------------------------------------ |
-| **WAITING**            | Idle state. Public methods (StartInterview, UploadSpec, PreviewAction) trigger transitions. |
+| **WAITING**            | Idle state. Public methods (StartInterview, PreviewAction) trigger transitions. |
 | **AWAIT_USER**         | Blocked waiting for user's response in chat. Polls chat channel for new messages.   |
 | **WORKING**            | Active work state - interviewing, drafting, and calling tools.                      |
 | **PREVIEW**            | Spec ready for user review. User chooses to continue interview or submit.           |
@@ -94,13 +95,13 @@ stateDiagram-v2
 
 ### Work Initiation
 
-PM can receive work in three ways:
+PM can receive work in two ways:
 
 1. **New Interview**: User sends interview request via WebUI → PM.StartInterview()
    - If bootstrap needed: → WORKING (PM proactively sets up project)
    - If no bootstrap: → AWAIT_USER (PM waits for user to describe feature)
+   - User can attach .md spec files inline during the interview (via paperclip button)
 2. **Iteration**: Architect sends RESULT(needs_changes) → PM enters WORKING with feedback context
-3. **Direct Spec Upload**: User uploads spec file directly → PM.UploadSpec() → PREVIEW with pre-loaded spec
 
 ### Tool-Driven Workflow
 
@@ -171,7 +172,7 @@ PM uses LLM reasoning to decide when to:
 ### State Change Mechanism
 
 **Direct Method Calls with Mutex Protection:**
-- Public methods (StartInterview, UploadSpec, PreviewAction) directly modify state with `sync.RWMutex`
+- Public methods (StartInterview, PreviewAction) directly modify state with `sync.RWMutex`
 - Methods are idempotent - handle duplicate requests gracefully
 - State handlers are non-blocking and return their natural next state
 - Run loop captures state before handler execution and detects external changes
@@ -199,8 +200,8 @@ PM uses LLM reasoning to decide when to:
 - Non-blocking - checks context cancellation with 100ms sleep
 - Returns StateWaiting (self-transition) until external method call changes state
 - Public methods trigger transitions:
-  - `StartInterview()` → AWAIT_USER
-  - `UploadSpec()` → PREVIEW
+  - `StartInterview()` → AWAIT_USER (or WORKING if bootstrap needed, or AWAIT_ARCHITECT if Spec 0 sent)
+- Spec files are uploaded inline during the interview via `InjectSpecFile()` (no state transition)
 - Architect feedback received via handleAwaitArchitect (not WAITING)
 
 ### AWAIT_USER State
@@ -364,7 +365,7 @@ The **SUSPEND** state handles external service unavailability (LLM API timeouts,
 | WAITING             | WAITING             | Polling for state changes (no activity)          |
 | WAITING             | WORKING             | StartInterview() with bootstrap needed           |
 | WAITING             | AWAIT_USER          | StartInterview() with no bootstrap               |
-| WAITING             | PREVIEW             | UploadSpec() method called                       |
+| WAITING             | AWAIT_ARCHITECT     | Bootstrap spec (Spec 0) sent at startup          |
 | WAITING             | DONE                | Shutdown signal                                  |
 | AWAIT_USER          | AWAIT_USER          | Still waiting for user input                     |
 | AWAIT_USER          | WORKING             | User sends message via chat                      |
@@ -373,6 +374,7 @@ The **SUSPEND** state handles external service unavailability (LLM API timeouts,
 | WORKING             | WORKING             | Continue working (tool calls)                    |
 | WORKING             | AWAIT_USER          | await_user tool called                           |
 | WORKING             | PREVIEW             | spec_submit tool called (spec ready)             |
+| WORKING             | AWAIT_ARCHITECT     | Bootstrap spec (Spec 0) sent from WORKING        |
 | WORKING             | ERROR               | Unrecoverable error                              |
 | WORKING             | DONE                | Shutdown signal                                  |
 | PREVIEW             | PREVIEW             | Polling for state changes (no action)            |

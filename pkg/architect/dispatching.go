@@ -22,10 +22,13 @@ func (d *Driver) handleDispatching(ctx context.Context) (proto.State, error) {
 		// Queue should already be populated during SCOPING phase
 		// Only load from database if this is a recovery scenario
 
-		// Detect cycles in dependencies.
+		// Detect cycles in dependencies (should not happen after validation in story loading).
 		cycles := d.queue.DetectCycles()
 		if len(cycles) > 0 {
-			return StateError, fmt.Errorf("dependency cycles detected: %v", cycles)
+			d.logger.Error("⚠️ DISPATCHING: Unexpected dependency cycles detected (should have been caught during story generation): %v", cycles)
+			// Defensive recovery: remove cyclic edges rather than crashing
+			d.queue.RemoveCyclicEdges(cycles)
+			d.logger.Warn("🔧 DISPATCHING: Removed cyclic edges, continuing with corrected DAG")
 		}
 
 		// Persist queue state to JSON for monitoring.
