@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/forge"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/utils"
 )
@@ -326,16 +327,55 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 		return logx.Wrap(err, fmt.Sprintf("git checkout %s failed", c.getBaseBranch()))
 	}
 
-	// Add 'github' remote for host-side push operations only.
-	// Container operations use 'origin' (mirror). Host-side push/fetch uses 'github'.
-	c.logger.Debug("Adding github remote for host-side push: %s", c.getRepoURL())
+	// Add 'github' remote — always points to the GitHub URL from config.
+	// In standard mode, this is the push target.
+	// In airplane mode, this is preserved for sync-back to GitHub.
+	c.logger.Debug("Adding github remote: %s", c.getRepoURL())
 	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "github", c.getRepoURL())
 	if err != nil {
-		return logx.Wrap(err, "failed to add github remote - agent will not be able to push branches")
+		return logx.Wrap(err, "failed to add github remote")
+	}
+
+	// In airplane mode, add 'forge' remote pointing to Gitea for push/fetch.
+	// Push/fetch helpers prefer 'forge' when it exists, falling back to 'github'.
+	if config.IsAirplaneMode() {
+		if forgeURL, forgeErr := buildForgeGitURL(); forgeErr == nil {
+			c.logger.Debug("Adding forge remote (airplane mode): %s", forgeURL)
+			_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "forge", forgeURL)
+			if err != nil {
+				c.logger.Warn("Failed to add forge remote (non-fatal): %v", err)
+			}
+		} else {
+			c.logger.Warn("Could not build forge URL for airplane mode (non-fatal): %v", forgeErr)
+		}
 	}
 
 	c.logger.Debug("Successfully created self-contained clone at: %s (origin=mirror, github=%s)", agentWorkDir, c.getRepoURL())
 	return nil
+}
+
+// buildForgeGitURL constructs the authenticated git URL for the local Gitea instance.
+// Returns a URL like http://maestro-admin:TOKEN@localhost:3000/maestro/repo.git
+func buildForgeGitURL() (string, error) {
+	projectDir := config.GetProjectDir()
+	if projectDir == "" {
+		return "", fmt.Errorf("project directory not configured")
+	}
+
+	state, err := forge.LoadState(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to load forge state: %w", err)
+	}
+
+	// Build clone URL: http://localhost:3000/owner/repo.git
+	cloneURL := fmt.Sprintf("%s/%s/%s.git", state.URL, state.Owner, state.RepoName)
+
+	// Embed auth token: http://user:token@host/path
+	if state.Token != "" {
+		cloneURL = strings.Replace(cloneURL, "://", fmt.Sprintf("://%s:%s@", "maestro-admin", state.Token), 1)
+	}
+
+	return cloneURL, nil
 }
 
 // createBranch creates and checks out a new branch in the agent clone directory.
