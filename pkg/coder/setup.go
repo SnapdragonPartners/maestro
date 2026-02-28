@@ -188,6 +188,10 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 	var extraMounts []execpkg.Mount
 	projectDir := config.GetProjectDir()
 	if projectDir != "" {
+		// Resolve to absolute path — Docker requires absolute paths for bind mounts
+		if absDir, absErr := filepath.Abs(projectDir); absErr == nil {
+			projectDir = absDir
+		}
 		mirrorsPath := filepath.Join(projectDir, ".mirrors")
 		if _, statErr := os.Stat(mirrorsPath); statErr == nil {
 			extraMounts = append(extraMounts, execpkg.Mount{
