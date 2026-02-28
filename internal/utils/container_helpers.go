@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/coder/claude/embedded"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dockerfiles"
+	"orchestrator/pkg/version"
 )
 
 const bootstrapHashLabel = "com.maestro.content-hash"
@@ -103,17 +104,16 @@ func GetImageID(ctx context.Context, imageName string) (string, error) {
 }
 
 // BootstrapContentHash computes a deterministic hash of all inputs to the bootstrap
-// image (Dockerfile, embedded configs, proxy binary). Used to detect when the image
-// needs rebuilding after code updates.
+// image (Dockerfile, embedded configs, build version). Used to detect when the image
+// needs rebuilding after code updates. The build version (set via ldflags by goreleaser)
+// ensures rebuilds on new maestro releases without hashing the full proxy binary.
 func BootstrapContentHash() string {
 	h := sha256.New()
 	h.Write([]byte(dockerfiles.GetBootstrapDockerfile()))
 	h.Write([]byte(dockerfiles.GetAgentshServerConfig()))
 	h.Write([]byte(dockerfiles.GetAgentshEntrypoint()))
 	h.Write([]byte(dockerfiles.GetAgentshDefaultPolicy()))
-	if proxy, err := embedded.GetProxyBinary(runtime.GOARCH); err == nil {
-		h.Write(proxy)
-	}
+	h.Write([]byte(version.Version))
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
