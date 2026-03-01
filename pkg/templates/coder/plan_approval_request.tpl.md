@@ -32,7 +32,7 @@ The following architectural patterns and rules are relevant to this story:
 2. ⚠️ **Plan needs refinement** - The plan has gaps or unclear approaches
    - If yes: Use **NEEDS_CHANGES** and specify what needs clarification or additional detail
 
-3. ❌ **Work is already complete** - No code changes are needed (static parity only)
-   - If yes: Use **REJECTED** and suggest I call `done` with a summary explaining why no changes are needed
+3. ❌ **Work is already complete** - No code changes are needed
+   - If yes: Use **REJECTED** and explain that the story requirements are already satisfied so the coder can use `story_complete` with evidence
 
 **Note**: I am currently in PLANNING state with read-only access. I cannot start implementation until the plan is approved.

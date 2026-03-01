@@ -39,9 +39,9 @@ I am in **PLANNING** state with **read-only** container access. I have been expl
    - Check: Recent Context shows varied exploration leading to understanding
    - Guidance: "You have gathered enough information. Please submit your plan using the `submit_plan` tool."
 
-2. ✅ **Work already complete** - No code changes needed (static parity only), should use `done` tool
+2. ✅ **Work already complete** - No code changes needed, should use `story_complete` tool
    - Check: Exploration confirms feature already implemented
-   - Guidance: "The requirements are already satisfied. Call `done` with a summary explaining why no changes are needed."
+   - Guidance: "The requirements are already satisfied. Call `story_complete` with evidence explaining why no changes are needed."
 
 3. ⚠️ **Need more exploration** - Plan needs additional investigation before submission
    - Check: Agent has clear direction for further exploration
@@ -58,5 +58,5 @@ I am in **PLANNING** state with **read-only** container access. I have been expl
 **Important Context:**
 - I am in PLANNING state (read-only access)
 - I have NOT started coding yet
-- I need to either submit a plan OR call done if no changes are needed
+- I need to either submit a plan OR call story_complete if no changes are needed
 - I cannot execute implementation commands like `go mod init`, `npm install`, `make build` in planning state

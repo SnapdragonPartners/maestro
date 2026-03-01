@@ -168,13 +168,13 @@ When submitting your plan with `submit_plan`, you MUST provide:
 
 ## IMPORTANT: When No Infrastructure Changes Are Needed
 
-If after exploring the infrastructure you determine that **all required infrastructure files/configs already exist** (static parity) **and** the story's acceptance criteria do NOT include any executable commands (container_build, container_test, deploy, etc.), call `done` with a summary explaining why no changes are needed. The system will automatically detect the empty diff and request completion approval from the architect.
+If after exploring the infrastructure you determine that **all required infrastructure files/configs already exist** and the story requirements are already met, use `story_complete` to signal that the story is already implemented. Provide specific evidence (file paths, existing functionality, test results) and your confidence level. The architect will verify your claim before marking the story complete.
 
 **If infrastructure appears complete but acceptance criteria include executable commands**, you MUST generate a **verification-only implementation plan** that focuses on running those commands and fixing any failures found.
 
 **WORKFLOW PRIORITY:**
 1. **First**: Explore the infrastructure systematically
-2. **If both static parity AND no executable criteria**: Use `done` with an explanation
+2. **If story requirements are already met**: Use `story_complete` with evidence
 3. **If missing infrastructure OR executable criteria exist**: Create implementation plan with `submit_plan`
 
 **Start by exploring the infrastructure systematically. Do not create a plan until you understand the existing implementation.**

@@ -459,7 +459,7 @@ func (d *DoneTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 				Signal: SignalStoryComplete,
 				Data: map[string]any{
 					"evidence":   summary,
-					"confidence": "HIGH",
+					"confidence": "MEDIUM", // Done tool infers completion from empty diff, not explicit user assessment
 				},
 			},
 		}, nil
@@ -509,7 +509,10 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 
 	// Check if there are any changes to commit
 	// git diff --cached --exit-code returns exit code 1 if there are staged changes
-	result, _ = d.executor.Run(ctx, []string{"git", "diff", "--cached", "--exit-code"}, opts)
+	result, err = d.executor.Run(ctx, []string{"git", "diff", "--cached", "--exit-code"}, opts)
+	if err != nil {
+		return commitResult{err: fmt.Errorf("git diff --cached failed: %w", err)}
+	}
 	if result.ExitCode == 0 {
 		// Exit code 0 means no staged changes — determine Case A vs Case B
 		if d.branchHasCommits(ctx, opts) {

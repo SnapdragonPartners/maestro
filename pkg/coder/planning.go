@@ -242,6 +242,20 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 
 			return StatePlanReview, false, nil
 
+		case tools.SignalStoryComplete:
+			// story_complete was called - story already implemented, no work needed
+			effectData, ok := out.EffectData.(map[string]any)
+			if !ok {
+				return proto.StateError, false, logx.Errorf("STORY_COMPLETE effect data is not map[string]any: %T", out.EffectData)
+			}
+
+			// Extract and store story complete data, sets up ApprovalTypeCompletion request
+			if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
+				return proto.StateError, false, logx.Wrap(err, "failed to process story complete data")
+			}
+
+			return StatePlanReview, false, nil
+
 		default:
 			c.logger.Warn("Unknown signal from planning toolloop: %s", out.Signal)
 			return StatePlanning, false, nil
@@ -332,7 +346,7 @@ func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData
 }
 
 // processStoryCompleteDataFromEffect extracts and stores story complete data from ProcessEffect.Data.
-// Called when the done tool detects an empty diff (Case A: no changes on branch) and returns SignalStoryComplete.
+// Called when story_complete tool (planning) or done tool empty-diff Case A (coding) returns SignalStoryComplete.
 // Sets up ApprovalTypeCompletion request for architect verification.
 //
 //nolint:unparam // error return reserved for future validation logic
