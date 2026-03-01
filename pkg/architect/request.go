@@ -49,6 +49,25 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		d.maintenance.mutex.Unlock()
 	}
 
+	// Ensure architect context is scoped to the correct story.
+	// Uses dispatcher lease as authoritative source — not request payload — to avoid
+	// desync in resume/reassignment scenarios.
+	// On first use or story change, sets the system prompt with story context
+	// and clears stale review streaks.
+	coderID := requestMsg.FromAgent
+	if coderID != "" {
+		storyID := d.dispatcher.GetStoryForAgent(coderID)
+		if storyID != "" {
+			if _, err := d.ensureContextForStory(ctx, coderID, storyID); err != nil {
+				d.logger.Warn("Failed to ensure context for agent %s story %s: %v",
+					coderID, storyID, err)
+				// Non-fatal: handlers still work via inline story context in request payload
+			}
+		} else {
+			d.logger.Debug("No active story lease for agent %s; skipping context scoping", coderID)
+		}
+	}
+
 	// Persist request to database (fire-and-forget)
 	if d.persistenceChannel != nil {
 		agentRequest := buildAgentRequestFromMsg(requestMsg)
