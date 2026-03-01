@@ -31,7 +31,7 @@ func TestContainerSwitchFallback(t *testing.T) {
 
 	t.Run("fallback_to_bootstrap_on_nonexistent_container", func(t *testing.T) {
 		// Create container switch tool
-		switchTool := tools.NewContainerSwitchTool()
+		switchTool := tools.NewContainerSwitchTool(newMockTestAgent(""))
 
 		// Attempt to switch to a non-existent container
 		args := map[string]any{
@@ -87,7 +87,7 @@ func TestContainerSwitchFallback(t *testing.T) {
 			t.Skip("Bootstrap container not available, skipping valid switch test")
 		}
 
-		switchTool := tools.NewContainerSwitchTool()
+		switchTool := tools.NewContainerSwitchTool(newMockTestAgent(""))
 
 		// Switch to the bootstrap container (which should always work)
 		args := map[string]any{
@@ -122,7 +122,7 @@ func TestContainerSwitchFallback(t *testing.T) {
 	})
 
 	t.Run("result_structure_on_failure", func(t *testing.T) {
-		switchTool := tools.NewContainerSwitchTool()
+		switchTool := tools.NewContainerSwitchTool(newMockTestAgent(""))
 
 		// Use a clearly invalid container name
 		args := map[string]any{
@@ -166,7 +166,7 @@ func TestContainerSwitchValidation(t *testing.T) {
 	defer cancel()
 
 	t.Run("missing_container_name", func(t *testing.T) {
-		switchTool := tools.NewContainerSwitchTool()
+		switchTool := tools.NewContainerSwitchTool(newMockTestAgent(""))
 
 		// Call without container_name
 		args := map[string]any{}
@@ -180,7 +180,7 @@ func TestContainerSwitchValidation(t *testing.T) {
 	})
 
 	t.Run("empty_container_name", func(t *testing.T) {
-		switchTool := tools.NewContainerSwitchTool()
+		switchTool := tools.NewContainerSwitchTool(newMockTestAgent(""))
 
 		// Call with empty container_name
 		args := map[string]any{

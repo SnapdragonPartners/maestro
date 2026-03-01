@@ -65,6 +65,10 @@ func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, str
 	return "", "", "", "", false // No pending config in mock
 }
 
+func (m *mockTestAgent) SwitchContainer(_ context.Context, _, _, _, _ string) (string, error) {
+	return "mock-container", nil // No-op for mock
+}
+
 var _ tools.Agent = (*mockTestAgent)(nil)
 
 // isDockerAvailable checks if Docker is available by running docker version.

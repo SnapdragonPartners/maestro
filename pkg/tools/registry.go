@@ -2,6 +2,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -43,6 +44,12 @@ type Agent interface {
 	// Container config methods (deferred until merge)
 	SetPendingContainerConfig(name, dockerfile, imageID, dockerfileHash string) // Store pending container config with Dockerfile hash
 	GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool)
+	// SwitchContainer performs a live container switch with atomic staging.
+	// In standard mode: starts new container, stops old, stages config.
+	// In Claude Code mode: stages config only (signal handler does the lifecycle switch).
+	// stagingImageID/stagingDockerfile/stagingHash are used for SetPendingContainerConfig.
+	// Pass empty stagingImageID to skip staging (e.g., for reserved/bootstrap containers).
+	SwitchContainer(ctx context.Context, newImage, stagingImageID, stagingDockerfile, stagingHash string) (containerName string, err error)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -359,9 +366,9 @@ func createContainerListTool(_ *AgentContext) (Tool, error) {
 }
 
 // createContainerSwitchTool creates a container switch tool instance.
-// Uses local executor internally - no executor needed from context.
-func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
-	return NewContainerSwitchTool(), nil
+// Uses local executor internally for docker commands; agent for live switch + staging.
+func createContainerSwitchTool(ctx *AgentContext) (Tool, error) {
+	return NewContainerSwitchTool(ctx.Agent), nil
 }
 
 // createComposeUpTool creates a compose up tool instance.
@@ -463,7 +470,7 @@ func getContainerListSchema() InputSchema {
 }
 
 func getContainerSwitchSchema() InputSchema {
-	return NewContainerSwitchTool().Definition().InputSchema
+	return NewContainerSwitchTool(nil).Definition().InputSchema
 }
 
 func getComposeUpSchema() InputSchema {
