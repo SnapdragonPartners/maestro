@@ -202,6 +202,9 @@ func setupContainerSwitchTestConfig(t *testing.T) {
 
 	// Create minimal config
 	testConfig := `{
+		"project": {
+			"name": "test-project"
+		},
 		"git": {
 			"repo_url": "https://github.com/anthropics/anthropic-sdk-python.git"
 		},
