@@ -83,7 +83,7 @@ The architect maintains **per-agent conversation contexts** to eliminate contrad
 - **Context scoping**: `ensureContextForStory(agentID, storyID)` - Idempotent method that checks template name (`"agent-{agentID}-story-{storyID}"`) against current template. On mismatch (story change or first use), resets context with fresh system prompt and clears review streaks. No-op if already scoped to correct story.
 - **Trigger**: Called at the top of `handleRequest()` in `pkg/architect/request.go`, using the **dispatcher lease** (`d.dispatcher.GetStoryForAgent(coderID)`) as the authoritative story source — not the request payload — to avoid desync in resume/reassignment scenarios.
 - **Legacy wrapper**: `ResetAgentContext(agentID)` delegates to `ensureContextForStory` for backward compatibility
-- **System prompt**: `buildSystemPrompt(agentID, storyID)` - Generates persistent context from story data
+- **System prompt**: `buildSystemPrompt(ctx, agentID, storyID)` - Generates persistent context from story data
 - **All request handlers** use agent-specific contexts:
   - `handleSingleTurnReview()` - Single-turn spec/plan reviews
   - `handleIterativeQuestion()` - Multi-turn Q&A with workspace inspection

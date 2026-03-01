@@ -59,9 +59,13 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		storyID := d.dispatcher.GetStoryForAgent(coderID)
 		if storyID != "" {
 			if _, err := d.ensureContextForStory(ctx, coderID, storyID); err != nil {
-				d.logger.Warn("Failed to ensure context for agent %s story %s: %v",
+				d.logger.Warn("Failed to ensure context for agent %s story %s: %v — resetting to clean state",
 					coderID, storyID, err)
-				// Non-fatal: handlers still work via inline story context in request payload
+				// Reset to a minimal context so we don't evaluate against stale story history.
+				// Handlers still function via inline story context in request payload.
+				cm := d.getContextForAgent(coderID)
+				cm.ResetForNewTemplate("", "You are the architect agent. Evaluate the following request.")
+				d.clearReviewStreaks(coderID)
 			}
 		} else {
 			d.logger.Debug("No active story lease for agent %s; skipping context scoping", coderID)
