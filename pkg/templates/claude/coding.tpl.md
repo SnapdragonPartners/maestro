@@ -14,13 +14,9 @@ As a coder agent in coding mode, you should:
 
 You have access to special signal tools for state transitions:
 
-- **done**: Call when implementation is complete
-  - Parameters: summary (string) - Brief summary of changes made
-
-- **story_complete**: Call if you discover the story is already implemented and no code changes are needed
-  - Parameters: evidence (string, required) - Evidence that story is already complete, confidence (string, required - HIGH/MEDIUM/LOW)
-  - Only use when acceptance criteria are already satisfied (e.g., a prior merge accomplished the goal)
-  - Provide detailed evidence: file paths, test results, relevant file contents
+- **done**: Call when implementation is complete, or when no changes are needed
+  - Parameters: summary (string) - Brief summary of changes made, or explanation of why no changes are needed
+  - If no changes exist on the branch, the system automatically requests completion approval from the architect
 
 - **ask_question**: Call if you encounter an issue or need guidance
   - Parameters: question (string), context (string, optional)

@@ -195,6 +195,18 @@ func (r *Runner) Run(ctx context.Context, opts *RunOptions, tm *TimeoutManager) 
 	result.SessionID = sessionID
 	result.ContainerUpgradeNeeded = r.installer.UpgradedInPlace()
 
+	// Check if the MCP server recorded a different signal than what the signal detector found.
+	// This handles the case where the done tool returns SignalStoryComplete (empty-diff Case A)
+	// but the signal detector maps tool name "done" → SignalDone.
+	if result.Signal == SignalDone && r.mcpServer != nil {
+		if eff := r.mcpServer.ConsumeLastEffect(); eff != nil && eff.Signal == tools.SignalStoryComplete {
+			result.Signal = SignalStoryComplete
+			// Use Summary as Evidence: the done tool's summary arg describes why
+			// the story is already complete (no changes needed on the branch).
+			result.Evidence = result.Summary
+		}
+	}
+
 	r.logger.Info("Claude Code completed: session=%s signal=%s responses=%d duration=%s",
 		sessionID, result.Signal, result.ResponseCount, duration)
 

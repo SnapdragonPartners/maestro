@@ -41,7 +41,6 @@ var signalToolNames = map[string]Signal{
 	tools.ToolSubmitPlan:      SignalPlanComplete,
 	tools.ToolDone:            SignalDone,
 	tools.ToolAskQuestion:     SignalQuestion,
-	tools.ToolStoryComplete:   SignalStoryComplete,
 	tools.ToolContainerSwitch: SignalContainerSwitch,
 }
 
@@ -58,10 +57,6 @@ type SignalToolInput struct {
 	// For ask_question
 	Question string `json:"question,omitempty"`
 	Context  string `json:"context,omitempty"`
-
-	// For story_complete
-	Evidence           string `json:"evidence,omitempty"`
-	ExplorationSummary string `json:"exploration_summary,omitempty"`
 
 	// For container_switch
 	ContainerName string `json:"container_name,omitempty"`
@@ -136,12 +131,6 @@ func parseSignalInput(input any) *SignalToolInput {
 		if context, ok := v["context"].(string); ok {
 			result.Context = context
 		}
-		if evidence, ok := v["evidence"].(string); ok {
-			result.Evidence = evidence
-		}
-		if explorationSummary, ok := v["exploration_summary"].(string); ok {
-			result.ExplorationSummary = explorationSummary
-		}
 		if containerName, ok := v["container_name"].(string); ok {
 			result.ContainerName = containerName
 		}
@@ -215,10 +204,6 @@ func BuildResult(signal Signal, input *SignalToolInput, events []StreamEvent) Re
 				Question: input.Question,
 				Context:  input.Context,
 			}
-
-		case SignalStoryComplete:
-			result.Evidence = input.Evidence
-			result.ExplorationSummary = input.ExplorationSummary
 
 		case SignalContainerSwitch:
 			result.ContainerSwitchTarget = input.ContainerName

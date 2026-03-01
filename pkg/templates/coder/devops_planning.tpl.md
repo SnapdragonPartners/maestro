@@ -166,26 +166,15 @@ When submitting your plan with `submit_plan`, you MUST provide:
 - **Complete**: Covers all infrastructure work
 - **Testable**: Can be verified when done
 
-## IMPORTANT: When to Mark Story Complete
+## IMPORTANT: When No Infrastructure Changes Are Needed
 
-You may use the `story_complete` tool **only if both conditions hold**:
-
-1. **All required infrastructure files/configs already exist** (static parity), **and**
-2. **The story's acceptance criteria do NOT include any executable commands** (container_build, container_test, deploy, etc.)
-
-```json
-{
-  "reason": "Clear explanation of why the infrastructure story is complete",
-  "evidence": "Specific infrastructure files and configs that satisfy requirements", 
-  "confidence": "HIGH"  // or MEDIUM, LOW
-}
-```
+If after exploring the infrastructure you determine that **all required infrastructure files/configs already exist** and the story requirements are already met, use `story_complete` to signal that the story is already implemented. Provide specific evidence (file paths, existing functionality, test results) and your confidence level. The architect will verify your claim before marking the story complete.
 
 **If infrastructure appears complete but acceptance criteria include executable commands**, you MUST generate a **verification-only implementation plan** that focuses on running those commands and fixing any failures found.
 
 **WORKFLOW PRIORITY:**
 1. **First**: Explore the infrastructure systematically
-2. **If both static parity AND no executable criteria**: Use `story_complete`
+2. **If story requirements are already met**: Use `story_complete` with evidence
 3. **If missing infrastructure OR executable criteria exist**: Create implementation plan with `submit_plan`
 
 **Start by exploring the infrastructure systematically. Do not create a plan until you understand the existing implementation.**

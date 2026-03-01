@@ -160,20 +160,9 @@ When submitting your plan with `submit_plan`, you MUST provide:
 - **Complete**: Covers all development work
 - **Testable**: Can be verified when done
 
-## IMPORTANT: When to Mark Story Complete
+## IMPORTANT: When No Code Changes Are Needed
 
-You may use the `story_complete` tool **only if both conditions hold**:
-
-1. **All required files/code already exist** (static parity), **and**
-2. **The story's acceptance criteria do NOT include any executable commands** (build, test, run, CLI invocation, etc.)
-
-```json
-{
-  "reason": "Clear explanation of why the feature story is complete",
-  "evidence": "Specific file paths and code that satisfy requirements", 
-  "confidence": "HIGH"  // or MEDIUM, LOW
-}
-```
+If after exploring the codebase you determine that **all required files/code already exist** and the story requirements are already met, use `story_complete` to signal that the story is already implemented. Provide specific evidence (file paths, existing functionality, test results) and your confidence level. The architect will verify your claim before marking the story complete.
 
 **If code appears complete but acceptance criteria include executable commands**, you MUST generate a **verification-only implementation plan** that focuses on running those commands and fixing any failures found. Use a plan description like:
 
@@ -181,7 +170,7 @@ You may use the `story_complete` tool **only if both conditions hold**:
 
 **WORKFLOW PRIORITY:**
 1. **First**: Explore the codebase systematically
-2. **If both static parity AND no executable criteria**: Use `story_complete`
+2. **If story requirements are already met**: Use `story_complete` with evidence
 3. **If missing code OR executable criteria exist**: Create implementation plan with `submit_plan`
 
 **Start by exploring the codebase systematically. Do not create a plan until you understand the existing implementation.**

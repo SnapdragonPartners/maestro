@@ -321,34 +321,43 @@ func (d *Driver) getContextForAgent(agentID string) *contextmgr.ContextManager {
 	return cm
 }
 
+// ensureContextForStory ensures the architect's per-agent context is scoped to the correct story.
+// Uses ContextManager.GetCurrentTemplate() for idempotent detection: if the template name
+// (which encodes the story ID) already matches, this is a no-op. On story change (or first use),
+// it resets the context with a fresh system prompt and clears review streaks.
+func (d *Driver) ensureContextForStory(ctx context.Context, agentID, storyID string) (*contextmgr.ContextManager, error) {
+	cm := d.getContextForAgent(agentID)
+	templateName := fmt.Sprintf("agent-%s-story-%s", agentID, storyID)
+
+	if cm.GetCurrentTemplate() == templateName {
+		return cm, nil // Already scoped to this story
+	}
+
+	// Story changed (or first use) — reset context with new system prompt
+	d.logger.Info("Story context change detected for agent %s: %q → %q",
+		agentID, cm.GetCurrentTemplate(), templateName)
+
+	systemPrompt, err := d.buildSystemPrompt(ctx, agentID, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build system prompt for agent %s story %s: %w",
+			agentID, storyID, err)
+	}
+
+	cm.ResetForNewTemplate(templateName, systemPrompt)
+	d.clearReviewStreaks(agentID)
+	d.logger.Info("Reset context for agent %s (story %s)", agentID, storyID)
+	return cm, nil
+}
+
 // ResetAgentContext resets the context for an agent when they start a new story.
-// Called when a coder transitions to SETUP state with a new story assignment.
+// Delegates to ensureContextForStory using the dispatcher lease as the authoritative story source.
 func (d *Driver) ResetAgentContext(agentID string) error {
-	// Get current story for this agent from dispatcher
 	storyID := d.dispatcher.GetStoryForAgent(agentID)
 	if storyID == "" {
 		return fmt.Errorf("no story found for agent %s", agentID)
 	}
-
-	// Get or create context for this agent
-	cm := d.getContextForAgent(agentID)
-
-	// Build comprehensive system prompt
-	systemPrompt, err := d.buildSystemPrompt(agentID, storyID)
-	if err != nil {
-		return fmt.Errorf("failed to build system prompt: %w", err)
-	}
-
-	// Reset context with story-scoped template name
-	templateName := fmt.Sprintf("agent-%s-story-%s", agentID, storyID)
-	cm.ResetForNewTemplate(templateName, systemPrompt)
-
-	d.logger.Info("✅ Reset context for agent %s (story %s)", agentID, storyID)
-
-	// Clear review streaks for this agent (new story = fresh start)
-	d.clearReviewStreaks(agentID)
-
-	return nil
+	_, err := d.ensureContextForStory(context.Background(), agentID, storyID)
+	return err
 }
 
 // incrementReviewStreak increments the consecutive NEEDS_CHANGES streak for a coder/review-type pair.
@@ -434,7 +443,7 @@ func (d *Driver) makeOnLLMErrorCallback(contextType string) func(error, *context
 
 // buildSystemPrompt creates the comprehensive system prompt for an agent context.
 // This prompt contains persistent context for the entire story lifecycle.
-func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
+func (d *Driver) buildSystemPrompt(ctx context.Context, agentID, storyID string) (string, error) {
 	// Get story details from queue
 	story, exists := d.queue.GetStory(storyID)
 	if !exists {
@@ -463,7 +472,7 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 	// Load and add MAESTRO.md content if available (formatted with trust boundary)
 	if d.workDir != "" {
 		mirrorMgr := mirror.NewManager(d.workDir)
-		if maestroContent, err := mirrorMgr.LoadMaestroMd(context.Background()); err == nil && maestroContent != "" {
+		if maestroContent, err := mirrorMgr.LoadMaestroMd(ctx); err == nil && maestroContent != "" {
 			data.Extra["MaestroMd"] = utils.FormatMaestroMdForPrompt(maestroContent)
 		}
 	}

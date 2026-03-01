@@ -90,7 +90,7 @@ const (
 
 	// Coder signals.
 	SignalPlanReview    = "PLAN_REVIEW"    // submit_plan tool ready for architect review
-	SignalStoryComplete = "STORY_COMPLETE" // story_complete tool - story already implemented, no work needed
+	SignalStoryComplete = "STORY_COMPLETE" // done tool empty-diff - story already implemented, no work needed
 	SignalCoding        = "CODING"         // todos_add tool ready to start coding
 	SignalTesting       = "TESTING"        // done tool ready for testing phase
 	SignalTodoComplete  = "TODO_COMPLETE"  // todo_complete tool marked a todo as done

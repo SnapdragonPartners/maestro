@@ -209,7 +209,7 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 		return proto.StateError, false, logx.Errorf("Claude Code coding error: %s", errMsg)
 
 	case claude.SignalStoryComplete:
-		// story_complete called from coding - story already implemented
+		// done tool detected empty diff (Case A) - story already implemented
 		sm.SetStateData(KeyCodingCompletedAt, time.Now().UTC())
 
 		// Store evidence from Claude Code result

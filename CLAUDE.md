@@ -75,13 +75,15 @@ The architect maintains **per-agent conversation contexts** to eliminate contrad
   - Knowledge pack (relevant project knowledge)
   - Role descriptions and available tools
 - **90% smaller request prompts**: Request-specific prompts now contain just the request content + brief instruction (story context in system prompt)
-- **Context lifecycle**: Contexts reset when agents start new stories (SETUP state transition), preserving history within story boundaries
+- **Context lifecycle**: Contexts reset automatically on story transitions — detected by comparing template names (which encode story IDs) at the top of `handleRequest()`
 
 ### Implementation
 - **Location**: `pkg/architect/driver.go` - `agentContexts map[string]*contextmgr.ContextManager`
 - **Context creation**: `getContextForAgent(agentID)` - Creates or retrieves agent-specific context
-- **Context reset**: `ResetAgentContext(agentID)` - Called when coder enters SETUP state for new story
-- **System prompt**: `buildSystemPrompt(agentID, storyID)` - Generates persistent context from story data
+- **Context scoping**: `ensureContextForStory(agentID, storyID)` - Idempotent method that checks template name (`"agent-{agentID}-story-{storyID}"`) against current template. On mismatch (story change or first use), resets context with fresh system prompt and clears review streaks. No-op if already scoped to correct story.
+- **Trigger**: Called at the top of `handleRequest()` in `pkg/architect/request.go`, using the **dispatcher lease** (`d.dispatcher.GetStoryForAgent(coderID)`) as the authoritative story source — not the request payload — to avoid desync in resume/reassignment scenarios.
+- **Legacy wrapper**: `ResetAgentContext(agentID)` delegates to `ensureContextForStory` for backward compatibility
+- **System prompt**: `buildSystemPrompt(ctx, agentID, storyID)` - Generates persistent context from story data
 - **All request handlers** use agent-specific contexts:
   - `handleSingleTurnReview()` - Single-turn spec/plan reviews
   - `handleIterativeQuestion()` - Multi-turn Q&A with workspace inspection
@@ -92,6 +94,7 @@ The architect maintains **per-agent conversation contexts** to eliminate contrad
 - **No contradictory feedback**: Architect remembers previous interactions within story
 - **Efficient prompts**: 90% reduction in prompt size by eliminating repeated story context
 - **Clean boundaries**: Each story starts with fresh context to avoid cross-contamination
+- **Automatic detection**: Story transitions are detected idempotently via template name comparison — no external trigger needed
 - **Scalable**: Supports multiple concurrent conversations with different agents
 
 See `docs/ARCHITECT_CONTEXT.md` for detailed implementation history and design decisions.
