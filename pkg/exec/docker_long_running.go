@@ -465,13 +465,20 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
+			// Exit code >= 125 indicates a docker daemon/client failure, not the
+			// contained command. Docker uses 125 for its own errors, 126 for
+			// "command cannot be invoked", 127 for "command not found".
+			if result.ExitCode >= 125 {
+				return result, fmt.Errorf("docker exec failed (exit %d): %w", result.ExitCode, err)
+			}
+			// Exit code 1-124: the command itself returned non-zero.
+			// Return err=nil so callers check result.ExitCode, matching LocalExec behavior.
 		} else {
+			// Actual execution failure (timeout, missing binary, etc.)
 			result.ExitCode = 1
+			return result, fmt.Errorf("docker exec failed: %w", err)
 		}
-		return result, fmt.Errorf("docker exec failed: %w", err)
 	}
-
-	result.ExitCode = 0
 
 	// Update container activity tracking.
 	d.updateContainerActivity(containerName)
@@ -568,13 +575,17 @@ func (d *LongRunningDockerExec) RunStreaming(ctx context.Context, cmd []string, 
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
+			// Exit code >= 125 indicates a docker daemon/client failure.
+			if result.ExitCode >= 125 {
+				return result, fmt.Errorf("docker exec failed (exit %d): %w", result.ExitCode, err)
+			}
+			// Exit code 1-124: command returned non-zero, matching LocalExec behavior.
 		} else {
 			result.ExitCode = 1
+			return result, fmt.Errorf("docker exec failed: %w", err)
 		}
-		return result, fmt.Errorf("docker exec failed: %w", err)
 	}
 
-	result.ExitCode = 0
 	d.updateContainerActivity(containerName)
 
 	return result, nil
