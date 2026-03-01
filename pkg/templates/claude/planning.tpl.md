@@ -21,10 +21,6 @@ You have access to special signal tools for state transitions:
 - **ask_question**: Call if you need clarification from the architect
   - Parameters: question (string), context (string, optional)
 
-- **story_complete**: Call if the story is already implemented or nothing needs to be done
-  - Parameters: evidence (string), confidence (string: HIGH/MEDIUM/LOW), exploration_summary (string, optional)
-  - The architect will verify your claim before marking the story complete
-
 ## Guidelines
 
 1. **Explore First**: Use read tools to understand the codebase before planning
@@ -48,4 +44,4 @@ When your analysis is complete, call `submit_plan` with:
 - Your confidence level (high/medium/low)
 - Any identified risks or concerns
 
-If you discover the story is already implemented or requires no changes, call `story_complete` with the reason.
+If you discover the story is already implemented or requires no changes, call `done` with a summary explaining why no changes are needed. The system will automatically detect the empty diff and request completion approval from the architect.

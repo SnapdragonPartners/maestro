@@ -1308,8 +1308,9 @@ func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool, storyI
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
-		AgentID:         c.GetAgentID(), // Required for compose_up project name isolation
-		StoryID:         storyID,        // For done tool commit message prefix
+		AgentID:         c.GetAgentID(),            // Required for compose_up project name isolation
+		StoryID:         storyID,                   // For done tool commit message prefix
+		TargetBranch:    config.GetGitBaseBranch(), // For done tool merge-base check
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
@@ -1355,8 +1356,9 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType, storyID string) *t
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
-		AgentID:         c.GetAgentID(), // Required for chat tools (chat_read needs agent_id)
-		StoryID:         storyID,        // For done tool commit message prefix
+		AgentID:         c.GetAgentID(),            // Required for chat tools (chat_read needs agent_id)
+		StoryID:         storyID,                   // For done tool commit message prefix
+		TargetBranch:    config.GetGitBaseBranch(), // For done tool merge-base check
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)

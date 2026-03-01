@@ -236,7 +236,7 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			c.logger.Info("🧑‍💻 Advancing to TESTING state")
 			return StateTesting, false, nil
 		case tools.SignalStoryComplete:
-			// story_complete was called from CODING - story already implemented
+			// done tool detected empty diff (Case A) - story already implemented
 			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 			if !ok {
 				return proto.StateError, false, logx.Errorf("STORY_COMPLETE effect data is not map[string]any: %T", out.EffectData)

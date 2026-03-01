@@ -84,7 +84,7 @@ func createToolByName(toolName string) (tools.Tool, error) {
 		return tools.NewSubmitPlanTool(), nil
 	case tools.ToolDone:
 		mockAgent := &mockTestAgent{}
-		return tools.NewDoneTool(mockAgent, nil, "", ""), nil
+		return tools.NewDoneTool(mockAgent, nil, "", "", ""), nil
 	// Add more tools as needed - CreateMakefile doesn't have a constant yet
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)

@@ -79,6 +79,7 @@ Evaluate the implementation for:
 7. **Documentation**: Adequate comments and documentation for complex logic
 8. **Error Handling**: Proper error handling and edge case coverage
 9. **Environment/Compose Alignment**: If `.env*` or compose files changed, verify that hostnames in environment variables match compose service names (avoid loopback addresses like `localhost`, `127.0.0.1`, `::1` unless explicitly waived with `# nolint:localhost (reason)`)
+10. **Build Artifacts**: If compiled binaries, object files, or other build artifacts appear in the diff (e.g., extensionless executables, `*.o`, `*.so`, `*.exe`, `vendor/`, `node_modules/`), request that the coder update `.gitignore` to exclude them before approving
 
 ## Decision Options
 

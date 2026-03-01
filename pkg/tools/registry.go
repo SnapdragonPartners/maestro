@@ -26,6 +26,7 @@ type AgentContext struct {
 	Agent           Agent                  // Optional agent reference for state-aware tools
 	ProjectDir      string                 // Project directory for bootstrap detection and config access
 	StoryID         string                 // Story ID for commit message prefix (used by done tool)
+	TargetBranch    string                 // Target branch for done tool merge-base check (defaults to "main")
 	ComposeRegistry *state.ComposeRegistry // Compose stack registry for cleanup tracking
 }
 
@@ -258,11 +259,6 @@ func createAskQuestionTool(_ *AgentContext) (Tool, error) {
 	return NewAskQuestionTool(), nil
 }
 
-// createStoryCompleteTool creates a story complete tool instance.
-func createStoryCompleteTool(_ *AgentContext) (Tool, error) {
-	return NewStoryCompleteTool(), nil
-}
-
 // createBuildTool creates a build tool instance.
 func createBuildTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
@@ -286,7 +282,7 @@ func createLintTool(ctx *AgentContext) (Tool, error) {
 
 // createDoneTool creates a done tool instance.
 func createDoneTool(ctx *AgentContext) (Tool, error) {
-	return NewDoneTool(ctx.Agent, ctx.Executor, ctx.WorkDir, ctx.StoryID), nil
+	return NewDoneTool(ctx.Agent, ctx.Executor, ctx.WorkDir, ctx.StoryID, ctx.TargetBranch), nil
 }
 
 // createBackendInfoTool creates a backend info tool instance.
@@ -415,10 +411,6 @@ func getAskQuestionSchema() InputSchema {
 	return NewAskQuestionTool().Definition().InputSchema
 }
 
-func getStoryCompleteSchema() InputSchema {
-	return NewStoryCompleteTool().Definition().InputSchema
-}
-
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
 	return NewBuildTool(buildSvc).Definition().InputSchema
@@ -435,7 +427,7 @@ func getLintSchema() InputSchema {
 }
 
 func getDoneSchema() InputSchema {
-	return NewDoneTool(nil, nil, "", "").Definition().InputSchema
+	return NewDoneTool(nil, nil, "", "", "").Definition().InputSchema
 }
 
 func getBackendInfoSchema() InputSchema {
@@ -681,12 +673,6 @@ func init() {
 		Name:        ToolAskQuestion,
 		Description: "Ask the architect for clarification or guidance during planning",
 		InputSchema: getAskQuestionSchema(),
-	})
-
-	Register(ToolStoryComplete, createStoryCompleteTool, &ToolMeta{
-		Name:        ToolStoryComplete,
-		Description: "Signal that the story is already implemented - no work needed",
-		InputSchema: getStoryCompleteSchema(),
 	})
 
 	// Register development tools

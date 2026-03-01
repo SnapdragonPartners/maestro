@@ -13,7 +13,7 @@ import (
 
 // TestDoneTool_NoExecutor verifies the done tool works when no executor is provided (test/schema mode).
 func TestDoneTool_NoExecutor(t *testing.T) {
-	tool := NewDoneTool(nil, nil, "", "")
+	tool := NewDoneTool(nil, nil, "", "", "")
 
 	result, err := tool.Exec(context.Background(), map[string]any{
 		"summary": "Implemented feature X",
@@ -35,7 +35,7 @@ func TestDoneTool_NoExecutor(t *testing.T) {
 
 // TestDoneTool_MissingSummary verifies the done tool rejects missing summary.
 func TestDoneTool_MissingSummary(t *testing.T) {
-	tool := NewDoneTool(nil, nil, "", "")
+	tool := NewDoneTool(nil, nil, "", "", "")
 
 	_, err := tool.Exec(context.Background(), map[string]any{})
 	if err == nil {
@@ -66,7 +66,7 @@ func TestDoneTool_CommitsChanges(t *testing.T) {
 
 	// Create done tool with local executor
 	executor := execpkg.NewLocalExec()
-	tool := NewDoneTool(nil, executor, repoDir, "STORY-42")
+	tool := NewDoneTool(nil, executor, repoDir, "STORY-42", "")
 
 	// Execute done tool
 	result, err := tool.Exec(context.Background(), map[string]any{
@@ -97,12 +97,75 @@ func TestDoneTool_CommitsChanges(t *testing.T) {
 	}
 }
 
-// TestDoneTool_NothingToCommit verifies the done tool handles no changes gracefully.
-func TestDoneTool_NothingToCommit(t *testing.T) {
+// TestDoneTool_NothingToCommit_CaseA verifies that when no changes exist on the branch at all
+// (Case A: branch has zero commits beyond target), the done tool returns SignalStoryComplete.
+func TestDoneTool_NothingToCommit_CaseA(t *testing.T) {
+	repoDir := initTestGitRepoWithRemote(t)
+
+	executor := execpkg.NewLocalExec()
+	tool := NewDoneTool(nil, executor, repoDir, "STORY-1", "main")
+
+	result, err := tool.Exec(context.Background(), map[string]any{
+		"summary": "No changes needed - feature already exists",
+	})
+	if err != nil {
+		t.Fatalf("Done tool failed: %v", err)
+	}
+
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be set")
+	}
+	if result.ProcessEffect.Signal != SignalStoryComplete {
+		t.Errorf("Expected signal %q (Case A), got %q", SignalStoryComplete, result.ProcessEffect.Signal)
+	}
+	if !strings.Contains(result.Content, "story requirements already satisfied") {
+		t.Errorf("Expected story complete message, got: %s", result.Content)
+	}
+}
+
+// TestDoneTool_NothingToCommit_WithPriorCommits verifies that when the branch has prior commits
+// but nothing new this cycle (Case B), the done tool returns SignalTesting.
+func TestDoneTool_NothingToCommit_WithPriorCommits(t *testing.T) {
+	repoDir := initTestGitRepoWithRemote(t)
+
+	// Create a branch with a commit so there are prior commits beyond origin/main
+	gitCmd(t, repoDir, "checkout", "-b", "feature-branch")
+	if err := os.WriteFile(filepath.Join(repoDir, "prior.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatalf("Failed to write file: %v", err)
+	}
+	gitCmd(t, repoDir, "add", "-A")
+	gitCmd(t, repoDir, "commit", "-m", "Prior commit")
+
+	executor := execpkg.NewLocalExec()
+	tool := NewDoneTool(nil, executor, repoDir, "STORY-2", "main")
+
+	// Call done with nothing new to stage
+	result, err := tool.Exec(context.Background(), map[string]any{
+		"summary": "No new changes this cycle",
+	})
+	if err != nil {
+		t.Fatalf("Done tool failed: %v", err)
+	}
+
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be set")
+	}
+	if result.ProcessEffect.Signal != SignalTesting {
+		t.Errorf("Expected signal %q (Case B), got %q", SignalTesting, result.ProcessEffect.Signal)
+	}
+	if !strings.Contains(result.Content, "No changes to commit") {
+		t.Errorf("Expected 'No changes to commit' message, got: %s", result.Content)
+	}
+}
+
+// TestDoneTool_NothingToCommit_MergeBaseFailure verifies that when merge-base fails
+// (e.g., no remote), the done tool falls back to Case B (SignalTesting).
+func TestDoneTool_NothingToCommit_MergeBaseFailure(t *testing.T) {
+	// Use initTestGitRepo (no remote) so merge-base will fail
 	repoDir := initTestGitRepo(t)
 
 	executor := execpkg.NewLocalExec()
-	tool := NewDoneTool(nil, executor, repoDir, "STORY-1")
+	tool := NewDoneTool(nil, executor, repoDir, "STORY-3", "main")
 
 	result, err := tool.Exec(context.Background(), map[string]any{
 		"summary": "No changes needed",
@@ -111,8 +174,12 @@ func TestDoneTool_NothingToCommit(t *testing.T) {
 		t.Fatalf("Done tool failed: %v", err)
 	}
 
-	if result.ProcessEffect == nil || result.ProcessEffect.Signal != SignalTesting {
-		t.Fatal("Expected TESTING signal even with no changes")
+	if result.ProcessEffect == nil {
+		t.Fatal("Expected ProcessEffect to be set")
+	}
+	// Should fallback to Case B (SignalTesting) since merge-base fails without remote
+	if result.ProcessEffect.Signal != SignalTesting {
+		t.Errorf("Expected signal %q (fallback), got %q", SignalTesting, result.ProcessEffect.Signal)
 	}
 	if !strings.Contains(result.Content, "No changes to commit") {
 		t.Errorf("Expected 'No changes to commit' message, got: %s", result.Content)
@@ -129,7 +196,7 @@ func TestDoneTool_CommitMessageWithoutStoryID(t *testing.T) {
 	}
 
 	executor := execpkg.NewLocalExec()
-	tool := NewDoneTool(nil, executor, repoDir, "") // No story ID
+	tool := NewDoneTool(nil, executor, repoDir, "", "") // No story ID
 
 	_, err := tool.Exec(context.Background(), map[string]any{
 		"summary": "Added file.txt",
@@ -150,7 +217,7 @@ func TestDoneTool_CommitMessageWithoutStoryID(t *testing.T) {
 
 // TestDoneTool_Definition verifies the tool definition reflects commit behavior.
 func TestDoneTool_Definition(t *testing.T) {
-	tool := NewDoneTool(nil, nil, "", "")
+	tool := NewDoneTool(nil, nil, "", "", "")
 	def := tool.Definition()
 
 	if def.Name != "done" {
@@ -166,7 +233,7 @@ func TestDoneTool_Definition(t *testing.T) {
 
 // TestDoneTool_PromptDocumentation verifies documentation mentions commit behavior.
 func TestDoneTool_PromptDocumentation(t *testing.T) {
-	tool := NewDoneTool(nil, nil, "", "")
+	tool := NewDoneTool(nil, nil, "", "", "")
 	doc := tool.PromptDocumentation()
 
 	if !strings.Contains(doc, "git add") {
@@ -217,6 +284,38 @@ func initTestGitRepo(t *testing.T) string {
 	gitCmd(t, dir, "commit", "-m", "Initial commit")
 
 	return dir
+}
+
+// initTestGitRepoWithRemote creates a repo with a local "origin" remote.
+// This enables merge-base checks against origin/main.
+func initTestGitRepoWithRemote(t *testing.T) string {
+	t.Helper()
+
+	// Create "remote" bare repo
+	remoteDir := t.TempDir()
+	gitCmd(t, remoteDir, "init", "--bare")
+
+	// Create working repo and push to "remote"
+	workDir := t.TempDir()
+	gitCmd(t, workDir, "init")
+	gitCmd(t, workDir, "config", "user.email", "test@test.com")
+	gitCmd(t, workDir, "config", "user.name", "Test")
+
+	readmePath := filepath.Join(workDir, "README.md")
+	if err := os.WriteFile(readmePath, []byte("# Test\n"), 0644); err != nil {
+		t.Fatalf("Failed to write README: %v", err)
+	}
+	gitCmd(t, workDir, "add", "-A")
+	gitCmd(t, workDir, "commit", "-m", "Initial commit")
+
+	// Ensure we're on main branch
+	gitCmd(t, workDir, "branch", "-M", "main")
+
+	// Add remote and push
+	gitCmd(t, workDir, "remote", "add", "origin", remoteDir)
+	gitCmd(t, workDir, "push", "-u", "origin", "main")
+
+	return workDir
 }
 
 // gitCmd runs a git command in the given directory and returns stdout.

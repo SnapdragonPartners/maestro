@@ -6,9 +6,8 @@ import "orchestrator/pkg/config"
 // and enable compile-time checking.
 const (
 	// Planning tools.
-	ToolSubmitPlan    = "submit_plan"
-	ToolAskQuestion   = "ask_question"
-	ToolStoryComplete = "story_complete"
+	ToolSubmitPlan  = "submit_plan"
+	ToolAskQuestion = "ask_question"
 
 	// Development tools.
 	ToolFileEdit    = "file_edit"
@@ -67,7 +66,6 @@ var (
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
-		ToolStoryComplete,
 		ToolContainerTest,
 		ToolContainerList,
 		ToolChatPost,
@@ -82,7 +80,6 @@ var (
 		ToolShell,
 		ToolSubmitPlan,
 		ToolAskQuestion,
-		ToolStoryComplete,
 		ToolContainerTest,
 		ToolContainerList,
 		ToolChatPost,
@@ -102,7 +99,6 @@ var (
 		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
-		ToolStoryComplete,
 		ToolContainerBuild,
 		ToolContainerUpdate,
 		ToolContainerTest,
@@ -129,7 +125,6 @@ var (
 		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
-		ToolStoryComplete,
 		ToolContainerBuild,
 		ToolContainerUpdate,
 		ToolContainerTest,
