@@ -34,17 +34,13 @@ func NewContainerBuildTool(hostWorkspacePath string) *ContainerBuildTool {
 func (c *ContainerBuildTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "container_build",
-		Description: "Build Docker container from Dockerfile using buildx with proper validation and testing. Container name is auto-generated from project config if not specified.",
+		Description: "Build Docker container from Dockerfile using buildx with proper validation and testing. Container name is auto-generated from project config.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
 				"cwd": {
 					Type:        "string",
 					Description: "Working directory containing Dockerfile (defaults to current directory)",
-				},
-				"container_name": {
-					Type:        "string",
-					Description: "Optional: Name to tag the built container. If not provided, auto-generates as 'maestro-<projectname>-<dockerfile>:latest'",
 				},
 				"dockerfile": {
 					Type:        "string",
@@ -55,7 +51,7 @@ func (c *ContainerBuildTool) Definition() ToolDefinition {
 					Description: "Target platform for multi-arch builds (e.g., 'linux/amd64', 'linux/arm64')",
 				},
 			},
-			Required: []string{}, // No required parameters - container_name is auto-generated
+			Required: []string{},
 		},
 	}
 }
@@ -69,12 +65,11 @@ func (c *ContainerBuildTool) Name() string {
 func (c *ContainerBuildTool) PromptDocumentation() string {
 	return `- **container_build** - Build Docker container from Dockerfile using buildx
   - Parameters:
-    - container_name (optional): name to tag the built container - auto-generates as 'maestro-<projectname>-<dockerfile>:latest' if not provided
     - cwd (optional): working directory (project root)
     - dockerfile (optional): path within .maestro/ directory (defaults to .maestro/Dockerfile)
     - platform (optional): target platform for multi-arch builds
+  - Container name is auto-generated as 'maestro-<projectname>-<dockerfile>:latest'
   - IMPORTANT: Dockerfile must be in .maestro/ directory to avoid conflicts with production Dockerfiles
-  - IMPORTANT: 'maestro-bootstrap' is a reserved name and cannot be used for project containers
   - If adapting an existing repo Dockerfile, copy it to .maestro/ first
   - Builds container using Docker buildx with validation and testing`
 }
@@ -124,22 +119,18 @@ func (c *ContainerBuildTool) Exec(ctx context.Context, args map[string]any) (*Ex
 		dockerfilePath = path
 	}
 
-	// Extract or auto-generate container name
-	containerName, ok := args["container_name"].(string)
-	if !ok || containerName == "" {
-		// Auto-generate from project config and dockerfile
-		cfg, err := config.GetConfig()
-		if err != nil {
-			return nil, fmt.Errorf("container_name not provided and failed to get config for auto-generation: %w", err)
-		}
-		projectName := cfg.Project.Name
-		if projectName == "" {
-			return nil, fmt.Errorf("container_name not provided and project name not configured - either provide container_name or configure project name")
-		}
-		containerName = GenerateContainerName(projectName, dockerfilePath)
-		log.Printf("INFO container_build: Auto-generated container name: %s (project: %s, dockerfile: %s)",
-			containerName, projectName, dockerfilePath)
+	// Auto-generate container name from project config and dockerfile
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config for container name generation: %w", err)
 	}
+	projectName := cfg.Project.Name
+	if projectName == "" {
+		return nil, fmt.Errorf("project name not configured - configure project name in config.json")
+	}
+	containerName := GenerateContainerName(projectName, dockerfilePath)
+	log.Printf("INFO container_build: Auto-generated container name: %s (project: %s, dockerfile: %s)",
+		containerName, projectName, dockerfilePath)
 
 	// SECURITY: Reject reserved container names to prevent overwriting the bootstrap container
 	if IsReservedContainerName(containerName) {

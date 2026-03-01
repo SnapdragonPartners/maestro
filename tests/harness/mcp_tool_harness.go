@@ -52,6 +52,10 @@ func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, str
 	return "", "", "", "", false // No pending config in mock
 }
 
+func (m *mockTestAgent) SwitchContainer(_ context.Context, _, _, _, _ string) (string, error) {
+	return "mock-container", nil // No-op for mock
+}
+
 // HarnessResult wraps the tool result with additional metadata for testing.
 //
 //nolint:govet // fieldalignment: prefer logical grouping over memory optimization

@@ -151,6 +151,32 @@ func ValidateContainerCapabilities(ctx context.Context, executor exec.Executor, 
 	return result
 }
 
+// GetContainerImageID resolves the SHA256 image ID for a given container/image name using docker inspect.
+// This is used by container_update (to pin images) and container_switch (for staging config).
+// The executor should be a host-side executor (LocalExec) since docker commands run on the host.
+func GetContainerImageID(ctx context.Context, executor exec.Executor, containerName string) (string, error) {
+	result, err := executor.Run(ctx, []string{"docker", "inspect", "--format={{.Id}}", containerName}, &exec.Opts{
+		Timeout: 30 * time.Second,
+	})
+
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect container/image '%s': %w (stdout: %s, stderr: %s)",
+			containerName, err, result.Stdout, result.Stderr)
+	}
+
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("docker inspect failed for '%s' with exit code %d (stdout: %s, stderr: %s)",
+			containerName, result.ExitCode, result.Stdout, result.Stderr)
+	}
+
+	imageID := strings.TrimSpace(result.Stdout)
+	if imageID == "" {
+		return "", fmt.Errorf("empty image ID returned for container/image '%s'", containerName)
+	}
+
+	return imageID, nil
+}
+
 // Note: validateGitHubAPIAccess and extractRepoPath functions removed.
 // GitHub API validation was running 'gh' inside the container, but PR operations
 // actually run on the host via exec.CommandContext in pkg/github/client.go.

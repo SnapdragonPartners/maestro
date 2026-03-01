@@ -38,7 +38,7 @@ func TestContainerBuildIntegration(t *testing.T) {
 	testCases := []struct {
 		name              string
 		dockerfileContent string
-		containerName     string
+		expectedContainer string // Auto-generated from project "test-project" + dockerfile path
 		dockerfilePath    string
 	}{
 		{
@@ -48,8 +48,8 @@ RUN apk add --no-cache git github-cli
 RUN adduser -D -u 1000 coder
 RUN echo "test" > /test.txt
 CMD ["sleep", "infinity"]`,
-			containerName:  "maestro-test-default",
-			dockerfilePath: ".maestro/Dockerfile",
+			expectedContainer: "maestro-test-project-dockerfile:latest",
+			dockerfilePath:    ".maestro/Dockerfile",
 		},
 		{
 			name: "dockerfile_variant_in_maestro",
@@ -58,8 +58,8 @@ RUN apk add --no-cache git github-cli
 RUN adduser -D -u 1000 coder
 RUN echo "variant test" > /variant.txt
 CMD ["sleep", "infinity"]`,
-			containerName:  "maestro-test-variant",
-			dockerfilePath: ".maestro/Dockerfile.dev",
+			expectedContainer: "maestro-test-project-dockerfile-dev:latest",
+			dockerfilePath:    ".maestro/Dockerfile.dev",
 		},
 	}
 
@@ -80,14 +80,14 @@ CMD ["sleep", "infinity"]`,
 			}
 
 			// Ensure target container image is cleaned up
-			defer cleanupBuiltContainer(tc.containerName)
+			defer cleanupBuiltContainer(tc.expectedContainer)
 
 			// Build the container (uses local executor internally, so we pass host path)
+			// container_name is now auto-generated from project config
 			buildTool := tools.NewContainerBuildTool(workspaceDir)
 			args := map[string]any{
-				"container_name": tc.containerName,
-				"dockerfile":     tc.dockerfilePath,
-				"cwd":            workspaceDir, // Host path - container_build runs on host
+				"dockerfile": tc.dockerfilePath,
+				"cwd":        workspaceDir, // Host path - container_build runs on host
 			}
 
 			result, err := buildTool.Exec(ctx, args)
@@ -107,12 +107,12 @@ CMD ["sleep", "infinity"]`,
 				t.Fatalf("Expected success=true, got success=%v, result=%+v", resultMap["success"], resultMap)
 			}
 
-			// Verify the container was built
-			if !isContainerBuilt(tc.containerName) {
-				t.Fatalf("Container %s was not built successfully", tc.containerName)
+			// Verify the container was built (auto-generated name)
+			if !isContainerBuilt(tc.expectedContainer) {
+				t.Fatalf("Container %s was not built successfully", tc.expectedContainer)
 			}
 
-			t.Logf("✅ Successfully built container: %s", tc.containerName)
+			t.Logf("✅ Successfully built container: %s", tc.expectedContainer)
 		})
 	}
 }

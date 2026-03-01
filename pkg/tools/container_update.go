@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"strings"
-	"time"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
@@ -33,20 +32,16 @@ func NewContainerUpdateTool(agent Agent) *ContainerUpdateTool {
 func (c *ContainerUpdateTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "container_update",
-		Description: "Update project configuration with container settings - automatically gets image ID from Docker. Container name is auto-generated from project config if not specified.",
+		Description: "Update project configuration with container settings - automatically gets image ID from Docker. Container name is auto-generated from project config.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
-				"container_name": {
-					Type:        "string",
-					Description: "Optional: Name of the container to register. If not provided, auto-generates as 'maestro-<projectname>-<dockerfile>:latest'",
-				},
 				"dockerfile": {
 					Type:        "string",
 					Description: "Path to Dockerfile within .maestro/ directory (defaults to .maestro/Dockerfile)",
 				},
 			},
-			Required: []string{}, // No required parameters - container_name is auto-generated
+			Required: []string{},
 		},
 	}
 }
@@ -60,10 +55,9 @@ func (c *ContainerUpdateTool) Name() string {
 func (c *ContainerUpdateTool) PromptDocumentation() string {
 	return `- **container_update** - Register container for use after merge
   - Parameters:
-    - container_name (optional): name of container to register - auto-generates as 'maestro-<projectname>-<dockerfile>:latest' if not provided
     - dockerfile (optional): path within .maestro/ directory (defaults to .maestro/Dockerfile)
+  - Container name is auto-generated as 'maestro-<projectname>-<dockerfile>:latest'
   - IMPORTANT: Dockerfile must be in .maestro/ directory to avoid conflicts with production Dockerfiles
-  - IMPORTANT: 'maestro-bootstrap' is a reserved name and cannot be used for project containers
   - Validates container capabilities before registering
   - Automatically gets and pins the current image ID from Docker
   - Configuration is applied AFTER merge is successful (not immediately)
@@ -86,22 +80,18 @@ func (c *ContainerUpdateTool) Exec(ctx context.Context, args map[string]any) (*E
 		dockerfilePath = normalizedPath
 	}
 
-	// Extract or auto-generate container name
-	containerName := utils.GetMapFieldOr(args, "container_name", "")
-	if containerName == "" {
-		// Auto-generate from project config and dockerfile
-		cfg, err := config.GetConfig()
-		if err != nil {
-			return nil, fmt.Errorf("container_name not provided and failed to get config for auto-generation: %w", err)
-		}
-		projectName := cfg.Project.Name
-		if projectName == "" {
-			return nil, fmt.Errorf("container_name not provided and project name not configured - either provide container_name or configure project name")
-		}
-		containerName = GenerateContainerName(projectName, dockerfilePath)
-		log.Printf("INFO container_update: Auto-generated container name: %s (project: %s, dockerfile: %s)",
-			containerName, projectName, dockerfilePath)
+	// Auto-generate container name from project config and dockerfile
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config for container name generation: %w", err)
 	}
+	projectName := cfg.Project.Name
+	if projectName == "" {
+		return nil, fmt.Errorf("project name not configured - configure project name in config.json")
+	}
+	containerName := GenerateContainerName(projectName, dockerfilePath)
+	log.Printf("INFO container_update: Auto-generated container name: %s (project: %s, dockerfile: %s)",
+		containerName, projectName, dockerfilePath)
 
 	// SECURITY: Reject reserved container names to prevent overwriting the bootstrap container
 	if IsReservedContainerName(containerName) {
@@ -193,27 +183,12 @@ func (c *ContainerUpdateTool) updateContainerConfiguration(ctx context.Context, 
 }
 
 // getContainerImageID gets the image ID for a given container/image name.
+// Delegates to the shared GetContainerImageID helper.
 func (c *ContainerUpdateTool) getContainerImageID(ctx context.Context, containerName string) (string, error) {
-	// Use docker inspect to get the image ID
-	result, err := c.executor.Run(ctx, []string{"docker", "inspect", "--format={{.Id}}", containerName}, &exec.Opts{
-		Timeout: 30 * time.Second,
-	})
-
+	imageID, err := GetContainerImageID(ctx, c.executor, containerName)
 	if err != nil {
-		return "", fmt.Errorf("failed to inspect container/image '%s': %w (stdout: %s, stderr: %s)",
-			containerName, err, result.Stdout, result.Stderr)
+		return "", err
 	}
-
-	if result.ExitCode != 0 {
-		return "", fmt.Errorf("docker inspect failed for '%s' with exit code %d (stdout: %s, stderr: %s)",
-			containerName, result.ExitCode, result.Stdout, result.Stderr)
-	}
-
-	imageID := strings.TrimSpace(result.Stdout)
-	if imageID == "" {
-		return "", fmt.Errorf("empty image ID returned for container/image '%s'", containerName)
-	}
-
 	log.Printf("DEBUG: Retrieved image ID %s for container %s", imageID, containerName)
 	return imageID, nil
 }

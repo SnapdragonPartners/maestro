@@ -58,7 +58,8 @@ CMD ["sleep", "infinity"]`
 		t.Fatalf("Failed to create Dockerfile: %v", err)
 	}
 
-	containerName := "maestro-test-hash-rebuild"
+	// Container name is auto-generated from project "test-project" + ".maestro/Dockerfile"
+	containerName := "maestro-test-project-dockerfile:latest"
 	defer cleanupBuiltContainer(containerName)
 
 	var originalHash string
@@ -67,9 +68,8 @@ CMD ["sleep", "infinity"]`
 	t.Run("1_build_initial_container", func(t *testing.T) {
 		buildTool := tools.NewContainerBuildTool(workspaceDir)
 		args := map[string]any{
-			"container_name": containerName,
-			"dockerfile":     ".maestro/Dockerfile",
-			"cwd":            workspaceDir,
+			"dockerfile": ".maestro/Dockerfile",
+			"cwd":        workspaceDir,
 		}
 
 		result, err := buildTool.Exec(ctx, args)
@@ -108,8 +108,7 @@ CMD ["sleep", "infinity"]`
 		updateTool := tools.NewContainerUpdateTool(mockAgent)
 
 		args := map[string]any{
-			"container_name": containerName,
-			"dockerfile":     ".maestro/Dockerfile",
+			"dockerfile": ".maestro/Dockerfile",
 		}
 
 		result, err := updateTool.Exec(ctx, args)
@@ -170,9 +169,8 @@ CMD ["sleep", "infinity"]`
 		// Rebuild the container (simulating what verifyAndRebuildIfNeeded does)
 		buildTool := tools.NewContainerBuildTool(workspaceDir)
 		args := map[string]any{
-			"container_name": containerName,
-			"dockerfile":     ".maestro/Dockerfile",
-			"cwd":            workspaceDir,
+			"dockerfile": ".maestro/Dockerfile",
+			"cwd":        workspaceDir,
 		}
 
 		result, err := buildTool.Exec(ctx, args)
@@ -198,8 +196,7 @@ CMD ["sleep", "infinity"]`
 		updateTool := tools.NewContainerUpdateTool(mockAgent)
 
 		args := map[string]any{
-			"container_name": containerName,
-			"dockerfile":     ".maestro/Dockerfile",
+			"dockerfile": ".maestro/Dockerfile",
 		}
 
 		result, err := updateTool.Exec(ctx, args)

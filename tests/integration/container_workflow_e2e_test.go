@@ -57,16 +57,16 @@ CMD ["sleep", "infinity"]`
 		t.Fatalf("Failed to create Dockerfile: %v", err)
 	}
 
-	containerName := "maestro-test-workflow-e2e"
+	// Container name is auto-generated from project "test-project" + ".maestro/Dockerfile"
+	containerName := "maestro-test-project-dockerfile:latest"
 	defer cleanupBuiltContainer(containerName)
 
 	t.Run("container_build_for_app_story", func(t *testing.T) {
 		// Build the container (simulating what an app story coder would do)
 		buildTool := tools.NewContainerBuildTool(workspaceDir)
 		args := map[string]any{
-			"container_name": containerName,
-			"dockerfile":     ".maestro/Dockerfile",
-			"cwd":            workspaceDir,
+			"dockerfile": ".maestro/Dockerfile",
+			"cwd":        workspaceDir,
 		}
 
 		result, err := buildTool.Exec(ctx, args)
@@ -95,8 +95,7 @@ CMD ["sleep", "infinity"]`
 		// Create container_update tool with the mock agent
 		updateTool := tools.NewContainerUpdateTool(mockAgent)
 		args := map[string]any{
-			"container_name": containerName,
-			"dockerfile":     ".maestro/Dockerfile",
+			"dockerfile": ".maestro/Dockerfile",
 		}
 
 		result, err := updateTool.Exec(ctx, args)

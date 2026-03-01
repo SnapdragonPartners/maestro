@@ -65,6 +65,10 @@ func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, str
 	return "", "", "", "", false // No pending config in mock
 }
 
+func (m *mockTestAgent) SwitchContainer(_ context.Context, newImage, _, _, _ string) (string, error) {
+	return newImage, nil // Return the requested image as container name
+}
+
 var _ tools.Agent = (*mockTestAgent)(nil)
 
 // isDockerAvailable checks if Docker is available by running docker version.
@@ -228,6 +232,9 @@ func SetupTestConfig(t *testing.T) {
 	// Using anthropic-sdk-python as a public repo that anyone can access (read-only API calls)
 	// Include all required config sections to avoid nil pointer panics in applyDefaults
 	testConfig := `{
+		"project": {
+			"name": "test-project"
+		},
 		"git": {
 			"repo_url": "https://github.com/anthropics/anthropic-sdk-python.git"
 		},
