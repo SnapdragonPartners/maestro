@@ -111,8 +111,11 @@ func (c *Coder) detectGitWorkspaceState(ctx context.Context) (*GitWorkspaceState
 
 	// Run git status --porcelain to get file states
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "status", "--porcelain"}, opts)
-	if err != nil || result.ExitCode != 0 {
-		return nil, fmt.Errorf("git status failed: %w (exit=%d)", err, result.ExitCode)
+	if err != nil {
+		return nil, fmt.Errorf("git status failed: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("git status failed: exit=%d, stderr: %s", result.ExitCode, result.Stderr)
 	}
 
 	state.GitStatusOutput = result.Stdout
@@ -164,8 +167,11 @@ func (c *Coder) getRemoteHEAD(ctx context.Context, targetBranch string) (string,
 	result, err := c.longRunningExecutor.Run(ctx, []string{
 		"git", "rev-parse", fmt.Sprintf("origin/%s", targetBranch),
 	}, opts)
-	if err != nil || result.ExitCode != 0 {
-		return "", fmt.Errorf("failed to get remote HEAD: %w (exit=%d)", err, result.ExitCode)
+	if err != nil {
+		return "", fmt.Errorf("failed to get remote HEAD: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return "", fmt.Errorf("failed to get remote HEAD: exit=%d, stderr: %s", result.ExitCode, result.Stderr)
 	}
 
 	return strings.TrimSpace(result.Stdout), nil
@@ -248,8 +254,11 @@ func (c *Coder) continueRebase(ctx context.Context) error {
 	}
 
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--continue"}, opts)
-	if err != nil || result.ExitCode != 0 {
-		return fmt.Errorf("git rebase --continue failed: %w (exit=%d, stderr: %s)", err, result.ExitCode, result.Stderr)
+	if err != nil {
+		return fmt.Errorf("git rebase --continue failed: %w (stderr: %s)", err, result.Stderr)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("git rebase --continue failed: exit=%d, stderr: %s", result.ExitCode, result.Stderr)
 	}
 	return nil
 }
