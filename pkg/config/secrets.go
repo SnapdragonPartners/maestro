@@ -8,10 +8,57 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"golang.org/x/crypto/scrypt"
 )
+
+// SecretType distinguishes between system (Maestro operational) and user (app-injected) secrets.
+type SecretType string
+
+// Secret type constants.
+const (
+	SecretTypeSystem SecretType = "system"
+	SecretTypeUser   SecretType = "user"
+)
+
+// systemSecretNames is the allowlist of valid system secret names.
+//
+//nolint:gochecknoglobals // Intentional package-level lookup table for system secret validation
+var systemSecretNames = map[string]bool{
+	"ANTHROPIC_API_KEY":    true,
+	"OPENAI_API_KEY":       true,
+	"GOOGLE_GENAI_API_KEY": true,
+	"GITHUB_TOKEN":         true,
+	"SSL_KEY_PEM":          true,
+}
+
+// StructuredSecrets separates system (Maestro operational) from user (app-injected) secrets.
+type StructuredSecrets struct {
+	System map[string]string `json:"system"`
+	User   map[string]string `json:"user"`
+}
+
+// SecretNameEntry represents a secret name with its type for listing.
+type SecretNameEntry struct {
+	Name string     `json:"name"`
+	Type SecretType `json:"type"`
+}
+
+// validSecretNameRe validates environment variable names.
+var validSecretNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// ValidateSecretName checks that a name is a valid environment variable name.
+func ValidateSecretName(name string) error {
+	if name == "" {
+		return fmt.Errorf("secret name cannot be empty")
+	}
+	if !validSecretNameRe.MatchString(name) {
+		return fmt.Errorf("secret name %q is not a valid environment variable name (must match ^[a-zA-Z_][a-zA-Z0-9_]*$)", name)
+	}
+	return nil
+}
 
 // Secrets file configuration.
 const (
@@ -28,7 +75,7 @@ const (
 //
 //nolint:gochecknoglobals // Intentional global state for in-memory secrets storage
 var (
-	decryptedSecrets    map[string]string
+	decryptedSecrets    *StructuredSecrets
 	decryptedSecretsMux sync.RWMutex
 	projectPassword     string
 	projectPasswordMux  sync.RWMutex
@@ -63,20 +110,25 @@ func ClearProjectPassword() {
 }
 
 // SetDecryptedSecrets stores decrypted secrets in memory.
-func SetDecryptedSecrets(secrets map[string]string) {
+func SetDecryptedSecrets(secrets *StructuredSecrets) {
 	decryptedSecretsMux.Lock()
 	defer decryptedSecretsMux.Unlock()
 	decryptedSecrets = secrets
 }
 
-// GetSecret returns a secret value by name using standard precedence:
-// 1. Decrypted secrets file (in memory)
-// 2. Environment variables.
+// GetSecret returns a secret value by name using precedence:
+// 1. User secrets (in memory)
+// 2. System secrets (in memory)
+// 3. Environment variables.
 func GetSecret(name string) (string, error) {
-	// Check decrypted secrets first
 	decryptedSecretsMux.RLock()
 	if decryptedSecrets != nil {
-		if value, exists := decryptedSecrets[name]; exists && value != "" {
+		// User secrets take precedence over system secrets
+		if value, exists := decryptedSecrets.User[name]; exists && value != "" {
+			decryptedSecretsMux.RUnlock()
+			return value, nil
+		}
+		if value, exists := decryptedSecrets.System[name]; exists && value != "" {
 			decryptedSecretsMux.RUnlock()
 			return value, nil
 		}
@@ -91,52 +143,111 @@ func GetSecret(name string) (string, error) {
 	return "", fmt.Errorf("secret %s not found in secrets file or environment", name)
 }
 
-// GetDecryptedSecretNames returns a list of secret names (not values).
-func GetDecryptedSecretNames() []string {
+// GetDecryptedSecretNames returns a list of secret names with type info (not values).
+func GetDecryptedSecretNames() []SecretNameEntry {
 	decryptedSecretsMux.RLock()
 	defer decryptedSecretsMux.RUnlock()
 
 	if decryptedSecrets == nil {
-		return []string{}
+		return []SecretNameEntry{}
 	}
 
-	names := make([]string, 0, len(decryptedSecrets))
-	for name := range decryptedSecrets {
-		names = append(names, name)
+	entries := make([]SecretNameEntry, 0, len(decryptedSecrets.System)+len(decryptedSecrets.User))
+	for name := range decryptedSecrets.System {
+		entries = append(entries, SecretNameEntry{Name: name, Type: SecretTypeSystem})
 	}
-	return names
+	for name := range decryptedSecrets.User {
+		entries = append(entries, SecretNameEntry{Name: name, Type: SecretTypeUser})
+	}
+	return entries
 }
 
-// SetSecret sets a secret value in memory.
-func SetSecret(name, value string) error {
+// SetSecret sets a secret value in the specified bucket.
+// System secrets are validated against the systemSecretNames allowlist.
+func SetSecret(name, value string, secretType SecretType) error {
+	if err := ValidateSecretName(name); err != nil {
+		return err
+	}
+
+	if secretType == SecretTypeSystem {
+		if !systemSecretNames[name] {
+			return fmt.Errorf("unknown system secret name %q (allowed: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENAI_API_KEY, GITHUB_TOKEN, SSL_KEY_PEM)", name)
+		}
+	}
+
 	decryptedSecretsMux.Lock()
 	defer decryptedSecretsMux.Unlock()
 
 	if decryptedSecrets == nil {
-		decryptedSecrets = make(map[string]string)
+		decryptedSecrets = &StructuredSecrets{
+			System: make(map[string]string),
+			User:   make(map[string]string),
+		}
 	}
-	decryptedSecrets[name] = value
+
+	switch secretType {
+	case SecretTypeSystem:
+		if decryptedSecrets.System == nil {
+			decryptedSecrets.System = make(map[string]string)
+		}
+		decryptedSecrets.System[name] = value
+	default:
+		if decryptedSecrets.User == nil {
+			decryptedSecrets.User = make(map[string]string)
+		}
+		decryptedSecrets.User[name] = value
+	}
 	return nil
 }
 
-// DeleteSecret removes a secret from memory.
-func DeleteSecret(name string) error {
+// DeleteSecret removes a secret from the specified bucket.
+func DeleteSecret(name string, secretType SecretType) error {
 	decryptedSecretsMux.Lock()
 	defer decryptedSecretsMux.Unlock()
 
 	if decryptedSecrets == nil {
 		return nil
 	}
-	delete(decryptedSecrets, name)
+
+	switch secretType {
+	case SecretTypeSystem:
+		delete(decryptedSecrets.System, name)
+	default:
+		delete(decryptedSecrets.User, name)
+	}
 	return nil
+}
+
+// GetUserSecrets returns a copy of user secrets for container injection.
+func GetUserSecrets() map[string]string {
+	decryptedSecretsMux.RLock()
+	defer decryptedSecretsMux.RUnlock()
+
+	if decryptedSecrets == nil || len(decryptedSecrets.User) == 0 {
+		return nil
+	}
+
+	result := make(map[string]string, len(decryptedSecrets.User))
+	for k, v := range decryptedSecrets.User {
+		result[k] = v
+	}
+	return result
 }
 
 // SaveSecretsToFile saves the current in-memory secrets to the encrypted file.
 func SaveSecretsToFile(projectDir, password string) error {
 	decryptedSecretsMux.RLock()
-	secretsCopy := make(map[string]string, len(decryptedSecrets))
-	for k, v := range decryptedSecrets {
-		secretsCopy[k] = v
+	secretsCopy := &StructuredSecrets{
+		System: make(map[string]string),
+		User:   make(map[string]string),
+	}
+	if decryptedSecrets != nil {
+		for k, v := range decryptedSecrets.System {
+			secretsCopy.System[k] = v
+		}
+		for k, v := range decryptedSecrets.User {
+			secretsCopy.User[k] = v
+		}
 	}
 	decryptedSecretsMux.RUnlock()
 
@@ -152,7 +263,7 @@ func SecretsFileExists(projectDir string) bool {
 
 // EncryptSecretsFile encrypts and saves secrets to .maestro/secrets.json.enc.
 // Sets file permissions to 0600 for security.
-func EncryptSecretsFile(projectDir, password string, secrets map[string]string) error {
+func EncryptSecretsFile(projectDir, password string, secrets *StructuredSecrets) error {
 	// Convert password to bytes
 	passwordBytes := []byte(password)
 	defer func() {
@@ -227,7 +338,8 @@ func EncryptSecretsFile(projectDir, password string, secrets map[string]string) 
 }
 
 // DecryptSecretsFile decrypts and returns secrets from .maestro/secrets.json.enc.
-func DecryptSecretsFile(projectDir, password string) (map[string]string, error) {
+// Supports both the new structured format and legacy flat map format (auto-migrates).
+func DecryptSecretsFile(projectDir, password string) (*StructuredSecrets, error) {
 	path := filepath.Join(projectDir, ".maestro", secretsFileName)
 
 	// Check file permissions
@@ -300,13 +412,29 @@ func DecryptSecretsFile(projectDir, password string) (map[string]string, error) 
 		return nil, fmt.Errorf("decryption failed (wrong password or corrupted file)")
 	}
 
-	// Unmarshal JSON
-	var secrets map[string]string
-	if err := json.Unmarshal(plaintext, &secrets); err != nil {
+	// Try structured format first
+	var structured StructuredSecrets
+	if err := json.Unmarshal(plaintext, &structured); err == nil && (structured.System != nil || structured.User != nil) {
+		if structured.System == nil {
+			structured.System = make(map[string]string)
+		}
+		if structured.User == nil {
+			structured.User = make(map[string]string)
+		}
+		return &structured, nil
+	}
+
+	// Fall back to legacy flat map format (auto-migrate: all go to system bucket)
+	var flatSecrets map[string]string
+	if err := json.Unmarshal(plaintext, &flatSecrets); err != nil {
 		return nil, fmt.Errorf("failed to parse secrets: %w", err)
 	}
 
-	return secrets, nil
+	migrated := &StructuredSecrets{
+		System: flatSecrets,
+		User:   make(map[string]string),
+	}
+	return migrated, nil
 }
 
 // GetSSLCertAndKey returns SSL certificate and key bytes.

@@ -81,6 +81,10 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	opts.EnvVars = map[string]string{
 		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
 	}
+	// User secrets override (including ANTHROPIC_API_KEY if user-defined)
+	for key, value := range config.GetUserSecrets() {
+		opts.EnvVars[key] = value
+	}
 
 	var renderer *claudetemplates.Renderer
 

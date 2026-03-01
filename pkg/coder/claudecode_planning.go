@@ -74,6 +74,10 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	opts.EnvVars = map[string]string{
 		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
 	}
+	// User secrets override (including ANTHROPIC_API_KEY if user-defined)
+	for key, value := range config.GetUserSecrets() {
+		opts.EnvVars[key] = value
+	}
 
 	if shouldResume {
 		// Resume existing session with feedback from plan review
