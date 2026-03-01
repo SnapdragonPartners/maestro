@@ -160,8 +160,8 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 			Timeout: 10 * time.Second,
 		}
 
-		_, err = executor.Run(ctx, []string{"gh", "--version"}, checkOpts)
-		if err != nil {
+		ghResult, err := executor.Run(ctx, []string{"gh", "--version"}, checkOpts)
+		if err != nil || ghResult.ExitCode != 0 {
 			t.Skip("GitHub CLI not available in maestro-bootstrap container - this needs to be fixed!")
 		}
 
@@ -173,8 +173,8 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 		}
 
 		result, err := executor.Run(ctx, []string{"gh", "auth", "status"}, authOpts)
-		if err != nil {
-			t.Logf("GitHub auth failed: %v", err)
+		if err != nil || result.ExitCode != 0 {
+			t.Logf("GitHub auth failed: err=%v exit=%d", err, result.ExitCode)
 			t.Logf("Stdout: %s", result.Stdout)
 			t.Logf("Stderr: %s", result.Stderr)
 

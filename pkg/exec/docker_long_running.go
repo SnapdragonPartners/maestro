@@ -464,14 +464,15 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		// Extract exit code from error.
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
+			// Non-zero exit code from the command itself — not an execution failure.
+			// Return err=nil so callers check result.ExitCode, matching LocalExec behavior.
 			result.ExitCode = exitErr.ExitCode()
 		} else {
+			// Actual execution failure (timeout, missing binary, container gone, etc.)
 			result.ExitCode = 1
+			return result, fmt.Errorf("docker exec failed: %w", err)
 		}
-		return result, fmt.Errorf("docker exec failed: %w", err)
 	}
-
-	result.ExitCode = 0
 
 	// Update container activity tracking.
 	d.updateContainerActivity(containerName)
@@ -567,14 +568,15 @@ func (d *LongRunningDockerExec) RunStreaming(ctx context.Context, cmd []string, 
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
+			// Non-zero exit code from the command itself — not an execution failure.
+			// Return err=nil so callers check result.ExitCode, matching LocalExec behavior.
 			result.ExitCode = exitErr.ExitCode()
 		} else {
 			result.ExitCode = 1
+			return result, fmt.Errorf("docker exec failed: %w", err)
 		}
-		return result, fmt.Errorf("docker exec failed: %w", err)
 	}
 
-	result.ExitCode = 0
 	d.updateContainerActivity(containerName)
 
 	return result, nil

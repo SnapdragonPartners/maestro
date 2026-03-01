@@ -111,8 +111,8 @@ func (c *Coder) detectGitWorkspaceState(ctx context.Context) (*GitWorkspaceState
 
 	// Run git status --porcelain to get file states
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "status", "--porcelain"}, opts)
-	if err != nil {
-		return nil, fmt.Errorf("git status failed: %w", err)
+	if err != nil || result.ExitCode != 0 {
+		return nil, fmt.Errorf("git status failed: %w (exit=%d)", err, result.ExitCode)
 	}
 
 	state.GitStatusOutput = result.Stdout
@@ -164,8 +164,8 @@ func (c *Coder) getRemoteHEAD(ctx context.Context, targetBranch string) (string,
 	result, err := c.longRunningExecutor.Run(ctx, []string{
 		"git", "rev-parse", fmt.Sprintf("origin/%s", targetBranch),
 	}, opts)
-	if err != nil {
-		return "", fmt.Errorf("failed to get remote HEAD: %w", err)
+	if err != nil || result.ExitCode != 0 {
+		return "", fmt.Errorf("failed to get remote HEAD: %w (exit=%d)", err, result.ExitCode)
 	}
 
 	return strings.TrimSpace(result.Stdout), nil
@@ -183,7 +183,7 @@ func (c *Coder) getConflictingFiles(ctx context.Context) []string {
 	result, err := c.longRunningExecutor.Run(ctx, []string{
 		"git", "diff", "--name-only", "--diff-filter=U",
 	}, opts)
-	if err != nil {
+	if err != nil || result.ExitCode != 0 {
 		// If no conflicts, this command may return empty or error
 		return nil
 	}
@@ -206,8 +206,8 @@ func (c *Coder) getGitStatusForError(ctx context.Context) string {
 	}
 
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "status"}, opts)
-	if err != nil {
-		return fmt.Sprintf("(failed to get git status: %v)", err)
+	if err != nil || result.ExitCode != 0 {
+		return fmt.Sprintf("(failed to get git status: err=%v exit=%d)", err, result.ExitCode)
 	}
 
 	// Truncate if too long
@@ -248,8 +248,8 @@ func (c *Coder) continueRebase(ctx context.Context) error {
 	}
 
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "rebase", "--continue"}, opts)
-	if err != nil {
-		return fmt.Errorf("git rebase --continue failed: %w (stderr: %s)", err, result.Stderr)
+	if err != nil || result.ExitCode != 0 {
+		return fmt.Errorf("git rebase --continue failed: %w (exit=%d, stderr: %s)", err, result.ExitCode, result.Stderr)
 	}
 	return nil
 }
