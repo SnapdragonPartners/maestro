@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
@@ -100,7 +101,7 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*E
 			// Compute Dockerfile hash if agent has host workspace path
 			if c.agent != nil {
 				if hostWorkspace := c.agent.GetHostWorkspacePath(); hostWorkspace != "" {
-					fullDockerfilePath := hostWorkspace + "/" + stagingDockerfile
+					fullDockerfilePath := filepath.Join(hostWorkspace, stagingDockerfile)
 					if dockerfileContent, readErr := os.ReadFile(fullDockerfilePath); readErr == nil {
 						hashBytes := sha256.Sum256(dockerfileContent)
 						stagingHash = hex.EncodeToString(hashBytes[:])
@@ -136,13 +137,20 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*E
 		return &ExecResult{Content: string(content)}, nil
 	}
 
+	liveSwitched := newContainerName != previousContainer
+	message := fmt.Sprintf("Successfully switched to container '%s'", newContainerName)
+	if !liveSwitched {
+		message = fmt.Sprintf("Staged container config for '%s' (lifecycle deferred to signal handler)", containerName)
+	}
+
 	result := map[string]any{
 		"success":            true,
 		"previous_container": previousContainer,
 		"current_container":  newContainerName,
 		"requested_image":    containerName,
 		"staged":             stagingImageID != "",
-		"message":            fmt.Sprintf("Successfully switched to container '%s'", newContainerName),
+		"live_switched":      liveSwitched,
+		"message":            message,
 	}
 
 	content, err := json.Marshal(result)

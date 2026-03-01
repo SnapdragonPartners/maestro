@@ -1738,13 +1738,18 @@ func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID, dockerfi
 	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.pendingDockerfileHash, c.hasPendingContainerConfig
 }
 
-// SwitchContainer performs a live container switch with atomic staging.
+// SwitchContainer performs a live container switch with config staging.
 // Implements the tools.Agent interface for the container_switch MCP tool.
 //
-// In standard mode: starts a candidate container first (atomic pattern), then stops
-// the old container, updates coder state, stages config, and reconfigures services.
+// In standard mode: stops old container, starts new one with the target image,
+// verifies health, updates coder state, stages config, and reconfigures services.
 // In Claude Code mode: stages config only — the signal handler does the lifecycle switch
 // after the Claude Code session ends gracefully.
+//
+// Note: LongRunningDockerExec.StartContainer reuses an existing container if one is
+// tracked under the same agentID. We must stop the old container first to force
+// creation of a new container with the target image. If the new container fails,
+// we attempt bootstrap fallback.
 //
 //nolint:cyclop // Container switch has inherent complexity with lifecycle + fallback + staging
 func (c *Coder) SwitchContainer(ctx context.Context, newImage, stagingImageID, stagingDockerfile, stagingHash string) (string, error) {
@@ -1763,15 +1768,12 @@ func (c *Coder) SwitchContainer(ctx context.Context, newImage, stagingImageID, s
 		return c.containerName, nil
 	}
 
-	// Standard mode: atomic lifecycle switch (start candidate first, then stop old)
+	// Standard mode: stop old → start new → health check → update state
 	if c.longRunningExecutor == nil {
 		return "", fmt.Errorf("no executor available for container switch")
 	}
 
-	c.logger.Info("🐳 Switching container from %s to %s (atomic pattern)", c.containerName, newImage)
-
-	// Save old container name for cleanup
-	oldContainerName := c.containerName
+	c.logger.Info("🐳 Switching container from %s to %s", c.containerName, newImage)
 
 	// Switch by imageID when available (immutable SHA256 reference) to prevent
 	// tag-rewrite races between image ID resolution and container start.
@@ -1781,9 +1783,6 @@ func (c *Coder) SwitchContainer(ctx context.Context, newImage, stagingImageID, s
 		imageToStart = stagingImageID
 		c.logger.Info("Using pinned imageID %s instead of tag %s", stagingImageID[:min(24, len(stagingImageID))], newImage)
 	}
-
-	// Update docker image to target
-	c.SetDockerImage(imageToStart)
 
 	// Create execution options for new container (read-write for coding)
 	execOpts := execpkg.Opts{
@@ -1816,79 +1815,79 @@ func (c *Coder) SwitchContainer(ctx context.Context, newImage, stagingImageID, s
 		}
 	}
 
-	// Step 1: Start CANDIDATE container first (before stopping old)
 	agentID := c.GetID()
 	sanitizedAgentID := utils.SanitizeContainerName(agentID)
 
-	candidateName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
-	if err != nil {
-		// Try falling back to bootstrap container
-		c.logger.Warn("Failed to start target container %s, falling back to bootstrap: %v",
-			newImage, err)
+	// Step 1: Stop old container so StartContainer creates a fresh one with the new image.
+	// LongRunningDockerExec.StartContainer reuses an already-tracked container by name,
+	// so we must remove the old one from tracking first.
+	c.logger.Info("Stopping old container %s before starting new one", c.containerName)
+	stopCtx, stopCancel := context.WithTimeout(ctx, 30*time.Second)
+	if stopErr := c.longRunningExecutor.StopContainer(stopCtx, sanitizedAgentID); stopErr != nil {
+		c.logger.Warn("Failed to stop old container %s: %v (proceeding with start)", sanitizedAgentID, stopErr)
+	}
+	stopCancel()
 
+	// Step 2: Start new container with target image
+	c.SetDockerImage(imageToStart)
+	newContainerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+	if err != nil {
+		// Target failed — try bootstrap fallback
+		c.logger.Warn("Failed to start target container %s, falling back to bootstrap: %v", newImage, err)
 		c.SetDockerImage(config.BootstrapContainerTag)
-		candidateName, err = c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+		newContainerName, err = c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
 		if err != nil {
-			// Both failed — old container may still be running (StartContainer cleans up orphans)
 			return "", fmt.Errorf("failed to start container (including bootstrap fallback): %w", err)
 		}
-		c.logger.Info("Started fallback bootstrap container: %s", candidateName)
+		c.logger.Info("Started fallback bootstrap container: %s", newContainerName)
 		// Bootstrap fallback: skip staging (empty stagingImageID signals this)
 		stagingImageID = ""
 	}
 
-	// Step 1b: Health check — verify candidate can execute commands before committing
+	// Step 3: Health check — verify new container can execute commands.
+	// After stopping old + starting new, this is the only active container,
+	// so Run() will target it via the first-active-container fallback.
 	healthCtx, healthCancel := context.WithTimeout(ctx, 15*time.Second)
 	healthResult, healthErr := c.longRunningExecutor.Run(healthCtx, []string{"echo", "ok"}, &execpkg.Opts{
 		Timeout: 10 * time.Second,
 	})
 	healthCancel()
 	if healthErr != nil || healthResult.ExitCode != 0 {
-		// Candidate is unhealthy — stop it and keep old container
-		c.logger.Error("Health check failed for candidate %s: err=%v exit=%d", candidateName, healthErr, healthResult.ExitCode)
-		stopCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		_ = c.longRunningExecutor.StopContainer(stopCtx, candidateName)
-		cancel()
-		return "", fmt.Errorf("candidate container %s failed health check (started but not functional): %w", candidateName, healthErr)
+		c.logger.Error("Health check failed for %s: err=%v exit=%d", newContainerName, healthErr, healthResult.ExitCode)
+		// New container is unhealthy — stop it and report failure
+		failStopCtx, failStopCancel := context.WithTimeout(ctx, 15*time.Second)
+		_ = c.longRunningExecutor.StopContainer(failStopCtx, sanitizedAgentID)
+		failStopCancel()
+		return "", fmt.Errorf("container %s failed health check: %w", newContainerName, healthErr)
 	}
-	c.logger.Info("Health check passed for candidate container: %s", candidateName)
+	c.logger.Info("Health check passed for container: %s", newContainerName)
 
-	// Step 2: Stop OLD container (candidate is verified and running, so this is safe)
-	if oldContainerName != "" {
-		c.logger.Info("Stopping old container: %s", oldContainerName)
-		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if stopErr := c.longRunningExecutor.StopContainer(stopCtx, oldContainerName); stopErr != nil {
-			c.logger.Warn("Failed to stop old container %s: %v (continuing anyway — candidate is running)", oldContainerName, stopErr)
-		}
-		cancel()
-	}
+	// Step 4: Update coder state
+	c.containerName = newContainerName
 
-	// Step 3: Update coder state
-	c.containerName = candidateName
-
-	// Step 4: Stage config atomically (pure in-memory mutation, can't fail)
+	// Step 5: Stage config atomically (pure in-memory mutation, can't fail)
 	if stagingImageID != "" {
 		c.SetPendingContainerConfig(newImage, stagingDockerfile, stagingImageID, stagingHash)
 	}
 
-	// Step 5: Reconfigure build service for new container
+	// Step 6: Reconfigure build service for new container
 	if c.buildService != nil {
-		executor := build.NewContainerExecutor(candidateName)
+		executor := build.NewContainerExecutor(newContainerName)
 		c.buildService.SetExecutor(executor)
-		c.logger.Info("Reconfigured build service with new container executor: %s", candidateName)
+		c.logger.Info("Reconfigured build service with new container executor: %s", newContainerName)
 	}
 
-	// Step 6: Remap git origin to container mirror path
+	// Step 7: Remap git origin to container mirror path
 	if err := c.remapOriginToContainerMirror(ctx); err != nil {
 		c.logger.Warn("Failed to remap origin to container mirror path (non-fatal): %v", err)
 	}
 
-	// Step 7: Reset Claude Code availability flags (new container may differ)
+	// Step 8: Reset Claude Code availability flags (new container may differ)
 	c.claudeCodeAvailabilityChecked = false
 	c.claudeCodeAvailable = false
 
-	c.logger.Info("✅ Container switch complete: now running %s", candidateName)
-	return candidateName, nil
+	c.logger.Info("✅ Container switch complete: now running %s", newContainerName)
+	return newContainerName, nil
 }
 
 // logToolExecution logs a tool execution to the database for debugging and analysis.
