@@ -47,6 +47,8 @@ type SecretNameEntry struct {
 }
 
 // validSecretNameRe validates environment variable names.
+//
+//nolint:gochecknoglobals // Precompiled regex for secret name validation reused across the package
 var validSecretNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // ValidateSecretName checks that a name is a valid environment variable name.

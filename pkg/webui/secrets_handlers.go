@@ -27,8 +27,12 @@ func (s *Server) handleSecretsList(w http.ResponseWriter, r *http.Request) {
 	// Get all secret names from in-memory secrets
 	secrets := config.GetDecryptedSecretNames()
 
-	// Optional type filter
+	// Optional type filter (validate if provided)
 	typeFilter := r.URL.Query().Get("type")
+	if typeFilter != "" && typeFilter != string(config.SecretTypeUser) && typeFilter != string(config.SecretTypeSystem) {
+		http.Error(w, `Invalid secret type; must be "user" or "system"`, http.StatusBadRequest)
+		return
+	}
 
 	// Build response
 	entries := make([]SecretEntry, 0, len(secrets))
@@ -84,15 +88,21 @@ func (s *Server) handleSecretsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default type to "user"
+	// Validate type (default to "user")
 	secretType := config.SecretTypeUser
-	if reqBody.Type == string(config.SecretTypeSystem) {
+	switch reqBody.Type {
+	case "", string(config.SecretTypeUser):
+		// keep default user type
+	case string(config.SecretTypeSystem):
 		secretType = config.SecretTypeSystem
+	default:
+		http.Error(w, `Invalid secret type; must be "user" or "system"`, http.StatusBadRequest)
+		return
 	}
 
 	// Validate name format
 	if err := config.ValidateSecretName(reqBody.Name); err != nil {
-		http.Error(w, "Secret name must contain only alphanumeric characters and underscores", http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -148,8 +158,14 @@ func (s *Server) handleSecretsDelete(w http.ResponseWriter, r *http.Request) {
 
 	// Get type from query param (default: user)
 	secretType := config.SecretTypeUser
-	if r.URL.Query().Get("type") == string(config.SecretTypeSystem) {
+	switch r.URL.Query().Get("type") {
+	case "", string(config.SecretTypeUser):
+		// keep default user type
+	case string(config.SecretTypeSystem):
 		secretType = config.SecretTypeSystem
+	default:
+		http.Error(w, `Invalid secret type; must be "user" or "system"`, http.StatusBadRequest)
+		return
 	}
 
 	// Delete the secret from memory

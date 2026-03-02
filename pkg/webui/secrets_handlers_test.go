@@ -64,13 +64,14 @@ func TestHandleSecretsList_WithSecrets(t *testing.T) {
 	}
 
 	// Should be sorted alphabetically
-	if len(entries) == 2 {
-		if entries[0].Name != "ANTHROPIC_API_KEY" {
-			t.Errorf("expected first entry to be ANTHROPIC_API_KEY, got %s", entries[0].Name)
-		}
-		if entries[1].Name != "DB_PASSWORD" {
-			t.Errorf("expected second entry to be DB_PASSWORD, got %s", entries[1].Name)
-		}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	if entries[0].Name != "ANTHROPIC_API_KEY" {
+		t.Errorf("expected first entry to be ANTHROPIC_API_KEY, got %s", entries[0].Name)
+	}
+	if entries[1].Name != "DB_PASSWORD" {
+		t.Errorf("expected second entry to be DB_PASSWORD, got %s", entries[1].Name)
 	}
 }
 

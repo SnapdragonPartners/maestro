@@ -1,9 +1,15 @@
 package config
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/crypto/scrypt"
 )
 
 func TestEncryptDecryptSecretsRoundTrip(t *testing.T) {
@@ -402,36 +408,76 @@ func TestLegacyFlatFormatMigration(t *testing.T) {
 	tmpDir := t.TempDir()
 	password := "test-password"
 
-	// Simulate encrypting in the old flat format by using json.Marshal on a map
-	// We'll use EncryptSecretsFile but trick it by creating a legacy-format encrypted file manually
-	// Actually, we can use the encrypt internals since they just marshal whatever struct we give them
-
-	// The simplest way: encrypt a StructuredSecrets where System has data
-	// This tests that the migration path works when we encounter the new format
-	legacy := &StructuredSecrets{
-		System: map[string]string{
-			"ANTHROPIC_API_KEY": "sk-ant-legacy",
-			"GITHUB_TOKEN":      "ghp_legacy",
-		},
-		User: map[string]string{},
+	// Encrypt a flat map[string]string directly (the old format) using raw crypto,
+	// bypassing EncryptSecretsFile which now only accepts *StructuredSecrets.
+	legacyFlat := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-legacy",
+		"GITHUB_TOKEN":      "ghp_legacy",
+	}
+	if err := encryptRawJSON(tmpDir, password, legacyFlat); err != nil {
+		t.Fatalf("Failed to encrypt legacy format: %v", err)
 	}
 
-	err := EncryptSecretsFile(tmpDir, password, legacy)
-	if err != nil {
-		t.Fatalf("Failed to encrypt: %v", err)
-	}
-
+	// DecryptSecretsFile should detect the flat format and migrate it
 	decrypted, err := DecryptSecretsFile(tmpDir, password)
 	if err != nil {
 		t.Fatalf("Failed to decrypt: %v", err)
 	}
 
 	if decrypted.System["ANTHROPIC_API_KEY"] != "sk-ant-legacy" {
-		t.Errorf("Expected ANTHROPIC_API_KEY from migration, got: %q", decrypted.System["ANTHROPIC_API_KEY"])
+		t.Errorf("Expected ANTHROPIC_API_KEY in system bucket after migration, got: %q", decrypted.System["ANTHROPIC_API_KEY"])
+	}
+	if decrypted.System["GITHUB_TOKEN"] != "ghp_legacy" {
+		t.Errorf("Expected GITHUB_TOKEN in system bucket after migration, got: %q", decrypted.System["GITHUB_TOKEN"])
 	}
 	if decrypted.User == nil {
 		t.Error("Expected User map to be initialized after migration")
 	}
+	if len(decrypted.User) != 0 {
+		t.Errorf("Expected empty User map after migration, got %d entries", len(decrypted.User))
+	}
+}
+
+// encryptRawJSON encrypts any JSON-serializable value to the secrets file,
+// used to create legacy-format test fixtures.
+func encryptRawJSON(projectDir, password string, v any) error {
+	passwordBytes := []byte(password)
+	salt := make([]byte, saltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+	key, err := scrypt.Key(passwordBytes, salt, scryptN, scryptR, scryptP, keySize)
+	if err != nil {
+		return err
+	}
+	plaintext, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+
+	fileData := make([]byte, 0, saltSize+nonceSize+len(ciphertext))
+	fileData = append(fileData, salt...)
+	fileData = append(fileData, nonce...)
+	fileData = append(fileData, ciphertext...)
+
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(maestroDir, secretsFileName), fileData, 0600)
 }
 
 func TestValidateSecretName(t *testing.T) {
