@@ -106,9 +106,13 @@ func (t *AddMaintenanceItemTool) Exec(_ context.Context, args map[string]any) (*
 		AddedAt:     time.Now(),
 	}
 
-	if t.log != nil {
-		t.log.AddMaintenanceItem(item)
+	if t.log == nil {
+		return &ExecResult{
+			Content: fmt.Sprintf("Maintenance item not persisted (MaintenanceLog not configured, priority: %s). Continue with your review.", priority),
+		}, nil
 	}
+
+	t.log.AddMaintenanceItem(item)
 
 	return &ExecResult{
 		Content: fmt.Sprintf("Maintenance item logged (priority: %s). Continue with your review.", priority),

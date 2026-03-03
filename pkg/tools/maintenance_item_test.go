@@ -112,7 +112,7 @@ func TestAddMaintenanceItemTool_SourceWithoutStory(t *testing.T) {
 }
 
 func TestAddMaintenanceItemTool_NilLog(t *testing.T) {
-	// Should not panic with nil log
+	// Should not panic with nil log, but should indicate item was not persisted
 	tool := NewAddMaintenanceItemTool(nil, "test", "")
 	result, err := tool.Exec(context.Background(), map[string]any{
 		"description": "Test item",
@@ -123,6 +123,9 @@ func TestAddMaintenanceItemTool_NilLog(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("expected non-nil result")
+	}
+	if !strings.Contains(result.Content, "not persisted") {
+		t.Errorf("expected content to indicate item was not persisted, got: %s", result.Content)
 	}
 }
 

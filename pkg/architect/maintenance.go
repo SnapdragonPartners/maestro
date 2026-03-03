@@ -468,8 +468,9 @@ func (d *Driver) snapshotAndClearItems() []tools.MaintenanceItem {
 		return nil
 	}
 
-	// Copy slice and nil the original
-	items := d.maintenance.Items
+	// Copy slice contents into a new backing array and nil the original
+	items := make([]tools.MaintenanceItem, len(d.maintenance.Items))
+	copy(items, d.maintenance.Items)
 	d.maintenance.Items = nil
 	return items
 }
@@ -552,7 +553,9 @@ func (d *Driver) generateStoriesFromItems(ctx context.Context, items []tools.Mai
 		requirements = requirements[:maxMaintenanceStories]
 	}
 
-	// Convert requirements to maintenance.Story structs
+	// Convert requirements to maintenance.Story structs.
+	// Assign deterministic IDs (llm_001, llm_002, ...) to avoid empty or duplicate
+	// IDs from the LLM, which would cause queue overwrites in dispatchMaintenanceSpec.
 	stories := make([]maintenance.Story, 0, len(requirements))
 	for i := range requirements {
 		req := &requirements[i]
@@ -570,7 +573,7 @@ func (d *Driver) generateStoriesFromItems(ctx context.Context, items []tools.Mai
 		express := req.EstimatedPoints <= 1
 
 		stories = append(stories, maintenance.Story{
-			ID:      req.ID,
+			ID:      fmt.Sprintf("llm_%03d", i+1),
 			Title:   req.Title,
 			Content: content.String(),
 			Express: express,
