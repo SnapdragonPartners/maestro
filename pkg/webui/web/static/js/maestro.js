@@ -1698,6 +1698,131 @@ class MaestroUI {
     }
 
     // PM interview methods (startPMInterview, sendPMChatMessage) removed - handled by pm.js
+
+    // === Secrets Management ===
+
+    openSecretsModal() {
+        this.currentSecretsTab = 'user';
+        document.getElementById('secrets-modal').classList.remove('hidden');
+        this.switchSecretsTab('user');
+    }
+
+    closeSecretsModal() {
+        document.getElementById('secrets-modal').classList.add('hidden');
+    }
+
+    switchSecretsTab(type) {
+        this.currentSecretsTab = type;
+        const userTab = document.getElementById('secrets-tab-user');
+        const systemTab = document.getElementById('secrets-tab-system');
+        const userInfo = document.getElementById('secrets-info-user');
+        const systemInfo = document.getElementById('secrets-info-system');
+        const freeInput = document.getElementById('secrets-name-free');
+        const dropdownInput = document.getElementById('secrets-name-dropdown');
+
+        if (type === 'user') {
+            userTab.className = 'px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600';
+            systemTab.className = 'px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700';
+            userInfo.classList.remove('hidden');
+            systemInfo.classList.add('hidden');
+            freeInput.classList.remove('hidden');
+            dropdownInput.classList.add('hidden');
+        } else {
+            systemTab.className = 'px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600';
+            userTab.className = 'px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700';
+            systemInfo.classList.remove('hidden');
+            userInfo.classList.add('hidden');
+            dropdownInput.classList.remove('hidden');
+            freeInput.classList.add('hidden');
+        }
+        this.loadSecrets();
+    }
+
+    async loadSecrets() {
+        const list = document.getElementById('secrets-list');
+        try {
+            const response = await fetch(`/api/secrets?type=${this.currentSecretsTab}`);
+            if (!response.ok) throw new Error('Failed to load secrets');
+            const entries = await response.json();
+
+            if (entries.length === 0) {
+                list.innerHTML = '<p class="text-sm text-gray-400 py-2">No secrets configured.</p>';
+                return;
+            }
+
+            list.innerHTML = entries.map(e => `
+                <div class="flex items-center justify-between py-1.5 px-2 hover:bg-gray-50 rounded">
+                    <span class="text-sm font-mono text-gray-800">${this.escapeHtml(e.name)}</span>
+                    <button onclick="window.maestroUI.deleteSecret('${this.escapeHtml(e.name)}')" class="text-red-400 hover:text-red-600 text-xs px-2 py-0.5 rounded hover:bg-red-50">Delete</button>
+                </div>
+            `).join('');
+        } catch (error) {
+            list.innerHTML = '<p class="text-sm text-red-500">Failed to load secrets.</p>';
+        }
+    }
+
+    async addSecret() {
+        const type = this.currentSecretsTab;
+        let name;
+        if (type === 'system') {
+            name = document.getElementById('secrets-name-select').value;
+        } else {
+            name = document.getElementById('secrets-name-input').value.trim();
+        }
+        const value = document.getElementById('secrets-value-input').value;
+
+        if (!name) {
+            this.showToast('Secret name is required', 'error');
+            return;
+        }
+        if (!value) {
+            this.showToast('Secret value is required', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/secrets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, value, type })
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(text);
+            }
+
+            this.showToast(`Secret "${name}" saved`, 'success');
+            document.getElementById('secrets-name-input').value = '';
+            document.getElementById('secrets-name-select').value = '';
+            document.getElementById('secrets-value-input').value = '';
+            this.loadSecrets();
+        } catch (error) {
+            this.showToast(`Failed to save secret: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteSecret(name) {
+        const type = this.currentSecretsTab;
+        try {
+            const response = await fetch(`/api/secrets/${encodeURIComponent(name)}?type=${type}`, {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) throw new Error('Failed to delete');
+
+            this.showToast(`Secret "${name}" deleted`, 'success');
+            this.loadSecrets();
+        } catch (error) {
+            this.showToast(`Failed to delete secret: ${error.message}`, 'error');
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
 }
 
 // Global functions for onclick handlers
