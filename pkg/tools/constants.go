@@ -47,6 +47,9 @@ const (
 	ToolReviewComplete = "review_complete"
 	ToolStoryEdit      = "story_edit"
 
+	// Architect maintenance tools.
+	ToolAddMaintenanceItem = "add_maintenance_item"
+
 	// PM tools.
 	ToolSpecSubmit      = "spec_submit"
 	ToolChatAskUser     = "chat_ask_user"

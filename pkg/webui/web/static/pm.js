@@ -138,6 +138,15 @@ class PMController {
         switch (status.state) {
             case 'WAITING':
                 badge.classList.add('bg-green-100', 'text-green-800');
+                // Reset UI so Start Interview button is visible again
+                // (handles PM crash/restart back to WAITING)
+                document.getElementById('interview-start-section').classList.remove('hidden');
+                document.getElementById('interview-chat-section').classList.add('hidden');
+                this.sessionID = null;
+                this.previewLoaded = false;
+                if (window.maestroUI) {
+                    window.maestroUI.pmSessionId = null;
+                }
                 break;
             case 'WORKING':
                 badge.classList.add('bg-blue-100', 'text-blue-800');

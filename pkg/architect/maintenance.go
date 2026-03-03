@@ -4,11 +4,17 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/github"
+	"orchestrator/pkg/templates"
 	"orchestrator/pkg/templates/maintenance"
+	"orchestrator/pkg/tools"
 )
 
 // onSpecComplete is called when all stories for a spec are done.
@@ -138,12 +144,30 @@ func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *c
 		d.maintenance.mutex.Unlock()
 	}()
 
+	// Snapshot and clear logged maintenance items before generating stories.
+	// Items logged during this generation will roll into the next cycle (correct by design).
+	loggedItems := d.snapshotAndClearItems()
+	if len(loggedItems) > 0 {
+		d.logger.Info("🔧 Snapshotted %d logged maintenance items for story generation", len(loggedItems))
+	}
+
 	// Generate maintenance spec with stories based on config (synchronous, in-memory)
 	spec := maintenance.GenerateSpecWithID(cfg, cycleID)
 
 	if needsUpgrade {
 		spec.Stories = append(spec.Stories, maintenance.ContainerUpgradeStory(upgradeReason))
 		d.logger.Info("🔧 Added container upgrade story (reason: %s)", upgradeReason)
+	}
+
+	// Generate stories from logged maintenance items via LLM (non-fatal)
+	if len(loggedItems) > 0 {
+		llmStories, err := d.generateStoriesFromItems(ctx, loggedItems)
+		if err != nil {
+			d.logger.Warn("🔧 Failed to generate stories from maintenance items: %v (continuing with hardcoded stories only)", err)
+		} else if len(llmStories) > 0 {
+			spec.Stories = append(spec.Stories, llmStories...)
+			d.logger.Info("🔧 Added %d LLM-generated maintenance stories", len(llmStories))
+		}
 	}
 
 	d.logger.Info("🔧 Generated maintenance spec with %d stories", len(spec.Stories))
@@ -431,6 +455,129 @@ func (d *Driver) isMaintenanceCycleCompleteUnsafe() bool {
 		}
 	}
 	return len(d.maintenance.StoryResults) > 0
+}
+
+// snapshotAndClearItems atomically copies and clears the maintenance items list.
+// Returns the snapshot of items that were accumulated since the last cycle.
+// Must be called outside the maintenance mutex (it acquires it internally).
+func (d *Driver) snapshotAndClearItems() []tools.MaintenanceItem {
+	d.maintenance.mutex.Lock()
+	defer d.maintenance.mutex.Unlock()
+
+	if len(d.maintenance.Items) == 0 {
+		return nil
+	}
+
+	// Copy slice and nil the original
+	items := d.maintenance.Items
+	d.maintenance.Items = nil
+	return items
+}
+
+// generateStoriesFromItems runs a single-turn LLM toolloop to convert logged maintenance items
+// into structured stories. Returns maintenance.Story structs ready to be appended to a spec.
+// Non-fatal: callers should log warnings and continue if this fails.
+func (d *Driver) generateStoriesFromItems(ctx context.Context, items []tools.MaintenanceItem) ([]maintenance.Story, error) {
+	if d.toolLoop == nil || d.LLMClient == nil {
+		return nil, fmt.Errorf("LLM not available for maintenance story generation")
+	}
+
+	if d.renderer == nil {
+		return nil, fmt.Errorf("template renderer not available")
+	}
+
+	// Serialize items into a text document for the LLM
+	var sb strings.Builder
+	for i := range items {
+		sb.WriteString(fmt.Sprintf("%d. [%s] %s\n   Source: %s | Logged: %s\n\n",
+			i+1, items[i].Priority, items[i].Description, items[i].Source, items[i].AddedAt.Format(time.RFC3339)))
+	}
+
+	// Render the maintenance story generation template
+	templateData := &templates.TemplateData{
+		TaskContent: sb.String(),
+	}
+
+	prompt, err := d.renderer.Render(templates.MaintenanceStoryGenTemplate, templateData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render maintenance story gen template: %w", err)
+	}
+
+	// Create a fresh context manager for this one-shot generation
+	modelName := config.GetEffectiveArchitectModel()
+	cm := contextmgr.NewContextManagerWithModel(modelName)
+	cm.AddMessage("user", prompt)
+
+	// Get submit_stories tool
+	submitStoriesTool := tools.NewSubmitStoriesTool()
+
+	// Run single-turn toolloop with submit_stories as terminal tool
+	storiesOut := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[SubmitStoriesResult]{
+		ContextManager:     cm,
+		GeneralTools:       nil, // No general tools — just generate and submit
+		TerminalTool:       submitStoriesTool,
+		MaxIterations:      5,
+		SingleTurn:         true,
+		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+		OnLLMError:         d.makeOnLLMErrorCallback("maintenance_story_gen"),
+	})
+
+	if storiesOut.Kind != toolloop.OutcomeProcessEffect {
+		return nil, fmt.Errorf("maintenance story generation failed: %w", storiesOut.Err)
+	}
+
+	if storiesOut.Signal != tools.SignalStoriesSubmitted {
+		return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
+	}
+
+	// Extract requirements from effect data
+	effectData, ok := storiesOut.EffectData.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("STORIES_SUBMITTED effect data is not map[string]any: %T", storiesOut.EffectData)
+	}
+
+	requirements, err := d.convertToolResultToRequirements(effectData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert tool result to requirements: %w", err)
+	}
+
+	// Cap at 5 stories maximum to prevent queue flooding
+	const maxMaintenanceStories = 5
+	if len(requirements) > maxMaintenanceStories {
+		d.logger.Info("🔧 Capping maintenance stories from %d to %d (prioritizing highest priority)", len(requirements), maxMaintenanceStories)
+		requirements = requirements[:maxMaintenanceStories]
+	}
+
+	// Convert requirements to maintenance.Story structs
+	stories := make([]maintenance.Story, 0, len(requirements))
+	for i := range requirements {
+		req := &requirements[i]
+		// Build story content from description + acceptance criteria
+		var content strings.Builder
+		content.WriteString(req.Description)
+		if len(req.AcceptanceCriteria) > 0 {
+			content.WriteString("\n\n## Acceptance Criteria\n")
+			for _, ac := range req.AcceptanceCriteria {
+				content.WriteString(fmt.Sprintf("- %s\n", ac))
+			}
+		}
+
+		// Small maintenance stories skip planning
+		express := req.EstimatedPoints <= 1
+
+		stories = append(stories, maintenance.Story{
+			ID:      req.ID,
+			Title:   req.Title,
+			Content: content.String(),
+			Express: express,
+		})
+	}
+
+	return stories, nil
 }
 
 // OnMaintenanceStoryStarted updates tracking when a maintenance story begins execution.

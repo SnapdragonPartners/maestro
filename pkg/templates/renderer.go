@@ -143,6 +143,9 @@ const (
 	// PMMaestroGenerationTemplate is the template for generating MAESTRO.md project overview.
 	PMMaestroGenerationTemplate StateTemplate = "pm/maestro_generation.tpl.md"
 
+	// MaintenanceStoryGenTemplate is the template for generating maintenance stories from logged items.
+	MaintenanceStoryGenTemplate StateTemplate = "architect/maintenance_story_gen.tpl.md"
+
 	// ArchitectSystemTemplate is the system prompt for architect agent per-agent contexts.
 	ArchitectSystemTemplate StateTemplate = "architect/system_prompt.tpl.md"
 )
@@ -190,6 +193,7 @@ func NewRenderer() (*Renderer, error) {
 		DevOpsCodeReviewTemplate,
 		StoryEditTemplate,
 		HotfixReviewTemplate,
+		MaintenanceStoryGenTemplate,
 		// Request content templates (coder → architect).
 		PlanApprovalRequestTemplate,
 		PlanReviewArchitectTemplate,

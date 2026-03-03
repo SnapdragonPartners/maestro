@@ -1,10 +1,12 @@
 package architect
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/tools"
 )
 
 func TestMaintenanceTracker_InitialState(t *testing.T) {
@@ -837,5 +839,120 @@ func TestMaintenanceStatus_FromTracker(t *testing.T) {
 	}
 	if status.Metrics.BranchesDeleted != 5 {
 		t.Errorf("expected BranchesDeleted 5, got %d", status.Metrics.BranchesDeleted)
+	}
+}
+
+// Tests for MaintenanceItem accumulation and snapshotAndClearItems
+
+func TestMaintenanceTracker_ItemsAccumulation(t *testing.T) {
+	tracker := MaintenanceTracker{}
+
+	// Items should be empty initially
+	if len(tracker.Items) != 0 {
+		t.Errorf("expected 0 items initially, got %d", len(tracker.Items))
+	}
+
+	// Add items directly (simulating mutex-protected append from AddMaintenanceItem)
+	tracker.Items = append(tracker.Items, tools.MaintenanceItem{
+		Description: "Missing .gitignore for binaries",
+		Priority:    "p2",
+		Source:      "coder-001:story-abc",
+		AddedAt:     time.Now(),
+	})
+	tracker.Items = append(tracker.Items, tools.MaintenanceItem{
+		Description: "Outdated chi router v4",
+		Priority:    "p1",
+		Source:      "coder-002:story-def",
+		AddedAt:     time.Now(),
+	})
+
+	if len(tracker.Items) != 2 {
+		t.Errorf("expected 2 items, got %d", len(tracker.Items))
+	}
+	if tracker.Items[0].Priority != "p2" {
+		t.Errorf("expected first item priority p2, got %s", tracker.Items[0].Priority)
+	}
+	if tracker.Items[1].Priority != "p1" {
+		t.Errorf("expected second item priority p1, got %s", tracker.Items[1].Priority)
+	}
+}
+
+func TestMaintenanceTracker_SnapshotAndClear(t *testing.T) {
+	// Create a minimal Driver with just the maintenance tracker populated
+	d := &Driver{
+		maintenance: MaintenanceTracker{
+			Items: []tools.MaintenanceItem{
+				{Description: "Item 1", Priority: "p1", Source: "test-agent:story-1", AddedAt: time.Now()},
+				{Description: "Item 2", Priority: "p2", Source: "test-agent:story-2", AddedAt: time.Now()},
+				{Description: "Item 3", Priority: "p3", Source: "test-agent:story-3", AddedAt: time.Now()},
+			},
+		},
+	}
+
+	// Snapshot and clear
+	items := d.snapshotAndClearItems()
+
+	// Verify snapshot has all items
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items in snapshot, got %d", len(items))
+	}
+	if items[0].Description != "Item 1" {
+		t.Errorf("expected first item 'Item 1', got %q", items[0].Description)
+	}
+	if items[2].Priority != "p3" {
+		t.Errorf("expected third item priority p3, got %s", items[2].Priority)
+	}
+
+	// Verify tracker items are now nil
+	if d.maintenance.Items != nil {
+		t.Errorf("expected tracker Items to be nil after snapshot, got %d items", len(d.maintenance.Items))
+	}
+
+	// Second snapshot should return nil
+	items2 := d.snapshotAndClearItems()
+	if items2 != nil {
+		t.Errorf("expected nil from second snapshot, got %d items", len(items2))
+	}
+}
+
+func TestMaintenanceTracker_SnapshotAndClear_Empty(t *testing.T) {
+	d := &Driver{}
+
+	items := d.snapshotAndClearItems()
+	if items != nil {
+		t.Errorf("expected nil for empty tracker, got %d items", len(items))
+	}
+}
+
+func TestMaintenanceTracker_ConcurrentItemAccess(t *testing.T) {
+	d := &Driver{}
+
+	// Simulate concurrent AddMaintenanceItem calls
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(_ int) {
+			defer wg.Done()
+			d.maintenance.mutex.Lock()
+			d.maintenance.Items = append(d.maintenance.Items, tools.MaintenanceItem{
+				Description: "Concurrent item",
+				Priority:    "p2",
+				Source:      "test",
+				AddedAt:     time.Now(),
+			})
+			d.maintenance.mutex.Unlock()
+		}(i)
+	}
+	wg.Wait()
+
+	// All 10 items should be present
+	items := d.snapshotAndClearItems()
+	if len(items) != 10 {
+		t.Errorf("expected 10 items from concurrent append, got %d", len(items))
+	}
+
+	// Tracker should be clear
+	if d.maintenance.Items != nil {
+		t.Errorf("expected nil items after snapshot")
 	}
 }

@@ -61,6 +61,9 @@ type MaintenanceTracker struct {
 	// Container upgrade signaling (set by coder when Claude Code upgraded in-place)
 	NeedsContainerUpgrade  bool   // True if container image needs rebuild
 	ContainerUpgradeReason string // What triggered the upgrade (e.g., "claude_code")
+
+	// Maintenance items logged by architect during reviews via add_maintenance_item tool
+	Items []tools.MaintenanceItem
 }
 
 // MaintenanceStoryResult tracks the result of a single maintenance story.
@@ -489,6 +492,15 @@ func (d *Driver) buildSystemPrompt(ctx context.Context, agentID, storyID string)
 	}
 
 	return prompt, nil
+}
+
+// AddMaintenanceItem implements the tools.MaintenanceLog interface.
+// Appends an item to the maintenance tracker for processing in the next maintenance cycle.
+func (d *Driver) AddMaintenanceItem(item tools.MaintenanceItem) {
+	d.maintenance.mutex.Lock()
+	defer d.maintenance.mutex.Unlock()
+	d.maintenance.Items = append(d.maintenance.Items, item)
+	d.logger.Info("🔧 Maintenance item logged: [%s] %s (source: %s)", item.Priority, item.Description, item.Source)
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
@@ -943,10 +955,13 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 }
 
 // createReviewToolProviderForCoder creates a tool provider for structured reviews (approvals).
-// Includes read_file, list_files, review_complete, and optionally get_diff.
+// Includes read_file, list_files, review_complete, add_maintenance_item, and optionally get_diff.
 func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
+	// Get story ID from dispatcher lease for maintenance item source context
+	storyID := d.dispatcher.GetStoryForAgent(coderID)
 
 	ctx := tools.AgentContext{
 		Executor:        d.executor,       // Architect executor with read-only mounts
@@ -955,14 +970,18 @@ func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff
 		NetworkDisabled: false,            // Network allowed for architect
 		WorkDir:         containerWorkDir, // Use coder's container mount path
 		Agent:           nil,              // No agent reference needed for read tools
+		AgentID:         coderID,          // Agent being reviewed (for maintenance item source)
+		StoryID:         storyID,          // Story being reviewed (for maintenance item source)
+		MaintenanceLog:  d,                // Driver implements MaintenanceLog
 	}
 
-	// Build tool list: read tools + review_complete terminal tool
+	// Build tool list: read tools + review_complete terminal tool + maintenance item
 	// Optionally include get_diff for code reviews
 	allowedTools := []string{
 		tools.ToolReadFile,
 		tools.ToolListFiles,
-		tools.ToolReviewComplete, // Terminal tool for structured reviews
+		tools.ToolReviewComplete,     // Terminal tool for structured reviews
+		tools.ToolAddMaintenanceItem, // Non-terminal: log issues during review
 	}
 	if includeGetDiff {
 		allowedTools = append(allowedTools, tools.ToolGetDiff)
@@ -972,10 +991,13 @@ func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff
 }
 
 // createQuestionToolProviderForCoder creates a tool provider for answering questions.
-// Includes read_file, list_files, and submit_reply.
+// Includes read_file, list_files, submit_reply, and add_maintenance_item.
 func (d *Driver) createQuestionToolProviderForCoder(coderID string) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
+	// Get story ID from dispatcher lease for maintenance item source context
+	storyID := d.dispatcher.GetStoryForAgent(coderID)
 
 	ctx := tools.AgentContext{
 		Executor:        d.executor,       // Architect executor with read-only mounts
@@ -984,13 +1006,17 @@ func (d *Driver) createQuestionToolProviderForCoder(coderID string) *tools.ToolP
 		NetworkDisabled: false,            // Network allowed for architect
 		WorkDir:         containerWorkDir, // Use coder's container mount path
 		Agent:           nil,              // No agent reference needed for read tools
+		AgentID:         coderID,          // Agent being reviewed (for maintenance item source)
+		StoryID:         storyID,          // Story being reviewed (for maintenance item source)
+		MaintenanceLog:  d,                // Driver implements MaintenanceLog
 	}
 
-	// Build tool list: read tools + submit_reply terminal tool
+	// Build tool list: read tools + submit_reply terminal tool + maintenance item
 	allowedTools := []string{
 		tools.ToolReadFile,
 		tools.ToolListFiles,
-		tools.ToolSubmitReply, // Terminal tool for text replies
+		tools.ToolSubmitReply,        // Terminal tool for text replies
+		tools.ToolAddMaintenanceItem, // Non-terminal: log issues during Q&A
 	}
 
 	return tools.NewProvider(&ctx, allowedTools)
