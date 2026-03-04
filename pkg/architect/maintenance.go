@@ -12,6 +12,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/github"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/templates"
 	"orchestrator/pkg/templates/maintenance"
 	"orchestrator/pkg/tools"
@@ -147,8 +148,21 @@ func (d *Driver) runMaintenanceTasks(ctx context.Context, cycleID string, cfg *c
 	// Snapshot and clear logged maintenance items before generating stories.
 	// Items logged during this generation will roll into the next cycle (correct by design).
 	loggedItems := d.snapshotAndClearItems()
+
+	// Also load any unconsumed items from the database (from previous sessions or pre-restart).
+	dbItems, dbIDs := d.loadUnconsumedMaintenanceItems()
+	if len(dbItems) > 0 {
+		loggedItems = append(loggedItems, dbItems...)
+	}
+
 	if len(loggedItems) > 0 {
-		d.logger.Info("🔧 Snapshotted %d logged maintenance items for story generation", len(loggedItems))
+		d.logger.Info("🔧 Snapshotted %d maintenance items for story generation (%d in-memory, %d from DB)",
+			len(loggedItems), len(loggedItems)-len(dbItems), len(dbItems))
+	}
+
+	// Mark DB items as consumed (fire-and-forget)
+	if len(dbIDs) > 0 {
+		d.markMaintenanceItemsConsumed(dbIDs)
 	}
 
 	// Generate maintenance spec with stories based on config (synchronous, in-memory)
@@ -475,6 +489,58 @@ func (d *Driver) snapshotAndClearItems() []tools.MaintenanceItem {
 	return items
 }
 
+// loadUnconsumedMaintenanceItems queries the database for maintenance items that haven't been
+// consumed yet (e.g., from a previous session or pre-restart). Returns the items as tools.MaintenanceItem
+// and their database IDs for marking consumed after processing.
+func (d *Driver) loadUnconsumedMaintenanceItems() ([]tools.MaintenanceItem, []int64) {
+	if d.persistenceChannel == nil {
+		return nil, nil
+	}
+
+	respCh := make(chan interface{}, 1)
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpGetUnconsumedMaintenanceItems,
+		Response:  respCh,
+	}
+
+	resp := <-respCh
+	if err, ok := resp.(error); ok {
+		d.logger.Warn("🔧 Failed to load unconsumed maintenance items from DB: %v", err)
+		return nil, nil
+	}
+
+	records, ok := resp.([]persistence.MaintenanceItemRecord)
+	if !ok || len(records) == 0 {
+		return nil, nil
+	}
+
+	items := make([]tools.MaintenanceItem, len(records))
+	ids := make([]int64, len(records))
+	for i := range records {
+		items[i] = tools.MaintenanceItem{
+			Description: records[i].Description,
+			Priority:    records[i].Priority,
+			Source:      records[i].Source,
+			AddedAt:     records[i].CreatedAt,
+		}
+		ids[i] = records[i].ID
+	}
+
+	return items, ids
+}
+
+// markMaintenanceItemsConsumed marks the given database item IDs as consumed (fire-and-forget).
+func (d *Driver) markMaintenanceItemsConsumed(ids []int64) {
+	if d.persistenceChannel == nil || len(ids) == 0 {
+		return
+	}
+
+	d.persistenceChannel <- &persistence.Request{
+		Operation: persistence.OpMarkMaintenanceItemsConsumed,
+		Data:      ids,
+	}
+}
+
 // generateStoriesFromItems runs a single-turn LLM toolloop to convert logged maintenance items
 // into structured stories. Returns maintenance.Story structs ready to be appended to a spec.
 // Non-fatal: callers should log warnings and continue if this fails.
@@ -549,7 +615,7 @@ func (d *Driver) generateStoriesFromItems(ctx context.Context, items []tools.Mai
 	// Cap at 5 stories maximum to prevent queue flooding
 	const maxMaintenanceStories = 5
 	if len(requirements) > maxMaintenanceStories {
-		d.logger.Info("🔧 Capping maintenance stories from %d to %d (prioritizing highest priority)", len(requirements), maxMaintenanceStories)
+		d.logger.Info("🔧 Capping maintenance stories from %d to %d (taking first %d from LLM output)", len(requirements), maxMaintenanceStories, maxMaintenanceStories)
 		requirements = requirements[:maxMaintenanceStories]
 	}
 

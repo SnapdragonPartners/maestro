@@ -67,6 +67,11 @@ const (
 
 	// Context checkpoint operations (for error debugging).
 	OpSaveAgentContext = "save_agent_context"
+
+	// Maintenance item operations.
+	OpInsertMaintenanceItem         = "insert_maintenance_item"
+	OpGetUnconsumedMaintenanceItems = "get_unconsumed_maintenance_items"
+	OpMarkMaintenanceItemsConsumed  = "mark_maintenance_items_consumed"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -1124,6 +1129,69 @@ func (ops *DatabaseOperations) CheckKnowledgeModified(req *CheckKnowledgeModifie
 func (ops *DatabaseOperations) RebuildKnowledgeIndex(req *RebuildKnowledgeIndexRequest) error {
 	if err := knowledge.RebuildIndex(ops.db, req.DotPath, req.SessionID); err != nil {
 		return fmt.Errorf("failed to rebuild knowledge index: %w", err)
+	}
+	return nil
+}
+
+// InsertMaintenanceItem inserts a maintenance item logged during architect review.
+func (ops *DatabaseOperations) InsertMaintenanceItem(item *MaintenanceItemRecord) error {
+	query := `
+		INSERT INTO maintenance_items (session_id, description, priority, source, consumed, created_at)
+		VALUES (?, ?, ?, ?, 0, ?)
+	`
+	_, err := ops.db.Exec(query, ops.sessionID, item.Description, item.Priority, item.Source, item.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to insert maintenance item: %w", err)
+	}
+	return nil
+}
+
+// GetUnconsumedMaintenanceItems returns all maintenance items that haven't been consumed yet.
+func (ops *DatabaseOperations) GetUnconsumedMaintenanceItems() ([]MaintenanceItemRecord, error) {
+	query := `
+		SELECT id, description, priority, source, created_at
+		FROM maintenance_items
+		WHERE session_id = ? AND consumed = 0
+		ORDER BY created_at ASC
+	`
+	rows, err := ops.db.Query(query, ops.sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query unconsumed maintenance items: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var items []MaintenanceItemRecord
+	for rows.Next() {
+		var item MaintenanceItemRecord
+		if err := rows.Scan(&item.ID, &item.Description, &item.Priority, &item.Source, &item.CreatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan maintenance item: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating maintenance items: %w", err)
+	}
+	return items, nil
+}
+
+// MarkMaintenanceItemsConsumed marks a batch of maintenance items as consumed by their IDs.
+func (ops *DatabaseOperations) MarkMaintenanceItemsConsumed(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Build parameterized query with one placeholder per ID (safe from injection).
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := "UPDATE maintenance_items SET consumed = 1 WHERE id IN (" + strings.Join(placeholders, ",") + ")" //nolint:gosec // placeholders are all "?", not user input
+	_, err := ops.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to mark maintenance items consumed: %w", err)
 	}
 	return nil
 }

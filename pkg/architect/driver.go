@@ -495,12 +495,21 @@ func (d *Driver) buildSystemPrompt(ctx context.Context, agentID, storyID string)
 }
 
 // AddMaintenanceItem implements the tools.MaintenanceLog interface.
-// Appends an item to the maintenance tracker for processing in the next maintenance cycle.
+// Appends an item to the maintenance tracker for processing in the next maintenance cycle,
+// and persists it to the database for durability across restarts.
 func (d *Driver) AddMaintenanceItem(item tools.MaintenanceItem) {
 	d.maintenance.mutex.Lock()
 	defer d.maintenance.mutex.Unlock()
 	d.maintenance.Items = append(d.maintenance.Items, item)
 	d.logger.Info("🔧 Maintenance item logged: [%s] %s (source: %s)", item.Priority, item.Description, item.Source)
+
+	// Fire-and-forget persistence
+	persistence.PersistMaintenanceItem(&persistence.MaintenanceItemRecord{
+		Description: item.Description,
+		Priority:    item.Priority,
+		Source:      item.Source,
+		CreatedAt:   item.AddedAt,
+	}, d.persistenceChannel)
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
