@@ -14,6 +14,7 @@ import (
 
 	"orchestrator/internal/state"
 	"orchestrator/pkg/config"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 )
 
@@ -464,11 +465,13 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 		s.logger.Info("   Using environment file: .maestro/.env")
 	}
 
-	// Inject user-defined secrets as environment variables
-	if userSecrets := config.GetUserSecrets(); len(userSecrets) > 0 {
-		for key, value := range userSecrets {
-			args = append(args, "--env", fmt.Sprintf("%s=%s", key, value))
-		}
+	// Inject user-defined secrets via env file to avoid leaking values in logs/ps.
+	secretsEnvFile, fErr := execpkg.WriteEnvFile(s.buildSecretEnvVars())
+	if fErr != nil {
+		return fmt.Errorf("failed to write secrets env file: %w", fErr)
+	}
+	if secretsEnvFile != "" {
+		args = append(args, "--env-file", secretsEnvFile)
 	}
 
 	// Add session ID label dynamically
@@ -486,6 +489,11 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 	}
 
 	output, err := cmd.CombinedOutput()
+
+	// Clean up secrets env file immediately — Docker reads it at container creation only.
+	if secretsEnvFile != "" {
+		_ = os.Remove(secretsEnvFile)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to start demo container: %w (output: %s)", err, string(output))
 	}
@@ -637,6 +645,19 @@ func (s *Service) getImageID() string {
 }
 
 // removeExistingContainer removes any existing demo container.
+// buildSecretEnvVars returns user secrets as KEY=VALUE strings for env file injection.
+func (s *Service) buildSecretEnvVars() []string {
+	userSecrets := config.GetUserSecrets()
+	if len(userSecrets) == 0 {
+		return nil
+	}
+	envVars := make([]string, 0, len(userSecrets))
+	for key, value := range userSecrets {
+		envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+	}
+	return envVars
+}
+
 func (s *Service) removeExistingContainer(ctx context.Context) {
 	var cmd *exec.Cmd
 	if s.commandRunner != nil {
