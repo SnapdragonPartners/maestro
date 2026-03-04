@@ -13,7 +13,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 18
+const CurrentSchemaVersion = 19
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -127,6 +127,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion17(db)
 	case 18:
 		return migrateToVersion18(db)
+	case 19:
+		return migrateToVersion19(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -577,20 +579,6 @@ func migrateToVersion14(db *sql.DB) error {
 			prs_merged INTEGER DEFAULT 0,
 			report_path TEXT
 		)`,
-
-		// Maintenance story results
-		`CREATE TABLE IF NOT EXISTS maintenance_story_results (
-			id TEXT PRIMARY KEY,
-			cycle_id TEXT NOT NULL REFERENCES maintenance_cycles(id),
-			story_id TEXT NOT NULL,
-			title TEXT NOT NULL,
-			status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
-			pr_number INTEGER,
-			pr_merged INTEGER DEFAULT 0,
-			completed_at DATETIME,
-			summary TEXT,
-			error_message TEXT
-		)`,
 	}
 
 	// Create tables
@@ -604,8 +592,6 @@ func migrateToVersion14(db *sql.DB) error {
 	indices := []string{
 		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_session ON maintenance_cycles(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_status ON maintenance_cycles(status)",
-		"CREATE INDEX IF NOT EXISTS idx_maint_stories_cycle ON maintenance_story_results(cycle_id)",
-		"CREATE INDEX IF NOT EXISTS idx_maint_stories_status ON maintenance_story_results(status)",
 	}
 
 	for _, idx := range indices {
@@ -787,6 +773,32 @@ func migrateToVersion18(db *sql.DB) error {
 	for _, migration := range migrations {
 		if _, err := conn.ExecContext(ctx, migration); err != nil {
 			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateToVersion19 adds maintenance_items table and drops unused maintenance_story_results.
+func migrateToVersion19(db *sql.DB) error {
+	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS maintenance_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			description TEXT NOT NULL,
+			priority TEXT NOT NULL CHECK (priority IN ('p1', 'p2', 'p3')),
+			source TEXT NOT NULL,
+			consumed INTEGER DEFAULT 0,
+			created_at DATETIME NOT NULL
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_maint_items_session ON maintenance_items(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_items_consumed ON maintenance_items(consumed)",
+		"DROP TABLE IF EXISTS maintenance_story_results",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration v19: %w", err)
 		}
 	}
 
@@ -1100,18 +1112,15 @@ func createSchema(db *sql.DB) error {
 			report_path TEXT
 		)`,
 
-		// Maintenance story results
-		`CREATE TABLE IF NOT EXISTS maintenance_story_results (
-			id TEXT PRIMARY KEY,
-			cycle_id TEXT NOT NULL REFERENCES maintenance_cycles(id),
-			story_id TEXT NOT NULL,
-			title TEXT NOT NULL,
-			status TEXT NOT NULL CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
-			pr_number INTEGER,
-			pr_merged INTEGER DEFAULT 0,
-			completed_at DATETIME,
-			summary TEXT,
-			error_message TEXT
+		// Maintenance items logged by architect during reviews
+		`CREATE TABLE IF NOT EXISTS maintenance_items (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL,
+			description TEXT NOT NULL,
+			priority TEXT NOT NULL CHECK (priority IN ('p1', 'p2', 'p3')),
+			source TEXT NOT NULL,
+			consumed INTEGER DEFAULT 0,
+			created_at DATETIME NOT NULL
 		)`,
 	}
 
@@ -1182,8 +1191,8 @@ func createSchema(db *sql.DB) error {
 		// Maintenance mode indices
 		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_session ON maintenance_cycles(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_status ON maintenance_cycles(status)",
-		"CREATE INDEX IF NOT EXISTS idx_maint_stories_cycle ON maintenance_story_results(cycle_id)",
-		"CREATE INDEX IF NOT EXISTS idx_maint_stories_status ON maintenance_story_results(status)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_items_session ON maintenance_items(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_maint_items_consumed ON maintenance_items(consumed)",
 	}
 
 	// Execute table creation

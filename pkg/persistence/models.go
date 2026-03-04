@@ -161,6 +161,19 @@ type AgentPlan struct {
 	Feedback   *string    `json:"feedback,omitempty"`
 }
 
+// MaintenanceItemRecord represents a maintenance item logged by the architect during reviews.
+// Persisted to the maintenance_items table for durability across restarts.
+//
+//nolint:govet // fieldalignment: field order matches logical grouping
+type MaintenanceItemRecord struct {
+	ID          int64     `json:"id"`
+	Description string    `json:"description"`
+	Priority    string    `json:"priority"` // "p1", "p2", "p3"
+	Source      string    `json:"source"`   // e.g. "coder-001:story-abc"
+	Consumed    bool      `json:"consumed"` // true once snapshotted for story generation
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 // Request type constants.
 const (
 	RequestTypeQuestion = "question"

@@ -1,9 +1,15 @@
 package config
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/crypto/scrypt"
 )
 
 func TestEncryptDecryptSecretsRoundTrip(t *testing.T) {
@@ -11,11 +17,16 @@ func TestEncryptDecryptSecretsRoundTrip(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	password := "test-password-12345"
-	secrets := map[string]string{
-		"GITHUB_TOKEN":      "ghp_test123456789",
-		"ANTHROPIC_API_KEY": "sk-ant-test123",
-		"OPENAI_API_KEY":    "sk-test-openai",
-		"SSL_KEY_PEM":       "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+	secrets := &StructuredSecrets{
+		System: map[string]string{
+			"GITHUB_TOKEN":      "ghp_test123456789",
+			"ANTHROPIC_API_KEY": "sk-ant-test123",
+			"OPENAI_API_KEY":    "sk-test-openai",
+			"SSL_KEY_PEM":       "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+		},
+		User: map[string]string{
+			"DATABASE_URL": "postgres://localhost:5432/mydb",
+		},
 	}
 
 	// Test encryption
@@ -45,16 +56,27 @@ func TestEncryptDecryptSecretsRoundTrip(t *testing.T) {
 		t.Fatalf("Failed to decrypt secrets: %v", err)
 	}
 
-	// Verify all secrets match
-	if len(decrypted) != len(secrets) {
-		t.Errorf("Expected %d secrets, got %d", len(secrets), len(decrypted))
+	// Verify system secrets match
+	if len(decrypted.System) != len(secrets.System) {
+		t.Errorf("Expected %d system secrets, got %d", len(secrets.System), len(decrypted.System))
+	}
+	for key, expectedValue := range secrets.System {
+		if actualValue, exists := decrypted.System[key]; !exists {
+			t.Errorf("System secret %s not found in decrypted data", key)
+		} else if actualValue != expectedValue {
+			t.Errorf("System secret %s: expected %q, got %q", key, expectedValue, actualValue)
+		}
 	}
 
-	for key, expectedValue := range secrets {
-		if actualValue, exists := decrypted[key]; !exists {
-			t.Errorf("Secret %s not found in decrypted data", key)
+	// Verify user secrets match
+	if len(decrypted.User) != len(secrets.User) {
+		t.Errorf("Expected %d user secrets, got %d", len(secrets.User), len(decrypted.User))
+	}
+	for key, expectedValue := range secrets.User {
+		if actualValue, exists := decrypted.User[key]; !exists {
+			t.Errorf("User secret %s not found in decrypted data", key)
 		} else if actualValue != expectedValue {
-			t.Errorf("Secret %s: expected %q, got %q", key, expectedValue, actualValue)
+			t.Errorf("User secret %s: expected %q, got %q", key, expectedValue, actualValue)
 		}
 	}
 }
@@ -65,8 +87,9 @@ func TestDecryptWithWrongPassword(t *testing.T) {
 
 	password := "correct-password"
 	wrongPassword := "wrong-password"
-	secrets := map[string]string{
-		"GITHUB_TOKEN": "ghp_test123456789",
+	secrets := &StructuredSecrets{
+		System: map[string]string{"GITHUB_TOKEN": "ghp_test123456789"},
+		User:   map[string]string{},
 	}
 
 	// Encrypt with correct password
@@ -98,7 +121,10 @@ func TestSecretsFileExists(t *testing.T) {
 
 	// Create secrets file
 	password := "test-password"
-	secrets := map[string]string{"GITHUB_TOKEN": "ghp_test"}
+	secrets := &StructuredSecrets{
+		System: map[string]string{"GITHUB_TOKEN": "ghp_test"},
+		User:   map[string]string{},
+	}
 	err := EncryptSecretsFile(tmpDir, password, secrets)
 	if err != nil {
 		t.Fatalf("Failed to encrypt secrets: %v", err)
@@ -111,15 +137,15 @@ func TestSecretsFileExists(t *testing.T) {
 }
 
 func TestGetSecretPrecedence(t *testing.T) {
-	// Test 1: Secret from decrypted secrets (in memory)
-	SetDecryptedSecrets(map[string]string{
-		"TEST_SECRET": "from-secrets-file",
+	// Test 1: User secret takes precedence over system and env
+	SetDecryptedSecrets(&StructuredSecrets{
+		System: map[string]string{"TEST_SECRET": "from-system"},
+		User:   map[string]string{"TEST_SECRET": "from-user"},
 	})
 	defer func() {
 		SetDecryptedSecrets(nil) // Clean up
 	}()
 
-	// Set environment variable with different value
 	os.Setenv("TEST_SECRET", "from-env-var")
 	defer os.Unsetenv("TEST_SECRET")
 
@@ -127,13 +153,28 @@ func TestGetSecretPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Expected to get secret, got error: %v", err)
 	}
-	if secret != "from-secrets-file" {
-		t.Errorf("Expected secret from secrets file (precedence), got: %q", secret)
+	if secret != "from-user" {
+		t.Errorf("Expected secret from user bucket (highest precedence), got: %q", secret)
 	}
 
-	// Test 2: Secret from environment when not in secrets file
-	SetDecryptedSecrets(map[string]string{
-		"OTHER_SECRET": "other-value",
+	// Test 2: System secret takes precedence over env
+	SetDecryptedSecrets(&StructuredSecrets{
+		System: map[string]string{"TEST_SECRET": "from-system"},
+		User:   map[string]string{},
+	})
+
+	secret, err = GetSecret("TEST_SECRET")
+	if err != nil {
+		t.Fatalf("Expected to get secret from system, got error: %v", err)
+	}
+	if secret != "from-system" {
+		t.Errorf("Expected secret from system bucket, got: %q", secret)
+	}
+
+	// Test 3: Fall back to env var
+	SetDecryptedSecrets(&StructuredSecrets{
+		System: map[string]string{},
+		User:   map[string]string{},
 	})
 
 	secret, err = GetSecret("TEST_SECRET")
@@ -144,7 +185,7 @@ func TestGetSecretPrecedence(t *testing.T) {
 		t.Errorf("Expected secret from env var, got: %q", secret)
 	}
 
-	// Test 3: Secret not found anywhere
+	// Test 4: Secret not found anywhere
 	SetDecryptedSecrets(nil)
 	os.Unsetenv("TEST_SECRET")
 
@@ -245,7 +286,10 @@ func TestEmptySecrets(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	password := "test-password"
-	secrets := map[string]string{} // Empty secrets
+	secrets := &StructuredSecrets{
+		System: map[string]string{},
+		User:   map[string]string{},
+	}
 
 	// Should be able to encrypt/decrypt empty secrets
 	err := EncryptSecretsFile(tmpDir, password, secrets)
@@ -258,7 +302,276 @@ func TestEmptySecrets(t *testing.T) {
 		t.Fatalf("Failed to decrypt empty secrets: %v", err)
 	}
 
-	if len(decrypted) != 0 {
-		t.Errorf("Expected 0 secrets, got %d", len(decrypted))
+	if len(decrypted.System) != 0 || len(decrypted.User) != 0 {
+		t.Errorf("Expected 0 secrets, got %d system + %d user", len(decrypted.System), len(decrypted.User))
+	}
+}
+
+func TestSetSecretSystemValidation(t *testing.T) {
+	SetDecryptedSecrets(nil)
+	defer SetDecryptedSecrets(nil)
+
+	// Valid system secret name should succeed
+	err := SetSecret("ANTHROPIC_API_KEY", "test-value", SecretTypeSystem)
+	if err != nil {
+		t.Errorf("Expected system secret to be set, got error: %v", err)
+	}
+
+	// Invalid system secret name should fail
+	err = SetSecret("UNKNOWN_SYSTEM_SECRET", "test-value", SecretTypeSystem)
+	if err == nil {
+		t.Error("Expected error for unknown system secret name, got nil")
+	}
+
+	// User secrets with any valid name should succeed
+	err = SetSecret("MY_CUSTOM_SECRET", "test-value", SecretTypeUser)
+	if err == nil {
+		// Verify it was stored in user bucket
+		secrets := GetUserSecrets()
+		if secrets["MY_CUSTOM_SECRET"] != "test-value" {
+			t.Errorf("Expected user secret to be stored, got: %v", secrets)
+		}
+	} else {
+		t.Errorf("Expected user secret to be set, got error: %v", err)
+	}
+}
+
+func TestGetUserSecrets(t *testing.T) {
+	// Test nil state
+	SetDecryptedSecrets(nil)
+	secrets := GetUserSecrets()
+	if secrets != nil {
+		t.Errorf("Expected nil for no secrets, got: %v", secrets)
+	}
+
+	// Test with user secrets
+	SetDecryptedSecrets(&StructuredSecrets{
+		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
+		User:   map[string]string{"DB_URL": "postgres://localhost"},
+	})
+	defer SetDecryptedSecrets(nil)
+
+	secrets = GetUserSecrets()
+	if len(secrets) != 1 {
+		t.Errorf("Expected 1 user secret, got %d", len(secrets))
+	}
+	if secrets["DB_URL"] != "postgres://localhost" {
+		t.Errorf("Expected DB_URL value, got: %q", secrets["DB_URL"])
+	}
+	// Should NOT include system secrets
+	if _, exists := secrets["ANTHROPIC_API_KEY"]; exists {
+		t.Error("GetUserSecrets should not return system secrets")
+	}
+}
+
+func TestStructuredSecretsRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	password := "test-password"
+
+	original := &StructuredSecrets{
+		System: map[string]string{
+			"ANTHROPIC_API_KEY": "sk-ant-test",
+			"GITHUB_TOKEN":      "ghp_test",
+		},
+		User: map[string]string{
+			"DATABASE_URL": "postgres://localhost:5432/mydb",
+			"REDIS_URL":    "redis://localhost:6379",
+		},
+	}
+
+	err := EncryptSecretsFile(tmpDir, password, original)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	decrypted, err := DecryptSecretsFile(tmpDir, password)
+	if err != nil {
+		t.Fatalf("Failed to decrypt: %v", err)
+	}
+
+	// Verify system secrets
+	for k, v := range original.System {
+		if decrypted.System[k] != v {
+			t.Errorf("System secret %s: expected %q, got %q", k, v, decrypted.System[k])
+		}
+	}
+
+	// Verify user secrets
+	for k, v := range original.User {
+		if decrypted.User[k] != v {
+			t.Errorf("User secret %s: expected %q, got %q", k, v, decrypted.User[k])
+		}
+	}
+}
+
+func TestLegacyFlatFormatMigration(t *testing.T) {
+	tmpDir := t.TempDir()
+	password := "test-password"
+
+	// Encrypt a flat map[string]string directly (the old format) using raw crypto,
+	// bypassing EncryptSecretsFile which now only accepts *StructuredSecrets.
+	legacyFlat := map[string]string{
+		"ANTHROPIC_API_KEY": "sk-ant-legacy",
+		"GITHUB_TOKEN":      "ghp_legacy",
+	}
+	if err := encryptRawJSON(tmpDir, password, legacyFlat); err != nil {
+		t.Fatalf("Failed to encrypt legacy format: %v", err)
+	}
+
+	// DecryptSecretsFile should detect the flat format and migrate it
+	decrypted, err := DecryptSecretsFile(tmpDir, password)
+	if err != nil {
+		t.Fatalf("Failed to decrypt: %v", err)
+	}
+
+	if decrypted.System["ANTHROPIC_API_KEY"] != "sk-ant-legacy" {
+		t.Errorf("Expected ANTHROPIC_API_KEY in system bucket after migration, got: %q", decrypted.System["ANTHROPIC_API_KEY"])
+	}
+	if decrypted.System["GITHUB_TOKEN"] != "ghp_legacy" {
+		t.Errorf("Expected GITHUB_TOKEN in system bucket after migration, got: %q", decrypted.System["GITHUB_TOKEN"])
+	}
+	if decrypted.User == nil {
+		t.Error("Expected User map to be initialized after migration")
+	}
+	if len(decrypted.User) != 0 {
+		t.Errorf("Expected empty User map after migration, got %d entries", len(decrypted.User))
+	}
+}
+
+// encryptRawJSON encrypts any JSON-serializable value to the secrets file,
+// used to create legacy-format test fixtures.
+func encryptRawJSON(projectDir, password string, v any) error {
+	passwordBytes := []byte(password)
+	salt := make([]byte, saltSize)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+	key, err := scrypt.Key(passwordBytes, salt, scryptN, scryptR, scryptP, keySize)
+	if err != nil {
+		return err
+	}
+	plaintext, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return err
+	}
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+
+	fileData := make([]byte, 0, saltSize+nonceSize+len(ciphertext))
+	fileData = append(fileData, salt...)
+	fileData = append(fileData, nonce...)
+	fileData = append(fileData, ciphertext...)
+
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(maestroDir, secretsFileName), fileData, 0600)
+}
+
+func TestValidateSecretName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"VALID_NAME", false},
+		{"_STARTS_WITH_UNDERSCORE", false},
+		{"lowercase", false},
+		{"MixedCase123", false},
+		{"", true},
+		{"invalid-name", true},
+		{"has spaces", true},
+		{"123_STARTS_WITH_NUMBER", true},
+		{"has.dot", true},
+	}
+
+	for _, tt := range tests {
+		err := ValidateSecretName(tt.name)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("ValidateSecretName(%q) error = %v, wantErr = %v", tt.name, err, tt.wantErr)
+		}
+	}
+}
+
+func TestDeleteSecretWithType(t *testing.T) {
+	SetDecryptedSecrets(&StructuredSecrets{
+		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
+		User:   map[string]string{"MY_SECRET": "my-value"},
+	})
+	defer SetDecryptedSecrets(nil)
+
+	// Delete user secret
+	err := DeleteSecret("MY_SECRET", SecretTypeUser)
+	if err != nil {
+		t.Fatalf("Failed to delete user secret: %v", err)
+	}
+
+	// Verify user secret is gone but system secret remains
+	secrets := GetUserSecrets()
+	if _, exists := secrets["MY_SECRET"]; exists {
+		t.Error("Expected MY_SECRET to be deleted from user secrets")
+	}
+	val, err := GetSecret("ANTHROPIC_API_KEY")
+	if err != nil || val != "sk-ant-test" {
+		t.Errorf("Expected system secret to remain, got: %q, %v", val, err)
+	}
+
+	// Delete system secret
+	err = DeleteSecret("ANTHROPIC_API_KEY", SecretTypeSystem)
+	if err != nil {
+		t.Fatalf("Failed to delete system secret: %v", err)
+	}
+	// Temporarily unset env var to test that the secret is truly gone
+	origEnv := os.Getenv("ANTHROPIC_API_KEY")
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	defer func() {
+		if origEnv != "" {
+			os.Setenv("ANTHROPIC_API_KEY", origEnv)
+		}
+	}()
+	_, err = GetSecret("ANTHROPIC_API_KEY")
+	if err == nil {
+		t.Error("Expected system secret to be deleted")
+	}
+}
+
+func TestGetDecryptedSecretNamesWithTypes(t *testing.T) {
+	SetDecryptedSecrets(&StructuredSecrets{
+		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant"},
+		User:   map[string]string{"MY_SECRET": "value"},
+	})
+	defer SetDecryptedSecrets(nil)
+
+	entries := GetDecryptedSecretNames()
+	if len(entries) != 2 {
+		t.Fatalf("Expected 2 entries, got %d", len(entries))
+	}
+
+	foundSystem := false
+	foundUser := false
+	for _, e := range entries {
+		if e.Name == "ANTHROPIC_API_KEY" && e.Type == SecretTypeSystem {
+			foundSystem = true
+		}
+		if e.Name == "MY_SECRET" && e.Type == SecretTypeUser {
+			foundUser = true
+		}
+	}
+	if !foundSystem {
+		t.Error("Expected to find system secret ANTHROPIC_API_KEY")
+	}
+	if !foundUser {
+		t.Error("Expected to find user secret MY_SECRET")
 	}
 }

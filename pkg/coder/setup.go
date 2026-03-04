@@ -243,6 +243,13 @@ func (c *Coder) configureWorkspaceMount(ctx context.Context, readonly bool, purp
 		// coders from pushing unapproved code. See pushBranch() in prepare_merge.go.
 	}
 
+	// Inject user-defined secrets as environment variables
+	if userSecrets := config.GetUserSecrets(); len(userSecrets) > 0 {
+		for key, value := range userSecrets {
+			execOpts.Env = append(execOpts.Env, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
 	// Use sanitized agent ID for container naming (story ID not accessible from here)
 	agentID := c.GetID()
 	sanitizedAgentID := utils.SanitizeContainerName(agentID)

@@ -29,6 +29,7 @@ type AgentContext struct {
 	StoryID         string                 // Story ID for commit message prefix (used by done tool)
 	TargetBranch    string                 // Target branch for done tool merge-base check (defaults to "main")
 	ComposeRegistry *state.ComposeRegistry // Compose stack registry for cleanup tracking
+	MaintenanceLog  MaintenanceLog         // Maintenance log for architect review tools (nil for non-architect)
 }
 
 // Agent interface for tools that need access to agent state.
@@ -658,6 +659,14 @@ func getStoryEditSchema() InputSchema {
 	return NewStoryEditTool().Definition().InputSchema
 }
 
+func createAddMaintenanceItemTool(ctx *AgentContext) (Tool, error) {
+	return NewAddMaintenanceItemTool(ctx.MaintenanceLog, ctx.AgentID, ctx.StoryID), nil
+}
+
+func getAddMaintenanceItemSchema() InputSchema {
+	return NewAddMaintenanceItemTool(nil, "", "").Definition().InputSchema
+}
+
 func createWebSearchTool(_ *AgentContext) (Tool, error) {
 	return NewWebSearchTool(), nil
 }
@@ -878,6 +887,13 @@ func init() {
 		Name:        ToolStoryEdit,
 		Description: "Annotate a story with implementation notes before requeueing",
 		InputSchema: getStoryEditSchema(),
+	})
+
+	// Register architect maintenance tools
+	Register(ToolAddMaintenanceItem, createAddMaintenanceItemTool, &ToolMeta{
+		Name:        ToolAddMaintenanceItem,
+		Description: "Log an issue for the next maintenance cycle (non-terminal)",
+		InputSchema: getAddMaintenanceItemSchema(),
 	})
 
 	// Register research tools

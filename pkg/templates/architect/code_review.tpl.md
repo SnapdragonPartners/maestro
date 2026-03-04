@@ -138,3 +138,12 @@ Story should be abandoned or reassigned.
 ```
 
 Be thorough, fair, and constructive. Use NEEDS_CHANGES for recoverable issues and reserve REJECTED for truly unsalvageable situations.
+
+## Logging Maintenance Issues
+
+If you notice operational issues during your review that are NOT the coder's fault but should be fixed in a future maintenance cycle, use the `add_maintenance_item` tool to log them. Examples:
+
+- **Use `add_maintenance_item`** for operational fixes: missing .gitignore rules, outdated dependencies with known vulnerabilities, broken test infrastructure, build system issues, missing CI checks
+- **Do NOT use `add_maintenance_item`** for issues the coder should fix — use NEEDS_CHANGES feedback instead
+
+This is a non-terminal tool — call it during your review, then continue to your review decision.
