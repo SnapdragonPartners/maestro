@@ -464,6 +464,13 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 		s.logger.Info("   Using environment file: .maestro/.env")
 	}
 
+	// Inject user-defined secrets as environment variables
+	if userSecrets := config.GetUserSecrets(); len(userSecrets) > 0 {
+		for key, value := range userSecrets {
+			args = append(args, "--env", fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
 	// Add session ID label dynamically
 	if s.config != nil && s.config.SessionID != "" {
 		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", s.config.SessionID))

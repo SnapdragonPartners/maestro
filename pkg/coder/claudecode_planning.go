@@ -3,7 +3,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -71,8 +70,13 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	opts.Mode = claude.ModePlanning
 	opts.WorkDir = "/workspace"
 	opts.Model = config.GetEffectiveCoderModel()
+	anthropicKey, _ := config.GetSecret(config.EnvAnthropicAPIKey)
 	opts.EnvVars = map[string]string{
-		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
+		"ANTHROPIC_API_KEY": anthropicKey,
+	}
+	// User secrets override (including ANTHROPIC_API_KEY if user-defined)
+	for key, value := range config.GetUserSecrets() {
+		opts.EnvVars[key] = value
 	}
 
 	if shouldResume {

@@ -1799,6 +1799,13 @@ func (c *Coder) SwitchContainer(ctx context.Context, newImage, stagingImageID, s
 		},
 	}
 
+	// Inject user-defined secrets as environment variables
+	if userSecrets := config.GetUserSecrets(); len(userSecrets) > 0 {
+		for key, value := range userSecrets {
+			execOpts.Env = append(execOpts.Env, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
 	// Build extra mounts (mirror repository)
 	projectDir := config.GetProjectDir()
 	if projectDir != "" {

@@ -174,8 +174,8 @@ func (c *Coder) resolveHeadSHA(ctx context.Context) string {
 		Timeout: 10 * time.Second,
 	}
 	result, err := c.longRunningExecutor.Run(ctx, []string{"git", "rev-parse", "HEAD"}, opts)
-	if err != nil {
-		c.logger.Debug("Failed to resolve HEAD SHA: %v", err)
+	if err != nil || result.ExitCode != 0 {
+		c.logger.Debug("Failed to resolve HEAD SHA: err=%v exit=%d", err, result.ExitCode)
 		return ""
 	}
 	return strings.TrimSpace(result.Stdout)

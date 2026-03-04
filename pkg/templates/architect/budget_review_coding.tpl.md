@@ -155,3 +155,7 @@ review_complete({
 ```
 
 **Important**: When using NEEDS_CHANGES from CODING state, the agent will return to CODING (not PLANNING) with your feedback guidance. Provide concrete implementation guidance that helps the agent proceed with coding tasks.
+
+## Logging Maintenance Issues
+
+If you notice systemic issues (not the coder's fault) that should be fixed in a future maintenance cycle, use the `add_maintenance_item` tool. This is non-terminal — call it during review, then continue to your decision.

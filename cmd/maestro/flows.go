@@ -593,6 +593,7 @@ func handleSecretsDecryption(projectDir string) error {
 		}
 
 		// Success! Store secrets and password in memory
+		// DecryptSecretsFile returns *StructuredSecrets (handles legacy flat format migration)
 		config.SetDecryptedSecrets(secrets)
 		config.SetProjectPassword(password)
 		config.LogInfo("✅ Credentials decrypted successfully")
