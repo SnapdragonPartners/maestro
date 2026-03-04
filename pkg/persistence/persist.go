@@ -113,3 +113,16 @@ func PersistToolExecution(toolExec *ToolExecution, persistenceChannel chan<- *Re
 		Response:  nil, // Fire-and-forget
 	}
 }
+
+// PersistMaintenanceItem persists a maintenance item logged during architect review.
+func PersistMaintenanceItem(item *MaintenanceItemRecord, persistenceChannel chan<- *Request) {
+	if persistenceChannel == nil || item == nil {
+		return
+	}
+
+	persistenceChannel <- &Request{
+		Operation: OpInsertMaintenanceItem,
+		Data:      item,
+		Response:  nil, // Fire-and-forget
+	}
+}

@@ -64,3 +64,7 @@ review_complete({
 ```
 
 Provide clear, actionable feedback that helps the coder improve their plan or proceed with confidence.
+
+## Logging Maintenance Issues
+
+If you notice operational issues during your review that should be fixed in a future maintenance cycle (not by this coder), use the `add_maintenance_item` tool. Examples: missing .gitignore rules, outdated dependencies, broken test infrastructure. This is non-terminal — call it during review, then continue to your decision.
