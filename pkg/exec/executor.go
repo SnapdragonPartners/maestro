@@ -4,6 +4,8 @@ package exec
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 )
 
@@ -116,6 +118,41 @@ type Result struct {
 
 	// ExitCode is the exit code of the command.
 	ExitCode int
+}
+
+// WriteEnvFile writes KEY=VALUE pairs to a temporary file suitable for docker --env-file.
+// The file is created with 0600 permissions. The caller is responsible for removing the file
+// after the docker command has started (Docker reads it at container creation time only).
+// Returns the file path, or empty string if envVars is empty.
+func WriteEnvFile(envVars []string) (string, error) {
+	if len(envVars) == 0 {
+		return "", nil
+	}
+
+	f, err := os.CreateTemp("", "maestro-env-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create env file: %w", err)
+	}
+
+	for _, env := range envVars {
+		if _, wErr := fmt.Fprintln(f, env); wErr != nil {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return "", fmt.Errorf("failed to write env file: %w", wErr)
+		}
+	}
+
+	if cErr := f.Close(); cErr != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("failed to close env file: %w", cErr)
+	}
+
+	if chErr := os.Chmod(f.Name(), 0600); chErr != nil {
+		_ = os.Remove(f.Name())
+		return "", fmt.Errorf("failed to chmod env file: %w", chErr)
+	}
+
+	return f.Name(), nil
 }
 
 // DefaultExecOpts returns default execution options.

@@ -253,9 +253,13 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 
 	// Note: MCP communication uses TCP via host.docker.internal - no socket mount needed.
 
-	// Environment variables.
-	for _, env := range opts.Env {
-		args = append(args, "--env", env)
+	// Environment variables: write to temp file to avoid leaking secrets in logs/ps.
+	envFile, envErr := WriteEnvFile(opts.Env)
+	if envErr != nil {
+		return "", envErr
+	}
+	if envFile != "" {
+		args = append(args, "--env-file", envFile)
 	}
 
 	// Add image and command (sleep to keep container running)
@@ -280,6 +284,12 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	d.logger.Debug("Docker command environment: %v", cmd.Env)
 
 	output, err := cmd.CombinedOutput()
+
+	// Clean up env file immediately — Docker only reads it at container creation time.
+	if envFile != "" {
+		_ = os.Remove(envFile)
+	}
+
 	if err != nil {
 		cmdString := strings.Join(cmd.Args, " ")
 		if cmdString == "" {

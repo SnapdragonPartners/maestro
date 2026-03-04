@@ -14,6 +14,7 @@ import (
 
 	"orchestrator/internal/state"
 	"orchestrator/pkg/config"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 )
 
@@ -464,10 +465,19 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 		s.logger.Info("   Using environment file: .maestro/.env")
 	}
 
-	// Inject user-defined secrets as environment variables
+	// Inject user-defined secrets via env file to avoid leaking values in logs/ps.
 	if userSecrets := config.GetUserSecrets(); len(userSecrets) > 0 {
+		envVars := make([]string, 0, len(userSecrets))
 		for key, value := range userSecrets {
-			args = append(args, "--env", fmt.Sprintf("%s=%s", key, value))
+			envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+		}
+		secretsFile, fErr := execpkg.WriteEnvFile(envVars)
+		if fErr != nil {
+			return fmt.Errorf("failed to write secrets env file: %w", fErr)
+		}
+		if secretsFile != "" {
+			defer func() { _ = os.Remove(secretsFile) }()
+			args = append(args, "--env-file", secretsFile)
 		}
 	}
 
