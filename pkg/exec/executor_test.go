@@ -50,7 +50,7 @@ func TestWriteEnvFile_WritesAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read env file: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) != len(envVars) {
 		t.Fatalf("expected %d lines, got %d: %v", len(envVars), len(lines), lines)
 	}
@@ -58,5 +58,29 @@ func TestWriteEnvFile_WritesAndCleanup(t *testing.T) {
 		if lines[i] != want {
 			t.Errorf("line %d: got %q, want %q", i, lines[i], want)
 		}
+	}
+}
+
+func TestWriteEnvFile_RejectsNewlines(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+	}{
+		{"newline in value", "FOO=bar\nbaz"},
+		{"carriage return", "FOO=bar\rbaz"},
+		{"null byte", "FOO=bar\x00baz"},
+		{"newline in key", "FO\nO=bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, err := WriteEnvFile([]string{tt.env})
+			if err == nil {
+				_ = os.Remove(path)
+				t.Fatal("expected error for env var with invalid characters")
+			}
+			if !strings.Contains(err.Error(), "invalid characters") {
+				t.Errorf("expected 'invalid characters' error, got: %v", err)
+			}
+		})
 	}
 }

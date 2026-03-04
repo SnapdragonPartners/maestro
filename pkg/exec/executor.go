@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -135,6 +136,11 @@ func WriteEnvFile(envVars []string) (string, error) {
 	}
 
 	for _, env := range envVars {
+		if strings.ContainsAny(env, "\n\r\x00") {
+			_ = f.Close()
+			_ = os.Remove(f.Name())
+			return "", fmt.Errorf("env var contains invalid characters (newline or NUL): %q", strings.SplitN(env, "=", 2)[0])
+		}
 		if _, wErr := fmt.Fprintln(f, env); wErr != nil {
 			_ = f.Close()
 			_ = os.Remove(f.Name())
@@ -145,11 +151,6 @@ func WriteEnvFile(envVars []string) (string, error) {
 	if cErr := f.Close(); cErr != nil {
 		_ = os.Remove(f.Name())
 		return "", fmt.Errorf("failed to close env file: %w", cErr)
-	}
-
-	if chErr := os.Chmod(f.Name(), 0600); chErr != nil {
-		_ = os.Remove(f.Name())
-		return "", fmt.Errorf("failed to chmod env file: %w", chErr)
 	}
 
 	return f.Name(), nil
