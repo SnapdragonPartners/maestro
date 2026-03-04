@@ -46,7 +46,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
       - name: Set up GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
           args: release --clean
