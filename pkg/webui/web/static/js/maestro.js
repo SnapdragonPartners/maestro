@@ -1740,10 +1740,22 @@ class MaestroUI {
 
     async loadSecrets() {
         const list = document.getElementById('secrets-list');
+        const warningEl = document.getElementById('secrets-password-warning');
         try {
             const response = await fetch(`/api/secrets?type=${this.currentSecretsTab}`);
             if (!response.ok) throw new Error('Failed to load secrets');
-            const entries = await response.json();
+            const data = await response.json();
+            const entries = data.secrets || [];
+
+            // Show or hide password warning
+            if (warningEl) {
+                if (data.warning) {
+                    warningEl.textContent = data.warning;
+                    warningEl.classList.remove('hidden');
+                } else {
+                    warningEl.classList.add('hidden');
+                }
+            }
 
             if (entries.length === 0) {
                 list.innerHTML = '<p class="text-sm text-gray-400 py-2">No secrets configured.</p>';

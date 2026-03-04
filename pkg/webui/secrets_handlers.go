@@ -3,6 +3,7 @@ package webui
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 
@@ -48,8 +49,16 @@ func (s *Server) handleSecretsList(w http.ResponseWriter, r *http.Request) {
 		return entries[i].Name < entries[j].Name
 	})
 
+	// Build response with optional warning
+	response := map[string]interface{}{
+		"secrets": entries,
+	}
+	if os.Getenv("MAESTRO_PASSWORD") == "" {
+		response["warning"] = "MAESTRO_PASSWORD env var is not set. Save your generated password or secrets will be lost on restart."
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(entries); err != nil {
+	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.logger.Error("Failed to encode secrets list response: %v", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
@@ -116,13 +125,14 @@ func (s *Server) handleSecretsSet(w http.ResponseWriter, r *http.Request) {
 	// Persist to encrypted file
 	password := config.GetProjectPassword()
 	if password == "" {
-		// If no password set, we can only store in memory
-		s.logger.Warn("No project password set - secret stored in memory only")
-	} else {
-		if err := config.SaveSecretsToFile(s.workDir, password); err != nil {
-			s.logger.Error("Failed to persist secret to file: %v", err)
-			// Don't fail - the secret is still in memory
-		}
+		s.logger.Error("No project password set - cannot persist secrets")
+		http.Error(w, "No project password set - cannot persist secrets", http.StatusInternalServerError)
+		return
+	}
+	if err := config.SaveSecretsToFile(s.workDir, password); err != nil {
+		s.logger.Error("Failed to persist secret to file: %v", err)
+		http.Error(w, "Failed to persist secret to file", http.StatusInternalServerError)
+		return
 	}
 
 	response := map[string]interface{}{
@@ -177,11 +187,15 @@ func (s *Server) handleSecretsDelete(w http.ResponseWriter, r *http.Request) {
 
 	// Persist to encrypted file
 	password := config.GetProjectPassword()
-	if password != "" {
-		if err := config.SaveSecretsToFile(s.workDir, password); err != nil {
-			s.logger.Error("Failed to persist secret deletion to file: %v", err)
-			// Don't fail - the secret is deleted from memory
-		}
+	if password == "" {
+		s.logger.Error("No project password set - cannot persist secrets")
+		http.Error(w, "No project password set - cannot persist secrets", http.StatusInternalServerError)
+		return
+	}
+	if err := config.SaveSecretsToFile(s.workDir, password); err != nil {
+		s.logger.Error("Failed to persist secret deletion to file: %v", err)
+		http.Error(w, "Failed to persist secret deletion to file", http.StatusInternalServerError)
+		return
 	}
 
 	response := map[string]interface{}{

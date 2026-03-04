@@ -58,9 +58,6 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Start web UI if requested
 	if f.webUI {
-		// Generate password if not set (before starting WebUI)
-		ensureWebUIPassword()
-
 		if err := k.StartWebUI(); err != nil {
 			return fmt.Errorf("failed to start web UI: %w", err)
 		}
@@ -186,9 +183,6 @@ func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Start web UI if requested
 	if f.webUI {
-		// Generate password if not set (before starting WebUI)
-		ensureWebUIPassword()
-
 		if err := k.StartWebUI(); err != nil {
 			return fmt.Errorf("failed to start web UI: %w", err)
 		}
@@ -475,6 +469,9 @@ func ensureWebUIPassword() {
 		if config.GetProjectPassword() != "" {
 			logger("🔐 WebUI password loaded from project secrets")
 		} else {
+			// MAESTRO_PASSWORD env var is set but not yet stored in memory.
+			// Store it so GetProjectPassword() returns it for secrets encryption.
+			config.SetProjectPassword(config.GetWebUIPassword())
 			logger("🔐 WebUI password loaded from MAESTRO_PASSWORD environment variable")
 		}
 
@@ -504,13 +501,14 @@ func ensureWebUIPassword() {
 
 	// Display the generated password to the user (NOT via logger!)
 	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║                   🔐 WebUI Password Generated                      ║")
+	fmt.Println("║                   🔐 Project Password Generated                     ║")
 	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
 	fmt.Printf("║  Username: maestro                                                 ║\n")
 	fmt.Printf("║  Password: %-52s ║\n", password)
 	fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
+	fmt.Println("║  Used for: WebUI login + secrets encryption                        ║")
 	fmt.Println("║  ⚠️  Save this password! It will not be shown again.               ║")
-	fmt.Println("║  💡 Set MAESTRO_PASSWORD env var to use a custom password.         ║")
+	fmt.Println("║  💡 Set MAESTRO_PASSWORD env var to persist across restarts.       ║")
 	if !sslEnabled {
 		fmt.Println("╠════════════════════════════════════════════════════════════════════╣")
 		fmt.Println("║  🔓 WARNING: SSL is disabled! Password sent in plain text.        ║")
