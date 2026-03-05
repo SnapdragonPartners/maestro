@@ -84,59 +84,49 @@ func TestMirrorExists_NonExistentPath(t *testing.T) {
 	}
 }
 
-func TestAuthenticateURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		url      string
-		token    string
-		expected string
-	}{
-		{
-			name:     "HTTPS GitHub URL with token",
-			url:      "https://github.com/owner/repo.git",
-			token:    "ghp_test123",
-			expected: "https://x-access-token:ghp_test123@github.com/owner/repo.git",
-		},
-		{
-			name:     "HTTPS GitHub URL without .git",
-			url:      "https://github.com/owner/repo",
-			token:    "ghp_test123",
-			expected: "https://x-access-token:ghp_test123@github.com/owner/repo",
-		},
-		{
-			name:     "No token returns URL unchanged",
-			url:      "https://github.com/owner/repo.git",
-			token:    "",
-			expected: "https://github.com/owner/repo.git",
-		},
-		{
-			name:     "Non-GitHub URL unchanged even with token",
-			url:      "https://gitea.local/owner/repo.git",
-			token:    "ghp_test123",
-			expected: "https://gitea.local/owner/repo.git",
-		},
-		{
-			name:     "SSH URL unchanged",
-			url:      "git@github.com:owner/repo.git",
-			token:    "ghp_test123",
-			expected: "git@github.com:owner/repo.git",
-		},
-	}
+func TestGitAuthEnv(t *testing.T) {
+	t.Run("with token sets credential helper", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "ghp_test123")
+		env := gitAuthEnv()
+		envMap := make(map[string]string)
+		for _, e := range env {
+			if k, v, ok := strings.Cut(e, "="); ok {
+				envMap[k] = v
+			}
+		}
+		if envMap["GIT_TERMINAL_PROMPT"] != "0" {
+			t.Error("Expected GIT_TERMINAL_PROMPT=0")
+		}
+		if envMap["GIT_CONFIG_COUNT"] != "1" {
+			t.Error("Expected GIT_CONFIG_COUNT=1")
+		}
+		if envMap["GIT_CONFIG_KEY_0"] != "credential.helper" {
+			t.Error("Expected GIT_CONFIG_KEY_0=credential.helper")
+		}
+		val := envMap["GIT_CONFIG_VALUE_0"]
+		if !strings.Contains(val, "x-access-token") || !strings.Contains(val, "ghp_test123") {
+			t.Errorf("Expected credential helper with token, got: %s", val)
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set GITHUB_TOKEN for this test
-			if tt.token != "" {
-				t.Setenv("GITHUB_TOKEN", tt.token)
-			} else {
-				t.Setenv("GITHUB_TOKEN", "")
+	t.Run("without token only sets terminal prompt", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "")
+		env := gitAuthEnv()
+		for _, e := range env {
+			if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") {
+				t.Error("Should not set GIT_CONFIG_COUNT without token")
 			}
-			result := authenticateURL(tt.url)
-			if result != tt.expected {
-				t.Errorf("authenticateURL(%q) = %q, want %q", tt.url, result, tt.expected)
+		}
+		found := false
+		for _, e := range env {
+			if e == "GIT_TERMINAL_PROMPT=0" {
+				found = true
 			}
-		})
-	}
+		}
+		if !found {
+			t.Error("Expected GIT_TERMINAL_PROMPT=0")
+		}
+	})
 }
 
 // initBareRepo creates a bare git repo at the given path for testing.
