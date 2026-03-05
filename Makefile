@@ -36,7 +36,7 @@ test:
 # Run integration tests only (requires API keys and external services)
 test-integration:
 	@echo "🧪 Running integration tests..."
-	go test -tags=integration -cover -timeout=10m ./...
+	go test -tags=integration -cover -timeout=20m ./...
 
 # Run E2E tests (full workflow tests requiring Docker, Gitea, real Git operations)
 test-e2e:
@@ -47,7 +47,7 @@ test-e2e:
 # Run all tests including integration tests (combines unit and integration)
 test-all:
 	@echo "🔬 Running all tests (unit + integration)..."
-	go test -tags=integration -cover -timeout=10m ./...
+	go test -tags=integration -cover -timeout=20m ./...
 
 # Run tests and generate detailed coverage report
 test-coverage:

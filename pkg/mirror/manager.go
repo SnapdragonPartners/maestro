@@ -339,6 +339,26 @@ func (m *Manager) updateDefaultBranch(ctx context.Context, mirrorPath string) er
 	return nil
 }
 
+// gitAuthEnv returns environment variables that configure git authentication
+// via a credential helper, plus GIT_TERMINAL_PROMPT=0 to prevent interactive prompts.
+// The token is passed through the environment rather than embedded in URLs,
+// keeping it out of git remote configs and command arguments.
+func gitAuthEnv() []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	token := config.GetGitHubToken()
+	if token == "" {
+		return env
+	}
+	// Configure a one-shot credential helper via environment.
+	// GIT_CONFIG_COUNT/KEY/VALUE override git config without touching files.
+	helper := fmt.Sprintf("!printf 'username=x-access-token\\npassword=%s\\n'", token)
+	return append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0="+helper,
+	)
+}
+
 // extractRepoName extracts the repository name from a git URL.
 func extractRepoName(repoURL string) string {
 	// Remove .git suffix if present
@@ -395,6 +415,7 @@ func (m *Manager) validateMirror(ctx context.Context, mirrorPath string) error {
 // cloneGitMirror creates a bare git mirror clone of the repository.
 func cloneGitMirror(ctx context.Context, repoURL, mirrorPath string) error {
 	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", repoURL, mirrorPath)
+	cmd.Env = gitAuthEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone --mirror failed: %w\nOutput: %s", err, string(output))
@@ -406,6 +427,7 @@ func cloneGitMirror(ctx context.Context, repoURL, mirrorPath string) error {
 func updateGitMirror(ctx context.Context, mirrorPath string) error {
 	cmd := exec.CommandContext(ctx, "git", "remote", "update")
 	cmd.Dir = mirrorPath
+	cmd.Env = gitAuthEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
@@ -536,6 +558,7 @@ For more information about Maestro, visit: https://github.com/anthropics/maestro
 
 	pushCmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", defaultBranch)
 	pushCmd.Dir = tempDir
+	pushCmd.Env = gitAuthEnv()
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push failed (check GITHUB_TOKEN): %w\nOutput: %s", err, string(output))
 	}
@@ -721,6 +744,7 @@ func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string
 	m.logger.Debug("Pushing MAESTRO.md update to %s", repoURL)
 	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", branch)
 	pushCmd.Dir = tempDir
+	pushCmd.Env = gitAuthEnv()
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push failed: %w\nOutput: %s", err, string(output))
 	}

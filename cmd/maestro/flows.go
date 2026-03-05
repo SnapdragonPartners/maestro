@@ -7,10 +7,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"syscall"
 	"time"
-
-	"golang.org/x/term"
 
 	"orchestrator/internal/kernel"
 	"orchestrator/internal/orch"
@@ -546,8 +543,6 @@ func generateSecurePassword(length int) (string, error) {
 
 // handleSecretsDecryption checks for secrets file and decrypts it if present.
 // Returns error only on fatal issues. Gracefully handles missing file or wrong password.
-//
-//nolint:cyclop // Complex logic for user interaction flow - extracting helpers would reduce readability
 func handleSecretsDecryption(projectDir string) error {
 	// Check if secrets file exists
 	if !config.SecretsFileExists(projectDir) {
@@ -557,96 +552,27 @@ func handleSecretsDecryption(projectDir string) error {
 
 	config.LogInfo("📋 Loading project from %s", projectDir)
 
-	// Try to get password from MAESTRO_PASSWORD env var first
+	// Password must be provided via MAESTRO_PASSWORD env var (no interactive prompts)
 	password := os.Getenv("MAESTRO_PASSWORD")
-
-	maxAttempts := 3
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// If no env var, prompt user
-		if password == "" {
-			var err error
-			password, err = promptForSecretsPassword()
-			if err != nil {
-				return fmt.Errorf("failed to read password: %w", err)
-			}
-		}
-
-		// Try to decrypt
-		secrets, err := config.DecryptSecretsFile(projectDir, password)
-		if err != nil {
-			if attempt < maxAttempts {
-				// Wrong password - offer retry or delete
-				if promptRetryOrDelete() {
-					return deleteSecretsFile(projectDir)
-				}
-
-				// Retry - clear password for next prompt
-				password = ""
-				continue
-			}
-
-			// Max attempts reached - delete file
-			fmt.Println("⚠️  Maximum password attempts reached.")
-			return deleteSecretsFile(projectDir)
-		}
-
-		// Success! Store secrets and password in memory
-		// DecryptSecretsFile returns *StructuredSecrets (handles legacy flat format migration)
-		config.SetDecryptedSecrets(secrets)
-		config.SetProjectPassword(password)
-		config.LogInfo("✅ Credentials decrypted successfully")
-
-		// Display WebUI info if WebUI is enabled
-		displayWebUIInfo()
-
-		return nil
+	if password == "" {
+		return fmt.Errorf("secrets file exists at %s/.maestro/secrets.json.enc but MAESTRO_PASSWORD environment variable is not set", projectDir)
 	}
 
-	return nil
-}
-
-// promptForSecretsPassword prompts user for secrets password.
-func promptForSecretsPassword() (string, error) {
-	fmt.Print("Enter Maestro password: ")
-	passwordBytes, err := term.ReadPassword(syscall.Stdin)
-	fmt.Println() // New line after password input
+	// Try to decrypt
+	secrets, err := config.DecryptSecretsFile(projectDir, password)
 	if err != nil {
-		return "", fmt.Errorf("failed to read password: %w", err)
+		return fmt.Errorf("failed to decrypt secrets file (check MAESTRO_PASSWORD): %w", err)
 	}
 
-	password := string(passwordBytes)
+	// Success! Store secrets and password in memory
+	// DecryptSecretsFile returns *StructuredSecrets (handles legacy flat format migration)
+	config.SetDecryptedSecrets(secrets)
+	config.SetProjectPassword(password)
+	config.LogInfo("✅ Credentials decrypted successfully")
 
-	// Clear password bytes from memory
-	for i := range passwordBytes {
-		passwordBytes[i] = 0
-	}
+	// Display WebUI info if WebUI is enabled
+	displayWebUIInfo()
 
-	return password, nil
-}
-
-// promptRetryOrDelete asks user if they want to retry or delete secrets file.
-func promptRetryOrDelete() (shouldDelete bool) {
-	fmt.Println("⚠️  Unable to decrypt secrets file with specified password.")
-	fmt.Println()
-	fmt.Print("Do you want to (R)etry or (D)elete the secrets file and restart? [R/d]: ")
-
-	var choice string
-	if _, err := fmt.Scanln(&choice); err != nil {
-		// Treat scan error as "retry" (safer default)
-		return false
-	}
-
-	return choice == "d" || choice == "D"
-}
-
-// deleteSecretsFile removes the secrets file and returns nil.
-func deleteSecretsFile(projectDir string) error {
-	secretsPath := projectDir + "/.maestro/secrets.json.enc"
-	if err := os.Remove(secretsPath); err != nil {
-		return fmt.Errorf("failed to delete secrets file: %w", err)
-	}
-	fmt.Println("⚠️  Deleting .maestro/secrets.json.enc...")
-	fmt.Println("✅ Secrets file removed. Attempting to continue with environment variables...")
 	return nil
 }
 

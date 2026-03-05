@@ -84,6 +84,51 @@ func TestMirrorExists_NonExistentPath(t *testing.T) {
 	}
 }
 
+func TestGitAuthEnv(t *testing.T) {
+	t.Run("with token sets credential helper", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "ghp_test123")
+		env := gitAuthEnv()
+		envMap := make(map[string]string)
+		for _, e := range env {
+			if k, v, ok := strings.Cut(e, "="); ok {
+				envMap[k] = v
+			}
+		}
+		if envMap["GIT_TERMINAL_PROMPT"] != "0" {
+			t.Error("Expected GIT_TERMINAL_PROMPT=0")
+		}
+		if envMap["GIT_CONFIG_COUNT"] != "1" {
+			t.Error("Expected GIT_CONFIG_COUNT=1")
+		}
+		if envMap["GIT_CONFIG_KEY_0"] != "credential.helper" {
+			t.Error("Expected GIT_CONFIG_KEY_0=credential.helper")
+		}
+		val := envMap["GIT_CONFIG_VALUE_0"]
+		if !strings.Contains(val, "x-access-token") || !strings.Contains(val, "ghp_test123") {
+			t.Errorf("Expected credential helper with token, got: %s", val)
+		}
+	})
+
+	t.Run("without token only sets terminal prompt", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "")
+		env := gitAuthEnv()
+		for _, e := range env {
+			if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") {
+				t.Error("Should not set GIT_CONFIG_COUNT without token")
+			}
+		}
+		found := false
+		for _, e := range env {
+			if e == "GIT_TERMINAL_PROMPT=0" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("Expected GIT_TERMINAL_PROMPT=0")
+		}
+	})
+}
+
 // initBareRepo creates a bare git repo at the given path for testing.
 func initBareRepo(t *testing.T, path string) {
 	t.Helper()
