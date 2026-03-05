@@ -115,7 +115,7 @@ func (p *PMExecutor) Start(ctx context.Context) error {
 		// Mount PM workspace at /workspace (read-only, same as coders)
 		"--volume", fmt.Sprintf("%s:/workspace:ro", absWorkspace),
 		// Tmpfs mounts for temporary files
-		"--tmpfs", "/tmp:exec,nodev,nosuid,size=1g",
+		"--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()),
 		"--tmpfs", "/home:exec,nodev,nosuid,size=100m",
 		"--tmpfs", "/.cache:exec,nodev,nosuid,size=100m",
 		"--env", "HOME=/tmp",

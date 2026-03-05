@@ -428,7 +428,7 @@ const (
 
 	// Docker container runtime defaults (applied when not specified in config).
 	DefaultDockerNetwork = "bridge"    // Enable networking (required for git operations)
-	DefaultTmpfsSize     = "1g"        // Temporary filesystem size for /tmp
+	DefaultTmpfsSize     = "4g"        // Temporary filesystem size for /tmp
 	DefaultDockerCPUs    = "2"         // CPU limit for container execution
 	DefaultDockerMemory  = "2g"        // Memory limit for container execution
 	DefaultDockerPIDs    = int64(1024) // Process limit for container execution
