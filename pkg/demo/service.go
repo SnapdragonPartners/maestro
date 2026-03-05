@@ -170,7 +170,12 @@ func (s *Service) Start(ctx context.Context) error {
 	s.cancelMu.Lock()
 	s.startCancel = startCancel
 	s.cancelMu.Unlock()
-	defer startCancel()
+	defer func() {
+		startCancel()
+		s.cancelMu.Lock()
+		s.startCancel = nil
+		s.cancelMu.Unlock()
+	}()
 
 	ctx = startCtx
 
@@ -582,14 +587,24 @@ func (s *Service) runPortDiscoveryWithNetwork(ctx context.Context, imageID, buil
 	// If a reachable port is found, WaitForListeners returns immediately.
 	ports, err := portDetector.WaitForListeners(pollCtx, 1*time.Second)
 	if err != nil {
-		// Check if container crashed (either detected by goroutine or by timeout)
+		// Check if container crashed (either detected by the liveness goroutine or by context cancellation)
 		containerStatus := s.getContainerStatus(ctx)
 		if containerStatus.Status != containerStatusRunning {
 			logs := s.fetchContainerLogs(ctx)
 			return &DiagnosticResult{
-				ErrorType: DiagnosticContainerExited,
-				Error:     fmt.Sprintf("Container exited (%s). Last logs:\n%s", containerStatus.Status, truncateLogs(logs, 50)),
+				ErrorType:     DiagnosticContainerExited,
+				DetectedPorts: ports,
+				Error:         fmt.Sprintf("Container exited (%s). Last logs:\n%s", containerStatus.Status, truncateLogs(logs, 50)),
 			}
+		}
+		// Container still running — use any detected ports for diagnostics
+		if len(ports) > 0 {
+			diagnostic := BuildDiagnostic(ports, SelectMainPort(s.config.Demo, ports, nil), 0, nil)
+			logs := s.fetchContainerLogs(ctx)
+			if tailLogs := truncateLogs(logs, 50); tailLogs != "" {
+				diagnostic.Error += fmt.Sprintf("\n\nContainer logs:\n%s", tailLogs)
+			}
+			return &diagnostic
 		}
 		return &DiagnosticResult{
 			ErrorType: DiagnosticNoListeners,

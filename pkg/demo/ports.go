@@ -99,11 +99,9 @@ func (pd *PortDetector) WaitForListeners(ctx context.Context, pollInterval time.
 		select {
 		case <-ctx.Done():
 			pd.logf("   [port-discovery] context cancelled after %d polls", pollCount)
-			// Context cancelled — return whatever we found so caller can diagnose.
-			if len(lastPorts) > 0 {
-				return lastPorts, nil
-			}
-			return nil, fmt.Errorf("context cancelled while waiting for listeners: %w", ctx.Err())
+			// Always return an error on cancellation so callers can distinguish
+			// cancellation from success. Return lastPorts too for diagnostics.
+			return lastPorts, fmt.Errorf("context cancelled while waiting for listeners: %w", ctx.Err())
 		case <-time.After(pollInterval):
 			// Continue polling
 		}

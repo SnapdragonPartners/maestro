@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"orchestrator/pkg/config"
@@ -138,14 +139,27 @@ func TestHandleSecretsList_WarningWhenNoEnvVar(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// Warning should be present when MAESTRO_PASSWORD env var is not set
-	// (test environment typically doesn't have it)
-	if resp.Warning == "" {
-		t.Log("MAESTRO_PASSWORD is set in env - warning correctly absent")
-	} else {
-		if resp.Warning == "" {
-			t.Error("expected warning when MAESTRO_PASSWORD is not set")
+	// Warning should be present when MAESTRO_PASSWORD env var is not set.
+	// Control the env var explicitly to make the test deterministic.
+	prevPassword := os.Getenv("MAESTRO_PASSWORD")
+	os.Unsetenv("MAESTRO_PASSWORD")
+	defer func() {
+		if prevPassword != "" {
+			os.Setenv("MAESTRO_PASSWORD", prevPassword)
 		}
+	}()
+
+	// Re-request with env var cleared
+	req = httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
+	w = httptest.NewRecorder()
+	server.handleSecretsList(w, req)
+
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Warning == "" {
+		t.Error("expected warning when MAESTRO_PASSWORD is not set")
 	}
 }
 
