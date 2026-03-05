@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -60,6 +61,9 @@ type Server struct {
 	llmFactory  *agent.LLMClientFactory
 	logger      *logx.Logger
 	templates   *template.Template
+	// Setup mode: gate startup until API keys are configured
+	setupReady chan struct{} // signaled when all keys present
+	setupMode  atomic.Int32  // 1 = setup mode active
 }
 
 // AgentListItem represents an agent in the list response.
@@ -86,6 +90,7 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 		templates:   templates,
 		chatService: chatService,
 		llmFactory:  llmFactory,
+		setupReady:  make(chan struct{}, 1),
 	}
 }
 
@@ -141,7 +146,13 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // RegisterRoutes sets up HTTP routes for the API.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Web UI routes - protected by basic auth.
-	mux.HandleFunc("/", s.requireAuth(s.handleDashboard))
+	// Dashboard is wrapped with setup mode redirect middleware.
+	mux.HandleFunc("/", s.requireAuth(s.setupModeRedirect(s.handleDashboard)))
+
+	// Setup mode routes
+	mux.HandleFunc("/setup", s.requireAuth(s.handleSetupPage))
+	mux.HandleFunc("/api/setup/status", s.requireAuth(s.handleSetupStatus))
+	mux.HandleFunc("/api/setup/recheck", s.requireAuth(s.handleSetupRecheck))
 
 	// Serve static files from embedded filesystem - protected by basic auth
 	staticSubFS, err := fs.Sub(staticFS, "web/static")

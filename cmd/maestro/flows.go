@@ -68,6 +68,13 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 		fmt.Printf("🌐 WebUI: %s://%s:%d\n", protocol, k.Config.WebUI.Host, k.Config.WebUI.Port)
 	}
 
+	// Wait for API keys to be configured (if WebUI is active, shows setup page)
+	if f.webUI {
+		if err := k.WebServer.WaitForSetup(ctx, k.Config); err != nil {
+			return fmt.Errorf("setup cancelled: %w", err)
+		}
+	}
+
 	// Create supervisor for agent lifecycle management (creates its own factory)
 	supervisor := supervisor.NewSupervisor(k)
 
@@ -191,6 +198,13 @@ func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 			protocol = protocolHTTPS
 		}
 		fmt.Printf("🌐 WebUI: %s://%s:%d\n", protocol, k.Config.WebUI.Host, k.Config.WebUI.Port)
+	}
+
+	// Wait for API keys to be configured (if WebUI is active, shows setup page)
+	if f.webUI {
+		if err := k.WebServer.WaitForSetup(ctx, k.Config); err != nil {
+			return fmt.Errorf("setup cancelled: %w", err)
+		}
 	}
 
 	// Create supervisor for agent lifecycle management (creates its own factory)
