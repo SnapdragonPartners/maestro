@@ -84,6 +84,61 @@ func TestMirrorExists_NonExistentPath(t *testing.T) {
 	}
 }
 
+func TestAuthenticateURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		token    string
+		expected string
+	}{
+		{
+			name:     "HTTPS GitHub URL with token",
+			url:      "https://github.com/owner/repo.git",
+			token:    "ghp_test123",
+			expected: "https://x-access-token:ghp_test123@github.com/owner/repo.git",
+		},
+		{
+			name:     "HTTPS GitHub URL without .git",
+			url:      "https://github.com/owner/repo",
+			token:    "ghp_test123",
+			expected: "https://x-access-token:ghp_test123@github.com/owner/repo",
+		},
+		{
+			name:     "No token returns URL unchanged",
+			url:      "https://github.com/owner/repo.git",
+			token:    "",
+			expected: "https://github.com/owner/repo.git",
+		},
+		{
+			name:     "Non-GitHub URL unchanged even with token",
+			url:      "https://gitea.local/owner/repo.git",
+			token:    "ghp_test123",
+			expected: "https://gitea.local/owner/repo.git",
+		},
+		{
+			name:     "SSH URL unchanged",
+			url:      "git@github.com:owner/repo.git",
+			token:    "ghp_test123",
+			expected: "git@github.com:owner/repo.git",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Set GITHUB_TOKEN for this test
+			if tt.token != "" {
+				t.Setenv("GITHUB_TOKEN", tt.token)
+			} else {
+				t.Setenv("GITHUB_TOKEN", "")
+			}
+			result := authenticateURL(tt.url)
+			if result != tt.expected {
+				t.Errorf("authenticateURL(%q) = %q, want %q", tt.url, result, tt.expected)
+			}
+		})
+	}
+}
+
 // initBareRepo creates a bare git repo at the given path for testing.
 func initBareRepo(t *testing.T, path string) {
 	t.Helper()

@@ -135,10 +135,12 @@ func (m *Manager) ensureRemoteURL(ctx context.Context, mirrorPath, targetURL str
 	checkCmd.Dir = mirrorPath
 	output, err := checkCmd.CombinedOutput()
 
+	authURL := authenticateURL(targetURL)
+
 	if err != nil {
 		// Remote doesn't exist — add it
 		m.logger.Debug("Origin remote missing, adding with URL %s", targetURL)
-		addCmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", targetURL)
+		addCmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", authURL)
 		addCmd.Dir = mirrorPath
 		if addOutput, addErr := addCmd.CombinedOutput(); addErr != nil {
 			return fmt.Errorf("git remote add origin failed: %w\nOutput: %s", addErr, string(addOutput))
@@ -146,11 +148,12 @@ func (m *Manager) ensureRemoteURL(ctx context.Context, mirrorPath, targetURL str
 		return nil
 	}
 
-	// Remote exists — check if URL matches
+	// Remote exists — check if URL matches (compare against both raw and authenticated URLs
+	// since the stored remote may already have a token from a previous run)
 	currentURL := strings.TrimSpace(string(output))
-	if currentURL != targetURL {
+	if currentURL != authURL {
 		m.logger.Debug("Updating remote URL from %s to %s", currentURL, targetURL)
-		setCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", targetURL)
+		setCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", authURL)
 		setCmd.Dir = mirrorPath
 		if setOutput, setErr := setCmd.CombinedOutput(); setErr != nil {
 			return fmt.Errorf("git remote set-url failed: %w\nOutput: %s", setErr, string(setOutput))
@@ -339,6 +342,21 @@ func (m *Manager) updateDefaultBranch(ctx context.Context, mirrorPath string) er
 	return nil
 }
 
+// authenticateURL injects a GitHub token into an HTTPS URL if available.
+// Converts https://github.com/owner/repo.git to https://x-access-token:<token>@github.com/owner/repo.git.
+// Returns the URL unchanged if no token is available or the URL is not HTTPS GitHub.
+func authenticateURL(rawURL string) string {
+	token := config.GetGitHubToken()
+	if token == "" {
+		return rawURL
+	}
+	const prefix = "https://github.com/"
+	if !strings.HasPrefix(rawURL, prefix) {
+		return rawURL
+	}
+	return "https://x-access-token:" + token + "@github.com/" + strings.TrimPrefix(rawURL, prefix)
+}
+
 // extractRepoName extracts the repository name from a git URL.
 func extractRepoName(repoURL string) string {
 	// Remove .git suffix if present
@@ -394,7 +412,9 @@ func (m *Manager) validateMirror(ctx context.Context, mirrorPath string) error {
 
 // cloneGitMirror creates a bare git mirror clone of the repository.
 func cloneGitMirror(ctx context.Context, repoURL, mirrorPath string) error {
-	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", repoURL, mirrorPath)
+	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", authenticateURL(repoURL), mirrorPath)
+	// Prevent git from prompting for credentials interactively (fail fast instead of hanging)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone --mirror failed: %w\nOutput: %s", err, string(output))
@@ -406,6 +426,7 @@ func cloneGitMirror(ctx context.Context, repoURL, mirrorPath string) error {
 func updateGitMirror(ctx context.Context, mirrorPath string) error {
 	cmd := exec.CommandContext(ctx, "git", "remote", "update")
 	cmd.Dir = mirrorPath
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
@@ -528,7 +549,7 @@ For more information about Maestro, visit: https://github.com/anthropics/maestro
 
 	// Add remote and push to GitHub
 	m.logger.Debug("Pushing to GitHub: %s", repoURL)
-	remoteCmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", repoURL)
+	remoteCmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", authenticateURL(repoURL))
 	remoteCmd.Dir = tempDir
 	if output, err := remoteCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git remote add failed: %w\nOutput: %s", err, string(output))
@@ -676,7 +697,7 @@ func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string
 
 	// Set remote to actual upstream for push (clone from mirror sets origin to local path)
 	// This works with both GitHub and Gitea (airplane mode)
-	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", repoURL)
+	setRemoteCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", authenticateURL(repoURL))
 	setRemoteCmd.Dir = tempDir
 	if output, err := setRemoteCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git remote set-url failed: %w\nOutput: %s", err, string(output))
