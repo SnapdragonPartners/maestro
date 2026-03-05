@@ -22,6 +22,7 @@ func getPortPreferenceOrder() []int {
 // PortDetector handles detection of listening ports inside containers.
 type PortDetector struct {
 	commandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
+	logFunc       func(format string, args ...any)
 	containerName string
 }
 
@@ -29,6 +30,18 @@ type PortDetector struct {
 func NewPortDetector(containerName string) *PortDetector {
 	return &PortDetector{
 		containerName: containerName,
+	}
+}
+
+// SetLogFunc sets a logging function for debug output during port detection.
+func (pd *PortDetector) SetLogFunc(f func(format string, args ...any)) {
+	pd.logFunc = f
+}
+
+// logf logs if a log function is set.
+func (pd *PortDetector) logf(format string, args ...any) {
+	if pd.logFunc != nil {
+		pd.logFunc(format, args...)
 	}
 }
 
@@ -49,41 +62,50 @@ func (pd *PortDetector) DetectListeners(ctx context.Context) ([]config.PortInfo,
 	return pd.parseProcNetTCP(output), nil
 }
 
-// WaitForListeners polls for TCP listeners until at least one reachable port is found or timeout.
+// WaitForListeners polls for TCP listeners until at least one reachable port is found
+// or the context is cancelled. There is no arbitrary timeout — the caller controls
+// termination via context (e.g., container liveness monitor, user stop).
 // Returns all detected ports once at least one is reachable (bound to 0.0.0.0 or ::, not loopback).
-func (pd *PortDetector) WaitForListeners(ctx context.Context, timeout, pollInterval time.Duration) ([]config.PortInfo, error) {
-	deadline := time.Now().Add(timeout)
+func (pd *PortDetector) WaitForListeners(ctx context.Context, pollInterval time.Duration) ([]config.PortInfo, error) {
 	var lastPorts []config.PortInfo
 
-	for time.Now().Before(deadline) {
+	pollCount := 0
+	for {
+		pollCount++
 		ports, err := pd.DetectListeners(ctx)
-		if err == nil && len(ports) > 0 {
+		if err != nil {
+			pd.logf("   [port-discovery] poll #%d: DetectListeners error: %v", pollCount, err)
+		} else if len(ports) > 0 {
 			lastPorts = ports
+			// Log what we found
+			for i := range ports {
+				pd.logf("   [port-discovery] poll #%d: found %s:%d (reachable=%v)",
+					pollCount, ports[i].BindAddress, ports[i].Port, ports[i].Reachable)
+			}
 			// Check if we have at least one reachable port (not bound to loopback).
 			// Docker containers often have internal services on loopback (e.g., DNS on 127.0.0.11).
 			// We need to wait for the actual app to start on 0.0.0.0 or ::.
 			for i := range ports {
 				if ports[i].Reachable {
+					pd.logf("   [port-discovery] poll #%d: reachable port found, returning", pollCount)
 					return ports, nil
 				}
 			}
 			// Found ports but all are loopback - keep polling in case app starts
+		} else {
+			pd.logf("   [port-discovery] poll #%d: no ports detected", pollCount)
 		}
 
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("context cancelled while waiting for listeners: %w", ctx.Err())
+			pd.logf("   [port-discovery] context cancelled after %d polls", pollCount)
+			// Always return an error on cancellation so callers can distinguish
+			// cancellation from success. Return lastPorts too for diagnostics.
+			return lastPorts, fmt.Errorf("context cancelled while waiting for listeners: %w", ctx.Err())
 		case <-time.After(pollInterval):
 			// Continue polling
 		}
 	}
-
-	// On timeout, return whatever we found (even if loopback-only).
-	// This allows BuildDiagnostic to provide appropriate error message.
-	if len(lastPorts) > 0 {
-		return lastPorts, nil
-	}
-	return nil, fmt.Errorf("no TCP listeners detected after %v", timeout)
 }
 
 // execInContainer runs a command inside the container.

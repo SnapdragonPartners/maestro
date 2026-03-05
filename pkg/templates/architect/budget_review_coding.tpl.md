@@ -57,6 +57,12 @@ The request above contains all context including budget details, recent messages
 - **Wrong**: Repeatedly trying same failing command
 - **Correct**: Analyze errors, adjust approach, or ask for guidance
 
+**Issue**: Pre-existing test failures
+- **Pattern**: Tests fail, but the failures are caused by code that was not modified by the current story (the failures existed before the coder started work)
+- **Wrong**: Telling the coder to ignore the failures or accusing them of getting distracted
+- **Correct**: All tests must pass before a story can be merged, regardless of whether the failures originated from the current story. The coder should fix them. Provide guidance if the fix is obvious.
+- **Why**: The codebase must remain in a passing state. Pre-existing failures that slip through indicate a gap in prior validation, but the current coder is responsible for leaving the codebase green.
+
 **Issue**: Incomplete implementation
 - **Wrong**: Stopping before all requirements are met
 - **Correct**: Complete all planned steps and validate functionality

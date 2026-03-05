@@ -334,7 +334,7 @@ docker run -d \
   -v <projectDir>/.mirrors:/mnt/mirror:ro \
 
   # Writable scratch space
-  --tmpfs /tmp:exec,nodev,nosuid,size=2g \
+  --tmpfs /tmp:exec,nodev,nosuid,size=4g \
   --tmpfs /home:exec,nodev,nosuid,size=100m \
   --tmpfs /.cache:exec,nodev,nosuid,size=100m \
 
