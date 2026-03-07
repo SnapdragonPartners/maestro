@@ -54,7 +54,9 @@ func (s *Server) handleSecretsList(w http.ResponseWriter, r *http.Request) {
 		"secrets": entries,
 	}
 	if os.Getenv("MAESTRO_PASSWORD") == "" {
-		response["warning"] = "MAESTRO_PASSWORD env var is not set. Save your generated password or secrets will be lost on restart."
+		response["warning"] = "Secrets are encrypted with your WebUI login password. " +
+			"If you lose this password, secrets cannot be recovered. " +
+			"Set MAESTRO_PASSWORD env var to use a persistent password."
 	}
 
 	w.Header().Set("Content-Type", "application/json")
