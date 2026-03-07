@@ -244,7 +244,9 @@ See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
 > **Option C: Direct download**
 > Download the binary for your platform from [releases](https://github.com/SnapdragonPartners/maestro/releases) and install it somewhere in your path.
 >
-> **Step 2:** Export your API keys as environment variables for the models you want to use and Github.
+> **Step 2:** Provide your API keys for the models you want to use and GitHub. You have two options:
+>
+> **Option A: Environment variables** (traditional)
 ```bash
 export OPENAI_API_KEY=sk-...
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -258,6 +260,10 @@ export OLLAMA_HOST=http://localhost:11434
 export GOOGLE_SEARCH_API_KEY=AIza...
 export GOOGLE_SEARCH_CX=...  # Your Custom Search Engine ID
 ```
+>
+> **Option B: Configure via Web UI** (easier)
+>
+> Skip this step entirely and just run Maestro. If any required API keys are missing, Maestro will automatically open a setup page in the Web UI where you can paste your keys into a browser form. Keys are encrypted and stored locally.
 
 > **Step 3:** Create a project directory  (projectdir) and switch to it.
 ```bash
@@ -269,6 +275,7 @@ mkdir myproject && cd myproject
 ```bash
 maestro
 ```
+> If any required API keys are missing, Maestro will launch in **setup mode** — open the Web UI (default [http://localhost:8080](http://localhost:8080)) and follow the prompts to enter your keys. Once all keys are configured, Maestro continues startup automatically.
 
 > **Step 5:** Open the web UI at [http://localhost:8080](http://localhost:8080) (you can change this in the config file.)
 > - Work with the PM to bootstrap your project by uploading a pre-existing spec or starting a PM interview to generate a specification
