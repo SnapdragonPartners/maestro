@@ -276,6 +276,8 @@ mkdir myproject && cd myproject
 maestro
 ```
 > If any required API keys are missing, Maestro will launch in **setup mode** — open the Web UI (default [http://localhost:8080](http://localhost:8080)) and follow the prompts to enter your keys. Once all keys are configured, Maestro continues startup automatically.
+>
+> **Important:** When Maestro generates a password, it is used for both WebUI login and secrets encryption. Record it somewhere safe — if lost, any secrets stored through the WebUI cannot be recovered. To use your own persistent password, set the `MAESTRO_PASSWORD` environment variable before running Maestro.
 
 > **Step 5:** Open the web UI at [http://localhost:8080](http://localhost:8080) (you can change this in the config file.)
 > - Work with the PM to bootstrap your project by uploading a pre-existing spec or starting a PM interview to generate a specification

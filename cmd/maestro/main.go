@@ -102,17 +102,13 @@ func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMo
 		return 1
 	}
 
-	// Ensure a password is available before secrets decryption.
-	// On first run this generates a password; on restart it checks MAESTRO_PASSWORD.
-	// Must run before handleSecretsDecryption so the password is available for
-	// both decrypting existing secrets and encrypting new ones via WebUI.
-	ensureWebUIPassword()
+	// Establish password: from env var, verifier file (deferred to WebUI login), or generate new.
+	// Must run before secrets decryption so the password is available for encryption/decryption.
+	ensureWebUIPassword(projectDir)
 
-	// Handle secrets file decryption if present (loads credentials into memory)
-	if err := handleSecretsDecryption(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to handle secrets: %v\n", err)
-		return 1
-	}
+	// Decrypt secrets if password is already available (env var or first-run generation).
+	// If password is pending WebUI login, secrets are decrypted lazily in the auth middleware.
+	handleSecretsDecryptionIfReady(projectDir)
 
 	// Check for resume mode
 	if continueMode {

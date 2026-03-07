@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -64,6 +65,9 @@ type Server struct {
 	// Setup mode: gate startup until API keys are configured
 	setupReady chan struct{} // signaled when all keys present
 	setupMode  atomic.Int32  // 1 = setup mode active
+	// Password recovery: verify Basic Auth against verifier file when no password in memory
+	passwordRecovered atomic.Bool
+	recoverMu         sync.Mutex
 }
 
 // AgentListItem represents an agent in the list response.
@@ -107,40 +111,109 @@ func (s *Server) SetDemoAvailabilityChecker(checker DemoAvailabilityChecker) {
 
 // requireAuth wraps an HTTP handler with Basic Authentication.
 // Username is always "maestro", password comes from unified password (secrets file or MAESTRO_PASSWORD env var).
+// When no password is in memory but a verifier file exists, the middleware verifies the
+// presented Basic Auth password against the verifier and recovers the password for the session.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Get password using unified password logic
-		expectedPassword := config.GetWebUIPassword()
-		if expectedPassword == "" {
-			// No password set - this should never happen as we generate one at startup
-			s.logger.Error("WebUI password not set - denying access")
-			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-
-		// Check Basic Auth credentials
+		// Check Basic Auth credentials are present
 		username, password, ok := r.BasicAuth()
 		if !ok {
-			// No credentials provided
 			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Validate credentials (constant-time comparison for password)
 		expectedUsername := "maestro"
-		if username != expectedUsername || password != expectedPassword {
-			// Invalid credentials
+		if username != expectedUsername {
 			s.logger.Warn("Failed authentication attempt from %s (username: %s)", r.RemoteAddr, username)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Credentials valid - proceed to handler
-		next(w, r)
+		// Fast path: password is already in memory
+		expectedPassword := config.GetWebUIPassword()
+		if expectedPassword != "" {
+			if password != expectedPassword {
+				s.logger.Warn("Failed authentication attempt from %s", r.RemoteAddr)
+				w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+			return
+		}
+
+		// Slow path: no password in memory, try to recover via verifier file
+		if config.PasswordVerifierExists(s.workDir) {
+			if s.tryRecoverPassword(password) {
+				next(w, r)
+				return
+			}
+			// Wrong password
+			s.logger.Warn("Failed password recovery attempt from %s", r.RemoteAddr)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// No password in memory and no verifier file — should not happen
+		s.logger.Error("WebUI password not set and no verifier file found")
+		w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+}
+
+// tryRecoverPassword verifies a password against the verifier file and, on success,
+// caches it in memory and decrypts the secrets file if present.
+// This runs at most once per process — after success, GetWebUIPassword() returns the
+// cached value and requireAuth uses the fast path.
+func (s *Server) tryRecoverPassword(password string) bool {
+	// Already recovered — shouldn't reach here, but guard anyway
+	if s.passwordRecovered.Load() {
+		return false
+	}
+
+	s.recoverMu.Lock()
+	defer s.recoverMu.Unlock()
+
+	// Double-check after acquiring lock
+	if s.passwordRecovered.Load() {
+		return false
+	}
+
+	ok, err := config.VerifyPassword(s.workDir, password)
+	if err != nil {
+		s.logger.Error("Password verification error: %v", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+
+	// Password verified — cache in memory
+	config.SetProjectPassword(password)
+
+	// Decrypt secrets if file exists
+	if config.SecretsFileExists(s.workDir) {
+		secrets, decryptErr := config.DecryptSecretsFile(s.workDir, password)
+		if decryptErr != nil {
+			s.logger.Error("Password verified but secrets decryption failed: %v", decryptErr)
+			// Still mark as recovered — password is valid, secrets may be corrupt
+		} else {
+			config.SetDecryptedSecrets(secrets)
+			s.logger.Info("Password recovered via WebUI login. Secrets decrypted.")
+		}
+	} else {
+		s.logger.Info("Password recovered via WebUI login. No secrets file to decrypt.")
+	}
+
+	s.passwordRecovered.Store(true)
+
+	// Signal setup mode in case API keys are now available from decrypted secrets
+	s.notifySetupIfReady()
+
+	return true
 }
 
 // RegisterRoutes sets up HTTP routes for the API.

@@ -19,6 +19,17 @@
             <p class="mt-2 text-gray-600">Configure your API keys to get started. Keys are encrypted and stored locally.</p>
         </div>
 
+        <!-- Password Warning -->
+        <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+            <p class="text-sm text-amber-800 font-medium">Important: Record Your Password</p>
+            <p class="text-sm text-amber-700 mt-1">
+                Your WebUI login password is also used to encrypt secrets stored by Maestro.
+                If you lose this password, stored secrets cannot be recovered.
+                You can avoid this by setting the <code class="bg-amber-100 px-1 rounded">MAESTRO_PASSWORD</code>
+                environment variable before starting Maestro.
+            </p>
+        </div>
+
         <!-- Required Keys Card -->
         <div class="bg-white shadow rounded-lg p-6 mb-6">
             <h2 class="text-lg font-semibold text-gray-800 mb-4">Required API Keys</h2>

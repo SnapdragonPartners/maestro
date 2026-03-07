@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -327,6 +328,138 @@ func TestFindArchitectStateNoArchitect(t *testing.T) {
 	_, err = server.findArchitectState()
 	if err == nil {
 		t.Error("Expected error when no architect registered, got nil")
+	}
+}
+
+func TestRequireAuthFastPath(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
+
+	// Set password in memory
+	config.SetProjectPassword("test-password")
+	defer config.SetProjectPassword("")
+
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Correct password
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", "test-password")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 for correct password, got %d", w.Code)
+	}
+
+	// Wrong password
+	req = httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", "wrong")
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for wrong password, got %d", w.Code)
+	}
+
+	// No credentials
+	req = httptest.NewRequest("GET", "/", nil)
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for no credentials, got %d", w.Code)
+	}
+
+	// Wrong username
+	req = httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("admin", "test-password")
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for wrong username, got %d", w.Code)
+	}
+}
+
+func TestRequireAuthVerifierRecovery(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	workDir := t.TempDir()
+	server := NewServer(dispatcher, workDir, nil, llmFactory)
+
+	// Create a verifier but do NOT set password in memory
+	password := "recovery-password"
+	if err := config.SavePasswordVerifier(workDir, password); err != nil {
+		t.Fatalf("Failed to save verifier: %v", err)
+	}
+
+	// Clear any in-memory password and temporarily unset env var
+	config.SetProjectPassword("")
+	if orig := os.Getenv("MAESTRO_PASSWORD"); orig != "" {
+		t.Setenv("MAESTRO_PASSWORD", "")
+	}
+
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Correct password should recover
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", password)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 for correct password via verifier recovery, got %d", w.Code)
+	}
+
+	// After recovery, password should be in memory
+	if config.GetWebUIPassword() == "" {
+		t.Error("Password should be cached in memory after recovery")
+	}
+
+	// Clean up
+	config.SetProjectPassword("")
+}
+
+func TestRequireAuthVerifierWrongPassword(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	workDir := t.TempDir()
+	server := NewServer(dispatcher, workDir, nil, llmFactory)
+
+	// Create a verifier but do NOT set password in memory
+	if err := config.SavePasswordVerifier(workDir, "correct-password"); err != nil {
+		t.Fatalf("Failed to save verifier: %v", err)
+	}
+	config.SetProjectPassword("")
+	if orig := os.Getenv("MAESTRO_PASSWORD"); orig != "" {
+		t.Setenv("MAESTRO_PASSWORD", "")
+	}
+
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Wrong password should fail
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", "wrong-password")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for wrong password via verifier, got %d", w.Code)
+	}
+
+	// Password should NOT be cached
+	if config.GetWebUIPassword() != "" {
+		t.Error("Password should not be cached after failed recovery")
 	}
 }
 
