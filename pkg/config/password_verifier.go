@@ -129,6 +129,14 @@ func VerifyPassword(projectDir, password string) (bool, error) {
 		return false, fmt.Errorf("failed to decode hash: %w", err)
 	}
 
+	// Validate decoded lengths to catch corrupted verifier files
+	if len(salt) != verifierSaltSize {
+		return false, fmt.Errorf("invalid salt length: got %d, expected %d", len(salt), verifierSaltSize)
+	}
+	if len(storedHash) != verifierKeyLen {
+		return false, fmt.Errorf("invalid hash length: got %d, expected %d", len(storedHash), verifierKeyLen)
+	}
+
 	// Re-derive using the same parameters
 	derived, err := scrypt.Key([]byte(password), salt, verifierN, verifierR, verifierP, verifierKeyLen)
 	if err != nil {

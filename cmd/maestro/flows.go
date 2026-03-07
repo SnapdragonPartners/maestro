@@ -476,20 +476,18 @@ func InjectSpec(dispatcher *dispatch.Dispatcher, source string, content []byte) 
 func ensureWebUIPassword(projectDir string) {
 	logger := config.LogInfo
 
-	// 1. MAESTRO_PASSWORD env var (highest precedence)
-	if config.GetWebUIPassword() != "" {
-		if config.GetProjectPassword() != "" {
-			logger("🔐 WebUI password loaded from project secrets")
-		} else {
-			config.SetProjectPassword(config.GetWebUIPassword())
-			logger("🔐 WebUI password loaded from MAESTRO_PASSWORD environment variable")
-		}
+	// 1. Password already available (MAESTRO_PASSWORD env var or previously decrypted secrets)
+	if envPw := os.Getenv("MAESTRO_PASSWORD"); envPw != "" {
+		config.SetProjectPassword(envPw)
+		logger("🔐 WebUI password loaded from MAESTRO_PASSWORD environment variable")
+	} else if config.GetProjectPassword() != "" {
+		logger("🔐 WebUI password loaded from project secrets")
+	}
 
-		// Ensure verifier exists for future runs without env var
-		if !config.PasswordVerifierExists(projectDir) {
-			if err := config.SavePasswordVerifier(projectDir, config.GetProjectPassword()); err != nil {
-				logger("⚠️  Failed to save password verifier: %v", err)
-			}
+	if config.GetWebUIPassword() != "" {
+		// Ensure verifier matches the active password for future runs without env var
+		if err := config.SavePasswordVerifier(projectDir, config.GetProjectPassword()); err != nil {
+			logger("⚠️  Failed to save password verifier: %v", err)
 		}
 
 		// Check SSL status and warn if disabled

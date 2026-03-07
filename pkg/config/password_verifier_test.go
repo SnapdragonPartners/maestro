@@ -140,6 +140,82 @@ func TestVerifierUniqueSalts(t *testing.T) {
 	}
 }
 
+func TestVerifierCorruptedSaltLength(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := SavePasswordVerifier(dir, "password"); err != nil {
+		t.Fatalf("SavePasswordVerifier failed: %v", err)
+	}
+
+	// Tamper with the verifier file: replace salt with a short value
+	path := filepath.Join(dir, ".maestro", passwordVerifierFile)
+	data, _ := os.ReadFile(path)
+	var v passwordVerifier
+	_ = json.Unmarshal(data, &v)
+	v.Salt = "c2hvcnQ=" // "short" in base64 (5 bytes, not 32)
+	tampered, _ := json.MarshalIndent(v, "", "  ")
+	_ = os.WriteFile(path, tampered, 0600)
+
+	_, err := VerifyPassword(dir, "password")
+	if err == nil {
+		t.Fatal("VerifyPassword should return error for corrupted salt length")
+	}
+}
+
+func TestVerifierCorruptedHashLength(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := SavePasswordVerifier(dir, "password"); err != nil {
+		t.Fatalf("SavePasswordVerifier failed: %v", err)
+	}
+
+	// Tamper with the verifier file: replace hash with a short value
+	path := filepath.Join(dir, ".maestro", passwordVerifierFile)
+	data, _ := os.ReadFile(path)
+	var v passwordVerifier
+	_ = json.Unmarshal(data, &v)
+	v.Hash = "c2hvcnQ=" // "short" in base64 (5 bytes, not 32)
+	tampered, _ := json.MarshalIndent(v, "", "  ")
+	_ = os.WriteFile(path, tampered, 0600)
+
+	_, err := VerifyPassword(dir, "password")
+	if err == nil {
+		t.Fatal("VerifyPassword should return error for corrupted hash length")
+	}
+}
+
+func TestVerifierOverwriteOnPasswordChange(t *testing.T) {
+	dir := t.TempDir()
+
+	// Save verifier for password A
+	if err := SavePasswordVerifier(dir, "password-A"); err != nil {
+		t.Fatalf("SavePasswordVerifier failed: %v", err)
+	}
+
+	// Overwrite verifier with password B
+	if err := SavePasswordVerifier(dir, "password-B"); err != nil {
+		t.Fatalf("SavePasswordVerifier (overwrite) failed: %v", err)
+	}
+
+	// Password A should no longer verify
+	ok, err := VerifyPassword(dir, "password-A")
+	if err != nil {
+		t.Fatalf("VerifyPassword returned error: %v", err)
+	}
+	if ok {
+		t.Fatal("Old password should not verify after overwrite")
+	}
+
+	// Password B should verify
+	ok, err = VerifyPassword(dir, "password-B")
+	if err != nil {
+		t.Fatalf("VerifyPassword returned error: %v", err)
+	}
+	if !ok {
+		t.Fatal("New password should verify after overwrite")
+	}
+}
+
 func TestVerifierNoTempFileLeftBehind(t *testing.T) {
 	dir := t.TempDir()
 
