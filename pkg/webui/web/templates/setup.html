@@ -62,10 +62,20 @@
             </div>
         </div>
 
+        <!-- Key Validation Results -->
+        <div id="validation-results" class="bg-white shadow rounded-lg p-6 mb-6 hidden">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Key Validation Results</h2>
+            <p class="text-xs text-gray-500 mb-3">Validates credentials are accepted by providers. Does not check rate limits or budgets.</p>
+            <div id="validation-list" class="space-y-2"></div>
+        </div>
+
         <!-- Action Buttons -->
         <div class="flex gap-3">
             <button onclick="recheckKeys()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 px-4 rounded-md text-sm border border-gray-300 transition-colors">
                 Recheck Keys
+            </button>
+            <button id="check-keys-btn" onclick="checkKeys()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-2.5 px-4 rounded-md text-sm transition-colors">
+                Check Keys
             </button>
             <button id="continue-btn" onclick="continueSetup()" disabled class="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-2.5 px-4 rounded-md text-sm transition-colors">
                 Continue Setup
@@ -202,6 +212,48 @@
             status.textContent = 'Error: ' + e.message;
             btn.disabled = false;
             btn.textContent = 'Continue Setup';
+        }
+    }
+
+    async function checkKeys() {
+        const btn = document.getElementById('check-keys-btn');
+        const resultsDiv = document.getElementById('validation-results');
+        const listDiv = document.getElementById('validation-list');
+
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        resultsDiv.classList.remove('hidden');
+        listDiv.innerHTML = '<p class="text-gray-500 text-sm">Validating keys with providers...</p>';
+
+        try {
+            const resp = await fetch('/api/keys/check', {method: 'POST'});
+            if (!resp.ok) throw new Error('Key check failed');
+            const results = await resp.json();
+
+            listDiv.innerHTML = results.map(r => {
+                let icon, badgeClass;
+                switch(r.status) {
+                    case 'valid': icon = '\u2705'; badgeClass = 'bg-green-100 text-green-800'; break;
+                    case 'missing': icon = '\u2014'; badgeClass = 'bg-gray-100 text-gray-800'; break;
+                    case 'unauthorized': icon = '\u274C'; badgeClass = 'bg-red-100 text-red-800'; break;
+                    case 'forbidden': icon = '\u26A0\uFE0F'; badgeClass = 'bg-yellow-100 text-yellow-800'; break;
+                    case 'unreachable': icon = '\uD83D\uDD0C'; badgeClass = 'bg-orange-100 text-orange-800'; break;
+                    default: icon = '\u2753'; badgeClass = 'bg-red-100 text-red-800'; break;
+                }
+                const latency = r.latency_ms > 0 ? ' (' + r.latency_ms + 'ms)' : '';
+                return '<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">' +
+                    '<div><span class="text-sm font-mono text-gray-800">' + r.env_var + '</span>' +
+                    '<span class="ml-2 text-xs text-gray-500">(' + r.provider + ')</span></div>' +
+                    '<div class="flex items-center gap-2">' +
+                    '<span class="text-xs text-gray-400">' + latency + '</span>' +
+                    '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + badgeClass + '">' +
+                    icon + ' ' + r.status + '</span></div></div>';
+            }).join('');
+        } catch (e) {
+            listDiv.innerHTML = '<p class="text-red-600 text-sm">Error: ' + e.message + '</p>';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Check Keys';
         }
     }
 

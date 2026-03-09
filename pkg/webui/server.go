@@ -4,7 +4,12 @@ package webui
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -68,6 +73,11 @@ type Server struct {
 	// Password recovery: verify Basic Auth against verifier file when no password in memory
 	passwordRecovered atomic.Bool
 	recoverMu         sync.Mutex
+	// Session token auth: one-time token exchange for cookie-based browser auth
+	sessionToken   string          // from MAESTRO_SESSION_TOKEN env var
+	sessionCookies map[string]bool // valid session cookie values
+	sessionMu      sync.Mutex      // protects sessionToken and sessionCookies
+	useSSL         bool            // set by StartServer; controls Secure flag on cookies
 }
 
 // AgentListItem represents an agent in the list response.
@@ -88,13 +98,15 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 	}
 
 	return &Server{
-		dispatcher:  dispatcher,
-		logger:      logx.NewLogger("webui"),
-		workDir:     workDir,
-		templates:   templates,
-		chatService: chatService,
-		llmFactory:  llmFactory,
-		setupReady:  make(chan struct{}, 1),
+		dispatcher:     dispatcher,
+		logger:         logx.NewLogger("webui"),
+		workDir:        workDir,
+		templates:      templates,
+		chatService:    chatService,
+		llmFactory:     llmFactory,
+		setupReady:     make(chan struct{}, 1),
+		sessionToken:   os.Getenv("MAESTRO_SESSION_TOKEN"),
+		sessionCookies: make(map[string]bool),
 	}
 }
 
@@ -109,12 +121,84 @@ func (s *Server) SetDemoAvailabilityChecker(checker DemoAvailabilityChecker) {
 	s.demoAvailabilityChecker = checker
 }
 
+// handleSessionAuth implements GET /auth/session?token=<token>.
+// Exchanges a one-time session token for a session cookie, enabling browser-based auth
+// without Basic Auth prompts. The macOS wrapper app uses this to open Safari seamlessly.
+func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Missing token parameter", http.StatusBadRequest)
+		return
+	}
+
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+
+	// Check token is set and matches (constant-time comparison)
+	if s.sessionToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) != 1 {
+		s.logger.Warn("Invalid session token attempt from %s", r.RemoteAddr)
+		http.Error(w, "Invalid or expired token", http.StatusForbidden)
+		return
+	}
+
+	// Invalidate token (one-time use)
+	s.sessionToken = ""
+
+	// Generate a random session cookie value
+	cookieBytes := make([]byte, 32)
+	if _, err := rand.Read(cookieBytes); err != nil {
+		s.logger.Error("Failed to generate session cookie: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// HMAC the random bytes with the password for a signed cookie value
+	password := config.GetWebUIPassword()
+	if password == "" {
+		// Fallback: use the random bytes directly if no password yet
+		password = "maestro-session"
+	}
+	mac := hmac.New(sha256.New, []byte(password))
+	mac.Write(cookieBytes)
+	cookieValue := hex.EncodeToString(mac.Sum(nil))
+
+	s.sessionCookies[cookieValue] = true
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "maestro_session",
+		Value:    cookieValue,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.useSSL,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	s.logger.Info("Session token exchanged for cookie from %s", r.RemoteAddr)
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
 // requireAuth wraps an HTTP handler with Basic Authentication.
 // Username is always "maestro", password comes from unified password (secrets file or MAESTRO_PASSWORD env var).
 // When no password is in memory but a verifier file exists, the middleware verifies the
 // presented Basic Auth password against the verifier and recovers the password for the session.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Check for valid session cookie first (set via /auth/session token exchange)
+		if cookie, err := r.Cookie("maestro_session"); err == nil {
+			s.sessionMu.Lock()
+			valid := s.sessionCookies[cookie.Value]
+			s.sessionMu.Unlock()
+			if valid {
+				next(w, r)
+				return
+			}
+		}
+
 		// Check Basic Auth credentials are present
 		username, password, ok := r.BasicAuth()
 		if !ok {
@@ -246,7 +330,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/shutdown", s.requireAuth(s.handleShutdown))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
-	mux.HandleFunc("/api/healthz", s.handleHealth) // No auth — used by load balancers and monitoring
+	mux.HandleFunc("/api/healthz", s.handleHealth)       // No auth — used by load balancers and monitoring
+	mux.HandleFunc("/auth/session", s.handleSessionAuth) // No auth — token exchange for cookie-based auth
+	mux.HandleFunc("/api/keys/check", s.requireAuth(s.handleKeysCheck))
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
 
 	// PM agent endpoints - specification development
@@ -949,6 +1035,8 @@ func (s *Server) getDebugLogDir() string {
 
 // StartServer starts the HTTP server using configuration settings.
 func (s *Server) StartServer(ctx context.Context, host string, port int, useSSL bool, certFile, keyFile string) error {
+	s.useSSL = useSSL
+
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
 

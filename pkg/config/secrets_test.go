@@ -546,6 +546,49 @@ func TestDeleteSecretWithType(t *testing.T) {
 	}
 }
 
+func TestSetSecretSyncsEnvVar(t *testing.T) {
+	SetDecryptedSecrets(nil)
+	defer SetDecryptedSecrets(nil)
+
+	// Use a unique env var name to avoid interference
+	const envName = "ANTHROPIC_API_KEY"
+
+	// Clear env var first
+	origEnv := os.Getenv(envName)
+	os.Unsetenv(envName)
+	defer func() {
+		if origEnv != "" {
+			os.Setenv(envName, origEnv)
+		} else {
+			os.Unsetenv(envName)
+		}
+	}()
+
+	// SetSecret for a system secret should also set the env var
+	if err := SetSecret(envName, "test-sync-value", SecretTypeSystem); err != nil {
+		t.Fatalf("SetSecret failed: %v", err)
+	}
+	if got := os.Getenv(envName); got != "test-sync-value" {
+		t.Errorf("Expected env var to be synced, got %q", got)
+	}
+
+	// DeleteSecret for a system secret should unset the env var
+	if err := DeleteSecret(envName, SecretTypeSystem); err != nil {
+		t.Fatalf("DeleteSecret failed: %v", err)
+	}
+	if got := os.Getenv(envName); got != "" {
+		t.Errorf("Expected env var to be cleared after delete, got %q", got)
+	}
+
+	// User secrets should NOT sync to env vars
+	if err := SetSecret("MY_USER_SECRET", "user-val", SecretTypeUser); err != nil {
+		t.Fatalf("SetSecret user failed: %v", err)
+	}
+	if got := os.Getenv("MY_USER_SECRET"); got != "" {
+		t.Errorf("User secrets should not sync to env vars, got %q", got)
+	}
+}
+
 func TestGetDecryptedSecretNamesWithTypes(t *testing.T) {
 	SetDecryptedSecrets(&StructuredSecrets{
 		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant"},
