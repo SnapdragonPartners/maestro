@@ -44,7 +44,7 @@ const perProviderTimeout = 15 * time.Second
 var validationModels = map[Provider]string{ //nolint:gochecknoglobals // static lookup table
 	ProviderAnthropic: "claude-sonnet-4-5",
 	ProviderOpenAI:    "gpt-4o-mini",
-	ProviderGoogle:    "gemini-3-pro-preview",
+	ProviderGoogle:    "gemini-2.0-flash",
 }
 
 // providerToConfig maps preflight Provider to config provider string.

@@ -231,17 +231,16 @@
             const results = await resp.json();
 
             listDiv.innerHTML = results.map(r => {
-                let icon, color;
+                let icon, badgeClass;
                 switch(r.status) {
-                    case 'valid': icon = '\u2705'; color = 'green'; break;
-                    case 'missing': icon = '\u2014'; color = 'gray'; break;
-                    case 'unauthorized': icon = '\u274C'; color = 'red'; break;
-                    case 'forbidden': icon = '\u26A0\uFE0F'; color = 'yellow'; break;
-                    case 'unreachable': icon = '\uD83D\uDD0C'; color = 'orange'; break;
-                    default: icon = '\u2753'; color = 'red'; break;
+                    case 'valid': icon = '\u2705'; badgeClass = 'bg-green-100 text-green-800'; break;
+                    case 'missing': icon = '\u2014'; badgeClass = 'bg-gray-100 text-gray-800'; break;
+                    case 'unauthorized': icon = '\u274C'; badgeClass = 'bg-red-100 text-red-800'; break;
+                    case 'forbidden': icon = '\u26A0\uFE0F'; badgeClass = 'bg-yellow-100 text-yellow-800'; break;
+                    case 'unreachable': icon = '\uD83D\uDD0C'; badgeClass = 'bg-orange-100 text-orange-800'; break;
+                    default: icon = '\u2753'; badgeClass = 'bg-red-100 text-red-800'; break;
                 }
                 const latency = r.latency_ms > 0 ? ' (' + r.latency_ms + 'ms)' : '';
-                const badgeClass = 'bg-' + color + '-100 text-' + color + '-800';
                 return '<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">' +
                     '<div><span class="text-sm font-mono text-gray-800">' + r.env_var + '</span>' +
                     '<span class="ml-2 text-xs text-gray-500">(' + r.provider + ')</span></div>' +
