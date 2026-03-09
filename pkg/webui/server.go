@@ -77,6 +77,7 @@ type Server struct {
 	sessionToken   string          // from MAESTRO_SESSION_TOKEN env var
 	sessionCookies map[string]bool // valid session cookie values
 	sessionMu      sync.Mutex      // protects sessionToken and sessionCookies
+	useSSL         bool            // set by StartServer; controls Secure flag on cookies
 }
 
 // AgentListItem represents an agent in the list response.
@@ -173,6 +174,7 @@ func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
 		Value:    cookieValue,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   s.useSSL,
 		SameSite: http.SameSiteStrictMode,
 	})
 
@@ -1033,6 +1035,8 @@ func (s *Server) getDebugLogDir() string {
 
 // StartServer starts the HTTP server using configuration settings.
 func (s *Server) StartServer(ctx context.Context, host string, port int, useSSL bool, certFile, keyFile string) error {
+	s.useSSL = useSSL
+
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
 
