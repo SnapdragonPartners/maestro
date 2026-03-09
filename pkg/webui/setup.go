@@ -57,6 +57,7 @@ func (s *Server) setupModeRedirect(next http.HandlerFunc) http.HandlerFunc {
 			if path != "/setup" &&
 				!strings.HasPrefix(path, "/api/setup/") &&
 				!strings.HasPrefix(path, "/api/secrets") &&
+				!strings.HasPrefix(path, "/api/keys/") &&
 				!strings.HasPrefix(path, "/api/healthz") &&
 				!strings.HasPrefix(path, "/static/") {
 				http.Redirect(w, r, "/setup", http.StatusTemporaryRedirect)
@@ -139,6 +140,23 @@ func (s *Server) handleSetupRecheck(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		s.logger.Error("Failed to encode setup recheck: %v", err)
+	}
+}
+
+// handleKeysCheck implements POST /api/keys/check.
+// Validates all configured API keys by making real provider API calls.
+func (s *Server) handleKeysCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.logger.Info("Key validation requested from %s", r.RemoteAddr)
+	results := preflight.ValidateKeys(r.Context())
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(results); err != nil {
+		s.logger.Error("Failed to encode key check results: %v", err)
 	}
 }
 

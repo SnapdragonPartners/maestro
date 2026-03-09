@@ -1270,7 +1270,7 @@ class MaestroUI {
     }
 
     // Toast notifications
-    showToast(message, type = 'info') {
+    showToast(message, type = 'info', duration = 3000) {
         const container = document.getElementById('toast-container');
         const toast = document.createElement('div');
 
@@ -1281,7 +1281,7 @@ class MaestroUI {
             info: 'bg-blue-500'
         };
 
-        toast.className = `${bgColors[type]} text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 translate-x-full`;
+        toast.className = `${bgColors[type]} text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 translate-x-full whitespace-pre-line`;
         toast.textContent = message;
 
         container.appendChild(toast);
@@ -1291,11 +1291,11 @@ class MaestroUI {
             toast.classList.remove('translate-x-full');
         }, 100);
 
-        // Remove after 3 seconds
+        // Remove after duration
         setTimeout(() => {
             toast.classList.add('translate-x-full');
             setTimeout(() => container.removeChild(toast), 300);
-        }, 3000);
+        }, duration);
     }
 
     // Chat functionality
@@ -1827,6 +1827,44 @@ class MaestroUI {
             this.loadSecrets();
         } catch (error) {
             this.showToast(`Failed to delete secret: ${error.message}`, 'error');
+        }
+    }
+
+    // === Key Validation ===
+
+    async checkKeys() {
+        const btn = document.getElementById('check-keys-btn');
+        if (!btn) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+
+        try {
+            const response = await fetch('/api/keys/check', { method: 'POST' });
+            if (!response.ok) throw new Error('Key check failed');
+            const results = await response.json();
+
+            const lines = results.map(r => {
+                let icon;
+                switch(r.status) {
+                    case 'valid': icon = '\u2705'; break;
+                    case 'missing': icon = '\u2014'; break;
+                    case 'unauthorized': icon = '\u274C'; break;
+                    case 'forbidden': icon = '\u26A0\uFE0F'; break;
+                    case 'unreachable': icon = '\uD83D\uDD0C'; break;
+                    default: icon = '\u2753'; break;
+                }
+                const latency = r.latency_ms > 0 ? ` (${r.latency_ms}ms)` : '';
+                return `${icon} ${r.provider}: ${r.status}${latency}`;
+            });
+
+            const allValid = results.every(r => r.status === 'valid' || r.status === 'missing');
+            this.showToast(lines.join('\n'), allValid ? 'success' : 'error', 8000);
+        } catch (error) {
+            this.showToast(`Key check failed: ${error.message}`, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Check Keys';
         }
     }
 

@@ -193,6 +193,8 @@ func SetSecret(name, value string, secretType SecretType) error {
 			decryptedSecrets.System = make(map[string]string)
 		}
 		decryptedSecrets.System[name] = value
+		// Sync to environment so code using os.Getenv() directly picks up the change
+		_ = os.Setenv(name, value)
 	default:
 		if decryptedSecrets.User == nil {
 			decryptedSecrets.User = make(map[string]string)
@@ -214,6 +216,8 @@ func DeleteSecret(name string, secretType SecretType) error {
 	switch secretType {
 	case SecretTypeSystem:
 		delete(decryptedSecrets.System, name)
+		// Remove from environment to stay in sync
+		_ = os.Unsetenv(name)
 	default:
 		delete(decryptedSecrets.User, name)
 	}

@@ -149,6 +149,23 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 	return f.createClientWithMiddleware(modelName, agentType.String(), stateProvider, logger)
 }
 
+// CreateRawClient creates a bare LLM client with no middleware for the given provider and API key.
+// Used for lightweight validation (e.g., key checking) where the full middleware stack is not needed.
+func CreateRawClient(provider, apiKey, model string) (LLMClient, error) {
+	switch provider {
+	case config.ProviderAnthropic:
+		return anthropic.NewClaudeClientWithModel(apiKey, model), nil
+	case config.ProviderOpenAI:
+		return openaiofficial.NewOfficialClientWithModel(apiKey, model), nil
+	case config.ProviderGoogle:
+		return google.NewGeminiClientWithModel(apiKey, model), nil
+	case config.ProviderOllama:
+		return ollama.NewOllamaClientWithModel(apiKey, model), nil
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", provider)
+	}
+}
+
 // createClientWithMiddleware creates a client with the full middleware chain.
 func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	// Create the raw LLM client based on provider
