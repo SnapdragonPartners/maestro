@@ -1995,19 +1995,19 @@ func GetAPIKey(provider string) (string, error) {
 		return "", fmt.Errorf("unknown provider: %s", provider)
 	}
 
-	// Try to get from secrets file first, then environment variable
-	key, err := GetSecret(envVar)
+	// Only check system secrets and env vars — user secrets are for container injection only
+	key, err := GetSystemSecret(envVar)
 	if err == nil && key != "" {
 		return key, nil
 	}
 
-	return "", fmt.Errorf("API key not found: %s not found in secrets file or environment variables", envVar)
+	return "", fmt.Errorf("API key not found: %s not found in system secrets or environment variables", envVar)
 }
 
 // GetGitHubToken returns the GitHub token.
-// Checks secrets file first, then falls back to environment variable.
+// Only checks system secrets and env vars — user secrets are for container injection only.
 func GetGitHubToken() string {
-	token, err := GetSecret("GITHUB_TOKEN")
+	token, err := GetSystemSecret("GITHUB_TOKEN")
 	if err == nil && token != "" {
 		return token
 	}

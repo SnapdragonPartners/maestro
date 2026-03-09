@@ -154,6 +154,11 @@ func (s *Server) handleKeysCheck(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Key validation requested from %s", r.RemoteAddr)
 	results := preflight.ValidateKeys(r.Context())
 
+	for i := range results {
+		r := &results[i]
+		s.logger.Info("Key check: %s (%s) = %s: %s [%dms]", r.Provider, r.EnvVar, r.Status, r.Message, r.LatencyMs)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(results); err != nil {
 		s.logger.Error("Failed to encode key check results: %v", err)

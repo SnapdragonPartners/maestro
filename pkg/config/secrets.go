@@ -145,6 +145,27 @@ func GetSecret(name string) (string, error) {
 	return "", fmt.Errorf("secret %s not found in secrets file or environment", name)
 }
 
+// GetSystemSecret returns a secret value for Maestro's own use (API keys, tokens).
+// Only checks system secrets and environment variables — never user secrets.
+// User secrets are for container injection only and should not be used by Maestro itself.
+func GetSystemSecret(name string) (string, error) {
+	decryptedSecretsMux.RLock()
+	if decryptedSecrets != nil {
+		if value, exists := decryptedSecrets.System[name]; exists && value != "" {
+			decryptedSecretsMux.RUnlock()
+			return value, nil
+		}
+	}
+	decryptedSecretsMux.RUnlock()
+
+	// Fall back to environment variable
+	if value := os.Getenv(name); value != "" {
+		return value, nil
+	}
+
+	return "", fmt.Errorf("secret %s not found in system secrets or environment", name)
+}
+
 // GetDecryptedSecretNames returns a list of secret names with type info (not values).
 func GetDecryptedSecretNames() []SecretNameEntry {
 	decryptedSecretsMux.RLock()
@@ -480,7 +501,7 @@ func GetSSLCertAndKey(cfg *Config, projectDir string) (certPEM, keyPEM []byte, e
 	// 2. Try secrets file
 	if certPEM == nil || keyPEM == nil {
 		if keyPEM == nil {
-			if key, err := GetSecret("SSL_KEY_PEM"); err == nil && key != "" {
+			if key, err := GetSystemSecret("SSL_KEY_PEM"); err == nil && key != "" {
 				keyPEM = []byte(key)
 			}
 		}

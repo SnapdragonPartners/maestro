@@ -72,7 +72,7 @@ func ValidateKeys(ctx context.Context) []KeyCheckResult {
 
 	for i, provider := range providers {
 		envVar := providerEnvVar[provider]
-		value, _ := config.GetSecret(envVar)
+		value, _ := config.GetSystemSecret(envVar)
 
 		if value == "" {
 			results[i] = KeyCheckResult{
@@ -151,7 +151,7 @@ func validateLLMKey(ctx context.Context, provider Provider, apiKey string) error
 
 	req := llm.CompletionRequest{
 		Messages:    []llm.CompletionMessage{llm.NewUserMessage("Say OK")},
-		MaxTokens:   10,
+		MaxTokens:   16,
 		Temperature: 0,
 	}
 

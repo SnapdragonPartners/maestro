@@ -44,7 +44,7 @@ func CheckRequiredAPIKeys(cfg *config.Config) ([]ProviderKeyInfo, bool) {
 			continue
 		}
 
-		value, _ := config.GetSecret(envVar)
+		value, _ := config.GetSystemSecret(envVar)
 		present := value != ""
 
 		keys = append(keys, ProviderKeyInfo{
