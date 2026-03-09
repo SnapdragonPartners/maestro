@@ -1,13 +1,13 @@
 Package: maestro
-Version: 1.3.2
+Version: 1.3.3
 Architecture: arm64
 Maintainer: Snapdragon Partners <maestro@snapdragonpartners.com>
-Installed-Size: 50624
-Filename: pool/main/maestro_1.3.2_arm64.deb
-Size: 18179416
-MD5sum: 04e288fd2a8a18240f01f2897de02a64
-SHA1: a6ded4486385b5f96547c396d1de8c46116a951c
-SHA256: 3b28bbdb418f0479b8ca70b68c420e6eb5e5c26d7e08bd1c9c47f8773e0989d9
+Installed-Size: 50688
+Filename: pool/main/maestro_1.3.3_arm64.deb
+Size: 18197712
+MD5sum: 91e0541f079746b218ced6b12a32db55
+SHA1: 8fbc5128c9e466a26d441d7fb2a6f112156520cc
+SHA256: e72b089642d69cddf266a9fb8f8ceaffcc7eacd2a8a77e5159f0eeada2ecba56
 Priority: optional
 Homepage: https://github.com/SnapdragonPartners/maestro
 Description: Multi-agent AI coding system orchestrator
