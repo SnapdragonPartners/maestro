@@ -70,6 +70,18 @@ jobs:
               --wait
           done
 
+  trigger-macos-app:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger macOS app build
+        env:
+          GH_TOKEN: ${{ secrets.MACOS_BUILD_PAT }}
+        run: |
+          gh workflow run release.yml \
+            --repo SnapdragonPartners/maestro-macos \
+            --field maestro_version=${{ github.ref_name }}
+
   publish-apt-repo:
     needs: goreleaser
     runs-on: ubuntu-latest
