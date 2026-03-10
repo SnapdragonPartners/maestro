@@ -23,7 +23,7 @@ func NewTokenCounter(model string) (*TokenCounter, error) {
 	case config.ModelOpenAIO3, config.ModelOpenAIO3Mini:
 		// OpenAI O3 models use GPT-4 tokenizer
 		tikModel = tokenizer.GPT4
-	case config.ModelClaudeSonnet3, config.ModelClaudeSonnet4:
+	case config.ModelClaudeSonnet3, config.ModelClaudeSonnet4, config.ModelClaudeSonnet46:
 		// Claude uses a similar tokenization, approximate with GPT-4 encoding
 		tikModel = tokenizer.GPT4
 	default:

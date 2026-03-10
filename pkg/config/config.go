@@ -152,6 +152,20 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  16384,
 	},
+	"claude-sonnet-4-6": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         3.0,
+		OutputCPM:        15.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  8192,
+	},
+	"claude-opus-4-6": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
 
 	// OpenAI GPT models
 	"gpt-4o": {
@@ -219,6 +233,13 @@ var KnownModels = map[string]ModelInfo{
 		OutputCPM:        2.50,
 		MaxContextTokens: 1048576,
 		MaxOutputTokens:  65536,
+	},
+	"gemini-2.5-flash-lite": {
+		Provider:         ProviderGoogle,
+		InputCPM:         0.02,
+		OutputCPM:        0.10,
+		MaxContextTokens: 1048576,
+		MaxOutputTokens:  8192,
 	},
 	"gemini-3-pro-preview": {
 		Provider:         ProviderGoogle,
@@ -469,13 +490,16 @@ const (
 	BuildTargetInstall = "install"
 
 	// Model name constants.
-	ModelClaudeSonnet4      = "claude-sonnet-4-5"
+	ModelClaudeSonnet45     = "claude-sonnet-4-5"
+	ModelClaudeSonnet4      = ModelClaudeSonnet45 // Legacy alias
+	ModelClaudeSonnet46     = "claude-sonnet-4-6"
 	ModelClaudeSonnet4Old   = "claude-sonnet-4-20250514"
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
-	ModelClaudeSonnetLatest = ModelClaudeSonnet4
+	ModelClaudeSonnetLatest = ModelClaudeSonnet46
 	ModelClaudeOpus41       = "claude-opus-4-1"
 	ModelClaudeOpus45       = "claude-opus-4-5"
-	ModelClaudeOpusLatest   = ModelClaudeOpus45
+	ModelClaudeOpus46       = "claude-opus-4-6"
+	ModelClaudeOpusLatest   = ModelClaudeOpus46
 	ModelOpenAIO3           = "o3"
 	ModelGemini3Pro         = "gemini-3-pro-preview"
 
@@ -492,9 +516,9 @@ const (
 	ModelGPT4o            = "gpt-4o"
 	ModelGPT5             = "gpt-5"
 	ModelGPT52            = "gpt-5.2"
-	DefaultCoderModel     = ModelClaudeSonnet4
+	DefaultCoderModel     = ModelClaudeSonnet46
 	DefaultArchitectModel = ModelGPT52
-	DefaultPMModel        = ModelClaudeOpus45
+	DefaultPMModel        = ModelClaudeOpus46
 
 	// Coder execution mode constants.
 	CoderModeStandard   = "standard"    // Default: use standard LLM-based coder agent
@@ -2258,7 +2282,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 			return ModelGPT52
 		}
 		if providers.Anthropic {
-			return ModelClaudeOpus45
+			return ModelClaudeOpus46
 		}
 		if providers.Google {
 			return ModelGemini3Pro
@@ -2267,7 +2291,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 	case AgentTypePM:
 		// PM prefers Anthropic for reasoning, then OpenAI, then Google
 		if providers.Anthropic {
-			return ModelClaudeOpus45
+			return ModelClaudeOpus46
 		}
 		if providers.OpenAI {
 			return ModelGPT52
@@ -2279,7 +2303,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 	case AgentTypeCoder:
 		// Coder prefers Anthropic for tool use, then OpenAI, then Google
 		if providers.Anthropic {
-			return ModelClaudeSonnet4
+			return ModelClaudeSonnet46
 		}
 		if providers.OpenAI {
 			return ModelGPT52
