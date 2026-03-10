@@ -42,7 +42,7 @@ const perProviderTimeout = 15 * time.Second
 
 // validationModels maps providers to cheap models for key validation.
 var validationModels = map[Provider]string{ //nolint:gochecknoglobals // static lookup table
-	ProviderAnthropic: "claude-sonnet-4-6",
+	ProviderAnthropic: config.ModelClaudeSonnet46,
 	ProviderOpenAI:    "gpt-4o-mini",
 	ProviderGoogle:    "gemini-2.5-flash-lite",
 }

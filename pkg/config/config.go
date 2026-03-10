@@ -490,7 +490,8 @@ const (
 	BuildTargetInstall = "install"
 
 	// Model name constants.
-	ModelClaudeSonnet4      = "claude-sonnet-4-5"
+	ModelClaudeSonnet45     = "claude-sonnet-4-5"
+	ModelClaudeSonnet4      = ModelClaudeSonnet45 // Legacy alias
 	ModelClaudeSonnet46     = "claude-sonnet-4-6"
 	ModelClaudeSonnet4Old   = "claude-sonnet-4-20250514"
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
