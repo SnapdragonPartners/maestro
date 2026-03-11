@@ -16,15 +16,90 @@ The big idea behind Maestro is that since LLMs are trained on and exhibit human 
 
 ---
 
-## Project Status
-
-Maestro v1 is feature complete and fully functional, but we're actively seeking bug testers and feedback. Please submit bug reports via Git Issues and thanks in advance for your help. 
-
----
-
 ## ❤️ Support This Project
 
 This project is developed and actively maintained by Snapdragon Partners. Tokens for developing Maestro are expensive but we're keeping the community version of Maestro free. If you like Maestro, any support you can provide via [GitHub Sponsors](https://github.com/sponsors/SnapdragonPartners) would be appreciated!
+
+---
+
+## Quickstart
+
+> **Step 1:** Install Maestro via Homebrew, APT, or direct download from [releases](https://github.com/SnapdragonPartners/maestro/releases).
+>
+> **Option A: Homebrew (macOS)**
+> ```bash
+> brew install --cask SnapdragonPartners/tap/maestro
+> ```
+>
+> **Option B: Control Panel App (macOS)**
+> 
+> A native macOS app is available as a graphical wrapper for the Maestro CLI. Download it from [maestro-macos releases](https://github.com/SnapdragonPartners/maestro-macos/releases). You can still use Homebrew or the CLI directly if you prefer, but the control panel app contains everything you need to use Maestro.
+>
+> **Option C: APT (Debian/Ubuntu)**
+> ```bash
+> # Add the Maestro APT repository (one-time setup)
+> curl -fsSL https://snapdragonpartners.github.io/maestro/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/maestro.gpg
+> echo "deb [signed-by=/usr/share/keyrings/maestro.gpg] https://snapdragonpartners.github.io/maestro stable main" | sudo tee /etc/apt/sources.list.d/maestro.list
+>
+> # Install (or upgrade)
+> sudo apt update && sudo apt install maestro
+> ```
+>
+> **Option D: Direct download**
+> Download the binary for your platform from [releases](https://github.com/SnapdragonPartners/maestro/releases) and install it somewhere in your path.
+>
+> **Step 2:** Provide your API keys for the models you want to use and GitHub. You have two options:
+>
+> **Option A: Environment variables** (traditional)
+> ```bash
+> export OPENAI_API_KEY=sk-...
+> export ANTHROPIC_API_KEY=sk-ant-...
+> export GOOGLE_GENAI_API_KEY=AIza...  # Optional, for Gemini models
+> export GITHUB_TOKEN=ghp-...
+>
+> # Optional: Ollama for local models (default: http://localhost:11434)
+> export OLLAMA_HOST=http://localhost:11434
+>
+> # Optional: Enable web search for agents (Google Custom Search)
+> export GOOGLE_SEARCH_API_KEY=AIza...
+> export GOOGLE_SEARCH_CX=...  # Your Custom Search Engine ID
+> ```
+>
+> **Option B: Configure via Web UI** (easier)
+>
+> Skip this step entirely and just run Maestro. If any required API keys are missing, Maestro will automatically open a setup page in the Web UI where you can paste your keys into a browser form. Keys are encrypted and stored locally.
+>
+> **Step 3:** Create a project directory  (projectdir) and switch to it.
+> ```bash
+> mkdir myproject && cd myproject
+> ```
+>
+> **Step 4:** Run Maestro
+> ```bash
+> maestro
+> ```
+> If any required API keys are missing, Maestro will launch in **setup mode** — open the Web UI (default [http://localhost:8080](http://localhost:8080)) and follow the prompts to enter your keys. Once all keys are configured, Maestro continues startup automatically.
+>
+> **Important:** When Maestro generates a password, it is used for both WebUI login and secrets encryption. Record it somewhere safe — if lost, any secrets stored through the WebUI cannot be recovered. To use your own persistent password, set the `MAESTRO_PASSWORD` environment variable before running Maestro.
+>
+> **Step 5:** Open the web UI at [http://localhost:8080](http://localhost:8080) (you can change this in the config file.)
+> - Work with the PM to bootstrap your project by uploading a pre-existing spec or starting a PM interview to generate a specification
+> - View stories, logs, and system metrics
+> - Monitor agent activity in real-time
+> - Optionally chat with agents as you watch their progress
+
+Config settings are in <projectdir>/.maestro/config.json.
+
+---
+
+## System Requirements
+
+- **Binary**: ~15 MB fat binary (Linux & macOS tested; Windows soon)
+- **Go**: Only needed if compiling from source (Go 1.24+)
+- **Docker**: CLI + daemon required
+- **GitHub**: Token with push/PR/merge perms (standard mode only)
+- **Ollama**: Required for airplane mode (local LLMs)
+- **Resources**: Runs comfortably on a personal workstation
 
 ---
 
@@ -219,87 +294,6 @@ maestro --sync
 ```
 
 See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
-
----
-
-## Quickstart
-
-> **Step 1:** Install Maestro via Homebrew, APT, or direct download from [releases](https://github.com/SnapdragonPartners/maestro/releases).
->
-> **Option A: Homebrew (macOS)**
-> ```bash
-> brew install --cask SnapdragonPartners/tap/maestro
-> ```
->
-> **Option B: macOS Control Panel App**
-> A native macOS app is available as a graphical wrapper for the Maestro CLI. Download it from [maestro-macos releases](https://github.com/SnapdragonPartners/maestro-macos/releases). You can still use Homebrew or the CLI directly if you prefer.
->
-> **Option C: APT (Debian/Ubuntu)**
-> ```bash
-> # Add the Maestro APT repository (one-time setup)
-> curl -fsSL https://snapdragonpartners.github.io/maestro/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/maestro.gpg
-> echo "deb [signed-by=/usr/share/keyrings/maestro.gpg] https://snapdragonpartners.github.io/maestro stable main" | sudo tee /etc/apt/sources.list.d/maestro.list
->
-> # Install (or upgrade)
-> sudo apt update && sudo apt install maestro
-> ```
->
-> **Option D: Direct download**
-> Download the binary for your platform from [releases](https://github.com/SnapdragonPartners/maestro/releases) and install it somewhere in your path.
->
-> **Step 2:** Provide your API keys for the models you want to use and GitHub. You have two options:
->
-> **Option A: Environment variables** (traditional)
-```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export GOOGLE_GENAI_API_KEY=AIza...  # Optional, for Gemini models
-export GITHUB_TOKEN=ghp-...
-
-# Optional: Ollama for local models (default: http://localhost:11434)
-export OLLAMA_HOST=http://localhost:11434
-
-# Optional: Enable web search for agents (Google Custom Search)
-export GOOGLE_SEARCH_API_KEY=AIza...
-export GOOGLE_SEARCH_CX=...  # Your Custom Search Engine ID
-```
->
-> **Option B: Configure via Web UI** (easier)
->
-> Skip this step entirely and just run Maestro. If any required API keys are missing, Maestro will automatically open a setup page in the Web UI where you can paste your keys into a browser form. Keys are encrypted and stored locally.
-
-> **Step 3:** Create a project directory  (projectdir) and switch to it.
-```bash
-mkdir myproject && cd myproject
-```
-
-
-> **Step 4:** Run Maestro
-```bash
-maestro
-```
-> If any required API keys are missing, Maestro will launch in **setup mode** — open the Web UI (default [http://localhost:8080](http://localhost:8080)) and follow the prompts to enter your keys. Once all keys are configured, Maestro continues startup automatically.
->
-> **Important:** When Maestro generates a password, it is used for both WebUI login and secrets encryption. Record it somewhere safe — if lost, any secrets stored through the WebUI cannot be recovered. To use your own persistent password, set the `MAESTRO_PASSWORD` environment variable before running Maestro.
-
-> **Step 5:** Open the web UI at [http://localhost:8080](http://localhost:8080) (you can change this in the config file.)
-> - Work with the PM to bootstrap your project by uploading a pre-existing spec or starting a PM interview to generate a specification
-> - View stories, logs, and system metrics
-> - Monitor agent activity in real-time
-> - Optionally chat with agents as you watch their progress
-
-Config settings are in <projectdir>/.maestro/config.json.
-
----
-
-## System Requirements
-
-- **Binary**: ~14 MB fat binary (Linux & macOS tested; Windows soon)
-- **Go**: Only needed if compiling from source (Go 1.24+)
-- **Docker**: CLI + daemon required
-- **GitHub**: Token with push/PR/merge perms (standard mode only)
-- **Ollama**: Required for airplane mode (local LLMs)
-- **Resources**: Runs comfortably on a personal workstation
 
 ---
 
