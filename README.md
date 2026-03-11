@@ -231,7 +231,10 @@ See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
 > brew install --cask SnapdragonPartners/tap/maestro
 > ```
 >
-> **Option B: APT (Debian/Ubuntu)**
+> **Option B: macOS Control Panel App**
+> A native macOS app is available as a graphical wrapper for the Maestro CLI. Download it from [maestro-macos releases](https://github.com/SnapdragonPartners/maestro-macos/releases). You can still use Homebrew or the CLI directly if you prefer.
+>
+> **Option C: APT (Debian/Ubuntu)**
 > ```bash
 > # Add the Maestro APT repository (one-time setup)
 > curl -fsSL https://snapdragonpartners.github.io/maestro/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/maestro.gpg
@@ -241,7 +244,7 @@ See [docs/AIRPLANE_MODE.md](docs/AIRPLANE_MODE.md) for detailed specification.
 > sudo apt update && sudo apt install maestro
 > ```
 >
-> **Option C: Direct download**
+> **Option D: Direct download**
 > Download the binary for your platform from [releases](https://github.com/SnapdragonPartners/maestro/releases) and install it somewhere in your path.
 >
 > **Step 2:** Provide your API keys for the models you want to use and GitHub. You have two options:
