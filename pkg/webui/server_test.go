@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -528,12 +529,25 @@ func TestSessionTokenOneTimeUse(t *testing.T) {
 		t.Errorf("First use: expected 302, got %d", w.Code)
 	}
 
-	// Second use: should fail (token invalidated)
+	// Second use: should fail (token invalidated) with friendly HTML page
 	req = httptest.NewRequest("GET", "/auth/session?token=one-time-token", nil)
 	w = httptest.NewRecorder()
 	server.handleSessionAuth(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Second use: expected 403, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Expected HTML content type, got %q", ct)
+	}
+	if !strings.Contains(body, "Session Link Expired") {
+		t.Error("Expected friendly expired page with 'Session Link Expired' heading")
+	}
+	if !strings.Contains(body, "Reopen from App") {
+		t.Error("Expected recovery option 'Reopen from App'")
+	}
+	if !strings.Contains(body, "Log in with Password") {
+		t.Error("Expected recovery option 'Log in with Password'")
 	}
 }
 

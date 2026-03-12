@@ -142,7 +142,7 @@ func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
 	// Check token is set and matches (constant-time comparison)
 	if s.sessionToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) != 1 {
 		s.logger.Warn("Invalid session token attempt from %s", r.RemoteAddr)
-		http.Error(w, "Invalid or expired token", http.StatusForbidden)
+		s.renderTokenExpiredPage(w)
 		return
 	}
 
@@ -181,6 +181,50 @@ func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Session token exchanged for cookie from %s", r.RemoteAddr)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
+
+// renderTokenExpiredPage serves a friendly HTML page when a session token is invalid or expired,
+// giving the user clear recovery options instead of a bare 403 error.
+func (s *Server) renderTokenExpiredPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	w.Write([]byte(tokenExpiredHTML)) //nolint:errcheck
+}
+
+const tokenExpiredHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session Expired - Maestro</title>
+    <link href="/static/css/tailwind.css?v=2" rel="stylesheet">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/img/logos/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/img/logos/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/img/logos/favicon-16x16.png">
+    <link rel="shortcut icon" href="/static/img/logos/favicon.ico">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-lg mx-auto px-4 py-16">
+        <div class="text-center mb-8">
+            <img src="/static/img/logos/maestro_logo_small.png" alt="Maestro" class="h-20 w-auto mx-auto mb-4">
+            <h1 class="text-2xl font-bold text-gray-900">Session Link Expired</h1>
+            <p class="mt-3 text-gray-600">This session link has already been used or has expired. Each link can only be used once.</p>
+        </div>
+
+        <div class="bg-white shadow rounded-lg p-6 space-y-5">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-800 mb-1">Reopen from App</h2>
+                <p class="text-sm text-gray-600">If you are using Maestro via an app like the Maestro macOS Control Panel, close this tab and use the app to open the Web UI again. This will generate a fresh session link.</p>
+            </div>
+            <hr class="border-gray-200">
+            <div>
+                <h2 class="text-sm font-semibold text-gray-800 mb-1">Log in with Password</h2>
+                <p class="text-sm text-gray-600 mb-3">If you know your Maestro password, you can log in directly.</p>
+                <a href="/" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors">Log in with Password</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`
 
 // requireAuth wraps an HTTP handler with Basic Authentication.
 // Username is always "maestro", password comes from unified password (secrets file or MAESTRO_PASSWORD env var).
