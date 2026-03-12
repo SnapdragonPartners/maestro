@@ -99,6 +99,8 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 //	Case 2: Dockerfile configured + NOT on disk → suspicious, fall back to bootstrap
 //	Case 3: Rebuild attempted but failed → fall back to bootstrap
 //	Case 4: No dockerfile configured → fall back to bootstrap
+//	Case 5: Dockerfile path cannot be accessed (permission/IO error) → fall back to bootstrap
+//	Case 6: Dockerfile path is a directory → fall back to bootstrap
 func (o *StartupOrchestrator) validateTargetContainer(ctx context.Context) error {
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -151,15 +153,31 @@ func (o *StartupOrchestrator) validateTargetContainer(ctx context.Context) error
 	return o.recoverUnhealthyTarget(ctx, &cfg, safeImageID)
 }
 
-// recoverUnhealthyTarget handles recovery when the target container is unhealthy.
-// It attempts to rebuild from dockerfile if available, or falls back to bootstrap mode.
-func (o *StartupOrchestrator) recoverUnhealthyTarget(ctx context.Context, cfg *config.Config, safeImageID string) error {
+// recoveryCase identifies the recovery action for an unhealthy target container.
+type recoveryCase int
+
+const (
+	// recoveryCaseRebuild means Dockerfile exists and a rebuild should be attempted.
+	recoveryCaseRebuild recoveryCase = 1
+	// recoveryCaseDockerfileMissing means Dockerfile is configured but not found on disk.
+	recoveryCaseDockerfileMissing recoveryCase = 2
+	// recoveryCaseRebuildFailed is logged when a rebuild attempt fails (not returned by detectRecoveryCase).
+	_ recoveryCase = 3 // Case 3: rebuild failed — used in logging only
+	// recoveryCaseNoDockerfile means no Dockerfile is configured at all.
+	recoveryCaseNoDockerfile recoveryCase = 4
+	// recoveryCaseStatError means the Dockerfile path could not be accessed (permission/IO error).
+	recoveryCaseStatError recoveryCase = 5
+	// recoveryCaseIsDir means the configured Dockerfile path is a directory, not a file.
+	recoveryCaseIsDir recoveryCase = 6
+)
+
+// detectRecoveryCase determines which recovery path to take based on config and filesystem state.
+// This is a pure detection function with no side effects, making it unit-testable.
+func (o *StartupOrchestrator) detectRecoveryCase(cfg *config.Config) (recoveryCase, string) {
 	dockerfilePath := o.getDockerfilePath(cfg)
 
-	// Case 4: No dockerfile configured at all
 	if dockerfilePath == "" {
-		o.logger.Warn("⚠️  Recovery case 4: No dockerfile configured — falling back to bootstrap mode")
-		return o.fallbackToBootstrap(safeImageID)
+		return recoveryCaseNoDockerfile, ""
 	}
 
 	// Resolve dockerfile path relative to project directory
@@ -168,25 +186,58 @@ func (o *StartupOrchestrator) recoverUnhealthyTarget(ctx context.Context, cfg *c
 		absDockerfile = filepath.Join(o.projectDir, dockerfilePath)
 	}
 
-	// Check if dockerfile actually exists on disk
-	if _, err := os.Stat(absDockerfile); os.IsNotExist(err) {
-		// Case 2: Dockerfile configured but not on disk — suspicious
+	fi, err := os.Stat(absDockerfile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return recoveryCaseDockerfileMissing, dockerfilePath
+		}
+		return recoveryCaseStatError, dockerfilePath
+	}
+
+	if fi.IsDir() {
+		return recoveryCaseIsDir, dockerfilePath
+	}
+
+	return recoveryCaseRebuild, dockerfilePath
+}
+
+// recoverUnhealthyTarget handles recovery when the target container is unhealthy.
+// It attempts to rebuild from dockerfile if available, or falls back to bootstrap mode.
+func (o *StartupOrchestrator) recoverUnhealthyTarget(ctx context.Context, cfg *config.Config, safeImageID string) error {
+	rc, dockerfilePath := o.detectRecoveryCase(cfg)
+
+	switch rc {
+	case recoveryCaseNoDockerfile:
+		o.logger.Warn("⚠️  Recovery case 4: No dockerfile configured — falling back to bootstrap mode")
+		return o.fallbackToBootstrap(safeImageID)
+
+	case recoveryCaseDockerfileMissing:
 		o.logger.Warn("⚠️  Recovery case 2: Dockerfile configured at %q but file not found on disk", dockerfilePath)
 		o.logger.Warn("⚠️  This is unexpected — the Dockerfile may have been deleted from the repository")
 		return o.fallbackToBootstrap(safeImageID)
-	}
 
-	// Case 1: Dockerfile exists — attempt auto-rebuild
-	o.logger.Info("🔨 Recovery case 1: Dockerfile found at %q — rebuilding target container automatically", dockerfilePath)
-	if err := o.buildContainerFromConfig(ctx, cfg); err != nil {
-		// Case 3: Rebuild failed
-		o.logger.Warn("⚠️  Recovery case 3: Rebuild from dockerfile failed: %v", err)
-		o.logger.Warn("⚠️  Falling back to bootstrap mode — PM will handle Dockerfile remediation")
+	case recoveryCaseStatError:
+		o.logger.Warn("⚠️  Recovery case 5: Dockerfile at %q cannot be accessed — falling back to bootstrap mode", dockerfilePath)
+		return o.fallbackToBootstrap(safeImageID)
+
+	case recoveryCaseIsDir:
+		o.logger.Warn("⚠️  Recovery case 6: Configured Dockerfile path %q is a directory, not a file — falling back to bootstrap mode", dockerfilePath)
+		return o.fallbackToBootstrap(safeImageID)
+
+	case recoveryCaseRebuild:
+		o.logger.Info("🔨 Recovery case 1: Dockerfile found at %q — rebuilding target container automatically", dockerfilePath)
+		if err := o.buildContainerFromConfig(ctx, cfg); err != nil {
+			o.logger.Warn("⚠️  Recovery case 3: Rebuild from dockerfile failed: %v", err)
+			o.logger.Warn("⚠️  Falling back to bootstrap mode — PM will handle Dockerfile remediation")
+			return o.fallbackToBootstrap(safeImageID)
+		}
+		o.logger.Info("✅ Target container rebuilt successfully from dockerfile")
+		return nil
+
+	default:
+		o.logger.Warn("⚠️  Unknown recovery case %d — falling back to bootstrap mode", rc)
 		return o.fallbackToBootstrap(safeImageID)
 	}
-
-	o.logger.Info("✅ Target container rebuilt successfully from dockerfile")
-	return nil
 }
 
 // fallbackToBootstrap resets the pinned image to the safe container, allowing the
