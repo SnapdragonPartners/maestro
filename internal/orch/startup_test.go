@@ -1,8 +1,6 @@
 package orch
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"orchestrator/pkg/config"
@@ -209,29 +207,20 @@ func TestGetDockerfilePath(t *testing.T) {
 }
 
 // TestDetectRecoveryCase tests that detectRecoveryCase correctly identifies
-// each recovery scenario based on config and filesystem state.
+// each recovery scenario based on config state.
+//
+// Note: The Dockerfile lives in the git repository, not on the host filesystem.
+// detectRecoveryCase only checks whether a Dockerfile is *configured* — the actual
+// file existence is validated during the build (which clones the repo).
 func TestDetectRecoveryCase(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create a valid dockerfile on disk
-	maestroDir := filepath.Join(tmpDir, ".maestro")
-	if err := os.MkdirAll(maestroDir, 0755); err != nil {
-		t.Fatalf("failed to create .maestro dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(maestroDir, "Dockerfile"), []byte("FROM ubuntu:latest\n"), 0644); err != nil {
-		t.Fatalf("failed to write dockerfile: %v", err)
-	}
-
 	tests := []struct {
 		name         string
-		projectDir   string
 		config       *config.Config
 		expectedCase recoveryCase
 		expectedPath string
 	}{
 		{
-			name:       "case 1: dockerfile exists on disk — rebuild",
-			projectDir: tmpDir,
+			name: "dockerfile configured — attempt rebuild",
 			config: &config.Config{
 				Container: &config.ContainerConfig{
 					Dockerfile: ".maestro/Dockerfile",
@@ -241,19 +230,7 @@ func TestDetectRecoveryCase(t *testing.T) {
 			expectedPath: ".maestro/Dockerfile",
 		},
 		{
-			name:       "case 2: dockerfile configured but not on disk",
-			projectDir: tmpDir,
-			config: &config.Config{
-				Container: &config.ContainerConfig{
-					Dockerfile: ".maestro/Dockerfile.missing",
-				},
-			},
-			expectedCase: recoveryCaseDockerfileMissing,
-			expectedPath: ".maestro/Dockerfile.missing",
-		},
-		{
-			name:       "case 4: no dockerfile configured",
-			projectDir: tmpDir,
+			name: "no dockerfile configured — empty string",
 			config: &config.Config{
 				Container: &config.ContainerConfig{
 					Dockerfile: "",
@@ -263,8 +240,7 @@ func TestDetectRecoveryCase(t *testing.T) {
 			expectedPath: "",
 		},
 		{
-			name:       "case 4: nil container config",
-			projectDir: tmpDir,
+			name: "nil container config — no dockerfile",
 			config: &config.Config{
 				Container: nil,
 			},
@@ -272,21 +248,20 @@ func TestDetectRecoveryCase(t *testing.T) {
 			expectedPath: "",
 		},
 		{
-			name:       "case 6: dockerfile path is a directory",
-			projectDir: tmpDir,
+			name: "custom dockerfile path — attempt rebuild",
 			config: &config.Config{
 				Container: &config.ContainerConfig{
-					Dockerfile: ".maestro", // points to the directory itself
+					Dockerfile: ".maestro/Dockerfile.custom",
 				},
 			},
-			expectedCase: recoveryCaseIsDir,
-			expectedPath: ".maestro",
+			expectedCase: recoveryCaseRebuild,
+			expectedPath: ".maestro/Dockerfile.custom",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			orch, err := NewStartupOrchestrator(tt.projectDir, false)
+			orch, err := NewStartupOrchestrator("/test", false)
 			if err != nil {
 				t.Fatalf("failed to create orchestrator: %v", err)
 			}
