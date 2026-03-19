@@ -560,12 +560,15 @@ func TestSessionTokenInvalid(t *testing.T) {
 	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
 	server.sessionToken = "real-token"
 
-	// Wrong token
+	// Wrong token — should return friendly HTML page
 	req := httptest.NewRequest("GET", "/auth/session?token=wrong-token", nil)
 	w := httptest.NewRecorder()
 	server.handleSessionAuth(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Expected 403 for wrong token, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Session Link Expired") {
+		t.Error("Expected friendly expired page for wrong token")
 	}
 
 	// Missing token param
@@ -576,13 +579,16 @@ func TestSessionTokenInvalid(t *testing.T) {
 		t.Errorf("Expected 400 for missing token, got %d", w.Code)
 	}
 
-	// No session token configured
+	// No session token configured — should return friendly HTML page
 	server.sessionToken = ""
 	req = httptest.NewRequest("GET", "/auth/session?token=anything", nil)
 	w = httptest.NewRecorder()
 	server.handleSessionAuth(w, req)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Expected 403 when no token configured, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Session Link Expired") {
+		t.Error("Expected friendly expired page when no token configured")
 	}
 }
 

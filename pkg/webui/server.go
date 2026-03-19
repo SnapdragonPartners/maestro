@@ -196,30 +196,36 @@ const tokenExpiredHTML = `<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Session Expired - Maestro</title>
-    <link href="/static/css/tailwind.css?v=2" rel="stylesheet">
-    <link rel="apple-touch-icon" sizes="180x180" href="/static/img/logos/apple-touch-icon.png">
-    <link rel="icon" type="image/png" sizes="32x32" href="/static/img/logos/favicon-32x32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="/static/img/logos/favicon-16x16.png">
-    <link rel="shortcut icon" href="/static/img/logos/favicon.ico">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f9fafb; color: #111827; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }
+        .container { max-width: 32rem; width: 100%; }
+        .heading { text-align: center; margin-bottom: 2rem; }
+        .heading h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
+        .heading p { color: #4b5563; font-size: 0.95rem; }
+        .card { background: #fff; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06); padding: 1.5rem; }
+        .section + .section { border-top: 1px solid #e5e7eb; margin-top: 1.25rem; padding-top: 1.25rem; }
+        .section h2 { font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem; }
+        .section p { color: #4b5563; font-size: 0.875rem; }
+        .btn { display: inline-block; margin-top: 0.75rem; background: #2563eb; color: #fff; text-decoration: none; font-size: 0.875rem; font-weight: 500; padding: 0.5rem 1rem; border-radius: 0.375rem; }
+        .btn:hover { background: #1d4ed8; }
+    </style>
 </head>
-<body class="bg-gray-50 min-h-screen">
-    <div class="max-w-lg mx-auto px-4 py-16">
-        <div class="text-center mb-8">
-            <img src="/static/img/logos/maestro_logo_small.png" alt="Maestro" class="h-20 w-auto mx-auto mb-4">
-            <h1 class="text-2xl font-bold text-gray-900">Session Link Expired</h1>
-            <p class="mt-3 text-gray-600">This session link has already been used or has expired. Each link can only be used once.</p>
+<body>
+    <div class="container">
+        <div class="heading">
+            <h1>Session Link Expired</h1>
+            <p>This session link has already been used or has expired. Each link can only be used once.</p>
         </div>
-
-        <div class="bg-white shadow rounded-lg p-6 space-y-5">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-800 mb-1">Reopen from App</h2>
-                <p class="text-sm text-gray-600">If you are using Maestro via an app like the Maestro macOS Control Panel, close this tab and use the app to open the Web UI again. This will generate a fresh session link.</p>
+        <div class="card">
+            <div class="section">
+                <h2>Reopen from App</h2>
+                <p>If you are using Maestro via an app like the Maestro macOS Control Panel, close this tab and use the app to open the Web UI again. This will generate a fresh session link.</p>
             </div>
-            <hr class="border-gray-200">
-            <div>
-                <h2 class="text-sm font-semibold text-gray-800 mb-1">Log in with Password</h2>
-                <p class="text-sm text-gray-600 mb-3">If you know your Maestro password, you can log in directly.</p>
-                <a href="/" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors">Log in with Password</a>
+            <div class="section">
+                <h2>Log in with Password</h2>
+                <p>If you know your Maestro password, you can log in directly.</p>
+                <a href="/" class="btn">Log in with Password</a>
             </div>
         </div>
     </div>
