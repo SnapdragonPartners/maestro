@@ -88,7 +88,7 @@ func (s *Server) handleIssueSubmit(w http.ResponseWriter, r *http.Request) {
 	// Build diagnostics zip if requested
 	var diagnosticsPath string
 	if req.IncludeDiagnostics {
-		diagnosticsPath, err = buildDiagnosticsZip(s.workDir, installationID)
+		diagnosticsPath, err = buildDiagnosticsZip(s.workDir, installationID, req.Description)
 		if err != nil {
 			s.logger.Error("Failed to build diagnostics zip: %v", err)
 			// Non-fatal: submit without diagnostics
@@ -229,6 +229,7 @@ func (s *Server) getIssueHTTPClient() *http.Client {
 type diagnosticsManifest struct {
 	MaestroVersion string         `json:"maestro_version"`
 	InstallationID string         `json:"installation_id"`
+	Description    string         `json:"description"`
 	CreatedAt      string         `json:"created_at"`
 	Files          []manifestFile `json:"files"`
 }
@@ -240,7 +241,7 @@ type manifestFile struct {
 
 // buildDiagnosticsZip creates a temporary zip file with diagnostic data.
 // Caller is responsible for removing the returned file path.
-func buildDiagnosticsZip(workDir, installationID string) (string, error) {
+func buildDiagnosticsZip(workDir, installationID, description string) (string, error) {
 	maestroDir := filepath.Join(workDir, config.ProjectConfigDir)
 
 	// Create temp file for the zip
@@ -298,6 +299,7 @@ func buildDiagnosticsZip(workDir, installationID string) (string, error) {
 	manifest := diagnosticsManifest{
 		MaestroVersion: version.Version,
 		InstallationID: installationID,
+		Description:    description,
 		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 		Files:          manifestFiles,
 	}

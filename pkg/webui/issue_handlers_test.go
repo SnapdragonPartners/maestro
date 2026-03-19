@@ -212,7 +212,7 @@ func TestBuildDiagnosticsZip(t *testing.T) {
 	os.WriteFile(filepath.Join(maestroDir, "secrets.json.enc"), []byte("secret!"), 0o644)
 	os.WriteFile(filepath.Join(maestroDir, ".password-verifier.json"), []byte("verifier!"), 0o644)
 
-	zipPath, err := buildDiagnosticsZip(workDir, "test-install-id")
+	zipPath, err := buildDiagnosticsZip(workDir, "test-install-id", "test issue description")
 	if err != nil {
 		t.Fatalf("buildDiagnosticsZip: %v", err)
 	}
@@ -265,6 +265,9 @@ func TestBuildDiagnosticsZip(t *testing.T) {
 			}
 			if manifest.InstallationID != "test-install-id" {
 				t.Errorf("manifest installation_id = %q, want %q", manifest.InstallationID, "test-install-id")
+			}
+			if manifest.Description != "test issue description" {
+				t.Errorf("manifest description = %q, want %q", manifest.Description, "test issue description")
 			}
 			if manifest.MaestroVersion != version.Version {
 				t.Errorf("manifest version = %q, want %q", manifest.MaestroVersion, version.Version)
