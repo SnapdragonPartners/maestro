@@ -55,6 +55,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           AC_USERNAME: ${{ secrets.AC_USERNAME }}
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+          ISSUE_REPORTING_KEY: ${{ secrets.ISSUE_REPORTING_KEY }}
 
       - name: Notarize macOS archives
         env:
