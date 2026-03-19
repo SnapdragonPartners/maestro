@@ -142,7 +142,7 @@ func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
 	// Check token is set and matches (constant-time comparison)
 	if s.sessionToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) != 1 {
 		s.logger.Warn("Invalid session token attempt from %s", r.RemoteAddr)
-		http.Error(w, "Invalid or expired token", http.StatusForbidden)
+		s.renderTokenExpiredPage(w)
 		return
 	}
 
@@ -181,6 +181,56 @@ func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("Session token exchanged for cookie from %s", r.RemoteAddr)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
+
+// renderTokenExpiredPage serves a friendly HTML page when a session token is invalid or expired,
+// giving the user clear recovery options instead of a bare 403 error.
+func (s *Server) renderTokenExpiredPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	w.Write([]byte(tokenExpiredHTML)) //nolint:errcheck
+}
+
+const tokenExpiredHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session Expired - Maestro</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f9fafb; color: #111827; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }
+        .container { max-width: 32rem; width: 100%; }
+        .heading { text-align: center; margin-bottom: 2rem; }
+        .heading h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
+        .heading p { color: #4b5563; font-size: 0.95rem; }
+        .card { background: #fff; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06); padding: 1.5rem; }
+        .section + .section { border-top: 1px solid #e5e7eb; margin-top: 1.25rem; padding-top: 1.25rem; }
+        .section h2 { font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem; }
+        .section p { color: #4b5563; font-size: 0.875rem; }
+        .btn { display: inline-block; margin-top: 0.75rem; background: #2563eb; color: #fff; text-decoration: none; font-size: 0.875rem; font-weight: 500; padding: 0.5rem 1rem; border-radius: 0.375rem; }
+        .btn:hover { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="heading">
+            <h1>Session Link Expired</h1>
+            <p>This session link has already been used or has expired. Each link can only be used once.</p>
+        </div>
+        <div class="card">
+            <div class="section">
+                <h2>Reopen from App</h2>
+                <p>If you are using Maestro via an app like the Maestro macOS Control Panel, close this tab and use the app to open the Web UI again. This will generate a fresh session link.</p>
+            </div>
+            <div class="section">
+                <h2>Log in with Password</h2>
+                <p>If you know your Maestro password, you can log in directly.</p>
+                <a href="/" class="btn">Log in with Password</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`
 
 // requireAuth wraps an HTTP handler with Basic Authentication.
 // Username is always "maestro", password comes from unified password (secrets file or MAESTRO_PASSWORD env var).
