@@ -45,6 +45,15 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "$ISSUE_REPORTING_KEY" ]; then
+            echo "::error::ISSUE_REPORTING_KEY secret is not set. Release builds require this for issue reporting."
+            exit 1
+          fi
+        env:
+          ISSUE_REPORTING_KEY: ${{ secrets.ISSUE_REPORTING_KEY }}
+
       - name: Set up GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
