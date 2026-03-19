@@ -73,6 +73,8 @@ type Server struct {
 	// Password recovery: verify Basic Auth against verifier file when no password in memory
 	passwordRecovered atomic.Bool
 	recoverMu         sync.Mutex
+	// Issue reporting HTTP client (injectable for tests)
+	issueHTTPClient *http.Client
 	// Session token auth: one-time token exchange for cookie-based browser auth
 	sessionToken   string          // from MAESTRO_SESSION_TOKEN env var
 	sessionCookies map[string]bool // valid session cookie values
@@ -404,6 +406,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Secrets endpoints - encrypted secrets management
 	mux.HandleFunc("/api/secrets", s.requireAuth(s.handleSecretsRouter))
 	mux.HandleFunc("/api/secrets/", s.requireAuth(s.handleSecretsDelete))
+
+	// Issue reporting
+	mux.HandleFunc("/api/issues/submit", s.requireAuth(s.handleIssueSubmit))
 }
 
 // handleSecretsRouter routes GET/POST to appropriate handlers.

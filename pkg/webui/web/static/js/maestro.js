@@ -1873,6 +1873,98 @@ class MaestroUI {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    // === Issue Reporting ===
+
+    openIssueModal() {
+        document.getElementById('issue-modal').classList.remove('hidden');
+        document.getElementById('issue-description').value = '';
+        document.getElementById('issue-include-diagnostics').checked = true;
+        document.getElementById('issue-char-count').classList.add('hidden');
+        document.getElementById('issue-status').classList.add('hidden');
+        document.getElementById('issue-buttons').classList.remove('hidden');
+        const submitBtn = document.getElementById('issue-submit-btn');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+    }
+
+    closeIssueModal() {
+        document.getElementById('issue-modal').classList.add('hidden');
+    }
+
+    updateIssueCharCount() {
+        const textarea = document.getElementById('issue-description');
+        const counter = document.getElementById('issue-char-count');
+        const remaining = 10000 - textarea.value.length;
+        if (remaining <= 500) {
+            counter.textContent = `${remaining} characters remaining`;
+            counter.classList.remove('hidden');
+            counter.className = remaining <= 100
+                ? 'text-xs text-red-500 text-right mt-1'
+                : 'text-xs text-gray-400 text-right mt-1';
+        } else {
+            counter.classList.add('hidden');
+        }
+    }
+
+    async submitIssue() {
+        const description = document.getElementById('issue-description').value.trim();
+        if (!description) {
+            this.showToast('Please describe the issue', 'error');
+            return;
+        }
+
+        const includeDiagnostics = document.getElementById('issue-include-diagnostics').checked;
+        const statusEl = document.getElementById('issue-status');
+        const submitBtn = document.getElementById('issue-submit-btn');
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+        statusEl.classList.add('hidden');
+
+        try {
+            const response = await fetch('/api/issues/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    description: description,
+                    include_diagnostics: includeDiagnostics
+                })
+            });
+
+            let data;
+            try {
+                data = await response.json();
+            } catch {
+                data = { error: await response.text() || 'Unexpected response from server' };
+            }
+            if (response.ok) {
+                statusEl.textContent = `Issue submitted successfully. Reference: ${data.id || 'N/A'}`;
+                statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-green-50 text-green-800';
+                statusEl.classList.remove('hidden');
+                // Hide buttons, show close-only
+                document.getElementById('issue-buttons').classList.add('hidden');
+            } else if (response.status === 429) {
+                statusEl.textContent = 'Rate limit exceeded. Please try again later.';
+                statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-yellow-50 text-yellow-800';
+                statusEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit';
+            } else {
+                statusEl.textContent = `Failed to submit: ${data.error || 'Unknown error'}`;
+                statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-red-50 text-red-800';
+                statusEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit';
+            }
+        } catch (err) {
+            statusEl.textContent = 'Failed to submit issue. Please try again.';
+            statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-red-50 text-red-800';
+            statusEl.classList.remove('hidden');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit';
+        }
+    }
 }
 
 // Global functions for onclick handlers

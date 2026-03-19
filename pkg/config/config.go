@@ -58,8 +58,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"orchestrator/pkg/logx"
 )
+
+// generateUUID returns a new UUID v4 string.
+func generateUUID() string {
+	return uuid.New().String()
+}
 
 // Global config instance with mutex protection.
 // projectDir is set once during LoadConfig and never changes - it defines where all
@@ -687,6 +694,9 @@ type Config struct {
 	// Can be overridden at runtime with --airplane CLI flag.
 	// Note: This is distinct from "Operating Modes" (Bootstrap, Development) and "Coder Mode" (standard, claude-code).
 	DefaultMode string `json:"default_mode,omitempty"` // Default operating mode: "standard" or "airplane"
+
+	// === INSTALLATION IDENTITY ===
+	InstallationID string `json:"installation_id,omitempty"` // Per-project UUID for issue reporting
 
 	// === PROJECT-SPECIFIC SETTINGS (per .maestro/config.json) ===
 	Project     *ProjectInfo       `json:"project"`     // Basic project metadata (name, platform)
@@ -2105,6 +2115,30 @@ func GenerateSessionID() error {
 	config.SessionID = sessionID
 
 	getLogger().Info("Generated session ID: %s", sessionID)
+	return nil
+}
+
+// EnsureInstallationID generates and persists an installation ID if one doesn't already exist.
+// The installation ID is a UUID that uniquely identifies this project installation for issue reporting.
+// Must be called after LoadConfig.
+func EnsureInstallationID() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	if config.InstallationID != "" {
+		return nil
+	}
+
+	config.InstallationID = generateUUID()
+	if err := saveConfigLocked(); err != nil {
+		return fmt.Errorf("failed to persist installation ID: %w", err)
+	}
+
+	getLogger().Info("Generated installation ID: %s", config.InstallationID)
 	return nil
 }
 
