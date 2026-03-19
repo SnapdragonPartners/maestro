@@ -1932,7 +1932,12 @@ class MaestroUI {
                 })
             });
 
-            const data = await response.json();
+            let data;
+            try {
+                data = await response.json();
+            } catch {
+                data = { error: await response.text() || 'Unexpected response from server' };
+            }
             if (response.ok) {
                 statusEl.textContent = `Issue submitted successfully. Reference: ${data.id || 'N/A'}`;
                 statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-green-50 text-green-800';

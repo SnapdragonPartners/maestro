@@ -25,6 +25,8 @@ import (
 const (
 	defaultIssueServiceURL = "https://issues.maestroappfactory.ai"
 	maxDescriptionLength   = 10000
+	maxRequestBodyBytes    = 64 * 1024 // 64 KB — generous for a 10K-char description + JSON overhead
+	maxResponseBodyBytes   = 4 * 1024  // 4 KB — issue service responses are small JSON
 	issueSubmitTimeout     = 30 * time.Second
 )
 
@@ -48,6 +50,9 @@ func (s *Server) handleIssueSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Limit request body size to prevent abuse
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
 	var req issueSubmitRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -105,9 +110,14 @@ func (s *Server) handleIssueSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Forward the response status and body
-	respBody, _ := io.ReadAll(resp.Body)
-	s.logger.Info("Issue service responded: status=%d body=%s", resp.StatusCode, string(respBody))
+	// Forward the response status and body (limited read to prevent memory issues)
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	if readErr != nil {
+		s.logger.Error("Failed to read issue service response: %v", readErr)
+		writeJSONError(w, "Failed to read issue service response", http.StatusInternalServerError)
+		return
+	}
+	s.logger.Debug("Issue service responded: status=%d", resp.StatusCode)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody) //nolint:errcheck
@@ -192,6 +202,9 @@ func (s *Server) postToIssueService(ctx context.Context, installationID, signatu
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
+		// Unblock the writer goroutine so it can exit
+		_ = pr.CloseWithError(err)
+		<-errCh
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 
@@ -245,9 +258,11 @@ func buildDiagnosticsZip(workDir, installationID string) (string, error) {
 
 	zipWriter := zip.NewWriter(tmpFile)
 
-	// Checkpoint the WAL before copying the database
+	// Checkpoint the WAL before copying the database, but only if the DB exists
 	dbPath := filepath.Join(maestroDir, config.DatabaseFilename)
-	checkpointWAL(dbPath)
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		checkpointWAL(dbPath)
+	}
 
 	// Files to include (relative to .maestro/)
 	includeFiles := []string{
