@@ -464,6 +464,11 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 		return nil, nil, fmt.Errorf("failed to generate session ID: %w", sessionErr)
 	}
 
+	// Ensure installation ID exists for issue reporting
+	if installErr := config.EnsureInstallationID(); installErr != nil {
+		return nil, nil, fmt.Errorf("failed to ensure installation ID: %w", installErr)
+	}
+
 	// Get configuration AFTER generating session ID (session ID is stored in global config)
 	cfg, err := config.GetConfig()
 	if err != nil {
