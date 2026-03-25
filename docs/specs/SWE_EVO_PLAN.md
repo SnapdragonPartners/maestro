@@ -49,7 +49,7 @@ To avoid ambiguity, this document uses these terms consistently:
 │    1. Create/reset GitHub repo with base_commit              │
 │    2. Generate Maestro project config                        │
 │    3. Write spec file (release notes) to project dir         │
-│    4. Launch: maestro --zeroshot spec.md --project-dir ...   │
+│    4. Launch: maestro --zeroshot spec.md --projectdir ...   │
 │    5. Wait for completion / timeout                          │
 │    6. Validate and collect patch from remote main            │
 │    7. Tag, archive logs, shut down                           │
@@ -263,7 +263,7 @@ for each instance:
      - Tag base_commit as `benchmark-base` in the repo
 
   3. LAUNCH MAESTRO (runner)
-     - exec: `maestro --zeroshot release-note.md --project-dir benchmark-runs/{instance_id}/`
+     - exec: `maestro --zeroshot release-note.md --projectdir benchmark-runs/{instance_id}/`
      - Maestro starts in zero-shot mode:
        - PM receives spec file, validates, runs bootstrap detection
        - PM submits spec to architect (auto-skips preview, never blocks on human)

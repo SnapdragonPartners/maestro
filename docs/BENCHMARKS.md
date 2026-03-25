@@ -21,14 +21,14 @@ This document tracks external coding benchmarks we're evaluating for measuring M
 | **Languages** | Python only |
 | **Best score** | 21% (GPT-5) |
 | **Published** | December 2025 |
-| **Repo** | https://github.com/SWE-EVO/SWE-EVO |
+| **Repo** | Upstream: https://github.com/SWE-EVO/SWE-EVO / Evaluated fork: https://github.com/FSoft-AI4Code/SWE-EVO |
 | **Why it fits** | Closest to Maestro's workflow: interpret high-level requirements → plan coordinated multi-file changes → iterate. The multi-PR nature maps directly to story decomposition. |
 
 ### Status: DEEP EVALUATION COMPLETE
 
 ### Technical Details
 
-**Repository**: `github.com/FSoft-AI4Code/SWE-EVO` (fork of SWE-bench). Installs as the `swebench` Python package.
+**Repository**: `github.com/FSoft-AI4Code/SWE-EVO` (evaluated fork; upstream: `github.com/SWE-EVO/SWE-EVO`). Installs as the `swebench` Python package.
 
 **Repo structure**:
 ```
@@ -98,12 +98,11 @@ A harness that:
 - Orchestrates sequential or parallel runs across instances
 
 #### 2. Zero-Shot Execution Mode
-- [ ] New config flag (e.g., `autonomous_mode: true`) that modifies the workflow:
-  - **Skip PM bootstrap entirely** — task comes pre-formed from the benchmark adapter
-  - **Architect auto-resolves ambiguities** — instead of ESCALATED state, architect makes a judgment call and continues
-  - **Disable escalation timeouts** — or set to 0 to auto-proceed
-  - **Single-story mode** — one release note = one story (or let architect decompose into sub-stories)
-- [ ] Consider whether architect should decompose release notes into multiple stories or treat each as one unit
+- [ ] CLI flag `--zeroshot <specfile>` that enables autonomous execution:
+  - **PM runs in zero-shot mode** — receives spec file, validates, submits to architect. Never blocks on human (AWAIT_USER → AUTO_RESOLVE).
+  - **Architect auto-resolves escalations** — instead of ESCALATED state, makes a judgment call and continues
+  - **All agents stay in the loop** — PM↔architect Q&A preserved for heterogeneous model reasoning
+  - **Default decomposition** — architect decomposes spec into stories as normal
 
 #### 3. Input Adapter (Release Notes → Stories)
 - [ ] Parse SWE-EVO instance JSON into Maestro story format
