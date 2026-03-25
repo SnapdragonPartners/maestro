@@ -45,8 +45,17 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
+      - name: Validate required secrets
+        run: |
+          if [ -z "$ISSUE_REPORTING_KEY" ]; then
+            echo "::error::ISSUE_REPORTING_KEY secret is not set. Release builds require this for issue reporting."
+            exit 1
+          fi
+        env:
+          ISSUE_REPORTING_KEY: ${{ secrets.ISSUE_REPORTING_KEY }}
+
       - name: Set up GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+        uses: goreleaser/goreleaser-action@v7
         with:
           version: latest
           args: release --clean
@@ -55,6 +64,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           AC_USERNAME: ${{ secrets.AC_USERNAME }}
           AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+          ISSUE_REPORTING_KEY: ${{ secrets.ISSUE_REPORTING_KEY }}
 
       - name: Notarize macOS archives
         env:
@@ -69,6 +79,18 @@ jobs:
               --password "$AC_PASSWORD" \
               --wait
           done
+
+  trigger-macos-app:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger macOS app build
+        env:
+          GH_TOKEN: ${{ secrets.MACOS_BUILD_PAT }}
+        run: |
+          gh workflow run release.yml \
+            --repo SnapdragonPartners/maestro-macos \
+            --field maestro_version=${{ github.ref_name }}
 
   publish-apt-repo:
     needs: goreleaser

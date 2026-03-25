@@ -48,10 +48,12 @@ For each requirement you identify:
    - 3 points: Complex features, database changes
    - 4 points: Major integrations, security features
    - 5 points: Complex systems, architectural changes
-5. **Identify logical dependencies** between requirements (use requirement titles)
+5. **Assign an ordinal ID** to each requirement: `req_001`, `req_002`, `req_003`, etc.
+6. **Identify logical dependencies** between requirements using ordinal IDs (e.g., `["req_001"]`)
+   - **Dependencies must form a DAG — no circular references**
    - **For app stories**: Scope stories to minimize overlap and enable parallel development - stories should touch different files/components where possible to avoid merge conflicts
    - **For devops stories**: Dependencies are fine as infrastructure work is typically sequential
-6. **Classify story type** as either:
+7. **Classify story type** as either:
    - **"devops"**: Infrastructure, containers, deployment, configuration - minimally scoped to infrastructure tasks ONLY
    - **"app"**: Application code, features, business logic, algorithms, data processing
    - **Default to "app"** when uncertain - app containers provide full development environments
@@ -63,10 +65,11 @@ When you have completed your analysis, you MUST call the `submit_stories` tool w
 - **analysis**: Brief summary of what you found in the specification and the identified platform (e.g., 'Go-based project requiring module setup and linting configuration')
 - **platform**: The identified platform (e.g., "go", "python", "nodejs")
 - **requirements**: Array of requirement objects, each containing:
+  - **id**: Ordinal identifier (e.g., "req_001", "req_002")
   - **title**: Concise, clear requirement title
   - **description**: Detailed description of what needs to be implemented using platform-appropriate tools and examples
   - **acceptance_criteria**: Array of 3-5 specific, testable criteria (platform-consistent)
-  - **dependencies**: Array of requirement titles this depends on
+  - **dependencies**: Array of ordinal IDs this depends on (e.g., ["req_001"]) — must form a DAG, no cycles
   - **story_type**: Either "app" (application code) or "devops" (infrastructure)
 
 **Important Guidelines:**
@@ -75,7 +78,7 @@ When you have completed your analysis, you MUST call the `submit_stories` tool w
 - Focus on implementable features, not documentation or planning tasks
 - Make requirements specific enough for a coding agent to implement
 - Ensure acceptance criteria are testable and concrete
-- Dependencies should reference other requirement titles in this analysis
+- Dependencies should reference ordinal IDs of other requirements in this analysis (e.g., ["req_001"])
 - If the spec is unclear, make reasonable assumptions and note them in the description
 - Extract value even from poorly formatted or incomplete specifications
 

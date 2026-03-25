@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -168,4 +169,8 @@ func (m *mockAgent) SetPendingContainerConfig(_, _, _, _ string) {
 
 func (m *mockAgent) GetPendingContainerConfig() (string, string, string, string, bool) {
 	return "", "", "", "", false // No pending config in mock
+}
+
+func (m *mockAgent) SwitchContainer(_ context.Context, _, _, _, _ string) (string, error) {
+	return "mock-container", nil // No-op for mock
 }

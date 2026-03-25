@@ -32,13 +32,14 @@ func TestAllValidTransitions(t *testing.T) {
 			StateWaiting,
 			StateWorking,
 			StateAwaitUser,
-			StatePreview,
+			StateAwaitArchitect, // Bootstrap spec (Spec 0) sent at startup
 			proto.StateDone,
 		},
 		StateWorking: {
 			StateWorking,
 			StateAwaitUser,
 			StatePreview,
+			StateAwaitArchitect, // Bootstrap spec (Spec 0) sent from WORKING
 			proto.StateError,
 			proto.StateDone,
 		},
@@ -105,7 +106,6 @@ func TestInvalidTransitions(t *testing.T) {
 		to   proto.State
 		name string
 	}{
-		{StateWaiting, StateAwaitArchitect, "WAITING->AWAIT_ARCHITECT (skipping PREVIEW)"},
 		{StateAwaitUser, StatePreview, "AWAIT_USER->PREVIEW (must go through WORKING)"},
 		{StateAwaitUser, StateAwaitArchitect, "AWAIT_USER->AWAIT_ARCHITECT (invalid path)"},
 		{StatePreview, StateWorking, "PREVIEW->WORKING (must use AWAIT_USER)"},

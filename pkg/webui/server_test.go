@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -327,6 +329,319 @@ func TestFindArchitectStateNoArchitect(t *testing.T) {
 	_, err = server.findArchitectState()
 	if err == nil {
 		t.Error("Expected error when no architect registered, got nil")
+	}
+}
+
+func TestRequireAuthFastPath(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
+
+	// Set password in memory
+	config.SetProjectPassword("test-password")
+	defer config.SetProjectPassword("")
+
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Correct password
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", "test-password")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 for correct password, got %d", w.Code)
+	}
+
+	// Wrong password
+	req = httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", "wrong")
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for wrong password, got %d", w.Code)
+	}
+
+	// No credentials
+	req = httptest.NewRequest("GET", "/", nil)
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for no credentials, got %d", w.Code)
+	}
+
+	// Wrong username
+	req = httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("admin", "test-password")
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for wrong username, got %d", w.Code)
+	}
+}
+
+func TestRequireAuthVerifierRecovery(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	workDir := t.TempDir()
+	server := NewServer(dispatcher, workDir, nil, llmFactory)
+
+	// Create a verifier but do NOT set password in memory
+	password := "recovery-password"
+	if err := config.SavePasswordVerifier(workDir, password); err != nil {
+		t.Fatalf("Failed to save verifier: %v", err)
+	}
+
+	// Clear any in-memory password and temporarily unset env var
+	config.SetProjectPassword("")
+	if orig := os.Getenv("MAESTRO_PASSWORD"); orig != "" {
+		t.Setenv("MAESTRO_PASSWORD", "")
+	}
+
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Correct password should recover
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", password)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 for correct password via verifier recovery, got %d", w.Code)
+	}
+
+	// After recovery, password should be in memory
+	if config.GetWebUIPassword() == "" {
+		t.Error("Password should be cached in memory after recovery")
+	}
+
+	// Clean up
+	config.SetProjectPassword("")
+}
+
+func TestRequireAuthVerifierWrongPassword(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	workDir := t.TempDir()
+	server := NewServer(dispatcher, workDir, nil, llmFactory)
+
+	// Create a verifier but do NOT set password in memory
+	if err := config.SavePasswordVerifier(workDir, "correct-password"); err != nil {
+		t.Fatalf("Failed to save verifier: %v", err)
+	}
+	config.SetProjectPassword("")
+	if orig := os.Getenv("MAESTRO_PASSWORD"); orig != "" {
+		t.Setenv("MAESTRO_PASSWORD", "")
+	}
+
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Wrong password should fail
+	req := httptest.NewRequest("GET", "/", nil)
+	req.SetBasicAuth("maestro", "wrong-password")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 for wrong password via verifier, got %d", w.Code)
+	}
+
+	// Password should NOT be cached
+	if config.GetWebUIPassword() != "" {
+		t.Error("Password should not be cached after failed recovery")
+	}
+}
+
+func TestSessionTokenExchange(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
+	server.sessionToken = "test-token-abc123"
+
+	// Set a password so the HMAC cookie signing works
+	config.SetProjectPassword("test-password")
+	defer config.SetProjectPassword("")
+
+	// Valid token should set cookie and redirect
+	req := httptest.NewRequest("GET", "/auth/session?token=test-token-abc123", nil)
+	w := httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("Expected 302 redirect, got %d", w.Code)
+	}
+	if w.Header().Get("Location") != "/" {
+		t.Errorf("Expected redirect to /, got %s", w.Header().Get("Location"))
+	}
+
+	// Check cookie was set
+	cookies := w.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "maestro_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("Expected maestro_session cookie to be set")
+	}
+	if !sessionCookie.HttpOnly {
+		t.Error("Session cookie should be HttpOnly")
+	}
+	if sessionCookie.SameSite != http.SameSiteStrictMode {
+		t.Error("Session cookie should have SameSite=Strict")
+	}
+}
+
+func TestSessionTokenOneTimeUse(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
+	server.sessionToken = "one-time-token"
+
+	config.SetProjectPassword("test-password")
+	defer config.SetProjectPassword("")
+
+	// First use: should succeed
+	req := httptest.NewRequest("GET", "/auth/session?token=one-time-token", nil)
+	w := httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+	if w.Code != http.StatusFound {
+		t.Errorf("First use: expected 302, got %d", w.Code)
+	}
+
+	// Second use: should fail (token invalidated) with friendly HTML page
+	req = httptest.NewRequest("GET", "/auth/session?token=one-time-token", nil)
+	w = httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Second use: expected 403, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if ct := w.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Expected HTML content type, got %q", ct)
+	}
+	if !strings.Contains(body, "Session Link Expired") {
+		t.Error("Expected friendly expired page with 'Session Link Expired' heading")
+	}
+	if !strings.Contains(body, "Reopen from App") {
+		t.Error("Expected recovery option 'Reopen from App'")
+	}
+	if !strings.Contains(body, "Log in with Password") {
+		t.Error("Expected recovery option 'Log in with Password'")
+	}
+}
+
+func TestSessionTokenInvalid(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
+	server.sessionToken = "real-token"
+
+	// Wrong token — should return friendly HTML page
+	req := httptest.NewRequest("GET", "/auth/session?token=wrong-token", nil)
+	w := httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 for wrong token, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Session Link Expired") {
+		t.Error("Expected friendly expired page for wrong token")
+	}
+
+	// Missing token param
+	req = httptest.NewRequest("GET", "/auth/session", nil)
+	w = httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected 400 for missing token, got %d", w.Code)
+	}
+
+	// No session token configured — should return friendly HTML page
+	server.sessionToken = ""
+	req = httptest.NewRequest("GET", "/auth/session?token=anything", nil)
+	w = httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Expected 403 when no token configured, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "Session Link Expired") {
+		t.Error("Expected friendly expired page when no token configured")
+	}
+}
+
+func TestSessionCookieBypassesBasicAuth(t *testing.T) {
+	cfg := createTestConfig()
+	dispatcher, _ := dispatch.NewDispatcher(cfg)
+	llmFactory := createTestLLMFactory(t)
+	defer llmFactory.Stop()
+
+	server := NewServer(dispatcher, t.TempDir(), nil, llmFactory)
+	server.sessionToken = "exchange-token"
+
+	config.SetProjectPassword("test-password")
+	defer config.SetProjectPassword("")
+
+	// Exchange token for cookie
+	req := httptest.NewRequest("GET", "/auth/session?token=exchange-token", nil)
+	w := httptest.NewRecorder()
+	server.handleSessionAuth(w, req)
+
+	// Extract the cookie
+	cookies := w.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "maestro_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("Expected session cookie from token exchange")
+	}
+
+	// Use cookie to access a protected endpoint (no Basic Auth)
+	handler := server.requireAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req = httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(sessionCookie)
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected 200 with valid session cookie, got %d", w.Code)
+	}
+
+	// Invalid cookie should fall back to Basic Auth (and fail without credentials)
+	req = httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "maestro_session", Value: "invalid-value"})
+	w = httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected 401 with invalid session cookie and no Basic Auth, got %d", w.Code)
 	}
 }
 

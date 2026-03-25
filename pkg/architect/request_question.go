@@ -16,9 +16,11 @@ import (
 // generateQuestionPrompt creates a concise user message for technical questions.
 // Context (story, role, tools) is already in the system prompt.
 func (d *Driver) generateQuestionPrompt(requestMsg *proto.AgentMsg, questionPayload *proto.QuestionRequestPayload, coderID string, toolProvider *tools.ToolProvider) string {
-	_ = requestMsg   // context already in system prompt
-	_ = coderID      // context already in system prompt
-	_ = toolProvider // tools already documented in system prompt
+	// Story context is provided in the system prompt (via ensureContextForStory)
+	// AND inline in the request payload content. Both are available to the LLM.
+	_ = requestMsg
+	_ = coderID
+	_ = toolProvider
 
 	return fmt.Sprintf(`The coder has a technical question:
 

@@ -3,7 +3,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -71,8 +70,13 @@ func (c *Coder) handleClaudeCodePlanning(ctx context.Context, sm *agent.BaseStat
 	opts.Mode = claude.ModePlanning
 	opts.WorkDir = "/workspace"
 	opts.Model = config.GetEffectiveCoderModel()
+	anthropicKey, _ := config.GetSecret(config.EnvAnthropicAPIKey)
 	opts.EnvVars = map[string]string{
-		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
+		"ANTHROPIC_API_KEY": anthropicKey,
+	}
+	// User secrets override (including ANTHROPIC_API_KEY if user-defined)
+	for key, value := range config.GetUserSecrets() {
+		opts.EnvVars[key] = value
 	}
 
 	if shouldResume {
@@ -192,22 +196,6 @@ func (c *Coder) processClaudeCodePlanningResult(sm *agent.BaseStateMachine, resu
 		sm.SetStateData(KeyPendingQuestion, questionData)
 		c.logger.Info("❓ Claude Code needs clarification: %s", result.Question.Question)
 		return StateQuestion, false, nil
-
-	case claude.SignalStoryComplete:
-		// Story is already complete - needs architect verification
-		c.logger.Info("✅ Claude Code determined story is already complete: %s", result.Evidence)
-		sm.SetStateData(KeyCompletionDetails, result.Evidence)
-		if result.ExplorationSummary != "" {
-			sm.SetStateData(string(stateDataKeyExplorationSummary), result.ExplorationSummary)
-		}
-		// Set up approval request for architect verification
-		c.pendingApprovalRequest = &ApprovalRequest{
-			ID:      proto.GenerateApprovalID(),
-			Content: result.Evidence,
-			Reason:  "Story completion claim requires verification",
-			Type:    proto.ApprovalTypeCompletion,
-		}
-		return StatePlanReview, false, nil
 
 	case claude.SignalTimeout:
 		c.logger.Warn("⏰ Claude Code planning timed out after %s", result.Duration)

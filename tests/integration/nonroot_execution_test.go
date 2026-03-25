@@ -279,7 +279,7 @@ func TestContainerToolsWithLocalExecutor(t *testing.T) {
 
 	// Test 3: container_switch tool can be instantiated
 	t.Run("ContainerSwitchToolInstantiation", func(t *testing.T) {
-		switchTool := tools.NewContainerSwitchTool()
+		switchTool := tools.NewContainerSwitchTool(nil) // nil agent OK for instantiation test
 
 		def := switchTool.Definition()
 		if def.Name != "container_switch" {

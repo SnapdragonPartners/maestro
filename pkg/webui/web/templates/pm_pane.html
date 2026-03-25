@@ -25,10 +25,7 @@
     <!-- Tab Navigation -->
     <div class="border-b border-gray-200 mb-4">
         <nav class="flex space-x-4" aria-label="PM Tabs">
-            <button id="tab-upload" class="pm-tab active px-4 py-2 text-sm font-medium border-b-2 border-maestro-blue text-maestro-blue">
-                Upload Spec
-            </button>
-            <button id="tab-interview" class="pm-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
+            <button id="tab-interview" class="pm-tab active px-4 py-2 text-sm font-medium border-b-2 border-maestro-blue text-maestro-blue">
                 Interview
             </button>
             <button id="tab-preview" class="pm-tab px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300">
@@ -40,31 +37,8 @@
         </nav>
     </div>
 
-    <!-- Upload Tab Content -->
-    <div id="pm-upload-content" class="pm-tab-content">
-        <div class="mb-4">
-            <p class="text-sm text-gray-600 mb-3">
-                Upload a markdown specification file to start the review process.
-                The PM will validate your spec and submit it to the architect.
-            </p>
-            <div id="upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors cursor-pointer">
-                <input type="file" id="pm-spec-file" accept=".md" class="hidden">
-                <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48">
-                    <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                </svg>
-                <p class="mt-2 text-sm text-gray-600">
-                    <span class="font-medium text-maestro-blue">Click to upload</span> or drag and drop
-                </p>
-                <p class="text-xs text-gray-500">Markdown files only, max 100KB</p>
-            </div>
-            <div id="upload-status" class="hidden mt-3 p-3 rounded-lg">
-                <p id="upload-status-text" class="text-sm"></p>
-            </div>
-        </div>
-    </div>
-
     <!-- Interview Tab Content -->
-    <div id="pm-interview-content" class="pm-tab-content hidden">
+    <div id="pm-interview-content" class="pm-tab-content">
         <div class="space-y-4">
             <!-- Interview Session Controls -->
             <div id="interview-start-section">
@@ -93,15 +67,36 @@
                         <!-- Dynamic interview messages -->
                     </div>
                 </div>
-                <div class="flex" style="width: 100%; gap: 0.5rem;">
-                    <input
-                        type="text"
+                <!-- Attachment indicator (hidden by default) -->
+                <div id="interview-attachment" class="hidden mb-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                        <svg class="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                        </svg>
+                        <span id="interview-attachment-name" class="text-sm text-blue-800 font-medium"></span>
+                        <span id="interview-attachment-size" class="text-xs text-blue-600"></span>
+                    </div>
+                    <button id="interview-attachment-remove" class="text-blue-600 hover:text-blue-800 p-1" title="Remove attachment">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="flex items-end" style="width: 100%; gap: 0.5rem;">
+                    <input type="file" id="interview-file-input" accept=".md" class="hidden">
+                    <button id="interview-file-btn" class="flex-shrink-0 p-2 text-gray-500 hover:text-maestro-blue transition-colors" title="Attach a .md spec file">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                        </svg>
+                    </button>
+                    <textarea
                         id="interview-input"
                         placeholder="Type your response..."
                         class="border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-maestro-blue focus:border-transparent"
-                        style="flex: 1; min-width: 0;"
+                        style="flex: 1; min-width: 0; resize: none; overflow-y: auto;"
+                        rows="2"
                         maxlength="4096"
-                    />
+                    ></textarea>
                     <button id="interview-send-btn" class="btn btn-primary px-6 flex-shrink-0">
                         Send
                     </button>

@@ -57,8 +57,9 @@ class DemoController {
             const status = await response.json();
             this.updateUI({ available: true, ...status });
 
-            // Also fetch logs when demo is running
-            if (status.running) {
+            // Fetch logs when demo is running OR when there's a diagnostic error
+            // (crashed container still has logs available via docker logs)
+            if (status.running || status.diagnostic_error) {
                 this.fetchLogs();
             }
         } catch (error) {

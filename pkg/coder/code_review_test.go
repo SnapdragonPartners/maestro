@@ -194,10 +194,8 @@ func TestGetCompletionRequestContent_Basic(t *testing.T) {
 	coder := createTestCoder(t, nil)
 
 	content := coder.getCompletionRequestContent(
-		"PR merged successfully",
-		"story-123",
-		"feature-branch",
-		"https://github.com/test/repo/pull/1",
+		"No changes needed",
+		".gitignore already contains bin/",
 		"Original task",
 	)
 
@@ -212,14 +210,18 @@ func TestGetCompletionRequestContent_NoRenderer(t *testing.T) {
 
 	content := coder.getCompletionRequestContent(
 		"summary",
-		"story-id",
-		"branch",
-		"pr-url",
+		"evidence",
 		"task",
 	)
 
 	if content == "" {
 		t.Error("Expected fallback content when renderer is nil")
+	}
+	if !strings.Contains(content, "summary") {
+		t.Error("Fallback should contain summary")
+	}
+	if !strings.Contains(content, "evidence") {
+		t.Error("Fallback should contain evidence")
 	}
 }
 

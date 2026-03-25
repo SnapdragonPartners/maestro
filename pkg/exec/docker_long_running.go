@@ -222,6 +222,22 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, workspaceDir, mountMode), "--workdir", workspaceDir)
 	}
 
+	// Process extra mounts (e.g., mirror repository RO mount for coder containers).
+	for i := range opts.ExtraMounts {
+		mount := &opts.ExtraMounts[i]
+		mountMode := "rw"
+		if mount.ReadOnly {
+			mountMode = "ro"
+		}
+		hostPath := d.normalizePath(mount.Source)
+		if resolvedPath, err := filepath.EvalSymlinks(hostPath); err == nil && resolvedPath != hostPath {
+			d.logger.Info("Resolved extra mount symlink: %s -> %s", hostPath, resolvedPath)
+			hostPath = resolvedPath
+		}
+		args = append(args, "--volume", fmt.Sprintf("%s:%s:%s", hostPath, mount.Destination, mountMode))
+		d.logger.Debug("Added extra mount: %s -> %s (%s)", hostPath, mount.Destination, mountMode)
+	}
+
 	// Mount Docker socket for container self-updating capability and add writable tmpfs directories.
 	// Set HOME=/tmp so Claude Code uses /tmp/.claude (already writable via tmpfs).
 	args = append(args, "--volume", "/var/run/docker.sock:/var/run/docker.sock", "--tmpfs", fmt.Sprintf("/tmp:exec,nodev,nosuid,size=%s", config.GetContainerTmpfsSize()), "--tmpfs", "/.cache:exec,nodev,nosuid,size=100m", "--env", "HOME=/tmp")
@@ -237,9 +253,13 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 
 	// Note: MCP communication uses TCP via host.docker.internal - no socket mount needed.
 
-	// Environment variables.
-	for _, env := range opts.Env {
-		args = append(args, "--env", env)
+	// Environment variables: write to temp file to avoid leaking secrets in logs/ps.
+	envFile, envErr := WriteEnvFile(opts.Env)
+	if envErr != nil {
+		return "", envErr
+	}
+	if envFile != "" {
+		args = append(args, "--env-file", envFile)
 	}
 
 	// Add image and command (sleep to keep container running)
@@ -264,6 +284,12 @@ func (d *LongRunningDockerExec) StartContainer(ctx context.Context, storyID stri
 	d.logger.Debug("Docker command environment: %v", cmd.Env)
 
 	output, err := cmd.CombinedOutput()
+
+	// Clean up env file immediately — Docker only reads it at container creation time.
+	if envFile != "" {
+		_ = os.Remove(envFile)
+	}
+
 	if err != nil {
 		cmdString := strings.Join(cmd.Args, " ")
 		if cmdString == "" {
@@ -449,13 +475,20 @@ func (d *LongRunningDockerExec) Run(ctx context.Context, cmd []string, opts *Opt
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
+			// Exit code >= 125 indicates a docker daemon/client failure, not the
+			// contained command. Docker uses 125 for its own errors, 126 for
+			// "command cannot be invoked", 127 for "command not found".
+			if result.ExitCode >= 125 {
+				return result, fmt.Errorf("docker exec failed (exit %d): %w", result.ExitCode, err)
+			}
+			// Exit code 1-124: the command itself returned non-zero.
+			// Return err=nil so callers check result.ExitCode, matching LocalExec behavior.
 		} else {
+			// Actual execution failure (timeout, missing binary, etc.)
 			result.ExitCode = 1
+			return result, fmt.Errorf("docker exec failed: %w", err)
 		}
-		return result, fmt.Errorf("docker exec failed: %w", err)
 	}
-
-	result.ExitCode = 0
 
 	// Update container activity tracking.
 	d.updateContainerActivity(containerName)
@@ -552,13 +585,17 @@ func (d *LongRunningDockerExec) RunStreaming(ctx context.Context, cmd []string, 
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
+			// Exit code >= 125 indicates a docker daemon/client failure.
+			if result.ExitCode >= 125 {
+				return result, fmt.Errorf("docker exec failed (exit %d): %w", result.ExitCode, err)
+			}
+			// Exit code 1-124: command returned non-zero, matching LocalExec behavior.
 		} else {
 			result.ExitCode = 1
+			return result, fmt.Errorf("docker exec failed: %w", err)
 		}
-		return result, fmt.Errorf("docker exec failed: %w", err)
 	}
 
-	result.ExitCode = 0
 	d.updateContainerActivity(containerName)
 
 	return result, nil

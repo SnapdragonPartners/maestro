@@ -156,3 +156,123 @@ func TestHasDockerfile(t *testing.T) {
 		})
 	}
 }
+
+// TestGetDockerfilePath tests dockerfile path extraction from config.
+func TestGetDockerfilePath(t *testing.T) {
+	orch, err := NewStartupOrchestrator("/test", false)
+	if err != nil {
+		t.Fatalf("failed to create orchestrator: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		config   *config.Config
+		expected string
+	}{
+		{
+			name: "with dockerfile path",
+			config: &config.Config{
+				Container: &config.ContainerConfig{
+					Dockerfile: ".maestro/Dockerfile",
+				},
+			},
+			expected: ".maestro/Dockerfile",
+		},
+		{
+			name: "with empty dockerfile",
+			config: &config.Config{
+				Container: &config.ContainerConfig{
+					Dockerfile: "",
+				},
+			},
+			expected: "",
+		},
+		{
+			name: "with nil container config",
+			config: &config.Config{
+				Container: nil,
+			},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := orch.getDockerfilePath(tt.config)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestDetectRecoveryCase tests that detectRecoveryCase correctly identifies
+// each recovery scenario based on config state.
+//
+// Note: The Dockerfile lives in the git repository, not on the host filesystem.
+// detectRecoveryCase only checks whether a Dockerfile is *configured* — the actual
+// file existence is validated during the build (which clones the repo).
+func TestDetectRecoveryCase(t *testing.T) {
+	tests := []struct {
+		name         string
+		config       *config.Config
+		expectedCase recoveryCase
+		expectedPath string
+	}{
+		{
+			name: "dockerfile configured — attempt rebuild",
+			config: &config.Config{
+				Container: &config.ContainerConfig{
+					Dockerfile: ".maestro/Dockerfile",
+				},
+			},
+			expectedCase: recoveryCaseRebuild,
+			expectedPath: ".maestro/Dockerfile",
+		},
+		{
+			name: "no dockerfile configured — empty string",
+			config: &config.Config{
+				Container: &config.ContainerConfig{
+					Dockerfile: "",
+				},
+			},
+			expectedCase: recoveryCaseNoDockerfile,
+			expectedPath: "",
+		},
+		{
+			name: "nil container config — no dockerfile",
+			config: &config.Config{
+				Container: nil,
+			},
+			expectedCase: recoveryCaseNoDockerfile,
+			expectedPath: "",
+		},
+		{
+			name: "custom dockerfile path — attempt rebuild",
+			config: &config.Config{
+				Container: &config.ContainerConfig{
+					Dockerfile: ".maestro/Dockerfile.custom",
+				},
+			},
+			expectedCase: recoveryCaseRebuild,
+			expectedPath: ".maestro/Dockerfile.custom",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orch, err := NewStartupOrchestrator("/test", false)
+			if err != nil {
+				t.Fatalf("failed to create orchestrator: %v", err)
+			}
+
+			rc, path := orch.detectRecoveryCase(tt.config)
+			if rc != tt.expectedCase {
+				t.Errorf("expected recovery case %d, got %d", tt.expectedCase, rc)
+			}
+			if path != tt.expectedPath {
+				t.Errorf("expected path %q, got %q", tt.expectedPath, path)
+			}
+		})
+	}
+}

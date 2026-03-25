@@ -4,7 +4,12 @@ package webui
 import (
 	"bufio"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -14,6 +19,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -60,6 +67,19 @@ type Server struct {
 	llmFactory  *agent.LLMClientFactory
 	logger      *logx.Logger
 	templates   *template.Template
+	// Setup mode: gate startup until API keys are configured
+	setupReady chan struct{} // signaled when all keys present
+	setupMode  atomic.Int32  // 1 = setup mode active
+	// Password recovery: verify Basic Auth against verifier file when no password in memory
+	passwordRecovered atomic.Bool
+	recoverMu         sync.Mutex
+	// Issue reporting HTTP client (injectable for tests)
+	issueHTTPClient *http.Client
+	// Session token auth: one-time token exchange for cookie-based browser auth
+	sessionToken   string          // from MAESTRO_SESSION_TOKEN env var
+	sessionCookies map[string]bool // valid session cookie values
+	sessionMu      sync.Mutex      // protects sessionToken and sessionCookies
+	useSSL         bool            // set by StartServer; controls Secure flag on cookies
 }
 
 // AgentListItem represents an agent in the list response.
@@ -80,12 +100,15 @@ func NewServer(dispatcher *dispatch.Dispatcher, workDir string, chatService *cha
 	}
 
 	return &Server{
-		dispatcher:  dispatcher,
-		logger:      logx.NewLogger("webui"),
-		workDir:     workDir,
-		templates:   templates,
-		chatService: chatService,
-		llmFactory:  llmFactory,
+		dispatcher:     dispatcher,
+		logger:         logx.NewLogger("webui"),
+		workDir:        workDir,
+		templates:      templates,
+		chatService:    chatService,
+		llmFactory:     llmFactory,
+		setupReady:     make(chan struct{}, 1),
+		sessionToken:   os.Getenv("MAESTRO_SESSION_TOKEN"),
+		sessionCookies: make(map[string]bool),
 	}
 }
 
@@ -100,48 +123,245 @@ func (s *Server) SetDemoAvailabilityChecker(checker DemoAvailabilityChecker) {
 	s.demoAvailabilityChecker = checker
 }
 
+// handleSessionAuth implements GET /auth/session?token=<token>.
+// Exchanges a one-time session token for a session cookie, enabling browser-based auth
+// without Basic Auth prompts. The macOS wrapper app uses this to open Safari seamlessly.
+func (s *Server) handleSessionAuth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		http.Error(w, "Missing token parameter", http.StatusBadRequest)
+		return
+	}
+
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+
+	// Check token is set and matches (constant-time comparison)
+	if s.sessionToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) != 1 {
+		s.logger.Warn("Invalid session token attempt from %s", r.RemoteAddr)
+		s.renderTokenExpiredPage(w)
+		return
+	}
+
+	// Invalidate token (one-time use)
+	s.sessionToken = ""
+
+	// Generate a random session cookie value
+	cookieBytes := make([]byte, 32)
+	if _, err := rand.Read(cookieBytes); err != nil {
+		s.logger.Error("Failed to generate session cookie: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// HMAC the random bytes with the password for a signed cookie value
+	password := config.GetWebUIPassword()
+	if password == "" {
+		// Fallback: use the random bytes directly if no password yet
+		password = "maestro-session"
+	}
+	mac := hmac.New(sha256.New, []byte(password))
+	mac.Write(cookieBytes)
+	cookieValue := hex.EncodeToString(mac.Sum(nil))
+
+	s.sessionCookies[cookieValue] = true
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "maestro_session",
+		Value:    cookieValue,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.useSSL,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	s.logger.Info("Session token exchanged for cookie from %s", r.RemoteAddr)
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+// renderTokenExpiredPage serves a friendly HTML page when a session token is invalid or expired,
+// giving the user clear recovery options instead of a bare 403 error.
+func (s *Server) renderTokenExpiredPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusForbidden)
+	w.Write([]byte(tokenExpiredHTML)) //nolint:errcheck
+}
+
+const tokenExpiredHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session Expired - Maestro</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f9fafb; color: #111827; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem 1rem; }
+        .container { max-width: 32rem; width: 100%; }
+        .heading { text-align: center; margin-bottom: 2rem; }
+        .heading h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.75rem; }
+        .heading p { color: #4b5563; font-size: 0.95rem; }
+        .card { background: #fff; border-radius: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06); padding: 1.5rem; }
+        .section + .section { border-top: 1px solid #e5e7eb; margin-top: 1.25rem; padding-top: 1.25rem; }
+        .section h2 { font-size: 0.875rem; font-weight: 600; margin-bottom: 0.25rem; }
+        .section p { color: #4b5563; font-size: 0.875rem; }
+        .btn { display: inline-block; margin-top: 0.75rem; background: #2563eb; color: #fff; text-decoration: none; font-size: 0.875rem; font-weight: 500; padding: 0.5rem 1rem; border-radius: 0.375rem; }
+        .btn:hover { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="heading">
+            <h1>Session Link Expired</h1>
+            <p>This session link has already been used or has expired. Each link can only be used once.</p>
+        </div>
+        <div class="card">
+            <div class="section">
+                <h2>Reopen from App</h2>
+                <p>If you are using Maestro via an app like the Maestro macOS Control Panel, close this tab and use the app to open the Web UI again. This will generate a fresh session link.</p>
+            </div>
+            <div class="section">
+                <h2>Log in with Password</h2>
+                <p>If you know your Maestro password, you can log in directly.</p>
+                <a href="/" class="btn">Log in with Password</a>
+            </div>
+        </div>
+    </div>
+</body>
+</html>`
+
 // requireAuth wraps an HTTP handler with Basic Authentication.
 // Username is always "maestro", password comes from unified password (secrets file or MAESTRO_PASSWORD env var).
+// When no password is in memory but a verifier file exists, the middleware verifies the
+// presented Basic Auth password against the verifier and recovers the password for the session.
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Get password using unified password logic
-		expectedPassword := config.GetWebUIPassword()
-		if expectedPassword == "" {
-			// No password set - this should never happen as we generate one at startup
-			s.logger.Error("WebUI password not set - denying access")
-			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+		// Check for valid session cookie first (set via /auth/session token exchange)
+		if cookie, err := r.Cookie("maestro_session"); err == nil {
+			s.sessionMu.Lock()
+			valid := s.sessionCookies[cookie.Value]
+			s.sessionMu.Unlock()
+			if valid {
+				next(w, r)
+				return
+			}
 		}
 
-		// Check Basic Auth credentials
+		// Check Basic Auth credentials are present
 		username, password, ok := r.BasicAuth()
 		if !ok {
-			// No credentials provided
 			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Validate credentials (constant-time comparison for password)
 		expectedUsername := "maestro"
-		if username != expectedUsername || password != expectedPassword {
-			// Invalid credentials
+		if username != expectedUsername {
 			s.logger.Warn("Failed authentication attempt from %s (username: %s)", r.RemoteAddr, username)
 			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		// Credentials valid - proceed to handler
-		next(w, r)
+		// Fast path: password is already in memory
+		expectedPassword := config.GetWebUIPassword()
+		if expectedPassword != "" {
+			if password != expectedPassword {
+				s.logger.Warn("Failed authentication attempt from %s", r.RemoteAddr)
+				w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+			return
+		}
+
+		// Slow path: no password in memory, try to recover via verifier file
+		if config.PasswordVerifierExists(s.workDir) {
+			if s.tryRecoverPassword(password) {
+				next(w, r)
+				return
+			}
+			// Wrong password
+			s.logger.Warn("Failed password recovery attempt from %s", r.RemoteAddr)
+			w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// No password in memory and no verifier file — should not happen
+		s.logger.Error("WebUI password not set and no verifier file found")
+		w.Header().Set("WWW-Authenticate", `Basic realm="Maestro WebUI"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+}
+
+// tryRecoverPassword verifies a password against the verifier file and, on success,
+// caches it in memory and decrypts the secrets file if present.
+// This runs at most once per process — after success, GetWebUIPassword() returns the
+// cached value and requireAuth uses the fast path.
+func (s *Server) tryRecoverPassword(password string) bool {
+	// Already recovered — shouldn't reach here, but guard anyway
+	if s.passwordRecovered.Load() {
+		return false
+	}
+
+	s.recoverMu.Lock()
+	defer s.recoverMu.Unlock()
+
+	// Double-check after acquiring lock
+	if s.passwordRecovered.Load() {
+		return false
+	}
+
+	ok, err := config.VerifyPassword(s.workDir, password)
+	if err != nil {
+		s.logger.Error("Password verification error: %v", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+
+	// Password verified — cache in memory
+	config.SetProjectPassword(password)
+
+	// Decrypt secrets if file exists
+	if config.SecretsFileExists(s.workDir) {
+		secrets, decryptErr := config.DecryptSecretsFile(s.workDir, password)
+		if decryptErr != nil {
+			s.logger.Error("Password verified but secrets decryption failed: %v", decryptErr)
+			// Still mark as recovered — password is valid, secrets may be corrupt
+		} else {
+			config.SetDecryptedSecrets(secrets)
+			s.logger.Info("Password recovered via WebUI login. Secrets decrypted.")
+		}
+	} else {
+		s.logger.Info("Password recovered via WebUI login. No secrets file to decrypt.")
+	}
+
+	s.passwordRecovered.Store(true)
+
+	// Signal setup mode in case API keys are now available from decrypted secrets
+	s.notifySetupIfReady()
+
+	return true
 }
 
 // RegisterRoutes sets up HTTP routes for the API.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Web UI routes - protected by basic auth.
-	mux.HandleFunc("/", s.requireAuth(s.handleDashboard))
+	// Dashboard is wrapped with setup mode redirect middleware.
+	mux.HandleFunc("/", s.requireAuth(s.setupModeRedirect(s.handleDashboard)))
+
+	// Setup mode routes
+	mux.HandleFunc("/setup", s.requireAuth(s.handleSetupPage))
+	mux.HandleFunc("/api/setup/status", s.requireAuth(s.handleSetupStatus))
+	mux.HandleFunc("/api/setup/recheck", s.requireAuth(s.handleSetupRecheck))
 
 	// Serve static files from embedded filesystem - protected by basic auth
 	staticSubFS, err := fs.Sub(staticFS, "web/static")
@@ -157,12 +377,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/queues", s.requireAuth(s.handleQueues))
 	mux.HandleFunc("/api/stories", s.requireAuth(s.handleStories))
 	// NOTE: /api/upload removed - all specs must go through PM for validation
-	// Use /api/pm/upload instead
+	// Specs are uploaded inline via /api/pm/chat with file_content field
 	mux.HandleFunc("/api/answer", s.requireAuth(s.handleAnswer))
 	mux.HandleFunc("/api/shutdown", s.requireAuth(s.handleShutdown))
 	mux.HandleFunc("/api/logs", s.requireAuth(s.handleLogs))
 	mux.HandleFunc("/api/messages", s.requireAuth(s.handleMessages))
-	mux.HandleFunc("/api/healthz", s.handleHealth) // No auth — used by load balancers and monitoring
+	mux.HandleFunc("/api/healthz", s.handleHealth)       // No auth — used by load balancers and monitoring
+	mux.HandleFunc("/auth/session", s.handleSessionAuth) // No auth — token exchange for cookie-based auth
+	mux.HandleFunc("/api/keys/check", s.requireAuth(s.handleKeysCheck))
 	mux.HandleFunc("/api/chat", s.requireAuth(s.handleChat))
 
 	// PM agent endpoints - specification development
@@ -171,7 +393,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/pm/preview", s.requireAuth(s.handlePMPreview))
 	mux.HandleFunc("/api/pm/preview/action", s.requireAuth(s.handlePMPreviewAction))
 	mux.HandleFunc("/api/pm/preview/spec", s.requireAuth(s.handlePMPreviewGet))
-	mux.HandleFunc("/api/pm/upload", s.requireAuth(s.handlePMUpload))
 	mux.HandleFunc("/api/pm/status", s.requireAuth(s.handlePMStatus))
 
 	// Demo endpoints - application demo mode
@@ -185,6 +406,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Secrets endpoints - encrypted secrets management
 	mux.HandleFunc("/api/secrets", s.requireAuth(s.handleSecretsRouter))
 	mux.HandleFunc("/api/secrets/", s.requireAuth(s.handleSecretsDelete))
+
+	// Issue reporting
+	mux.HandleFunc("/api/issues/submit", s.requireAuth(s.handleIssueSubmit))
 }
 
 // handleSecretsRouter routes GET/POST to appropriate handlers.
@@ -866,6 +1090,8 @@ func (s *Server) getDebugLogDir() string {
 
 // StartServer starts the HTTP server using configuration settings.
 func (s *Server) StartServer(ctx context.Context, host string, port int, useSSL bool, certFile, keyFile string) error {
+	s.useSSL = useSSL
+
 	mux := http.NewServeMux()
 	s.RegisterRoutes(mux)
 

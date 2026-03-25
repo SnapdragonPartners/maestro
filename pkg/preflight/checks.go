@@ -38,8 +38,8 @@ func checkDocker(ctx context.Context) CheckResult {
 func checkGitHub(ctx context.Context) CheckResult {
 	result := CheckResult{Provider: ProviderGitHub}
 
-	// Check for GITHUB_TOKEN environment variable
-	token := os.Getenv("GITHUB_TOKEN")
+	// Check for GITHUB_TOKEN (secrets store → env var fallback)
+	token, _ := config.GetSystemSecret("GITHUB_TOKEN")
 	if token == "" {
 		result.Passed = false
 		result.Message = "GITHUB_TOKEN environment variable is not set"
@@ -113,7 +113,7 @@ func checkGitea(ctx context.Context, _ *config.Config) CheckResult {
 func checkOpenAI(_ context.Context) CheckResult {
 	result := CheckResult{Provider: ProviderOpenAI}
 
-	key := os.Getenv("OPENAI_API_KEY")
+	key, _ := config.GetSystemSecret("OPENAI_API_KEY")
 	if key == "" {
 		result.Passed = false
 		result.Message = "OPENAI_API_KEY environment variable is not set"
@@ -131,7 +131,7 @@ func checkOpenAI(_ context.Context) CheckResult {
 func checkAnthropic(_ context.Context) CheckResult {
 	result := CheckResult{Provider: ProviderAnthropic}
 
-	key := os.Getenv("ANTHROPIC_API_KEY")
+	key, _ := config.GetSystemSecret("ANTHROPIC_API_KEY")
 	if key == "" {
 		result.Passed = false
 		result.Message = "ANTHROPIC_API_KEY environment variable is not set"
@@ -148,7 +148,7 @@ func checkAnthropic(_ context.Context) CheckResult {
 func checkGoogle(_ context.Context) CheckResult {
 	result := CheckResult{Provider: ProviderGoogle}
 
-	key := os.Getenv("GOOGLE_GENAI_API_KEY")
+	key, _ := config.GetSystemSecret("GOOGLE_GENAI_API_KEY")
 	if key == "" {
 		result.Passed = false
 		result.Message = "GOOGLE_GENAI_API_KEY environment variable is not set"

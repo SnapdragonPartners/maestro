@@ -103,6 +103,12 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		return StateAwaitUser, nil
 	}
 
+	// Handle AWAIT_ARCHITECT signal - bootstrap spec sent, wait for response
+	if signal == string(StateAwaitArchitect) {
+		d.logger.Info("⏳ PM transitioning to AWAIT_ARCHITECT state (bootstrap spec sent)")
+		return StateAwaitArchitect, nil
+	}
+
 	// Stay in WORKING - PM continues interviewing/drafting
 	return StateWorking, nil
 }
@@ -210,14 +216,19 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 	// Inject state into spec_submit tool
 	if submitTool, ok := specSubmitTool.(*tools.SpecSubmitTool); ok {
-		// Inject bootstrap requirement IDs if bootstrap is needed
-		// The architect will render the full technical specification from these IDs
-		if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
-			reqIDs := reqs.ToRequirementIDs()
-			if len(reqIDs) > 0 {
-				submitTool.SetBootstrapRequirements(reqIDs)
-				d.logger.Info("📋 Injected bootstrap requirements into spec_submit: %v", reqIDs)
+		// Only inject bootstrap requirement IDs if bootstrap spec hasn't been sent separately (Spec 0).
+		// When bootstrap spec was already sent, user spec should not re-bundle bootstrap requirements.
+		bootstrapSpecSent := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyBootstrapSpecSent, false)
+		if !bootstrapSpecSent {
+			if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+				reqIDs := reqs.ToRequirementIDs()
+				if len(reqIDs) > 0 {
+					submitTool.SetBootstrapRequirements(reqIDs)
+					d.logger.Info("📋 Injected bootstrap requirements into spec_submit: %v", reqIDs)
+				}
 			}
+		} else {
+			d.logger.Info("📋 Bootstrap spec already sent (Spec 0) - not bundling bootstrap reqs in user spec")
 		}
 
 		// Inject in_flight flag to enforce hotfix-only mode during development
@@ -347,8 +358,20 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 
 				// Recompute bootstrap requirements after bootstrap tool configures project.
 				// This refreshes the detection so we don't keep prompting for already-configured items.
-				d.detectAndStoreBootstrapRequirements(ctx)
+				reqs, _ := d.detectAndStoreBootstrapRequirements(ctx)
 				d.logger.Debug("🔄 Recomputed bootstrap requirements after bootstrap tool")
+
+				// Check if bootstrap spec (Spec 0) should be sent to architect
+				// Conditions: config complete (no gate), infrastructure items still missing, not already sent
+				bootstrapSpecSent := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyBootstrapSpecSent, false)
+				if !bootstrapSpecSent && reqs != nil && reqs.HasAnyMissingComponents() && !reqs.NeedsBootstrapGate() {
+					if sendErr := d.sendBootstrapSpecRequest(ctx); sendErr != nil {
+						d.logger.Warn("⚠️ Failed to send bootstrap spec: %v (continuing with interview)", sendErr)
+					} else {
+						d.logger.Info("📤 Bootstrap spec (Spec 0) sent to architect, transitioning to AWAIT_ARCHITECT")
+						return string(StateAwaitArchitect), nil
+					}
+				}
 
 				// Reset context if tool requested it (now safe - Clear() properly clears pendingToolResults)
 				if resetContext {
@@ -466,12 +489,17 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 	}
 
 	// Get bootstrap requirements from detection struct (stored during SETUP)
-	// Architect will render the full technical spec from these IDs
+	// Only include if bootstrap spec hasn't been sent separately (Spec 0)
 	var bootstrapReqs []string
-	if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
-		for _, id := range reqs.ToRequirementIDs() {
-			bootstrapReqs = append(bootstrapReqs, string(id))
+	bootstrapSpecSent := utils.GetStateValueOr[bool](d.BaseStateMachine, StateKeyBootstrapSpecSent, false)
+	if !bootstrapSpecSent {
+		if reqs := d.GetBootstrapRequirements(); reqs != nil && reqs.HasAnyMissingComponents() {
+			for _, id := range reqs.ToRequirementIDs() {
+				bootstrapReqs = append(bootstrapReqs, string(id))
+			}
 		}
+	} else {
+		d.logger.Info("📋 Bootstrap spec already sent (Spec 0) - not bundling bootstrap reqs in spec approval")
 	}
 
 	// Create approval request payload
@@ -493,6 +521,9 @@ func (d *Driver) sendSpecApprovalRequest(_ context.Context) error {
 		ToAgent:   "architect", // Dispatcher resolves to "architect-001"
 		Payload:   proto.NewApprovalRequestPayload(approvalPayload),
 	}
+
+	// Track that we're awaiting a user spec response
+	d.SetStateData(StateKeyAwaitingSpecType, "user")
 
 	// Send via dispatcher
 	if err := d.dispatcher.DispatchMessage(requestMsg); err != nil {
@@ -549,6 +580,9 @@ func (d *Driver) sendHotfixRequest(_ context.Context) error {
 		ToAgent:   "architect", // Dispatcher resolves to "architect-001"
 		Payload:   proto.NewHotfixRequestPayload(hotfixPayload),
 	}
+
+	// Track that we're awaiting a hotfix response
+	d.SetStateData(StateKeyAwaitingSpecType, "hotfix")
 
 	// Send via dispatcher
 	if err := d.dispatcher.DispatchMessage(requestMsg); err != nil {

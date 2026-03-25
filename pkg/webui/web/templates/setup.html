@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup - Maestro</title>
+    <link href="/static/css/tailwind.css?v=2" rel="stylesheet">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/img/logos/apple-touch-icon.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/img/logos/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/img/logos/favicon-16x16.png">
+    <link rel="shortcut icon" href="/static/img/logos/favicon.ico">
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="max-w-2xl mx-auto px-4 py-12">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <img src="/static/img/logos/maestro_logo_small.png" alt="Maestro" class="h-20 w-auto mx-auto mb-4">
+            <h1 class="text-2xl font-bold text-gray-900">Maestro Setup</h1>
+            <p class="mt-2 text-gray-600">Configure your API keys to get started. Keys are encrypted and stored locally.</p>
+        </div>
+
+        <!-- Password Warning -->
+        <div class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-6">
+            <p class="text-sm text-amber-800 font-medium">Important: Record Your Password</p>
+            <p class="text-sm text-amber-700 mt-1">
+                Your WebUI login password is also used to encrypt secrets stored by Maestro.
+                If you lose this password, stored secrets cannot be recovered.
+                You can avoid this by setting the <code class="bg-amber-100 px-1 rounded">MAESTRO_PASSWORD</code>
+                environment variable before starting Maestro.
+            </p>
+        </div>
+
+        <!-- Required Keys Card -->
+        <div class="bg-white shadow rounded-lg p-6 mb-6">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Required API Keys</h2>
+            <div id="keys-list" class="space-y-3">
+                <p class="text-gray-500 text-sm">Loading...</p>
+            </div>
+        </div>
+
+        <!-- Add Key Form -->
+        <div id="add-key-form" class="bg-white shadow rounded-lg p-6 mb-6 hidden">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Add API Key</h2>
+            <div class="space-y-4">
+                <div>
+                    <label for="key-select" class="block text-sm font-medium text-gray-700 mb-1">Select Key</label>
+                    <select id="key-select" class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="">Choose a key to configure...</option>
+                    </select>
+                </div>
+                <div id="guidance-box" class="hidden bg-blue-50 border border-blue-200 rounded-md p-3">
+                    <p class="text-sm text-blue-800">Get this key at: <a id="guidance-link" href="#" target="_blank" class="underline font-medium"></a></p>
+                </div>
+                <div>
+                    <label for="key-value" class="block text-sm font-medium text-gray-700 mb-1">API Key Value</label>
+                    <textarea id="key-value" rows="2" placeholder="Paste your API key here..." class="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                </div>
+                <button id="save-btn" onclick="saveKey()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors">
+                    Save Key
+                </button>
+                <div id="save-error" class="hidden text-red-600 text-sm"></div>
+            </div>
+        </div>
+
+        <!-- Key Validation Results -->
+        <div id="validation-results" class="bg-white shadow rounded-lg p-6 mb-6 hidden">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4">Key Validation Results</h2>
+            <p class="text-xs text-gray-500 mb-3">Validates credentials are accepted by providers. Does not check rate limits or budgets.</p>
+            <div id="validation-list" class="space-y-2"></div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex gap-3">
+            <button onclick="recheckKeys()" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2.5 px-4 rounded-md text-sm border border-gray-300 transition-colors">
+                Recheck Keys
+            </button>
+            <button id="check-keys-btn" onclick="checkKeys()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-2.5 px-4 rounded-md text-sm transition-colors">
+                Check Keys
+            </button>
+            <button id="continue-btn" onclick="continueSetup()" disabled class="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-medium py-2.5 px-4 rounded-md text-sm transition-colors">
+                Continue Setup
+            </button>
+        </div>
+        <div id="continue-status" class="hidden text-center text-sm text-gray-500 mt-3"></div>
+    </div>
+
+    <script>
+    let keysData = [];
+
+    async function fetchStatus() {
+        try {
+            const resp = await fetch('/api/setup/status');
+            if (!resp.ok) throw new Error('Failed to fetch status');
+            return await resp.json();
+        } catch (e) {
+            console.error('Status fetch error:', e);
+            return null;
+        }
+    }
+
+    function renderKeys(data) {
+        keysData = data.keys || [];
+        const list = document.getElementById('keys-list');
+        const continueBtn = document.getElementById('continue-btn');
+        const form = document.getElementById('add-key-form');
+        const select = document.getElementById('key-select');
+
+        if (!keysData.length) {
+            list.innerHTML = '<p class="text-gray-500 text-sm">No API keys required.</p>';
+            continueBtn.disabled = false;
+            form.classList.add('hidden');
+            return;
+        }
+
+        list.innerHTML = keysData.map(k => {
+            const badge = k.present
+                ? '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Configured</span>'
+                : '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Missing</span>';
+            return '<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">' +
+                '<div><span class="text-sm font-mono text-gray-800">' + k.env_var + '</span>' +
+                '<span class="ml-2 text-xs text-gray-500">(' + k.provider + ')</span></div>' +
+                badge + '</div>';
+        }).join('');
+
+        const missing = keysData.filter(k => !k.present);
+        continueBtn.disabled = missing.length > 0;
+
+        if (missing.length > 0) {
+            form.classList.remove('hidden');
+            select.innerHTML = '<option value="">Choose a key to configure...</option>' +
+                missing.map(k => '<option value="' + k.env_var + '" data-url="' + (k.guidance_url || '') + '">' + k.env_var + ' (' + k.provider + ')</option>').join('');
+        } else {
+            form.classList.add('hidden');
+        }
+    }
+
+    document.getElementById('key-select').addEventListener('change', function() {
+        const opt = this.options[this.selectedIndex];
+        const url = opt.dataset.url;
+        const box = document.getElementById('guidance-box');
+        const link = document.getElementById('guidance-link');
+        if (url) {
+            link.href = url;
+            link.textContent = url;
+            box.classList.remove('hidden');
+        } else {
+            box.classList.add('hidden');
+        }
+    });
+
+    async function saveKey() {
+        const select = document.getElementById('key-select');
+        const value = document.getElementById('key-value').value.trim();
+        const errorEl = document.getElementById('save-error');
+        errorEl.classList.add('hidden');
+
+        if (!select.value) { errorEl.textContent = 'Please select a key.'; errorEl.classList.remove('hidden'); return; }
+        if (!value) { errorEl.textContent = 'Please enter the key value.'; errorEl.classList.remove('hidden'); return; }
+
+        try {
+            const resp = await fetch('/api/secrets', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: select.value, value: value, type: 'system'})
+            });
+            if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
+            document.getElementById('key-value').value = '';
+            await refreshStatus();
+        } catch (e) {
+            errorEl.textContent = 'Failed to save: ' + e.message;
+            errorEl.classList.remove('hidden');
+        }
+    }
+
+    async function recheckKeys() {
+        try {
+            const resp = await fetch('/api/setup/recheck', {method: 'POST'});
+            if (!resp.ok) throw new Error('Recheck failed');
+            const data = await resp.json();
+            renderKeys(data);
+        } catch (e) {
+            console.error('Recheck error:', e);
+        }
+    }
+
+    async function refreshStatus() {
+        const data = await fetchStatus();
+        if (data) renderKeys(data);
+    }
+
+    async function continueSetup() {
+        const btn = document.getElementById('continue-btn');
+        const status = document.getElementById('continue-status');
+        btn.disabled = true;
+        btn.textContent = 'Starting...';
+        status.textContent = 'Verifying keys and starting agents...';
+        status.classList.remove('hidden');
+
+        try {
+            await fetch('/api/setup/recheck', {method: 'POST'});
+            // Poll until setup mode is off
+            for (let i = 0; i < 30; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                const data = await fetchStatus();
+                if (data && !data.setup_mode) {
+                    window.location.href = '/';
+                    return;
+                }
+            }
+            status.textContent = 'Setup is taking longer than expected. Please wait...';
+        } catch (e) {
+            status.textContent = 'Error: ' + e.message;
+            btn.disabled = false;
+            btn.textContent = 'Continue Setup';
+        }
+    }
+
+    async function checkKeys() {
+        const btn = document.getElementById('check-keys-btn');
+        const resultsDiv = document.getElementById('validation-results');
+        const listDiv = document.getElementById('validation-list');
+
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        resultsDiv.classList.remove('hidden');
+        listDiv.innerHTML = '<p class="text-gray-500 text-sm">Validating keys with providers...</p>';
+
+        try {
+            const resp = await fetch('/api/keys/check', {method: 'POST'});
+            if (!resp.ok) throw new Error('Key check failed');
+            const results = await resp.json();
+
+            listDiv.innerHTML = results.map(r => {
+                let icon, badgeClass;
+                switch(r.status) {
+                    case 'valid': icon = '\u2705'; badgeClass = 'bg-green-100 text-green-800'; break;
+                    case 'missing': icon = '\u2014'; badgeClass = 'bg-gray-100 text-gray-800'; break;
+                    case 'unauthorized': icon = '\u274C'; badgeClass = 'bg-red-100 text-red-800'; break;
+                    case 'forbidden': icon = '\u26A0\uFE0F'; badgeClass = 'bg-yellow-100 text-yellow-800'; break;
+                    case 'unreachable': icon = '\uD83D\uDD0C'; badgeClass = 'bg-orange-100 text-orange-800'; break;
+                    default: icon = '\u2753'; badgeClass = 'bg-red-100 text-red-800'; break;
+                }
+                const latency = r.latency_ms > 0 ? ' (' + r.latency_ms + 'ms)' : '';
+                return '<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">' +
+                    '<div><span class="text-sm font-mono text-gray-800">' + r.env_var + '</span>' +
+                    '<span class="ml-2 text-xs text-gray-500">(' + r.provider + ')</span></div>' +
+                    '<div class="flex items-center gap-2">' +
+                    '<span class="text-xs text-gray-400">' + latency + '</span>' +
+                    '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + badgeClass + '">' +
+                    icon + ' ' + r.status + '</span></div></div>';
+            }).join('');
+        } catch (e) {
+            listDiv.innerHTML = '<p class="text-red-600 text-sm">Error: ' + e.message + '</p>';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Check Keys';
+        }
+    }
+
+    // Initial load
+    refreshStatus();
+    </script>
+</body>
+</html>

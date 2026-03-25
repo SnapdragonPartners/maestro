@@ -39,7 +39,6 @@ func TestIsValidPMTransition(t *testing.T) {
 		// WAITING transitions
 		{StateWaiting, StateWaiting, "WAITING -> WAITING (polling for state changes)"},
 		{StateWaiting, StateAwaitUser, "WAITING -> AWAIT_USER (interview starts)"},
-		{StateWaiting, StatePreview, "WAITING -> PREVIEW (spec file upload)"},
 		{StateWaiting, proto.StateDone, "WAITING -> DONE (shutdown)"},
 
 		// WORKING transitions
@@ -91,6 +90,7 @@ func TestInvalidPMTransitions(t *testing.T) {
 	}{
 		// Invalid WAITING transitions
 		{StateWaiting, proto.StateError, "WAITING -> ERROR (invalid)"},
+		{StateWaiting, StatePreview, "WAITING -> PREVIEW (invalid - upload removed, files via chat)"},
 
 		// Invalid AWAIT_USER transitions
 		{StateAwaitUser, StateWaiting, "AWAIT_USER -> WAITING (invalid - must go through WORKING)"},
@@ -218,9 +218,9 @@ func TestValidNextStates(t *testing.T) {
 		from     proto.State
 		expected []proto.State
 	}{
-		{StateWaiting, []proto.State{StateWaiting, StateSetup, StateWorking, StateAwaitUser, StatePreview, proto.StateDone}},
+		{StateWaiting, []proto.State{StateWaiting, StateSetup, StateWorking, StateAwaitUser, StateAwaitArchitect, proto.StateDone}},
 		{StateSetup, []proto.State{StateWaiting, proto.StateError}},
-		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, proto.StateError, proto.StateDone}},
+		{StateWorking, []proto.State{StateWorking, StateAwaitUser, StatePreview, StateAwaitArchitect, proto.StateError, proto.StateDone}},
 		{StateAwaitUser, []proto.State{StateAwaitUser, StateWorking, proto.StateError, proto.StateDone}},
 		{StatePreview, []proto.State{StatePreview, StateAwaitUser, StateAwaitArchitect, proto.StateError, proto.StateDone}},
 		{StateAwaitArchitect, []proto.State{StateAwaitArchitect, StateWorking, proto.StateError, proto.StateDone}},

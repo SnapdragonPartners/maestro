@@ -58,8 +58,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"orchestrator/pkg/logx"
 )
+
+// generateUUID returns a new UUID v4 string.
+func generateUUID() string {
+	return uuid.New().String()
+}
 
 // Global config instance with mutex protection.
 // projectDir is set once during LoadConfig and never changes - it defines where all
@@ -152,6 +159,20 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  16384,
 	},
+	"claude-sonnet-4-6": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         3.0,
+		OutputCPM:        15.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  8192,
+	},
+	"claude-opus-4-6": {
+		Provider:         ProviderAnthropic,
+		InputCPM:         15.0,
+		OutputCPM:        75.0,
+		MaxContextTokens: 200000,
+		MaxOutputTokens:  16384,
+	},
 
 	// OpenAI GPT models
 	"gpt-4o": {
@@ -219,6 +240,13 @@ var KnownModels = map[string]ModelInfo{
 		OutputCPM:        2.50,
 		MaxContextTokens: 1048576,
 		MaxOutputTokens:  65536,
+	},
+	"gemini-2.5-flash-lite": {
+		Provider:         ProviderGoogle,
+		InputCPM:         0.02,
+		OutputCPM:        0.10,
+		MaxContextTokens: 1048576,
+		MaxOutputTokens:  8192,
 	},
 	"gemini-3-pro-preview": {
 		Provider:         ProviderGoogle,
@@ -428,7 +456,7 @@ const (
 
 	// Docker container runtime defaults (applied when not specified in config).
 	DefaultDockerNetwork = "bridge"    // Enable networking (required for git operations)
-	DefaultTmpfsSize     = "1g"        // Temporary filesystem size for /tmp
+	DefaultTmpfsSize     = "4g"        // Temporary filesystem size for /tmp
 	DefaultDockerCPUs    = "2"         // CPU limit for container execution
 	DefaultDockerMemory  = "2g"        // Memory limit for container execution
 	DefaultDockerPIDs    = int64(1024) // Process limit for container execution
@@ -469,13 +497,16 @@ const (
 	BuildTargetInstall = "install"
 
 	// Model name constants.
-	ModelClaudeSonnet4      = "claude-sonnet-4-5"
+	ModelClaudeSonnet45     = "claude-sonnet-4-5"
+	ModelClaudeSonnet4      = ModelClaudeSonnet45 // Legacy alias
+	ModelClaudeSonnet46     = "claude-sonnet-4-6"
 	ModelClaudeSonnet4Old   = "claude-sonnet-4-20250514"
 	ModelClaudeSonnet3      = "claude-3-7-sonnet-20250219"
-	ModelClaudeSonnetLatest = ModelClaudeSonnet4
+	ModelClaudeSonnetLatest = ModelClaudeSonnet46
 	ModelClaudeOpus41       = "claude-opus-4-1"
 	ModelClaudeOpus45       = "claude-opus-4-5"
-	ModelClaudeOpusLatest   = ModelClaudeOpus45
+	ModelClaudeOpus46       = "claude-opus-4-6"
+	ModelClaudeOpusLatest   = ModelClaudeOpus46
 	ModelOpenAIO3           = "o3"
 	ModelGemini3Pro         = "gemini-3-pro-preview"
 
@@ -492,9 +523,9 @@ const (
 	ModelGPT4o            = "gpt-4o"
 	ModelGPT5             = "gpt-5"
 	ModelGPT52            = "gpt-5.2"
-	DefaultCoderModel     = ModelClaudeSonnet4
+	DefaultCoderModel     = ModelClaudeSonnet46
 	DefaultArchitectModel = ModelGPT52
-	DefaultPMModel        = ModelClaudeOpus45
+	DefaultPMModel        = ModelClaudeOpus46
 
 	// Coder execution mode constants.
 	CoderModeStandard   = "standard"    // Default: use standard LLM-based coder agent
@@ -663,6 +694,9 @@ type Config struct {
 	// Can be overridden at runtime with --airplane CLI flag.
 	// Note: This is distinct from "Operating Modes" (Bootstrap, Development) and "Coder Mode" (standard, claude-code).
 	DefaultMode string `json:"default_mode,omitempty"` // Default operating mode: "standard" or "airplane"
+
+	// === INSTALLATION IDENTITY ===
+	InstallationID string `json:"installation_id,omitempty"` // Per-project UUID for issue reporting
 
 	// === PROJECT-SPECIFIC SETTINGS (per .maestro/config.json) ===
 	Project     *ProjectInfo       `json:"project"`     // Basic project metadata (name, platform)
@@ -1995,19 +2029,19 @@ func GetAPIKey(provider string) (string, error) {
 		return "", fmt.Errorf("unknown provider: %s", provider)
 	}
 
-	// Try to get from secrets file first, then environment variable
-	key, err := GetSecret(envVar)
+	// Only check system secrets and env vars — user secrets are for container injection only
+	key, err := GetSystemSecret(envVar)
 	if err == nil && key != "" {
 		return key, nil
 	}
 
-	return "", fmt.Errorf("API key not found: %s not found in secrets file or environment variables", envVar)
+	return "", fmt.Errorf("API key not found: %s not found in system secrets or environment variables", envVar)
 }
 
 // GetGitHubToken returns the GitHub token.
-// Checks secrets file first, then falls back to environment variable.
+// Only checks system secrets and env vars — user secrets are for container injection only.
 func GetGitHubToken() string {
-	token, err := GetSecret("GITHUB_TOKEN")
+	token, err := GetSystemSecret("GITHUB_TOKEN")
 	if err == nil && token != "" {
 		return token
 	}
@@ -2081,6 +2115,30 @@ func GenerateSessionID() error {
 	config.SessionID = sessionID
 
 	getLogger().Info("Generated session ID: %s", sessionID)
+	return nil
+}
+
+// EnsureInstallationID generates and persists an installation ID if one doesn't already exist.
+// The installation ID is a UUID that uniquely identifies this project installation for issue reporting.
+// Must be called after LoadConfig.
+func EnsureInstallationID() error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+
+	if config.InstallationID != "" {
+		return nil
+	}
+
+	config.InstallationID = generateUUID()
+	if err := saveConfigLocked(); err != nil {
+		return fmt.Errorf("failed to persist installation ID: %w", err)
+	}
+
+	getLogger().Info("Generated installation ID: %s", config.InstallationID)
 	return nil
 }
 
@@ -2258,7 +2316,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 			return ModelGPT52
 		}
 		if providers.Anthropic {
-			return ModelClaudeOpus45
+			return ModelClaudeOpus46
 		}
 		if providers.Google {
 			return ModelGemini3Pro
@@ -2267,7 +2325,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 	case AgentTypePM:
 		// PM prefers Anthropic for reasoning, then OpenAI, then Google
 		if providers.Anthropic {
-			return ModelClaudeOpus45
+			return ModelClaudeOpus46
 		}
 		if providers.OpenAI {
 			return ModelGPT52
@@ -2279,7 +2337,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 	case AgentTypeCoder:
 		// Coder prefers Anthropic for tool use, then OpenAI, then Google
 		if providers.Anthropic {
-			return ModelClaudeSonnet4
+			return ModelClaudeSonnet46
 		}
 		if providers.OpenAI {
 			return ModelGPT52
@@ -2393,9 +2451,10 @@ func GetGitBranchPattern() string {
 // This accounts for token estimation inaccuracies (tiktoken vs actual).
 const RateLimitBufferFactor = 0.9
 
-// validateRateLimitCapacity checks that rate limits are sufficient for model context sizes.
-// If a model's MaxContextTokens exceeds the effective bucket capacity (TPM * 0.9),
-// requests could block forever. This function warns about such configurations.
+// validateRateLimitCapacity checks that configured rate limits can handle the maximum
+// context size of each selected model. If a model's MaxContextTokens exceeds the
+// provider's effective bucket capacity (TPM * buffer), a single max-context request
+// would permanently block in the rate limiter.
 func validateRateLimitCapacity(cfg *Config) {
 	if cfg == nil || cfg.Agents == nil {
 		return
@@ -2409,27 +2468,34 @@ func validateRateLimitCapacity(cfg *Config) {
 		ProviderOllama:    cfg.Agents.Resilience.RateLimit.Ollama.TokensPerMinute,
 	}
 
-	// Check each known model
-	for modelName := range KnownModels {
-		modelInfo := KnownModels[modelName]
+	// Only check models actually selected in config (not all known models)
+	selectedModels := []string{
+		cfg.Agents.CoderModel,
+		cfg.Agents.ArchitectModel,
+		cfg.Agents.PMModel,
+	}
+
+	for _, modelName := range selectedModels {
+		if modelName == "" {
+			continue
+		}
+		modelInfo, known := KnownModels[modelName]
+		if !known {
+			continue
+		}
 		tpm := providerTPM[modelInfo.Provider]
 		if tpm == 0 {
 			continue
 		}
 
-		// Effective capacity is TPM * 0.9 (the buffer factor used in limiter.go)
 		effectiveCapacity := int(float64(tpm) * RateLimitBufferFactor)
-
 		if modelInfo.MaxContextTokens > effectiveCapacity {
-			logx.Warnf("CONFIG: Model %s has MaxContextTokens (%d) > effective rate limit capacity (%d = %d * %.1f). "+
-				"Large contexts may block forever. Consider increasing %s tokens_per_minute to at least %d.",
-				modelName,
-				modelInfo.MaxContextTokens,
-				effectiveCapacity,
-				tpm,
-				RateLimitBufferFactor,
+			_ = logx.Errorf("CONFIG: Model %s (MaxContextTokens %d) exceeds %s rate limit bucket capacity "+
+				"(%d = %d TPM * %.1f buffer). A max-context request will block forever. "+
+				"Increase %s tokens_per_minute.",
+				modelName, modelInfo.MaxContextTokens,
+				modelInfo.Provider, effectiveCapacity, tpm, RateLimitBufferFactor,
 				modelInfo.Provider,
-				int(float64(modelInfo.MaxContextTokens)/RateLimitBufferFactor)+1,
 			)
 		}
 	}

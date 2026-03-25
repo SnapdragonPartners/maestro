@@ -2,6 +2,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,7 +27,9 @@ type AgentContext struct {
 	Agent           Agent                  // Optional agent reference for state-aware tools
 	ProjectDir      string                 // Project directory for bootstrap detection and config access
 	StoryID         string                 // Story ID for commit message prefix (used by done tool)
+	TargetBranch    string                 // Target branch for done tool merge-base check (defaults to "main")
 	ComposeRegistry *state.ComposeRegistry // Compose stack registry for cleanup tracking
+	MaintenanceLog  MaintenanceLog         // Maintenance log for architect review tools (nil for non-architect)
 }
 
 // Agent interface for tools that need access to agent state.
@@ -42,6 +45,12 @@ type Agent interface {
 	// Container config methods (deferred until merge)
 	SetPendingContainerConfig(name, dockerfile, imageID, dockerfileHash string) // Store pending container config with Dockerfile hash
 	GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool)
+	// SwitchContainer performs a live container switch with atomic staging.
+	// In standard mode: starts new container, stops old, stages config.
+	// In Claude Code mode: stages config only (signal handler does the lifecycle switch).
+	// stagingImageID/stagingDockerfile/stagingHash are used for SetPendingContainerConfig.
+	// Pass empty stagingImageID to skip staging (e.g., for reserved/bootstrap containers).
+	SwitchContainer(ctx context.Context, newImage, stagingImageID, stagingDockerfile, stagingHash string) (containerName string, err error)
 }
 
 // ToolFactory creates a tool instance configured for a specific agent context.
@@ -286,7 +295,7 @@ func createLintTool(ctx *AgentContext) (Tool, error) {
 
 // createDoneTool creates a done tool instance.
 func createDoneTool(ctx *AgentContext) (Tool, error) {
-	return NewDoneTool(ctx.Agent, ctx.Executor, ctx.WorkDir, ctx.StoryID), nil
+	return NewDoneTool(ctx.Agent, ctx.Executor, ctx.WorkDir, ctx.StoryID, ctx.TargetBranch), nil
 }
 
 // createBackendInfoTool creates a backend info tool instance.
@@ -358,9 +367,9 @@ func createContainerListTool(_ *AgentContext) (Tool, error) {
 }
 
 // createContainerSwitchTool creates a container switch tool instance.
-// Uses local executor internally - no executor needed from context.
-func createContainerSwitchTool(_ *AgentContext) (Tool, error) {
-	return NewContainerSwitchTool(), nil
+// Uses local executor internally for docker commands; agent for live switch + staging.
+func createContainerSwitchTool(ctx *AgentContext) (Tool, error) {
+	return NewContainerSwitchTool(ctx.Agent), nil
 }
 
 // createComposeUpTool creates a compose up tool instance.
@@ -435,7 +444,7 @@ func getLintSchema() InputSchema {
 }
 
 func getDoneSchema() InputSchema {
-	return NewDoneTool(nil, nil, "", "").Definition().InputSchema
+	return NewDoneTool(nil, nil, "", "", "").Definition().InputSchema
 }
 
 func getBackendInfoSchema() InputSchema {
@@ -462,7 +471,7 @@ func getContainerListSchema() InputSchema {
 }
 
 func getContainerSwitchSchema() InputSchema {
-	return NewContainerSwitchTool().Definition().InputSchema
+	return NewContainerSwitchTool(nil).Definition().InputSchema
 }
 
 func getComposeUpSchema() InputSchema {
@@ -648,6 +657,14 @@ func createStoryEditTool(_ *AgentContext) (Tool, error) {
 
 func getStoryEditSchema() InputSchema {
 	return NewStoryEditTool().Definition().InputSchema
+}
+
+func createAddMaintenanceItemTool(ctx *AgentContext) (Tool, error) {
+	return NewAddMaintenanceItemTool(ctx.MaintenanceLog, ctx.AgentID, ctx.StoryID), nil
+}
+
+func getAddMaintenanceItemSchema() InputSchema {
+	return NewAddMaintenanceItemTool(nil, "", "").Definition().InputSchema
 }
 
 func createWebSearchTool(_ *AgentContext) (Tool, error) {
@@ -870,6 +887,13 @@ func init() {
 		Name:        ToolStoryEdit,
 		Description: "Annotate a story with implementation notes before requeueing",
 		InputSchema: getStoryEditSchema(),
+	})
+
+	// Register architect maintenance tools
+	Register(ToolAddMaintenanceItem, createAddMaintenanceItemTool, &ToolMeta{
+		Name:        ToolAddMaintenanceItem,
+		Description: "Log an issue for the next maintenance cycle (non-terminal)",
+		InputSchema: getAddMaintenanceItemSchema(),
 	})
 
 	// Register research tools

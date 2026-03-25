@@ -31,6 +31,8 @@ type Server struct {
 	mu           sync.Mutex
 	running      bool
 	cancel       context.CancelFunc
+	lastEffect   *tools.ProcessEffect // Last ProcessEffect from tool execution
+	effectMu     sync.Mutex           // Guards lastEffect
 }
 
 // NewServer creates a new MCP server with a randomly generated auth token.
@@ -156,6 +158,17 @@ func (s *Server) Port() int {
 // Token returns the auth token that clients must provide to connect.
 func (s *Server) Token() string {
 	return s.authToken
+}
+
+// ConsumeLastEffect atomically returns and clears the last ProcessEffect.
+// Returns nil if no effect has been recorded since the last call.
+// This prevents stale effect reuse across tool calls.
+func (s *Server) ConsumeLastEffect() *tools.ProcessEffect {
+	s.effectMu.Lock()
+	defer s.effectMu.Unlock()
+	eff := s.lastEffect
+	s.lastEffect = nil
+	return eff
 }
 
 // authMessage is the expected first message from clients.
@@ -409,6 +422,13 @@ func (s *Server) handleToolsCall(ctx context.Context, conn net.Conn, req *JSONRP
 			"isError": true,
 		})
 		return
+	}
+
+	// Store ProcessEffect for signal passthrough (e.g., done tool → SignalStoryComplete)
+	if result.ProcessEffect != nil {
+		s.effectMu.Lock()
+		s.lastEffect = result.ProcessEffect
+		s.effectMu.Unlock()
 	}
 
 	// Log successful execution with content preview

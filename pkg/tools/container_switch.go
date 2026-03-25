@@ -2,8 +2,13 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/exec"
@@ -11,15 +16,21 @@ import (
 )
 
 // ContainerSwitchTool switches the coder agent execution environment to a different container.
-// Uses local executor to run docker commands directly on the host.
+// Performs a live container switch via the Agent interface (lifecycle + config staging),
+// with fallback to bootstrap container on failure.
 type ContainerSwitchTool struct {
-	executor exec.Executor
+	executor exec.Executor // For validation + imageID resolution (host docker commands)
+	agent    Agent         // For live switch + staging
 }
 
 // NewContainerSwitchTool creates a new container switch tool instance.
-// Uses local executor since docker commands run on the host, not inside containers.
-func NewContainerSwitchTool() *ContainerSwitchTool {
-	return &ContainerSwitchTool{executor: exec.NewLocalExec()}
+// Uses local executor for docker commands on the host.
+// Agent is required for performing the actual container switch.
+func NewContainerSwitchTool(agent Agent) *ContainerSwitchTool {
+	return &ContainerSwitchTool{
+		executor: exec.NewLocalExec(),
+		agent:    agent,
+	}
 }
 
 // Definition returns the tool's definition in Claude API format.
@@ -32,7 +43,7 @@ func (c *ContainerSwitchTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"container_name": {
 					Type:        "string",
-					Description: "Name of container to switch to (e.g., 'maestro-hello', 'maestro-bootstrap')",
+					Description: "Name of container image to switch to (e.g., 'maestro-myproject-dockerfile:latest', 'maestro-bootstrap:latest')",
 				},
 			},
 			Required: []string{"container_name"},
@@ -49,15 +60,17 @@ func (c *ContainerSwitchTool) Name() string {
 func (c *ContainerSwitchTool) PromptDocumentation() string {
 	return `- **container_switch** - Switch coder execution environment to different container
   - Parameters:
-    - container_name (required): name of container to switch to
-  - Switches the current agent execution environment to specified container
+    - container_name (required): name of container image to switch to
+  - Performs a LIVE container switch: starts the new container, stops the old one
+  - Automatically stages configuration for post-merge persistence
   - Falls back to bootstrap container (maestro-bootstrap) if switch fails
   - Use 'maestro-bootstrap' to return to safe bootstrap environment
-  - Updates agent context so it knows its new execution environment
   - Essential for DevOps stories that need to test target containers`
 }
 
 // Exec executes the container switch operation.
+//
+//nolint:cyclop // Container switch has inherent complexity with validation, staging, and fallback paths
 func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
 	// Extract container name
 	containerName := utils.GetMapFieldOr(args, "container_name", "")
@@ -65,21 +78,57 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*E
 		return nil, fmt.Errorf("container_name is required")
 	}
 
-	// Test that the target container is available and working
-	testResult, err := c.testContainerAvailability(ctx, containerName)
-	if err != nil {
-		// Container not available - fall back to bootstrap
-		return c.fallbackToBootstrap(ctx, containerName, err.Error())
+	// Validate container capabilities before attempting switch
+	validationResult := ValidateContainerCapabilities(ctx, c.executor, containerName)
+	if !validationResult.Success {
+		// Target container failed validation — attempt bootstrap fallback
+		return c.fallbackToBootstrap(ctx, containerName,
+			fmt.Sprintf("container '%s' validation failed: %s. Missing tools: %v",
+				containerName, validationResult.Message, validationResult.MissingTools))
 	}
 
-	// Update the agent's container configuration to use the new container
-	if updateErr := c.updateAgentContainer(containerName); updateErr != nil {
+	// Resolve staging data for non-reserved containers
+	stagingImageID, stagingDockerfile, stagingHash := "", "", ""
+	if !IsReservedContainerName(containerName) {
+		// Resolve image ID for staging
+		imageID, err := GetContainerImageID(ctx, c.executor, containerName)
+		if err != nil {
+			log.Printf("WARN container_switch: Failed to resolve image ID for %s: %v (skipping staging)", containerName, err)
+		} else {
+			stagingImageID = imageID
+			stagingDockerfile = config.GetDockerfilePath()
+
+			// Compute Dockerfile hash if agent has host workspace path
+			if c.agent != nil {
+				if hostWorkspace := c.agent.GetHostWorkspacePath(); hostWorkspace != "" {
+					fullDockerfilePath := filepath.Join(hostWorkspace, stagingDockerfile)
+					if dockerfileContent, readErr := os.ReadFile(fullDockerfilePath); readErr == nil {
+						hashBytes := sha256.Sum256(dockerfileContent)
+						stagingHash = hex.EncodeToString(hashBytes[:])
+					}
+				}
+			}
+		}
+	}
+
+	// Perform the actual switch via agent interface
+	if c.agent == nil {
+		return nil, fmt.Errorf("no agent reference available for container switch")
+	}
+
+	previousContainer := ""
+	if c.agent != nil {
+		previousContainer = c.agent.GetContainerName()
+	}
+
+	newContainerName, err := c.agent.SwitchContainer(ctx, containerName, stagingImageID, stagingDockerfile, stagingHash)
+	if err != nil {
+		// SwitchContainer includes bootstrap fallback internally, so this is a hard failure
 		response := map[string]any{
 			"success":             false,
 			"requested_container": containerName,
-			"current_container":   c.getCurrentContainer(),
-			"error":               fmt.Sprintf("Failed to update agent configuration: %v", updateErr),
-			"fallback_available":  true,
+			"previous_container":  previousContainer,
+			"error":               fmt.Sprintf("Container switch failed: %v", err),
 		}
 		content, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
@@ -88,12 +137,20 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*E
 		return &ExecResult{Content: string(content)}, nil
 	}
 
+	liveSwitched := newContainerName != previousContainer
+	message := fmt.Sprintf("Successfully switched to container '%s'", newContainerName)
+	if !liveSwitched {
+		message = fmt.Sprintf("Staged container config for '%s' (lifecycle deferred to signal handler)", containerName)
+	}
+
 	result := map[string]any{
 		"success":            true,
-		"previous_container": c.getCurrentContainer(),
-		"current_container":  containerName,
-		"test_result":        testResult,
-		"message":            fmt.Sprintf("Successfully switched to container '%s'", containerName),
+		"previous_container": previousContainer,
+		"current_container":  newContainerName,
+		"requested_image":    containerName,
+		"staged":             stagingImageID != "",
+		"live_switched":      liveSwitched,
+		"message":            message,
 	}
 
 	content, err := json.Marshal(result)
@@ -104,36 +161,17 @@ func (c *ContainerSwitchTool) Exec(ctx context.Context, args map[string]any) (*E
 	return &ExecResult{Content: string(content)}, nil
 }
 
-// testContainerAvailability tests that the target container has all required capabilities.
-func (c *ContainerSwitchTool) testContainerAvailability(ctx context.Context, containerName string) (map[string]any, error) {
-	// Use centralized validation helper with comprehensive checks
-	validationResult := ValidateContainerCapabilities(ctx, c.executor, containerName)
-
-	if !validationResult.Success {
-		return nil, fmt.Errorf("container '%s' validation failed: %s. Missing tools: %v. This container cannot be used for Maestro operations until these tools are installed: %v",
-			containerName, validationResult.Message, validationResult.MissingTools, validationResult.ErrorDetails)
-	}
-
-	return map[string]any{
-		"test_passed":   true,
-		"validation":    validationResult,
-		"git_available": validationResult.GitAvailable,
-		"user_uid_1000": validationResult.UserUID1000,
-	}, nil
-}
-
-// fallbackToBootstrap falls back to the bootstrap container when target container fails.
+// fallbackToBootstrap falls back to the bootstrap container when target container fails validation.
 func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requestedContainer, errorMsg string) (*ExecResult, error) {
 	bootstrapContainer := config.BootstrapContainerTag
 
 	// Test bootstrap container availability
-	_, testErr := c.testContainerAvailability(ctx, bootstrapContainer)
-	if testErr != nil {
+	bootstrapValidation := ValidateContainerCapabilities(ctx, c.executor, bootstrapContainer)
+	if !bootstrapValidation.Success {
 		response := map[string]any{
 			"success":             false,
 			"requested_container": requestedContainer,
-			"current_container":   c.getCurrentContainer(),
-			"error":               fmt.Sprintf("Target container failed: %s. Bootstrap container also failed: %v", errorMsg, testErr),
+			"error":               fmt.Sprintf("Target container failed: %s. Bootstrap container also failed: %s", errorMsg, bootstrapValidation.Message),
 			"fallback_available":  false,
 		}
 		content, marshalErr := json.Marshal(response)
@@ -143,13 +181,27 @@ func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requested
 		return &ExecResult{Content: string(content)}, nil
 	}
 
-	// Update to bootstrap container
-	if err := c.updateAgentContainer(bootstrapContainer); err != nil {
+	// Attempt bootstrap switch via agent (no staging for reserved containers)
+	if c.agent == nil {
 		response := map[string]any{
 			"success":             false,
 			"requested_container": requestedContainer,
-			"current_container":   c.getCurrentContainer(),
-			"error":               fmt.Sprintf("Target container failed: %s. Failed to switch to bootstrap: %v", errorMsg, err),
+			"error":               fmt.Sprintf("Target container failed: %s. No agent reference for bootstrap fallback.", errorMsg),
+			"fallback_available":  false,
+		}
+		content, marshalErr := json.Marshal(response)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal error response: %w", marshalErr)
+		}
+		return &ExecResult{Content: string(content)}, nil
+	}
+
+	newContainerName, switchErr := c.agent.SwitchContainer(ctx, bootstrapContainer, "", "", "")
+	if switchErr != nil {
+		response := map[string]any{
+			"success":             false,
+			"requested_container": requestedContainer,
+			"error":               fmt.Sprintf("Target container failed: %s. Bootstrap switch also failed: %v", errorMsg, switchErr),
 			"fallback_available":  false,
 		}
 		content, marshalErr := json.Marshal(response)
@@ -162,10 +214,10 @@ func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requested
 	result := map[string]any{
 		"success":             false,
 		"requested_container": requestedContainer,
-		"current_container":   bootstrapContainer,
+		"current_container":   newContainerName,
 		"fallback_used":       true,
 		"original_error":      errorMsg,
-		"message":             fmt.Sprintf("Container '%s' failed, fell back to '%s'", requestedContainer, bootstrapContainer),
+		"message":             fmt.Sprintf("Container '%s' failed, fell back to '%s'", requestedContainer, newContainerName),
 	}
 
 	content, err := json.Marshal(result)
@@ -174,46 +226,4 @@ func (c *ContainerSwitchTool) fallbackToBootstrap(ctx context.Context, requested
 	}
 
 	return &ExecResult{Content: string(content)}, nil
-}
-
-// updateAgentContainer updates the agent's container configuration.
-func (c *ContainerSwitchTool) updateAgentContainer(containerName string) error {
-	// Get current config
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get config: %w", err)
-	}
-
-	// Update container configuration while preserving other settings
-	if cfg.Container == nil {
-		cfg.Container = &config.ContainerConfig{}
-	}
-
-	updatedContainer := &config.ContainerConfig{
-		Name:          containerName,
-		Dockerfile:    cfg.Container.Dockerfile,    // Preserve dockerfile path
-		WorkspacePath: cfg.Container.WorkspacePath, // Preserve workspace path
-		// Preserve runtime settings
-		Network:   cfg.Container.Network,
-		TmpfsSize: cfg.Container.TmpfsSize,
-		CPUs:      cfg.Container.CPUs,
-		Memory:    cfg.Container.Memory,
-		PIDs:      cfg.Container.PIDs,
-	}
-
-	// Use atomic update function
-	if err := config.UpdateContainer(updatedContainer); err != nil {
-		return fmt.Errorf("failed to update container config: %w", err)
-	}
-
-	return nil
-}
-
-// getCurrentContainer returns the currently configured container name.
-func (c *ContainerSwitchTool) getCurrentContainer() string {
-	cfg, err := config.GetConfig()
-	if err != nil || cfg.Container == nil {
-		return "unknown"
-	}
-	return cfg.Container.Name
 }

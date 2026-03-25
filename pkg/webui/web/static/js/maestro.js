@@ -1270,7 +1270,7 @@ class MaestroUI {
     }
 
     // Toast notifications
-    showToast(message, type = 'info') {
+    showToast(message, type = 'info', duration = 3000) {
         const container = document.getElementById('toast-container');
         const toast = document.createElement('div');
 
@@ -1281,7 +1281,7 @@ class MaestroUI {
             info: 'bg-blue-500'
         };
 
-        toast.className = `${bgColors[type]} text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 translate-x-full`;
+        toast.className = `${bgColors[type]} text-white px-4 py-2 rounded-md shadow-lg transform transition-all duration-300 translate-x-full whitespace-pre-line`;
         toast.textContent = message;
 
         container.appendChild(toast);
@@ -1291,11 +1291,11 @@ class MaestroUI {
             toast.classList.remove('translate-x-full');
         }, 100);
 
-        // Remove after 3 seconds
+        // Remove after duration
         setTimeout(() => {
             toast.classList.add('translate-x-full');
             setTimeout(() => container.removeChild(toast), 300);
-        }, 3000);
+        }, duration);
     }
 
     // Chat functionality
@@ -1698,6 +1698,273 @@ class MaestroUI {
     }
 
     // PM interview methods (startPMInterview, sendPMChatMessage) removed - handled by pm.js
+
+    // === Secrets Management ===
+
+    openSecretsModal() {
+        this.currentSecretsTab = 'user';
+        document.getElementById('secrets-modal').classList.remove('hidden');
+        this.switchSecretsTab('user');
+    }
+
+    closeSecretsModal() {
+        document.getElementById('secrets-modal').classList.add('hidden');
+    }
+
+    switchSecretsTab(type) {
+        this.currentSecretsTab = type;
+        const userTab = document.getElementById('secrets-tab-user');
+        const systemTab = document.getElementById('secrets-tab-system');
+        const userInfo = document.getElementById('secrets-info-user');
+        const systemInfo = document.getElementById('secrets-info-system');
+        const freeInput = document.getElementById('secrets-name-free');
+        const dropdownInput = document.getElementById('secrets-name-dropdown');
+
+        if (type === 'user') {
+            userTab.className = 'px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600';
+            systemTab.className = 'px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700';
+            userInfo.classList.remove('hidden');
+            systemInfo.classList.add('hidden');
+            freeInput.classList.remove('hidden');
+            dropdownInput.classList.add('hidden');
+        } else {
+            systemTab.className = 'px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600';
+            userTab.className = 'px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700';
+            systemInfo.classList.remove('hidden');
+            userInfo.classList.add('hidden');
+            dropdownInput.classList.remove('hidden');
+            freeInput.classList.add('hidden');
+        }
+        this.loadSecrets();
+    }
+
+    async loadSecrets() {
+        const list = document.getElementById('secrets-list');
+        const warningEl = document.getElementById('secrets-password-warning');
+        try {
+            const response = await fetch(`/api/secrets?type=${this.currentSecretsTab}`);
+            if (!response.ok) throw new Error('Failed to load secrets');
+            const data = await response.json();
+            const entries = data.secrets || [];
+
+            // Show or hide password warning
+            if (warningEl) {
+                if (data.warning) {
+                    warningEl.textContent = data.warning;
+                    warningEl.classList.remove('hidden');
+                } else {
+                    warningEl.classList.add('hidden');
+                }
+            }
+
+            if (entries.length === 0) {
+                list.innerHTML = '<p class="text-sm text-gray-400 py-2">No secrets configured.</p>';
+                return;
+            }
+
+            list.innerHTML = entries.map(e => `
+                <div class="flex items-center justify-between py-1.5 px-2 hover:bg-gray-50 rounded">
+                    <span class="text-sm font-mono text-gray-800">${this.escapeHtml(e.name)}</span>
+                    <button onclick="window.maestroUI.deleteSecret('${this.escapeHtml(e.name)}')" class="text-red-400 hover:text-red-600 text-xs px-2 py-0.5 rounded hover:bg-red-50">Delete</button>
+                </div>
+            `).join('');
+        } catch (error) {
+            list.innerHTML = '<p class="text-sm text-red-500">Failed to load secrets.</p>';
+        }
+    }
+
+    async addSecret() {
+        const type = this.currentSecretsTab;
+        let name;
+        if (type === 'system') {
+            name = document.getElementById('secrets-name-select').value;
+        } else {
+            name = document.getElementById('secrets-name-input').value.trim();
+        }
+        const value = document.getElementById('secrets-value-input').value;
+
+        if (!name) {
+            this.showToast('Secret name is required', 'error');
+            return;
+        }
+        if (!value) {
+            this.showToast('Secret value is required', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/secrets', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, value, type })
+            });
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(text);
+            }
+
+            this.showToast(`Secret "${name}" saved`, 'success');
+            document.getElementById('secrets-name-input').value = '';
+            document.getElementById('secrets-name-select').value = '';
+            document.getElementById('secrets-value-input').value = '';
+            this.loadSecrets();
+        } catch (error) {
+            this.showToast(`Failed to save secret: ${error.message}`, 'error');
+        }
+    }
+
+    async deleteSecret(name) {
+        const type = this.currentSecretsTab;
+        try {
+            const response = await fetch(`/api/secrets/${encodeURIComponent(name)}?type=${type}`, {
+                method: 'DELETE'
+            });
+
+            if (!response.ok) throw new Error('Failed to delete');
+
+            this.showToast(`Secret "${name}" deleted`, 'success');
+            this.loadSecrets();
+        } catch (error) {
+            this.showToast(`Failed to delete secret: ${error.message}`, 'error');
+        }
+    }
+
+    // === Key Validation ===
+
+    async checkKeys() {
+        const btn = document.getElementById('check-keys-btn');
+        if (!btn) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+
+        try {
+            const response = await fetch('/api/keys/check', { method: 'POST' });
+            if (!response.ok) throw new Error('Key check failed');
+            const results = await response.json();
+
+            const lines = results.map(r => {
+                let icon;
+                switch(r.status) {
+                    case 'valid': icon = '\u2705'; break;
+                    case 'missing': icon = '\u2014'; break;
+                    case 'unauthorized': icon = '\u274C'; break;
+                    case 'forbidden': icon = '\u26A0\uFE0F'; break;
+                    case 'unreachable': icon = '\uD83D\uDD0C'; break;
+                    default: icon = '\u2753'; break;
+                }
+                const latency = r.latency_ms > 0 ? ` (${r.latency_ms}ms)` : '';
+                return `${icon} ${r.provider}: ${r.status}${latency}`;
+            });
+
+            const allValid = results.every(r => r.status === 'valid' || r.status === 'missing');
+            this.showToast(lines.join('\n'), allValid ? 'success' : 'error', 8000);
+        } catch (error) {
+            this.showToast(`Key check failed: ${error.message}`, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Check Keys';
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // === Issue Reporting ===
+
+    openIssueModal() {
+        document.getElementById('issue-modal').classList.remove('hidden');
+        document.getElementById('issue-description').value = '';
+        document.getElementById('issue-include-diagnostics').checked = true;
+        document.getElementById('issue-char-count').classList.add('hidden');
+        document.getElementById('issue-status').classList.add('hidden');
+        document.getElementById('issue-buttons').classList.remove('hidden');
+        const submitBtn = document.getElementById('issue-submit-btn');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+    }
+
+    closeIssueModal() {
+        document.getElementById('issue-modal').classList.add('hidden');
+    }
+
+    updateIssueCharCount() {
+        const textarea = document.getElementById('issue-description');
+        const counter = document.getElementById('issue-char-count');
+        const remaining = 10000 - textarea.value.length;
+        if (remaining <= 500) {
+            counter.textContent = `${remaining} characters remaining`;
+            counter.classList.remove('hidden');
+            counter.className = remaining <= 100
+                ? 'text-xs text-red-500 text-right mt-1'
+                : 'text-xs text-gray-400 text-right mt-1';
+        } else {
+            counter.classList.add('hidden');
+        }
+    }
+
+    async submitIssue() {
+        const description = document.getElementById('issue-description').value.trim();
+        if (!description) {
+            this.showToast('Please describe the issue', 'error');
+            return;
+        }
+
+        const includeDiagnostics = document.getElementById('issue-include-diagnostics').checked;
+        const statusEl = document.getElementById('issue-status');
+        const submitBtn = document.getElementById('issue-submit-btn');
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Submitting...';
+        statusEl.classList.add('hidden');
+
+        try {
+            const response = await fetch('/api/issues/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    description: description,
+                    include_diagnostics: includeDiagnostics
+                })
+            });
+
+            let data;
+            try {
+                data = await response.json();
+            } catch {
+                data = { error: await response.text() || 'Unexpected response from server' };
+            }
+            if (response.ok) {
+                statusEl.textContent = `Issue submitted successfully. Reference: ${data.id || 'N/A'}`;
+                statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-green-50 text-green-800';
+                statusEl.classList.remove('hidden');
+                // Hide buttons, show close-only
+                document.getElementById('issue-buttons').classList.add('hidden');
+            } else if (response.status === 429) {
+                statusEl.textContent = 'Rate limit exceeded. Please try again later.';
+                statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-yellow-50 text-yellow-800';
+                statusEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit';
+            } else {
+                statusEl.textContent = `Failed to submit: ${data.error || 'Unknown error'}`;
+                statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-red-50 text-red-800';
+                statusEl.classList.remove('hidden');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Submit';
+            }
+        } catch (err) {
+            statusEl.textContent = 'Failed to submit issue. Please try again.';
+            statusEl.className = 'mt-3 p-3 text-sm rounded-md bg-red-50 text-red-800';
+            statusEl.classList.remove('hidden');
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit';
+        }
+    }
 }
 
 // Global functions for onclick handlers

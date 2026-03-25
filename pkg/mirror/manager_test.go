@@ -1,8 +1,11 @@
 package mirror
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +81,187 @@ func TestMirrorExists_NonExistentPath(t *testing.T) {
 	// Non-existent path should not be a mirror
 	if mirrorExists("/nonexistent/path/to/mirror") {
 		t.Error("Expected mirrorExists = false for non-existent path")
+	}
+}
+
+func TestGitAuthEnv(t *testing.T) {
+	t.Run("with token sets credential helper", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "ghp_test123")
+		env := gitAuthEnv()
+		envMap := make(map[string]string)
+		for _, e := range env {
+			if k, v, ok := strings.Cut(e, "="); ok {
+				envMap[k] = v
+			}
+		}
+		if envMap["GIT_TERMINAL_PROMPT"] != "0" {
+			t.Error("Expected GIT_TERMINAL_PROMPT=0")
+		}
+		if envMap["GIT_CONFIG_COUNT"] != "1" {
+			t.Error("Expected GIT_CONFIG_COUNT=1")
+		}
+		if envMap["GIT_CONFIG_KEY_0"] != "credential.helper" {
+			t.Error("Expected GIT_CONFIG_KEY_0=credential.helper")
+		}
+		val := envMap["GIT_CONFIG_VALUE_0"]
+		if !strings.Contains(val, "x-access-token") || !strings.Contains(val, "ghp_test123") {
+			t.Errorf("Expected credential helper with token, got: %s", val)
+		}
+	})
+
+	t.Run("without token only sets terminal prompt", func(t *testing.T) {
+		t.Setenv("GITHUB_TOKEN", "")
+		env := gitAuthEnv()
+		for _, e := range env {
+			if strings.HasPrefix(e, "GIT_CONFIG_COUNT=") {
+				t.Error("Should not set GIT_CONFIG_COUNT without token")
+			}
+		}
+		found := false
+		for _, e := range env {
+			if e == "GIT_TERMINAL_PROMPT=0" {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("Expected GIT_TERMINAL_PROMPT=0")
+		}
+	})
+}
+
+// initBareRepo creates a bare git repo at the given path for testing.
+func initBareRepo(t *testing.T, path string) {
+	t.Helper()
+	cmd := exec.Command("git", "init", "--bare", path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare failed: %v\n%s", err, output)
+	}
+}
+
+func TestValidateMirror_Healthy(t *testing.T) {
+	tmpDir := t.TempDir()
+	mirrorPath := filepath.Join(tmpDir, "test.git")
+	initBareRepo(t, mirrorPath)
+
+	// Add origin remote (required by validateMirror)
+	cmd := exec.Command("git", "-C", mirrorPath, "remote", "add", "origin", "https://example.com/repo.git")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git remote add failed: %v\n%s", err, output)
+	}
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.validateMirror(context.Background(), mirrorPath); err != nil {
+		t.Errorf("validateMirror returned error for healthy repo: %v", err)
+	}
+}
+
+func TestValidateMirror_NoHEAD(t *testing.T) {
+	tmpDir := t.TempDir()
+	mirrorPath := filepath.Join(tmpDir, "test.git")
+	if err := os.MkdirAll(mirrorPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(tmpDir)
+	err := mgr.validateMirror(context.Background(), mirrorPath)
+	if err == nil {
+		t.Fatal("Expected error for directory without HEAD")
+	}
+	if !strings.Contains(err.Error(), "missing HEAD") {
+		t.Errorf("Expected 'missing HEAD' in error, got: %v", err)
+	}
+}
+
+func TestValidateMirror_NoOriginRemote(t *testing.T) {
+	tmpDir := t.TempDir()
+	mirrorPath := filepath.Join(tmpDir, "test.git")
+	initBareRepo(t, mirrorPath)
+	// Deliberately do NOT add origin remote
+
+	mgr := NewManager(tmpDir)
+	err := mgr.validateMirror(context.Background(), mirrorPath)
+	if err == nil {
+		t.Fatal("Expected error for repo without origin remote")
+	}
+	if !strings.Contains(err.Error(), "origin remote missing") {
+		t.Errorf("Expected 'origin remote missing' in error, got: %v", err)
+	}
+}
+
+func TestEnsureRemoteURL_AddWhenMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	mirrorPath := filepath.Join(tmpDir, "test.git")
+	initBareRepo(t, mirrorPath)
+
+	mgr := NewManager(tmpDir)
+	err := mgr.ensureRemoteURL(context.Background(), mirrorPath, "https://example.com/repo.git")
+	if err != nil {
+		t.Fatalf("ensureRemoteURL failed: %v", err)
+	}
+
+	// Verify origin was added
+	cmd := exec.Command("git", "-C", mirrorPath, "remote", "get-url", "origin")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git remote get-url failed after add: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != "https://example.com/repo.git" {
+		t.Errorf("Expected URL 'https://example.com/repo.git', got '%s'", got)
+	}
+}
+
+func TestEnsureRemoteURL_UpdateWhenDifferent(t *testing.T) {
+	tmpDir := t.TempDir()
+	mirrorPath := filepath.Join(tmpDir, "test.git")
+	initBareRepo(t, mirrorPath)
+
+	// Add origin with old URL
+	cmd := exec.Command("git", "-C", mirrorPath, "remote", "add", "origin", "https://old.com/repo.git")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git remote add failed: %v\n%s", err, output)
+	}
+
+	mgr := NewManager(tmpDir)
+	err := mgr.ensureRemoteURL(context.Background(), mirrorPath, "https://new.com/repo.git")
+	if err != nil {
+		t.Fatalf("ensureRemoteURL failed: %v", err)
+	}
+
+	// Verify URL was updated
+	verifyCmd := exec.Command("git", "-C", mirrorPath, "remote", "get-url", "origin")
+	output, err := verifyCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git remote get-url failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != "https://new.com/repo.git" {
+		t.Errorf("Expected URL 'https://new.com/repo.git', got '%s'", got)
+	}
+}
+
+func TestEnsureRemoteURL_NoChangeWhenSame(t *testing.T) {
+	tmpDir := t.TempDir()
+	mirrorPath := filepath.Join(tmpDir, "test.git")
+	initBareRepo(t, mirrorPath)
+
+	targetURL := "https://example.com/repo.git"
+	cmd := exec.Command("git", "-C", mirrorPath, "remote", "add", "origin", targetURL)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git remote add failed: %v\n%s", err, output)
+	}
+
+	mgr := NewManager(tmpDir)
+	err := mgr.ensureRemoteURL(context.Background(), mirrorPath, targetURL)
+	if err != nil {
+		t.Fatalf("ensureRemoteURL failed: %v", err)
+	}
+
+	// Verify URL is still correct
+	verifyCmd := exec.Command("git", "-C", mirrorPath, "remote", "get-url", "origin")
+	output, err := verifyCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git remote get-url failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(output)); got != targetURL {
+		t.Errorf("Expected URL '%s', got '%s'", targetURL, got)
 	}
 }

@@ -127,16 +127,28 @@ func (m *Manager) SwitchUpstream(ctx context.Context, newURL string) error {
 }
 
 // ensureRemoteURL ensures the mirror's origin remote points to the given URL.
+// If the origin remote does not exist, it is created. If it exists with a different
+// URL, it is updated. Follows the add-vs-set-url pattern from forge/gitea/setup.go.
 func (m *Manager) ensureRemoteURL(ctx context.Context, mirrorPath, targetURL string) error {
-	// Get current remote URL
-	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
-	cmd.Dir = mirrorPath
-	output, err := cmd.CombinedOutput()
+	// Check if origin remote exists
+	checkCmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	checkCmd.Dir = mirrorPath
+	output, err := checkCmd.CombinedOutput()
 
+	if err != nil {
+		// Remote doesn't exist — add it
+		m.logger.Debug("Origin remote missing, adding with URL %s", targetURL)
+		addCmd := exec.CommandContext(ctx, "git", "remote", "add", "origin", targetURL)
+		addCmd.Dir = mirrorPath
+		if addOutput, addErr := addCmd.CombinedOutput(); addErr != nil {
+			return fmt.Errorf("git remote add origin failed: %w\nOutput: %s", addErr, string(addOutput))
+		}
+		return nil
+	}
+
+	// Remote exists — check if URL matches
 	currentURL := strings.TrimSpace(string(output))
-
-	if err != nil || currentURL != targetURL {
-		// Update remote URL
+	if currentURL != targetURL {
 		m.logger.Debug("Updating remote URL from %s to %s", currentURL, targetURL)
 		setCmd := exec.CommandContext(ctx, "git", "remote", "set-url", "origin", targetURL)
 		setCmd.Dir = mirrorPath
@@ -177,6 +189,53 @@ func (m *Manager) GetMirrorPath() (string, error) {
 	return filepath.Join(m.projectDir, ".mirrors", repoName), nil
 }
 
+// validateOrRecoverMirror checks if an existing mirror is healthy and attempts to update it.
+// Returns (needsClone, error). If needsClone is true, the caller should do a fresh clone.
+// Handles corrupt/partial mirrors by removing them and signaling a fresh clone is needed.
+func (m *Manager) validateOrRecoverMirror(ctx context.Context, mirrorPath, repoURL string) (bool, error) {
+	// Check if directory exists at all
+	dirExists := false
+	if info, statErr := os.Stat(mirrorPath); statErr == nil && info.IsDir() {
+		dirExists = true
+	}
+	if !dirExists {
+		return true, nil // No directory — need fresh clone
+	}
+
+	// Directory exists — validate structural health
+	if validErr := m.validateMirror(ctx, mirrorPath); validErr != nil {
+		m.logger.Warn("⚠️  Mirror at %s is invalid (%v), removing for fresh clone", mirrorPath, validErr)
+		if removeErr := os.RemoveAll(mirrorPath); removeErr != nil {
+			return false, fmt.Errorf("failed to remove corrupt mirror: %w", removeErr)
+		}
+		return true, nil
+	}
+
+	// Valid mirror — update it from current forge (mode-aware)
+	fetchURL, fetchErr := m.GetFetchURL()
+	if fetchErr != nil {
+		fetchURL = repoURL // Fall back to configured URL
+	}
+
+	m.logger.Info("📂 Git mirror exists at %s, updating from %s...", mirrorPath, fetchURL)
+
+	if updateErr := m.ensureRemoteURL(ctx, mirrorPath, fetchURL); updateErr != nil {
+		return false, fmt.Errorf("failed to update remote URL: %w", updateErr)
+	}
+
+	if updateErr := updateGitMirror(ctx, mirrorPath); updateErr != nil {
+		// Update failed on a previously-valid mirror — recover via fresh clone
+		m.logger.Warn("⚠️  Mirror update failed (%v), removing for fresh clone", updateErr)
+		if removeErr := os.RemoveAll(mirrorPath); removeErr != nil {
+			return false, fmt.Errorf("failed to remove broken mirror: %w", removeErr)
+		}
+		return true, nil
+	}
+
+	m.logger.Info("✅ Git mirror updated successfully")
+	return false, nil
+}
+
 // EnsureMirror creates or updates a git mirror.
 // Reads repository URL from config.GetConfig().Git.RepoURL.
 // In airplane mode with existing mirror, updates from Gitea instead of GitHub.
@@ -205,33 +264,16 @@ func (m *Manager) EnsureMirror(ctx context.Context) (string, error) {
 	repoName := extractRepoName(repoURL)
 	repoMirrorPath := filepath.Join(mirrorDir, repoName)
 
-	// Check if mirror already exists by looking for HEAD file (bare repos don't have .git subdir)
-	if mirrorExists(repoMirrorPath) {
-		// Mirror exists - update it from current forge (mode-aware)
-		fetchURL, fetchErr := m.GetFetchURL()
-		if fetchErr != nil {
-			// Fall back to configured URL if we can't determine fetch URL
-			fetchURL = repoURL
-		}
+	// Validate existing mirror or recover via fresh clone.
+	needsClone, err := m.validateOrRecoverMirror(ctx, repoMirrorPath, repoURL)
+	if err != nil {
+		return "", err
+	}
 
-		m.logger.Info("📂 Git mirror exists at %s, updating from %s...", repoMirrorPath, fetchURL)
-
-		// Ensure remote URL is correct for current mode
-		if updateErr := m.ensureRemoteURL(ctx, repoMirrorPath, fetchURL); updateErr != nil {
-			return "", fmt.Errorf("failed to update remote URL: %w", updateErr)
-		}
-
-		err = updateGitMirror(ctx, repoMirrorPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to update git mirror: %w", err)
-		}
-		m.logger.Info("✅ Git mirror updated successfully")
-	} else {
-		// Clone as bare mirror
+	if needsClone {
 		m.logger.Info("📥 Creating git mirror for %s...", repoURL)
-		err = cloneGitMirror(ctx, repoURL, repoMirrorPath)
-		if err != nil {
-			return "", fmt.Errorf("failed to create git mirror: %w", err)
+		if cloneErr := cloneGitMirror(ctx, repoURL, repoMirrorPath); cloneErr != nil {
+			return "", fmt.Errorf("failed to create git mirror: %w", cloneErr)
 		}
 		m.logger.Info("✅ Git mirror created at %s", repoMirrorPath)
 	}
@@ -297,6 +339,26 @@ func (m *Manager) updateDefaultBranch(ctx context.Context, mirrorPath string) er
 	return nil
 }
 
+// gitAuthEnv returns environment variables that configure git authentication
+// via a credential helper, plus GIT_TERMINAL_PROMPT=0 to prevent interactive prompts.
+// The token is passed through the environment rather than embedded in URLs,
+// keeping it out of git remote configs and command arguments.
+func gitAuthEnv() []string {
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	token := config.GetGitHubToken()
+	if token == "" {
+		return env
+	}
+	// Configure a one-shot credential helper via environment.
+	// GIT_CONFIG_COUNT/KEY/VALUE override git config without touching files.
+	helper := fmt.Sprintf("!printf 'username=x-access-token\\npassword=%s\\n'", token)
+	return append(env,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0="+helper,
+	)
+}
+
 // extractRepoName extracts the repository name from a git URL.
 func extractRepoName(repoURL string) string {
 	// Remove .git suffix if present
@@ -324,9 +386,36 @@ func mirrorExists(mirrorPath string) bool {
 	return err == nil
 }
 
+// validateMirror checks the structural health of a git mirror at the given path.
+// Returns nil if healthy, or a descriptive error indicating what is broken.
+// Goes beyond mirrorExists() by checking remote configuration and repo integrity.
+func (m *Manager) validateMirror(ctx context.Context, mirrorPath string) error {
+	// Check 1: HEAD file exists (bare repo indicator)
+	if _, err := os.Stat(filepath.Join(mirrorPath, "HEAD")); err != nil {
+		return fmt.Errorf("missing HEAD file: %w", err)
+	}
+
+	// Check 2: origin remote exists
+	checkCmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	checkCmd.Dir = mirrorPath
+	if output, err := checkCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("origin remote missing: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	}
+
+	// Check 3: structural integrity (connectivity check only — fast, no object content verification)
+	fsckCmd := exec.CommandContext(ctx, "git", "fsck", "--connectivity-only", "--no-progress")
+	fsckCmd.Dir = mirrorPath
+	if output, err := fsckCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("repository integrity check failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
+	}
+
+	return nil
+}
+
 // cloneGitMirror creates a bare git mirror clone of the repository.
 func cloneGitMirror(ctx context.Context, repoURL, mirrorPath string) error {
 	cmd := exec.CommandContext(ctx, "git", "clone", "--mirror", repoURL, mirrorPath)
+	cmd.Env = gitAuthEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone --mirror failed: %w\nOutput: %s", err, string(output))
@@ -338,6 +427,7 @@ func cloneGitMirror(ctx context.Context, repoURL, mirrorPath string) error {
 func updateGitMirror(ctx context.Context, mirrorPath string) error {
 	cmd := exec.CommandContext(ctx, "git", "remote", "update")
 	cmd.Dir = mirrorPath
+	cmd.Env = gitAuthEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git remote update failed: %w\nOutput: %s", err, string(output))
@@ -468,6 +558,7 @@ For more information about Maestro, visit: https://github.com/anthropics/maestro
 
 	pushCmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", defaultBranch)
 	pushCmd.Dir = tempDir
+	pushCmd.Env = gitAuthEnv()
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push failed (check GITHUB_TOKEN): %w\nOutput: %s", err, string(output))
 	}
@@ -653,6 +744,7 @@ func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string
 	m.logger.Debug("Pushing MAESTRO.md update to %s", repoURL)
 	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", branch)
 	pushCmd.Dir = tempDir
+	pushCmd.Env = gitAuthEnv()
 	if output, err := pushCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git push failed: %w\nOutput: %s", err, string(output))
 	}

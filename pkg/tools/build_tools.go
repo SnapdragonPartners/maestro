@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -360,20 +361,24 @@ func (l *LintTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 // DoneTool provides MCP interface for signaling task completion.
 // When called, it commits all changes (git add -A + git commit) using the summary
 // as the commit message, then advances the FSM to TESTING state.
+// If no changes exist on the branch at all (Case A), it instead signals
+// STORY_COMPLETE for architect verification.
 type DoneTool struct {
-	agent    Agent            // Optional agent reference for todo checking
-	executor execpkg.Executor // Optional executor for git commit operations
-	workDir  string           // Workspace directory for git operations
-	storyID  string           // Story ID for commit message prefix
+	agent        Agent            // Optional agent reference for todo checking
+	executor     execpkg.Executor // Optional executor for git commit operations
+	workDir      string           // Workspace directory for git operations
+	storyID      string           // Story ID for commit message prefix
+	targetBranch string           // Target branch for merge-base check (defaults to "main")
 }
 
 // NewDoneTool creates a new done tool instance.
-func NewDoneTool(agent Agent, executor execpkg.Executor, workDir, storyID string) *DoneTool {
+func NewDoneTool(agent Agent, executor execpkg.Executor, workDir, storyID, targetBranch string) *DoneTool {
 	return &DoneTool{
-		agent:    agent,
-		executor: executor,
-		workDir:  workDir,
-		storyID:  storyID,
+		agent:        agent,
+		executor:     executor,
+		workDir:      workDir,
+		storyID:      storyID,
+		targetBranch: targetBranch,
 	}
 }
 
@@ -446,6 +451,20 @@ func (d *DoneTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 		content = strings.Join(warnings, "; ") + ". " + content
 	}
 
+	// If no changes on branch at all (Case A), signal story complete instead of testing
+	if commitResult.storyComplete {
+		return &ExecResult{
+			Content: content,
+			ProcessEffect: &ProcessEffect{
+				Signal: SignalStoryComplete,
+				Data: map[string]any{
+					"evidence":   summary,
+					"confidence": "MEDIUM", // Done tool infers completion from empty diff, not explicit user assessment
+				},
+			},
+		}, nil
+	}
+
 	// Return human-readable message for LLM context
 	// Return structured data via ProcessEffect.Data for state machine
 	return &ExecResult{
@@ -461,8 +480,9 @@ func (d *DoneTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 
 // commitResult holds the outcome of a git commit attempt.
 type commitResult struct {
-	err     error  // Non-nil if commit failed
-	message string // Human-readable description of what happened
+	err           error  // Non-nil if commit failed
+	message       string // Human-readable description of what happened
+	storyComplete bool   // True when no changes exist on branch (Case A: story already complete)
 }
 
 // commitChanges runs git add -A + git commit with the summary as commit message.
@@ -489,10 +509,21 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 
 	// Check if there are any changes to commit
 	// git diff --cached --exit-code returns exit code 1 if there are staged changes
-	result, _ = d.executor.Run(ctx, []string{"git", "diff", "--cached", "--exit-code"}, opts)
+	result, err = d.executor.Run(ctx, []string{"git", "diff", "--cached", "--exit-code"}, opts)
+	if err != nil {
+		return commitResult{err: fmt.Errorf("git diff --cached failed: %w", err)}
+	}
 	if result.ExitCode == 0 {
-		// Exit code 0 means no staged changes
-		return commitResult{message: "No changes to commit, advancing to TESTING state"}
+		// Exit code 0 means no staged changes — determine Case A vs Case B
+		if d.branchHasCommits(ctx, opts) {
+			// Case B: prior commits exist but nothing new this cycle → normal TESTING flow
+			return commitResult{message: "No changes to commit, advancing to TESTING state"}
+		}
+		// Case A: no changes on branch at all → story already complete
+		return commitResult{
+			storyComplete: true,
+			message:       "No changes on branch — story requirements already satisfied, requesting completion approval",
+		}
 	}
 
 	// Build commit message with story prefix
@@ -512,6 +543,48 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 	}
 
 	return commitResult{message: fmt.Sprintf("Changes committed and advancing to TESTING state. Commit: %s", strings.TrimSpace(result.Stdout))}
+}
+
+// branchHasCommits checks whether the current branch has any commits beyond the target branch.
+// Returns true if there are prior commits (Case B) or if the check fails (safe fallback).
+// Returns false if the branch has no commits at all (Case A: story already complete).
+func (d *DoneTool) branchHasCommits(ctx context.Context, opts *execpkg.Opts) bool {
+	targetBranch := d.targetBranch
+	if targetBranch == "" {
+		targetBranch = "main"
+	}
+
+	// Find the merge base between origin/<targetBranch> and HEAD
+	mergeBaseResult, err := d.executor.Run(ctx, []string{
+		"git", "merge-base", "origin/" + targetBranch, "HEAD",
+	}, opts)
+	if err != nil || mergeBaseResult.ExitCode != 0 {
+		// merge-base check failed — safe fallback to Case B (assume prior commits)
+		logx.Debugf("branchHasCommits: merge-base failed (err=%v, exit=%d), falling back to Case B", err, mergeBaseResult.ExitCode)
+		return true
+	}
+
+	mergeBase := strings.TrimSpace(mergeBaseResult.Stdout)
+	if mergeBase == "" {
+		logx.Debugf("branchHasCommits: empty merge-base, falling back to Case B")
+		return true
+	}
+
+	// Count commits between merge-base and HEAD
+	countResult, err := d.executor.Run(ctx, []string{
+		"git", "rev-list", "--count", mergeBase + "..HEAD",
+	}, opts)
+	if err != nil || countResult.ExitCode != 0 {
+		logx.Debugf("branchHasCommits: rev-list failed (err=%v, exit=%d), falling back to Case B", err, countResult.ExitCode)
+		return true
+	}
+
+	n, parseErr := strconv.Atoi(strings.TrimSpace(countResult.Stdout))
+	if parseErr != nil {
+		logx.Debugf("branchHasCommits: failed to parse commit count %q, falling back to Case B", countResult.Stdout)
+		return true
+	}
+	return n > 0
 }
 
 // BackendInfoTool provides MCP interface for backend information.

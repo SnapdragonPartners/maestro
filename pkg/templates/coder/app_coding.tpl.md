@@ -68,7 +68,7 @@ Key examples:
 - **todos_add**: Use ONLY when you discover additional work not in the original plan (e.g., missing edge case tests, forgotten error handling)
 
 ### Story Completion
-- **done**: Call ONLY when ALL completion criteria are met (see below). Before calling:
+- **done**: Call when implementation is complete, or when no changes are needed. Before calling:
   - Verify all required files exist using `shell({{"{"}}{{printf "\"command\": \"ls\""}}}})`
 {{- if .TestCommand}}
   - Run full test suite and confirm all tests pass: `shell({{"{"}}{{printf "\"command\": \"%s\"" .TestCommand}}}})`

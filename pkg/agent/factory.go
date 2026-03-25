@@ -149,6 +149,23 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 	return f.createClientWithMiddleware(modelName, agentType.String(), stateProvider, logger)
 }
 
+// CreateRawClient creates a bare LLM client with no middleware for the given provider and API key.
+// Used for lightweight validation (e.g., key checking) where the full middleware stack is not needed.
+func CreateRawClient(provider, apiKey, model string) (LLMClient, error) {
+	switch provider {
+	case config.ProviderAnthropic:
+		return anthropic.NewClaudeClientWithModel(apiKey, model), nil
+	case config.ProviderOpenAI:
+		return openaiofficial.NewOfficialClientWithModel(apiKey, model), nil
+	case config.ProviderGoogle:
+		return google.NewGeminiClientWithModel(apiKey, model), nil
+	case config.ProviderOllama:
+		return ollama.NewOllamaClientWithModel(apiKey, model), nil
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", provider)
+	}
+}
+
 // createClientWithMiddleware creates a client with the full middleware chain.
 func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	// Create the raw LLM client based on provider
@@ -196,6 +213,12 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	}
 	retryPolicy := retry.NewPolicy(retryConfig, nil) // Use default classifier
 
+	// Ensure logger is available for retry middleware
+	retryLogger := logger
+	if retryLogger == nil {
+		retryLogger = logx.NewLogger("retry")
+	}
+
 	// Build the full middleware chain
 
 	// Convert agentTypeStr to validation.AgentType
@@ -218,7 +241,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		validator.Middleware(), // Agent-aware empty response validation
 		metrics.Middleware(f.metricsRecorder, nil, stateProvider, logger),
 		circuit.Middleware(circuitBreaker),
-		retry.Middleware(retryPolicy),
+		retry.Middleware(retryPolicy, retryLogger),
 		logging.EmptyResponseLoggingMiddleware(),                 // Log empty responses after retry exhaustion
 		ratelimit.Middleware(f.rateLimitMap, nil, stateProvider), // Real token bucket with concurrency limiting
 		timeout.Middleware(f.config.Agents.Resilience.Timeout),

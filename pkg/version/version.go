@@ -15,4 +15,8 @@ var (
 
 	// Date is the build date in ISO format.
 	Date = "unknown"
+
+	// IssueReportingKey is the HMAC shared secret for signing issue submissions.
+	// Set at build time via goreleaser; defaults to dev key for local builds.
+	IssueReportingKey = "dev-issue-key"
 )

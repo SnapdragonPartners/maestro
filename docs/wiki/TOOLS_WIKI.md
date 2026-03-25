@@ -928,7 +928,7 @@ func (r *HostRunner) RunContainerTest(ctx context.Context, args map[string]any) 
         "docker", "run", "--rm",
         "-v", fmt.Sprintf("%s:/workspace:%s", hostWorkspace, mountPermissions),
         "-w", "/workspace",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=2g",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=4g",
         containerName,
         "sh", "-c", command,
     }

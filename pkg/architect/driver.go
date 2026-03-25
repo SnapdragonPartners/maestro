@@ -61,6 +61,9 @@ type MaintenanceTracker struct {
 	// Container upgrade signaling (set by coder when Claude Code upgraded in-place)
 	NeedsContainerUpgrade  bool   // True if container image needs rebuild
 	ContainerUpgradeReason string // What triggered the upgrade (e.g., "claude_code")
+
+	// Maintenance items logged by architect during reviews via add_maintenance_item tool
+	Items []tools.MaintenanceItem
 }
 
 // MaintenanceStoryResult tracks the result of a single maintenance story.
@@ -321,34 +324,43 @@ func (d *Driver) getContextForAgent(agentID string) *contextmgr.ContextManager {
 	return cm
 }
 
+// ensureContextForStory ensures the architect's per-agent context is scoped to the correct story.
+// Uses ContextManager.GetCurrentTemplate() for idempotent detection: if the template name
+// (which encodes the story ID) already matches, this is a no-op. On story change (or first use),
+// it resets the context with a fresh system prompt and clears review streaks.
+func (d *Driver) ensureContextForStory(ctx context.Context, agentID, storyID string) (*contextmgr.ContextManager, error) {
+	cm := d.getContextForAgent(agentID)
+	templateName := fmt.Sprintf("agent-%s-story-%s", agentID, storyID)
+
+	if cm.GetCurrentTemplate() == templateName {
+		return cm, nil // Already scoped to this story
+	}
+
+	// Story changed (or first use) — reset context with new system prompt
+	d.logger.Info("Story context change detected for agent %s: %q → %q",
+		agentID, cm.GetCurrentTemplate(), templateName)
+
+	systemPrompt, err := d.buildSystemPrompt(ctx, agentID, storyID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build system prompt for agent %s story %s: %w",
+			agentID, storyID, err)
+	}
+
+	cm.ResetForNewTemplate(templateName, systemPrompt)
+	d.clearReviewStreaks(agentID)
+	d.logger.Info("Reset context for agent %s (story %s)", agentID, storyID)
+	return cm, nil
+}
+
 // ResetAgentContext resets the context for an agent when they start a new story.
-// Called when a coder transitions to SETUP state with a new story assignment.
+// Delegates to ensureContextForStory using the dispatcher lease as the authoritative story source.
 func (d *Driver) ResetAgentContext(agentID string) error {
-	// Get current story for this agent from dispatcher
 	storyID := d.dispatcher.GetStoryForAgent(agentID)
 	if storyID == "" {
 		return fmt.Errorf("no story found for agent %s", agentID)
 	}
-
-	// Get or create context for this agent
-	cm := d.getContextForAgent(agentID)
-
-	// Build comprehensive system prompt
-	systemPrompt, err := d.buildSystemPrompt(agentID, storyID)
-	if err != nil {
-		return fmt.Errorf("failed to build system prompt: %w", err)
-	}
-
-	// Reset context with story-scoped template name
-	templateName := fmt.Sprintf("agent-%s-story-%s", agentID, storyID)
-	cm.ResetForNewTemplate(templateName, systemPrompt)
-
-	d.logger.Info("✅ Reset context for agent %s (story %s)", agentID, storyID)
-
-	// Clear review streaks for this agent (new story = fresh start)
-	d.clearReviewStreaks(agentID)
-
-	return nil
+	_, err := d.ensureContextForStory(context.Background(), agentID, storyID)
+	return err
 }
 
 // incrementReviewStreak increments the consecutive NEEDS_CHANGES streak for a coder/review-type pair.
@@ -434,7 +446,7 @@ func (d *Driver) makeOnLLMErrorCallback(contextType string) func(error, *context
 
 // buildSystemPrompt creates the comprehensive system prompt for an agent context.
 // This prompt contains persistent context for the entire story lifecycle.
-func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
+func (d *Driver) buildSystemPrompt(ctx context.Context, agentID, storyID string) (string, error) {
 	// Get story details from queue
 	story, exists := d.queue.GetStory(storyID)
 	if !exists {
@@ -463,7 +475,7 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 	// Load and add MAESTRO.md content if available (formatted with trust boundary)
 	if d.workDir != "" {
 		mirrorMgr := mirror.NewManager(d.workDir)
-		if maestroContent, err := mirrorMgr.LoadMaestroMd(context.Background()); err == nil && maestroContent != "" {
+		if maestroContent, err := mirrorMgr.LoadMaestroMd(ctx); err == nil && maestroContent != "" {
 			data.Extra["MaestroMd"] = utils.FormatMaestroMdForPrompt(maestroContent)
 		}
 	}
@@ -480,6 +492,24 @@ func (d *Driver) buildSystemPrompt(agentID, storyID string) (string, error) {
 	}
 
 	return prompt, nil
+}
+
+// AddMaintenanceItem implements the tools.MaintenanceLog interface.
+// Appends an item to the maintenance tracker for processing in the next maintenance cycle,
+// and persists it to the database for durability across restarts.
+func (d *Driver) AddMaintenanceItem(item tools.MaintenanceItem) {
+	d.maintenance.mutex.Lock()
+	defer d.maintenance.mutex.Unlock()
+	d.maintenance.Items = append(d.maintenance.Items, item)
+	d.logger.Info("🔧 Maintenance item logged: [%s] %s (source: %s)", item.Priority, item.Description, item.Source)
+
+	// Fire-and-forget persistence
+	persistence.PersistMaintenanceItem(&persistence.MaintenanceItemRecord{
+		Description: item.Description,
+		Priority:    item.Priority,
+		Source:      item.Source,
+		CreatedAt:   item.AddedAt,
+	}, d.persistenceChannel)
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
@@ -612,9 +642,18 @@ func (d *Driver) Run(ctx context.Context) error {
 		default:
 		}
 
-		// Check if we're already in a terminal state.
+		// Check current state for recycling or terminal exit.
 		currentState := d.GetCurrentState()
-		if currentState == StateDone || currentState == StateError {
+		if currentState == StateDone {
+			// Recycle to WAITING for new specs instead of exiting
+			d.logger.Info("✅ All stories completed - recycling to WAITING for new specs")
+			if err := d.TransitionTo(ctx, StateWaiting, nil); err != nil {
+				d.logger.Error("Failed to transition from DONE to WAITING: %v", err)
+				break
+			}
+			continue
+		}
+		if currentState == StateError {
 			break
 		}
 
@@ -672,8 +711,8 @@ func (d *Driver) processCurrentState(ctx context.Context) (proto.State, error) {
 	case StateEscalated:
 		return d.handleEscalated(ctx)
 	case StateDone:
-		// DONE is a terminal state - should not continue processing.
-		return StateDone, nil
+		// Recycle to WAITING for new specs (handled in Run loop above)
+		return StateWaiting, nil
 	case proto.StateSuspend:
 		nextState, _, err := d.HandleSuspend(ctx)
 		if err != nil {
@@ -925,10 +964,13 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 }
 
 // createReviewToolProviderForCoder creates a tool provider for structured reviews (approvals).
-// Includes read_file, list_files, review_complete, and optionally get_diff.
+// Includes read_file, list_files, review_complete, add_maintenance_item, and optionally get_diff.
 func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff bool) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
+	// Get story ID from dispatcher lease for maintenance item source context
+	storyID := d.dispatcher.GetStoryForAgent(coderID)
 
 	ctx := tools.AgentContext{
 		Executor:        d.executor,       // Architect executor with read-only mounts
@@ -937,14 +979,18 @@ func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff
 		NetworkDisabled: false,            // Network allowed for architect
 		WorkDir:         containerWorkDir, // Use coder's container mount path
 		Agent:           nil,              // No agent reference needed for read tools
+		AgentID:         coderID,          // Agent being reviewed (for maintenance item source)
+		StoryID:         storyID,          // Story being reviewed (for maintenance item source)
+		MaintenanceLog:  d,                // Driver implements MaintenanceLog
 	}
 
-	// Build tool list: read tools + review_complete terminal tool
+	// Build tool list: read tools + review_complete terminal tool + maintenance item
 	// Optionally include get_diff for code reviews
 	allowedTools := []string{
 		tools.ToolReadFile,
 		tools.ToolListFiles,
-		tools.ToolReviewComplete, // Terminal tool for structured reviews
+		tools.ToolReviewComplete,     // Terminal tool for structured reviews
+		tools.ToolAddMaintenanceItem, // Non-terminal: log issues during review
 	}
 	if includeGetDiff {
 		allowedTools = append(allowedTools, tools.ToolGetDiff)
@@ -954,10 +1000,13 @@ func (d *Driver) createReviewToolProviderForCoder(coderID string, includeGetDiff
 }
 
 // createQuestionToolProviderForCoder creates a tool provider for answering questions.
-// Includes read_file, list_files, and submit_reply.
+// Includes read_file, list_files, submit_reply, and add_maintenance_item.
 func (d *Driver) createQuestionToolProviderForCoder(coderID string) *tools.ToolProvider {
 	// Inside the architect container, coder workspaces are mounted at /mnt/coders/{coder-id}
 	containerWorkDir := fmt.Sprintf("/mnt/coders/%s", coderID)
+
+	// Get story ID from dispatcher lease for maintenance item source context
+	storyID := d.dispatcher.GetStoryForAgent(coderID)
 
 	ctx := tools.AgentContext{
 		Executor:        d.executor,       // Architect executor with read-only mounts
@@ -966,13 +1015,17 @@ func (d *Driver) createQuestionToolProviderForCoder(coderID string) *tools.ToolP
 		NetworkDisabled: false,            // Network allowed for architect
 		WorkDir:         containerWorkDir, // Use coder's container mount path
 		Agent:           nil,              // No agent reference needed for read tools
+		AgentID:         coderID,          // Agent being reviewed (for maintenance item source)
+		StoryID:         storyID,          // Story being reviewed (for maintenance item source)
+		MaintenanceLog:  d,                // Driver implements MaintenanceLog
 	}
 
-	// Build tool list: read tools + submit_reply terminal tool
+	// Build tool list: read tools + submit_reply terminal tool + maintenance item
 	allowedTools := []string{
 		tools.ToolReadFile,
 		tools.ToolListFiles,
-		tools.ToolSubmitReply, // Terminal tool for text replies
+		tools.ToolSubmitReply,        // Terminal tool for text replies
+		tools.ToolAddMaintenanceItem, // Non-terminal: log issues during Q&A
 	}
 
 	return tools.NewProvider(&ctx, allowedTools)

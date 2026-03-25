@@ -1308,8 +1308,9 @@ func (c *Coder) createCodingToolProvider(storyType string, isHotfix bool, storyI
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
-		AgentID:         c.GetAgentID(), // Required for compose_up project name isolation
-		StoryID:         storyID,        // For done tool commit message prefix
+		AgentID:         c.GetAgentID(),            // Required for compose_up project name isolation
+		StoryID:         storyID,                   // For done tool commit message prefix
+		TargetBranch:    config.GetGitBaseBranch(), // For done tool merge-base check
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
@@ -1355,8 +1356,9 @@ func (c *Coder) createClaudeCodeCodingToolProvider(storyType, storyID string) *t
 		ReadOnly:        false,                 // Coding requires write access
 		NetworkDisabled: false,                 // May need network for builds/tests
 		WorkDir:         c.workDir,
-		AgentID:         c.GetAgentID(), // Required for chat tools (chat_read needs agent_id)
-		StoryID:         storyID,        // For done tool commit message prefix
+		AgentID:         c.GetAgentID(),            // Required for chat tools (chat_read needs agent_id)
+		StoryID:         storyID,                   // For done tool commit message prefix
+		TargetBranch:    config.GetGitBaseBranch(), // For done tool merge-base check
 	}
 
 	return tools.NewProvider(&agentCtx, codingTools)
@@ -1734,6 +1736,165 @@ func (c *Coder) SetPendingContainerConfig(name, dockerfile, imageID, dockerfileH
 // Implements the tools.Agent interface for await_merge state.
 func (c *Coder) GetPendingContainerConfig() (name, dockerfile, imageID, dockerfileHash string, exists bool) {
 	return c.pendingContainerName, c.pendingContainerDockerfile, c.pendingContainerImageID, c.pendingDockerfileHash, c.hasPendingContainerConfig
+}
+
+// SwitchContainer performs a live container switch with config staging.
+// Implements the tools.Agent interface for the container_switch MCP tool.
+//
+// In standard mode: stops old container, starts new one with the target image,
+// verifies health, updates coder state, stages config, and reconfigures services.
+// In Claude Code mode: stages config only — the signal handler does the lifecycle switch
+// after the Claude Code session ends gracefully.
+//
+// Note: LongRunningDockerExec.StartContainer reuses an existing container if one is
+// tracked under the same agentID. We must stop the old container first to force
+// creation of a new container with the target image. If the new container fails,
+// we attempt bootstrap fallback.
+//
+//nolint:cyclop // Container switch has inherent complexity with lifecycle + fallback + staging
+func (c *Coder) SwitchContainer(ctx context.Context, newImage, stagingImageID, stagingDockerfile, stagingHash string) (string, error) {
+	// Check if Claude Code mode is configured
+	isClaudeCodeConfigured := false
+	if cfg, cfgErr := config.GetConfig(); cfgErr == nil && cfg.Agents != nil {
+		isClaudeCodeConfigured = cfg.Agents.CoderMode == config.CoderModeClaudeCode
+	}
+
+	// In Claude Code mode, only stage config — lifecycle is handled by signal handler
+	if isClaudeCodeConfigured {
+		if stagingImageID != "" {
+			c.SetPendingContainerConfig(newImage, stagingDockerfile, stagingImageID, stagingHash)
+			c.logger.Info("🐳 Claude Code mode: staged container config for %s (lifecycle deferred to signal handler)", newImage)
+		}
+		return c.containerName, nil
+	}
+
+	// Standard mode: stop old → start new → health check → update state
+	if c.longRunningExecutor == nil {
+		return "", fmt.Errorf("no executor available for container switch")
+	}
+
+	c.logger.Info("🐳 Switching container from %s to %s", c.containerName, newImage)
+
+	// Switch by imageID when available (immutable SHA256 reference) to prevent
+	// tag-rewrite races between image ID resolution and container start.
+	// Falls back to tag for bootstrap or when imageID is not provided.
+	imageToStart := newImage
+	if stagingImageID != "" {
+		imageToStart = stagingImageID
+		c.logger.Info("Using pinned imageID %s instead of tag %s", stagingImageID[:min(24, len(stagingImageID))], newImage)
+	}
+
+	// Create execution options for new container (read-write for coding)
+	execOpts := execpkg.Opts{
+		WorkDir:         c.workDir,
+		ReadOnly:        false, // Coding requires write access
+		NetworkDisabled: false, // Network enabled
+		User:            "1000:1000",
+		Env:             []string{"HOME=/tmp"},
+		Timeout:         0, // No timeout for long-running container
+		ResourceLimits: &execpkg.ResourceLimits{
+			CPUs:   config.GetContainerCPUs(),
+			Memory: config.GetContainerMemory(),
+			PIDs:   config.GetContainerPIDs(),
+		},
+	}
+
+	// Inject user-defined secrets as environment variables
+	if userSecrets := config.GetUserSecrets(); len(userSecrets) > 0 {
+		for key, value := range userSecrets {
+			execOpts.Env = append(execOpts.Env, fmt.Sprintf("%s=%s", key, value))
+		}
+	}
+
+	// Build extra mounts (mirror repository)
+	projectDir := config.GetProjectDir()
+	if projectDir != "" {
+		if absDir, absErr := filepath.Abs(projectDir); absErr == nil {
+			projectDir = absDir
+		}
+		mirrorsPath := filepath.Join(projectDir, ".mirrors")
+		if _, statErr := os.Stat(mirrorsPath); statErr == nil {
+			execOpts.ExtraMounts = append(execOpts.ExtraMounts, execpkg.Mount{
+				Source:      mirrorsPath,
+				Destination: "/mirrors",
+				ReadOnly:    true,
+			})
+		}
+	}
+
+	agentID := c.GetID()
+	sanitizedAgentID := utils.SanitizeContainerName(agentID)
+
+	// Step 1: Stop old container so StartContainer creates a fresh one with the new image.
+	// LongRunningDockerExec.StartContainer reuses an already-tracked container by name,
+	// so we must remove the old one from tracking first.
+	c.logger.Info("Stopping old container %s before starting new one", c.containerName)
+	stopCtx, stopCancel := context.WithTimeout(ctx, 30*time.Second)
+	if stopErr := c.longRunningExecutor.StopContainer(stopCtx, sanitizedAgentID); stopErr != nil {
+		c.logger.Warn("Failed to stop old container %s: %v (proceeding with start)", sanitizedAgentID, stopErr)
+	}
+	stopCancel()
+
+	// Step 2: Start new container with target image
+	c.SetDockerImage(imageToStart)
+	newContainerName, err := c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+	if err != nil {
+		// Target failed — try bootstrap fallback
+		c.logger.Warn("Failed to start target container %s, falling back to bootstrap: %v", newImage, err)
+		c.SetDockerImage(config.BootstrapContainerTag)
+		newContainerName, err = c.longRunningExecutor.StartContainer(ctx, sanitizedAgentID, &execOpts)
+		if err != nil {
+			return "", fmt.Errorf("failed to start container (including bootstrap fallback): %w", err)
+		}
+		c.logger.Info("Started fallback bootstrap container: %s", newContainerName)
+		// Bootstrap fallback: skip staging (empty stagingImageID signals this)
+		stagingImageID = ""
+	}
+
+	// Step 3: Health check — verify new container can execute commands.
+	// After stopping old + starting new, this is the only active container,
+	// so Run() will target it via the first-active-container fallback.
+	healthCtx, healthCancel := context.WithTimeout(ctx, 15*time.Second)
+	healthResult, healthErr := c.longRunningExecutor.Run(healthCtx, []string{"echo", "ok"}, &execpkg.Opts{
+		Timeout: 10 * time.Second,
+	})
+	healthCancel()
+	if healthErr != nil || healthResult.ExitCode != 0 {
+		c.logger.Error("Health check failed for %s: err=%v exit=%d", newContainerName, healthErr, healthResult.ExitCode)
+		// New container is unhealthy — stop it and report failure
+		failStopCtx, failStopCancel := context.WithTimeout(ctx, 15*time.Second)
+		_ = c.longRunningExecutor.StopContainer(failStopCtx, sanitizedAgentID)
+		failStopCancel()
+		return "", fmt.Errorf("container %s failed health check: %w", newContainerName, healthErr)
+	}
+	c.logger.Info("Health check passed for container: %s", newContainerName)
+
+	// Step 4: Update coder state
+	c.containerName = newContainerName
+
+	// Step 5: Stage config atomically (pure in-memory mutation, can't fail)
+	if stagingImageID != "" {
+		c.SetPendingContainerConfig(newImage, stagingDockerfile, stagingImageID, stagingHash)
+	}
+
+	// Step 6: Reconfigure build service for new container
+	if c.buildService != nil {
+		executor := build.NewContainerExecutor(newContainerName)
+		c.buildService.SetExecutor(executor)
+		c.logger.Info("Reconfigured build service with new container executor: %s", newContainerName)
+	}
+
+	// Step 7: Remap git origin to container mirror path
+	if err := c.remapOriginToContainerMirror(ctx); err != nil {
+		c.logger.Warn("Failed to remap origin to container mirror path (non-fatal): %v", err)
+	}
+
+	// Step 8: Reset Claude Code availability flags (new container may differ)
+	c.claudeCodeAvailabilityChecked = false
+	c.claudeCodeAvailable = false
+
+	c.logger.Info("✅ Container switch complete: now running %s", newContainerName)
+	return newContainerName, nil
 }
 
 // logToolExecution logs a tool execution to the database for debugging and analysis.

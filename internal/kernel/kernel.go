@@ -566,6 +566,31 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			k.Logger.Error("Invalid data type for OpCheckpointPMState")
 		}
 
+	case persistence.OpInsertMaintenanceItem:
+		if item, ok := req.Data.(*persistence.MaintenanceItemRecord); ok {
+			if err := ops.InsertMaintenanceItem(item); err != nil {
+				k.Logger.Error("Failed to insert maintenance item: %v", err)
+			}
+		}
+
+	case persistence.OpGetUnconsumedMaintenanceItems:
+		if req.Response != nil {
+			items, err := ops.GetUnconsumedMaintenanceItems()
+			if err != nil {
+				k.Logger.Error("Failed to get unconsumed maintenance items: %v", err)
+				req.Response <- err
+			} else {
+				req.Response <- items
+			}
+		}
+
+	case persistence.OpMarkMaintenanceItemsConsumed:
+		if ids, ok := req.Data.([]int64); ok {
+			if err := ops.MarkMaintenanceItemsConsumed(ids); err != nil {
+				k.Logger.Error("Failed to mark maintenance items consumed: %v", err)
+			}
+		}
+
 	case persistence.OpSaveAgentContext:
 		// Save a single agent context (used for error debugging checkpoints)
 		if ctx, ok := utils.SafeAssert[*persistence.AgentContext](req.Data); ok {

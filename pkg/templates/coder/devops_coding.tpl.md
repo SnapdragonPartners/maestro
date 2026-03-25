@@ -32,14 +32,14 @@
 
 ### Container Tools (Use These First)
 - **container_build**: Build Docker images from Dockerfile. Use BEFORE attempting any docker build commands.
-  - Always specify exact Dockerfile path and image name
-  - Example: container_build({"dockerfile": "/workspace/.maestro/Dockerfile", "image_name": "maestro-myapp"})
+  - Container name is auto-generated from project config (no need to specify)
+  - Example: container_build({"dockerfile": "/workspace/.maestro/Dockerfile"})
 - **container_test**: Test containers by running commands in temporary instances. Use for validation.
   - Specify exact commands to run
-  - Example: container_test({"image_name": "maestro-myapp", "command": "go version"})
+  - Example: container_test({"container_name": "maestro-myapp-dockerfile:latest", "command": "go version"})
 - **container_update**: Register built containers with the system for persistence.
-  - Use after successful container_build
-  - Example: container_update({"image_name": "maestro-myapp"})
+  - Use after successful container_build. Container name is auto-generated.
+  - Example: container_update({"dockerfile": "/workspace/.maestro/Dockerfile"})
 - **container_list**: Check available containers and registry status. Use BEFORE building new containers.
 - **container_switch**: Change execution environment between containers when needed.
 - **compose_up**: Bring up Docker Compose services defined in .maestro/compose.yml. Use for multi-container setups requiring databases or other services.

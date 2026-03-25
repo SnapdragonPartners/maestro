@@ -9,7 +9,9 @@ import (
 // generatePlanPrompt creates a concise user message for plan reviews.
 // Context (story, role) is already in the system prompt.
 func (d *Driver) generatePlanPrompt(requestMsg *proto.AgentMsg, approvalPayload *proto.ApprovalRequestPayload) string {
-	_ = requestMsg // context already in system prompt
+	// Story context is provided in the system prompt (via ensureContextForStory)
+	// AND inline in the request payload content. Both are available to the LLM.
+	_ = requestMsg
 
 	return fmt.Sprintf(`The coder submitted their implementation plan for review:
 

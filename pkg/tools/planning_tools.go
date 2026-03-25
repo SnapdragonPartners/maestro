@@ -140,7 +140,7 @@ func (s *StoryCompleteTool) PromptDocumentation() string {
 }
 
 // Exec executes the story complete operation.
-// Returns ProcessEffect to transition to PLAN_REVIEW with ApprovalTypeCompletion.
+// Returns ProcessEffect to pause the toolloop and transition to PLAN_REVIEW with ApprovalTypeCompletion.
 func (s *StoryCompleteTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
 	// Validate evidence (required)
 	evidence, ok := args["evidence"]
@@ -246,7 +246,7 @@ func (s *SubmitPlanTool) PromptDocumentation() string {
 	return `- **submit_plan** - Submit implementation plan for architect approval
   - Parameters: plan, confidence (required), exploration_summary (optional)
   - Advances to PLAN_REVIEW for architect approval
-  - Use story_complete instead if the story is already implemented`
+  - If the story requires no changes, use done with a summary explaining why`
 }
 
 // Exec executes the submit plan operation.

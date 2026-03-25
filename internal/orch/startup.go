@@ -2,11 +2,8 @@
 package orch
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	"orchestrator/internal/utils"
@@ -93,7 +90,13 @@ func (o *StartupOrchestrator) ensureSafeContainerHealthy(ctx context.Context) er
 	return nil
 }
 
-// validateTargetContainer validates the target container and offers interactive recovery.
+// validateTargetContainer validates the target container and recovers automatically.
+//
+// Recovery cases when the target container is unhealthy:
+//
+//	Case 1: Dockerfile configured → auto-rebuild from repository clone
+//	Case 2: No dockerfile configured → fall back to bootstrap
+//	Case 3: Rebuild attempted but failed → fall back to bootstrap
 func (o *StartupOrchestrator) validateTargetContainer(ctx context.Context) error {
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -142,50 +145,82 @@ func (o *StartupOrchestrator) validateTargetContainer(ctx context.Context) error
 
 	o.logger.Warn("⚠️  Target container %s is not healthy", pinnedImageID)
 
-	// Cases D/E: Offer interactive rebuild if dockerfile is available
-	if o.hasDockerfile(&cfg) {
-		return o.offerInteractiveRebuild(ctx, &cfg, pinnedImageID)
-	}
-
-	// No dockerfile available
-	return fmt.Errorf("target image %s unavailable and no dockerfile configured - provide image or run with --bootstrap", pinnedImageID)
+	// Target is unhealthy — attempt recovery based on dockerfile availability
+	return o.recoverUnhealthyTarget(ctx, &cfg, safeImageID)
 }
 
-// offerInteractiveRebuild offers to rebuild the container from dockerfile.
-func (o *StartupOrchestrator) offerInteractiveRebuild(ctx context.Context, cfg *config.Config, currentImageID string) error {
-	// Check if image exists but is unhealthy vs missing entirely
-	imageExists := true
-	cmd := exec.CommandContext(ctx, "docker", "image", "inspect", currentImageID)
-	if cmd.Run() != nil {
-		imageExists = false
+// recoveryCase identifies the recovery action for an unhealthy target container.
+type recoveryCase int
+
+const (
+	// recoveryCaseRebuild means a Dockerfile is configured and a rebuild should be attempted.
+	recoveryCaseRebuild recoveryCase = 1
+	// recoveryCaseNoDockerfile means no Dockerfile is configured at all.
+	recoveryCaseNoDockerfile recoveryCase = 2
+)
+
+// detectRecoveryCase determines which recovery path to take based on config.
+//
+// The Dockerfile lives in the git repository, not in the project root directory.
+// We cannot check for it on the local filesystem — the build process clones the
+// repo and uses the Dockerfile from there. If the Dockerfile has been deleted from
+// the repo, the build will fail and we fall back to bootstrap mode (Case 3 in logs).
+//
+// This is a pure detection function with no side effects, making it unit-testable.
+func (o *StartupOrchestrator) detectRecoveryCase(cfg *config.Config) (recoveryCase, string) {
+	dockerfilePath := o.getDockerfilePath(cfg)
+
+	if dockerfilePath == "" {
+		return recoveryCaseNoDockerfile, ""
 	}
 
-	var prompt string
-	if imageExists {
-		prompt = fmt.Sprintf("Target image %s exists but is not healthy. Rebuild from dockerfile? (y/N): ", currentImageID)
-	} else {
-		prompt = fmt.Sprintf("Target image %s does not exist. Build from dockerfile? (y/N): ", currentImageID)
-	}
+	return recoveryCaseRebuild, dockerfilePath
+}
 
-	fmt.Print(prompt)
-	reader := bufio.NewReader(os.Stdin)
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		return fmt.Errorf("failed to read user input: %w", err)
-	}
+// recoverUnhealthyTarget handles recovery when the target container is unhealthy.
+// It attempts to rebuild from dockerfile if available, or falls back to bootstrap mode.
+func (o *StartupOrchestrator) recoverUnhealthyTarget(ctx context.Context, cfg *config.Config, safeImageID string) error {
+	rc, dockerfilePath := o.detectRecoveryCase(cfg)
 
-	response = strings.TrimSpace(strings.ToLower(response))
-	if response != "y" && response != "yes" {
-		return fmt.Errorf("user declined rebuild - provide valid image or run with --bootstrap")
-	}
+	switch rc {
+	case recoveryCaseNoDockerfile:
+		o.logger.Warn("⚠️  No dockerfile configured — falling back to bootstrap mode")
+		return o.fallbackToBootstrap(safeImageID)
 
-	// Proceed with rebuild
-	o.logger.Info("🔨 Building container from dockerfile...")
-	if err := o.buildContainerFromConfig(ctx, cfg); err != nil {
-		return fmt.Errorf("container build failed: %w", err)
-	}
+	case recoveryCaseRebuild:
+		o.logger.Info("🔨 Dockerfile configured at %q — rebuilding target container from repository", dockerfilePath)
+		if err := o.buildContainerFromConfig(ctx, cfg); err != nil {
+			o.logger.Warn("⚠️  Rebuild from dockerfile failed: %v", err)
+			o.logger.Warn("⚠️  Falling back to bootstrap mode — PM will handle Dockerfile remediation")
+			return o.fallbackToBootstrap(safeImageID)
+		}
+		o.logger.Info("✅ Target container rebuilt successfully from dockerfile")
+		return nil
 
+	default:
+		o.logger.Warn("⚠️  Unknown recovery case %d — falling back to bootstrap mode", rc)
+		return o.fallbackToBootstrap(safeImageID)
+	}
+}
+
+// fallbackToBootstrap resets the pinned image to the safe container, allowing the
+// system to continue in bootstrap mode. The PM's bootstrap detection will pick up
+// any missing components (including Dockerfile) and create stories to address them.
+func (o *StartupOrchestrator) fallbackToBootstrap(safeImageID string) error {
+	o.logger.Info("🔄 Resetting pinned image to safe container: %s", safeImageID)
+	if err := config.SetPinnedImageID(safeImageID); err != nil {
+		return fmt.Errorf("failed to reset pinned image to safe container: %w", err)
+	}
+	o.logger.Info("✅ Falling back to safe container — PM will handle recovery via bootstrap detection")
 	return nil
+}
+
+// getDockerfilePath returns the dockerfile path from config, or empty string if not configured.
+func (o *StartupOrchestrator) getDockerfilePath(cfg *config.Config) string {
+	if cfg.Container != nil && cfg.Container.Dockerfile != "" {
+		return cfg.Container.Dockerfile
+	}
+	return ""
 }
 
 // buildContainerFromConfig builds a container using the configured dockerfile.
@@ -207,8 +242,11 @@ func (o *StartupOrchestrator) buildContainerFromConfig(ctx context.Context, cfg 
 	}
 	defer cleanup()
 
-	// Generate a new image name with timestamp
-	imageName := fmt.Sprintf("%s:latest", cfg.Container.Name)
+	// Use the configured container name, adding :latest tag only if no tag is present
+	imageName := cfg.Container.Name
+	if !strings.Contains(imageName, ":") {
+		imageName += ":latest"
+	}
 
 	// Build container
 	dockerfilePath := cfg.Container.Dockerfile

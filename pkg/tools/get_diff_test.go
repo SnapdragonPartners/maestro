@@ -258,7 +258,7 @@ func TestGetDiff_DoneToolThenGetDiff(t *testing.T) {
 
 	// Call the done tool (this should commit the changes)
 	executor := execpkg.NewLocalExec()
-	doneTool := NewDoneTool(nil, executor, repoDir, "STORY-2")
+	doneTool := NewDoneTool(nil, executor, repoDir, "STORY-2", "")
 
 	doneResult, err := doneTool.Exec(context.Background(), map[string]any{
 		"summary": "Added API endpoint",

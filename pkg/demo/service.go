@@ -14,6 +14,7 @@ import (
 
 	"orchestrator/internal/state"
 	"orchestrator/pkg/config"
+	execpkg "orchestrator/pkg/exec"
 	"orchestrator/pkg/logx"
 )
 
@@ -80,6 +81,12 @@ type Service struct {
 	useCompose     bool              // Whether demo is using compose or container-only mode
 	containerID    string            // Container ID when running without compose
 	lastDiagnostic *DiagnosticResult // Last port detection diagnostic
+
+	// startCancel cancels any in-progress Start operation (port discovery).
+	// Protected by cancelMu (separate from mu) so Stop() can cancel Start()
+	// without waiting for mu, which Start() holds during long operations.
+	cancelMu    sync.Mutex
+	startCancel context.CancelFunc
 
 	// For testing
 	commandRunner func(ctx context.Context, name string, args ...string) *exec.Cmd
@@ -156,6 +163,21 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.workspacePath == "" {
 		return fmt.Errorf("workspace path not set")
 	}
+
+	// Create a cancellable context so Stop() can abort port discovery.
+	// Uses cancelMu (not mu) so Stop() can cancel without waiting for mu.
+	startCtx, startCancel := context.WithCancel(ctx)
+	s.cancelMu.Lock()
+	s.startCancel = startCancel
+	s.cancelMu.Unlock()
+	defer func() {
+		startCancel()
+		s.cancelMu.Lock()
+		s.startCancel = nil
+		s.cancelMu.Unlock()
+	}()
+
+	ctx = startCtx
 
 	s.logger.Info("🚀 Starting demo...")
 
@@ -464,6 +486,15 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 		s.logger.Info("   Using environment file: .maestro/.env")
 	}
 
+	// Inject user-defined secrets via env file to avoid leaking values in logs/ps.
+	secretsEnvFile, fErr := execpkg.WriteEnvFile(s.buildSecretEnvVars())
+	if fErr != nil {
+		return fmt.Errorf("failed to write secrets env file: %w", fErr)
+	}
+	if secretsEnvFile != "" {
+		args = append(args, "--env-file", secretsEnvFile)
+	}
+
 	// Add session ID label dynamically
 	if s.config != nil && s.config.SessionID != "" {
 		args = append(args, "--label", fmt.Sprintf("com.maestro.session=%s", s.config.SessionID))
@@ -479,6 +510,11 @@ func (s *Service) runContainerWithNetwork(ctx context.Context, imageID, buildCmd
 	}
 
 	output, err := cmd.CombinedOutput()
+
+	// Clean up secrets env file immediately — Docker reads it at container creation only.
+	if secretsEnvFile != "" {
+		_ = os.Remove(secretsEnvFile)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to start demo container: %w (output: %s)", err, string(output))
 	}
@@ -516,22 +552,63 @@ func (s *Service) runPortDiscoveryWithNetwork(ctx context.Context, imageID, buil
 	if s.commandRunner != nil {
 		portDetector.SetCommandRunner(s.commandRunner)
 	}
+	portDetector.SetLogFunc(func(format string, args ...any) {
+		s.logger.Info(format, args...)
+	})
 
-	// Wait for listeners (30 second timeout, poll every second)
-	ports, err := portDetector.WaitForListeners(ctx, 30*time.Second, 1*time.Second)
+	// Monitor container liveness concurrently — if the container exits during the
+	// poll (e.g., app crashes after build), cancel immediately instead of waiting
+	// the full 30 seconds polling a dead container.
+	pollCtx, pollCancel := context.WithCancel(ctx)
+	defer pollCancel()
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pollCtx.Done():
+				return
+			case <-ticker.C:
+				status := s.getContainerStatus(pollCtx)
+				s.logger.Info("   [port-discovery] container status: %s", status.Status)
+				if status.Status != containerStatusRunning {
+					s.logger.Info("   [port-discovery] container exited, cancelling poll")
+					pollCancel()
+					return
+				}
+			}
+		}
+	}()
+
+	// Wait for listeners (no timeout — exits via context cancellation).
+	// If the container exits, the goroutine above cancels pollCtx.
+	// If the user hits stop, the parent ctx is cancelled.
+	// If a reachable port is found, WaitForListeners returns immediately.
+	ports, err := portDetector.WaitForListeners(pollCtx, 1*time.Second)
 	if err != nil {
-		// Check if container crashed
+		// Check if container crashed (either detected by the liveness goroutine or by context cancellation)
 		containerStatus := s.getContainerStatus(ctx)
 		if containerStatus.Status != containerStatusRunning {
-			logs, _ := s.GetLogs(ctx)
+			logs := s.fetchContainerLogs(ctx)
 			return &DiagnosticResult{
-				ErrorType: DiagnosticContainerExited,
-				Error:     fmt.Sprintf("Container exited (%s). Last logs:\n%s", containerStatus.Status, truncateLogs(logs, 10)),
+				ErrorType:     DiagnosticContainerExited,
+				DetectedPorts: ports,
+				Error:         fmt.Sprintf("Container exited (%s). Last logs:\n%s", containerStatus.Status, truncateLogs(logs, 50)),
 			}
+		}
+		// Container still running — use any detected ports for diagnostics
+		if len(ports) > 0 {
+			diagnostic := BuildDiagnostic(ports, SelectMainPort(s.config.Demo, ports, nil), 0, nil)
+			logs := s.fetchContainerLogs(ctx)
+			if tailLogs := truncateLogs(logs, 50); tailLogs != "" {
+				diagnostic.Error += fmt.Sprintf("\n\nContainer logs:\n%s", tailLogs)
+			}
+			return &diagnostic
 		}
 		return &DiagnosticResult{
 			ErrorType: DiagnosticNoListeners,
-			Error:     "No TCP listeners detected after 30 seconds",
+			Error:     "No TCP listeners detected (port discovery cancelled)",
 		}
 	}
 
@@ -545,6 +622,26 @@ func (s *Service) runPortDiscoveryWithNetwork(ctx context.Context, imageID, buil
 	diagnostic := BuildDiagnostic(ports, selectedPort, 0, nil)
 
 	if selectedPort == 0 {
+		// No reachable ports — always fetch logs to explain why.
+		// The loopback-only error ("must bind to 0.0.0.0") is often misleading
+		// when the real issue is a crash (missing env var, syntax error, etc.).
+		containerStatus := s.getContainerStatus(ctx)
+		logs := s.fetchContainerLogs(ctx)
+		tailLogs := truncateLogs(logs, 50)
+
+		if containerStatus.Status != containerStatusRunning {
+			return &DiagnosticResult{
+				ErrorType:     DiagnosticContainerExited,
+				DetectedPorts: ports,
+				Error:         fmt.Sprintf("Container exited (%s). The app likely crashed on startup. Last logs:\n%s", containerStatus.Status, tailLogs),
+			}
+		}
+
+		// Container still running but only loopback ports — include logs so user
+		// can see what happened (the default "bind to 0.0.0.0" message alone is not actionable).
+		if tailLogs != "" {
+			diagnostic.Error += fmt.Sprintf("\n\nContainer logs:\n%s", tailLogs)
+		}
 		return &diagnostic
 	}
 
@@ -630,6 +727,19 @@ func (s *Service) getImageID() string {
 }
 
 // removeExistingContainer removes any existing demo container.
+// buildSecretEnvVars returns user secrets as KEY=VALUE strings for env file injection.
+func (s *Service) buildSecretEnvVars() []string {
+	userSecrets := config.GetUserSecrets()
+	if len(userSecrets) == 0 {
+		return nil
+	}
+	envVars := make([]string, 0, len(userSecrets))
+	for key, value := range userSecrets {
+		envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
+	}
+	return envVars
+}
+
 func (s *Service) removeExistingContainer(ctx context.Context) {
 	var cmd *exec.Cmd
 	if s.commandRunner != nil {
@@ -691,6 +801,16 @@ func (s *Service) updatePublishedPort(ctx context.Context) (bool, error) {
 
 // Stop stops the demo.
 func (s *Service) Stop(ctx context.Context) error {
+	// Cancel any in-progress Start() (e.g., port discovery) BEFORE acquiring mu.
+	// Start() holds mu during long operations, so we must cancel it first
+	// to unblock mu acquisition.
+	s.cancelMu.Lock()
+	if s.startCancel != nil {
+		s.startCancel()
+		s.startCancel = nil
+	}
+	s.cancelMu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -910,6 +1030,22 @@ func (s *Service) Status(ctx context.Context) *Status {
 	}
 
 	return status
+}
+
+// fetchContainerLogs gets container logs without locking.
+// Used during port discovery (called from Start() which holds mu).
+func (s *Service) fetchContainerLogs(ctx context.Context) string {
+	var cmd *exec.Cmd
+	if s.commandRunner != nil {
+		cmd = s.commandRunner(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+	} else {
+		cmd = exec.CommandContext(ctx, "docker", "logs", "--tail", "100", DemoContainerName)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(output)
 }
 
 // getContainerStatus returns the status of the demo container.

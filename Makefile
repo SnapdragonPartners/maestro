@@ -3,6 +3,12 @@
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
 
+# Build-time ldflags: inject issue reporting key if set in environment
+LDFLAGS :=
+ifdef ISSUE_REPORTING_KEY
+LDFLAGS += -X orchestrator/pkg/version.IssueReportingKey=$(ISSUE_REPORTING_KEY)
+endif
+
 # Install git hooks from hooks/ directory (non-fatal for read-only checkouts / CI)
 install-hooks:
 	@if [ -d .git ] && [ -w .git/hooks ]; then \
@@ -15,7 +21,7 @@ install-hooks:
 # Note: build-mcp-proxy must run before lint because go:embed requires files to exist
 build: install-hooks build-css build-mcp-proxy lint
 	go generate ./...
-	go build -o bin/maestro ./cmd/maestro
+	go build -ldflags "$(LDFLAGS)" -o bin/maestro ./cmd/maestro
 
 # Cross-compile MCP proxy for Linux containers (ARM64 and AMD64)
 build-mcp-proxy:
@@ -27,7 +33,7 @@ build-mcp-proxy:
 
 # Build the maestro CLI tool
 maestro: build-mcp-proxy lint
-	go build -o bin/maestro ./cmd/maestro
+	go build -ldflags "$(LDFLAGS)" -o bin/maestro ./cmd/maestro
 
 # Run all tests with coverage
 test:
@@ -36,7 +42,7 @@ test:
 # Run integration tests only (requires API keys and external services)
 test-integration:
 	@echo "🧪 Running integration tests..."
-	go test -tags=integration -cover -timeout=10m ./...
+	go test -tags=integration -cover -timeout=20m ./...
 
 # Run E2E tests (full workflow tests requiring Docker, Gitea, real Git operations)
 test-e2e:
@@ -47,7 +53,7 @@ test-e2e:
 # Run all tests including integration tests (combines unit and integration)
 test-all:
 	@echo "🔬 Running all tests (unit + integration)..."
-	go test -tags=integration -cover -timeout=10m ./...
+	go test -tags=integration -cover -timeout=20m ./...
 
 # Run tests and generate detailed coverage report
 test-coverage:

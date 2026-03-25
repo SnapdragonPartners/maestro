@@ -2,7 +2,6 @@ package forge
 
 import (
 	"fmt"
-	"os"
 
 	"orchestrator/pkg/config"
 )
@@ -39,10 +38,10 @@ var newGiteaClient = func(projectDir string) (Client, error) {
 //
 //nolint:gochecknoglobals // Factory pattern requires global registration
 var newGitHubClient = func() (Client, error) {
-	// Check for required environment variable
-	token := os.Getenv("GITHUB_TOKEN")
+	// Check for GitHub token (supports secrets file and environment variables)
+	token := config.GetGitHubToken()
 	if token == "" {
-		return nil, fmt.Errorf("GITHUB_TOKEN environment variable is not set")
+		return nil, fmt.Errorf("GITHUB_TOKEN is not set (check secrets or environment)")
 	}
 
 	// The existing github.Client doesn't implement forge.Client yet.

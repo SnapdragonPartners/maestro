@@ -3,7 +3,6 @@ package coder
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -78,8 +77,13 @@ func (c *Coder) handleClaudeCodeCoding(ctx context.Context, sm *agent.BaseStateM
 	opts.Mode = claude.ModeCoding
 	opts.WorkDir = "/workspace"
 	opts.Model = config.GetEffectiveCoderModel()
+	anthropicKey, _ := config.GetSecret(config.EnvAnthropicAPIKey)
 	opts.EnvVars = map[string]string{
-		"ANTHROPIC_API_KEY": os.Getenv(config.EnvAnthropicAPIKey),
+		"ANTHROPIC_API_KEY": anthropicKey,
+	}
+	// User secrets override (including ANTHROPIC_API_KEY if user-defined)
+	for key, value := range config.GetUserSecrets() {
+		opts.EnvVars[key] = value
 	}
 
 	var renderer *claudetemplates.Renderer
@@ -207,6 +211,33 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 			errMsg = result.Error.Error()
 		}
 		return proto.StateError, false, logx.Errorf("Claude Code coding error: %s", errMsg)
+
+	case claude.SignalStoryComplete:
+		// done tool detected empty diff (Case A) - story already implemented
+		sm.SetStateData(KeyCodingCompletedAt, time.Now().UTC())
+
+		// Store evidence from Claude Code result
+		if result.Evidence != "" {
+			sm.SetStateData(KeyCompletionDetails, result.Evidence)
+		}
+
+		// Build effect data for processStoryCompleteDataFromEffect
+		effectData := map[string]any{
+			"evidence":            result.Evidence,
+			"exploration_summary": result.ExplorationSummary,
+		}
+		// Confidence is required by processStoryCompleteDataFromEffect but
+		// Claude Code may not provide it; default to HIGH since the coder is confident
+		if result.Evidence != "" {
+			effectData["confidence"] = "HIGH"
+		}
+
+		if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
+			return proto.StateError, false, logx.Wrap(err, "failed to process story complete data from Claude Code")
+		}
+
+		c.logger.Info("✅ Story completion claim from Claude Code coding, transitioning to PLAN_REVIEW")
+		return StatePlanReview, false, nil
 
 	case claude.SignalPlanComplete:
 		// Unexpected - we're in coding mode, not planning

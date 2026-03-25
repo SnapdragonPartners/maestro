@@ -52,6 +52,10 @@ func (m *mockTestAgent) GetPendingContainerConfig() (string, string, string, str
 	return "", "", "", "", false // No pending config in mock
 }
 
+func (m *mockTestAgent) SwitchContainer(_ context.Context, _, _, _, _ string) (string, error) {
+	return "mock-container", nil // No-op for mock
+}
+
 // HarnessResult wraps the tool result with additional metadata for testing.
 //
 //nolint:govet // fieldalignment: prefer logical grouping over memory optimization
@@ -84,7 +88,7 @@ func createToolByName(toolName string) (tools.Tool, error) {
 		return tools.NewSubmitPlanTool(), nil
 	case tools.ToolDone:
 		mockAgent := &mockTestAgent{}
-		return tools.NewDoneTool(mockAgent, nil, "", ""), nil
+		return tools.NewDoneTool(mockAgent, nil, "", "", ""), nil
 	// Add more tools as needed - CreateMakefile doesn't have a constant yet
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)

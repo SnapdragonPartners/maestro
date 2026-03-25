@@ -18,12 +18,12 @@ You have access to special signal tools for state transitions:
 - **submit_plan**: Call when your implementation plan is ready for architect review
   - Parameters: plan (string), confidence (string: HIGH/MEDIUM/LOW), exploration_summary (string, optional)
 
+- **story_complete**: Call when the story is already implemented and requires no changes
+  - Parameters: evidence (string), confidence (string: HIGH/MEDIUM/LOW), exploration_summary (string, optional)
+  - Advances to PLAN_REVIEW for architect verification before marking complete
+
 - **ask_question**: Call if you need clarification from the architect
   - Parameters: question (string), context (string, optional)
-
-- **story_complete**: Call if the story is already implemented or nothing needs to be done
-  - Parameters: evidence (string), confidence (string: HIGH/MEDIUM/LOW), exploration_summary (string, optional)
-  - The architect will verify your claim before marking the story complete
 
 ## Guidelines
 
@@ -48,4 +48,4 @@ When your analysis is complete, call `submit_plan` with:
 - Your confidence level (high/medium/low)
 - Any identified risks or concerns
 
-If you discover the story is already implemented or requires no changes, call `story_complete` with the reason.
+If you discover the story is already implemented or requires no changes, call `story_complete` with evidence of why no changes are needed. The architect will verify your claim before marking the story complete.

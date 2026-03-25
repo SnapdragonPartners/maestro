@@ -102,11 +102,13 @@ func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMo
 		return 1
 	}
 
-	// Handle secrets file decryption if present (loads credentials into memory)
-	if err := handleSecretsDecryption(projectDir); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to handle secrets: %v\n", err)
-		return 1
-	}
+	// Establish password: from env var, verifier file (deferred to WebUI login), or generate new.
+	// Must run before secrets decryption so the password is available for encryption/decryption.
+	ensureWebUIPassword(projectDir)
+
+	// Decrypt secrets if password is already available (env var or first-run generation).
+	// If password is pending WebUI login, secrets are decrypted lazily in the auth middleware.
+	handleSecretsDecryptionIfReady(projectDir)
 
 	// Check for resume mode
 	if continueMode {
@@ -460,6 +462,11 @@ func initializeKernel(projectDir string) (*kernel.Kernel, context.Context, error
 	// Generate session ID for this orchestrator run (used for database session isolation)
 	if sessionErr := config.GenerateSessionID(); sessionErr != nil {
 		return nil, nil, fmt.Errorf("failed to generate session ID: %w", sessionErr)
+	}
+
+	// Ensure installation ID exists for issue reporting
+	if installErr := config.EnsureInstallationID(); installErr != nil {
+		return nil, nil, fmt.Errorf("failed to ensure installation ID: %w", installErr)
 	}
 
 	// Get configuration AFTER generating session ID (session ID is stored in global config)

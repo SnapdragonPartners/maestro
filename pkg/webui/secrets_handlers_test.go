@@ -5,10 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"orchestrator/pkg/config"
 )
+
+// secretsListResponse matches the wrapped response from handleSecretsList.
+type secretsListResponse struct {
+	Secrets []SecretEntry `json:"secrets"`
+	Warning string        `json:"warning,omitempty"`
+}
 
 func TestHandleSecretsList_Empty(t *testing.T) {
 	// Clear any existing secrets
@@ -25,21 +32,21 @@ func TestHandleSecretsList_Empty(t *testing.T) {
 		t.Errorf("expected status 200, got %d", w.Code)
 	}
 
-	var entries []SecretEntry
-	if err := json.NewDecoder(w.Body).Decode(&entries); err != nil {
+	var resp secretsListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if len(entries) != 0 {
-		t.Errorf("expected 0 entries, got %d", len(entries))
+	if len(resp.Secrets) != 0 {
+		t.Errorf("expected 0 entries, got %d", len(resp.Secrets))
 	}
 }
 
 func TestHandleSecretsList_WithSecrets(t *testing.T) {
-	// Set up test secrets
-	config.SetDecryptedSecrets(map[string]string{
-		"DB_PASSWORD": "secret1",
-		"API_KEY":     "secret2",
+	// Set up test secrets with structured format
+	config.SetDecryptedSecrets(&config.StructuredSecrets{
+		System: map[string]string{"ANTHROPIC_API_KEY": "secret1"},
+		User:   map[string]string{"DB_PASSWORD": "secret2"},
 	})
 	defer config.SetDecryptedSecrets(nil)
 
@@ -54,21 +61,105 @@ func TestHandleSecretsList_WithSecrets(t *testing.T) {
 		t.Errorf("expected status 200, got %d", w.Code)
 	}
 
-	var entries []SecretEntry
-	if err := json.NewDecoder(w.Body).Decode(&entries); err != nil {
+	var resp secretsListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if len(entries) != 2 {
-		t.Errorf("expected 2 entries, got %d", len(entries))
+	if len(resp.Secrets) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(resp.Secrets))
 	}
 
 	// Should be sorted alphabetically
-	if entries[0].Name != "API_KEY" {
-		t.Errorf("expected first entry to be API_KEY, got %s", entries[0].Name)
+	if resp.Secrets[0].Name != "ANTHROPIC_API_KEY" {
+		t.Errorf("expected first entry to be ANTHROPIC_API_KEY, got %s", resp.Secrets[0].Name)
 	}
-	if entries[1].Name != "DB_PASSWORD" {
-		t.Errorf("expected second entry to be DB_PASSWORD, got %s", entries[1].Name)
+	if resp.Secrets[1].Name != "DB_PASSWORD" {
+		t.Errorf("expected second entry to be DB_PASSWORD, got %s", resp.Secrets[1].Name)
+	}
+}
+
+func TestHandleSecretsList_FilterByType(t *testing.T) {
+	config.SetDecryptedSecrets(&config.StructuredSecrets{
+		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant"},
+		User:   map[string]string{"DB_URL": "postgres://localhost"},
+	})
+	defer config.SetDecryptedSecrets(nil)
+
+	server := NewServer(nil, "/tmp", nil, nil)
+
+	// Filter by user type
+	req := httptest.NewRequest(http.MethodGet, "/api/secrets?type=user", nil)
+	w := httptest.NewRecorder()
+	server.handleSecretsList(w, req)
+
+	var resp secretsListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp.Secrets) != 1 {
+		t.Fatalf("expected 1 user entry, got %d", len(resp.Secrets))
+	}
+	if resp.Secrets[0].Name != "DB_URL" {
+		t.Errorf("expected DB_URL, got %s", resp.Secrets[0].Name)
+	}
+	if resp.Secrets[0].Type != "user" {
+		t.Errorf("expected type user, got %s", resp.Secrets[0].Type)
+	}
+
+	// Filter by system type
+	req = httptest.NewRequest(http.MethodGet, "/api/secrets?type=system", nil)
+	w = httptest.NewRecorder()
+	server.handleSecretsList(w, req)
+
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp.Secrets) != 1 {
+		t.Fatalf("expected 1 system entry, got %d", len(resp.Secrets))
+	}
+	if resp.Secrets[0].Name != "ANTHROPIC_API_KEY" {
+		t.Errorf("expected ANTHROPIC_API_KEY, got %s", resp.Secrets[0].Name)
+	}
+}
+
+func TestHandleSecretsList_WarningWhenNoEnvVar(t *testing.T) {
+	config.SetDecryptedSecrets(nil)
+
+	server := NewServer(nil, "/tmp", nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
+	w := httptest.NewRecorder()
+	server.handleSecretsList(w, req)
+
+	var resp secretsListResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Warning should be present when MAESTRO_PASSWORD env var is not set.
+	// Control the env var explicitly to make the test deterministic.
+	prevPassword := os.Getenv("MAESTRO_PASSWORD")
+	os.Unsetenv("MAESTRO_PASSWORD")
+	defer func() {
+		if prevPassword != "" {
+			os.Setenv("MAESTRO_PASSWORD", prevPassword)
+		}
+	}()
+
+	// Re-request with env var cleared
+	req = httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
+	w = httptest.NewRecorder()
+	server.handleSecretsList(w, req)
+
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Warning == "" {
+		t.Error("expected warning when MAESTRO_PASSWORD is not set")
 	}
 }
 
@@ -87,6 +178,42 @@ func TestHandleSecretsList_WrongMethod(t *testing.T) {
 
 func TestHandleSecretsSet_Success(t *testing.T) {
 	config.SetDecryptedSecrets(nil)
+	config.SetProjectPassword("test-password")
+	defer config.SetDecryptedSecrets(nil)
+	defer config.SetProjectPassword("")
+
+	server := NewServer(nil, t.TempDir(), nil, nil)
+
+	body := bytes.NewBufferString(`{"name": "TEST_SECRET", "value": "test_value"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSecretsSet(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify secret was set as user type (default)
+	value, err := config.GetSecret("TEST_SECRET")
+	if err != nil {
+		t.Errorf("secret not set: %v", err)
+	}
+	if value != "test_value" {
+		t.Errorf("expected value 'test_value', got %q", value)
+	}
+
+	// Verify it's in user secrets
+	userSecrets := config.GetUserSecrets()
+	if userSecrets["TEST_SECRET"] != "test_value" {
+		t.Errorf("expected secret in user bucket, got: %v", userSecrets)
+	}
+}
+
+func TestHandleSecretsSet_NoPassword(t *testing.T) {
+	config.SetDecryptedSecrets(nil)
+	config.SetProjectPassword("")
 	defer config.SetDecryptedSecrets(nil)
 
 	server := NewServer(nil, "/tmp", nil, nil)
@@ -98,17 +225,68 @@ func TestHandleSecretsSet_Success(t *testing.T) {
 
 	server.handleSecretsSet(w, req)
 
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 when no password, got %d", w.Code)
+	}
+}
+
+func TestHandleSecretsSet_DefaultsToUser(t *testing.T) {
+	config.SetDecryptedSecrets(nil)
+	config.SetProjectPassword("test-password")
+	defer config.SetDecryptedSecrets(nil)
+	defer config.SetProjectPassword("")
+
+	server := NewServer(nil, t.TempDir(), nil, nil)
+
+	// No type field = defaults to user
+	body := bytes.NewBufferString(`{"name": "MY_APP_KEY", "value": "some_value"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSecretsSet(w, req)
+
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Errorf("expected status 200, got %d; body: %s", w.Code, w.Body.String())
 	}
 
-	// Verify secret was set
-	value, err := config.GetSecret("TEST_SECRET")
-	if err != nil {
-		t.Errorf("secret not set: %v", err)
+	// Verify it's in user secrets
+	userSecrets := config.GetUserSecrets()
+	if userSecrets["MY_APP_KEY"] != "some_value" {
+		t.Errorf("expected user secret, got: %v", userSecrets)
 	}
-	if value != "test_value" {
-		t.Errorf("expected value 'test_value', got %q", value)
+}
+
+func TestHandleSecretsSet_SystemValidation(t *testing.T) {
+	config.SetDecryptedSecrets(nil)
+	config.SetProjectPassword("test-password")
+	defer config.SetDecryptedSecrets(nil)
+	defer config.SetProjectPassword("")
+
+	server := NewServer(nil, t.TempDir(), nil, nil)
+
+	// Valid system secret should succeed
+	body := bytes.NewBufferString(`{"name": "ANTHROPIC_API_KEY", "value": "sk-ant-test", "type": "system"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	server.handleSecretsSet(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 for valid system secret, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Invalid system secret name should fail
+	body = bytes.NewBufferString(`{"name": "UNKNOWN_KEY", "value": "test", "type": "system"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/secrets", body)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+
+	server.handleSecretsSet(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for invalid system secret name, got %d", w.Code)
 	}
 }
 
@@ -158,9 +336,38 @@ func TestHandleSecretsSet_InvalidName(t *testing.T) {
 }
 
 func TestHandleSecretsDelete_Success(t *testing.T) {
-	config.SetDecryptedSecrets(map[string]string{
-		"DELETE_ME": "value",
+	config.SetDecryptedSecrets(&config.StructuredSecrets{
+		System: map[string]string{},
+		User:   map[string]string{"DELETE_ME": "value"},
 	})
+	config.SetProjectPassword("test-password")
+	defer config.SetDecryptedSecrets(nil)
+	defer config.SetProjectPassword("")
+
+	server := NewServer(nil, t.TempDir(), nil, nil)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/secrets/DELETE_ME", nil)
+	w := httptest.NewRecorder()
+
+	server.handleSecretsDelete(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	// Verify secret was deleted
+	_, err := config.GetSecret("DELETE_ME")
+	if err == nil {
+		t.Error("expected secret to be deleted")
+	}
+}
+
+func TestHandleSecretsDelete_NoPassword(t *testing.T) {
+	config.SetDecryptedSecrets(&config.StructuredSecrets{
+		System: map[string]string{},
+		User:   map[string]string{"DELETE_ME": "value"},
+	})
+	config.SetProjectPassword("")
 	defer config.SetDecryptedSecrets(nil)
 
 	server := NewServer(nil, "/tmp", nil, nil)
@@ -170,14 +377,39 @@ func TestHandleSecretsDelete_Success(t *testing.T) {
 
 	server.handleSecretsDelete(w, req)
 
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected status 500 when no password, got %d", w.Code)
+	}
+}
+
+func TestHandleSecretsDelete_WithType(t *testing.T) {
+	config.SetDecryptedSecrets(&config.StructuredSecrets{
+		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
+		User:   map[string]string{"ANTHROPIC_API_KEY": "user-override"},
+	})
+	config.SetProjectPassword("test-password")
+	defer config.SetDecryptedSecrets(nil)
+	defer config.SetProjectPassword("")
+
+	server := NewServer(nil, t.TempDir(), nil, nil)
+
+	// Delete system version
+	req := httptest.NewRequest(http.MethodDelete, "/api/secrets/ANTHROPIC_API_KEY?type=system", nil)
+	w := httptest.NewRecorder()
+
+	server.handleSecretsDelete(w, req)
+
 	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
+		t.Errorf("expected status 200, got %d; body: %s", w.Code, w.Body.String())
 	}
 
-	// Verify secret was deleted
-	_, err := config.GetSecret("DELETE_ME")
-	if err == nil {
-		t.Error("expected secret to be deleted")
+	// User version should still exist
+	val, err := config.GetSecret("ANTHROPIC_API_KEY")
+	if err != nil {
+		t.Fatalf("expected user secret to remain: %v", err)
+	}
+	if val != "user-override" {
+		t.Errorf("expected user version to remain, got: %q", val)
 	}
 }
 
@@ -207,33 +439,13 @@ func TestHandleSecretsDelete_WrongMethod(t *testing.T) {
 	}
 }
 
-func TestSanitizeSecretName(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"TEST_SECRET", "TEST_SECRET"},
-		{"test_secret", "test_secret"},
-		{"TestSecret123", "TestSecret123"},
-		{"TEST-SECRET", "TESTSECRET"},
-		{"TEST.SECRET", "TESTSECRET"},
-		{"TEST SECRET", "TESTSECRET"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		result := sanitizeSecretName(tt.input)
-		if result != tt.expected {
-			t.Errorf("sanitizeSecretName(%q) = %q, want %q", tt.input, result, tt.expected)
-		}
-	}
-}
-
 func TestHandleSecretsRouter(t *testing.T) {
 	config.SetDecryptedSecrets(nil)
+	config.SetProjectPassword("test-password")
 	defer config.SetDecryptedSecrets(nil)
+	defer config.SetProjectPassword("")
 
-	server := NewServer(nil, "/tmp", nil, nil)
+	server := NewServer(nil, t.TempDir(), nil, nil)
 
 	// Test GET routes to list
 	t.Run("GET routes to list", func(t *testing.T) {
@@ -253,7 +465,7 @@ func TestHandleSecretsRouter(t *testing.T) {
 		w := httptest.NewRecorder()
 		server.handleSecretsRouter(w, req)
 		if w.Code != http.StatusOK {
-			t.Errorf("expected status 200 for POST, got %d", w.Code)
+			t.Errorf("expected status 200 for POST, got %d; body: %s", w.Code, w.Body.String())
 		}
 	})
 

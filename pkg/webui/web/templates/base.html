@@ -26,6 +26,15 @@
                     <span id="ui-version" class="ml-2 px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">loading...</span>
                 </div>
                 <div class="flex items-center space-x-4">
+                    <button id="secrets-btn" onclick="window.maestroUI.openSecretsModal()" class="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md border border-gray-300 transition-colors">
+                        Secrets
+                    </button>
+                    <button id="check-keys-btn" onclick="window.maestroUI.checkKeys()" class="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md border border-gray-300 transition-colors">
+                        Check Keys
+                    </button>
+                    <button onclick="window.maestroUI.openIssueModal()" class="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md border border-gray-300 transition-colors">
+                        Report Issue
+                    </button>
                     <div id="status-indicator" class="flex items-center">
                         <div class="w-2 h-2 bg-green-500 rounded-full mr-2"></div>
                         <span class="text-sm text-gray-600">Connected</span>
@@ -63,6 +72,95 @@
                 <div id="escalation-content">
                     <!-- Dynamic content will be loaded here -->
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Secrets Modal -->
+    <div id="secrets-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg max-w-lg w-full p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-semibold text-gray-900">Secrets Manager</h3>
+                    <button onclick="window.maestroUI.closeSecretsModal()" class="text-gray-400 hover:text-gray-600">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <!-- Tabs -->
+                <div class="flex border-b border-gray-200 mb-4">
+                    <button id="secrets-tab-user" onclick="window.maestroUI.switchSecretsTab('user')" class="px-4 py-2 text-sm font-medium text-blue-600 border-b-2 border-blue-600">User Secrets</button>
+                    <button id="secrets-tab-system" onclick="window.maestroUI.switchSecretsTab('system')" class="px-4 py-2 text-sm font-medium text-gray-500 hover:text-gray-700">System Secrets</button>
+                </div>
+                <!-- Info banners -->
+                <div id="secrets-info-user" class="mb-3 p-2 bg-blue-50 text-blue-700 text-xs rounded">
+                    User secrets are injected as environment variables into all coding and demo containers.
+                </div>
+                <div id="secrets-info-system" class="mb-3 p-2 bg-amber-50 text-amber-700 text-xs rounded hidden">
+                    System secrets are used by Maestro on the host (LLM API keys, GitHub token). Not injected into containers.
+                </div>
+                <!-- Password warning -->
+                <div id="secrets-password-warning" class="mb-3 p-2 bg-yellow-50 text-yellow-800 text-xs rounded border border-yellow-200 hidden"></div>
+                <!-- Secrets list -->
+                <div id="secrets-list" class="mb-4 max-h-48 overflow-y-auto">
+                    <p class="text-sm text-gray-400">Loading...</p>
+                </div>
+                <!-- Add form -->
+                <div class="border-t border-gray-200 pt-4">
+                    <div class="flex flex-col space-y-2">
+                        <div id="secrets-name-free" class="flex-1">
+                            <input id="secrets-name-input" type="text" placeholder="SECRET_NAME" class="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500">
+                        </div>
+                        <div id="secrets-name-dropdown" class="flex-1 hidden">
+                            <select id="secrets-name-select" class="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500">
+                                <option value="">Select a system secret...</option>
+                                <option value="ANTHROPIC_API_KEY">ANTHROPIC_API_KEY</option>
+                                <option value="OPENAI_API_KEY">OPENAI_API_KEY</option>
+                                <option value="GOOGLE_GENAI_API_KEY">GOOGLE_GENAI_API_KEY</option>
+                                <option value="GITHUB_TOKEN">GITHUB_TOKEN</option>
+                                <option value="SSL_KEY_PEM">SSL_KEY_PEM</option>
+                            </select>
+                        </div>
+                        <textarea id="secrets-value-input" placeholder="Secret value (write-only, never displayed)" rows="2" class="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"></textarea>
+                        <button onclick="window.maestroUI.addSecret()" class="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors">Add Secret</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Issue Reporting Modal -->
+    <div id="issue-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
+        <div class="flex items-center justify-center min-h-screen p-4">
+            <div class="bg-white rounded-lg max-w-lg w-full p-6" role="dialog" aria-modal="true" aria-labelledby="issue-modal-title">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 id="issue-modal-title" class="text-lg font-semibold text-gray-900">Report an Issue</h3>
+                    <button onclick="window.maestroUI.closeIssueModal()" class="text-gray-400 hover:text-gray-600" aria-label="Close">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                        </svg>
+                    </button>
+                </div>
+                <div class="mb-4">
+                    <label for="issue-description" class="block text-sm font-medium text-gray-700 mb-1">Describe the issue you're experiencing</label>
+                    <textarea id="issue-description" maxlength="10000" rows="6"
+                        placeholder="What happened? What did you expect to happen?"
+                        oninput="window.maestroUI.updateIssueCharCount()"
+                        class="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 resize-vertical"></textarea>
+                    <div id="issue-char-count" class="text-xs text-gray-400 text-right mt-1 hidden"></div>
+                </div>
+                <div class="mb-4">
+                    <label class="flex items-start space-x-2 cursor-pointer">
+                        <input type="checkbox" id="issue-include-diagnostics" checked class="mt-1 rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                        <span class="text-sm text-gray-600">Include logs, configuration, and local database to help debug this issue. Passwords and API keys are never included.</span>
+                    </label>
+                </div>
+                <div id="issue-buttons" class="flex justify-end space-x-3">
+                    <button onclick="window.maestroUI.closeIssueModal()" class="px-4 py-1.5 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors">Cancel</button>
+                    <button id="issue-submit-btn" onclick="window.maestroUI.submitIssue()" class="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors">Submit</button>
+                </div>
+                <div id="issue-status" class="mt-3 p-3 text-sm rounded-md hidden"></div>
             </div>
         </div>
     </div>

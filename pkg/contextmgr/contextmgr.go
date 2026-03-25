@@ -433,6 +433,11 @@ func (cm *ContextManager) GetModelName() string {
 	return cm.modelName
 }
 
+// GetCurrentTemplate returns the current template name for change detection.
+func (cm *ContextManager) GetCurrentTemplate() string {
+	return cm.currentTemplate
+}
+
 // getContextLimits returns context management limits based on model name.
 // Uses ModelInfo from config if available, otherwise falls back to conservative defaults.
 func (cm *ContextManager) getContextLimits() (maxContext, maxReply int) {

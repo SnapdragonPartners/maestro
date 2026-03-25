@@ -39,11 +39,10 @@ const (
 	StateKeyQueueJSON          = "queue_json"                    // string - JSON representation of queue
 
 	// Story generation tracking.
-	StateKeySpecID              = "spec_id"               // string - spec ID being processed
-	StateKeyStoryIDs            = "story_ids"             // []string - generated story IDs
-	StateKeyStoriesGenerated    = "stories_generated"     // bool - stories have been generated
-	StateKeyStoriesCount        = "stories_count"         // int - number of stories generated
-	StateKeyContainerRetryCount = "container_retry_count" // int - container dependency retry count
+	StateKeySpecID           = "spec_id"           // string - spec ID being processed
+	StateKeyStoryIDs         = "story_ids"         // []string - generated story IDs
+	StateKeyStoriesGenerated = "stories_generated" // bool - stories have been generated
+	StateKeyStoriesCount     = "stories_count"     // int - number of stories generated
 
 	// Lifecycle tracking.
 	StateKeyStartedAt = "started_at" // time.Time - when architect started

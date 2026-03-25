@@ -26,7 +26,9 @@ func (t *SubmitStoriesTool) PromptDocumentation() string {
   - Parameters:
     - analysis (string, REQUIRED) - Brief summary of spec analysis and identified platform
     - platform (string, REQUIRED) - Identified platform (e.g., "go", "python", "nodejs")
-    - requirements (array, REQUIRED) - Array of requirement objects with title, description, acceptance_criteria, dependencies, and story_type
+    - requirements (array, REQUIRED) - Array of requirement objects with id, title, description, acceptance_criteria, dependencies, and story_type
+      - id (string, REQUIRED) - Ordinal identifier for this requirement (e.g., req_001, req_002)
+      - dependencies reference ordinal IDs (e.g., ["req_001"]), NOT titles
     - maintenance (boolean, OPTIONAL) - If true, routes stories to the maintenance queue with auto-merge enabled
   - Call this when you have completed spec analysis and extracted all requirements`
 }
@@ -53,6 +55,10 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 					Items: &Property{
 						Type: "object",
 						Properties: map[string]*Property{
+							"id": {
+								Type:        "string",
+								Description: "Ordinal identifier for this requirement (e.g., req_001, req_002). Dependencies reference these IDs.",
+							},
 							"title": {
 								Type:        "string",
 								Description: "Concise, clear requirement title",
@@ -70,7 +76,7 @@ func (t *SubmitStoriesTool) Definition() ToolDefinition {
 							},
 							"dependencies": {
 								Type:        "array",
-								Description: "Array of requirement titles this depends on",
+								Description: "Array of ordinal IDs this depends on (e.g., [\"req_001\"]). Must form a DAG — no circular references.",
 								Items: &Property{
 									Type: "string",
 								},
@@ -125,6 +131,10 @@ func (t *SubmitStoriesTool) Exec(_ context.Context, args map[string]any) (*ExecR
 		}
 
 		// Check required fields
+		id, ok := reqMap["id"].(string)
+		if !ok || id == "" {
+			return nil, fmt.Errorf("requirement %d: id is required (e.g., req_001)", i)
+		}
 		if _, ok := reqMap["title"].(string); !ok {
 			return nil, fmt.Errorf("requirement %d: title is required", i)
 		}

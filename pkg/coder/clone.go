@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/forge"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/utils"
 )
@@ -271,12 +272,16 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 // createFreshClone creates a self-contained git repository for agent isolation.
 // Uses local mirror as source for network efficiency while ensuring complete container compatibility.
 //
+// Two-remote strategy:
+//   - origin → local mirror (host path during clone, remapped to /mirrors/<repo>.git after container starts)
+//   - github → GitHub URL (used only by host-side push/fetch operations)
+//
 // IMPORTANT: This preserves the directory inode to maintain Docker bind mounts.
 // On macOS with Docker Desktop, bind mounts track inodes, not paths. If we delete
 // and recreate the directory, existing bind mounts become stale. We use git init
 // instead of git clone to allow cleaning contents while preserving the directory.
 func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWorkDir string) error {
-	c.logger.Debug("Creating fresh self-contained clone at: %s", agentWorkDir)
+	c.logger.Debug("Creating fresh self-contained clone at: %s (two-remote strategy)", agentWorkDir)
 
 	// Handle existing directory - clean contents but preserve inode for bind mounts.
 	if _, err := os.Stat(agentWorkDir); err == nil {
@@ -300,61 +305,77 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 		return logx.Wrap(err, "git init failed")
 	}
 
-	// Add the mirror as a remote named "mirror" for fetching.
-	c.logger.Debug("Adding mirror remote: %s", mirrorPath)
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "mirror", mirrorPath)
+	// Add origin pointing to the local mirror (host path — works during host-side setup).
+	// After the container starts, setup.go remaps origin to the container-visible /mirrors/<repo>.git path.
+	c.logger.Debug("Adding origin remote (mirror): %s", mirrorPath)
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "origin", mirrorPath)
 	if err != nil {
-		return logx.Wrap(err, "failed to add mirror remote")
+		return logx.Wrap(err, "failed to add origin remote (mirror)")
 	}
 
-	// Fetch all branches and tags from the mirror.
-	c.logger.Debug("Fetching from mirror")
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "fetch", "mirror", "--tags")
+	// Fetch all branches and tags from origin (local mirror — fast, no creds needed).
+	c.logger.Debug("Fetching from origin (mirror)")
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "fetch", "origin", "--tags")
 	if err != nil {
-		return logx.Wrap(err, "git fetch from mirror failed")
+		return logx.Wrap(err, "git fetch from origin (mirror) failed")
 	}
 
-	// Checkout the base branch from the mirror.
+	// Checkout the base branch from origin.
 	c.logger.Debug("Checking out base branch: %s", c.getBaseBranch())
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "checkout", "-b", c.getBaseBranch(), "mirror/"+c.getBaseBranch())
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "checkout", "-b", c.getBaseBranch(), "origin/"+c.getBaseBranch())
 	if err != nil {
 		return logx.Wrap(err, fmt.Sprintf("git checkout %s failed", c.getBaseBranch()))
 	}
 
-	// Configure remote origin for pushing branches to actual repository.
-	// Remove the mirror remote and set origin to the real repo URL.
-	c.logger.Debug("Configuring origin remote for push: %s", c.getRepoURL())
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "remove", "mirror")
+	// Add 'github' remote — always points to the GitHub URL from config.
+	// In standard mode, this is the push target.
+	// In airplane mode, this is preserved for sync-back to GitHub.
+	c.logger.Debug("Adding github remote: %s", c.getRepoURL())
+	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "github", c.getRepoURL())
 	if err != nil {
-		c.logger.Warn("Failed to remove mirror remote (non-fatal): %v", err)
+		return logx.Wrap(err, "failed to add github remote")
 	}
 
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "origin", c.getRepoURL())
-	if err != nil {
-		return logx.Wrap(err, "failed to add origin remote - agent will not be able to push branches")
+	// In airplane mode, add 'forge' remote pointing to Gitea for push/fetch.
+	// Push/fetch helpers prefer 'forge' when it exists, falling back to 'github'.
+	if config.IsAirplaneMode() {
+		if forgeURL, forgeErr := buildForgeGitURL(); forgeErr == nil {
+			c.logger.Debug("Adding forge remote (airplane mode): %s", forgeURL)
+			_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "forge", forgeURL)
+			if err != nil {
+				c.logger.Warn("Failed to add forge remote (non-fatal): %v", err)
+			}
+		} else {
+			c.logger.Warn("Could not build forge URL for airplane mode (non-fatal): %v", forgeErr)
+		}
 	}
 
-	// CRITICAL: Fetch latest from origin to ensure we have the most up-to-date refs.
-	// The mirror may be stale if origin was updated between mirror update and clone creation.
-	// This prevents conflicts when pushing later (agent would be based on old refs).
-	c.logger.Debug("Fetching latest from origin to ensure fresh refs")
-	_, err = c.retryGitNetworkOp(ctx, agentWorkDir, "fetch", "origin")
-	if err != nil {
-		c.logger.Warn("Failed to fetch from origin (non-fatal, may cause push conflicts): %v", err)
-		// Continue anyway - the mirror data may still be sufficient
-	}
-
-	// Reset the base branch to origin's version to ensure we're starting fresh.
-	// This handles the case where the mirror was stale.
-	c.logger.Debug("Resetting %s to origin/%s to ensure fresh starting point", c.getBaseBranch(), c.getBaseBranch())
-	_, err = c.gitRunner.Run(ctx, agentWorkDir, "reset", "--hard", "origin/"+c.getBaseBranch())
-	if err != nil {
-		c.logger.Warn("Failed to reset to origin/%s (non-fatal): %v", c.getBaseBranch(), err)
-		// Continue anyway - we'll work with what we have
-	}
-
-	c.logger.Debug("Successfully created self-contained clone at: %s", agentWorkDir)
+	c.logger.Debug("Successfully created self-contained clone at: %s (origin=mirror, github=%s)", agentWorkDir, c.getRepoURL())
 	return nil
+}
+
+// buildForgeGitURL constructs the authenticated git URL for the local Gitea instance.
+// Returns a URL like http://maestro-admin:TOKEN@localhost:3000/maestro/repo.git
+func buildForgeGitURL() (string, error) {
+	projectDir := config.GetProjectDir()
+	if projectDir == "" {
+		return "", fmt.Errorf("project directory not configured")
+	}
+
+	state, err := forge.LoadState(projectDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to load forge state: %w", err)
+	}
+
+	// Build clone URL: http://localhost:3000/owner/repo.git
+	cloneURL := fmt.Sprintf("%s/%s/%s.git", state.URL, state.Owner, state.RepoName)
+
+	// Embed auth token: http://user:token@host/path
+	if state.Token != "" {
+		cloneURL = strings.Replace(cloneURL, "://", fmt.Sprintf("://%s:%s@", "maestro-admin", state.Token), 1)
+	}
+
+	return cloneURL, nil
 }
 
 // createBranch creates and checks out a new branch in the agent clone directory.
@@ -406,8 +427,7 @@ func (c *CloneManager) createBranch(ctx context.Context, agentWorkDir, branchNam
 }
 
 // getExistingBranches gets a list of all branches (local and remote) in the repository.
-// It queries the remote directly via ls-remote to ensure we see all remote branches,
-// even if we haven't fetched them yet.
+// Since origin now points to the local mirror, ls-remote is fast and needs no credentials.
 func (c *CloneManager) getExistingBranches(ctx context.Context, agentWorkDir string) ([]string, error) {
 	branches := make([]string, 0)
 
@@ -428,9 +448,9 @@ func (c *CloneManager) getExistingBranches(ctx context.Context, agentWorkDir str
 		branches = append(branches, strings.TrimSpace(line))
 	}
 
-	// Query remote branches directly via ls-remote (doesn't require fetch).
-	// This ensures we see branches that exist on the remote even if not fetched.
-	remoteOutput, err := c.retryGitNetworkOp(ctx, agentWorkDir, "ls-remote", "--heads", "origin")
+	// Query remote branches via ls-remote against origin (local mirror — fast, no creds).
+	// No network retry needed since origin is a local path.
+	remoteOutput, err := c.gitRunner.Run(ctx, agentWorkDir, "ls-remote", "--heads", "origin")
 	if err != nil {
 		// Log warning but don't fail - we can still check local branches.
 		c.logger.Warn("Failed to query remote branches via ls-remote: %v", err)
