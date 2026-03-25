@@ -46,7 +46,7 @@ func NewClaudeClientWithModel(apiKey, model string) llm.LLMClient {
 	)
 	return &ClaudeClient{
 		client: client,
-		model:  anthropic.Model(model),
+		model:  model,
 	}
 }
 
@@ -522,7 +522,7 @@ func (c *ClaudeClient) Stream(ctx context.Context, in llm.CompletionRequest) (<-
 
 // GetModelName returns the model name for this client.
 func (c *ClaudeClient) GetModelName() string {
-	return string(c.model)
+	return c.model
 }
 
 // classifyError maps Anthropic SDK errors to our structured error types.
