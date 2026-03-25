@@ -105,7 +105,7 @@ func VerifyWorkspace(ctx context.Context, projectDir string, opts VerifyOptions)
 		}
 		rep.BootstrapFailures = append(rep.BootstrapFailures, failure)
 		// Also add to legacy failures for backward compatibility
-		fail(description)
+		fail("%s", description)
 	}
 
 	warn := func(msg string, args ...interface{}) {
