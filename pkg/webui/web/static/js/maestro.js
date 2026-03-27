@@ -207,11 +207,12 @@ class MaestroUI {
 
         container.innerHTML = providers.map(provider => {
             const stats = rateLimits[provider];
-            const tokenUtilization = Math.round((1 - stats.available_tokens / stats.max_capacity) * 100);
-            const concurrencyUtilization = Math.round((stats.active_requests / stats.max_concurrency) * 100);
-
-            // Debug: log stats for troubleshooting
-            console.log(`[Rate Limits] ${provider}:`, stats);
+            const tokenUtilization = stats.max_capacity > 0
+                ? Math.round((1 - stats.available_tokens / stats.max_capacity) * 100)
+                : 0;
+            const concurrencyUtilization = stats.max_concurrency > 0
+                ? Math.round((stats.active_requests / stats.max_concurrency) * 100)
+                : 0;
 
             // Color-code congestion levels (green < 70%, yellow < 90%, red >= 90%)
             const getUtilizationClass = (util) => {
@@ -221,19 +222,27 @@ class MaestroUI {
             };
 
             const getCongestionBadge = (hits) => {
-                // Ensure hits is a number
                 const hitCount = Number(hits) || 0;
-                console.log(`[Rate Limits] Badge for ${hitCount} hits`);
-                if (hitCount === 0) return '<span class="text-green-600">✓ No congestion</span>';
-                if (hitCount < 10) return `<span class="text-yellow-600">⚠ ${hitCount} hits</span>`;
-                return `<span class="text-red-600">⚠ ${hitCount} hits</span>`;
+                if (hitCount === 0) return '<span class="text-green-600">No congestion</span>';
+                if (hitCount < 10) return `<span class="text-yellow-600">${hitCount} hits</span>`;
+                return `<span class="text-red-600">${hitCount} hits</span>`;
+            };
+
+            // Token utilization progress bar width
+            const tokenBarWidth = Math.min(100, Math.max(0, tokenUtilization));
+            const concurrencyBarWidth = Math.min(100, Math.max(0, concurrencyUtilization));
+
+            const getBarColor = (util) => {
+                if (util < 70) return 'bg-green-500';
+                if (util < 90) return 'bg-yellow-500';
+                return 'bg-red-500';
             };
 
             return `
                 <div class="border border-gray-200 rounded-lg p-4">
                     <div class="flex items-center justify-between mb-3">
                         <h3 class="font-medium text-gray-900">${provider}</h3>
-                        <span class="text-xs text-gray-500 uppercase">Provider</span>
+                        <span class="text-xs text-gray-500">${stats.tracked_acquisitions || 0} in-flight</span>
                     </div>
                     <div class="grid grid-cols-2 gap-4">
                         <!-- Token Limits -->
@@ -242,11 +251,17 @@ class MaestroUI {
                                 <span class="text-gray-600">Token Limit Hits:</span>
                                 ${getCongestionBadge(stats.token_limit_hits)}
                             </div>
-                            <div class="flex items-center justify-between text-sm">
-                                <span class="text-gray-600">Available Tokens:</span>
-                                <span class="${getUtilizationClass(tokenUtilization)} px-2 py-1 rounded text-xs font-medium">
-                                    ${stats.available_tokens.toLocaleString()} / ${stats.max_capacity.toLocaleString()}
-                                </span>
+                            <div class="text-sm">
+                                <div class="flex items-center justify-between mb-1">
+                                    <span class="text-gray-600">Token Bucket:</span>
+                                    <span class="text-xs font-medium text-gray-700">${tokenUtilization}% used</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2">
+                                    <div class="${getBarColor(tokenUtilization)} h-2 rounded-full transition-all duration-500" style="width: ${tokenBarWidth}%"></div>
+                                </div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    ${stats.available_tokens.toLocaleString()} / ${stats.max_capacity.toLocaleString()} available
+                                </div>
                             </div>
                         </div>
 
@@ -256,11 +271,14 @@ class MaestroUI {
                                 <span class="text-gray-600">Concurrency Hits:</span>
                                 ${getCongestionBadge(stats.concurrency_hits)}
                             </div>
-                            <div class="flex items-center justify-between text-sm">
-                                <span class="text-gray-600">Active Requests:</span>
-                                <span class="${getUtilizationClass(concurrencyUtilization)} px-2 py-1 rounded text-xs font-medium">
-                                    ${stats.active_requests} / ${stats.max_concurrency}
-                                </span>
+                            <div class="text-sm">
+                                <div class="flex items-center justify-between mb-1">
+                                    <span class="text-gray-600">Concurrency:</span>
+                                    <span class="text-xs font-medium text-gray-700">${stats.active_requests} / ${stats.max_concurrency}</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-2">
+                                    <div class="${getBarColor(concurrencyUtilization)} h-2 rounded-full transition-all duration-500" style="width: ${concurrencyBarWidth}%"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
