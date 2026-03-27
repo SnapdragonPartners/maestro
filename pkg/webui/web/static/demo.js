@@ -22,6 +22,9 @@ class DemoController {
 
         // Refresh logs button
         document.getElementById('demo-refresh-logs')?.addEventListener('click', () => this.fetchLogs());
+
+        // Copy logs button
+        document.getElementById('demo-copy-logs')?.addEventListener('click', () => this.copyLogs());
     }
 
     startStatusPolling() {
@@ -422,6 +425,28 @@ class DemoController {
         } catch (error) {
             console.error('Error fetching demo logs:', error);
             document.getElementById('demo-logs-content').textContent = `Error fetching logs: ${error.message}`;
+        }
+    }
+
+    async copyLogs() {
+        const logsContent = document.getElementById('demo-logs-content');
+        if (!logsContent) return;
+
+        const btn = document.getElementById('demo-copy-logs');
+        try {
+            await navigator.clipboard.writeText(logsContent.textContent);
+            if (btn) {
+                const original = btn.textContent;
+                btn.textContent = 'Copied!';
+                btn.classList.add('text-green-600');
+                setTimeout(() => {
+                    btn.textContent = original;
+                    btn.classList.remove('text-green-600');
+                }, 1500);
+            }
+        } catch (err) {
+            console.error('Failed to copy logs:', err);
+            alert('Failed to copy to clipboard');
         }
     }
 

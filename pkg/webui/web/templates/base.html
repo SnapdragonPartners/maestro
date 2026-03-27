@@ -60,8 +60,8 @@
     <!-- Escalation Modal -->
     <div id="escalation-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden z-50">
         <div class="flex items-center justify-center min-h-screen p-4">
-            <div class="bg-white rounded-lg max-w-2xl w-full p-6">
-                <div class="flex items-center justify-between mb-4">
+            <div class="bg-white rounded-lg max-w-2xl w-full p-6 flex flex-col" style="max-height: calc(100vh - 4rem);">
+                <div class="flex items-center justify-between mb-4 flex-shrink-0">
                     <h3 class="text-lg font-semibold text-gray-900">Agent Info</h3>
                     <button id="close-modal" class="text-gray-400 hover:text-gray-600">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -69,7 +69,7 @@
                         </svg>
                     </button>
                 </div>
-                <div id="escalation-content">
+                <div id="escalation-content" class="overflow-y-auto">
                     <!-- Dynamic content will be loaded here -->
                 </div>
             </div>
