@@ -446,6 +446,7 @@ class DemoController {
             }
         } catch (err) {
             console.error('Failed to copy logs:', err);
+            alert('Failed to copy to clipboard');
         }
     }
 
