@@ -483,6 +483,7 @@ type commitResult struct {
 	err           error  // Non-nil if commit failed
 	message       string // Human-readable description of what happened
 	storyComplete bool   // True when no changes exist on branch (Case A: story already complete)
+	exitCode      int    // Exit code from the failed git command (for failure classification)
 }
 
 // BlockedError wraps a FailureInfo to signal a non-recoverable infrastructure failure.
@@ -559,9 +560,9 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 
 		lastErr = res.err
 
-		// Classify the failure
+		// Classify the failure using stderr content and actual exit code
 		errMsg := res.err.Error()
-		kind := classifyCommitFailure(errMsg, 0) // exit code already in error message
+		kind := classifyCommitFailure(errMsg, res.exitCode)
 
 		// Infrastructure failures: wrap in BlockedError immediately, no point retrying
 		if kind == proto.FailureKindExternal {
@@ -596,7 +597,7 @@ func (d *DoneTool) attemptCommit(ctx context.Context, opts *execpkg.Opts, summar
 		if errMsg == "" {
 			errMsg = result.Stdout
 		}
-		return commitResult{err: fmt.Errorf("git add failed (exit %d): %s", result.ExitCode, errMsg)}
+		return commitResult{err: fmt.Errorf("git add failed (exit %d): %s", result.ExitCode, errMsg), exitCode: result.ExitCode}
 	}
 
 	// Check if there are any changes to commit
@@ -631,7 +632,7 @@ func (d *DoneTool) attemptCommit(ctx context.Context, opts *execpkg.Opts, summar
 		if errMsg == "" {
 			errMsg = result.Stdout
 		}
-		return commitResult{err: fmt.Errorf("git commit failed (exit %d): %s", result.ExitCode, errMsg)}
+		return commitResult{err: fmt.Errorf("git commit failed (exit %d): %s", result.ExitCode, errMsg), exitCode: result.ExitCode}
 	}
 
 	return commitResult{message: fmt.Sprintf("Changes committed and advancing to TESTING state. Commit: %s", strings.TrimSpace(result.Stdout))}

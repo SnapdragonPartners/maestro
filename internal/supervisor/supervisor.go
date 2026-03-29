@@ -13,6 +13,7 @@ import (
 	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/github"
@@ -400,7 +401,7 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 	// Wire up activity tracker for coder agents (watchdog monitoring)
 	if agentType == "coder" {
 		type activityTrackerSetter interface {
-			SetActivityTracker(tracker interface{ RecordActivity(agentID string) })
+			SetActivityTracker(tracker toolloop.ActivityTracker)
 		}
 		if ats, ok := agent.(activityTrackerSetter); ok {
 			ats.SetActivityTracker(s)

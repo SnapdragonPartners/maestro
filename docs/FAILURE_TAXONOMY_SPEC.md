@@ -69,8 +69,7 @@ done tool
 
 `classifyCommitFailure()` examines git stderr to classify:
 - `bad tree object`, `corrupt`, `broken` -> `external` (filesystem/container corruption)
-- `nothing to commit` -> `story_invalid` (coder produced no changes)
-- Other git errors -> `external` (default for unrecognized git failures)
+- Unrecognized git errors -> returns empty string (no classification; handled by caller)
 
 ### Path 2: LLM-Reported (report_blocked tool)
 
@@ -91,8 +90,8 @@ The `report_blocked` tool schema:
 {
     Name: "report_blocked",
     Parameters: {
-        "kind":    enum["story_invalid", "external"],  // transient handled separately
-        "summary": string,                              // What went wrong
+        "failure_kind": enum["story_invalid", "external"],  // transient handled separately
+        "explanation":  string,                               // What went wrong
     },
 }
 ```
@@ -125,10 +124,10 @@ Architect (processRequeueRequests)
 ```go
 // In coder Step(), on transition to ERROR:
 metadata := buildErrorMetadata(stateData)
-// metadata["failure_info"] = serialized FailureInfo JSON
+// metadata["failure_info"] = proto.FailureInfo value (Go value, not JSON)
 
 // In supervisor, on StateChangeNotification:
-fi := extractFailureInfo(notification.Metadata)
+fi := notification.Metadata["failure_info"].(proto.FailureInfo)  // type assertion
 dispatcher.UpdateStoryRequeue(storyID, fi)
 ```
 
@@ -153,14 +152,13 @@ A between-turns heartbeat mechanism detects stalled agents that are alive but no
 ```go
 type ActivityTracker interface {
     RecordActivity(agentID string)
-    LastActivity(agentID string) time.Time
 }
 ```
 
 - The toolloop records activity at the start of each iteration via `ActivityTracker.RecordActivity()`.
-- The supervisor polls every 30 seconds, checking `LastActivity()` for each active coding agent.
-- If the gap between now and last activity exceeds `CodingWatchdogMinutes` (configurable, default 30), the supervisor cancels the agent's context for a clean exit.
-- The agent transitions to ERROR with a `FailureInfo` of kind `external` and summary indicating watchdog timeout.
+- The supervisor maintains its own `lastActivity` map internally and polls every 30 seconds, checking elapsed time for each active coding agent.
+- If the gap between now and last activity exceeds `CodingWatchdogMinutes` (configurable, default 30), the supervisor cancels the agent's context.
+- The agent exits cleanly via `OutcomeGracefulShutdown` (context cancellation), without generating a `FailureInfo`.
 
 ### Exclusions
 

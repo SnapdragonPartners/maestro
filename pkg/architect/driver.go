@@ -883,12 +883,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			d.logger.Info("🔄 Story %s attempt count: %d/%d (reason: %s)",
 				requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts, requeueRequest.Reason)
 
-			// If this is a classified failure, give the architect a chance to review and act
-			if requeueRequest.FailureInfo != nil {
-				d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
-			}
-
-			// Check retry limit - circuit breaker
+			// Check retry limit - circuit breaker (before spending tokens on blocked requeue review)
 			if story.AttemptCount >= MaxStoryAttempts {
 				d.logger.Error("🚨 Story %s exceeded retry limit (%d attempts). Last failure: %s. Transitioning architect to ERROR.",
 					requeueRequest.StoryID, story.AttemptCount, requeueRequest.Reason)
@@ -908,6 +903,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.logger.Error("❌ Failed to transition to ERROR state: %v", transErr)
 				}
 				continue
+			}
+
+			// If this is a classified failure, give the architect a chance to review and act
+			if requeueRequest.FailureInfo != nil {
+				d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
 			}
 
 			// Promote hotfix stories to full stories on requeue.
