@@ -94,6 +94,7 @@ const (
 	SignalCoding        = "CODING"         // todos_add tool ready to start coding
 	SignalTesting       = "TESTING"        // done tool ready for testing phase
 	SignalTodoComplete  = "TODO_COMPLETE"  // todo_complete tool marked a todo as done
+	SignalBlocked       = "BLOCKED"        // report_blocked tool: coder blocked by infrastructure or invalid story
 )
 
 // ExecResult is the result of executing a tool.

@@ -13,6 +13,7 @@ import (
 	"orchestrator/internal/factory"
 	"orchestrator/internal/kernel"
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
@@ -148,6 +149,10 @@ type Supervisor struct {
 	suspendedAgents map[string]bool
 	suspendMu       sync.Mutex
 	pollCancel      context.CancelFunc // Cancel function for API polling goroutine
+
+	// Coding watchdog: between-turns activity tracking
+	lastActivity map[string]time.Time // agentID → last toolloop iteration start
+	activityMu   sync.Mutex
 }
 
 // NewSupervisor creates a new supervisor with the given kernel.
@@ -174,6 +179,8 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		running:         false,
 		// SUSPEND support - channel is created lazily when first agent suspends
 		suspendedAgents: make(map[string]bool),
+		// Coding watchdog
+		lastActivity: make(map[string]time.Time),
 	}
 
 	// Wire up the restore channel to the factory for SUSPEND state support
@@ -197,6 +204,9 @@ func (s *Supervisor) Start(ctx context.Context) {
 	s.Logger.Info("State change processor got channel from dispatcher: %p", stateChangeCh)
 
 	s.running = true
+
+	// Start coding watchdog for between-turns timeout detection
+	go s.startCodingWatchdog(ctx)
 
 	// Start state change processing goroutine
 	go func() {
@@ -262,8 +272,21 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 			} else {
 				// Clear the lease first
 				s.Kernel.Dispatcher.ClearLease(notification.AgentID)
-				// Use the new clean channel-based requeue pattern
-				if err := s.Kernel.Dispatcher.UpdateStoryRequeue(storyID, notification.AgentID, "Agent failed with error state"); err != nil {
+
+				// Extract structured failure info from notification metadata (if present)
+				reason := "Agent failed with error state"
+				var failureInfo *proto.FailureInfo
+				if notification.Metadata != nil {
+					// Use value type assertion — FailureInfo is stored as value in metadata
+					if fi, ok := notification.Metadata[proto.KeyFailureInfo].(proto.FailureInfo); ok {
+						failureInfo = &fi
+						reason = fmt.Sprintf("%s: %s", fi.Kind, fi.Explanation)
+						s.Logger.Info("Coder %s failed with classified failure: %s (%s)", notification.AgentID, fi.Kind, fi.Explanation)
+					}
+				}
+
+				// Use the clean channel-based requeue pattern
+				if err := s.Kernel.Dispatcher.UpdateStoryRequeue(storyID, notification.AgentID, reason, failureInfo); err != nil {
 					s.Logger.Error("Failed to requeue story %s from agent %s: %v", storyID, notification.AgentID, err)
 				} else {
 					s.Logger.Info("Successfully requeued story %s from failed agent %s", storyID, notification.AgentID)
@@ -373,6 +396,16 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 	s.AgentTypes[agentID] = agentType
 	s.Agents[agentID] = agent
 	s.Logger.Info("Registered agent %s (type: %s)", agentID, agentType)
+
+	// Wire up activity tracker for coder agents (watchdog monitoring)
+	if agentType == "coder" {
+		type activityTrackerSetter interface {
+			SetActivityTracker(tracker interface{ RecordActivity(agentID string) })
+		}
+		if ats, ok := agent.(activityTrackerSetter); ok {
+			ats.SetActivityTracker(s)
+		}
+	}
 
 	// Start the agent's state machine with individual context
 	if runnable, ok := agent.(interface{ Run(context.Context) error }); ok {
@@ -594,4 +627,75 @@ func (s *Supervisor) GetSuspendedAgentCount() int {
 	s.suspendMu.Lock()
 	defer s.suspendMu.Unlock()
 	return len(s.suspendedAgents)
+}
+
+// RecordActivity records a toolloop heartbeat for the given agent.
+// Called by the toolloop at the start of each iteration via the ActivityTracker interface.
+func (s *Supervisor) RecordActivity(agentID string) {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	s.lastActivity[agentID] = time.Now()
+}
+
+// startCodingWatchdog monitors coder agents for between-turns activity gaps.
+// If a coder agent has no toolloop activity for longer than the configured timeout,
+// the watchdog cancels the agent context to force a clean exit.
+// Claude Code mode coders are excluded (they have their own timeout management).
+func (s *Supervisor) startCodingWatchdog(ctx context.Context) {
+	const watchdogPollInterval = 30 * time.Second
+
+	ticker := time.NewTicker(watchdogPollInterval)
+	defer ticker.Stop()
+
+	s.Logger.Info("🐕 Coding watchdog started (timeout: %d minutes)", config.GetCodingWatchdogMinutes())
+
+	for {
+		select {
+		case <-ctx.Done():
+			s.Logger.Info("🐕 Coding watchdog stopped")
+			return
+		case <-ticker.C:
+			s.checkCodingActivity()
+		}
+	}
+}
+
+// checkCodingActivity checks all coder agents for activity timeouts.
+func (s *Supervisor) checkCodingActivity() {
+	timeout := time.Duration(config.GetCodingWatchdogMinutes()) * time.Minute
+
+	// Skip if Claude Code mode (they manage their own timeouts)
+	cfg, err := config.GetConfig()
+	if err == nil && cfg.Agents.CoderMode == config.CoderModeClaudeCode {
+		return
+	}
+
+	s.activityMu.Lock()
+	// Copy the activity map under lock to avoid holding it during cancel operations
+	staleAgents := make(map[string]time.Time)
+	for agentID, lastTime := range s.lastActivity {
+		if time.Since(lastTime) > timeout {
+			// Only check coder agents
+			if agentType, exists := s.AgentTypes[agentID]; exists && agentType == "coder" {
+				staleAgents[agentID] = lastTime
+			}
+		}
+	}
+	s.activityMu.Unlock()
+
+	// Cancel stale agents outside the lock
+	for agentID, lastTime := range staleAgents {
+		s.Logger.Error("🐕 Coding watchdog timeout: agent %s has had no toolloop activity for %v (last: %s). Cancelling agent.",
+			agentID, time.Since(lastTime).Round(time.Second), lastTime.Format(time.RFC3339))
+
+		// Cancel the agent's context for a clean exit via OutcomeGracefulShutdown
+		if cancel, exists := s.AgentContexts[agentID]; exists {
+			cancel()
+		}
+
+		// Remove from activity tracking to avoid re-firing
+		s.activityMu.Lock()
+		delete(s.lastActivity, agentID)
+		s.activityMu.Unlock()
+	}
 }

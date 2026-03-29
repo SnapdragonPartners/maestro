@@ -668,10 +668,11 @@ type StoryStatusUpdate struct {
 
 // StoryRequeueRequest represents a request to requeue a story from a failed agent.
 type StoryRequeueRequest struct {
-	StoryID   string    `json:"story_id"`
-	AgentID   string    `json:"agent_id"`
-	Reason    string    `json:"reason"`
-	Timestamp time.Time `json:"timestamp"`
+	StoryID     string       `json:"story_id"`
+	AgentID     string       `json:"agent_id"`
+	Reason      string       `json:"reason"`
+	Timestamp   time.Time    `json:"timestamp"`
+	FailureInfo *FailureInfo `json:"failure_info,omitempty"` // Structured failure context (nil for unclassified failures)
 }
 
 // Metadata helper functions

@@ -878,9 +878,15 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			// Increment attempt count and store failure reason
 			story.AttemptCount++
 			story.LastFailReason = requeueRequest.Reason
+			story.LastFailureInfo = requeueRequest.FailureInfo
 
 			d.logger.Info("🔄 Story %s attempt count: %d/%d (reason: %s)",
 				requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts, requeueRequest.Reason)
+
+			// If this is a classified failure, give the architect a chance to review and act
+			if requeueRequest.FailureInfo != nil {
+				d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
+			}
 
 			// Check retry limit - circuit breaker
 			if story.AttemptCount >= MaxStoryAttempts {
@@ -961,6 +967,119 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// handleBlockedRequeue gives the architect LLM a chance to review and act on a classified failure
+// before the story is requeued. Follows the attemptStoryEdit pattern: inject context into the
+// architect's per-agent conversation and run a single-turn toolloop with story_edit.
+// This is best-effort: if the LLM call fails, we log and continue with the requeue as-is.
+func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryRequeueRequest, story *QueuedStory, fi *proto.FailureInfo) {
+	// Get or create a context for the failed agent
+	cm := d.getContextForAgent(req.AgentID)
+
+	// Build the blocked requeue prompt from template
+	prompt := d.buildBlockedRequeuePrompt(story, req.StoryID, fi)
+
+	// Add prompt to existing per-agent context
+	cm.AddMessage("blocked-requeue-prompt", prompt)
+
+	// Create tool provider with story_edit + chat_post (for escalation)
+	agentCtx := tools.AgentContext{
+		ReadOnly: true,
+		WorkDir:  "/mnt/architect",
+	}
+	allowedTools := []string{tools.ToolStoryEdit}
+	toolProvider := tools.NewProvider(&agentCtx, allowedTools)
+
+	storyEditTool, err := toolProvider.Get(tools.ToolStoryEdit)
+	if err != nil {
+		d.logger.Warn("🚧 Failed to get story_edit tool for blocked requeue: %v", err)
+		return
+	}
+
+	d.logger.Info("🚧 Running blocked requeue review for story %s (failure: %s)", req.StoryID, fi.Kind)
+
+	// Run single-turn toolloop with story_edit as the terminal tool
+	out := toolloop.Run(d.toolLoop, ctx, &toolloop.Config[StoryEditResult]{
+		ContextManager:     cm,
+		GeneralTools:       []tools.Tool{},
+		TerminalTool:       storyEditTool,
+		MaxIterations:      3,
+		MaxTokens:          agent.ArchitectMaxTokens,
+		Temperature:        config.GetTemperature(config.TempRoleArchitect),
+		SingleTurn:         true,
+		AgentID:            d.GetAgentID(),
+		DebugLogging:       config.GetDebugLLMMessages(),
+		PersistenceChannel: d.persistenceChannel,
+		StoryID:            req.StoryID,
+	})
+
+	// Handle outcome — same pattern as attemptStoryEdit
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		d.logger.Warn("🚧 Blocked requeue review failed for %s: %v (continuing with requeue)", req.StoryID, out.Err)
+		return
+	}
+
+	if out.Signal != tools.SignalStoryEditComplete {
+		d.logger.Warn("🚧 Unexpected signal from blocked requeue review: %s (continuing with requeue)", out.Signal)
+		return
+	}
+
+	// Extract edit data from EffectData
+	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
+	if !ok {
+		d.logger.Warn("🚧 Blocked requeue effect data is not map[string]any: %T (continuing with requeue)", out.EffectData)
+		return
+	}
+
+	// Check for full story rewrite first (takes precedence over notes)
+	revisedContent, _ := utils.SafeAssert[string](effectData["revised_content"])
+	if revisedContent != "" {
+		story.Content = revisedContent
+		d.logger.Info("🚧 Replaced story content for %s (%d chars) — architect rewrote story after %s failure",
+			req.StoryID, len(revisedContent), fi.Kind)
+		return
+	}
+
+	// Fall back to appending implementation notes
+	notes, _ := utils.SafeAssert[string](effectData["notes"])
+	if notes == "" {
+		d.logger.Info("🚧 Architect provided no edits for blocked story %s", req.StoryID)
+		return
+	}
+
+	story.Content += "\n\n## Failure Context (Auto-generated)\n\n" + notes
+	d.logger.Info("🚧 Appended failure context to story %s (%d chars)", req.StoryID, len(notes))
+}
+
+// buildBlockedRequeuePrompt renders the blocked requeue template for the architect.
+func (d *Driver) buildBlockedRequeuePrompt(story *QueuedStory, storyID string, fi *proto.FailureInfo) string {
+	fallback := fmt.Sprintf("The coder working on story %s reported a %s failure: %s. "+
+		"The story will be requeued. Review and call story_edit if the story needs changes.", storyID, fi.Kind, fi.Explanation)
+
+	if d.renderer == nil {
+		return fallback
+	}
+
+	templateData := &templates.TemplateData{
+		Extra: map[string]any{
+			"StoryTitle":   story.Title,
+			"StoryID":      storyID,
+			"FailureKind":  string(fi.Kind),
+			"Explanation":  fi.Explanation,
+			"FailedState":  fi.FailedState,
+			"ToolName":     fi.ToolName,
+			"AttemptCount": story.AttemptCount,
+		},
+	}
+
+	content, err := d.renderer.Render(templates.BlockedRequeueTemplate, templateData)
+	if err != nil {
+		d.logger.Warn("🚧 Failed to render blocked requeue template: %v", err)
+		return fallback
+	}
+
+	return content
 }
 
 // createReviewToolProviderForCoder creates a tool provider for structured reviews (approvals).

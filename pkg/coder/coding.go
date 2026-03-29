@@ -17,7 +17,8 @@ import (
 	"orchestrator/pkg/utils"
 )
 
-// MaxCodingIterations is the maximum number of coding loop iterations before budget review.
+// MaxCodingIterations is the default maximum number of coding loop iterations before budget review.
+// Use config.GetCodingBudgetReviewTurns() for the configurable value.
 const MaxCodingIterations = 12
 
 // handleCoding processes the CODING state with priority-based work handling.
@@ -38,7 +39,7 @@ func (c *Coder) handleInitialCoding(ctx context.Context, sm *agent.BaseStateMach
 		}
 	}
 
-	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), MaxCodingIterations, StateCoding); budgetExceeded {
+	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyCodingIterations), config.GetCodingBudgetReviewTurns(), StateCoding); budgetExceeded {
 		c.logger.Info("Coding budget exceeded, triggering BUDGET_REVIEW")
 		// Store effect for BUDGET_REVIEW state to execute
 		sm.SetStateData(KeyBudgetReviewEffect, budgetReviewEff)
@@ -164,27 +165,29 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 	// Use toolloop for LLM iteration with coding tools
 	loop := toolloop.New(c.LLMClient, c.logger)
+	maxCodingIter := config.GetCodingBudgetReviewTurns()
 
 	//nolint:dupl // Similar config in planning.go - intentional per-state configuration
 	cfg := &toolloop.Config[CodingResult]{
-		ContextManager: c.contextManager,
-		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  MaxCodingIterations,
-		MaxTokens:      8192, // Increased for comprehensive code generation
-		Temperature:    c.getCodingTemperature(sm),
-		AgentID:        c.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:  c.contextManager,
+		InitialPrompt:   "", // Prompt already in context via ResetForNewTemplate
+		GeneralTools:    generalTools,
+		TerminalTool:    terminalTool,
+		MaxIterations:   maxCodingIter,
+		MaxTokens:       8192, // Increased for comprehensive code generation
+		Temperature:     c.getCodingTemperature(sm),
+		AgentID:         c.GetAgentID(),
+		DebugLogging:    config.GetDebugLLMMessages(),
+		ActivityTracker: c.activityTracker,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("coding_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
-			SoftLimit: MaxCodingIterations - 2, // Warn 2 iterations before limit
-			HardLimit: MaxCodingIterations,
+			SoftLimit: maxCodingIter - 2, // Warn 2 iterations before limit
+			HardLimit: maxCodingIter,
 			OnHardLimit: func(_ context.Context, key string, count int) error {
 				c.logger.Info("⚠️  Coding reached max iterations (%d, key: %s), triggering budget review", count, key)
 
 				// Render full budget review content with template (same as checkLoopBudget)
-				content := c.getBudgetReviewContent(sm, StateCoding, count, MaxCodingIterations)
+				content := c.getBudgetReviewContent(sm, StateCoding, count, maxCodingIter)
 				if content == "" {
 					return logx.Errorf("failed to generate budget review content - cannot proceed without proper context for architect")
 				}
@@ -248,6 +251,14 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 
 			c.logger.Info("✅ Story completion claim submitted from CODING, transitioning to PLAN_REVIEW")
 			return StatePlanReview, false, nil
+		case tools.SignalBlocked:
+			// report_blocked was called - coder is blocked by infrastructure or invalid story
+			failureInfo := extractFailureInfoFromEffect(out.EffectData)
+			sm.SetStateData(KeyFailureInfo, failureInfo)
+			sm.SetStateData(KeyErrorMessage, fmt.Sprintf("%s: %s", failureInfo.Kind, failureInfo.Explanation))
+			c.logger.Error("🚫 Coder blocked (%s): %s", failureInfo.Kind, failureInfo.Explanation)
+			return proto.StateError, false, nil
+
 		case tools.SignalCoding:
 			// todos_add was called during coding - add todos and continue coding
 			// This handles the case where LLM calls todos_add during CODING state
@@ -283,6 +294,13 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		}
 		return proto.StateError, false, logx.Wrap(out.Err, "toolloop execution failed")
 
+	case toolloop.OutcomeBlocked:
+		// Auto-detected infrastructure failure (e.g., git corruption in done tool)
+		sm.SetStateData(KeyFailureInfo, out.FailureInfo)
+		sm.SetStateData(KeyErrorMessage, fmt.Sprintf("%s: %s", out.FailureInfo.Kind, out.FailureInfo.Explanation))
+		c.logger.Error("🚫 Coder blocked (auto-detected): %s", out.FailureInfo.Explanation)
+		return proto.StateError, false, nil
+
 	case toolloop.OutcomeNoToolTwice:
 		// LLM failed to use tools - treat as error
 		return proto.StateError, false, logx.Wrap(out.Err, "LLM did not use tools in coding")
@@ -295,6 +313,24 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 	default:
 		return proto.StateError, false, logx.Errorf("unknown toolloop outcome kind: %v", out.Kind)
 	}
+}
+
+// extractFailureInfoFromEffect extracts a proto.FailureInfo from ProcessEffect data.
+// Returns a zero FailureInfo if extraction fails.
+func extractFailureInfoFromEffect(effectDataRaw any) proto.FailureInfo {
+	effectData, ok := utils.SafeAssert[map[string]any](effectDataRaw)
+	if !ok {
+		return proto.FailureInfo{Explanation: "failed to extract failure info from effect data"}
+	}
+	fi, ok := effectData[proto.KeyFailureInfo]
+	if !ok {
+		return proto.FailureInfo{Explanation: "no failure_info in effect data"}
+	}
+	failureInfo, ok := fi.(proto.FailureInfo)
+	if !ok {
+		return proto.FailureInfo{Explanation: fmt.Sprintf("failure_info is %T, not FailureInfo", fi)}
+	}
+	return failureInfo
 }
 
 // storePendingQuestionFromEffect stores question details from ProcessEffect.Data in state for QUESTION state.

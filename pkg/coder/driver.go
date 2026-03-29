@@ -13,6 +13,7 @@ import (
 	"orchestrator/internal/state"
 	iutils "orchestrator/internal/utils"
 	"orchestrator/pkg/agent"
+	"orchestrator/pkg/agent/toolloop"
 	"orchestrator/pkg/build"
 	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
@@ -81,7 +82,8 @@ type Coder struct {
 	pendingContainerImageID    string
 	pendingDockerfileHash      string // SHA256 hash of Dockerfile when container was built
 	hasPendingContainerConfig  bool
-	containerUpgradeNeeded     bool // True if Claude Code was upgraded in-place (container image needs rebuild)
+	containerUpgradeNeeded     bool                     // True if Claude Code was upgraded in-place (container image needs rebuild)
+	activityTracker            toolloop.ActivityTracker // Optional: records toolloop heartbeats for watchdog
 }
 
 // Runtime extends BaseRuntime with coder-specific capabilities.
@@ -451,6 +453,12 @@ func (c *Coder) SetChannels(storyCh, _ chan *proto.AgentMsg, replyCh <-chan *pro
 func (c *Coder) SetDispatcher(dispatcher *dispatch.Dispatcher) {
 	c.dispatcher = dispatcher
 	c.logger.Info("🧑‍💻 Coder %s dispatcher set: %p", c.GetID(), dispatcher)
+}
+
+// SetActivityTracker sets the activity tracker for watchdog monitoring.
+// Called by the supervisor after coder creation to wire up heartbeat reporting.
+func (c *Coder) SetActivityTracker(tracker toolloop.ActivityTracker) {
+	c.activityTracker = tracker
 }
 
 // SetStateNotificationChannel implements the ChannelReceiver interface for state change notifications.
@@ -1063,14 +1071,38 @@ func (c *Coder) Step(ctx context.Context) (bool, error) {
 	// Transition to next state if different, even when done.
 	currentState := c.BaseStateMachine.GetCurrentState()
 	if nextState != currentState {
-		// Transition validation is handled by base state machine.
+		// For ERROR transitions, propagate failure metadata so the supervisor
+		// can pass structured FailureInfo through to the requeue flow.
+		var metadata map[string]any
+		if nextState == proto.StateError {
+			metadata = c.buildErrorMetadata()
+		}
 
-		if err := c.BaseStateMachine.TransitionTo(ctx, nextState, nil); err != nil {
+		if err := c.BaseStateMachine.TransitionTo(ctx, nextState, metadata); err != nil {
 			return false, logx.Wrap(err, fmt.Sprintf("failed to transition to state %s", nextState))
 		}
 	}
 
 	return done, nil
+}
+
+// buildErrorMetadata extracts failure info and error message from state data
+// to pass as metadata in the StateChangeNotification.
+func (c *Coder) buildErrorMetadata() map[string]any {
+	sm := c.BaseStateMachine
+	metadata := make(map[string]any)
+
+	if fi, exists := sm.GetStateValue(KeyFailureInfo); exists {
+		metadata[proto.KeyFailureInfo] = fi
+	}
+	if em, exists := sm.GetStateValue(KeyErrorMessage); exists {
+		metadata["error"] = em
+	}
+
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
 }
 
 // Shutdown performs cleanup (required for Driver interface).

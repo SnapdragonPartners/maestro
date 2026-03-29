@@ -98,6 +98,7 @@ const (
 	KeyDockerfileHash          = "dockerfile_hash"         // string: SHA256 hash of Dockerfile when container was built
 	KeyContainerSwitchTarget   = "container_switch_target" // string: target container for pending switch (Claude Code mode)
 	KeyNeedsChangesCount       = "needs_changes_count"     // int: consecutive NEEDS_CHANGES from architect (for temperature laddering)
+	KeyFailureInfo             = "failure_info"            // proto.FailureInfo: structured failure context for blocked/error propagation
 )
 
 // ValidateState checks if a state is valid for coder agents.
