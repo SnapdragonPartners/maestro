@@ -485,8 +485,61 @@ type commitResult struct {
 	storyComplete bool   // True when no changes exist on branch (Case A: story already complete)
 }
 
+// BlockedError wraps a FailureInfo to signal a non-recoverable infrastructure failure.
+// The toolloop checks for this via errors.As to short-circuit LLM retry on fundamentally
+// broken operations (e.g., corrupted git repository).
+type BlockedError struct {
+	FailureInfo proto.FailureInfo
+}
+
+func (e *BlockedError) Error() string {
+	return fmt.Sprintf("blocked (%s): %s", e.FailureInfo.Kind, e.FailureInfo.Explanation)
+}
+
+// commitRetryBackoff is the delay between commit retry attempts.
+const commitRetryBackoff = 2 * time.Second
+
+// maxCommitRetries is the maximum number of commit attempts before giving up.
+const maxCommitRetries = 3
+
+// classifyCommitFailure examines git command output to determine if a failure
+// is an infrastructure issue (FailureKindExternal) or something the LLM might fix.
+// Returns empty string for unclassified/content errors that should be retried normally.
+func classifyCommitFailure(stderr string, exitCode int) proto.FailureKind {
+	lower := strings.ToLower(stderr)
+
+	// Pre-commit hook failures are content errors, not infrastructure — let LLM retry
+	if exitCode == 1 && (strings.Contains(lower, "hook") || strings.Contains(lower, "pre-commit")) {
+		return ""
+	}
+
+	// Git structural/infrastructure errors → external
+	infrastructurePatterns := []string{
+		"bad tree object",
+		"corrupt",
+		"not a git repository",
+		"unable to create",
+		"cannot lock ref",
+		"fatal: unable to",
+		"error: bad object",
+		"fakeowner",
+		"permission denied",
+		"no space left on device",
+		"read-only file system",
+	}
+	for _, pattern := range infrastructurePatterns {
+		if strings.Contains(lower, pattern) {
+			return proto.FailureKindExternal
+		}
+	}
+
+	return ""
+}
+
 // commitChanges runs git add -A + git commit with the summary as commit message.
-// Returns a commitResult describing the outcome.
+// Retries up to maxCommitRetries times for transient failures. Infrastructure failures
+// (detected via classifyCommitFailure) are wrapped in BlockedError for the toolloop
+// to short-circuit LLM retry.
 func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResult {
 	if !isExecutorUsable(d.executor) {
 		return commitResult{message: "Changes committed (no executor - skipped git operations), advancing to TESTING state"}
@@ -497,6 +550,45 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 		Timeout: 30 * time.Second,
 	}
 
+	var lastErr error
+	for attempt := 1; attempt <= maxCommitRetries; attempt++ {
+		res := d.attemptCommit(ctx, opts, summary)
+		if res.err == nil {
+			return res
+		}
+
+		lastErr = res.err
+
+		// Classify the failure
+		errMsg := res.err.Error()
+		kind := classifyCommitFailure(errMsg, 0) // exit code already in error message
+
+		// Infrastructure failures: wrap in BlockedError immediately, no point retrying
+		if kind == proto.FailureKindExternal {
+			logx.Warnf("Commit attempt %d/%d failed with infrastructure error: %v", attempt, maxCommitRetries, res.err)
+			return commitResult{
+				err: &BlockedError{
+					FailureInfo: proto.NewFailureInfo(kind, errMsg, "CODING", "done"),
+				},
+			}
+		}
+
+		// Transient/unknown failure: retry if attempts remain
+		if attempt < maxCommitRetries {
+			logx.Warnf("Commit attempt %d/%d failed, retrying in %v: %v", attempt, maxCommitRetries, commitRetryBackoff, res.err)
+			select {
+			case <-ctx.Done():
+				return commitResult{err: fmt.Errorf("commit retry cancelled: %w", ctx.Err())}
+			case <-time.After(commitRetryBackoff):
+			}
+		}
+	}
+
+	return commitResult{err: fmt.Errorf("git commit failed after %d attempts: %w", maxCommitRetries, lastErr)}
+}
+
+// attemptCommit performs a single git add + diff check + commit attempt.
+func (d *DoneTool) attemptCommit(ctx context.Context, opts *execpkg.Opts, summary string) commitResult {
 	// Stage all changes
 	result, err := d.executor.Run(ctx, []string{"git", "add", "-A"}, opts)
 	if err != nil || result.ExitCode != 0 {

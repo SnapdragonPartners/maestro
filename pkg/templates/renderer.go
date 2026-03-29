@@ -125,6 +125,8 @@ const (
 	BudgetReviewResponseTemplate StateTemplate = "architect/budget_review_response.tpl.md"
 	// StoryEditTemplate is the template for architect story annotation before requeue.
 	StoryEditTemplate StateTemplate = "architect/story_edit.tpl.md"
+	// BlockedRequeueTemplate is the template for architect review of blocked (failed) story requeues.
+	BlockedRequeueTemplate StateTemplate = "architect/blocked_requeue.tpl.md"
 	// HotfixReviewTemplate is the template for architect hotfix requirements review.
 	HotfixReviewTemplate StateTemplate = "architect/hotfix_review.tpl.md"
 
@@ -192,6 +194,7 @@ func NewRenderer() (*Renderer, error) {
 		AppCodeReviewTemplate,
 		DevOpsCodeReviewTemplate,
 		StoryEditTemplate,
+		BlockedRequeueTemplate,
 		HotfixReviewTemplate,
 		MaintenanceStoryGenTemplate,
 		// Request content templates (coder → architect).

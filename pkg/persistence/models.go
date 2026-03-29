@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"orchestrator/pkg/proto"
 )
 
 // Spec represents a specification document.
@@ -52,14 +54,15 @@ type Story struct {
 	Metadata string `json:"metadata,omitempty"` // JSON blob for extensibility
 
 	// Queue-specific fields (not persisted to database)
-	DependsOn       []string `json:"depends_on" db:"-"`       // Story dependencies
-	EstimatedPoints int      `json:"estimated_points" db:"-"` // Estimation points
-	KnowledgePack   string   `json:"knowledge_pack" db:"-"`   // Relevant knowledge subgraph (DOT format)
-	Express         bool     `json:"express" db:"-"`          // Skip planning, fast-path to coding (knowledge updates, hotfixes)
-	IsHotfix        bool     `json:"is_hotfix" db:"-"`        // If true, routes to dedicated hotfix coder
-	IsMaintenance   bool     `json:"is_maintenance" db:"-"`   // If true, story is part of maintenance cycle
-	AttemptCount    int      `json:"attempt_count" db:"-"`    // Number of dispatch attempts (for retry limit)
-	LastFailReason  string   `json:"last_fail_reason" db:"-"` // Reason for last failure (for diagnostics)
+	DependsOn       []string           `json:"depends_on" db:"-"`                  // Story dependencies
+	EstimatedPoints int                `json:"estimated_points" db:"-"`            // Estimation points
+	KnowledgePack   string             `json:"knowledge_pack" db:"-"`              // Relevant knowledge subgraph (DOT format)
+	Express         bool               `json:"express" db:"-"`                     // Skip planning, fast-path to coding (knowledge updates, hotfixes)
+	IsHotfix        bool               `json:"is_hotfix" db:"-"`                   // If true, routes to dedicated hotfix coder
+	IsMaintenance   bool               `json:"is_maintenance" db:"-"`              // If true, story is part of maintenance cycle
+	AttemptCount    int                `json:"attempt_count" db:"-"`               // Number of dispatch attempts (for retry limit)
+	LastFailReason  string             `json:"last_fail_reason" db:"-"`            // Reason for last failure (for diagnostics)
+	LastFailureInfo *proto.FailureInfo `json:"last_failure_info,omitempty" db:"-"` // Structured failure context (nil for unclassified failures)
 }
 
 // StoryDependency represents a dependency relationship between stories.

@@ -434,6 +434,11 @@ type AgentConfig struct {
 	ArchitectTemp     float32 `json:"architect_temp,omitempty"`      // Default: 0.65
 	PMTemp            float32 `json:"pm_temp,omitempty"`             // Default: 0.30
 
+	// Watchdog and iteration limits
+	CodingWatchdogMinutes     int `json:"coding_watchdog_minutes,omitempty"`      // Between-turns timeout for coding (default: 30)
+	CodingBudgetReviewTurns   int `json:"coding_budget_review_turns,omitempty"`   // Max coding iterations before budget review (default: 12)
+	PlanningBudgetReviewTurns int `json:"planning_budget_review_turns,omitempty"` // Max planning iterations before budget review (default: 10)
+
 	// Airplane mode model overrides
 	Airplane *AirplaneAgentConfig `json:"airplane,omitempty"` // Model overrides for airplane (offline) mode
 }
@@ -1071,6 +1076,40 @@ func getDefaultTemperature(role string) float32 {
 	default:
 		return DefaultCoderCodingTemp
 	}
+}
+
+// Default iteration limits and watchdog timeout.
+const (
+	DefaultCodingWatchdogMinutes     = 30
+	DefaultCodingBudgetReviewTurns   = 12
+	DefaultPlanningBudgetReviewTurns = 10
+)
+
+// GetCodingWatchdogMinutes returns the configured between-turns watchdog timeout for coding agents.
+func GetCodingWatchdogMinutes() int {
+	cfg, err := GetConfig()
+	if err != nil || cfg.Agents.CodingWatchdogMinutes <= 0 {
+		return DefaultCodingWatchdogMinutes
+	}
+	return cfg.Agents.CodingWatchdogMinutes
+}
+
+// GetCodingBudgetReviewTurns returns the configured max coding iterations before budget review.
+func GetCodingBudgetReviewTurns() int {
+	cfg, err := GetConfig()
+	if err != nil || cfg.Agents.CodingBudgetReviewTurns <= 0 {
+		return DefaultCodingBudgetReviewTurns
+	}
+	return cfg.Agents.CodingBudgetReviewTurns
+}
+
+// GetPlanningBudgetReviewTurns returns the configured max planning iterations before budget review.
+func GetPlanningBudgetReviewTurns() int {
+	cfg, err := GetConfig()
+	if err != nil || cfg.Agents.PlanningBudgetReviewTurns <= 0 {
+		return DefaultPlanningBudgetReviewTurns
+	}
+	return cfg.Agents.PlanningBudgetReviewTurns
 }
 
 // GetConfig returns the current global config BY VALUE (copy, not reference).

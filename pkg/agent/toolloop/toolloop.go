@@ -4,6 +4,7 @@ package toolloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -157,6 +158,10 @@ type Config[T any] struct {
 
 	// StoryID for associating tool executions with a story (optional).
 	StoryID string
+
+	// ActivityTracker records heartbeats for watchdog monitoring (optional).
+	// When set, RecordActivity is called at the start of each iteration.
+	ActivityTracker ActivityTracker
 }
 
 // Run executes the tool loop with ProcessEffect-based terminal signaling, returning an Outcome[T].
@@ -251,6 +256,11 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 		default:
 			// Context not cancelled, continue with iteration
+		}
+
+		// Record activity heartbeat for watchdog monitoring
+		if cfg.ActivityTracker != nil && cfg.AgentID != "" {
+			cfg.ActivityTracker.RecordActivity(cfg.AgentID)
 		}
 
 		// Flush user buffer before LLM request
@@ -384,6 +394,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		tl.logger.Info("Processing %d tool calls", len(resp.ToolCalls))
 		var pendingEffect *tools.ProcessEffect
 		failedTools := make(map[string]bool) // Track which tools failed so we don't auto-wrap terminal failures
+		var terminalToolErr error            // Stores the actual error from terminal tool for BlockedError detection
 
 		for i := range resp.ToolCalls {
 			toolCall := &resp.ToolCalls[i]
@@ -416,6 +427,9 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				content = fmt.Sprintf("Tool failed: %v", err)
 				isError = true
 				failedTools[toolCall.Name] = true
+				if toolCall.Name == terminalToolName {
+					terminalToolErr = err
+				}
 			} else {
 				tl.logger.Info("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
 
@@ -460,10 +474,27 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		// Terminal tools should use ProcessEffect pattern - they would have exited above
 		// If terminal tool was called but didn't return ProcessEffect, auto-wrap with generic signal
 		// BUT: if the terminal tool FAILED, let the loop continue so LLM can see the error and retry
+		// EXCEPTION: if the failure wraps a BlockedError, short-circuit immediately
 		for i := range resp.ToolCalls {
 			if resp.ToolCalls[i].Name == terminalToolName {
 				// Check if the terminal tool failed - if so, let the loop continue for retry
 				if failedTools[terminalToolName] {
+					// Check if the error is a BlockedError (infrastructure failure) —
+					// don't let the LLM retry something fundamentally broken
+					if terminalToolErr != nil {
+						var blockedErr *tools.BlockedError
+						if errors.As(terminalToolErr, &blockedErr) {
+							tl.logger.Error("🚫 Terminal tool '%s' blocked: %s", terminalToolName, blockedErr.Error())
+							var zero T
+							return Outcome[T]{
+								Kind:        OutcomeBlocked,
+								FailureInfo: blockedErr.FailureInfo,
+								Err:         blockedErr,
+								Value:       zero,
+								Iteration:   currentIteration,
+							}
+						}
+					}
 					tl.logger.Info("⚠️  Terminal tool '%s' failed - continuing loop so LLM can retry", terminalToolName)
 					break // Continue to next iteration so LLM can see error and retry
 				}

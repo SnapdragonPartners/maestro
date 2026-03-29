@@ -1208,15 +1208,16 @@ func (d *Dispatcher) UpdateStoryStatus(storyID, status string) error {
 
 // UpdateStoryRequeue sends a requeue request to the architect via the requeue channel.
 // This replaces the legacy ExternalAPIProvider pattern with clean channel communication.
-func (d *Dispatcher) UpdateStoryRequeue(storyID, agentID, reason string) error {
+func (d *Dispatcher) UpdateStoryRequeue(storyID, agentID, reason string, failureInfo *proto.FailureInfo) error {
 	d.logger.Info("🔄 Sending story %s requeue request from agent %s via requeue channel: %s", storyID, agentID, reason)
 
 	// Create a requeue request notification
 	requeueRequest := &proto.StoryRequeueRequest{
-		StoryID:   storyID,
-		AgentID:   agentID,
-		Reason:    reason,
-		Timestamp: time.Now().UTC(),
+		StoryID:     storyID,
+		AgentID:     agentID,
+		Reason:      reason,
+		Timestamp:   time.Now().UTC(),
+		FailureInfo: failureInfo,
 	}
 
 	// Send to requeue requests channel (non-blocking)
