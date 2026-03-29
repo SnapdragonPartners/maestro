@@ -29,6 +29,9 @@ const (
 	// Compose tools.
 	ToolComposeUp = "compose_up"
 
+	// Failure reporting tools.
+	ToolReportBlocked = "report_blocked"
+
 	// Chat tools.
 	ToolChatPost = "chat_post"
 	ToolChatRead = "chat_read"
@@ -71,6 +74,7 @@ var (
 		ToolSubmitPlan,
 		ToolAskQuestion,
 		ToolStoryComplete,
+		ToolReportBlocked,
 		ToolContainerTest,
 		ToolContainerList,
 		ToolChatPost,
@@ -86,6 +90,7 @@ var (
 		ToolSubmitPlan,
 		ToolAskQuestion,
 		ToolStoryComplete,
+		ToolReportBlocked,
 		ToolContainerTest,
 		ToolContainerList,
 		ToolChatPost,
@@ -105,6 +110,7 @@ var (
 		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
+		ToolReportBlocked,
 		ToolContainerBuild,
 		ToolContainerUpdate,
 		ToolContainerTest,
@@ -131,6 +137,7 @@ var (
 		ToolLint,
 		ToolAskQuestion,
 		ToolDone,
+		ToolReportBlocked,
 		ToolContainerBuild,
 		ToolContainerUpdate,
 		ToolContainerTest,

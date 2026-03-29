@@ -26,7 +26,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 	// LLM response will be the assistant message
 
 	// Check planning budget using unified budget review mechanism
-	const maxPlanningIterations = 10
+	maxPlanningIterations := config.GetPlanningBudgetReviewTurns()
 	if budgetReviewEff, budgetExceeded := c.checkLoopBudget(sm, string(stateDataKeyPlanningIterations), maxPlanningIterations, StatePlanning); budgetExceeded {
 		c.logger.Info("Planning budget exceeded, triggering BUDGET_REVIEW")
 		// Store effect for BUDGET_REVIEW state to execute
@@ -168,15 +168,16 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 
 	//nolint:dupl // Similar config in coding.go - intentional per-state configuration
 	cfg := &toolloop.Config[PlanningResult]{
-		ContextManager: c.contextManager,
-		InitialPrompt:  "", // Prompt already in context via ResetForNewTemplate
-		GeneralTools:   generalTools,
-		TerminalTool:   terminalTool,
-		MaxIterations:  maxPlanningIterations,
-		MaxTokens:      8192, // Increased for exploration
-		Temperature:    c.getPlanningTemperature(sm),
-		AgentID:        c.GetAgentID(),
-		DebugLogging:   config.GetDebugLLMMessages(),
+		ContextManager:  c.contextManager,
+		InitialPrompt:   "", // Prompt already in context via ResetForNewTemplate
+		GeneralTools:    generalTools,
+		TerminalTool:    terminalTool,
+		MaxIterations:   maxPlanningIterations,
+		MaxTokens:       8192, // Increased for exploration
+		Temperature:     c.getPlanningTemperature(sm),
+		AgentID:         c.GetAgentID(),
+		DebugLogging:    config.GetDebugLLMMessages(),
+		ActivityTracker: c.activityTracker,
 		Escalation: &toolloop.EscalationConfig{
 			Key:       fmt.Sprintf("planning_%s", utils.GetStateValueOr[string](sm, KeyStoryID, "unknown")),
 			SoftLimit: maxPlanningIterations - 2, // Warn 2 iterations before limit

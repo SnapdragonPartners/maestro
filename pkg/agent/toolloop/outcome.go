@@ -1,6 +1,10 @@
 package toolloop
 
-import "fmt"
+import (
+	"fmt"
+
+	"orchestrator/pkg/proto"
+)
 
 // OutcomeKind categorizes the result of a toolloop execution.
 // These are loop-level outcomes describing what happened during iteration.
@@ -40,6 +44,12 @@ const (
 	// The OnShutdown callback is invoked before returning this outcome.
 	// Callers should serialize their state and exit cleanly when receiving this.
 	OutcomeGracefulShutdown
+
+	// OutcomeBlocked indicates a recognized, non-LLM-recoverable failure was detected
+	// during tool execution (e.g., git corruption, workspace issues).
+	// Distinguished from ERROR: OutcomeBlocked carries typed FailureInfo for routing.
+	// The FailureInfo field contains structured failure context.
+	OutcomeBlocked
 )
 
 // String returns human-readable name for OutcomeKind.
@@ -59,6 +69,8 @@ func (k OutcomeKind) String() string {
 		return "ExtractionError"
 	case OutcomeGracefulShutdown:
 		return "GracefulShutdown"
+	case OutcomeBlocked:
+		return "Blocked"
 	default:
 		return fmt.Sprintf("OutcomeKind(%d)", k)
 	}
@@ -98,4 +110,8 @@ type Outcome[T any] struct {
 	// Useful for logging, metrics, and debugging.
 	// Example: "reached iteration limit at iteration 16"
 	Iteration int
+
+	// FailureInfo carries structured failure context when Kind == OutcomeBlocked.
+	// Contains failure classification, explanation, and origin state/tool.
+	FailureInfo proto.FailureInfo
 }
