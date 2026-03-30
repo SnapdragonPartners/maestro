@@ -122,8 +122,59 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 		d.contextManager.AddMessage("user", completionMsg)
 		return StateWorking, nil
 
+	case proto.PayloadKindStoryBlocked:
+		return d.handleStoryBlockedNotification(typedPayload)
+
 	default:
 		d.logger.Warn("⚠️ Unhandled architect notification kind: %s", typedPayload.Kind)
 		return StateAwaitUser, nil
 	}
+}
+
+// handleStoryBlockedNotification processes a story_blocked notification from the architect.
+func (d *Driver) handleStoryBlockedNotification(payload *proto.MessagePayload) (proto.State, error) {
+	blocked, err := payload.ExtractStoryBlocked()
+	if err != nil {
+		d.logger.Error("❌ Failed to parse story_blocked payload: %v", err)
+		return StateAwaitUser, nil
+	}
+
+	if blocked.WillRetry {
+		d.logger.Info("🚧 Story blocked (retrying): %s - %s (attempt %d/%d, kind: %s)",
+			blocked.StoryID, blocked.Title, blocked.AttemptCount, blocked.MaxAttempts, blocked.FailureKind)
+	} else {
+		d.logger.Info("🚨 Story blocked (abandoned): %s - %s (attempt %d/%d, kind: %s)",
+			blocked.StoryID, blocked.Title, blocked.AttemptCount, blocked.MaxAttempts, blocked.FailureKind)
+	}
+
+	var blockedMsg string
+	if !blocked.ActionRequired {
+		// Informational only — the system is handling this automatically.
+		blockedMsg = fmt.Sprintf(
+			"[INFORMATIONAL — NO ACTION REQUIRED] "+
+				"A development story encountered an issue and is being automatically retried. "+
+				"Story: %q (ID: %s). Issue type: %s. Details: %s. "+
+				"This is attempt %d of %d. ",
+			blocked.Title, blocked.StoryID, blocked.FailureKind, blocked.Explanation,
+			blocked.AttemptCount, blocked.MaxAttempts)
+		if blocked.StoryEdited {
+			blockedMsg += "The architect has reviewed and modified the story requirements before retrying. "
+		}
+		blockedMsg += "This is handled automatically by the development team. " +
+			"Use chat_ask_user to briefly let the user know this happened, but make clear no action is needed on their part. " +
+			"Do NOT attempt to fix, resubmit, or modify anything yourself — the retry is already in progress."
+	} else {
+		// Action required — story has been abandoned.
+		blockedMsg = fmt.Sprintf(
+			"[ACTION REQUIRED] "+
+				"A development story has failed and cannot be retried (maximum attempts reached). "+
+				"Story: %q (ID: %s). Issue type: %s. Details: %s. "+
+				"The story failed after %d attempts. ",
+			blocked.Title, blocked.StoryID, blocked.FailureKind, blocked.Explanation,
+			blocked.AttemptCount)
+		blockedMsg += "Use chat_ask_user to inform the user about this failure and ask how they'd like to proceed."
+	}
+
+	d.contextManager.AddMessage("user", blockedMsg)
+	return StateWorking, nil
 }

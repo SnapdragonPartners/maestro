@@ -43,6 +43,7 @@ const (
 	// Notification payloads.
 	PayloadKindStoryComplete      PayloadKind = "story_complete"       // Story completion notification
 	PayloadKindAllStoriesComplete PayloadKind = "all_stories_complete" // All stories completed notification
+	PayloadKindStoryBlocked       PayloadKind = "story_blocked"        // Story blocked/failed notification
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -345,6 +346,42 @@ func (p *MessagePayload) ExtractAllStoriesComplete() (*AllStoriesCompletePayload
 	var result AllStoriesCompletePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal all stories complete payload: %w", err)
+	}
+	return &result, nil
+}
+
+// StoryBlockedPayload contains data for a story blocked/failed notification.
+// Sent by architect to PM when a story is blocked and being retried or abandoned.
+type StoryBlockedPayload struct {
+	StoryID        string      `json:"story_id"`
+	Title          string      `json:"title"`
+	FailureKind    FailureKind `json:"failure_kind"`
+	Explanation    string      `json:"explanation"`
+	AttemptCount   int         `json:"attempt_count"`
+	MaxAttempts    int         `json:"max_attempts"`
+	WillRetry      bool        `json:"will_retry"`      // true if story is being requeued, false if abandoned
+	StoryEdited    bool        `json:"story_edited"`    // true if architect modified the story before retry
+	ActionRequired bool        `json:"action_required"` // true if PM/user must act (e.g., abandoned story); false if informational only
+	Timestamp      string      `json:"timestamp"`
+}
+
+// NewStoryBlockedPayload creates a payload for story blocked notifications.
+func NewStoryBlockedPayload(data *StoryBlockedPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindStoryBlocked,
+		Data: raw,
+	}
+}
+
+// ExtractStoryBlocked extracts and validates a story blocked payload.
+func (p *MessagePayload) ExtractStoryBlocked() (*StoryBlockedPayload, error) {
+	if p.Kind != PayloadKindStoryBlocked {
+		return nil, fmt.Errorf("expected story_blocked payload, got %s", p.Kind)
+	}
+	var result StoryBlockedPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal story blocked payload: %w", err)
 	}
 	return &result, nil
 }
