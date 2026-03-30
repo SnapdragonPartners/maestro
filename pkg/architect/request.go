@@ -806,6 +806,35 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 	return nil
 }
 
+// notifyPMOfBlockedStory sends a story blocked notification to PM.
+// willRetry indicates whether the story is being requeued (true) or abandoned (false).
+// storyEdited indicates whether the architect modified the story before retry.
+func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory, fi *proto.FailureInfo, willRetry, storyEdited bool) {
+	payload := &proto.StoryBlockedPayload{
+		StoryID:        story.ID,
+		Title:          story.Title,
+		FailureKind:    fi.Kind,
+		Explanation:    fi.Explanation,
+		AttemptCount:   story.AttemptCount,
+		MaxAttempts:    MaxStoryAttempts,
+		WillRetry:      willRetry,
+		StoryEdited:    storyEdited,
+		ActionRequired: !willRetry, // Abandoned stories require user action; retries are informational
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+	}
+
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewStoryBlockedPayload(payload))
+	notifyMsg.SetMetadata(proto.KeyStoryID, story.ID)
+
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		d.logger.Warn("⚠️ Failed to notify PM of blocked story %s: %v", story.ID, err)
+	} else {
+		d.logger.Info("📬 Notified PM of blocked story %s (kind=%s, willRetry=%v)", story.ID, fi.Kind, willRetry)
+	}
+}
+
 // Response formatting methods using templates
 
 // ResponseKind identifies the type of approval response for formatting.

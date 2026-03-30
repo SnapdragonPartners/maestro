@@ -893,6 +893,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
 				}
 
+				// Notify PM that story is being abandoned
+				if requeueRequest.FailureInfo != nil {
+					d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, false, false)
+				}
+
 				// Transition architect to ERROR state
 				if transErr := d.TransitionTo(ctx, StateError, map[string]any{
 					"error":            fmt.Sprintf("story %s exceeded retry limit after %d attempts", requeueRequest.StoryID, story.AttemptCount),
@@ -906,9 +911,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			}
 
 			// If this is a classified failure, give the architect a chance to review and act
+			storyEdited := false
 			if requeueRequest.FailureInfo != nil {
-				d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
+				storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
 			}
+			_ = storyEdited // used after dispatch below
 
 			// Promote hotfix stories to full stories on requeue.
 			// If a hotfix needed requeue, the "simple fix" assumption is wrong —
@@ -961,6 +968,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				} else {
 					d.logger.Info("✅ Successfully requeued and dispatched story %s to work queue (attempt %d/%d)",
 						requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts)
+
+					// Notify PM after successful requeue+dispatch
+					if requeueRequest.FailureInfo != nil {
+						d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, true, storyEdited)
+					}
 				}
 			} else {
 				d.logger.Error("❌ Story %s not in PENDING status after requeue", requeueRequest.StoryID)
@@ -973,7 +985,8 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 // before the story is requeued. Follows the attemptStoryEdit pattern: inject context into the
 // architect's per-agent conversation and run a single-turn toolloop with story_edit.
 // This is best-effort: if the LLM call fails, we log and continue with the requeue as-is.
-func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryRequeueRequest, story *QueuedStory, fi *proto.FailureInfo) {
+// Returns true if the story was modified (content replaced or notes appended).
+func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryRequeueRequest, story *QueuedStory, fi *proto.FailureInfo) bool {
 	// Get or create a context for the failed agent
 	cm := d.getContextForAgent(req.AgentID)
 
@@ -994,7 +1007,7 @@ func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryReque
 	storyEditTool, err := toolProvider.Get(tools.ToolStoryEdit)
 	if err != nil {
 		d.logger.Warn("🚧 Failed to get story_edit tool for blocked requeue: %v", err)
-		return
+		return false
 	}
 
 	d.logger.Info("🚧 Running blocked requeue review for story %s (failure: %s)", req.StoryID, fi.Kind)
@@ -1017,19 +1030,19 @@ func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryReque
 	// Handle outcome — same pattern as attemptStoryEdit
 	if out.Kind != toolloop.OutcomeProcessEffect {
 		d.logger.Warn("🚧 Blocked requeue review failed for %s: %v (continuing with requeue)", req.StoryID, out.Err)
-		return
+		return false
 	}
 
 	if out.Signal != tools.SignalStoryEditComplete {
 		d.logger.Warn("🚧 Unexpected signal from blocked requeue review: %s (continuing with requeue)", out.Signal)
-		return
+		return false
 	}
 
 	// Extract edit data from EffectData
 	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		d.logger.Warn("🚧 Blocked requeue effect data is not map[string]any: %T (continuing with requeue)", out.EffectData)
-		return
+		return false
 	}
 
 	// Check for full story rewrite first (takes precedence over notes)
@@ -1038,18 +1051,19 @@ func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryReque
 		story.Content = revisedContent
 		d.logger.Info("🚧 Replaced story content for %s (%d chars) — architect rewrote story after %s failure",
 			req.StoryID, len(revisedContent), fi.Kind)
-		return
+		return true
 	}
 
 	// Fall back to appending implementation notes
 	notes, _ := utils.SafeAssert[string](effectData["notes"])
 	if notes == "" {
 		d.logger.Info("🚧 Architect provided no edits for blocked story %s", req.StoryID)
-		return
+		return false
 	}
 
 	story.Content += "\n\n## Failure Context (Auto-generated)\n\n" + notes
 	d.logger.Info("🚧 Appended failure context to story %s (%d chars)", req.StoryID, len(notes))
+	return true
 }
 
 // buildBlockedRequeuePrompt renders the blocked requeue template for the architect.
