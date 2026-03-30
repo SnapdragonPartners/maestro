@@ -147,34 +147,72 @@ func (d *Driver) handleStoryBlockedNotification(payload *proto.MessagePayload) (
 			blocked.StoryID, blocked.Title, blocked.AttemptCount, blocked.MaxAttempts, blocked.FailureKind)
 	}
 
-	var blockedMsg string
-	if !blocked.ActionRequired {
-		// Informational only — the system is handling this automatically.
-		blockedMsg = fmt.Sprintf(
+	blockedMsg := d.buildBlockedMessage(blocked)
+
+	d.contextManager.AddMessage("user", blockedMsg)
+	return StateWorking, nil
+}
+
+// buildBlockedMessage constructs the PM context message for a blocked story notification.
+// Branches on WillRetry (retry vs abandoned) × ActionRequired (informational vs needs user input).
+func (d *Driver) buildBlockedMessage(b *proto.StoryBlockedPayload) string {
+	switch {
+	case b.WillRetry && !b.ActionRequired:
+		// Informational retry — system is handling it automatically.
+		msg := fmt.Sprintf(
 			"[INFORMATIONAL — NO ACTION REQUIRED] "+
-				"A development story encountered an issue and is being automatically retried. "+
+				"A development story encountered an issue and has been scheduled for retry. "+
 				"Story: %q (ID: %s). Issue type: %s. Details: %s. "+
 				"This is attempt %d of %d. ",
-			blocked.Title, blocked.StoryID, blocked.FailureKind, blocked.Explanation,
-			blocked.AttemptCount, blocked.MaxAttempts)
-		if blocked.StoryEdited {
-			blockedMsg += "The architect has reviewed and modified the story requirements before retrying. "
+			b.Title, b.StoryID, b.FailureKind, b.Explanation,
+			b.AttemptCount, b.MaxAttempts)
+		if b.StoryEdited {
+			msg += "The architect has reviewed and modified the story requirements before retrying. "
 		}
-		blockedMsg += "This is handled automatically by the development team. " +
+		msg += "This is handled automatically by the development team. " +
 			"Use chat_ask_user to briefly let the user know this happened, but make clear no action is needed on their part. " +
 			"Do NOT attempt to fix, resubmit, or modify anything yourself — the retry is already in progress."
-	} else {
-		// Action required — story has been abandoned.
-		blockedMsg = fmt.Sprintf(
+		return msg
+
+	case b.WillRetry && b.ActionRequired:
+		// Retry in progress but architect needs user/PM input (future escalation path).
+		msg := fmt.Sprintf(
+			"[ACTION REQUIRED] "+
+				"A development story has encountered an issue and will be retried, but may need your input. "+
+				"Story: %q (ID: %s). Issue type: %s. Details: %s. "+
+				"This is attempt %d of %d. ",
+			b.Title, b.StoryID, b.FailureKind, b.Explanation,
+			b.AttemptCount, b.MaxAttempts)
+		if b.StoryEdited {
+			msg += "The architect has reviewed and modified the story requirements before retrying. "
+		}
+		msg += "Use chat_ask_user to inform the user about the issue and request any clarifications or decisions needed, " +
+			"but make clear that a retry is already in progress and they do not need to manually rerun anything."
+		return msg
+
+	case !b.WillRetry && b.ActionRequired:
+		// Abandoned — max attempts exceeded, user must decide.
+		msg := fmt.Sprintf(
 			"[ACTION REQUIRED] "+
 				"A development story has failed and cannot be retried (maximum attempts reached). "+
 				"Story: %q (ID: %s). Issue type: %s. Details: %s. "+
 				"The story failed after %d attempts. ",
-			blocked.Title, blocked.StoryID, blocked.FailureKind, blocked.Explanation,
-			blocked.AttemptCount)
-		blockedMsg += "Use chat_ask_user to inform the user about this failure and ask how they'd like to proceed."
-	}
+			b.Title, b.StoryID, b.FailureKind, b.Explanation,
+			b.AttemptCount)
+		msg += "Use chat_ask_user to inform the user about this failure and ask how they'd like to proceed."
+		return msg
 
-	d.contextManager.AddMessage("user", blockedMsg)
-	return StateWorking, nil
+	default: // !b.WillRetry && !b.ActionRequired
+		// Abandoned but informational (e.g., story was already superseded or intentionally dropped).
+		msg := fmt.Sprintf(
+			"[INFORMATIONAL — NO ACTION REQUIRED] "+
+				"A development story has failed and will not be retried. "+
+				"Story: %q (ID: %s). Issue type: %s. Details: %s. "+
+				"The story failed after %d attempts. ",
+			b.Title, b.StoryID, b.FailureKind, b.Explanation,
+			b.AttemptCount)
+		msg += "Use chat_ask_user to inform the user about this outcome, " +
+			"but make clear that no specific action is required from them unless they wish to change the plan."
+		return msg
+	}
 }

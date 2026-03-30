@@ -911,10 +911,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			}
 
 			// If this is a classified failure, give the architect a chance to review and act
+			storyEdited := false
 			if requeueRequest.FailureInfo != nil {
-				storyEdited := d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
-				d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, true, storyEdited)
+				storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
 			}
+			_ = storyEdited // used after dispatch below
 
 			// Promote hotfix stories to full stories on requeue.
 			// If a hotfix needed requeue, the "simple fix" assumption is wrong —
@@ -967,6 +968,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				} else {
 					d.logger.Info("✅ Successfully requeued and dispatched story %s to work queue (attempt %d/%d)",
 						requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts)
+
+					// Notify PM after successful requeue+dispatch
+					if requeueRequest.FailureInfo != nil {
+						d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, true, storyEdited)
+					}
 				}
 			} else {
 				d.logger.Error("❌ Story %s not in PENDING status after requeue", requeueRequest.StoryID)
