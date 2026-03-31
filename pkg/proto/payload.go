@@ -363,6 +363,8 @@ type StoryBlockedPayload struct {
 	StoryEdited    bool        `json:"story_edited"`    // true if architect modified the story before retry
 	ActionRequired bool        `json:"action_required"` // true if PM/user must act (e.g., abandoned story); false if informational only
 	Timestamp      string      `json:"timestamp"`
+	FailureID      string      `json:"failure_id,omitempty"`  // ID of the failure record (for cross-reference)
+	HoldReason     string      `json:"hold_reason,omitempty"` // Reason the story was placed on hold
 }
 
 // NewStoryBlockedPayload creates a payload for story blocked notifications.

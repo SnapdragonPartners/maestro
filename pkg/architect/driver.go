@@ -875,17 +875,18 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				continue
 			}
 
-			// Increment attempt count and store failure reason
-			story.AttemptCount++
+			// Increment attempt budget and store failure reason
+			attemptCount, attemptMax, _ := d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassAttempt)
+			story.AttemptCount++ // Keep legacy counter in sync
 			story.LastFailReason = requeueRequest.Reason
 			story.LastFailureInfo = requeueRequest.FailureInfo
 
-			d.logger.Info("🔄 Story %s attempt count: %d/%d (reason: %s)",
-				requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts, requeueRequest.Reason)
+			d.logger.Info("🔄 Story %s attempt budget: %d/%d (reason: %s)",
+				requeueRequest.StoryID, attemptCount, attemptMax, requeueRequest.Reason)
 
-			// Check retry limit - circuit breaker (before spending tokens on blocked requeue review)
-			if story.AttemptCount >= MaxStoryAttempts {
-				d.logger.Error("🚨 Story %s exceeded retry limit (%d attempts). Last failure: %s. Transitioning architect to ERROR.",
+			// Check retry limit - mark story as failed but architect continues
+			if d.queue.IsBudgetExhausted(requeueRequest.StoryID, BudgetClassAttempt) {
+				d.logger.Warn("🚨 Story %s abandoned after %d attempts (last failure: %s); architect continues",
 					requeueRequest.StoryID, story.AttemptCount, requeueRequest.Reason)
 
 				// Mark story as failed
@@ -893,29 +894,85 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
 				}
 
+				// Persist failed status to database
+				if d.persistenceChannel != nil {
+					persistence.PersistStory(story.ToPersistenceStory(), d.persistenceChannel)
+				}
+
+				// Create and persist a failure record for this terminal failure
+				d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+					requeueRequest.Reason, proto.FailureActionMarkFailed,
+					proto.FailureResolutionFailed, requeueRequest.FailureInfo)
+
 				// Notify PM that story is being abandoned
 				if requeueRequest.FailureInfo != nil {
 					d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, false, false)
 				}
 
-				// Transition architect to ERROR state
-				if transErr := d.TransitionTo(ctx, StateError, map[string]any{
-					"error":            fmt.Sprintf("story %s exceeded retry limit after %d attempts", requeueRequest.StoryID, story.AttemptCount),
-					"failed_story_id":  requeueRequest.StoryID,
-					"attempt_count":    story.AttemptCount,
-					"last_fail_reason": requeueRequest.Reason,
-				}); transErr != nil {
-					d.logger.Error("❌ Failed to transition to ERROR state: %v", transErr)
+				// Check if all stories are now terminal — if so, architect is done
+				if d.queue.AllStoriesTerminal() {
+					d.logger.Info("📋 All stories are terminal (done or failed). Transitioning to DONE.")
+					if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
+						d.logger.Error("❌ Failed to transition to DONE state: %v", transErr)
+					}
 				}
 				continue
 			}
 
-			// If this is a classified failure, give the architect a chance to review and act
+			// If this is a classified failure, give the architect a chance to review and act.
 			storyEdited := false
 			if requeueRequest.FailureInfo != nil {
-				storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
+				fi := requeueRequest.FailureInfo
+				isStoryInvalid := fi.Kind == proto.FailureKindStoryInvalid
+
+				// For story_invalid failures, check rewrite budget BEFORE attempting rewrite.
+				// If exhausted, mark failed immediately — don't let handleBlockedRequeue edit again.
+				if isStoryInvalid && d.queue.IsBudgetExhausted(requeueRequest.StoryID, BudgetClassRewrite) {
+					d.logger.Warn("🚨 Story %s rewrite budget exhausted (%d/%d); marking as failed",
+						requeueRequest.StoryID, MaxStoryRewrites, MaxStoryRewrites)
+					if err := story.SetStatus(StatusFailed); err != nil {
+						d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
+					}
+					if d.persistenceChannel != nil {
+						persistence.PersistStory(story.ToPersistenceStory(), d.persistenceChannel)
+					}
+					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+						requeueRequest.Reason, proto.FailureActionMarkFailed,
+						proto.FailureResolutionFailed, fi)
+					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
+					if d.queue.AllStoriesTerminal() {
+						d.logger.Info("📋 All stories are terminal. Transitioning to DONE.")
+						if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
+							d.logger.Error("❌ Failed to transition to DONE: %v", transErr)
+						}
+					}
+					continue
+				}
+
+				// Hold the story during architect review if it's a story-level issue
+				if isStoryInvalid {
+					if holdErr := d.queue.HoldStory(requeueRequest.StoryID, "story_redraft", "architect", fi.ID, fi.Explanation); holdErr != nil {
+						d.logger.Warn("Failed to hold story %s: %v", requeueRequest.StoryID, holdErr)
+					}
+				}
+
+				storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, fi)
+
+				// If story was rewritten, increment rewrite budget and persist a rewrite failure record
+				if storyEdited && isStoryInvalid {
+					_, _, _ = d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassRewrite)
+					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+						fi.Explanation, proto.FailureActionRewriteStory,
+						proto.FailureResolutionSucceeded, fi)
+				}
+
+				// If story was on hold, release it back to pending
+				if story.GetStatus() == StatusOnHold {
+					if _, releaseErr := d.queue.ReleaseHeldStories([]string{requeueRequest.StoryID}, "architect review complete"); releaseErr != nil {
+						d.logger.Warn("Failed to release story %s from hold: %v", requeueRequest.StoryID, releaseErr)
+					}
+				}
 			}
-			_ = storyEdited // used after dispatch below
 
 			// Promote hotfix stories to full stories on requeue.
 			// If a hotfix needed requeue, the "simple fix" assumption is wrong —
@@ -925,6 +982,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				story.IsHotfix = false
 				story.Express = false
 			}
+
+			// Persist a retry_attempt failure record for every requeue (for budget reconstruction on resume)
+			d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+				requeueRequest.Reason, proto.FailureActionRetryAttempt,
+				proto.FailureResolutionRunning, requeueRequest.FailureInfo)
 
 			// Change story status back to PENDING so it can be picked up again
 			if err := d.queue.UpdateStoryStatus(requeueRequest.StoryID, StatusPending); err != nil {
@@ -979,6 +1041,34 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// persistFailureRecord creates and persists a failure record for any requeue event.
+// This ensures budget reconstruction on resume has the data it needs.
+func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason string, action proto.FailureAction, resolutionStatus proto.FailureResolutionStatus, fi *proto.FailureInfo) {
+	if d.persistenceChannel == nil {
+		return
+	}
+
+	now := time.Now().UTC()
+	record := &persistence.FailureRecord{
+		ID:               proto.GenerateFailureID(),
+		CreatedAt:        now.Format(time.RFC3339),
+		UpdatedAt:        now.Format(time.RFC3339),
+		StoryID:          storyID,
+		AttemptNumber:    attemptNumber,
+		Kind:             "external",
+		Explanation:      reason,
+		Action:           string(action),
+		ResolutionStatus: string(resolutionStatus),
+	}
+	if fi != nil {
+		record.Kind = string(fi.Kind)
+		record.Source = string(fi.Source)
+		record.FailedState = fi.FailedState
+		record.ToolName = fi.ToolName
+	}
+	persistence.PersistFailureRecord(record, d.persistenceChannel)
 }
 
 // handleBlockedRequeue gives the architect LLM a chance to review and act on a classified failure

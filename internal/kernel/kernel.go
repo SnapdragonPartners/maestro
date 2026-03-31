@@ -603,6 +603,59 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			k.Logger.Error("Invalid data type for OpSaveAgentContext: expected *persistence.AgentContext")
 		}
 
+	case persistence.OpPersistFailure:
+		if record, ok := req.Data.(*persistence.FailureRecord); ok {
+			if err := ops.PersistFailure(record); err != nil {
+				k.Logger.Error("Failed to persist failure record: %v", err)
+			} else {
+				k.Logger.Info("Successfully persisted failure record: %s (story=%s, kind=%s)", record.ID, record.StoryID, record.Kind)
+			}
+		}
+
+	case persistence.OpUpdateFailureResolution:
+		if updateReq, ok := req.Data.(*persistence.UpdateFailureResolutionRequest); ok {
+			if err := ops.UpdateFailureResolution(updateReq); err != nil {
+				k.Logger.Error("Failed to update failure resolution %s: %v", updateReq.ID, err)
+			} else {
+				k.Logger.Info("Successfully updated failure resolution: %s -> %s", updateReq.ID, updateReq.ResolutionStatus)
+			}
+		}
+
+	case persistence.OpQueryFailuresByStory:
+		if storyID, ok := req.Data.(string); ok && req.Response != nil {
+			records, err := ops.QueryFailuresByStory(storyID)
+			if err != nil {
+				k.Logger.Error("Failed to query failures for story %s: %v", storyID, err)
+				req.Response <- err
+			} else {
+				k.Logger.Debug("Retrieved %d failures for story %s", len(records), storyID)
+				req.Response <- records
+			}
+		}
+
+	case persistence.OpQueryFailureByID:
+		if failureID, ok := req.Data.(string); ok && req.Response != nil {
+			record, err := ops.QueryFailureByID(failureID)
+			if err != nil {
+				k.Logger.Error("Failed to query failure %s: %v", failureID, err)
+				req.Response <- err
+			} else {
+				req.Response <- record
+			}
+		}
+
+	case persistence.OpCountFailuresByStoryAndAction:
+		if storyID, ok := req.Data.(string); ok && req.Response != nil {
+			counts, err := ops.CountFailuresByStoryAndAction(storyID)
+			if err != nil {
+				k.Logger.Error("Failed to count failures for story %s: %v", storyID, err)
+				req.Response <- err
+			} else {
+				k.Logger.Debug("Failure counts for story %s: %v", storyID, counts)
+				req.Response <- &persistence.CountFailuresByStoryAndActionResponse{Counts: counts}
+			}
+		}
+
 	default:
 		k.Logger.Error("Unknown persistence operation: %v", req.Operation)
 		if req.Response != nil {

@@ -821,6 +821,8 @@ func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory,
 		StoryEdited:    storyEdited,
 		ActionRequired: !willRetry, // Abandoned stories require user action; retries are informational
 		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		FailureID:      fi.ID,
+		HoldReason:     story.HoldReason,
 	}
 
 	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")

@@ -257,6 +257,14 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 
 			return StatePlanReview, false, nil
 
+		case tools.SignalBlocked:
+			// report_blocked was called - coder is blocked by infrastructure or invalid story
+			failureInfo := extractFailureInfoFromEffect(out.EffectData)
+			sm.SetStateData(KeyFailureInfo, failureInfo)
+			sm.SetStateData(KeyErrorMessage, fmt.Sprintf("%s: %s", failureInfo.Kind, failureInfo.Explanation))
+			c.logger.Error("🚫 Coder blocked during PLANNING (%s): %s", failureInfo.Kind, failureInfo.Explanation)
+			return proto.StateError, false, nil
+
 		default:
 			c.logger.Warn("Unknown signal from planning toolloop: %s", out.Signal)
 			return StatePlanning, false, nil

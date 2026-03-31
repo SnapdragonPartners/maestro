@@ -30,6 +30,8 @@ const (
 	StatusDone StoryStatus = "done"
 	// StatusFailed indicates the story failed after exhausting retry limit.
 	StatusFailed StoryStatus = "failed"
+	// StatusOnHold indicates the story is paused but recoverable (e.g., blocked by a failure under recovery).
+	StatusOnHold StoryStatus = "on_hold"
 )
 
 // ToDatabaseStatus converts StoryStatus to persistence package status string.
@@ -44,18 +46,35 @@ func (s StoryStatus) ToDatabaseStatus() string {
 		return persistence.StatusPlanning
 	case StatusCoding:
 		return persistence.StatusCoding
-	case StatusDone, StatusFailed:
-		// Both done and failed are terminal states - map to done for database
+	case StatusDone:
 		return persistence.StatusDone
+	case StatusFailed:
+		return persistence.StatusFailed
+	case StatusOnHold:
+		return persistence.StatusOnHold
 	default:
 		return persistence.StatusNew
 	}
 }
 
 // MaxStoryAttempts is the maximum number of times a story can be dispatched before
-// tripping the retry circuit breaker. After this many failures, the architect
-// transitions to ERROR state to prevent infinite requeue loops.
+// the retry budget is exhausted. Deprecated: use MaxAttemptRetries with budget methods.
 const MaxStoryAttempts = 3
+
+// Per-class budget limits for failure recovery.
+const (
+	// MaxAttemptRetries is the maximum number of attempt-level retries (same as legacy MaxStoryAttempts).
+	MaxAttemptRetries = 3
+	// MaxStoryRewrites is the maximum number of times a story can be rewritten by the architect.
+	MaxStoryRewrites = 2
+	// Phase 2: MaxRepairAttempts = 2, MaxHumanRoundTrips = 1.
+)
+
+// Budget class constants for IncrementBudget/IsBudgetExhausted.
+const (
+	BudgetClassAttempt = "attempt"
+	BudgetClassRewrite = "rewrite"
+)
 
 // QueuedStory embeds the unified Story type with architect-specific methods.
 type QueuedStory struct {
@@ -68,12 +87,15 @@ func (s *QueuedStory) GetStatus() StoryStatus {
 }
 
 // SetStatus sets the story status from StoryStatus enum.
-// Returns an error if attempting to modify a completed story's status.
+// Returns an error if attempting to modify a terminal story's status.
 func (s *QueuedStory) SetStatus(status StoryStatus) error {
-	// Protect completed stories from status changes
-	// Once done, work is merged and dependencies released - story is immutable
-	if s.GetStatus() == StatusDone {
+	current := s.GetStatus()
+	// Protect terminal stories from status changes
+	if current == StatusDone {
 		return fmt.Errorf("cannot change status of completed story %s from done to %s: completed stories are immutable", s.ID, status)
+	}
+	if current == StatusFailed {
+		return fmt.Errorf("cannot change status of failed story %s from failed to %s: failed stories are terminal", s.ID, status)
 	}
 	s.Status = string(status)
 	return nil
@@ -237,8 +259,27 @@ func (q *Queue) GetReadyStories() []*QueuedStory {
 
 // AllStoriesCompleted checks if all stories in the queue are completed.
 func (q *Queue) AllStoriesCompleted() bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
 	for _, story := range q.stories {
 		if story.GetStatus() != StatusDone {
+			return false
+		}
+	}
+	return true
+}
+
+// AllStoriesTerminal checks if all stories in the queue are in a terminal state (done or failed).
+// Used by the circuit breaker to detect "no more work to do" without implying success.
+// This is distinct from AllStoriesCompleted which only checks for success (StatusDone).
+func (q *Queue) AllStoriesTerminal() bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	for _, story := range q.stories {
+		status := story.GetStatus()
+		if status != StatusDone && status != StatusFailed {
 			return false
 		}
 	}
@@ -416,14 +457,13 @@ func (q *Queue) RequeueStory(storyID string) error {
 		return fmt.Errorf("story %s not found", storyID)
 	}
 
-	// Protect completed stories from requeue
-	// Once done, work is merged and dependencies released - cannot be undone
-	if story.GetStatus() == StatusDone {
-		return fmt.Errorf("cannot requeue completed story %s: work is already merged and dependencies have been released. Any additional work should be handled through a new story", storyID)
+	// Protect terminal stories from requeue
+	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed {
+		return fmt.Errorf("cannot requeue terminal story %s (status=%s)", storyID, story.GetStatus())
 	}
 
 	// Clear assignment, approved plan, and reset to pending
-	_ = story.SetStatus(StatusPending) // Already checked for Done above
+	_ = story.SetStatus(StatusPending) // Already checked for terminal above
 	story.AssignedAgent = ""
 	story.ApprovedPlan = "" // Clear approved plan for fresh start
 	story.StartedAt = nil
@@ -639,14 +679,16 @@ func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
 		return fmt.Errorf("story %s not found in queue", storyID)
 	}
 
-	// Protect completed stories from status changes
-	// Once done, work is merged and dependencies released - story is immutable
-	if story.GetStatus() == StatusDone {
+	// Protect terminal stories from status changes
+	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed {
 		q.mutex.Unlock()
-		return fmt.Errorf("cannot update status of completed story %s: work is already merged and dependencies have been released. Any additional work should be handled through a new story", storyID)
+		return fmt.Errorf("cannot update status of terminal story %s (status=%s)", storyID, story.GetStatus())
 	}
 
-	_ = story.SetStatus(status) // Already checked for Done above
+	if err := story.SetStatus(status); err != nil {
+		q.mutex.Unlock()
+		return err
+	}
 	story.LastUpdated = time.Now().UTC()
 	q.mutex.Unlock() // Release before persistence
 
@@ -823,6 +865,191 @@ func (q *Queue) checkAndNotifyReadyLocked() {
 			}
 		}
 	}
+}
+
+// IncrementBudget increments a per-class budget counter for a story.
+// Returns the new count and the max for that budget class.
+func (q *Queue) IncrementBudget(storyID, budgetClass string) (count, limit int, err error) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	story, exists := q.stories[storyID]
+	if !exists {
+		return 0, 0, fmt.Errorf("story %s not found", storyID)
+	}
+
+	switch budgetClass {
+	case BudgetClassAttempt:
+		story.AttemptRetryBudget++
+		return story.AttemptRetryBudget, MaxAttemptRetries, nil
+	case BudgetClassRewrite:
+		story.RewriteBudget++
+		return story.RewriteBudget, MaxStoryRewrites, nil
+	default:
+		return 0, 0, fmt.Errorf("unknown budget class: %s", budgetClass)
+	}
+}
+
+// IsBudgetExhausted checks if a per-class budget is exhausted for a story.
+func (q *Queue) IsBudgetExhausted(storyID, budgetClass string) bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	story, exists := q.stories[storyID]
+	if !exists {
+		return true // Story not found = cannot retry
+	}
+
+	switch budgetClass {
+	case BudgetClassAttempt:
+		return story.AttemptRetryBudget >= MaxAttemptRetries
+	case BudgetClassRewrite:
+		return story.RewriteBudget >= MaxStoryRewrites
+	default:
+		return true // Unknown budget class = exhausted
+	}
+}
+
+// ReconstructBudgetsFromFailures rebuilds in-memory budget counters from failure counts.
+// Called on resume to restore budgets from the durable failures table.
+func (q *Queue) ReconstructBudgetsFromFailures(storyID string, failureCounts map[string]int) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	story, exists := q.stories[storyID]
+	if !exists {
+		return
+	}
+
+	if count, ok := failureCounts[string(proto.FailureActionRetryAttempt)]; ok {
+		story.AttemptRetryBudget = count
+	}
+	if count, ok := failureCounts[string(proto.FailureActionRewriteStory)]; ok {
+		story.RewriteBudget = count
+	}
+	// Also count mark_failed as attempt retries (they represent exhausted attempts)
+	if count, ok := failureCounts[string(proto.FailureActionMarkFailed)]; ok {
+		story.AttemptRetryBudget += count
+	}
+}
+
+// GetHeldStories returns all stories currently on hold.
+func (q *Queue) GetHeldStories() []*QueuedStory {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	var held []*QueuedStory
+	for _, story := range q.stories {
+		if story.GetStatus() == StatusOnHold {
+			held = append(held, story)
+		}
+	}
+
+	sort.Slice(held, func(i, j int) bool {
+		return held[i].ID < held[j].ID
+	})
+
+	return held
+}
+
+// HoldStory places a story on hold with the given metadata.
+// Clears AssignedAgent so the coder slot is freed. Persists the updated story to DB.
+func (q *Queue) HoldStory(storyID, reason, owner, failureID, note string) error {
+	q.mutex.Lock()
+	story, exists := q.stories[storyID]
+	if !exists {
+		q.mutex.Unlock()
+		return fmt.Errorf("story %s not found in queue", storyID)
+	}
+
+	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed {
+		q.mutex.Unlock()
+		return fmt.Errorf("cannot hold terminal story %s (status=%s)", storyID, story.GetStatus())
+	}
+
+	_ = story.SetStatus(StatusOnHold)
+	now := time.Now().UTC()
+	story.HoldReason = reason
+	story.HoldSince = &now
+	story.HoldOwner = owner
+	story.HoldNote = note
+	story.BlockedByFailureID = failureID
+	story.AssignedAgent = ""
+	story.LastUpdated = now
+	q.mutex.Unlock()
+
+	// Persist to database
+	if q.persistenceChannel != nil {
+		persistence.PersistStory(story.ToPersistenceStory(), q.persistenceChannel)
+	}
+
+	return nil
+}
+
+// ReleaseHeldStories releases the specified stories from on_hold back to pending.
+// Clears all hold metadata, AssignedAgent, StartedAt, and ApprovedPlan for a fresh start.
+// Returns the IDs of stories that were actually released.
+func (q *Queue) ReleaseHeldStories(storyIDs []string, _ string) ([]string, error) {
+	q.mutex.Lock()
+	released := make([]string, 0, len(storyIDs))
+	for _, storyID := range storyIDs {
+		story, exists := q.stories[storyID]
+		if !exists {
+			continue
+		}
+		if story.GetStatus() != StatusOnHold {
+			continue
+		}
+
+		_ = story.SetStatus(StatusPending)
+		story.HoldReason = ""
+		story.HoldSince = nil
+		story.HoldOwner = ""
+		story.HoldNote = ""
+		story.BlockedByFailureID = ""
+		story.AssignedAgent = ""
+		story.StartedAt = nil
+		story.ApprovedPlan = ""
+		story.LastUpdated = time.Now().UTC()
+		released = append(released, storyID)
+	}
+
+	// Collect persistence snapshots while still under lock
+	var toPersist []*persistence.Story
+	if q.persistenceChannel != nil {
+		for _, storyID := range released {
+			if story, exists := q.stories[storyID]; exists {
+				toPersist = append(toPersist, story.ToPersistenceStory())
+			}
+		}
+	}
+	q.mutex.Unlock()
+
+	// Persist outside the lock
+	for _, dbStory := range toPersist {
+		persistence.PersistStory(dbStory, q.persistenceChannel)
+	}
+
+	return released, nil
+}
+
+// ReleaseHeldStoriesByFailure releases all stories held by a specific failure ID.
+// Returns the IDs of stories that were released.
+func (q *Queue) ReleaseHeldStoriesByFailure(failureID, cause string) ([]string, error) {
+	q.mutex.RLock()
+	var matchingIDs []string
+	for _, story := range q.stories {
+		if story.GetStatus() == StatusOnHold && story.BlockedByFailureID == failureID {
+			matchingIDs = append(matchingIDs, story.ID)
+		}
+	}
+	q.mutex.RUnlock()
+
+	if len(matchingIDs) == 0 {
+		return nil, nil
+	}
+
+	return q.ReleaseHeldStories(matchingIDs, cause)
 }
 
 // areDependenciesSatisfiedLocked checks if all dependencies of a story are satisfied.
