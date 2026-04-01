@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phase 1 implemented** (2026-03-31). **Phase 2 implemented** (2026-03-31). Phase 2.5 and 3 are future work.
+**Phase 1 implemented** (2026-03-31). **Phase 2 implemented** (2026-03-31). **Phase 2.5 implemented** (2026-03-31). Phase 3 is future work.
 
 This document defines the desired end state for how Maestro handles blocked work, recovery, human clarification, and failure analytics. It is intentionally architecture-first. It does not prescribe an implementation sequence.
 
@@ -1187,11 +1187,23 @@ All 10 Phase 2 tasks are complete:
 - Test failure classification: `classifyTestFailure()` in `testing.go` pattern-matches test output for environment patterns (disk, permissions, git corruption, docker) and prerequisite patterns (auth, SSL, API keys, rate limits). Matched failures transition to ERROR for architect routing instead of looping back to CODING.
 - TESTING state now allows ERROR transitions (added to valid transitions map in `coder_fsm.go`).
 
-**Phase 2.5 gaps (to be implemented on same branch before PR):**
+### Phase 2.5 Implementation Status
 
-- PM clarification round-trip: structured request from architect to PM to relay to human for prerequisite/system failures
-- Manual release mechanism: human-triggered release of held stories after external repair
-- System repair completion signal: notification path for human to signal that system-scoped repair is complete, triggering `ResumeDispatch()` and release of held stories
+All 3 Phase 2.5 tasks are complete:
+
+| Task | Description | Status |
+| --- | --- | --- |
+| a | PM clarification round-trip for prerequisite/system failures | Done |
+| b | Manual release mechanism (`release_held_stories` tool) | Done |
+| c | System repair completion signal (repair_complete REQUEST) | Done |
+
+**Key decisions made during Phase 2.5:**
+
+- `release_held_stories` is a PM tool that returns a `SignalReleaseHeld` ProcessEffect. PM's working loop converts this into a `repair_complete` REQUEST message dispatched to the architect via the standard dispatcher — PM has no direct architect communication path.
+- `RepairCompletePayload` carries `failure_id` (optional, for targeted release) and `reason`. Architect's `handleRepairComplete` releases by failure ID if provided, otherwise releases all held stories.
+- `ClarificationRequestPayload` includes full context (failure ID, story ID, title, failure kind/scope, explanation, question, held story IDs) so PM can relay a complete picture to the human.
+- PM receives clarification requests via `AWAIT_USER` payload routing — the existing `handleClarificationRequest` builds a structured context message for the PM LLM to relay to the human.
+- Architect's `handleRepairComplete` both releases held stories and resumes dispatch (if suppressed), then transitions to DISPATCHING to pick up released work.
 
 ### Phase 2: Improve routing fidelity
 

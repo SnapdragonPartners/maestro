@@ -79,6 +79,7 @@ const (
 	SignalSpecPreview       = "SPEC_PREVIEW"        // spec_submit tool ready for user review
 	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE"  // bootstrap tool completed configuration
 	SignalAwaitUser         = "AWAIT_USER"          // chat_ask_user tool waiting for human response
+	SignalReleaseHeld       = "RELEASE_HELD"        // release_held_stories tool: signal architect to release held stories
 	SignalMaestroMdComplete = "MAESTRO_MD_COMPLETE" // maestro_md_submit tool completed
 
 	// Architect signals.

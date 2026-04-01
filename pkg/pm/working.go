@@ -443,6 +443,26 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
 				return tools.SignalAwaitUser, nil
 
+			case tools.SignalReleaseHeld:
+				// release_held_stories was called — send repair_complete to architect
+				d.logger.Info("🔧 Release held stories signal received, sending repair_complete to architect")
+				effectData, _ := utils.SafeAssert[map[string]any](out.EffectData)
+				reason := utils.GetMapFieldOr[string](effectData, "reason", "manual release")
+				failureID := utils.GetMapFieldOr[string](effectData, "failure_id", "")
+
+				repairMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, d.GetAgentID(), "architect-001")
+				repairMsg.SetTypedPayload(proto.NewRepairCompletePayload(&proto.RepairCompletePayload{
+					FailureID: failureID,
+					Reason:    reason,
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+				}))
+				if dispErr := d.dispatcher.DispatchMessage(repairMsg); dispErr != nil {
+					d.logger.Error("❌ Failed to send repair_complete to architect: %v", dispErr)
+				} else {
+					d.logger.Info("✅ Sent repair_complete to architect (reason: %s)", reason)
+				}
+				return "", nil
+
 			default:
 				return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 			}

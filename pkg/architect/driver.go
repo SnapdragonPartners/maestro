@@ -1044,8 +1044,14 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.logger.Info("🔧 Environment failure for story %s — retrying with fresh workspace", requeueRequest.StoryID)
 
 				case fi.Kind == proto.FailureKindPrerequisite:
-					// External dependency issue — retry, PM is already notified below.
-					d.logger.Info("🔑 Prerequisite failure for story %s — retrying (PM notified)", requeueRequest.StoryID)
+					// External dependency issue — ask PM to clarify with human, then retry.
+					question := fmt.Sprintf("A prerequisite is missing or invalid: %s. Please check and resolve.", fi.Explanation)
+					var heldIDs []string
+					if fi.ResolvedScope == proto.FailureScopeEpoch || fi.ResolvedScope == proto.FailureScopeSystem {
+						heldIDs = d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
+					}
+					d.notifyPMOfClarificationNeeded(ctx, story, fi, question, heldIDs)
+					d.logger.Info("🔑 Prerequisite failure for story %s — clarification requested from PM", requeueRequest.StoryID)
 
 				default:
 					// Transient or unclassified — just retry

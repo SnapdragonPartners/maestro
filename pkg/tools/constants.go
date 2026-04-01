@@ -29,8 +29,9 @@ const (
 	// Compose tools.
 	ToolComposeUp = "compose_up"
 
-	// Failure reporting tools.
-	ToolReportBlocked = "report_blocked"
+	// Failure reporting and recovery tools.
+	ToolReportBlocked      = "report_blocked"
+	ToolReleaseHeldStories = "release_held_stories"
 
 	// Chat tools.
 	ToolChatPost = "chat_post"
@@ -188,6 +189,7 @@ var (
 		ToolSpecSubmit,
 		ToolWebSearch,
 		ToolWebFetch,
+		ToolReleaseHeldStories,
 	}
 
 	// PMMaestroMdTools - tools for MAESTRO.md generation phase.

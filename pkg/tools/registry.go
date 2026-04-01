@@ -896,11 +896,16 @@ func init() {
 		InputSchema: getAddMaintenanceItemSchema(),
 	})
 
-	// Register failure reporting tools
+	// Register failure reporting and recovery tools
 	Register(ToolReportBlocked, createReportBlockedTool, &ToolMeta{
 		Name:        ToolReportBlocked,
 		Description: "Report that you are blocked and cannot proceed (story_invalid or external infrastructure issue)",
 		InputSchema: getReportBlockedSchema(),
+	})
+	Register(ToolReleaseHeldStories, createReleaseHeldStoriesTool, &ToolMeta{
+		Name:        ToolReleaseHeldStories,
+		Description: "Release held stories after a system repair or prerequisite issue is resolved",
+		InputSchema: getReleaseHeldStoriesSchema(),
 	})
 
 	// Register research tools

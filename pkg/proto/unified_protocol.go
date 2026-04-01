@@ -29,6 +29,9 @@ const (
 
 	// RequestKindHotfix represents a hotfix request from PM.
 	RequestKindHotfix RequestKind = "HOTFIX"
+
+	// RequestKindRepairComplete signals that a system repair has been completed.
+	RequestKindRepairComplete RequestKind = "REPAIR_COMPLETE"
 )
 
 // ResponseKind represents the type of response being sent in the unified protocol.
@@ -214,6 +217,8 @@ func GetRequestKind(msg *AgentMsg) (RequestKind, bool) {
 		return RequestKindRequeue, true
 	case PayloadKindHotfixRequest:
 		return RequestKindHotfix, true
+	case PayloadKindRepairComplete:
+		return RequestKindRepairComplete, true
 	default:
 		return "", false
 	}
