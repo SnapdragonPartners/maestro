@@ -1072,3 +1072,16 @@ func (q *Queue) areDependenciesSatisfiedLocked(storyID string) bool {
 	}
 	return true
 }
+
+// UpdateStoryFailureMetadata atomically updates a story's failure-related fields under the write lock.
+func (q *Queue) UpdateStoryFailureMetadata(storyID, reason string, fi *proto.FailureInfo) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	story, exists := q.stories[storyID]
+	if !exists {
+		return
+	}
+	story.AttemptCount++
+	story.LastFailReason = reason
+	story.LastFailureInfo = fi
+}

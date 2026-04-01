@@ -1134,12 +1134,13 @@ Files:
 - **Modify** `pkg/architect/request.go` — `notifyPMOfBlockedStory()` includes failure ID and hold reason.
 - **Modify** `pkg/proto/payload.go` — add `FailureID` and `HoldReason` to `StoryBlockedPayload`.
 
-#### Task 7: Expand `report_blocked` Availability
+#### Task 7: Clarify `report_blocked` Availability
+
+`report_blocked` is already available in: PLANNING (AppPlanningTools, DevOpsPlanningTools) and CODING (AppCodingTools, DevOpsCodingTools). Adding `report_blocked` to TESTING is deferred to Phase 2 because TESTING runs procedurally (no toolloop). Not needed in: PLAN_REVIEW, BUDGET_REVIEW, AWAIT_MERGE, QUESTION (passive/waiting states).
 
 Files:
-- **Modify** `pkg/tools/constants.go` — add `ToolReportBlocked` to `TestingTools`.
-
-Already available in: PLANNING (AppPlanningTools, DevOpsPlanningTools), CODING (AppCodingTools, DevOpsCodingTools). Needed in: TESTING. Not needed in: PLAN_REVIEW, BUDGET_REVIEW, AWAIT_MERGE, QUESTION (passive/waiting states).
+- **Modify** `pkg/tools/constants.go` — add comment documenting Phase 2 deferral for TESTING.
+- **Modify** `pkg/coder/planning.go` — add `SignalBlocked` case to PLANNING outcome switch (was missing, fell to "unknown signal" default).
 
 ### Orchestrator Repair (Phase 1 Definition)
 

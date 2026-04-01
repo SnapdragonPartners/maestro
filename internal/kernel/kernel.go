@@ -610,6 +610,8 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			} else {
 				k.Logger.Info("Successfully persisted failure record: %s (story=%s, kind=%s)", record.ID, record.StoryID, record.Kind)
 			}
+		} else {
+			k.Logger.Error("Invalid data type for %s operation", persistence.OpPersistFailure)
 		}
 
 	case persistence.OpUpdateFailureResolution:
@@ -619,6 +621,8 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			} else {
 				k.Logger.Info("Successfully updated failure resolution: %s -> %s", updateReq.ID, updateReq.ResolutionStatus)
 			}
+		} else {
+			k.Logger.Error("Invalid data type for %s operation", persistence.OpUpdateFailureResolution)
 		}
 
 	case persistence.OpQueryFailuresByStory:
@@ -631,6 +635,11 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 				k.Logger.Debug("Retrieved %d failures for story %s", len(records), storyID)
 				req.Response <- records
 			}
+		} else {
+			k.Logger.Error("Invalid data type for %s operation", persistence.OpQueryFailuresByStory)
+			if req.Response != nil {
+				req.Response <- fmt.Errorf("invalid data type for %s operation", persistence.OpQueryFailuresByStory)
+			}
 		}
 
 	case persistence.OpQueryFailureByID:
@@ -641,6 +650,11 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 				req.Response <- err
 			} else {
 				req.Response <- record
+			}
+		} else {
+			k.Logger.Error("Invalid data type for %s operation", persistence.OpQueryFailureByID)
+			if req.Response != nil {
+				req.Response <- fmt.Errorf("invalid data type for %s operation", persistence.OpQueryFailureByID)
 			}
 		}
 
@@ -653,6 +667,11 @@ func (k *Kernel) processPersistenceRequest(req *persistence.Request, ops *persis
 			} else {
 				k.Logger.Debug("Failure counts for story %s: %v", storyID, counts)
 				req.Response <- &persistence.CountFailuresByStoryAndActionResponse{Counts: counts}
+			}
+		} else {
+			k.Logger.Error("Invalid data type for %s operation", persistence.OpCountFailuresByStoryAndAction)
+			if req.Response != nil {
+				req.Response <- fmt.Errorf("invalid data type for %s operation", persistence.OpCountFailuresByStoryAndAction)
 			}
 		}
 

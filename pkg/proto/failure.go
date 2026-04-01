@@ -176,11 +176,15 @@ type FailureInfo struct {
 // NewFailureInfo creates a FailureInfo with the v1 parameters.
 // This is the backward-compatible constructor used by report_blocked and auto-classifier.
 func NewFailureInfo(kind FailureKind, explanation, failedState, toolName string) FailureInfo {
+	now := time.Now().UTC()
 	return FailureInfo{
+		ID:          GenerateFailureID(),
 		Kind:        kind,
 		Explanation: explanation,
 		FailedState: failedState,
 		ToolName:    toolName,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 

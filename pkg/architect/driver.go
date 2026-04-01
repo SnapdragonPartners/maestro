@@ -877,9 +877,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 
 			// Increment attempt budget and store failure reason
 			attemptCount, attemptMax, _ := d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassAttempt)
-			story.AttemptCount++ // Keep legacy counter in sync
-			story.LastFailReason = requeueRequest.Reason
-			story.LastFailureInfo = requeueRequest.FailureInfo
+			d.queue.UpdateStoryFailureMetadata(requeueRequest.StoryID, requeueRequest.Reason, requeueRequest.FailureInfo)
 
 			d.logger.Info("🔄 Story %s attempt budget: %d/%d (reason: %s)",
 				requeueRequest.StoryID, attemptCount, attemptMax, requeueRequest.Reason)
@@ -1050,11 +1048,14 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 		return
 	}
 
+	// sqliteTimestampFormat matches SQLite's strftime('%Y-%m-%dT%H:%M:%fZ','now') with fractional seconds.
+	const sqliteTimestampFormat = "2006-01-02T15:04:05.000000Z"
+
 	now := time.Now().UTC()
 	record := &persistence.FailureRecord{
 		ID:               proto.GenerateFailureID(),
-		CreatedAt:        now.Format(time.RFC3339),
-		UpdatedAt:        now.Format(time.RFC3339),
+		CreatedAt:        now.Format(sqliteTimestampFormat),
+		UpdatedAt:        now.Format(sqliteTimestampFormat),
 		StoryID:          storyID,
 		AttemptNumber:    attemptNumber,
 		Kind:             "external",

@@ -51,7 +51,7 @@ func (ops *DatabaseOperations) UpdateFailureResolution(req *UpdateFailureResolut
 		UPDATE failures SET
 			resolution_status = ?,
 			resolution_outcome = ?,
-			updated_at = datetime('now')
+			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 		WHERE id = ? AND session_id = ?
 	`
 
