@@ -24,12 +24,13 @@ All 7 Phase 1 tasks are complete:
 
 **Key decisions made during implementation:**
 
-- `report_blocked` was NOT added to TESTING tools because TESTING runs procedurally (no toolloop). Deferred to Phase 2 when TESTING may gain a toolloop.
+- `report_blocked` was NOT added to TESTING tools because TESTING runs procedurally (no toolloop). Phase 2 will classify test failures procedurally rather than adding a toolloop to TESTING.
 - `report_blocked` signal handling was added to PLANNING state (`pkg/coder/planning.go`) — was previously missing from the outcome switch.
 - Failure records are persisted for ALL requeue events (retry_attempt, rewrite_story, mark_failed), not just terminal events. This enables budget reconstruction on resume.
 - Budget exhaustion for rewrites is checked BEFORE `handleBlockedRequeue()` runs, preventing infinite bypass via successful edits.
 - Hold metadata (reason, since, owner, note, blocked_by_failure_id) is persisted to DB and loaded on resume via COALESCE wrappers for NULL safety.
 - `AllStoriesCompleted()` remains success-only (drives PM "all work done" notifications). `AllStoriesTerminal()` (done OR failed) drives the circuit breaker.
+- Budget reconstruction is wired into `RestoreState()` — queries `CountFailuresByStoryAndActionForSession()` for each story and calls `ReconstructBudgetsFromFailures()` to restore in-memory counters from the durable failures table.
 
 ## Summary
 
@@ -1158,17 +1159,86 @@ Phase 1 does not build new repair sequences. It wires hold/release so system fai
 
 ### Phase 2: Improve routing fidelity
 
-- split `external` into `environment` and `prerequisite` in `report_blocked` and auto-classifier
-- add `scope_guess` param to `report_blocked`; triage step in architect resolves scope
-- mechanical scope widening: auto-widen when same kind recurs across multiple stories in window
-- dispatch suppression flag during active `system` repair
-- transient-to-failure adapter records for unified analytics
-- wire `repair` and `human_roundtrip` budget classes into control flow
-- add `report_blocked` to TESTING state (requires TESTING to gain a toolloop or equivalent signal path)
+Phase 2 makes the recovery routing matrix functional: failures get classified into the right kind and scope, different kinds follow different recovery paths, and the system can suppress dispatch during system-wide repair.
+
+#### Task 1: Split `external` into `environment` + `prerequisite`
+
+Split `FailureKindExternal` in both `report_blocked` tool params and the auto-classifier (`classifyCommitFailure`). The constants already exist in `pkg/proto/failure.go` but are not yet exposed. `report_blocked` enum becomes `[story_invalid, environment, prerequisite]`. Auto-classifier splits infrastructure patterns into environment (git corruption, disk, permissions) and prerequisite (auth, credentials, host resolution). Deprecate `FailureKindExternal` with backward-compat mapping.
+
+Files: `pkg/tools/blocked_tool.go`, `pkg/tools/build_tools.go`, `pkg/proto/failure.go`
+
+#### Task 2: Add `scope_guess` to `report_blocked`
+
+Add optional `scope_guess` parameter (`attempt|story|epoch|system`) to `report_blocked`. Coders hint at blast radius; architect resolves during triage. Auto-classifier sets mechanical defaults: `environment` → `attempt`, `prerequisite` → `attempt`.
+
+Files: `pkg/tools/blocked_tool.go`, `pkg/tools/build_tools.go`
+
+#### Task 3: Architect triage step — resolve scope
+
+When architect receives a requeue with FailureInfo, resolve `ResolvedScope` and `ResolvedKind` before routing recovery. Phase 2 uses mechanical defaults: `story_invalid` → `story`, `environment` → `attempt`, `prerequisite` → `attempt`. Persist resolved fields in failure record. Route recovery based on resolved scope: `attempt` → retry, `story` → rewrite or hold, `epoch` → multi-story hold (Task 5), `system` → dispatch suppression (Task 7).
+
+Files: `pkg/architect/driver.go`, `pkg/persistence/failure_ops.go`
+
+#### Task 4: Mechanical scope widening
+
+Auto-escalate scope when the same failure kind recurs across multiple stories in a configurable time window (default: 3 stories in 30 minutes). In-memory ring buffer of recent failures, pruned by time window. Widening: `attempt` → `story` → `epoch` → `system`. Add `idx_failures_kind_created` index for cross-session queries if needed later.
+
+Files: `pkg/architect/scope_widening.go` (new), `pkg/architect/driver.go`, `pkg/persistence/schema.go`
+
+#### Task 5: Epoch-scoped hold (multi-story)
+
+When resolved scope is `epoch`, identify all stories in the same spec that are not done/failed. Hold them with `hold_reason=epoch_rewrite` linking to the same failure ID. Terminate active coders on affected stories. Run architect rewrite for all affected stories. Release after rewrite. Populate `AffectedStoryIDs` in the failure record.
+
+Files: `pkg/architect/driver.go`, `pkg/architect/queue.go`, `pkg/dispatch/dispatcher.go`
+
+#### Task 6: Kind-specific recovery routing
+
+Wire `environment` and `prerequisite` failures into different recovery paths from `story_invalid`. Environment + attempt → existing retry. Environment + story/system → hold with `environment_repair`. Prerequisite + story → hold with `awaiting_human`, send structured clarification request to PM. Add `ClarificationRequestPayload` for PM to relay questions to the human.
+
+Files: `pkg/architect/driver.go`, `pkg/architect/request.go`, `pkg/proto/payload.go`
+
+#### Task 7: Dispatch suppression during system repair
+
+When resolved scope is `system`, suppress new story dispatch. Add `dispatchSuppressed` flag + `SuppressDispatch()`/`ResumeDispatch()` on queue. `handleDispatching()` checks flag before dispatching. Hold all non-terminal stories. For Phase 2 repair is manual (human resolves, then architect releases). Add suppression timeout (2 hours) that escalates to PM.
+
+Files: `pkg/architect/queue.go`, `pkg/architect/dispatching.go`, `pkg/architect/driver.go`, `pkg/architect/monitoring.go`
+
+#### Task 8: Wire repair + human budget classes
+
+Uncomment `MaxRepairAttempts = 2`, `MaxHumanRoundTrips = 1`. Add `BudgetClassRepair` and `BudgetClassHuman` constants. Extend `IncrementBudget()`, `IsBudgetExhausted()`, `ReconstructBudgetsFromFailures()` for new classes. In `routeRecovery()`: check repair budget before environment repair (exhausted → escalate to human); check human budget before PM clarification (exhausted → mark failed).
+
+Files: `pkg/architect/queue.go`, `pkg/persistence/models.go`, `pkg/architect/driver.go`
+
+#### Task 9: Transient failure adapter
+
+Create synthetic failure records from SUSPEND events. In `EnterSuspend()`, create a FailureInfo with `kind=transient`, `source=orchestrator`, `scope=attempt`. Pass in state metadata. Supervisor persists failure record on SUSPEND, updates to `succeeded` on resume or `failed` on timeout. Enables unified analytics across all failure types.
+
+Files: `pkg/agent/internal/core/machine.go`, `internal/supervisor/supervisor.go`, `pkg/proto/failure.go`
+
+#### Task 10: Classify test failures as blocked reports
+
+TESTING runs procedurally (no toolloop), so `report_blocked` can't fire there. Instead, classify test failures procedurally: pattern-match test output for infrastructure issues (`cannot find package`, `permission denied`, `connection refused`, `executable not found`) → create FailureInfo with `kind=environment`, transition to ERROR (triggers existing requeue path). Test assertion failures continue returning to CODING as today. Container build/boot failures in DevOps testing get `kind=environment` + `scope=attempt`.
+
+Files: `pkg/coder/testing.go`
+
+#### Task dependency graph
+
+```
+Task 1 (kind split)  ──────────┐
+Task 2 (scope_guess param)  ───┼── Task 3 (architect triage) ──┐
+                               │                                ├── Task 5 (epoch hold)
+                               │                                ├── Task 6 (kind routing)
+Task 4 (scope widening)  ──────┘                                ├── Task 7 (dispatch suppression)
+                                                                └── Task 8 (repair+human budgets)
+
+Task 9 (transient adapter) ── standalone
+Task 10 (TESTING failures) ── standalone (depends on Task 1 for kind values)
+```
 
 ### Phase 3: Add richer analytics and smarter triage
 
-- normalized failure signatures (hash of kind+tool+state+explanation family)
-- workspace and environment fingerprints
-- richer evidence capture with sanitization pipeline
-- architect-led LLM impact analysis for epoch-scoped failures
+- Normalized failure signatures (hash of kind+tool+state+explanation family) for grouping recurring failures with different error text
+- Workspace and environment fingerprints to distinguish same-cause vs different-context failures
+- Richer evidence capture with sanitization pipeline (targeted snippets, secret redaction, size budgets)
+- Architect-led LLM impact analysis for epoch-scoped failures (replaces mechanical scope widening with reasoning)
+- Full toolloop in TESTING state (replaces procedural classification from Phase 2 Task 10)
