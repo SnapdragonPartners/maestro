@@ -128,6 +128,20 @@ func PersistFailureRecord(record *FailureRecord, persistenceChannel chan<- *Requ
 	}
 }
 
+// UpdateFailureResolutionAsync sends a failure resolution update to the persistence worker.
+// This is a fire-and-forget operation.
+func UpdateFailureResolutionAsync(req *UpdateFailureResolutionRequest, persistenceChannel chan<- *Request) {
+	if persistenceChannel == nil || req == nil {
+		return
+	}
+
+	persistenceChannel <- &Request{
+		Operation: OpUpdateFailureResolution,
+		Data:      req,
+		Response:  nil, // Fire-and-forget
+	}
+}
+
 // PersistMaintenanceItem persists a maintenance item logged during architect review.
 func PersistMaintenanceItem(item *MaintenanceItemRecord, persistenceChannel chan<- *Request) {
 	if persistenceChannel == nil || item == nil {

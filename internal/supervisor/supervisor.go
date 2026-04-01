@@ -18,6 +18,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/github"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
 )
 
@@ -146,10 +147,11 @@ type Supervisor struct {
 	running bool
 
 	// SUSPEND state support
-	restoreCh       chan struct{} // Broadcast channel for service recovery
-	suspendedAgents map[string]bool
-	suspendMu       sync.Mutex
-	pollCancel      context.CancelFunc // Cancel function for API polling goroutine
+	restoreCh        chan struct{} // Broadcast channel for service recovery
+	suspendedAgents  map[string]bool
+	suspendFailureID map[string]string // agentID → failure record ID for resolution tracking
+	suspendMu        sync.Mutex
+	pollCancel       context.CancelFunc // Cancel function for API polling goroutine
 
 	// Coding watchdog: between-turns activity tracking
 	lastActivity map[string]time.Time // agentID → last toolloop iteration start
@@ -179,7 +181,8 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		AgentContexts:   make(map[string]context.CancelFunc),
 		running:         false,
 		// SUSPEND support - channel is created lazily when first agent suspends
-		suspendedAgents: make(map[string]bool),
+		suspendedAgents:  make(map[string]bool),
+		suspendFailureID: make(map[string]string),
 		// Coding watchdog
 		lastActivity: make(map[string]time.Time),
 	}
@@ -300,12 +303,12 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 
 	// Handle SUSPEND state transitions
 	if notification.ToState == proto.StateSuspend {
-		s.handleAgentSuspend(ctx, notification.AgentID)
+		s.handleAgentSuspend(ctx, notification)
 	}
 
 	// Handle agent leaving SUSPEND state (recovery)
 	if notification.FromState == proto.StateSuspend && notification.ToState != proto.StateSuspend {
-		s.handleAgentResume(notification.AgentID)
+		s.handleAgentResume(notification.AgentID, notification.ToState)
 	}
 }
 
@@ -506,13 +509,46 @@ func (s *Supervisor) GetRestoreChannel() <-chan struct{} {
 }
 
 // handleAgentSuspend is called when an agent enters SUSPEND state.
-// Tracks suspended agents and starts API health polling if not already running.
-func (s *Supervisor) handleAgentSuspend(ctx context.Context, agentID string) {
+// Tracks suspended agents, persists a transient failure record, and starts API health polling.
+func (s *Supervisor) handleAgentSuspend(ctx context.Context, notification *proto.StateChangeNotification) {
+	agentID := notification.AgentID
+
 	s.suspendMu.Lock()
 	defer s.suspendMu.Unlock()
 
 	s.Logger.Info("⏸️  Agent %s entered SUSPEND state", agentID)
 	s.suspendedAgents[agentID] = true
+
+	// Persist a transient failure record for analytics tracking
+	if s.Kernel.PersistenceChannel != nil && notification.Metadata != nil {
+		if fi, ok := notification.Metadata[proto.KeyFailureInfo].(proto.FailureInfo); ok {
+			const sqliteTimestampFormat = "2006-01-02T15:04:05.000000Z"
+			now := time.Now().UTC()
+			failureID := proto.GenerateFailureID()
+
+			// Get story ID from the agent's lease
+			storyID := s.Kernel.Dispatcher.GetLease(agentID)
+
+			record := &persistence.FailureRecord{
+				ID:               failureID,
+				CreatedAt:        now.Format(sqliteTimestampFormat),
+				UpdatedAt:        now.Format(sqliteTimestampFormat),
+				StoryID:          storyID,
+				Source:           string(fi.Source),
+				ReporterAgentID:  agentID,
+				FailedState:      fi.FailedState,
+				Kind:             string(fi.Kind),
+				ScopeGuess:       string(fi.ScopeGuess),
+				Explanation:      fi.Explanation,
+				Action:           string(proto.FailureActionRetryAttempt),
+				ResolutionStatus: string(proto.FailureResolutionRunning),
+			}
+
+			persistence.PersistFailureRecord(record, s.Kernel.PersistenceChannel)
+			s.suspendFailureID[agentID] = failureID
+			s.Logger.Info("📝 Persisted transient failure record %s for agent %s", failureID, agentID)
+		}
+	}
 
 	// Start API polling if this is the first suspended agent
 	if len(s.suspendedAgents) == 1 && s.pollCancel == nil {
@@ -524,13 +560,27 @@ func (s *Supervisor) handleAgentSuspend(ctx context.Context, agentID string) {
 }
 
 // handleAgentResume is called when an agent leaves SUSPEND state.
-// Removes from tracking and stops polling if no more suspended agents.
-func (s *Supervisor) handleAgentResume(agentID string) {
+// Removes from tracking, updates the failure record, and stops polling if no more suspended agents.
+func (s *Supervisor) handleAgentResume(agentID string, toState proto.State) {
 	s.suspendMu.Lock()
 	defer s.suspendMu.Unlock()
 
-	s.Logger.Info("▶️  Agent %s left SUSPEND state", agentID)
+	s.Logger.Info("▶️  Agent %s left SUSPEND state → %s", agentID, toState)
 	delete(s.suspendedAgents, agentID)
+
+	// Update the transient failure record based on outcome
+	if failureID, ok := s.suspendFailureID[agentID]; ok && s.Kernel.PersistenceChannel != nil {
+		status := proto.FailureResolutionSucceeded
+		if toState == proto.StateError {
+			status = proto.FailureResolutionFailed
+		}
+		persistence.UpdateFailureResolutionAsync(&persistence.UpdateFailureResolutionRequest{
+			ID:               failureID,
+			ResolutionStatus: string(status),
+		}, s.Kernel.PersistenceChannel)
+		delete(s.suspendFailureID, agentID)
+		s.Logger.Info("📝 Updated transient failure %s → %s for agent %s", failureID, status, agentID)
+	}
 
 	// Stop polling if no more suspended agents
 	if len(s.suspendedAgents) == 0 && s.pollCancel != nil {

@@ -20,6 +20,9 @@ func TestReportBlockedTool_Definition(t *testing.T) {
 	if _, ok := def.InputSchema.Properties["explanation"]; !ok {
 		t.Error("expected explanation in properties")
 	}
+	if _, ok := def.InputSchema.Properties["scope_guess"]; !ok {
+		t.Error("expected scope_guess in properties")
+	}
 	if len(def.InputSchema.Required) != 2 {
 		t.Errorf("expected 2 required fields, got %d", len(def.InputSchema.Required))
 	}
@@ -61,11 +64,11 @@ func TestReportBlockedTool_ExecStoryInvalid(t *testing.T) {
 	}
 }
 
-func TestReportBlockedTool_ExecExternal(t *testing.T) {
+func TestReportBlockedTool_ExecEnvironment(t *testing.T) {
 	tool := NewReportBlockedTool(nil)
 
 	result, err := tool.Exec(context.Background(), map[string]any{
-		"failure_kind": "external",
+		"failure_kind": "environment",
 		"explanation":  "Git repository corrupt: bad tree object HEAD",
 	})
 	if err != nil {
@@ -83,8 +86,92 @@ func TestReportBlockedTool_ExecExternal(t *testing.T) {
 	if !ok {
 		t.Fatal("expected FailureInfo in Data")
 	}
-	if fi.Kind != proto.FailureKindExternal {
-		t.Errorf("expected kind %q, got %q", proto.FailureKindExternal, fi.Kind)
+	if fi.Kind != proto.FailureKindEnvironment {
+		t.Errorf("expected kind %q, got %q", proto.FailureKindEnvironment, fi.Kind)
+	}
+	if fi.Source != proto.FailureSourceLLMReport {
+		t.Errorf("expected source %q, got %q", proto.FailureSourceLLMReport, fi.Source)
+	}
+}
+
+func TestReportBlockedTool_ExecPrerequisite(t *testing.T) {
+	tool := NewReportBlockedTool(nil)
+
+	result, err := tool.Exec(context.Background(), map[string]any{
+		"failure_kind": "prerequisite",
+		"explanation":  "API key is expired",
+		"scope_guess":  "system",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.ProcessEffect == nil {
+		t.Fatal("expected ProcessEffect")
+	}
+
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatal("expected Data to be map[string]any")
+	}
+	fi, ok := data[proto.KeyFailureInfo].(proto.FailureInfo)
+	if !ok {
+		t.Fatal("expected FailureInfo in Data")
+	}
+	if fi.Kind != proto.FailureKindPrerequisite {
+		t.Errorf("expected kind %q, got %q", proto.FailureKindPrerequisite, fi.Kind)
+	}
+	if fi.ScopeGuess != proto.FailureScopeSystem {
+		t.Errorf("expected scope_guess %q, got %q", proto.FailureScopeSystem, fi.ScopeGuess)
+	}
+}
+
+func TestReportBlockedTool_ExecExternalBackwardCompat(t *testing.T) {
+	tool := NewReportBlockedTool(nil)
+
+	// "external" should be accepted and normalized to "environment"
+	result, err := tool.Exec(context.Background(), map[string]any{
+		"failure_kind": "external",
+		"explanation":  "Git repository corrupt",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatal("expected Data to be map[string]any")
+	}
+	fi, ok := data[proto.KeyFailureInfo].(proto.FailureInfo)
+	if !ok {
+		t.Fatal("expected FailureInfo in Data")
+	}
+	if fi.Kind != proto.FailureKindEnvironment {
+		t.Errorf("expected kind %q (external normalized), got %q", proto.FailureKindEnvironment, fi.Kind)
+	}
+}
+
+func TestReportBlockedTool_ScopeGuessOptional(t *testing.T) {
+	tool := NewReportBlockedTool(nil)
+
+	// Without scope_guess — should succeed with empty scope
+	result, err := tool.Exec(context.Background(), map[string]any{
+		"failure_kind": "environment",
+		"explanation":  "disk full",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, ok := result.ProcessEffect.Data.(map[string]any)
+	if !ok {
+		t.Fatal("expected Data to be map[string]any")
+	}
+	fi, ok := data[proto.KeyFailureInfo].(proto.FailureInfo)
+	if !ok {
+		t.Fatal("expected FailureInfo in Data")
+	}
+	if fi.ScopeGuess != "" {
+		t.Errorf("expected empty scope_guess, got %q", fi.ScopeGuess)
 	}
 }
 
@@ -113,7 +200,7 @@ func TestReportBlockedTool_MissingFields(t *testing.T) {
 
 	// Missing explanation
 	_, err = tool.Exec(context.Background(), map[string]any{
-		"failure_kind": "external",
+		"failure_kind": "environment",
 	})
 	if err == nil {
 		t.Error("expected error for missing explanation")
@@ -121,7 +208,7 @@ func TestReportBlockedTool_MissingFields(t *testing.T) {
 
 	// Empty explanation
 	_, err = tool.Exec(context.Background(), map[string]any{
-		"failure_kind": "external",
+		"failure_kind": "environment",
 		"explanation":  "",
 	})
 	if err == nil {
@@ -136,54 +223,75 @@ func TestClassifyCommitFailure(t *testing.T) {
 		exitCode int
 		want     proto.FailureKind
 	}{
+		// Environment failures
 		{
 			name:     "bad tree object",
 			stderr:   "fatal: bad tree object HEAD",
 			exitCode: 128,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
 		{
 			name:     "corrupt object",
 			stderr:   "error: object file is corrupt",
 			exitCode: 128,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
 		{
 			name:     "not a git repository",
 			stderr:   "fatal: not a git repository",
 			exitCode: 128,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
 		{
 			name:     "permission denied",
 			stderr:   "error: Permission denied",
 			exitCode: 1,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
 		{
 			name:     "no space left",
 			stderr:   "fatal: no space left on device",
 			exitCode: 1,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
 		{
 			name:     "read-only file system",
 			stderr:   "error: read-only file system",
 			exitCode: 1,
-			want:     proto.FailureKindExternal,
-		},
-		{
-			name:     "fakeowner",
-			stderr:   "error: fakeowner: operation not permitted",
-			exitCode: 128,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
 		{
 			name:     "cannot lock ref",
 			stderr:   "error: cannot lock ref 'refs/heads/main'",
 			exitCode: 1,
-			want:     proto.FailureKindExternal,
+			want:     proto.FailureKindEnvironment,
 		},
+		// Prerequisite failures
+		{
+			name:     "authentication failed",
+			stderr:   "fatal: Authentication failed for 'https://github.com'",
+			exitCode: 128,
+			want:     proto.FailureKindPrerequisite,
+		},
+		{
+			name:     "fakeowner (auth issue)",
+			stderr:   "error: fakeowner: operation not permitted",
+			exitCode: 128,
+			want:     proto.FailureKindPrerequisite,
+		},
+		{
+			name:     "could not resolve host",
+			stderr:   "fatal: unable to access: Could not resolve host: github.com",
+			exitCode: 128,
+			want:     proto.FailureKindPrerequisite,
+		},
+		{
+			name:     "token expired",
+			stderr:   "remote: Token expired, please refresh",
+			exitCode: 128,
+			want:     proto.FailureKindPrerequisite,
+		},
+		// Not classified (content errors)
 		{
 			name:     "pre-commit hook failure is not classified",
 			stderr:   "pre-commit hook exited with error",
@@ -217,5 +325,20 @@ func TestClassifyCommitFailure(t *testing.T) {
 				t.Errorf("classifyCommitFailure(%q, %d) = %q, want %q", tt.stderr, tt.exitCode, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNormalizeFailureKind(t *testing.T) {
+	if proto.NormalizeFailureKind(proto.FailureKindExternal) != proto.FailureKindEnvironment {
+		t.Error("expected external → environment")
+	}
+	if proto.NormalizeFailureKind(proto.FailureKindStoryInvalid) != proto.FailureKindStoryInvalid {
+		t.Error("expected story_invalid unchanged")
+	}
+	if proto.NormalizeFailureKind(proto.FailureKindEnvironment) != proto.FailureKindEnvironment {
+		t.Error("expected environment unchanged")
+	}
+	if proto.NormalizeFailureKind(proto.FailureKindPrerequisite) != proto.FailureKindPrerequisite {
+		t.Error("expected prerequisite unchanged")
 	}
 }

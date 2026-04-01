@@ -271,7 +271,22 @@ func (c *Coder) runContainerInfrastructureTests(ctx context.Context, sm *agent.B
 }
 
 // executeTestFailureAndTransition executes a test failure effect and transitions to CODING state.
+// If the test output matches an environment or prerequisite failure pattern, transitions to ERROR
+// instead (same as report_blocked) so the architect can route recovery properly.
 func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.BaseStateMachine, testFailureEff *effect.TestFailureEffect) (proto.State, bool, error) {
+	// Check for environment/prerequisite failures before sending back to CODING
+	if kind := classifyTestFailure(testFailureEff.FailureMessage); kind != "" {
+		explanation := fmt.Sprintf("Test execution detected %s issue: %s",
+			kind, truncateOutput(testFailureEff.FailureMessage))
+		failureInfo := proto.NewFailureInfo(kind, explanation, string(StateTesting), "")
+		failureInfo.Source = proto.FailureSourceAutoClassifier
+		failureInfo.ScopeGuess = proto.FailureScopeAttempt
+		sm.SetStateData(KeyFailureInfo, failureInfo)
+		sm.SetStateData(KeyErrorMessage, fmt.Sprintf("%s: %s", kind, explanation))
+		c.logger.Error("🚫 Test failure auto-classified as %s, transitioning to ERROR for architect routing", kind)
+		return proto.StateError, false, nil
+	}
+
 	// Execute the test failure effect
 	result, err := c.ExecuteEffect(ctx, testFailureEff)
 	if err != nil {
@@ -305,6 +320,56 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 	}
 
 	return proto.StateError, false, logx.Errorf("invalid test failure result type: %T", result)
+}
+
+// classifyTestFailure checks test output for environment or prerequisite failure patterns.
+// Returns the failure kind if matched, or empty string for normal test failures (code bugs).
+func classifyTestFailure(output string) proto.FailureKind {
+	lower := strings.ToLower(output)
+
+	// Environment failures — infrastructure/execution environment issues
+	environmentPatterns := []string{
+		"no space left on device",
+		"read-only file system",
+		"permission denied",
+		"cannot allocate memory",
+		"too many open files",
+		"disk quota exceeded",
+		"not a git repository",
+		"bad tree object",
+		"corrupt",
+		"cannot lock ref",
+		"docker daemon",
+		"container not running",
+		"oci runtime",
+	}
+	for _, p := range environmentPatterns {
+		if strings.Contains(lower, p) {
+			return proto.FailureKindEnvironment
+		}
+	}
+
+	// Prerequisite failures — external dependencies missing/invalid
+	prerequisitePatterns := []string{
+		"authentication failed",
+		"unauthorized",
+		"403 forbidden",
+		"token expired",
+		"could not resolve host",
+		"connection refused",
+		"certificate",
+		"ssl",
+		"api key",
+		"rate limit exceeded",
+		"quota exceeded",
+	}
+	for _, p := range prerequisitePatterns {
+		if strings.Contains(lower, p) {
+			return proto.FailureKindPrerequisite
+		}
+	}
+
+	return ""
 }
 
 // runContainerBuildTesting runs container_build tool directly for testing.

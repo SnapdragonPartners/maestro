@@ -27,24 +27,33 @@ const (
 	// Requires LLM agency — the coder must explain why the story is invalid.
 	FailureKindStoryInvalid FailureKind = "story_invalid"
 
-	// FailureKindExternal means an infrastructure/environment issue outside the agent's
-	// control prevents progress. This is a v1 umbrella kind.
-	// Deprecated: Phase 2 splits this into FailureKindEnvironment and FailureKindPrerequisite.
-	// Kept for backward compatibility with existing report_blocked and auto-classifier code.
+	// FailureKindExternal is a deprecated v1 umbrella kind for infrastructure/environment
+	// issues. Replaced by FailureKindEnvironment and FailureKindPrerequisite in Phase 2.
+	// Kept for backward compatibility with failure records created before the split.
+	// Use NormalizeFailureKind() to map to the current taxonomy.
 	FailureKindExternal FailureKind = "external"
 
 	// FailureKindEnvironment means the local or shared execution environment is broken
 	// or inconsistent. Examples: corrupted clone state, broken toolchain, invalid workspace
-	// state, unrecoverable local container issues.
-	// Phase 2: will be wired into report_blocked and auto-classifier.
+	// state, unrecoverable local container issues, disk space, permissions.
 	FailureKindEnvironment FailureKind = "environment"
 
 	// FailureKindPrerequisite means progress depends on an external prerequisite that
 	// is missing, invalid, expired, or unavailable. Examples: invalid API credentials,
-	// revoked access, unavailable third-party service.
-	// Phase 2: will be wired into report_blocked and auto-classifier.
+	// revoked access, unavailable third-party service, missing configuration.
 	FailureKindPrerequisite FailureKind = "prerequisite"
 )
+
+// NormalizeFailureKind maps deprecated kind values to the current taxonomy.
+// Records created before the Phase 2 kind split used "external" for both
+// environment and prerequisite failures. This maps "external" → "environment"
+// (the more common case). Returns the kind unchanged if already current.
+func NormalizeFailureKind(kind FailureKind) FailureKind {
+	if kind == FailureKindExternal {
+		return FailureKindEnvironment
+	}
+	return kind
+}
 
 // FailureScope describes the blast radius of a failure.
 type FailureScope string

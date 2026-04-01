@@ -70,6 +70,8 @@ type Story struct {
 	AttemptCount       int                `json:"attempt_count" db:"-"`               // Number of dispatch attempts (for retry limit) — deprecated, use budgets
 	AttemptRetryBudget int                `json:"attempt_retry_budget" db:"-"`        // Per-class budget: attempt retries used
 	RewriteBudget      int                `json:"rewrite_budget" db:"-"`              // Per-class budget: story rewrites used
+	RepairBudget       int                `json:"repair_budget" db:"-"`               // Per-class budget: environment repair attempts used
+	HumanBudget        int                `json:"human_budget" db:"-"`                // Per-class budget: human intervention round-trips used
 	LastFailReason     string             `json:"last_fail_reason" db:"-"`            // Reason for last failure (for diagnostics)
 	LastFailureInfo    *proto.FailureInfo `json:"last_failure_info,omitempty" db:"-"` // Structured failure context (nil for unclassified failures)
 }

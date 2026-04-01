@@ -67,13 +67,18 @@ const (
 	MaxAttemptRetries = 3
 	// MaxStoryRewrites is the maximum number of times a story can be rewritten by the architect.
 	MaxStoryRewrites = 2
-	// Phase 2: MaxRepairAttempts = 2, MaxHumanRoundTrips = 1.
+	// MaxRepairAttempts is the maximum number of environment repair attempts per story.
+	MaxRepairAttempts = 2
+	// MaxHumanRoundTrips is the maximum number of human intervention round-trips per story.
+	MaxHumanRoundTrips = 1
 )
 
 // Budget class constants for IncrementBudget/IsBudgetExhausted.
 const (
 	BudgetClassAttempt = "attempt"
 	BudgetClassRewrite = "rewrite"
+	BudgetClassRepair  = "repair"
+	BudgetClassHuman   = "human"
 )
 
 // QueuedStory embeds the unified Story type with architect-specific methods.
@@ -119,6 +124,8 @@ type Queue struct {
 	stories            map[string]*QueuedStory
 	readyStoryCh       chan<- string               // Channel to notify when stories become ready
 	persistenceChannel chan<- *persistence.Request // Channel for database operations
+	dispatchSuppressed bool                        // When true, GetReadyStories returns empty (system repair in progress)
+	suppressReason     string                      // Why dispatch is suppressed (for logging)
 }
 
 // NewQueue creates a new queue manager with database persistence.
@@ -236,10 +243,39 @@ func (q *Queue) NextReadyStory() *QueuedStory {
 	return ready[0]
 }
 
+// SuppressDispatch prevents new story dispatch during system-level repair.
+// Active coders continue but no new stories are assigned.
+func (q *Queue) SuppressDispatch(reason string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	q.dispatchSuppressed = true
+	q.suppressReason = reason
+}
+
+// ResumeDispatch re-enables story dispatch after repair completes.
+func (q *Queue) ResumeDispatch() {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+	q.dispatchSuppressed = false
+	q.suppressReason = ""
+}
+
+// IsDispatchSuppressed returns whether dispatch is currently suppressed and why.
+func (q *Queue) IsDispatchSuppressed() (bool, string) {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+	return q.dispatchSuppressed, q.suppressReason
+}
+
 // GetReadyStories returns all stories that are ready to be worked on.
+// Returns empty if dispatch is suppressed (system repair in progress).
 func (q *Queue) GetReadyStories() []*QueuedStory {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
+
+	if q.dispatchSuppressed {
+		return nil
+	}
 
 	var ready []*QueuedStory
 
@@ -885,6 +921,12 @@ func (q *Queue) IncrementBudget(storyID, budgetClass string) (count, limit int, 
 	case BudgetClassRewrite:
 		story.RewriteBudget++
 		return story.RewriteBudget, MaxStoryRewrites, nil
+	case BudgetClassRepair:
+		story.RepairBudget++
+		return story.RepairBudget, MaxRepairAttempts, nil
+	case BudgetClassHuman:
+		story.HumanBudget++
+		return story.HumanBudget, MaxHumanRoundTrips, nil
 	default:
 		return 0, 0, fmt.Errorf("unknown budget class: %s", budgetClass)
 	}
@@ -905,6 +947,10 @@ func (q *Queue) IsBudgetExhausted(storyID, budgetClass string) bool {
 		return story.AttemptRetryBudget >= MaxAttemptRetries
 	case BudgetClassRewrite:
 		return story.RewriteBudget >= MaxStoryRewrites
+	case BudgetClassRepair:
+		return story.RepairBudget >= MaxRepairAttempts
+	case BudgetClassHuman:
+		return story.HumanBudget >= MaxHumanRoundTrips
 	default:
 		return true // Unknown budget class = exhausted
 	}
@@ -926,6 +972,12 @@ func (q *Queue) ReconstructBudgetsFromFailures(storyID string, failureCounts map
 	}
 	if count, ok := failureCounts[string(proto.FailureActionRewriteStory)]; ok {
 		story.RewriteBudget = count
+	}
+	if count, ok := failureCounts[string(proto.FailureActionRepairEnvironment)]; ok {
+		story.RepairBudget = count
+	}
+	if count, ok := failureCounts[string(proto.FailureActionAskHuman)]; ok {
+		story.HumanBudget = count
 	}
 	// Also count mark_failed as attempt retries (they represent exhausted attempts)
 	if count, ok := failureCounts[string(proto.FailureActionMarkFailed)]; ok {
@@ -1050,6 +1102,46 @@ func (q *Queue) ReleaseHeldStoriesByFailure(failureID, cause string) ([]string, 
 	}
 
 	return q.ReleaseHeldStories(matchingIDs, cause)
+}
+
+// GetActiveStoriesForScope returns story IDs that should be held for a given failure scope.
+// For "story" scope, returns only the given storyID. For "epoch", returns active stories
+// in the same spec. For "system", returns all active stories.
+// Active means pending or dispatched — not done, failed, or already on_hold.
+func (q *Queue) GetActiveStoriesForScope(scope proto.FailureScope, storyID string) []string {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	// Find the spec ID for the failing story
+	var specID string
+	if story, exists := q.stories[storyID]; exists {
+		specID = story.SpecID
+	}
+
+	isActive := func(s *QueuedStory) bool {
+		status := s.GetStatus()
+		return status == StatusPending || status == StatusDispatched
+	}
+
+	var ids []string
+	switch scope {
+	case proto.FailureScopeStory:
+		ids = []string{storyID}
+	case proto.FailureScopeEpoch:
+		for _, s := range q.stories {
+			if s.SpecID == specID && isActive(s) && s.ID != storyID {
+				ids = append(ids, s.ID)
+			}
+		}
+	case proto.FailureScopeSystem:
+		for _, s := range q.stories {
+			if isActive(s) && s.ID != storyID {
+				ids = append(ids, s.ID)
+			}
+		}
+	}
+
+	return ids
 }
 
 // areDependenciesSatisfiedLocked checks if all dependencies of a story are satisfied.
