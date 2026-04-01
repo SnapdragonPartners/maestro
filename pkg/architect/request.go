@@ -108,7 +108,10 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 		case proto.RequestKindHotfix:
 			response, err = d.handleHotfixRequest(ctx, requestMsg)
 		case proto.RequestKindRepairComplete:
-			d.handleRepairComplete(ctx, requestMsg)
+			repairNextState := d.handleRepairComplete(ctx, requestMsg)
+			if repairNextState != "" {
+				return repairNextState, nil
+			}
 			response = nil // No response needed
 		default:
 			return StateError, fmt.Errorf("unknown request kind: %s", requestKind)
@@ -842,17 +845,19 @@ func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory,
 
 // handleRepairComplete processes a repair_complete signal from PM.
 // Releases held stories and resumes dispatch if it was suppressed.
-func (d *Driver) handleRepairComplete(ctx context.Context, msg *proto.AgentMsg) {
+// Returns StateDispatching if stories were released so the caller can
+// return it as the next state, or "" to let the default path continue.
+func (d *Driver) handleRepairComplete(_ context.Context, msg *proto.AgentMsg) proto.State {
 	typedPayload := msg.GetTypedPayload()
 	if typedPayload == nil {
 		d.logger.Warn("Repair complete message has no payload")
-		return
+		return ""
 	}
 
 	repair, err := typedPayload.ExtractRepairComplete()
 	if err != nil {
 		d.logger.Warn("Failed to extract repair_complete payload: %v", err)
-		return
+		return ""
 	}
 
 	d.logger.Info("🔧 Repair complete signal received: %s", repair.Reason)
@@ -896,12 +901,11 @@ func (d *Driver) handleRepairComplete(ctx context.Context, msg *proto.AgentMsg) 
 		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
 	}
 
-	// Trigger a dispatch pass for released stories
+	// Signal caller to transition to DISPATCHING if stories were released
 	if len(released) > 0 {
-		if transErr := d.TransitionTo(ctx, StateDispatching, nil); transErr != nil {
-			d.logger.Warn("Failed to transition to DISPATCHING after repair: %v", transErr)
-		}
+		return StateDispatching
 	}
+	return ""
 }
 
 // notifyPMOfClarificationNeeded sends a clarification request to PM for human input.

@@ -114,10 +114,16 @@ func (r *ReportBlockedTool) Exec(_ context.Context, args map[string]any) (*ExecR
 		return nil, fmt.Errorf("explanation is required and must be a non-empty string")
 	}
 
-	// Extract optional scope_guess
+	// Extract optional scope_guess with validation
 	var scopeGuess proto.FailureScope
 	if scopeStr, scopeOK := utils.SafeAssert[string](args["scope_guess"]); scopeOK && scopeStr != "" {
 		scopeGuess = proto.FailureScope(scopeStr)
+		switch scopeGuess {
+		case proto.FailureScopeAttempt, proto.FailureScopeStory, proto.FailureScopeEpoch, proto.FailureScopeSystem:
+			// Valid scope_guess
+		default:
+			return nil, fmt.Errorf("scope_guess must be one of 'attempt', 'story', 'epoch', or 'system', got %q", scopeStr)
+		}
 	}
 
 	// Get the current state from the agent if available

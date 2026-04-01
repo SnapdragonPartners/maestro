@@ -958,11 +958,13 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					fi.ResolvedKind, fi.ResolvedScope, requeueRequest.StoryID)
 			}
 
+			// affectedIDs is captured before holding so the prerequisite case can reference the list.
+			var affectedIDs []string
 			// For epoch/system scoped failures, hold affected stories to prevent wasted work
 			if requeueRequest.FailureInfo != nil {
 				fi := requeueRequest.FailureInfo
 				if fi.ResolvedScope == proto.FailureScopeEpoch || fi.ResolvedScope == proto.FailureScopeSystem {
-					affectedIDs := d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
+					affectedIDs = d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
 					if len(affectedIDs) > 0 {
 						reason := fmt.Sprintf("%s_%s_hold", fi.ResolvedScope, fi.ResolvedKind)
 						for _, id := range affectedIDs {
@@ -1062,11 +1064,8 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 						d.logger.Warn("Failed to hold story %s for prerequisite failure: %v", requeueRequest.StoryID, holdErr)
 					}
 					question := fmt.Sprintf("A prerequisite is missing or invalid: %s. Please check and resolve.", fi.Explanation)
-					var heldIDs []string
-					if fi.ResolvedScope == proto.FailureScopeEpoch || fi.ResolvedScope == proto.FailureScopeSystem {
-						heldIDs = d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
-					}
-					heldIDs = append(heldIDs, requeueRequest.StoryID)
+					// Use pre-hold affectedIDs (stories are already on_hold, GetActiveStoriesForScope would miss them)
+					heldIDs := append(append([]string{}, affectedIDs...), requeueRequest.StoryID)
 					d.notifyPMOfClarificationNeeded(ctx, story, fi, question, heldIDs)
 					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
 						requeueRequest.Reason, proto.FailureActionAskHuman,

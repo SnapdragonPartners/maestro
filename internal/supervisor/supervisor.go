@@ -352,10 +352,20 @@ func (s *Supervisor) handleStateAction(ctx context.Context, notification *proto.
 }
 
 // handleAgentCancel processes an agent cancellation request from the architect.
-// Clears the agent's story lease and restarts it so it picks up new work.
+// Verifies the agent is still working on the expected story before cancelling,
+// to avoid cancelling unrelated work if the request is stale.
 func (s *Supervisor) handleAgentCancel(ctx context.Context, req *proto.AgentCancelRequest) {
 	s.Logger.Info("🛑 Agent cancel request: agent=%s story=%s reason=%s",
 		req.AgentID, req.StoryID, req.Reason)
+
+	// Verify the agent is still leased to the expected story — if it has
+	// moved on to a different story, this cancel request is stale.
+	currentStory := s.Kernel.Dispatcher.GetLease(req.AgentID)
+	if currentStory != "" && currentStory != req.StoryID {
+		s.Logger.Warn("⏭️ Ignoring stale cancel for agent %s: was for story %s but agent now on %s",
+			req.AgentID, req.StoryID, currentStory)
+		return
+	}
 
 	// Clear the story lease so the story isn't double-assigned on restart
 	s.Kernel.Dispatcher.ClearLease(req.AgentID)

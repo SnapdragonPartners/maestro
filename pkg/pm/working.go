@@ -450,7 +450,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				reason := utils.GetMapFieldOr[string](effectData, "reason", "manual release")
 				failureID := utils.GetMapFieldOr[string](effectData, "failure_id", "")
 
-				repairMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, d.GetAgentID(), "architect-001")
+				repairMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, d.GetAgentID(), "architect")
 				repairMsg.SetTypedPayload(proto.NewRepairCompletePayload(&proto.RepairCompletePayload{
 					FailureID: failureID,
 					Reason:    reason,

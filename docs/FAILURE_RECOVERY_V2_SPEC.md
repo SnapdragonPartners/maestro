@@ -1180,7 +1180,7 @@ All 10 Phase 2 tasks are complete:
 - Architect triage resolves both `ResolvedKind` (normalized) and `ResolvedScope` (mechanical defaults: `story_invalid` → `story`, others → `attempt`) before routing.
 - Scope widening is in-memory only (ring buffer, pruned by time window). No database index needed yet — cross-session widening deferred to Phase 3.
 - Multi-story hold for epoch/system scope holds active (pending/dispatched) stories, not stories already in-progress with coders. Coder termination deferred to Phase 2.5.
-- Kind-specific routing: `story_invalid` → hold + rewrite + release; `environment` → retry with fresh workspace; `prerequisite` → retry + PM notification. No new `handleBlockedRequeue` call for environment/prerequisite (story content is fine).
+- Kind-specific routing: `story_invalid` → hold + rewrite + release; `environment` → retry with fresh workspace; `prerequisite` → hold (`awaiting_human`) + PM clarification + manual release via `release_held_stories`. No retry churn for prerequisite failures.
 - Dispatch suppression is a boolean flag on Queue checked by `GetReadyStories()`. System-scoped failures suppress; manual release resumes.
 - Repair and human budget classes are defined with limits (MaxRepairAttempts=2, MaxHumanRoundTrips=1) and wired into budget tracking/reconstruction, but no control flow uses them yet (Phase 2.5 adds PM clarification + repair completion signals).
 - Transient failure adapter: supervisor persists failure records on SUSPEND with `action=retry_attempt, status=running`, updates to `succeeded` on resume or `failed` on SUSPEND→ERROR timeout.
