@@ -13,7 +13,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 19
+const CurrentSchemaVersion = 20
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -129,6 +129,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion18(db)
 	case 19:
 		return migrateToVersion19(db)
+	case 20:
+		return migrateToVersion20(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -805,6 +807,132 @@ func migrateToVersion19(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion20 adds on_hold/failed story statuses, hold metadata columns,
+// and the failures table for durable failure recovery tracking.
+// Uses the table-swap pattern for the stories CHECK constraint (same as migration 18).
+func migrateToVersion20(db *sql.DB) error {
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection for migration: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Disable FK checks on this specific connection
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("failed to disable foreign keys: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	}()
+
+	// Phase 1: Table-swap stories to add on_hold and failed to CHECK constraint,
+	// plus new hold metadata columns.
+	storyMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS stories_new (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			spec_id TEXT REFERENCES specs(id),
+			title TEXT NOT NULL,
+			content TEXT NOT NULL,
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed')),
+			priority INTEGER DEFAULT 0,
+			approved_plan TEXT,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			started_at DATETIME,
+			completed_at DATETIME,
+			assigned_agent TEXT,
+			tokens_used BIGINT DEFAULT 0,
+			cost_usd DECIMAL(10,4) DEFAULT 0.0,
+			metadata TEXT,
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app', 'maintenance')),
+			pr_id TEXT,
+			commit_hash TEXT,
+			completion_summary TEXT,
+			hold_reason TEXT,
+			hold_since DATETIME,
+			hold_owner TEXT,
+			hold_note TEXT,
+			blocked_by_failure_id TEXT
+		)`,
+		`INSERT INTO stories_new (
+			id, session_id, spec_id, title, content, status, priority, approved_plan,
+			created_at, started_at, completed_at, assigned_agent,
+			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
+		) SELECT
+			id, session_id, spec_id, title, content, status, priority, approved_plan,
+			created_at, started_at, completed_at, assigned_agent,
+			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
+		FROM stories`,
+		`DROP TABLE stories`,
+		`ALTER TABLE stories_new RENAME TO stories`,
+		// Recreate indices
+		`CREATE INDEX IF NOT EXISTS idx_stories_session ON stories(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_status ON stories(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_agent ON stories(assigned_agent)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_type ON stories(story_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_spec ON stories(spec_id)`,
+	}
+
+	for _, migration := range storyMigrations {
+		if _, err := conn.ExecContext(ctx, migration); err != nil {
+			return fmt.Errorf("failed to execute stories migration: %s: %w", migration, err)
+		}
+	}
+
+	// Phase 2: Create failures table.
+	failureMigrations := []string{
+		`CREATE TABLE IF NOT EXISTS failures (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			spec_id TEXT,
+			story_id TEXT,
+			attempt_number INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			source TEXT,
+			reporter_agent_id TEXT,
+			reporter_agent_type TEXT,
+			failed_state TEXT,
+			tool_name TEXT,
+			kind TEXT NOT NULL,
+			scope_guess TEXT,
+			explanation TEXT NOT NULL,
+			human_needed_guess INTEGER DEFAULT 0,
+			evidence TEXT,
+			resolved_kind TEXT,
+			resolved_scope TEXT,
+			human_needed INTEGER DEFAULT 0,
+			affected_story_ids TEXT,
+			triage_summary TEXT,
+			owner TEXT,
+			action TEXT,
+			resolution_status TEXT DEFAULT 'pending',
+			resolution_outcome TEXT,
+			resolution_requested_at DATETIME,
+			resolution_started_at DATETIME,
+			resolution_completed_at DATETIME,
+			tags TEXT,
+			model TEXT,
+			provider TEXT,
+			base_commit TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_failures_story ON failures(story_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_failures_session ON failures(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_failures_kind ON failures(kind)`,
+		`CREATE INDEX IF NOT EXISTS idx_failures_resolution ON failures(resolution_status)`,
+	}
+
+	for _, migration := range failureMigrations {
+		if _, err := conn.ExecContext(ctx, migration); err != nil {
+			return fmt.Errorf("failed to execute failures migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
 // createSchema creates all required tables and indices.
 //
 //nolint:maintidx // Schema definition is inherently large; keeping it together aids comprehension.
@@ -845,7 +973,7 @@ func createSchema(db *sql.DB) error {
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
-			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done')),
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed')),
 			priority INTEGER DEFAULT 0,
 			approved_plan TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -858,7 +986,12 @@ func createSchema(db *sql.DB) error {
 			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app', 'maintenance')),
 			pr_id TEXT,
 			commit_hash TEXT,
-			completion_summary TEXT
+			completion_summary TEXT,
+			hold_reason TEXT,
+			hold_since DATETIME,
+			hold_owner TEXT,
+			hold_note TEXT,
+			blocked_by_failure_id TEXT
 		)`,
 
 		// Story dependencies junction table
@@ -1122,6 +1255,43 @@ func createSchema(db *sql.DB) error {
 			consumed INTEGER DEFAULT 0,
 			created_at DATETIME NOT NULL
 		)`,
+
+		// Failures table for durable failure recovery tracking
+		`CREATE TABLE IF NOT EXISTS failures (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			spec_id TEXT,
+			story_id TEXT,
+			attempt_number INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			source TEXT,
+			reporter_agent_id TEXT,
+			reporter_agent_type TEXT,
+			failed_state TEXT,
+			tool_name TEXT,
+			kind TEXT NOT NULL,
+			scope_guess TEXT,
+			explanation TEXT NOT NULL,
+			human_needed_guess INTEGER DEFAULT 0,
+			evidence TEXT,
+			resolved_kind TEXT,
+			resolved_scope TEXT,
+			human_needed INTEGER DEFAULT 0,
+			affected_story_ids TEXT,
+			triage_summary TEXT,
+			owner TEXT,
+			action TEXT,
+			resolution_status TEXT DEFAULT 'pending',
+			resolution_outcome TEXT,
+			resolution_requested_at DATETIME,
+			resolution_started_at DATETIME,
+			resolution_completed_at DATETIME,
+			tags TEXT,
+			model TEXT,
+			provider TEXT,
+			base_commit TEXT
+		)`,
 	}
 
 	// Create indices
@@ -1193,6 +1363,12 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_maint_cycles_status ON maintenance_cycles(status)",
 		"CREATE INDEX IF NOT EXISTS idx_maint_items_session ON maintenance_items(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_maint_items_consumed ON maintenance_items(consumed)",
+
+		// Failure tracking indices
+		"CREATE INDEX IF NOT EXISTS idx_failures_story ON failures(story_id)",
+		"CREATE INDEX IF NOT EXISTS idx_failures_session ON failures(session_id)",
+		"CREATE INDEX IF NOT EXISTS idx_failures_kind ON failures(kind)",
+		"CREATE INDEX IF NOT EXISTS idx_failures_resolution ON failures(resolution_status)",
 	}
 
 	// Execute table creation

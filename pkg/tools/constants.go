@@ -154,6 +154,9 @@ var (
 	}
 
 	// Testing tools - validation and verification.
+	// Note: ToolReportBlocked is NOT included here because TESTING runs procedurally
+	// (no toolloop). Blocks during testing surface as test failures → requeue.
+	// Phase 2 may add a toolloop-based testing path that can use report_blocked.
 	TestingTools = []string{
 		ToolShell,
 		ToolBuild,
