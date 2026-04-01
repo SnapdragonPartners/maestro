@@ -923,14 +923,14 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 			if requeueRequest.FailureInfo != nil && d.scopeWidener != nil {
 				fi := requeueRequest.FailureInfo
 				normalizedKind := proto.NormalizeFailureKind(fi.Kind)
-				d.scopeWidener.RecordFailure(normalizedKind, requeueRequest.StoryID)
+				d.scopeWidener.RecordFailure(normalizedKind, requeueRequest.StoryID, fi.Explanation)
 
 				// Check for mechanical scope widening — auto-escalate when same kind recurs across multiple stories
 				currentScope := fi.ScopeGuess
 				if currentScope == "" {
 					currentScope = proto.FailureScopeAttempt
 				}
-				widenedScope := d.scopeWidener.CheckForWidening(normalizedKind, currentScope)
+				widenedScope := d.scopeWidener.CheckForWidening(normalizedKind, fi.Explanation, currentScope)
 				if widenedScope != currentScope {
 					d.logger.Warn("🔍 Scope widened for %s failures: %s → %s (recurrence threshold reached)",
 						normalizedKind, currentScope, widenedScope)
@@ -966,6 +966,18 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					if len(affectedIDs) > 0 {
 						reason := fmt.Sprintf("%s_%s_hold", fi.ResolvedScope, fi.ResolvedKind)
 						for _, id := range affectedIDs {
+							// Cancel in-flight agents before holding (planning/coding stories have active coders)
+							if agentID := d.queue.GetAssignedAgent(id); agentID != "" {
+								cancelEffect := &CancelAgentEffect{
+									AgentID:    agentID,
+									StoryID:    id,
+									Reason:     reason,
+									Dispatcher: d.dispatcher,
+								}
+								if cancelErr := d.ExecuteEffect(ctx, cancelEffect); cancelErr != nil {
+									d.logger.Warn("Failed to cancel agent %s for story %s: %v", agentID, id, cancelErr)
+								}
+							}
 							if holdErr := d.queue.HoldStory(id, reason, "architect", fi.ID, fi.Explanation); holdErr != nil {
 								d.logger.Warn("Failed to hold story %s for %s-scoped failure: %v", id, fi.ResolvedScope, holdErr)
 							}
@@ -1044,14 +1056,24 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.logger.Info("🔧 Environment failure for story %s — retrying with fresh workspace", requeueRequest.StoryID)
 
 				case fi.Kind == proto.FailureKindPrerequisite:
-					// External dependency issue — ask PM to clarify with human, then retry.
+					// External dependency issue — hold the story and ask PM to clarify with human.
+					// Do NOT retry: the prerequisite won't be fixed until a human acts.
+					if holdErr := d.queue.HoldStory(requeueRequest.StoryID, "awaiting_human", "architect", fi.ID, fi.Explanation); holdErr != nil {
+						d.logger.Warn("Failed to hold story %s for prerequisite failure: %v", requeueRequest.StoryID, holdErr)
+					}
 					question := fmt.Sprintf("A prerequisite is missing or invalid: %s. Please check and resolve.", fi.Explanation)
 					var heldIDs []string
 					if fi.ResolvedScope == proto.FailureScopeEpoch || fi.ResolvedScope == proto.FailureScopeSystem {
 						heldIDs = d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
 					}
+					heldIDs = append(heldIDs, requeueRequest.StoryID)
 					d.notifyPMOfClarificationNeeded(ctx, story, fi, question, heldIDs)
-					d.logger.Info("🔑 Prerequisite failure for story %s — clarification requested from PM", requeueRequest.StoryID)
+					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+						requeueRequest.Reason, proto.FailureActionAskHuman,
+						proto.FailureResolutionPending, fi)
+					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
+					d.logger.Info("🔑 Prerequisite failure for story %s — held and clarification requested from PM", requeueRequest.StoryID)
+					continue
 
 				default:
 					// Transient or unclassified — just retry
@@ -1079,7 +1101,12 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				continue
 			}
 
-			// Dispatch the story back to the work queue (like DISPATCHING state does)
+			// Dispatch the story back to the work queue (like DISPATCHING state does).
+			// Skip dispatch if system-wide suppression is active (e.g., system-scoped failure under repair).
+			if suppressed, _ := d.queue.IsDispatchSuppressed(); suppressed {
+				d.logger.Info("⛔ Dispatch suppressed — story %s stays pending until suppression is lifted", requeueRequest.StoryID)
+				continue
+			}
 			if story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")

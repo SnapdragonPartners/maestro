@@ -245,8 +245,8 @@ func (d *Driver) handleClarificationRequest(payload *proto.MessagePayload) (prot
 	}
 
 	msg += "Use chat_ask_user to relay this question to the user. " +
-		"Once the user responds, use chat_ask_user to confirm the issue has been resolved. " +
-		"The development system will resume automatically when the underlying issue is fixed."
+		"Once the user confirms the issue has been resolved, call the release_held_stories tool " +
+		"with the reason for resolution. This will signal the development system to resume held work."
 
 	d.contextManager.AddMessage("user", msg)
 	return StateWorking, nil

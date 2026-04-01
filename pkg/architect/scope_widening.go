@@ -1,6 +1,7 @@
 package architect
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -8,7 +9,9 @@ import (
 )
 
 // ScopeWidener tracks recent failures and auto-escalates scope when the same
-// failure kind recurs across multiple stories within a time window.
+// failure kind+cause recurs across multiple stories within a time window.
+// Failures are grouped by a fingerprint (kind + normalized explanation prefix)
+// so that unrelated failures of the same kind do not trigger false widening.
 type ScopeWidener struct {
 	entries             []recentFailureEntry
 	mu                  sync.Mutex
@@ -18,17 +21,20 @@ type ScopeWidener struct {
 }
 
 type recentFailureEntry struct {
-	Timestamp time.Time
-	Kind      proto.FailureKind
-	StoryID   string
+	Timestamp   time.Time
+	Fingerprint string
+	StoryID     string
 }
 
 // DefaultRecurrenceThreshold is the number of distinct stories with the same
-// failure kind required to trigger scope widening.
+// failure fingerprint required to trigger scope widening.
 const DefaultRecurrenceThreshold = 3
 
 // DefaultScopeWideningWindow is the time window for recurrence detection.
 const DefaultScopeWideningWindow = 30 * time.Minute
+
+// fingerprintMaxLen is the max length of explanation prefix used in fingerprints.
+const fingerprintMaxLen = 60
 
 // NewScopeWidener creates a ScopeWidener with default settings.
 func NewScopeWidener() *ScopeWidener {
@@ -39,35 +45,48 @@ func NewScopeWidener() *ScopeWidener {
 	}
 }
 
+// failureFingerprint produces a grouping key from kind + normalized explanation prefix.
+// Two failures with the same kind but different explanations will not group together.
+func failureFingerprint(kind proto.FailureKind, explanation string) string {
+	// Normalize: lowercase, trim, take first N chars
+	normalized := strings.ToLower(strings.TrimSpace(explanation))
+	if len(normalized) > fingerprintMaxLen {
+		normalized = normalized[:fingerprintMaxLen]
+	}
+	return string(kind) + ":" + normalized
+}
+
 // RecordFailure adds a failure to the ring buffer for recurrence tracking.
-func (sw *ScopeWidener) RecordFailure(kind proto.FailureKind, storyID string) {
+func (sw *ScopeWidener) RecordFailure(kind proto.FailureKind, storyID, explanation string) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
 	now := time.Now()
 	sw.entries = append(sw.entries, recentFailureEntry{
-		Kind:      kind,
-		StoryID:   storyID,
-		Timestamp: now,
+		Fingerprint: failureFingerprint(kind, explanation),
+		StoryID:     storyID,
+		Timestamp:   now,
 	})
 
 	sw.pruneLocked(now)
 }
 
-// CheckForWidening evaluates whether the given failure kind has recurred across
+// CheckForWidening evaluates whether the given failure fingerprint has recurred across
 // enough distinct stories to warrant scope escalation. Returns the widened scope
 // or the original scope if no widening is warranted.
-func (sw *ScopeWidener) CheckForWidening(kind proto.FailureKind, currentScope proto.FailureScope) proto.FailureScope {
+func (sw *ScopeWidener) CheckForWidening(kind proto.FailureKind, explanation string, currentScope proto.FailureScope) proto.FailureScope {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 
 	now := time.Now()
 	sw.pruneLocked(now)
 
-	// Count distinct story IDs with the same kind in the window
+	fp := failureFingerprint(kind, explanation)
+
+	// Count distinct story IDs with the same fingerprint in the window
 	storySet := make(map[string]struct{})
 	for i := range sw.entries {
-		if sw.entries[i].Kind == kind {
+		if sw.entries[i].Fingerprint == fp {
 			storySet[sw.entries[i].StoryID] = struct{}{}
 		}
 	}

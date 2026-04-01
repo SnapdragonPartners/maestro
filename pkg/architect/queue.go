@@ -1104,10 +1104,21 @@ func (q *Queue) ReleaseHeldStoriesByFailure(failureID, cause string) ([]string, 
 	return q.ReleaseHeldStories(matchingIDs, cause)
 }
 
+// GetAssignedAgent returns the agent ID assigned to the given story, or empty if unassigned.
+func (q *Queue) GetAssignedAgent(storyID string) string {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+
+	if story, exists := q.stories[storyID]; exists {
+		return story.AssignedAgent
+	}
+	return ""
+}
+
 // GetActiveStoriesForScope returns story IDs that should be held for a given failure scope.
 // For "story" scope, returns only the given storyID. For "epoch", returns active stories
 // in the same spec. For "system", returns all active stories.
-// Active means pending or dispatched — not done, failed, or already on_hold.
+// Active means pending, dispatched, or in-flight (planning/coding) — not done, failed, or already on_hold.
 func (q *Queue) GetActiveStoriesForScope(scope proto.FailureScope, storyID string) []string {
 	q.mutex.RLock()
 	defer q.mutex.RUnlock()
@@ -1120,7 +1131,8 @@ func (q *Queue) GetActiveStoriesForScope(scope proto.FailureScope, storyID strin
 
 	isActive := func(s *QueuedStory) bool {
 		status := s.GetStatus()
-		return status == StatusPending || status == StatusDispatched
+		return status == StatusPending || status == StatusDispatched ||
+			status == StatusPlanning || status == StatusCoding
 	}
 
 	var ids []string

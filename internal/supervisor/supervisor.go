@@ -207,6 +207,9 @@ func (s *Supervisor) Start(ctx context.Context) {
 	stateChangeCh := s.Kernel.Dispatcher.GetStateChangeChannel()
 	s.Logger.Info("State change processor got channel from dispatcher: %p", stateChangeCh)
 
+	// Get agent cancellation requests from dispatcher
+	cancelRequestsCh := s.Kernel.Dispatcher.GetCancelRequestsChannel()
+
 	s.running = true
 
 	// Start coding watchdog for between-turns timeout detection
@@ -237,6 +240,15 @@ func (s *Supervisor) Start(ctx context.Context) {
 					s.handleStateChange(ctx, notification)
 				} else {
 					s.Logger.Warn("Received nil state change notification")
+				}
+
+			case cancelReq, ok := <-cancelRequestsCh:
+				if !ok {
+					s.Logger.Info("Cancel requests channel closed")
+					continue
+				}
+				if cancelReq != nil {
+					s.handleAgentCancel(ctx, cancelReq)
 				}
 			}
 		}
@@ -336,6 +348,23 @@ func (s *Supervisor) handleStateAction(ctx context.Context, notification *proto.
 	default:
 		s.Logger.Info("No action configured for agent %s (%s) in %s state",
 			notification.AgentID, agentType, stateType)
+	}
+}
+
+// handleAgentCancel processes an agent cancellation request from the architect.
+// Clears the agent's story lease and restarts it so it picks up new work.
+func (s *Supervisor) handleAgentCancel(ctx context.Context, req *proto.AgentCancelRequest) {
+	s.Logger.Info("🛑 Agent cancel request: agent=%s story=%s reason=%s",
+		req.AgentID, req.StoryID, req.Reason)
+
+	// Clear the story lease so the story isn't double-assigned on restart
+	s.Kernel.Dispatcher.ClearLease(req.AgentID)
+
+	// Restart the agent (cancels context, creates fresh instance)
+	if err := s.restartAgent(ctx, req.AgentID); err != nil {
+		s.Logger.Error("❌ Failed to cancel agent %s: %v", req.AgentID, err)
+	} else {
+		s.Logger.Info("✅ Agent %s cancelled and restarted (was working on story %s)", req.AgentID, req.StoryID)
 	}
 }
 
