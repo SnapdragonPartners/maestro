@@ -1,6 +1,7 @@
 package persistence
 
 import (
+	"database/sql"
 	"fmt"
 )
 
@@ -158,6 +159,39 @@ func (ops *DatabaseOperations) CountFailuresByStoryAndAction(storyID string) (ma
 	`
 
 	rows, err := ops.db.Query(query, storyID, ops.sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count failures for story %s: %w", storyID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var action string
+		var count int
+		if err := rows.Scan(&action, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan failure count: %w", err)
+		}
+		counts[action] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error for story %s failure counts: %w", storyID, err)
+	}
+
+	return counts, nil
+}
+
+// CountFailuresByStoryAndActionForSession is a standalone version of CountFailuresByStoryAndAction
+// for use during resume when DatabaseOperations is not available.
+func CountFailuresByStoryAndActionForSession(db *sql.DB, sessionID, storyID string) (map[string]int, error) {
+	query := `
+		SELECT action, COUNT(*) as cnt
+		FROM failures
+		WHERE story_id = ? AND session_id = ?
+		GROUP BY action
+	`
+
+	rows, err := db.Query(query, storyID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count failures for story %s: %w", storyID, err)
 	}
