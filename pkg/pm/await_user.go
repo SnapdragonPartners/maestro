@@ -125,6 +125,9 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 	case proto.PayloadKindStoryBlocked:
 		return d.handleStoryBlockedNotification(typedPayload)
 
+	case proto.PayloadKindClarificationRequest:
+		return d.handleClarificationRequest(typedPayload)
+
 	default:
 		d.logger.Warn("⚠️ Unhandled architect notification kind: %s", typedPayload.Kind)
 		return StateAwaitUser, nil
@@ -215,4 +218,36 @@ func (d *Driver) buildBlockedMessage(b *proto.StoryBlockedPayload) string {
 			"but make clear that no specific action is required from them unless they wish to change the plan."
 		return msg
 	}
+}
+
+// handleClarificationRequest processes a clarification_request from the architect.
+// The architect needs human input to resolve a failure (e.g., expired credentials, missing config).
+func (d *Driver) handleClarificationRequest(payload *proto.MessagePayload) (proto.State, error) {
+	req, err := payload.ExtractClarificationRequest()
+	if err != nil {
+		d.logger.Error("❌ Failed to parse clarification_request payload: %v", err)
+		return StateAwaitUser, nil
+	}
+
+	d.logger.Info("❓ Clarification requested for story %s (%s): %s", req.StoryID, req.FailureKind, req.Question)
+
+	msg := fmt.Sprintf(
+		"[ACTION REQUIRED — CLARIFICATION NEEDED] "+
+			"The development system has encountered a %s issue that requires your input. "+
+			"Story: %q (ID: %s). Scope: %s. "+
+			"Details: %s "+
+			"Question: %s ",
+		req.FailureKind, req.Title, req.StoryID, req.FailureScope,
+		req.Explanation, req.Question)
+
+	if len(req.HeldStoryIDs) > 0 {
+		msg += fmt.Sprintf("%d additional stories are paused pending resolution. ", len(req.HeldStoryIDs))
+	}
+
+	msg += "Use chat_ask_user to relay this question to the user. " +
+		"Once the user confirms the issue has been resolved, call the release_held_stories tool " +
+		"with the reason for resolution. This will signal the development system to resume held work."
+
+	d.contextManager.AddMessage("user", msg)
+	return StateWorking, nil
 }

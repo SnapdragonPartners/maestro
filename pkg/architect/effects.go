@@ -92,6 +92,31 @@ func (e *DispatchStoryEffect) Execute(_ context.Context, runtime effect.Runtime)
 	return struct{}{}, nil
 }
 
+// CancelAgentEffect represents an effect to cancel and restart an active coder agent.
+// Used when epoch/system-scoped failures require terminating in-flight work.
+type CancelAgentEffect struct {
+	Dispatcher *dispatch.Dispatcher
+	AgentID    string
+	StoryID    string
+	Reason     string
+}
+
+// Type returns the effect type identifier.
+func (e *CancelAgentEffect) Type() string {
+	return "cancel_agent"
+}
+
+// Execute sends a cancellation request to the supervisor via the dispatcher.
+func (e *CancelAgentEffect) Execute(_ context.Context, runtime effect.Runtime) (any, error) {
+	runtime.Info("🛑 Requesting cancellation of agent %s (story %s): %s", e.AgentID, e.StoryID, e.Reason)
+	e.Dispatcher.RequestAgentCancel(&proto.AgentCancelRequest{
+		AgentID: e.AgentID,
+		StoryID: e.StoryID,
+		Reason:  e.Reason,
+	})
+	return struct{}{}, nil
+}
+
 // ExecuteEffect executes a single Effect using the architect's runtime.
 func (d *Driver) ExecuteEffect(ctx context.Context, eff effect.Effect) error {
 	runtime := NewRuntime(d.dispatcher, d.logger, d.GetAgentID(), d.replyCh)

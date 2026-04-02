@@ -41,9 +41,11 @@ const (
 	PayloadKindShutdown PayloadKind = "shutdown"
 
 	// Notification payloads.
-	PayloadKindStoryComplete      PayloadKind = "story_complete"       // Story completion notification
-	PayloadKindAllStoriesComplete PayloadKind = "all_stories_complete" // All stories completed notification
-	PayloadKindStoryBlocked       PayloadKind = "story_blocked"        // Story blocked/failed notification
+	PayloadKindStoryComplete        PayloadKind = "story_complete"        // Story completion notification
+	PayloadKindAllStoriesComplete   PayloadKind = "all_stories_complete"  // All stories completed notification
+	PayloadKindStoryBlocked         PayloadKind = "story_blocked"         // Story blocked/failed notification
+	PayloadKindClarificationRequest PayloadKind = "clarification_request" // Request PM to relay clarification to human
+	PayloadKindRepairComplete       PayloadKind = "repair_complete"       // Signal that system repair is done
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -384,6 +386,70 @@ func (p *MessagePayload) ExtractStoryBlocked() (*StoryBlockedPayload, error) {
 	var result StoryBlockedPayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal story blocked payload: %w", err)
+	}
+	return &result, nil
+}
+
+// ClarificationRequestPayload is sent by the architect to PM when a failure
+// requires human input (e.g., expired credentials, missing API keys, unclear requirements).
+type ClarificationRequestPayload struct {
+	FailureID    string       `json:"failure_id"`
+	StoryID      string       `json:"story_id"`
+	Title        string       `json:"title"`
+	FailureKind  FailureKind  `json:"failure_kind"`
+	FailureScope FailureScope `json:"failure_scope"`
+	Explanation  string       `json:"explanation"`
+	Question     string       `json:"question"`                 // What the architect needs answered
+	HeldStoryIDs []string     `json:"held_story_ids,omitempty"` // Stories held pending resolution
+	Timestamp    string       `json:"timestamp"`
+}
+
+// NewClarificationRequestPayload creates a payload for clarification requests.
+func NewClarificationRequestPayload(data *ClarificationRequestPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindClarificationRequest,
+		Data: raw,
+	}
+}
+
+// ExtractClarificationRequest extracts a clarification request payload.
+func (p *MessagePayload) ExtractClarificationRequest() (*ClarificationRequestPayload, error) {
+	if p.Kind != PayloadKindClarificationRequest {
+		return nil, fmt.Errorf("expected clarification_request payload, got %s", p.Kind)
+	}
+	var result ClarificationRequestPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal clarification request payload: %w", err)
+	}
+	return &result, nil
+}
+
+// RepairCompletePayload signals that a system-scoped repair has been completed.
+// Sent by PM (on behalf of human) to architect to trigger release of held stories.
+type RepairCompletePayload struct {
+	FailureID string `json:"failure_id,omitempty"` // Specific failure resolved (empty = all)
+	Reason    string `json:"reason"`               // What was done to resolve
+	Timestamp string `json:"timestamp"`
+}
+
+// NewRepairCompletePayload creates a payload for repair completion signals.
+func NewRepairCompletePayload(data *RepairCompletePayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindRepairComplete,
+		Data: raw,
+	}
+}
+
+// ExtractRepairComplete extracts a repair complete payload.
+func (p *MessagePayload) ExtractRepairComplete() (*RepairCompletePayload, error) {
+	if p.Kind != PayloadKindRepairComplete {
+		return nil, fmt.Errorf("expected repair_complete payload, got %s", p.Kind)
+	}
+	var result RepairCompletePayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal repair complete payload: %w", err)
 	}
 	return &result, nil
 }

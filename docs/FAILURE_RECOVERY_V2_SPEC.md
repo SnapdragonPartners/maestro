@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phase 1 implemented** (2026-03-31). Phase 2 and 3 are future work.
+**Phase 1 implemented** (2026-03-31). **Phase 2 implemented** (2026-03-31). **Phase 2.5 implemented** (2026-03-31). Phase 3 is future work.
 
 This document defines the desired end state for how Maestro handles blocked work, recovery, human clarification, and failure analytics. It is intentionally architecture-first. It does not prescribe an implementation sequence.
 
@@ -1156,6 +1156,54 @@ Orchestrator repair maps to existing startup/bootstrap operations, not a new gen
 - Preflight checks — GitHub auth, API keys, external tools
 
 Phase 1 does not build new repair sequences. It wires hold/release so system failures can be manually resolved and released.
+
+### Phase 2 Implementation Status
+
+All 10 Phase 2 tasks are complete:
+
+| Task | Description | Status |
+| --- | --- | --- |
+| 1 | Split `external` into `environment` + `prerequisite` | Done |
+| 2 | Add `scope_guess` to `report_blocked` | Done |
+| 3 | Architect triage step — resolve scope with mechanical defaults | Done |
+| 4 | Mechanical scope widening (3 stories / 30 min) | Done |
+| 5 | Epoch-scoped hold (multi-story) | Done |
+| 6 | Kind-specific recovery routing | Done |
+| 7 | Dispatch suppression during system repair | Done |
+| 8 | Wire repair + human budget classes | Done |
+| 9 | Transient failure adapter (SUSPEND events) | Done |
+| 10 | Classify test failures as blocked reports | Done |
+
+**Key decisions made during Phase 2:**
+
+- `NormalizeFailureKind()` maps deprecated `external` → `environment` for backward compatibility. Old `report_blocked` calls with `failure_kind=external` still work.
+- Architect triage resolves both `ResolvedKind` (normalized) and `ResolvedScope` (mechanical defaults: `story_invalid` → `story`, others → `attempt`) before routing.
+- Scope widening is in-memory only (ring buffer, pruned by time window). No database index needed yet — cross-session widening deferred to Phase 3.
+- Multi-story hold for epoch/system scope holds active (pending/dispatched) stories, not stories already in-progress with coders. Coder termination deferred to Phase 2.5.
+- Kind-specific routing: `story_invalid` → hold + rewrite + release; `environment` → retry with fresh workspace; `prerequisite` → hold (`awaiting_human`) + PM clarification + manual release via `release_held_stories`. No retry churn for prerequisite failures.
+- Dispatch suppression is a boolean flag on Queue checked by `GetReadyStories()`. System-scoped failures suppress; manual release resumes.
+- Repair and human budget classes are defined with limits (MaxRepairAttempts=2, MaxHumanRoundTrips=1) and wired into budget tracking/reconstruction, but no control flow uses them yet (Phase 2.5 adds PM clarification + repair completion signals).
+- Transient failure adapter: supervisor persists failure records on SUSPEND with `action=retry_attempt, status=running`, updates to `succeeded` on resume or `failed` on SUSPEND→ERROR timeout.
+- Test failure classification: `classifyTestFailure()` in `testing.go` pattern-matches test output for environment patterns (disk, permissions, git corruption, docker) and prerequisite patterns (auth, SSL, API keys, rate limits). Matched failures transition to ERROR for architect routing instead of looping back to CODING.
+- TESTING state now allows ERROR transitions (added to valid transitions map in `coder_fsm.go`).
+
+### Phase 2.5 Implementation Status
+
+All 3 Phase 2.5 tasks are complete:
+
+| Task | Description | Status |
+| --- | --- | --- |
+| a | PM clarification round-trip for prerequisite/system failures | Done |
+| b | Manual release mechanism (`release_held_stories` tool) | Done |
+| c | System repair completion signal (repair_complete REQUEST) | Done |
+
+**Key decisions made during Phase 2.5:**
+
+- `release_held_stories` is a PM tool that returns a `SignalReleaseHeld` ProcessEffect. PM's working loop converts this into a `repair_complete` REQUEST message dispatched to the architect via the standard dispatcher — PM has no direct architect communication path.
+- `RepairCompletePayload` carries `failure_id` (optional, for targeted release) and `reason`. Architect's `handleRepairComplete` releases by failure ID if provided, otherwise releases all held stories.
+- `ClarificationRequestPayload` includes full context (failure ID, story ID, title, failure kind/scope, explanation, question, held story IDs) so PM can relay a complete picture to the human.
+- PM receives clarification requests via `AWAIT_USER` payload routing — the existing `handleClarificationRequest` builds a structured context message for the PM LLM to relay to the human.
+- Architect's `handleRepairComplete` both releases held stories and resumes dispatch (if suppressed), then transitions to DISPATCHING to pick up released work.
 
 ### Phase 2: Improve routing fidelity
 

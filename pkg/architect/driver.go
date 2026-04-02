@@ -110,6 +110,7 @@ type Driver struct {
 	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
+	scopeWidener            *ScopeWidener                         // Tracks failure recurrence for scope auto-escalation
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
 	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
@@ -194,6 +195,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		dispatcher:         dispatcher,
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
+		scopeWidener:       NewScopeWidener(),
 		shutdownCtx:        shutdownCtx,
 		shutdownCancel:     shutdownCancel,
 		// Channels will be set during Attach()
@@ -917,6 +919,84 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				continue
 			}
 
+			// Record failure for scope widening detection
+			if requeueRequest.FailureInfo != nil && d.scopeWidener != nil {
+				fi := requeueRequest.FailureInfo
+				normalizedKind := proto.NormalizeFailureKind(fi.Kind)
+				d.scopeWidener.RecordFailure(normalizedKind, requeueRequest.StoryID, fi.Explanation)
+
+				// Check for mechanical scope widening — auto-escalate when same kind recurs across multiple stories
+				currentScope := fi.ScopeGuess
+				if currentScope == "" {
+					currentScope = proto.FailureScopeAttempt
+				}
+				widenedScope := d.scopeWidener.CheckForWidening(normalizedKind, fi.Explanation, currentScope)
+				if widenedScope != currentScope {
+					d.logger.Warn("🔍 Scope widened for %s failures: %s → %s (recurrence threshold reached)",
+						normalizedKind, currentScope, widenedScope)
+					fi.ResolvedScope = widenedScope
+				}
+			}
+
+			// Architect triage: resolve kind and scope with mechanical defaults
+			if requeueRequest.FailureInfo != nil {
+				fi := requeueRequest.FailureInfo
+				fi.Kind = proto.NormalizeFailureKind(fi.Kind)
+				if fi.ResolvedKind == "" {
+					fi.ResolvedKind = fi.Kind
+				}
+				if fi.ResolvedScope == "" {
+					// Mechanical defaults: story_invalid → story, others → attempt
+					switch fi.Kind {
+					case proto.FailureKindStoryInvalid:
+						fi.ResolvedScope = proto.FailureScopeStory
+					default:
+						fi.ResolvedScope = proto.FailureScopeAttempt
+					}
+				}
+				d.logger.Info("🔍 Triage: kind=%s, resolved_scope=%s (story %s)",
+					fi.ResolvedKind, fi.ResolvedScope, requeueRequest.StoryID)
+			}
+
+			// affectedIDs is captured before holding so the prerequisite case can reference the list.
+			var affectedIDs []string
+			// For epoch/system scoped failures, hold affected stories to prevent wasted work
+			if requeueRequest.FailureInfo != nil {
+				fi := requeueRequest.FailureInfo
+				if fi.ResolvedScope == proto.FailureScopeEpoch || fi.ResolvedScope == proto.FailureScopeSystem {
+					affectedIDs = d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
+					if len(affectedIDs) > 0 {
+						reason := fmt.Sprintf("%s_%s_hold", fi.ResolvedScope, fi.ResolvedKind)
+						for _, id := range affectedIDs {
+							// Cancel in-flight agents before holding (planning/coding stories have active coders)
+							if agentID := d.queue.GetAssignedAgent(id); agentID != "" {
+								cancelEffect := &CancelAgentEffect{
+									AgentID:    agentID,
+									StoryID:    id,
+									Reason:     reason,
+									Dispatcher: d.dispatcher,
+								}
+								if cancelErr := d.ExecuteEffect(ctx, cancelEffect); cancelErr != nil {
+									d.logger.Warn("Failed to cancel agent %s for story %s: %v", agentID, id, cancelErr)
+								}
+							}
+							if holdErr := d.queue.HoldStory(id, reason, "architect", fi.ID, fi.Explanation); holdErr != nil {
+								d.logger.Warn("Failed to hold story %s for %s-scoped failure: %v", id, fi.ResolvedScope, holdErr)
+							}
+						}
+						d.logger.Warn("🔒 Held %d stories for %s-scoped %s failure (trigger: story %s)",
+							len(affectedIDs), fi.ResolvedScope, fi.ResolvedKind, requeueRequest.StoryID)
+					}
+
+					// System-scoped: suppress all new dispatch until manually resolved
+					if fi.ResolvedScope == proto.FailureScopeSystem {
+						d.queue.SuppressDispatch(fmt.Sprintf("system-scoped %s failure: %s", fi.ResolvedKind, fi.Explanation))
+						d.logger.Warn("⛔ Dispatch suppressed: system-scoped %s failure (story %s)",
+							fi.ResolvedKind, requeueRequest.StoryID)
+					}
+				}
+			}
+
 			// If this is a classified failure, give the architect a chance to review and act.
 			storyEdited := false
 			if requeueRequest.FailureInfo != nil {
@@ -947,28 +1027,56 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					continue
 				}
 
-				// Hold the story during architect review if it's a story-level issue
-				if isStoryInvalid {
+				// Kind-specific recovery routing
+				switch {
+				case isStoryInvalid:
+					// Story content is the problem — hold, rewrite, release
 					if holdErr := d.queue.HoldStory(requeueRequest.StoryID, "story_redraft", "architect", fi.ID, fi.Explanation); holdErr != nil {
 						d.logger.Warn("Failed to hold story %s: %v", requeueRequest.StoryID, holdErr)
 					}
-				}
 
-				storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, fi)
+					storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, fi)
 
-				// If story was rewritten, increment rewrite budget and persist a rewrite failure record
-				if storyEdited && isStoryInvalid {
-					_, _, _ = d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassRewrite)
-					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
-						fi.Explanation, proto.FailureActionRewriteStory,
-						proto.FailureResolutionSucceeded, fi)
-				}
-
-				// If story was on hold, release it back to pending
-				if story.GetStatus() == StatusOnHold {
-					if _, releaseErr := d.queue.ReleaseHeldStories([]string{requeueRequest.StoryID}, "architect review complete"); releaseErr != nil {
-						d.logger.Warn("Failed to release story %s from hold: %v", requeueRequest.StoryID, releaseErr)
+					// If story was rewritten, increment rewrite budget and persist a rewrite failure record
+					if storyEdited {
+						_, _, _ = d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassRewrite)
+						d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+							fi.Explanation, proto.FailureActionRewriteStory,
+							proto.FailureResolutionSucceeded, fi)
 					}
+
+					// Release from hold back to pending
+					if story.GetStatus() == StatusOnHold {
+						if _, releaseErr := d.queue.ReleaseHeldStories([]string{requeueRequest.StoryID}, "architect review complete"); releaseErr != nil {
+							d.logger.Warn("Failed to release story %s from hold: %v", requeueRequest.StoryID, releaseErr)
+						}
+					}
+
+				case fi.Kind == proto.FailureKindEnvironment:
+					// Environment broken — retry with fresh workspace (default requeue path handles this).
+					// For epoch/system scope, related stories are already held above.
+					d.logger.Info("🔧 Environment failure for story %s — retrying with fresh workspace", requeueRequest.StoryID)
+
+				case fi.Kind == proto.FailureKindPrerequisite:
+					// External dependency issue — hold the story and ask PM to clarify with human.
+					// Do NOT retry: the prerequisite won't be fixed until a human acts.
+					if holdErr := d.queue.HoldStory(requeueRequest.StoryID, "awaiting_human", "architect", fi.ID, fi.Explanation); holdErr != nil {
+						d.logger.Warn("Failed to hold story %s for prerequisite failure: %v", requeueRequest.StoryID, holdErr)
+					}
+					question := fmt.Sprintf("A prerequisite is missing or invalid: %s. Please check and resolve.", fi.Explanation)
+					// Use pre-hold affectedIDs (stories are already on_hold, GetActiveStoriesForScope would miss them)
+					heldIDs := append(append([]string{}, affectedIDs...), requeueRequest.StoryID)
+					d.notifyPMOfClarificationNeeded(ctx, story, fi, question, heldIDs)
+					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+						requeueRequest.Reason, proto.FailureActionAskHuman,
+						proto.FailureResolutionPending, fi)
+					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
+					d.logger.Info("🔑 Prerequisite failure for story %s — held and clarification requested from PM", requeueRequest.StoryID)
+					continue
+
+				default:
+					// Transient or unclassified — just retry
+					d.logger.Info("🔄 Retrying story %s after %s failure", requeueRequest.StoryID, fi.Kind)
 				}
 			}
 
@@ -992,7 +1100,12 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				continue
 			}
 
-			// Dispatch the story back to the work queue (like DISPATCHING state does)
+			// Dispatch the story back to the work queue (like DISPATCHING state does).
+			// Skip dispatch if system-wide suppression is active (e.g., system-scoped failure under repair).
+			if suppressed, _ := d.queue.IsDispatchSuppressed(); suppressed {
+				d.logger.Info("⛔ Dispatch suppressed — story %s stays pending until suppression is lifted", requeueRequest.StoryID)
+				continue
+			}
 			if story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
@@ -1058,7 +1171,7 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 		UpdatedAt:        now.Format(sqliteTimestampFormat),
 		StoryID:          storyID,
 		AttemptNumber:    attemptNumber,
-		Kind:             "external",
+		Kind:             string(proto.FailureKindEnvironment),
 		Explanation:      reason,
 		Action:           string(action),
 		ResolutionStatus: string(resolutionStatus),
@@ -1066,6 +1179,7 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 	if fi != nil {
 		record.Kind = string(fi.Kind)
 		record.Source = string(fi.Source)
+		record.ScopeGuess = string(fi.ScopeGuess)
 		record.FailedState = fi.FailedState
 		record.ToolName = fi.ToolName
 	}
