@@ -537,10 +537,16 @@ func (sm *BaseStateMachine) EnterSuspend(ctx context.Context) error {
 	// Store the originating state before transitioning
 	sm.SetStateData(KeySuspendedFrom, currentState)
 
-	// Transition to SUSPEND
+	// Create a transient FailureInfo for analytics tracking
+	fi := proto.NewFailureInfo(proto.FailureKindTransient, "external API failures detected", string(currentState), "")
+	fi.Source = proto.FailureSourceOrchestrator
+	fi.ScopeGuess = proto.FailureScopeAttempt
+
+	// Transition to SUSPEND with failure metadata
 	return sm.TransitionTo(ctx, proto.StateSuspend, map[string]any{
-		"suspend_reason": "external API failures detected",
-		"suspended_at":   time.Now().UTC(),
+		"suspend_reason":     "external API failures detected",
+		"suspended_at":       time.Now().UTC(),
+		proto.KeyFailureInfo: fi,
 	})
 }
 

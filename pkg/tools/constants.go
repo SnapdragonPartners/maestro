@@ -29,8 +29,9 @@ const (
 	// Compose tools.
 	ToolComposeUp = "compose_up"
 
-	// Failure reporting tools.
-	ToolReportBlocked = "report_blocked"
+	// Failure reporting and recovery tools.
+	ToolReportBlocked      = "report_blocked"
+	ToolReleaseHeldStories = "release_held_stories"
 
 	// Chat tools.
 	ToolChatPost = "chat_post"
@@ -154,6 +155,9 @@ var (
 	}
 
 	// Testing tools - validation and verification.
+	// Note: ToolReportBlocked is NOT included here because TESTING runs procedurally
+	// (no toolloop). Blocks during testing surface as test failures → requeue.
+	// Phase 2 may add a toolloop-based testing path that can use report_blocked.
 	TestingTools = []string{
 		ToolShell,
 		ToolBuild,
@@ -185,6 +189,7 @@ var (
 		ToolSpecSubmit,
 		ToolWebSearch,
 		ToolWebFetch,
+		ToolReleaseHeldStories,
 	}
 
 	// PMMaestroMdTools - tools for MAESTRO.md generation phase.

@@ -110,6 +110,7 @@ type Driver struct {
 	questionsCh             chan *proto.AgentMsg                  // Bi-directional channel for requests (specs, questions, approvals)
 	replyCh                 <-chan *proto.AgentMsg                // Read-only channel for replies
 	persistenceChannel      chan<- *persistence.Request           // Channel for database operations
+	scopeWidener            *ScopeWidener                         // Tracks failure recurrence for scope auto-escalation
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
 	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
@@ -194,6 +195,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		dispatcher:         dispatcher,
 		logger:             logger,
 		persistenceChannel: persistenceChannel,
+		scopeWidener:       NewScopeWidener(),
 		shutdownCtx:        shutdownCtx,
 		shutdownCancel:     shutdownCancel,
 		// Channels will be set during Attach()
@@ -875,17 +877,16 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				continue
 			}
 
-			// Increment attempt count and store failure reason
-			story.AttemptCount++
-			story.LastFailReason = requeueRequest.Reason
-			story.LastFailureInfo = requeueRequest.FailureInfo
+			// Increment attempt budget and store failure reason
+			attemptCount, attemptMax, _ := d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassAttempt)
+			d.queue.UpdateStoryFailureMetadata(requeueRequest.StoryID, requeueRequest.Reason, requeueRequest.FailureInfo)
 
-			d.logger.Info("🔄 Story %s attempt count: %d/%d (reason: %s)",
-				requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts, requeueRequest.Reason)
+			d.logger.Info("🔄 Story %s attempt budget: %d/%d (reason: %s)",
+				requeueRequest.StoryID, attemptCount, attemptMax, requeueRequest.Reason)
 
-			// Check retry limit - circuit breaker (before spending tokens on blocked requeue review)
-			if story.AttemptCount >= MaxStoryAttempts {
-				d.logger.Error("🚨 Story %s exceeded retry limit (%d attempts). Last failure: %s. Transitioning architect to ERROR.",
+			// Check retry limit - mark story as failed but architect continues
+			if d.queue.IsBudgetExhausted(requeueRequest.StoryID, BudgetClassAttempt) {
+				d.logger.Warn("🚨 Story %s abandoned after %d attempts (last failure: %s); architect continues",
 					requeueRequest.StoryID, story.AttemptCount, requeueRequest.Reason)
 
 				// Mark story as failed
@@ -893,21 +894,190 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
 				}
 
-				// Transition architect to ERROR state
-				if transErr := d.TransitionTo(ctx, StateError, map[string]any{
-					"error":            fmt.Sprintf("story %s exceeded retry limit after %d attempts", requeueRequest.StoryID, story.AttemptCount),
-					"failed_story_id":  requeueRequest.StoryID,
-					"attempt_count":    story.AttemptCount,
-					"last_fail_reason": requeueRequest.Reason,
-				}); transErr != nil {
-					d.logger.Error("❌ Failed to transition to ERROR state: %v", transErr)
+				// Persist failed status to database
+				if d.persistenceChannel != nil {
+					persistence.PersistStory(story.ToPersistenceStory(), d.persistenceChannel)
+				}
+
+				// Create and persist a failure record for this terminal failure
+				d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+					requeueRequest.Reason, proto.FailureActionMarkFailed,
+					proto.FailureResolutionFailed, requeueRequest.FailureInfo)
+
+				// Notify PM that story is being abandoned
+				if requeueRequest.FailureInfo != nil {
+					d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, false, false)
+				}
+
+				// Check if all stories are now terminal — if so, architect is done
+				if d.queue.AllStoriesTerminal() {
+					d.logger.Info("📋 All stories are terminal (done or failed). Transitioning to DONE.")
+					if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
+						d.logger.Error("❌ Failed to transition to DONE state: %v", transErr)
+					}
 				}
 				continue
 			}
 
-			// If this is a classified failure, give the architect a chance to review and act
+			// Record failure for scope widening detection
+			if requeueRequest.FailureInfo != nil && d.scopeWidener != nil {
+				fi := requeueRequest.FailureInfo
+				normalizedKind := proto.NormalizeFailureKind(fi.Kind)
+				d.scopeWidener.RecordFailure(normalizedKind, requeueRequest.StoryID, fi.Explanation)
+
+				// Check for mechanical scope widening — auto-escalate when same kind recurs across multiple stories
+				currentScope := fi.ScopeGuess
+				if currentScope == "" {
+					currentScope = proto.FailureScopeAttempt
+				}
+				widenedScope := d.scopeWidener.CheckForWidening(normalizedKind, fi.Explanation, currentScope)
+				if widenedScope != currentScope {
+					d.logger.Warn("🔍 Scope widened for %s failures: %s → %s (recurrence threshold reached)",
+						normalizedKind, currentScope, widenedScope)
+					fi.ResolvedScope = widenedScope
+				}
+			}
+
+			// Architect triage: resolve kind and scope with mechanical defaults
 			if requeueRequest.FailureInfo != nil {
-				d.handleBlockedRequeue(ctx, requeueRequest, story, requeueRequest.FailureInfo)
+				fi := requeueRequest.FailureInfo
+				fi.Kind = proto.NormalizeFailureKind(fi.Kind)
+				if fi.ResolvedKind == "" {
+					fi.ResolvedKind = fi.Kind
+				}
+				if fi.ResolvedScope == "" {
+					// Mechanical defaults: story_invalid → story, others → attempt
+					switch fi.Kind {
+					case proto.FailureKindStoryInvalid:
+						fi.ResolvedScope = proto.FailureScopeStory
+					default:
+						fi.ResolvedScope = proto.FailureScopeAttempt
+					}
+				}
+				d.logger.Info("🔍 Triage: kind=%s, resolved_scope=%s (story %s)",
+					fi.ResolvedKind, fi.ResolvedScope, requeueRequest.StoryID)
+			}
+
+			// affectedIDs is captured before holding so the prerequisite case can reference the list.
+			var affectedIDs []string
+			// For epoch/system scoped failures, hold affected stories to prevent wasted work
+			if requeueRequest.FailureInfo != nil {
+				fi := requeueRequest.FailureInfo
+				if fi.ResolvedScope == proto.FailureScopeEpoch || fi.ResolvedScope == proto.FailureScopeSystem {
+					affectedIDs = d.queue.GetActiveStoriesForScope(fi.ResolvedScope, requeueRequest.StoryID)
+					if len(affectedIDs) > 0 {
+						reason := fmt.Sprintf("%s_%s_hold", fi.ResolvedScope, fi.ResolvedKind)
+						for _, id := range affectedIDs {
+							// Cancel in-flight agents before holding (planning/coding stories have active coders)
+							if agentID := d.queue.GetAssignedAgent(id); agentID != "" {
+								cancelEffect := &CancelAgentEffect{
+									AgentID:    agentID,
+									StoryID:    id,
+									Reason:     reason,
+									Dispatcher: d.dispatcher,
+								}
+								if cancelErr := d.ExecuteEffect(ctx, cancelEffect); cancelErr != nil {
+									d.logger.Warn("Failed to cancel agent %s for story %s: %v", agentID, id, cancelErr)
+								}
+							}
+							if holdErr := d.queue.HoldStory(id, reason, "architect", fi.ID, fi.Explanation); holdErr != nil {
+								d.logger.Warn("Failed to hold story %s for %s-scoped failure: %v", id, fi.ResolvedScope, holdErr)
+							}
+						}
+						d.logger.Warn("🔒 Held %d stories for %s-scoped %s failure (trigger: story %s)",
+							len(affectedIDs), fi.ResolvedScope, fi.ResolvedKind, requeueRequest.StoryID)
+					}
+
+					// System-scoped: suppress all new dispatch until manually resolved
+					if fi.ResolvedScope == proto.FailureScopeSystem {
+						d.queue.SuppressDispatch(fmt.Sprintf("system-scoped %s failure: %s", fi.ResolvedKind, fi.Explanation))
+						d.logger.Warn("⛔ Dispatch suppressed: system-scoped %s failure (story %s)",
+							fi.ResolvedKind, requeueRequest.StoryID)
+					}
+				}
+			}
+
+			// If this is a classified failure, give the architect a chance to review and act.
+			storyEdited := false
+			if requeueRequest.FailureInfo != nil {
+				fi := requeueRequest.FailureInfo
+				isStoryInvalid := fi.Kind == proto.FailureKindStoryInvalid
+
+				// For story_invalid failures, check rewrite budget BEFORE attempting rewrite.
+				// If exhausted, mark failed immediately — don't let handleBlockedRequeue edit again.
+				if isStoryInvalid && d.queue.IsBudgetExhausted(requeueRequest.StoryID, BudgetClassRewrite) {
+					d.logger.Warn("🚨 Story %s rewrite budget exhausted (%d/%d); marking as failed",
+						requeueRequest.StoryID, MaxStoryRewrites, MaxStoryRewrites)
+					if err := story.SetStatus(StatusFailed); err != nil {
+						d.logger.Warn("Failed to mark story %s as failed: %v", requeueRequest.StoryID, err)
+					}
+					if d.persistenceChannel != nil {
+						persistence.PersistStory(story.ToPersistenceStory(), d.persistenceChannel)
+					}
+					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+						requeueRequest.Reason, proto.FailureActionMarkFailed,
+						proto.FailureResolutionFailed, fi)
+					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
+					if d.queue.AllStoriesTerminal() {
+						d.logger.Info("📋 All stories are terminal. Transitioning to DONE.")
+						if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
+							d.logger.Error("❌ Failed to transition to DONE: %v", transErr)
+						}
+					}
+					continue
+				}
+
+				// Kind-specific recovery routing
+				switch {
+				case isStoryInvalid:
+					// Story content is the problem — hold, rewrite, release
+					if holdErr := d.queue.HoldStory(requeueRequest.StoryID, "story_redraft", "architect", fi.ID, fi.Explanation); holdErr != nil {
+						d.logger.Warn("Failed to hold story %s: %v", requeueRequest.StoryID, holdErr)
+					}
+
+					storyEdited = d.handleBlockedRequeue(ctx, requeueRequest, story, fi)
+
+					// If story was rewritten, increment rewrite budget and persist a rewrite failure record
+					if storyEdited {
+						_, _, _ = d.queue.IncrementBudget(requeueRequest.StoryID, BudgetClassRewrite)
+						d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+							fi.Explanation, proto.FailureActionRewriteStory,
+							proto.FailureResolutionSucceeded, fi)
+					}
+
+					// Release from hold back to pending
+					if story.GetStatus() == StatusOnHold {
+						if _, releaseErr := d.queue.ReleaseHeldStories([]string{requeueRequest.StoryID}, "architect review complete"); releaseErr != nil {
+							d.logger.Warn("Failed to release story %s from hold: %v", requeueRequest.StoryID, releaseErr)
+						}
+					}
+
+				case fi.Kind == proto.FailureKindEnvironment:
+					// Environment broken — retry with fresh workspace (default requeue path handles this).
+					// For epoch/system scope, related stories are already held above.
+					d.logger.Info("🔧 Environment failure for story %s — retrying with fresh workspace", requeueRequest.StoryID)
+
+				case fi.Kind == proto.FailureKindPrerequisite:
+					// External dependency issue — hold the story and ask PM to clarify with human.
+					// Do NOT retry: the prerequisite won't be fixed until a human acts.
+					if holdErr := d.queue.HoldStory(requeueRequest.StoryID, "awaiting_human", "architect", fi.ID, fi.Explanation); holdErr != nil {
+						d.logger.Warn("Failed to hold story %s for prerequisite failure: %v", requeueRequest.StoryID, holdErr)
+					}
+					question := fmt.Sprintf("A prerequisite is missing or invalid: %s. Please check and resolve.", fi.Explanation)
+					// Use pre-hold affectedIDs (stories are already on_hold, GetActiveStoriesForScope would miss them)
+					heldIDs := append(append([]string{}, affectedIDs...), requeueRequest.StoryID)
+					d.notifyPMOfClarificationNeeded(ctx, story, fi, question, heldIDs)
+					d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+						requeueRequest.Reason, proto.FailureActionAskHuman,
+						proto.FailureResolutionPending, fi)
+					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
+					d.logger.Info("🔑 Prerequisite failure for story %s — held and clarification requested from PM", requeueRequest.StoryID)
+					continue
+
+				default:
+					// Transient or unclassified — just retry
+					d.logger.Info("🔄 Retrying story %s after %s failure", requeueRequest.StoryID, fi.Kind)
+				}
 			}
 
 			// Promote hotfix stories to full stories on requeue.
@@ -919,13 +1089,23 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				story.Express = false
 			}
 
+			// Persist a retry_attempt failure record for every requeue (for budget reconstruction on resume)
+			d.persistFailureRecord(requeueRequest.StoryID, story.AttemptCount,
+				requeueRequest.Reason, proto.FailureActionRetryAttempt,
+				proto.FailureResolutionRunning, requeueRequest.FailureInfo)
+
 			// Change story status back to PENDING so it can be picked up again
 			if err := d.queue.UpdateStoryStatus(requeueRequest.StoryID, StatusPending); err != nil {
 				d.logger.Error("❌ Failed to requeue story %s: %v", requeueRequest.StoryID, err)
 				continue
 			}
 
-			// Dispatch the story back to the work queue (like DISPATCHING state does)
+			// Dispatch the story back to the work queue (like DISPATCHING state does).
+			// Skip dispatch if system-wide suppression is active (e.g., system-scoped failure under repair).
+			if suppressed, _ := d.queue.IsDispatchSuppressed(); suppressed {
+				d.logger.Info("⛔ Dispatch suppressed — story %s stays pending until suppression is lifted", requeueRequest.StoryID)
+				continue
+			}
 			if story.GetStatus() == StatusPending {
 				// Create story message for dispatcher
 				storyMsg := proto.NewAgentMsg(proto.MsgTypeSTORY, d.GetAgentID(), "coder")
@@ -961,6 +1141,11 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 				} else {
 					d.logger.Info("✅ Successfully requeued and dispatched story %s to work queue (attempt %d/%d)",
 						requeueRequest.StoryID, story.AttemptCount, MaxStoryAttempts)
+
+					// Notify PM after successful requeue+dispatch
+					if requeueRequest.FailureInfo != nil {
+						d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, true, storyEdited)
+					}
 				}
 			} else {
 				d.logger.Error("❌ Story %s not in PENDING status after requeue", requeueRequest.StoryID)
@@ -969,11 +1154,44 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 	}
 }
 
+// persistFailureRecord creates and persists a failure record for any requeue event.
+// This ensures budget reconstruction on resume has the data it needs.
+func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason string, action proto.FailureAction, resolutionStatus proto.FailureResolutionStatus, fi *proto.FailureInfo) {
+	if d.persistenceChannel == nil {
+		return
+	}
+
+	// sqliteTimestampFormat matches SQLite's strftime('%Y-%m-%dT%H:%M:%fZ','now') with fractional seconds.
+	const sqliteTimestampFormat = "2006-01-02T15:04:05.000000Z"
+
+	now := time.Now().UTC()
+	record := &persistence.FailureRecord{
+		ID:               proto.GenerateFailureID(),
+		CreatedAt:        now.Format(sqliteTimestampFormat),
+		UpdatedAt:        now.Format(sqliteTimestampFormat),
+		StoryID:          storyID,
+		AttemptNumber:    attemptNumber,
+		Kind:             string(proto.FailureKindEnvironment),
+		Explanation:      reason,
+		Action:           string(action),
+		ResolutionStatus: string(resolutionStatus),
+	}
+	if fi != nil {
+		record.Kind = string(fi.Kind)
+		record.Source = string(fi.Source)
+		record.ScopeGuess = string(fi.ScopeGuess)
+		record.FailedState = fi.FailedState
+		record.ToolName = fi.ToolName
+	}
+	persistence.PersistFailureRecord(record, d.persistenceChannel)
+}
+
 // handleBlockedRequeue gives the architect LLM a chance to review and act on a classified failure
 // before the story is requeued. Follows the attemptStoryEdit pattern: inject context into the
 // architect's per-agent conversation and run a single-turn toolloop with story_edit.
 // This is best-effort: if the LLM call fails, we log and continue with the requeue as-is.
-func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryRequeueRequest, story *QueuedStory, fi *proto.FailureInfo) {
+// Returns true if the story was modified (content replaced or notes appended).
+func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryRequeueRequest, story *QueuedStory, fi *proto.FailureInfo) bool {
 	// Get or create a context for the failed agent
 	cm := d.getContextForAgent(req.AgentID)
 
@@ -994,7 +1212,7 @@ func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryReque
 	storyEditTool, err := toolProvider.Get(tools.ToolStoryEdit)
 	if err != nil {
 		d.logger.Warn("🚧 Failed to get story_edit tool for blocked requeue: %v", err)
-		return
+		return false
 	}
 
 	d.logger.Info("🚧 Running blocked requeue review for story %s (failure: %s)", req.StoryID, fi.Kind)
@@ -1017,19 +1235,19 @@ func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryReque
 	// Handle outcome — same pattern as attemptStoryEdit
 	if out.Kind != toolloop.OutcomeProcessEffect {
 		d.logger.Warn("🚧 Blocked requeue review failed for %s: %v (continuing with requeue)", req.StoryID, out.Err)
-		return
+		return false
 	}
 
 	if out.Signal != tools.SignalStoryEditComplete {
 		d.logger.Warn("🚧 Unexpected signal from blocked requeue review: %s (continuing with requeue)", out.Signal)
-		return
+		return false
 	}
 
 	// Extract edit data from EffectData
 	effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 	if !ok {
 		d.logger.Warn("🚧 Blocked requeue effect data is not map[string]any: %T (continuing with requeue)", out.EffectData)
-		return
+		return false
 	}
 
 	// Check for full story rewrite first (takes precedence over notes)
@@ -1038,18 +1256,19 @@ func (d *Driver) handleBlockedRequeue(ctx context.Context, req *proto.StoryReque
 		story.Content = revisedContent
 		d.logger.Info("🚧 Replaced story content for %s (%d chars) — architect rewrote story after %s failure",
 			req.StoryID, len(revisedContent), fi.Kind)
-		return
+		return true
 	}
 
 	// Fall back to appending implementation notes
 	notes, _ := utils.SafeAssert[string](effectData["notes"])
 	if notes == "" {
 		d.logger.Info("🚧 Architect provided no edits for blocked story %s", req.StoryID)
-		return
+		return false
 	}
 
 	story.Content += "\n\n## Failure Context (Auto-generated)\n\n" + notes
 	d.logger.Info("🚧 Appended failure context to story %s (%d chars)", req.StoryID, len(notes))
+	return true
 }
 
 // buildBlockedRequeuePrompt renders the blocked requeue template for the architect.

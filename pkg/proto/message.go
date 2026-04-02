@@ -675,6 +675,15 @@ type StoryRequeueRequest struct {
 	FailureInfo *FailureInfo `json:"failure_info,omitempty"` // Structured failure context (nil for unclassified failures)
 }
 
+// AgentCancelRequest represents a request to cancel and restart an agent.
+// Sent by the architect to the supervisor via the dispatcher when in-flight
+// work must be terminated (e.g., epoch/system-scoped failure hold).
+type AgentCancelRequest struct {
+	AgentID string `json:"agent_id"`
+	StoryID string `json:"story_id"`
+	Reason  string `json:"reason"`
+}
+
 // Metadata helper functions
 
 // GetStoryID returns the story_id from message metadata, or empty string if not present.

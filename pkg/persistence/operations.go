@@ -72,6 +72,13 @@ const (
 	OpInsertMaintenanceItem         = "insert_maintenance_item"
 	OpGetUnconsumedMaintenanceItems = "get_unconsumed_maintenance_items"
 	OpMarkMaintenanceItemsConsumed  = "mark_maintenance_items_consumed"
+
+	// Failure record operations.
+	OpPersistFailure                = "persist_failure"
+	OpUpdateFailureResolution       = "update_failure_resolution"
+	OpQueryFailuresByStory          = "query_failures_by_story"
+	OpQueryFailureByID              = "query_failure_by_id"
+	OpCountFailuresByStoryAndAction = "count_failures_by_story_and_action"
 )
 
 // UpdateStoryStatusRequest represents a status update request.
@@ -181,8 +188,9 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 		INSERT INTO stories (
 			id, session_id, spec_id, title, content, status, priority, approved_plan,
 			created_at, started_at, completed_at, assigned_agent,
-			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tokens_used, cost_usd, metadata, story_type, pr_id, commit_hash, completion_summary,
+			hold_reason, hold_since, hold_owner, hold_note, blocked_by_failure_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			spec_id = excluded.spec_id,
 			title = excluded.title,
@@ -199,7 +207,12 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 			story_type = excluded.story_type,
 			pr_id = excluded.pr_id,
 			commit_hash = excluded.commit_hash,
-			completion_summary = excluded.completion_summary
+			completion_summary = excluded.completion_summary,
+			hold_reason = excluded.hold_reason,
+			hold_since = excluded.hold_since,
+			hold_owner = excluded.hold_owner,
+			hold_note = excluded.hold_note,
+			blocked_by_failure_id = excluded.blocked_by_failure_id
 	`
 
 	_, err := ops.db.Exec(query,
@@ -207,6 +220,7 @@ func (ops *DatabaseOperations) UpsertStory(story *Story) error {
 		story.Priority, story.ApprovedPlan, story.CreatedAt, story.StartedAt,
 		story.CompletedAt, story.AssignedAgent, story.TokensUsed,
 		story.CostUSD, story.Metadata, story.StoryType, story.PRID, story.CommitHash, story.CompletionSummary,
+		story.HoldReason, story.HoldSince, story.HoldOwner, story.HoldNote, story.BlockedByFailureID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to upsert story %s: %w", story.ID, err)
@@ -319,7 +333,7 @@ func (ops *DatabaseOperations) RemoveStoryDependency(storyID, dependsOn string) 
 
 // QueryStoriesByFilter returns stories matching the given filter criteria.
 func (ops *DatabaseOperations) QueryStoriesByFilter(filter *StoryFilter) ([]*Story, error) {
-	query := "SELECT id, spec_id, title, content, status, priority, approved_plan, created_at, started_at, completed_at, assigned_agent, tokens_used, cost_usd, metadata FROM stories WHERE session_id = ?"
+	query := "SELECT id, spec_id, title, content, status, priority, approved_plan, created_at, started_at, completed_at, assigned_agent, tokens_used, cost_usd, metadata, COALESCE(hold_reason, '') AS hold_reason, hold_since, COALESCE(hold_owner, '') AS hold_owner, COALESCE(hold_note, '') AS hold_note, COALESCE(blocked_by_failure_id, '') AS blocked_by_failure_id FROM stories WHERE session_id = ?"
 	args := []interface{}{ops.sessionID}
 
 	// Build WHERE conditions
@@ -346,38 +360,7 @@ func (ops *DatabaseOperations) QueryStoriesByFilter(filter *StoryFilter) ([]*Sto
 
 	query += " ORDER BY priority DESC, created_at ASC"
 
-	rows, err := ops.db.Query(query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query stories: %w", err)
-	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			// Log error but don't override the main error
-			_ = closeErr
-		}
-	}()
-
-	var stories []*Story
-	for rows.Next() {
-		story := &Story{}
-		err := rows.Scan(
-			&story.ID, &story.SpecID, &story.Title, &story.Content,
-			&story.Status, &story.Priority, &story.ApprovedPlan,
-			&story.CreatedAt, &story.StartedAt, &story.CompletedAt,
-			&story.AssignedAgent, &story.TokensUsed, &story.CostUSD,
-			&story.Metadata,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan story: %w", err)
-		}
-		stories = append(stories, story)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration error: %w", err)
-	}
-
-	return stories, nil
+	return ops.queryStoriesBySQLWithArgs(query, args, "stories by filter")
 }
 
 // QueryPendingStories returns stories that are ready to be worked on (no unfinished dependencies).
@@ -385,7 +368,8 @@ func (ops *DatabaseOperations) QueryPendingStories() ([]*Story, error) {
 	query := `
 		SELECT DISTINCT s.id, s.spec_id, s.title, s.content, s.status, s.priority,
 		       s.approved_plan, s.created_at, s.started_at, s.completed_at,
-		       s.assigned_agent, s.tokens_used, s.cost_usd, s.metadata
+		       s.assigned_agent, s.tokens_used, s.cost_usd, s.metadata,
+		       COALESCE(s.hold_reason, '') AS hold_reason, s.hold_since, COALESCE(s.hold_owner, '') AS hold_owner, COALESCE(s.hold_note, '') AS hold_note, COALESCE(s.blocked_by_failure_id, '') AS blocked_by_failure_id
 		FROM stories s
 		LEFT JOIN story_dependencies d ON s.id = d.story_id
 		LEFT JOIN stories dep ON d.depends_on = dep.id
@@ -532,6 +516,8 @@ func (ops *DatabaseOperations) queryStoriesBySQLWithArgs(query string, args []in
 			&story.CreatedAt, &story.StartedAt, &story.CompletedAt,
 			&story.AssignedAgent, &story.TokensUsed, &story.CostUSD,
 			&story.Metadata,
+			&story.HoldReason, &story.HoldSince, &story.HoldOwner,
+			&story.HoldNote, &story.BlockedByFailureID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan story: %w", err)
@@ -551,7 +537,8 @@ func (ops *DatabaseOperations) GetAllStories() ([]*Story, error) {
 	query := `
 		SELECT id, spec_id, title, content, status, priority, approved_plan,
 		       created_at, started_at, completed_at, assigned_agent,
-		       tokens_used, cost_usd, metadata
+		       tokens_used, cost_usd, metadata,
+		       COALESCE(hold_reason, '') AS hold_reason, hold_since, COALESCE(hold_owner, '') AS hold_owner, COALESCE(hold_note, '') AS hold_note, COALESCE(blocked_by_failure_id, '') AS blocked_by_failure_id
 		FROM stories WHERE session_id = ? ORDER BY priority DESC, created_at ASC
 	`
 	return ops.queryStoriesBySQLWithArgs(query, []interface{}{ops.sessionID}, "all stories")

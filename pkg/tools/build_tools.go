@@ -503,9 +503,9 @@ const commitRetryBackoff = 2 * time.Second
 // maxCommitRetries is the maximum number of commit attempts before giving up.
 const maxCommitRetries = 3
 
-// classifyCommitFailure examines git command output to determine if a failure
-// is an infrastructure issue (FailureKindExternal) or something the LLM might fix.
-// Returns empty string for unclassified/content errors that should be retried normally.
+// classifyCommitFailure examines git command output to determine the failure kind.
+// Returns FailureKindEnvironment for infrastructure issues, FailureKindPrerequisite
+// for auth/credential issues, or empty string for content errors the LLM might fix.
 func classifyCommitFailure(stderr string, exitCode int) proto.FailureKind {
 	lower := strings.ToLower(stderr)
 
@@ -514,8 +514,24 @@ func classifyCommitFailure(stderr string, exitCode int) proto.FailureKind {
 		return ""
 	}
 
-	// Git structural/infrastructure errors → external
-	infrastructurePatterns := []string{
+	// Auth/credential errors → prerequisite
+	prerequisitePatterns := []string{
+		"authentication failed",
+		"unauthorized",
+		"forbidden",
+		"token expired",
+		"credential",
+		"could not resolve host",
+		"fakeowner",
+	}
+	for _, pattern := range prerequisitePatterns {
+		if strings.Contains(lower, pattern) {
+			return proto.FailureKindPrerequisite
+		}
+	}
+
+	// Git structural/infrastructure errors → environment
+	environmentPatterns := []string{
 		"bad tree object",
 		"corrupt",
 		"not a git repository",
@@ -523,14 +539,13 @@ func classifyCommitFailure(stderr string, exitCode int) proto.FailureKind {
 		"cannot lock ref",
 		"fatal: unable to",
 		"error: bad object",
-		"fakeowner",
 		"permission denied",
 		"no space left on device",
 		"read-only file system",
 	}
-	for _, pattern := range infrastructurePatterns {
+	for _, pattern := range environmentPatterns {
 		if strings.Contains(lower, pattern) {
-			return proto.FailureKindExternal
+			return proto.FailureKindEnvironment
 		}
 	}
 
@@ -564,8 +579,8 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 		errMsg := res.err.Error()
 		kind := classifyCommitFailure(errMsg, res.exitCode)
 
-		// Infrastructure failures: wrap in BlockedError immediately, no point retrying
-		if kind == proto.FailureKindExternal {
+		// Infrastructure/prerequisite failures: wrap in BlockedError immediately, no point retrying
+		if kind == proto.FailureKindEnvironment || kind == proto.FailureKindPrerequisite {
 			logx.Warnf("Commit attempt %d/%d failed with infrastructure error: %v", attempt, maxCommitRetries, res.err)
 			return commitResult{
 				err: &BlockedError{

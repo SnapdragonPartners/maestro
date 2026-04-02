@@ -138,7 +138,8 @@ type Dispatcher struct {
 	leasesMutex sync.Mutex        // Protects lease map
 
 	// State change notifications.
-	stateChangeCh chan *proto.StateChangeNotification // Channel for agent state change notifications
+	stateChangeCh    chan *proto.StateChangeNotification // Channel for agent state change notifications
+	cancelRequestsCh chan *proto.AgentCancelRequest      // Channel for agent cancellation requests
 
 	// Execution strategy for testing
 	runStrat runStrategy // Controls how dispatcher executes (goroutines vs step-by-step)
@@ -168,6 +169,7 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
 		errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
 		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
+		cancelRequestsCh:  make(chan *proto.AgentCancelRequest, 20),                                   // Buffered channel for agent cancellation requests
 		leases:            make(map[string]string),                                                    // Story lease tracking
 		runStrat:          &goroutineStrategy{},                                                       // Default to production goroutine strategy
 	}, nil
@@ -920,6 +922,21 @@ func (d *Dispatcher) GetStoryCh() <-chan *proto.AgentMsg {
 // GetStateChangeChannel returns the state change notification channel.
 func (d *Dispatcher) GetStateChangeChannel() <-chan *proto.StateChangeNotification {
 	return d.stateChangeCh
+}
+
+// RequestAgentCancel sends a cancellation request for an agent to the supervisor.
+// Non-blocking: drops the request if the channel is full (logged by caller).
+func (d *Dispatcher) RequestAgentCancel(req *proto.AgentCancelRequest) {
+	select {
+	case d.cancelRequestsCh <- req:
+	default:
+		d.logger.Warn("Cancel request channel full, dropping cancel for agent %s", req.AgentID)
+	}
+}
+
+// GetCancelRequestsChannel returns the agent cancellation requests channel.
+func (d *Dispatcher) GetCancelRequestsChannel() <-chan *proto.AgentCancelRequest {
+	return d.cancelRequestsCh
 }
 
 // GetStatusUpdatesChannel returns the story status updates channel.

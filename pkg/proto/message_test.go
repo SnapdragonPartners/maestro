@@ -495,3 +495,96 @@ func TestCorrelationHelpers(t *testing.T) {
 		t.Error("Should not have correlation ID when none set")
 	}
 }
+
+func TestStoryBlockedPayload_RoundTrip(t *testing.T) {
+	original := &StoryBlockedPayload{
+		StoryID:        "story-42",
+		Title:          "Add user auth",
+		FailureKind:    FailureKindExternal,
+		Explanation:    "git repository corrupt: bad tree object HEAD",
+		AttemptCount:   2,
+		MaxAttempts:    3,
+		WillRetry:      true,
+		StoryEdited:    true,
+		ActionRequired: false,
+		Timestamp:      "2026-03-29T10:00:00Z",
+	}
+
+	// Create payload
+	payload := NewStoryBlockedPayload(original)
+	if payload.Kind != PayloadKindStoryBlocked {
+		t.Errorf("expected kind %q, got %q", PayloadKindStoryBlocked, payload.Kind)
+	}
+
+	// Extract and verify round-trip
+	extracted, err := payload.ExtractStoryBlocked()
+	if err != nil {
+		t.Fatalf("ExtractStoryBlocked failed: %v", err)
+	}
+
+	if extracted.StoryID != original.StoryID {
+		t.Errorf("StoryID: got %q, want %q", extracted.StoryID, original.StoryID)
+	}
+	if extracted.FailureKind != original.FailureKind {
+		t.Errorf("FailureKind: got %q, want %q", extracted.FailureKind, original.FailureKind)
+	}
+	if extracted.Explanation != original.Explanation {
+		t.Errorf("Explanation: got %q, want %q", extracted.Explanation, original.Explanation)
+	}
+	if extracted.AttemptCount != original.AttemptCount {
+		t.Errorf("AttemptCount: got %d, want %d", extracted.AttemptCount, original.AttemptCount)
+	}
+	if extracted.WillRetry != original.WillRetry {
+		t.Errorf("WillRetry: got %v, want %v", extracted.WillRetry, original.WillRetry)
+	}
+	if extracted.StoryEdited != original.StoryEdited {
+		t.Errorf("StoryEdited: got %v, want %v", extracted.StoryEdited, original.StoryEdited)
+	}
+	if extracted.ActionRequired != original.ActionRequired {
+		t.Errorf("ActionRequired: got %v, want %v", extracted.ActionRequired, original.ActionRequired)
+	}
+}
+
+func TestStoryBlockedPayload_WrongKind(t *testing.T) {
+	payload := NewStoryCompletePayload(&StoryCompletePayload{
+		StoryID:   "story-1",
+		Title:     "test",
+		Timestamp: "2026-03-29T10:00:00Z",
+	})
+
+	_, err := payload.ExtractStoryBlocked()
+	if err == nil {
+		t.Error("expected error when extracting story_blocked from story_complete payload")
+	}
+}
+
+func TestStoryBlockedPayload_Abandoned(t *testing.T) {
+	original := &StoryBlockedPayload{
+		StoryID:        "story-99",
+		Title:          "Fix flaky test",
+		FailureKind:    FailureKindStoryInvalid,
+		Explanation:    "requirements contradict each other",
+		AttemptCount:   3,
+		MaxAttempts:    3,
+		WillRetry:      false,
+		StoryEdited:    false,
+		ActionRequired: true,
+		Timestamp:      "2026-03-29T10:00:00Z",
+	}
+
+	payload := NewStoryBlockedPayload(original)
+	extracted, err := payload.ExtractStoryBlocked()
+	if err != nil {
+		t.Fatalf("ExtractStoryBlocked failed: %v", err)
+	}
+
+	if extracted.WillRetry {
+		t.Error("expected WillRetry=false for abandoned story")
+	}
+	if extracted.StoryEdited {
+		t.Error("expected StoryEdited=false for abandoned story")
+	}
+	if !extracted.ActionRequired {
+		t.Error("expected ActionRequired=true for abandoned story")
+	}
+}

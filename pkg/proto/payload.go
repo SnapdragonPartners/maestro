@@ -41,8 +41,11 @@ const (
 	PayloadKindShutdown PayloadKind = "shutdown"
 
 	// Notification payloads.
-	PayloadKindStoryComplete      PayloadKind = "story_complete"       // Story completion notification
-	PayloadKindAllStoriesComplete PayloadKind = "all_stories_complete" // All stories completed notification
+	PayloadKindStoryComplete        PayloadKind = "story_complete"        // Story completion notification
+	PayloadKindAllStoriesComplete   PayloadKind = "all_stories_complete"  // All stories completed notification
+	PayloadKindStoryBlocked         PayloadKind = "story_blocked"         // Story blocked/failed notification
+	PayloadKindClarificationRequest PayloadKind = "clarification_request" // Request PM to relay clarification to human
+	PayloadKindRepairComplete       PayloadKind = "repair_complete"       // Signal that system repair is done
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -345,6 +348,108 @@ func (p *MessagePayload) ExtractAllStoriesComplete() (*AllStoriesCompletePayload
 	var result AllStoriesCompletePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal all stories complete payload: %w", err)
+	}
+	return &result, nil
+}
+
+// StoryBlockedPayload contains data for a story blocked/failed notification.
+// Sent by architect to PM when a story is blocked and being retried or abandoned.
+type StoryBlockedPayload struct {
+	StoryID        string      `json:"story_id"`
+	Title          string      `json:"title"`
+	FailureKind    FailureKind `json:"failure_kind"`
+	Explanation    string      `json:"explanation"`
+	AttemptCount   int         `json:"attempt_count"`
+	MaxAttempts    int         `json:"max_attempts"`
+	WillRetry      bool        `json:"will_retry"`      // true if story is being requeued, false if abandoned
+	StoryEdited    bool        `json:"story_edited"`    // true if architect modified the story before retry
+	ActionRequired bool        `json:"action_required"` // true if PM/user must act (e.g., abandoned story); false if informational only
+	Timestamp      string      `json:"timestamp"`
+	FailureID      string      `json:"failure_id,omitempty"`  // ID of the failure record (for cross-reference)
+	HoldReason     string      `json:"hold_reason,omitempty"` // Reason the story was placed on hold
+}
+
+// NewStoryBlockedPayload creates a payload for story blocked notifications.
+func NewStoryBlockedPayload(data *StoryBlockedPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindStoryBlocked,
+		Data: raw,
+	}
+}
+
+// ExtractStoryBlocked extracts and validates a story blocked payload.
+func (p *MessagePayload) ExtractStoryBlocked() (*StoryBlockedPayload, error) {
+	if p.Kind != PayloadKindStoryBlocked {
+		return nil, fmt.Errorf("expected story_blocked payload, got %s", p.Kind)
+	}
+	var result StoryBlockedPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal story blocked payload: %w", err)
+	}
+	return &result, nil
+}
+
+// ClarificationRequestPayload is sent by the architect to PM when a failure
+// requires human input (e.g., expired credentials, missing API keys, unclear requirements).
+type ClarificationRequestPayload struct {
+	FailureID    string       `json:"failure_id"`
+	StoryID      string       `json:"story_id"`
+	Title        string       `json:"title"`
+	FailureKind  FailureKind  `json:"failure_kind"`
+	FailureScope FailureScope `json:"failure_scope"`
+	Explanation  string       `json:"explanation"`
+	Question     string       `json:"question"`                 // What the architect needs answered
+	HeldStoryIDs []string     `json:"held_story_ids,omitempty"` // Stories held pending resolution
+	Timestamp    string       `json:"timestamp"`
+}
+
+// NewClarificationRequestPayload creates a payload for clarification requests.
+func NewClarificationRequestPayload(data *ClarificationRequestPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindClarificationRequest,
+		Data: raw,
+	}
+}
+
+// ExtractClarificationRequest extracts a clarification request payload.
+func (p *MessagePayload) ExtractClarificationRequest() (*ClarificationRequestPayload, error) {
+	if p.Kind != PayloadKindClarificationRequest {
+		return nil, fmt.Errorf("expected clarification_request payload, got %s", p.Kind)
+	}
+	var result ClarificationRequestPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal clarification request payload: %w", err)
+	}
+	return &result, nil
+}
+
+// RepairCompletePayload signals that a system-scoped repair has been completed.
+// Sent by PM (on behalf of human) to architect to trigger release of held stories.
+type RepairCompletePayload struct {
+	FailureID string `json:"failure_id,omitempty"` // Specific failure resolved (empty = all)
+	Reason    string `json:"reason"`               // What was done to resolve
+	Timestamp string `json:"timestamp"`
+}
+
+// NewRepairCompletePayload creates a payload for repair completion signals.
+func NewRepairCompletePayload(data *RepairCompletePayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindRepairComplete,
+		Data: raw,
+	}
+}
+
+// ExtractRepairComplete extracts a repair complete payload.
+func (p *MessagePayload) ExtractRepairComplete() (*RepairCompletePayload, error) {
+	if p.Kind != PayloadKindRepairComplete {
+		return nil, fmt.Errorf("expected repair_complete payload, got %s", p.Kind)
+	}
+	var result RepairCompletePayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal repair complete payload: %w", err)
 	}
 	return &result, nil
 }

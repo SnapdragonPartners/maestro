@@ -107,6 +107,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 			response = nil // No response needed for requeue messages
 		case proto.RequestKindHotfix:
 			response, err = d.handleHotfixRequest(ctx, requestMsg)
+		case proto.RequestKindRepairComplete:
+			repairNextState := d.handleRepairComplete(ctx, requestMsg)
+			if repairNextState != "" {
+				return repairNextState, nil
+			}
+			response = nil // No response needed
 		default:
 			return StateError, fmt.Errorf("unknown request kind: %s", requestKind)
 		}
@@ -804,6 +810,129 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 	d.pmAllCompleteNotified = true
 	d.logger.Info("🎉 Notified PM that all %d stories are complete (spec=%s)", totalStories, specID)
 	return nil
+}
+
+// notifyPMOfBlockedStory sends a story blocked notification to PM.
+// willRetry indicates whether the story is being requeued (true) or abandoned (false).
+// storyEdited indicates whether the architect modified the story before retry.
+func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory, fi *proto.FailureInfo, willRetry, storyEdited bool) {
+	payload := &proto.StoryBlockedPayload{
+		StoryID:        story.ID,
+		Title:          story.Title,
+		FailureKind:    fi.Kind,
+		Explanation:    fi.Explanation,
+		AttemptCount:   story.AttemptCount,
+		MaxAttempts:    MaxStoryAttempts,
+		WillRetry:      willRetry,
+		StoryEdited:    storyEdited,
+		ActionRequired: !willRetry, // Abandoned stories require user action; retries are informational
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		FailureID:      fi.ID,
+		HoldReason:     story.HoldReason,
+	}
+
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewStoryBlockedPayload(payload))
+	notifyMsg.SetMetadata(proto.KeyStoryID, story.ID)
+
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		d.logger.Warn("⚠️ Failed to notify PM of blocked story %s: %v", story.ID, err)
+	} else {
+		d.logger.Info("📬 Notified PM of blocked story %s (kind=%s, willRetry=%v)", story.ID, fi.Kind, willRetry)
+	}
+}
+
+// handleRepairComplete processes a repair_complete signal from PM.
+// Releases held stories and resumes dispatch if it was suppressed.
+// Returns StateDispatching if stories were released so the caller can
+// return it as the next state, or "" to let the default path continue.
+func (d *Driver) handleRepairComplete(_ context.Context, msg *proto.AgentMsg) proto.State {
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		d.logger.Warn("Repair complete message has no payload")
+		return ""
+	}
+
+	repair, err := typedPayload.ExtractRepairComplete()
+	if err != nil {
+		d.logger.Warn("Failed to extract repair_complete payload: %v", err)
+		return ""
+	}
+
+	d.logger.Info("🔧 Repair complete signal received: %s", repair.Reason)
+
+	// Release held stories
+	var released []string
+	if repair.FailureID != "" {
+		// Release stories held by a specific failure
+		released, _ = d.queue.ReleaseHeldStoriesByFailure(repair.FailureID, repair.Reason)
+	} else {
+		// Release ALL held stories
+		held := d.queue.GetHeldStories()
+		ids := make([]string, len(held))
+		for i, s := range held {
+			ids[i] = s.ID
+		}
+		if len(ids) > 0 {
+			released, _ = d.queue.ReleaseHeldStories(ids, repair.Reason)
+		}
+	}
+
+	if len(released) > 0 {
+		d.logger.Info("✅ Released %d held stories after repair: %v", len(released), released)
+
+		// Update failure records to succeeded
+		if d.persistenceChannel != nil {
+			failureID := repair.FailureID
+			if failureID != "" {
+				persistence.UpdateFailureResolutionAsync(&persistence.UpdateFailureResolutionRequest{
+					ID:                failureID,
+					ResolutionStatus:  string(proto.FailureResolutionSucceeded),
+					ResolutionOutcome: repair.Reason,
+				}, d.persistenceChannel)
+			}
+		}
+	}
+
+	// Resume dispatch if it was suppressed
+	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
+		d.queue.ResumeDispatch()
+		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
+	}
+
+	// Signal caller to transition to DISPATCHING if stories were released
+	if len(released) > 0 {
+		return StateDispatching
+	}
+	return ""
+}
+
+// notifyPMOfClarificationNeeded sends a clarification request to PM for human input.
+// Used when a failure requires external action (e.g., expired credentials, missing config).
+func (d *Driver) notifyPMOfClarificationNeeded(ctx context.Context, story *QueuedStory, fi *proto.FailureInfo, question string, heldStoryIDs []string) {
+	payload := &proto.ClarificationRequestPayload{
+		FailureID:    fi.ID,
+		StoryID:      story.ID,
+		Title:        story.Title,
+		FailureKind:  fi.ResolvedKind,
+		FailureScope: fi.ResolvedScope,
+		Explanation:  fi.Explanation,
+		Question:     question,
+		HeldStoryIDs: heldStoryIDs,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewClarificationRequestPayload(payload))
+	notifyMsg.SetMetadata(proto.KeyStoryID, story.ID)
+
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		d.logger.Warn("⚠️ Failed to send clarification request to PM for story %s: %v", story.ID, err)
+	} else {
+		d.logger.Info("❓ Sent clarification request to PM for story %s (%s: %s)", story.ID, fi.ResolvedKind, question)
+	}
 }
 
 // Response formatting methods using templates

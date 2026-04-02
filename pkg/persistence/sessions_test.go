@@ -43,6 +43,11 @@ func setupTestDB(t *testing.T) *sql.DB {
 		tokens_used INTEGER DEFAULT 0,
 		cost_usd REAL DEFAULT 0.0,
 		metadata TEXT DEFAULT '',
+		hold_reason TEXT DEFAULT '',
+		hold_since TIMESTAMP,
+		hold_owner TEXT DEFAULT '',
+		hold_note TEXT DEFAULT '',
+		blocked_by_failure_id TEXT DEFAULT '',
 		PRIMARY KEY (id, session_id),
 		FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 	);
