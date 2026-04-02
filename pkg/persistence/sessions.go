@@ -540,7 +540,8 @@ func GetAllStoriesForSession(db *sql.DB, sessionID string) ([]*Story, error) {
 	rows, err := db.Query(`
 		SELECT id, spec_id, title, content, status, priority, approved_plan,
 		       created_at, started_at, completed_at, assigned_agent,
-		       tokens_used, cost_usd, metadata, story_type
+		       tokens_used, cost_usd, metadata, story_type,
+		       COALESCE(hold_reason, '') AS hold_reason, hold_since, COALESCE(hold_owner, '') AS hold_owner, COALESCE(hold_note, '') AS hold_note, COALESCE(blocked_by_failure_id, '') AS blocked_by_failure_id
 		FROM stories
 		WHERE session_id = ?
 		ORDER BY priority DESC, created_at ASC
@@ -559,6 +560,8 @@ func GetAllStoriesForSession(db *sql.DB, sessionID string) ([]*Story, error) {
 			&story.CreatedAt, &story.StartedAt, &story.CompletedAt,
 			&story.AssignedAgent, &story.TokensUsed, &story.CostUSD,
 			&story.Metadata, &story.StoryType,
+			&story.HoldReason, &story.HoldSince, &story.HoldOwner,
+			&story.HoldNote, &story.BlockedByFailureID,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan story: %w", scanErr)

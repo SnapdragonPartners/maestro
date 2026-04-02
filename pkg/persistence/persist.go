@@ -114,6 +114,34 @@ func PersistToolExecution(toolExec *ToolExecution, persistenceChannel chan<- *Re
 	}
 }
 
+// PersistFailureRecord persists a failure record to the database.
+// This is a fire-and-forget operation that sends the record to the persistence worker.
+func PersistFailureRecord(record *FailureRecord, persistenceChannel chan<- *Request) {
+	if persistenceChannel == nil || record == nil {
+		return
+	}
+
+	persistenceChannel <- &Request{
+		Operation: OpPersistFailure,
+		Data:      record,
+		Response:  nil, // Fire-and-forget
+	}
+}
+
+// UpdateFailureResolutionAsync sends a failure resolution update to the persistence worker.
+// This is a fire-and-forget operation.
+func UpdateFailureResolutionAsync(req *UpdateFailureResolutionRequest, persistenceChannel chan<- *Request) {
+	if persistenceChannel == nil || req == nil {
+		return
+	}
+
+	persistenceChannel <- &Request{
+		Operation: OpUpdateFailureResolution,
+		Data:      req,
+		Response:  nil, // Fire-and-forget
+	}
+}
+
 // PersistMaintenanceItem persists a maintenance item logged during architect review.
 func PersistMaintenanceItem(item *MaintenanceItemRecord, persistenceChannel chan<- *Request) {
 	if persistenceChannel == nil || item == nil {

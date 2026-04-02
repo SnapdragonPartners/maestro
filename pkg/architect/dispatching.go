@@ -250,8 +250,8 @@ func (d *Driver) detectDeadlock() bool {
 		return false // No stories means no deadlock
 	}
 
-	// Check if all stories are completed - not a deadlock
-	if d.queue.AllStoriesCompleted() {
+	// Check if all stories are terminal (done or failed) - not a deadlock
+	if d.queue.AllStoriesTerminal() {
 		return false
 	}
 
@@ -264,10 +264,11 @@ func (d *Driver) detectDeadlock() bool {
 	// At this point: not all stories completed AND no stories ready
 	// Now check if unreleased stories have valid, satisfiable dependencies
 
-	// Get all unreleased (not done) stories
+	// Get all unreleased stories (exclude terminal and on_hold statuses)
 	var unreleasedStories []*QueuedStory
 	for _, story := range allStories {
-		if story.GetStatus() != StatusDone {
+		status := story.GetStatus()
+		if status != StatusDone && status != StatusFailed && status != StatusOnHold {
 			unreleasedStories = append(unreleasedStories, story)
 		}
 	}

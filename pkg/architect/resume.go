@@ -120,6 +120,24 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 	} else if len(stories) > 0 {
 		loadedCount := d.queue.LoadStoriesFromDB(stories)
 		d.logger.Info("Loaded %d stories from database", loadedCount)
+
+		// Reconstruct retry budgets from failure history.
+		// Budgets are in-memory only; the failures table is the durable source of truth.
+		budgetsReconstructed := 0
+		for _, story := range stories {
+			counts, countErr := persistence.CountFailuresByStoryAndActionForSession(db, sessionID, story.ID)
+			if countErr != nil {
+				d.logger.Warn("Failed to count failures for story %s: %v", story.ID, countErr)
+				continue
+			}
+			if len(counts) > 0 {
+				d.queue.ReconstructBudgetsFromFailures(story.ID, counts)
+				budgetsReconstructed++
+			}
+		}
+		if budgetsReconstructed > 0 {
+			d.logger.Info("Reconstructed retry budgets for %d stories from failure history", budgetsReconstructed)
+		}
 	}
 
 	d.logger.Info("State restored successfully (state=%s, contexts=%d, stories=%d)",

@@ -140,8 +140,8 @@ var CoderTransitions = map[proto.State][]proto.State{ //nolint:gochecknoglobals
 	// CODING can complete (→TESTING), exceed budget (→BUDGET_REVIEW), ask architect questions (→QUESTION), or hit unrecoverable error.
 	StateCoding: {StateTesting, StateBudgetReview, StateQuestion, proto.StateError},
 
-	// TESTING can pass (→CODE_REVIEW) or fail (→CODING).
-	StateTesting: {StateCoding, StateCodeReview},
+	// TESTING can pass (→CODE_REVIEW), fail (→CODING), or detect infrastructure issues (→ERROR for architect routing).
+	StateTesting: {StateCoding, StateCodeReview, proto.StateError},
 
 	// CODE_REVIEW can approve code (→PREPARE_MERGE), approve completion (→DONE), request changes (→CODING), or abandon (→ERROR).
 	StateCodeReview: {StatePrepareMerge, proto.StateDone, StateCoding, proto.StateError},

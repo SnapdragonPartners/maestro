@@ -53,16 +53,27 @@ type Story struct {
 	// Extensibility
 	Metadata string `json:"metadata,omitempty"` // JSON blob for extensibility
 
+	// Hold metadata (persisted to database for on_hold stories)
+	HoldReason         string     `json:"hold_reason,omitempty"`
+	HoldSince          *time.Time `json:"hold_since,omitempty"`
+	HoldOwner          string     `json:"hold_owner,omitempty"`
+	HoldNote           string     `json:"hold_note,omitempty"`
+	BlockedByFailureID string     `json:"blocked_by_failure_id,omitempty"`
+
 	// Queue-specific fields (not persisted to database)
-	DependsOn       []string           `json:"depends_on" db:"-"`                  // Story dependencies
-	EstimatedPoints int                `json:"estimated_points" db:"-"`            // Estimation points
-	KnowledgePack   string             `json:"knowledge_pack" db:"-"`              // Relevant knowledge subgraph (DOT format)
-	Express         bool               `json:"express" db:"-"`                     // Skip planning, fast-path to coding (knowledge updates, hotfixes)
-	IsHotfix        bool               `json:"is_hotfix" db:"-"`                   // If true, routes to dedicated hotfix coder
-	IsMaintenance   bool               `json:"is_maintenance" db:"-"`              // If true, story is part of maintenance cycle
-	AttemptCount    int                `json:"attempt_count" db:"-"`               // Number of dispatch attempts (for retry limit)
-	LastFailReason  string             `json:"last_fail_reason" db:"-"`            // Reason for last failure (for diagnostics)
-	LastFailureInfo *proto.FailureInfo `json:"last_failure_info,omitempty" db:"-"` // Structured failure context (nil for unclassified failures)
+	DependsOn          []string           `json:"depends_on" db:"-"`                  // Story dependencies
+	EstimatedPoints    int                `json:"estimated_points" db:"-"`            // Estimation points
+	KnowledgePack      string             `json:"knowledge_pack" db:"-"`              // Relevant knowledge subgraph (DOT format)
+	Express            bool               `json:"express" db:"-"`                     // Skip planning, fast-path to coding (knowledge updates, hotfixes)
+	IsHotfix           bool               `json:"is_hotfix" db:"-"`                   // If true, routes to dedicated hotfix coder
+	IsMaintenance      bool               `json:"is_maintenance" db:"-"`              // If true, story is part of maintenance cycle
+	AttemptCount       int                `json:"attempt_count" db:"-"`               // Number of dispatch attempts (for retry limit) — deprecated, use budgets
+	AttemptRetryBudget int                `json:"attempt_retry_budget" db:"-"`        // Per-class budget: attempt retries used
+	RewriteBudget      int                `json:"rewrite_budget" db:"-"`              // Per-class budget: story rewrites used
+	RepairBudget       int                `json:"repair_budget" db:"-"`               // Per-class budget: environment repair attempts used
+	HumanBudget        int                `json:"human_budget" db:"-"`                // Per-class budget: human intervention round-trips used
+	LastFailReason     string             `json:"last_fail_reason" db:"-"`            // Reason for last failure (for diagnostics)
+	LastFailureInfo    *proto.FailureInfo `json:"last_failure_info,omitempty" db:"-"` // Structured failure context (nil for unclassified failures)
 }
 
 // StoryDependency represents a dependency relationship between stories.
@@ -79,6 +90,8 @@ const (
 	StatusPlanning   = "planning"
 	StatusCoding     = "coding"
 	StatusDone       = "done"
+	StatusOnHold     = "on_hold"
+	StatusFailed     = "failed"
 )
 
 // GenerateSpecID generates a new UUID for a spec.
@@ -162,6 +175,53 @@ type AgentPlan struct {
 	Confidence *string    `json:"confidence,omitempty"` // "high", "medium", "low"
 	ReviewedBy *string    `json:"reviewed_by,omitempty"`
 	Feedback   *string    `json:"feedback,omitempty"`
+}
+
+// FailureRecord represents a durable failure record stored in the failures table.
+// Maps directly to the failures table schema for persistence.
+//
+//nolint:govet // struct alignment optimization not critical for this type
+type FailureRecord struct {
+	// Identity
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	CreatedAt string `json:"created_at"` // ISO8601 timestamp
+	UpdatedAt string `json:"updated_at"` // ISO8601 timestamp
+
+	// Context
+	SpecID        string `json:"spec_id,omitempty"`
+	StoryID       string `json:"story_id,omitempty"`
+	AttemptNumber int    `json:"attempt_number,omitempty"`
+
+	// Report
+	Source           string `json:"source,omitempty"`
+	ReporterAgentID  string `json:"reporter_agent_id,omitempty"`
+	FailedState      string `json:"failed_state,omitempty"`
+	ToolName         string `json:"tool_name,omitempty"`
+	Kind             string `json:"kind"`
+	ScopeGuess       string `json:"scope_guess,omitempty"`
+	Explanation      string `json:"explanation"`
+	HumanNeededGuess bool   `json:"human_needed_guess,omitempty"`
+	Evidence         string `json:"evidence,omitempty"` // JSON blob
+
+	// Triage
+	ResolvedKind     string `json:"resolved_kind,omitempty"`
+	ResolvedScope    string `json:"resolved_scope,omitempty"`
+	HumanNeeded      bool   `json:"human_needed,omitempty"`
+	AffectedStoryIDs string `json:"affected_story_ids,omitempty"` // JSON array
+	TriageSummary    string `json:"triage_summary,omitempty"`
+
+	// Resolution
+	Owner             string `json:"owner,omitempty"`
+	Action            string `json:"action,omitempty"`
+	ResolutionStatus  string `json:"resolution_status,omitempty"`
+	ResolutionOutcome string `json:"resolution_outcome,omitempty"`
+
+	// Analytics
+	Tags       string `json:"tags,omitempty"` // JSON array
+	Model      string `json:"model,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	BaseCommit string `json:"base_commit,omitempty"`
 }
 
 // MaintenanceItemRecord represents a maintenance item logged by the architect during reviews.
