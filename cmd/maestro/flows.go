@@ -18,6 +18,7 @@ import (
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/telemetry"
 	"orchestrator/pkg/utils"
 )
 
@@ -52,6 +53,14 @@ func NewMainFlow(specFile string, webUI bool) *OrchestratorFlow {
 //nolint:cyclop // Flow orchestrates agent creation and registration - complexity is acceptable for a flow function
 func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("Starting main flow")
+
+	// Retry unsent telemetry from previous sessions in the background
+	// so startup isn't blocked by network latency.
+	go func() { //nolint:contextcheck // intentionally detached from parent context
+		retryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		retryUnsentTelemetry(retryCtx, k)
+	}()
 
 	// Start web UI if requested
 	if f.webUI {
@@ -184,6 +193,14 @@ func NewResumeFlow(sessionID string, webUI, restoreState bool) *ResumeFlow {
 //nolint:cyclop // This function orchestrates agent creation/restoration - complexity is acceptable for a flow function
 func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("Starting resume flow for session %s", f.sessionID)
+
+	// Retry unsent telemetry from previous sessions in the background
+	// so startup isn't blocked by network latency.
+	go func() { //nolint:contextcheck // intentionally detached from parent context
+		retryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		retryUnsentTelemetry(retryCtx, k)
+	}()
 
 	// Start web UI if requested
 	if f.webUI {
@@ -366,6 +383,9 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 		k.Logger.Info("✅ Session marked as 'shutdown' - resumable")
 	}
 
+	// 4.5 Send failure telemetry if opted in (after session status is final)
+	sendFailureTelemetry(context.Background(), k, k.Config.SessionID)
+
 	// 5. Log resume instructions for the user
 	fmt.Println()
 	fmt.Println("╔════════════════════════════════════════════════════════════════════╗")
@@ -379,6 +399,112 @@ func performGracefulShutdown(k *kernel.Kernel, sup *supervisor.Supervisor) {
 	fmt.Println("║  Agent states have been saved and can be restored.                 ║")
 	fmt.Println("╚════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
+}
+
+// sendFailureTelemetry sends failure telemetry for a session if opted in.
+// Fire-and-forget: errors are logged but never block the caller.
+func sendFailureTelemetry(ctx context.Context, k *kernel.Kernel, sessionID string) {
+	if !k.Config.TelemetryEnabled {
+		return
+	}
+	if k.Config.InstallationID == "" {
+		return
+	}
+
+	records, err := persistence.QueryFailuresBySessionForDB(k.Database, sessionID)
+	if err != nil {
+		k.Logger.Warn("⚠️ Failed to query failures for telemetry: %v", err)
+		return
+	}
+	if len(records) == 0 {
+		// No failures to report, but mark the session so startup retry
+		// doesn't keep reprocessing it.
+		markTelemetrySent(k, sessionID)
+		return
+	}
+
+	summary, err := persistence.QuerySessionSummary(k.Database, sessionID)
+	if err != nil {
+		k.Logger.Warn("⚠️ Failed to query session summary for telemetry: %v", err)
+		return
+	}
+
+	report := telemetry.BuildReport(k.Config.InstallationID, sessionID, summary, records)
+
+	k.Logger.Info("📊 Sending failure telemetry (%d failures) for session %s", len(report.Failures), sessionID)
+	if err := telemetry.SendReport(ctx, report); err != nil {
+		k.Logger.Warn("⚠️ Failed to send telemetry: %v", err)
+		return
+	}
+
+	// Mark session as telemetry-sent via a marker file
+	markTelemetrySent(k, sessionID)
+	k.Logger.Info("✅ Telemetry sent successfully")
+}
+
+// retryUnsentTelemetry checks for terminal sessions that never sent telemetry
+// and sends it now. Called on startup to capture crash-path failures.
+func retryUnsentTelemetry(ctx context.Context, k *kernel.Kernel) {
+	if !k.Config.TelemetryEnabled {
+		return
+	}
+
+	// Query terminal sessions (shutdown/crashed) that might have unsent telemetry
+	rows, err := k.Database.Query(`
+		SELECT session_id FROM sessions
+		WHERE status IN (?, ?, ?)
+		ORDER BY started_at DESC
+		LIMIT 5
+	`, persistence.SessionStatusShutdown, persistence.SessionStatusCrashed, persistence.SessionStatusCompleted)
+	if err != nil {
+		k.Logger.Debug("Could not query sessions for telemetry retry: %v", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	var sessionIDs []string
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			k.Logger.Debug("Could not scan session for telemetry retry: %v", err)
+			continue
+		}
+		sessionIDs = append(sessionIDs, sid)
+	}
+	if err := rows.Err(); err != nil {
+		k.Logger.Debug("Could not iterate sessions for telemetry retry: %v", err)
+		return
+	}
+
+	for _, sid := range sessionIDs {
+		if sid == k.Config.SessionID {
+			continue // Skip current session
+		}
+		if isTelemetrySent(k, sid) {
+			continue
+		}
+		sendFailureTelemetry(ctx, k, sid)
+	}
+}
+
+// markTelemetrySent creates a marker file indicating telemetry was sent for a session.
+func markTelemetrySent(k *kernel.Kernel, sessionID string) {
+	markerDir := fmt.Sprintf("%s/.maestro/telemetry-sent", k.ProjectDir())
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		k.Logger.Debug("Could not create telemetry marker directory: %v", err)
+		return
+	}
+	markerPath := fmt.Sprintf("%s/%s", markerDir, sessionID)
+	if err := os.WriteFile(markerPath, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
+		k.Logger.Debug("Could not write telemetry marker for session %s: %v", sessionID, err)
+	}
+}
+
+// isTelemetrySent checks if telemetry was already sent for a session.
+func isTelemetrySent(k *kernel.Kernel, sessionID string) bool {
+	markerPath := fmt.Sprintf("%s/.maestro/telemetry-sent/%s", k.ProjectDir(), sessionID)
+	_, err := os.Stat(markerPath)
+	return err == nil
 }
 
 // runStartupOrchestration executes the startup rebuild + reconcile/rollback from Story 3.

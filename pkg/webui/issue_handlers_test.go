@@ -12,13 +12,14 @@ import (
 	"testing"
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/issueservice"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/version"
 )
 
 func TestComputeIssueHMAC(t *testing.T) {
 	// Known test vector: HMAC-SHA256("test-installation-id", "dev-issue-key")
-	result := computeIssueHMAC("test-installation-id", "dev-issue-key")
+	result := issueservice.ComputeHMACWithKey("test-installation-id", "dev-issue-key")
 	if result == "" {
 		t.Fatal("HMAC should not be empty")
 	}
@@ -27,12 +28,12 @@ func TestComputeIssueHMAC(t *testing.T) {
 		t.Errorf("HMAC hex length = %d, want 64", len(result))
 	}
 	// Verify deterministic
-	result2 := computeIssueHMAC("test-installation-id", "dev-issue-key")
+	result2 := issueservice.ComputeHMACWithKey("test-installation-id", "dev-issue-key")
 	if result != result2 {
 		t.Error("HMAC should be deterministic")
 	}
 	// Different input should produce different output
-	result3 := computeIssueHMAC("different-id", "dev-issue-key")
+	result3 := issueservice.ComputeHMACWithKey("different-id", "dev-issue-key")
 	if result == result3 {
 		t.Error("Different inputs should produce different HMACs")
 	}
@@ -148,7 +149,7 @@ func TestHandleIssueSubmit_HappyPath(t *testing.T) {
 	if receivedFields["description"] != "Something broke" {
 		t.Errorf("description = %q, want %q", receivedFields["description"], "Something broke")
 	}
-	expectedSig := computeIssueHMAC("test-uuid-1234", version.IssueReportingKey)
+	expectedSig := issueservice.ComputeHMACWithKey("test-uuid-1234", version.IssueReportingKey)
 	if receivedFields["signature"] != expectedSig {
 		t.Errorf("signature = %q, want %q", receivedFields["signature"], expectedSig)
 	}

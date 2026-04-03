@@ -3,10 +3,7 @@ package webui
 import (
 	"archive/zip"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,24 +16,16 @@ import (
 	_ "modernc.org/sqlite" // SQLite driver for WAL checkpoint
 
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/issueservice"
 	"orchestrator/pkg/version"
 )
 
 const (
-	defaultIssueServiceURL = "https://issues.maestroappfactory.ai"
-	maxDescriptionLength   = 10000
-	maxRequestBodyBytes    = 64 * 1024 // 64 KB — generous for a 10K-char description + JSON overhead
-	maxResponseBodyBytes   = 4 * 1024  // 4 KB — issue service responses are small JSON
-	issueSubmitTimeout     = 30 * time.Second
+	maxDescriptionLength = 10000
+	maxRequestBodyBytes  = 64 * 1024 // 64 KB — generous for a 10K-char description + JSON overhead
+	maxResponseBodyBytes = 4 * 1024  // 4 KB — issue service responses are small JSON
+	issueSubmitTimeout   = 30 * time.Second
 )
-
-// getIssueServiceURL returns the issue service URL, allowing env var override.
-func getIssueServiceURL() string {
-	if url := os.Getenv("MAESTRO_ISSUE_SERVICE_URL"); url != "" {
-		return url
-	}
-	return defaultIssueServiceURL
-}
 
 // issueSubmitRequest is the JSON body from the web UI.
 type issueSubmitRequest struct {
@@ -83,7 +72,7 @@ func (s *Server) handleIssueSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Compute HMAC signature: HMAC-SHA256(installation_id, issue_reporting_key)
-	signature := computeIssueHMAC(installationID, version.IssueReportingKey)
+	signature := issueservice.ComputeHMAC(installationID)
 
 	// Build diagnostics zip if requested
 	var diagnosticsPath string
@@ -100,7 +89,7 @@ func (s *Server) handleIssueSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward to issue service
-	serviceURL := getIssueServiceURL()
+	serviceURL := issueservice.BaseURL()
 	s.logger.Info("Submitting issue to %s (installation_id=%s, diagnostics=%v)", serviceURL, installationID, diagnosticsPath != "")
 	resp, err := s.postToIssueService(r.Context(), installationID, signature, req.Description, diagnosticsPath)
 	if err != nil {
@@ -121,13 +110,6 @@ func (s *Server) handleIssueSubmit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody) //nolint:errcheck
-}
-
-// computeIssueHMAC computes hex(HMAC-SHA256(message, key)) where key is the shared secret.
-func computeIssueHMAC(message, key string) string {
-	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write([]byte(message))
-	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // postToIssueService sends the issue as multipart/form-data to the issue service.
@@ -192,7 +174,7 @@ func (s *Server) postToIssueService(ctx context.Context, installationID, signatu
 		errCh <- nil
 	}()
 
-	serviceURL := getIssueServiceURL() + "/api/v1/issues"
+	serviceURL := issueservice.BaseURL() + "/api/v1/issues"
 	httpClient := s.getIssueHTTPClient()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, serviceURL, pr)
 	if err != nil {
