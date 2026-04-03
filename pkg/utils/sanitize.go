@@ -3,6 +3,7 @@ package utils
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // secretPatterns matches common secret/credential patterns in text.
@@ -34,9 +35,14 @@ func SanitizeString(s string, maxLen int) string {
 	// Normalize home directory paths
 	s = homePathPattern.ReplaceAllString(s, "<user>/")
 
-	// Truncate
+	// Truncate on rune boundaries to avoid splitting multi-byte UTF-8 characters
 	if maxLen > 0 && len(s) > maxLen {
-		s = s[:maxLen] + "...[truncated]"
+		truncated := s[:maxLen]
+		// Walk back to a valid rune boundary if we split a multi-byte character
+		for truncated != "" && !utf8.ValidString(truncated) {
+			truncated = truncated[:len(truncated)-1]
+		}
+		s = truncated + "...[truncated]"
 	}
 
 	return strings.TrimSpace(s)

@@ -54,8 +54,13 @@ func NewMainFlow(specFile string, webUI bool) *OrchestratorFlow {
 func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("Starting main flow")
 
-	// Retry unsent telemetry from previous sessions (fire-and-forget)
-	retryUnsentTelemetry(ctx, k)
+	// Retry unsent telemetry from previous sessions in the background
+	// so startup isn't blocked by network latency.
+	go func() { //nolint:contextcheck // intentionally detached from parent context
+		retryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		retryUnsentTelemetry(retryCtx, k)
+	}()
 
 	// Start web UI if requested
 	if f.webUI {
@@ -189,8 +194,13 @@ func NewResumeFlow(sessionID string, webUI, restoreState bool) *ResumeFlow {
 func (f *ResumeFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 	k.Logger.Info("Starting resume flow for session %s", f.sessionID)
 
-	// Retry unsent telemetry from previous sessions (fire-and-forget)
-	retryUnsentTelemetry(ctx, k)
+	// Retry unsent telemetry from previous sessions in the background
+	// so startup isn't blocked by network latency.
+	go func() { //nolint:contextcheck // intentionally detached from parent context
+		retryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		retryUnsentTelemetry(retryCtx, k)
+	}()
 
 	// Start web UI if requested
 	if f.webUI {
@@ -407,6 +417,9 @@ func sendFailureTelemetry(ctx context.Context, k *kernel.Kernel, sessionID strin
 		return
 	}
 	if len(records) == 0 {
+		// No failures to report, but mark the session so startup retry
+		// doesn't keep reprocessing it.
+		markTelemetrySent(k, sessionID)
 		return
 	}
 
@@ -452,9 +465,15 @@ func retryUnsentTelemetry(ctx context.Context, k *kernel.Kernel) {
 	var sessionIDs []string
 	for rows.Next() {
 		var sid string
-		if err := rows.Scan(&sid); err == nil {
-			sessionIDs = append(sessionIDs, sid)
+		if err := rows.Scan(&sid); err != nil {
+			k.Logger.Debug("Could not scan session for telemetry retry: %v", err)
+			continue
 		}
+		sessionIDs = append(sessionIDs, sid)
+	}
+	if err := rows.Err(); err != nil {
+		k.Logger.Debug("Could not iterate sessions for telemetry retry: %v", err)
+		return
 	}
 
 	for _, sid := range sessionIDs {
@@ -471,9 +490,14 @@ func retryUnsentTelemetry(ctx context.Context, k *kernel.Kernel) {
 // markTelemetrySent creates a marker file indicating telemetry was sent for a session.
 func markTelemetrySent(k *kernel.Kernel, sessionID string) {
 	markerDir := fmt.Sprintf("%s/.maestro/telemetry-sent", k.ProjectDir())
-	_ = os.MkdirAll(markerDir, 0o755)
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		k.Logger.Debug("Could not create telemetry marker directory: %v", err)
+		return
+	}
 	markerPath := fmt.Sprintf("%s/%s", markerDir, sessionID)
-	_ = os.WriteFile(markerPath, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644)
+	if err := os.WriteFile(markerPath, []byte(time.Now().UTC().Format(time.RFC3339)), 0o644); err != nil {
+		k.Logger.Debug("Could not write telemetry marker for session %s: %v", sessionID, err)
+	}
 }
 
 // isTelemetrySent checks if telemetry was already sent for a session.

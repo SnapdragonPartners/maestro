@@ -1395,6 +1395,16 @@ func loadConfigFromFile(configPath string) (*Config, error) {
 	return &config, nil
 }
 
+// SetTelemetryEnabled updates the global config's TelemetryEnabled field.
+// Called from the CLI flag handler before the kernel is created.
+func SetTelemetryEnabled(enabled bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	if config != nil {
+		config.TelemetryEnabled = enabled
+	}
+}
+
 // SaveConfig saves config to <projectDir>/.maestro/config.json.
 func SaveConfig(config *Config, projectDir string) error {
 	configPath := filepath.Join(projectDir, ProjectConfigDir, "config.json")

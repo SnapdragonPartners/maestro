@@ -28,6 +28,8 @@ const (
 	maxExplanationLen = 2000
 	// maxEvidenceSnippetLen caps sanitized evidence snippet text.
 	maxEvidenceSnippetLen = 1000
+	// maxEvidenceEntries caps the number of evidence entries per failure.
+	maxEvidenceEntries = 10
 )
 
 // Report is the JSON payload sent to POST /api/v1/telemetry.
@@ -116,10 +118,9 @@ func BuildReport(installationID, sessionID string, summary *persistence.SessionS
 		report.Failures = append(report.Failures, entry)
 	}
 
-	// Check total size and trim if needed
+	// Check total size and trim failures until under limit (can trim to 0)
 	if data, err := json.Marshal(report); err == nil && len(data) > maxReportBytes {
-		// Trim failures from the end until under limit
-		for len(report.Failures) > 1 {
+		for len(report.Failures) > 0 {
 			last := report.Failures[len(report.Failures)-1]
 			overflow[last.Kind]++
 			report.Failures = report.Failures[:len(report.Failures)-1]
@@ -148,6 +149,11 @@ func sanitizeEvidence(evidenceJSON string) []EvidenceEntry {
 	var raw []rawEvidence
 	if err := json.Unmarshal([]byte(evidenceJSON), &raw); err != nil {
 		return nil
+	}
+
+	// Cap evidence entries to keep payload size bounded
+	if len(raw) > maxEvidenceEntries {
+		raw = raw[:maxEvidenceEntries]
 	}
 
 	entries := make([]EvidenceEntry, 0, len(raw))

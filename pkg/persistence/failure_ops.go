@@ -291,11 +291,11 @@ func QuerySessionSummary(db *sql.DB, sessionID string) (*SessionSummary, error) 
 		}
 		summary.StoriesTotal += count
 		switch status {
-		case "done":
+		case StatusDone:
 			summary.StoriesCompleted += count
-		case "failed":
+		case StatusFailed:
 			summary.StoriesFailed += count
-		case "on_hold":
+		case StatusOnHold:
 			summary.StoriesHeld += count
 		}
 	}

@@ -25,17 +25,18 @@ import (
 func main() {
 	// Parse command line flags
 	var (
-		gitRepo      = flag.String("git-repo", "", "Git repository URL (optional)")
-		specFile     = flag.String("spec-file", "", "Path to specification file")
-		noWebUI      = flag.Bool("nowebui", false, "Disable web UI")
-		projectDir   = flag.String("projectdir", ".", "Project directory")
-		tee          = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
-		showVersion  = flag.Bool("version", false, "Show version information")
-		continueMode = flag.Bool("continue", false, "Resume from the most recent shutdown session")
-		airplaneMode = flag.Bool("airplane", false, "Run in airplane mode (offline with local Gitea + Ollama)")
-		syncMode     = flag.Bool("sync", false, "Sync offline changes from Gitea to GitHub and exit")
-		syncDryRun   = flag.Bool("sync-dry-run", false, "Preview sync without making changes (use with --sync)")
-		runMode      = flag.Bool("run", false, "Run app with dependencies only (no orchestrator)")
+		gitRepo       = flag.String("git-repo", "", "Git repository URL (optional)")
+		specFile      = flag.String("spec-file", "", "Path to specification file")
+		noWebUI       = flag.Bool("nowebui", false, "Disable web UI")
+		projectDir    = flag.String("projectdir", ".", "Project directory")
+		tee           = flag.Bool("tee", false, "Output logs to both console and file (default: file only)")
+		showVersion   = flag.Bool("version", false, "Show version information")
+		continueMode  = flag.Bool("continue", false, "Resume from the most recent shutdown session")
+		airplaneMode  = flag.Bool("airplane", false, "Run in airplane mode (offline with local Gitea + Ollama)")
+		syncMode      = flag.Bool("sync", false, "Sync offline changes from Gitea to GitHub and exit")
+		syncDryRun    = flag.Bool("sync-dry-run", false, "Preview sync without making changes (use with --sync)")
+		runMode       = flag.Bool("run", false, "Run app with dependencies only (no orchestrator)")
+		telemetryFlag = flag.String("telemetry", "", "Enable or disable failure telemetry reporting (true/false)")
 	)
 	flag.Parse()
 
@@ -71,7 +72,7 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode, *airplaneMode)
+	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode, *airplaneMode, *telemetryFlag)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -83,7 +84,7 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMode bool) int {
+func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMode bool, telemetryFlag string) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
@@ -95,6 +96,9 @@ func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMo
 		fmt.Fprintf(os.Stderr, "Project setup failed: %v\n", err)
 		return 1
 	}
+
+	// Apply telemetry flag if explicitly set (macOS app passes this based on user preference)
+	applyTelemetryFlag(telemetryFlag)
 
 	// Resolve operating mode: CLI flag takes precedence over config default
 	if err := config.ResolveOperatingMode(airplaneMode); err != nil {
@@ -160,6 +164,24 @@ func setupProjectInfrastructure(projectDir, gitRepo, specFile string) (bool, err
 	}
 
 	return configWasCreated, nil
+}
+
+// applyTelemetryFlag overrides TelemetryEnabled in config when the CLI flag is explicitly set.
+// The macOS app passes --telemetry=true or --telemetry=false based on user preference.
+// An empty string means the flag was not set, so the config default is preserved.
+func applyTelemetryFlag(flagValue string) {
+	switch flagValue {
+	case "true":
+		config.SetTelemetryEnabled(true)
+		config.LogInfo("Telemetry enabled via --telemetry flag")
+	case "false":
+		config.SetTelemetryEnabled(false)
+		config.LogInfo("Telemetry disabled via --telemetry flag")
+	case "":
+		// Not set — respect config file value
+	default:
+		config.LogInfo("Warning: invalid --telemetry value %q (expected true/false), ignoring", flagValue)
+	}
 }
 
 // mergeCommandLineParams updates config with command line arguments.

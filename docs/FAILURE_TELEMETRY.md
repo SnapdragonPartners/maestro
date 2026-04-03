@@ -23,15 +23,22 @@ maestro (client)                    maestro-issues (server)
 
 1. **Graceful shutdown** (after session status update): Query all failures for the session, build a sanitized report, POST to maestro-issues, mark session as sent via marker file.
 
-2. **Startup retry**: On next startup (fresh or resume), check for terminal sessions (shutdown/crashed) that haven't sent telemetry. Send and mark. This captures crash-path failures that never hit graceful shutdown.
+2. **Startup retry**: On next startup (fresh or resume), check the 5 most recent terminal sessions (shutdown/crashed/completed) that haven't sent telemetry. Send and mark. Runs in the background to avoid blocking startup. This captures crash-path failures that never hit graceful shutdown. The limit of 5 is a practical cap to keep startup fast — older sessions are unlikely to be actionable.
 
 3. **Idempotency**: Firestore document ID is `installationID_sessionID`. Uses `Set` (not `Create`), so resending the same session overwrites rather than duplicating.
 
 ## Opt-in
 
-Telemetry is disabled by default. Enable via config:
+Telemetry is disabled by default. Enable via CLI flag or config:
+
+```bash
+# CLI flag (takes precedence over config)
+maestro --telemetry=true   # enable
+maestro --telemetry=false  # disable
+```
 
 ```json
+// config.json fallback (used when --telemetry is not passed)
 {
   "telemetry_enabled": true
 }
