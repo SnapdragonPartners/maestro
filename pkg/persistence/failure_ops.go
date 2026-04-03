@@ -93,6 +93,11 @@ func (ops *DatabaseOperations) QueryFailuresByStory(storyID string) ([]*FailureR
 	}
 	defer func() { _ = rows.Close() }()
 
+	return scanFailureRecords(rows)
+}
+
+// scanFailureRecords scans all rows from a failures query into FailureRecords.
+func scanFailureRecords(rows *sql.Rows) ([]*FailureRecord, error) {
 	var records []*FailureRecord
 	for rows.Next() {
 		r := &FailureRecord{}
@@ -109,11 +114,9 @@ func (ops *DatabaseOperations) QueryFailuresByStory(storyID string) ([]*FailureR
 		}
 		records = append(records, r)
 	}
-
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("row iteration error for story %s failures: %w", storyID, err)
+		return nil, fmt.Errorf("failure record row iteration error: %w", err)
 	}
-
 	return records, nil
 }
 
@@ -212,4 +215,93 @@ func CountFailuresByStoryAndActionForSession(db *sql.DB, sessionID, storyID stri
 	}
 
 	return counts, nil
+}
+
+// QueryFailuresBySessionForDB returns all failure records for a given session.
+// Standalone function for use during shutdown/startup when DatabaseOperations
+// may not be available.
+func QueryFailuresBySessionForDB(db *sql.DB, sessionID string) ([]*FailureRecord, error) {
+	query := `
+		SELECT id, session_id, created_at, updated_at,
+			spec_id, story_id, attempt_number,
+			source, reporter_agent_id, failed_state, tool_name,
+			kind, scope_guess, explanation, human_needed_guess, evidence,
+			resolved_kind, resolved_scope, human_needed, affected_story_ids, triage_summary,
+			owner, action, resolution_status, resolution_outcome,
+			tags, model, provider, base_commit
+		FROM failures
+		WHERE session_id = ?
+		ORDER BY created_at ASC
+	`
+
+	rows, err := db.Query(query, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query failures for session %s: %w", sessionID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanFailureRecords(rows)
+}
+
+// SessionSummary holds aggregate stats for a session's telemetry report.
+type SessionSummary struct {
+	StartedAt        string `json:"started_at"`
+	EndedAt          string `json:"ended_at"`
+	SessionStatus    string `json:"session_status"`
+	StoriesTotal     int    `json:"stories_total"`
+	StoriesCompleted int    `json:"stories_completed"`
+	StoriesFailed    int    `json:"stories_failed"`
+	StoriesHeld      int    `json:"stories_held"`
+}
+
+// QuerySessionSummary gathers session timestamps and story counts by status.
+func QuerySessionSummary(db *sql.DB, sessionID string) (*SessionSummary, error) {
+	summary := &SessionSummary{}
+
+	// Get session timestamps and status
+	err := db.QueryRow(`
+		SELECT
+			COALESCE(started_at, ''),
+			COALESCE(ended_at, ''),
+			COALESCE(status, '')
+		FROM sessions
+		WHERE session_id = ?
+	`, sessionID).Scan(&summary.StartedAt, &summary.EndedAt, &summary.SessionStatus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query session %s: %w", sessionID, err)
+	}
+
+	// Count stories by status
+	rows, err := db.Query(`
+		SELECT status, COUNT(*) as cnt
+		FROM stories
+		WHERE session_id = ?
+		GROUP BY status
+	`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count stories for session %s: %w", sessionID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan story count: %w", err)
+		}
+		summary.StoriesTotal += count
+		switch status {
+		case "done":
+			summary.StoriesCompleted += count
+		case "failed":
+			summary.StoriesFailed += count
+		case "on_hold":
+			summary.StoriesHeld += count
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session summary row iteration error: %w", err)
+	}
+	return summary, nil
 }

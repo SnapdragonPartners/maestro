@@ -701,7 +701,8 @@ type Config struct {
 	DefaultMode string `json:"default_mode,omitempty"` // Default operating mode: "standard" or "airplane"
 
 	// === INSTALLATION IDENTITY ===
-	InstallationID string `json:"installation_id,omitempty"` // Per-project UUID for issue reporting
+	InstallationID   string `json:"installation_id,omitempty"`   // Per-project UUID for issue reporting
+	TelemetryEnabled bool   `json:"telemetry_enabled,omitempty"` // Opt-in failure telemetry reporting
 
 	// === PROJECT-SPECIFIC SETTINGS (per .maestro/config.json) ===
 	Project     *ProjectInfo       `json:"project"`     // Basic project metadata (name, platform)
