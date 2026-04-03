@@ -281,6 +281,13 @@ func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.B
 		failureInfo := proto.NewFailureInfo(kind, explanation, string(StateTesting), "")
 		failureInfo.Source = proto.FailureSourceAutoClassifier
 		failureInfo.ScopeGuess = proto.FailureScopeAttempt
+		failureInfo.Evidence = []proto.FailureEvidence{
+			{
+				Kind:    "test_output",
+				Summary: fmt.Sprintf("Auto-classified as %s", kind),
+				Snippet: utils.SanitizeString(testFailureEff.FailureMessage, 1000),
+			},
+		}
 		sm.SetStateData(KeyFailureInfo, failureInfo)
 		sm.SetStateData(KeyErrorMessage, fmt.Sprintf("%s: %s", kind, explanation))
 		c.logger.Error("🚫 Test failure auto-classified as %s, transitioning to ERROR for architect routing", kind)

@@ -135,6 +135,13 @@ func (r *ReportBlockedTool) Exec(_ context.Context, args map[string]any) (*ExecR
 	failureInfo := proto.NewFailureInfo(kind, explanation, failedState, "")
 	failureInfo.ScopeGuess = scopeGuess
 	failureInfo.Source = proto.FailureSourceLLMReport
+	failureInfo.Evidence = []proto.FailureEvidence{
+		{
+			Kind:    "llm_report",
+			Summary: fmt.Sprintf("Coder reported blocked: %s", kind),
+			Snippet: utils.SanitizeString(explanation, 1000),
+		},
+	}
 
 	return &ExecResult{
 		Content: fmt.Sprintf("Reported as blocked (%s): %s. Escalating to architect.", kind, explanation),
