@@ -1177,6 +1177,21 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 		ResolutionStatus: string(resolutionStatus),
 	}
 	if fi != nil {
+		// Use FailureInfo's ID and timestamps if available, so downstream
+		// flows (e.g., PM repair_complete) can correlate by fi.ID.
+		if fi.ID != "" {
+			record.ID = fi.ID
+		}
+		if !fi.CreatedAt.IsZero() {
+			record.CreatedAt = fi.CreatedAt.Format(sqliteTimestampFormat)
+		}
+		if !fi.UpdatedAt.IsZero() {
+			record.UpdatedAt = fi.UpdatedAt.Format(sqliteTimestampFormat)
+		}
+
+		// Context fields
+		record.SpecID = fi.SpecID
+
 		// Report fields
 		record.Kind = string(fi.Kind)
 		record.Source = string(fi.Source)
@@ -1187,7 +1202,9 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 
 		// Evidence (serialize to JSON for DB storage)
 		if len(fi.Evidence) > 0 {
-			if data, err := json.Marshal(fi.Evidence); err == nil {
+			if data, err := json.Marshal(fi.Evidence); err != nil {
+				d.logger.Debug("Failed to marshal failure evidence: %v", err)
+			} else {
 				record.Evidence = string(data)
 			}
 		}
@@ -1197,7 +1214,9 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 		record.ResolvedScope = string(fi.ResolvedScope)
 		record.HumanNeeded = fi.HumanNeeded
 		if len(fi.AffectedStoryIDs) > 0 {
-			if data, err := json.Marshal(fi.AffectedStoryIDs); err == nil {
+			if data, err := json.Marshal(fi.AffectedStoryIDs); err != nil {
+				d.logger.Debug("Failed to marshal affected story IDs: %v", err)
+			} else {
 				record.AffectedStoryIDs = string(data)
 			}
 		}
@@ -1207,7 +1226,9 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 
 		// Analytics
 		if len(fi.Tags) > 0 {
-			if data, err := json.Marshal(fi.Tags); err == nil {
+			if data, err := json.Marshal(fi.Tags); err != nil {
+				d.logger.Debug("Failed to marshal failure tags: %v", err)
+			} else {
 				record.Tags = string(data)
 			}
 		}
