@@ -582,10 +582,18 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 		// Infrastructure/prerequisite failures: wrap in BlockedError immediately, no point retrying
 		if kind == proto.FailureKindEnvironment || kind == proto.FailureKindPrerequisite {
 			logx.Warnf("Commit attempt %d/%d failed with infrastructure error: %v", attempt, maxCommitRetries, res.err)
-			return commitResult{
-				err: &BlockedError{
-					FailureInfo: proto.NewFailureInfo(kind, errMsg, "CODING", "done"),
+			fi := proto.NewFailureInfo(kind, errMsg, "CODING", "done")
+			fi.Source = proto.FailureSourceAutoClassifier
+			fi.ScopeGuess = proto.FailureScopeAttempt
+			fi.Evidence = []proto.FailureEvidence{
+				{
+					Kind:    "commit_error",
+					Summary: fmt.Sprintf("Git commit failed (exit %d): %s", res.exitCode, kind),
+					Snippet: utils.SanitizeString(errMsg, 1000),
 				},
+			}
+			return commitResult{
+				err: &BlockedError{FailureInfo: fi},
 			}
 		}
 
