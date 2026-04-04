@@ -20,6 +20,7 @@ import (
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // RestartAction defines what to do when an agent reaches a terminal state.
@@ -568,6 +569,9 @@ func (s *Supervisor) handleAgentSuspend(ctx context.Context, notification *proto
 			// Get story ID from the agent's lease
 			storyID := s.Kernel.Dispatcher.GetLease(agentID)
 
+			// Sanitize and compute signature before persistence.
+			fi.Sanitize(utils.SanitizeString)
+
 			record := &persistence.FailureRecord{
 				ID:               failureID,
 				CreatedAt:        now.Format(sqliteTimestampFormat),
@@ -579,6 +583,7 @@ func (s *Supervisor) handleAgentSuspend(ctx context.Context, notification *proto
 				Kind:             string(fi.Kind),
 				ScopeGuess:       string(fi.ScopeGuess),
 				Explanation:      fi.Explanation,
+				Signature:        fi.Signature,
 				Action:           string(proto.FailureActionRetryAttempt),
 				ResolutionStatus: string(proto.FailureResolutionRunning),
 			}

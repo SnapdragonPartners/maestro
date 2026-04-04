@@ -7,6 +7,10 @@
 package proto
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -176,6 +180,7 @@ type FailureInfo struct {
 	ResolutionOutcome string                  `json:"resolution_outcome,omitempty"`
 
 	// Analytics
+	Signature  string   `json:"signature,omitempty"` // Normalized hash for grouping recurring failures
 	Tags       []string `json:"tags,omitempty"`
 	Model      string   `json:"model,omitempty"`
 	Provider   string   `json:"provider,omitempty"`
@@ -246,4 +251,68 @@ func (fi *FailureInfo) SetTriage(resolvedKind FailureKind, resolvedScope Failure
 	fi.AffectedStoryIDs = affectedStoryIDs
 	fi.TriageSummary = summary
 	fi.UpdatedAt = time.Now().UTC()
+}
+
+// Sanitization and signature constants.
+const (
+	MaxExplanationLen     = 2000 // Max sanitized explanation length
+	MaxEvidenceSnippetLen = 1000 // Max sanitized evidence snippet length
+	MaxEvidenceSummaryLen = 500  // Max sanitized evidence summary length
+	MaxEvidenceEntries    = 10   // Max evidence items per failure
+)
+
+// explanationNormalizers strips variable details (hex hashes, timestamps, UUIDs, file paths,
+// line numbers, PIDs) from an explanation to produce a stable "family" string for signature hashing.
+var explanationNormalizers = []*regexp.Regexp{ //nolint:gochecknoglobals // compiled regexps are intentionally package-level
+	// Order matters: specific patterns before generic ones to avoid partial matches.
+	regexp.MustCompile(`\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`), // UUIDs
+	regexp.MustCompile(`\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}\S*`),                        // ISO timestamps (input is lowercased)
+	regexp.MustCompile(`(?:/[\w.-]+)+(?:\.\w+)?`),                                          // file paths
+	regexp.MustCompile(`\bpid\s*\d+\b`),                                                    // process IDs (lowercased)
+	regexp.MustCompile(`[0-9a-f]{7,64}`),                                                   // hex hashes/IDs (after timestamps/UUIDs)
+	regexp.MustCompile(`:\d+`),                                                             // line/port numbers
+	regexp.MustCompile(`\d{5,}`),                                                           // long numeric sequences
+}
+
+// ComputeSignature generates a normalized hash from kind+failed_state+tool_name+explanation family.
+// Two failures with the same root cause but different variable details (timestamps, hashes, paths)
+// will produce the same signature.
+func (fi *FailureInfo) ComputeSignature() string {
+	normalized := string(fi.Kind) + "|" + fi.FailedState + "|" + fi.ToolName + "|" + normalizeExplanation(fi.Explanation)
+	hash := sha256.Sum256([]byte(normalized))
+	return hex.EncodeToString(hash[:16]) // 32-char hex, sufficient for grouping
+}
+
+// normalizeExplanation strips variable details to produce a stable family string.
+func normalizeExplanation(s string) string {
+	s = strings.ToLower(s)
+	for _, re := range explanationNormalizers {
+		s = re.ReplaceAllString(s, "")
+	}
+	// Collapse whitespace
+	s = strings.Join(strings.Fields(s), " ")
+	return s
+}
+
+// Sanitize applies size limits and secret redaction to the failure's explanation and evidence.
+// Call before persistence to ensure stored data is both safe and bounded.
+// sanitizeFn should be utils.SanitizeString — passed as a parameter to avoid a circular import.
+func (fi *FailureInfo) Sanitize(sanitizeFn func(string, int) string) {
+	fi.Explanation = sanitizeFn(fi.Explanation, MaxExplanationLen)
+
+	// Cap evidence count
+	if len(fi.Evidence) > MaxEvidenceEntries {
+		fi.Evidence = fi.Evidence[:MaxEvidenceEntries]
+	}
+
+	// Sanitize each evidence entry
+	for i := range fi.Evidence {
+		fi.Evidence[i].Summary = sanitizeFn(fi.Evidence[i].Summary, MaxEvidenceSummaryLen)
+		fi.Evidence[i].Snippet = sanitizeFn(fi.Evidence[i].Snippet, MaxEvidenceSnippetLen)
+	}
+
+	// Compute signature after sanitization (explanation is now stable)
+	if fi.Signature == "" {
+		fi.Signature = fi.ComputeSignature()
+	}
 }

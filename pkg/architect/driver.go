@@ -1177,6 +1177,9 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 		ResolutionStatus: string(resolutionStatus),
 	}
 	if fi != nil {
+		// Sanitize evidence and compute signature before persistence.
+		fi.Sanitize(utils.SanitizeString)
+
 		// Use FailureInfo's ID and timestamps if available, so downstream
 		// flows (e.g., PM repair_complete) can correlate by fi.ID.
 		if fi.ID != "" {
@@ -1235,6 +1238,12 @@ func (d *Driver) persistFailureRecord(storyID string, attemptNumber int, reason 
 		record.Model = fi.Model
 		record.Provider = fi.Provider
 		record.BaseCommit = fi.BaseCommit
+		record.Signature = fi.Signature
+	}
+	// Compute signature for records without FailureInfo (fallback path).
+	if record.Signature == "" {
+		fallback := proto.NewFailureInfo(proto.FailureKind(record.Kind), record.Explanation, record.FailedState, record.ToolName)
+		record.Signature = fallback.ComputeSignature()
 	}
 	persistence.PersistFailureRecord(record, d.persistenceChannel)
 }

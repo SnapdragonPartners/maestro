@@ -13,7 +13,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 20
+const CurrentSchemaVersion = 21
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -131,6 +131,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion19(db)
 	case 20:
 		return migrateToVersion20(db)
+	case 21:
+		return migrateToVersion21(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -913,6 +915,7 @@ func migrateToVersion20(db *sql.DB) error {
 			resolution_requested_at DATETIME,
 			resolution_started_at DATETIME,
 			resolution_completed_at DATETIME,
+			signature TEXT,
 			tags TEXT,
 			model TEXT,
 			provider TEXT,
@@ -922,11 +925,28 @@ func migrateToVersion20(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_failures_session ON failures(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_failures_kind ON failures(kind)`,
 		`CREATE INDEX IF NOT EXISTS idx_failures_resolution ON failures(resolution_status)`,
+		`CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)`,
 	}
 
 	for _, migration := range failureMigrations {
 		if _, err := conn.ExecContext(ctx, migration); err != nil {
 			return fmt.Errorf("failed to execute failures migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
+// migrateToVersion21 adds the signature column to the failures table for grouping recurring failures.
+func migrateToVersion21(db *sql.DB) error {
+	migrations := []string{
+		"ALTER TABLE failures ADD COLUMN signature TEXT",
+		"CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)",
+	}
+
+	for _, migration := range migrations {
+		if _, err := db.Exec(migration); err != nil {
+			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
 		}
 	}
 
@@ -1287,6 +1307,7 @@ func createSchema(db *sql.DB) error {
 			resolution_requested_at DATETIME,
 			resolution_started_at DATETIME,
 			resolution_completed_at DATETIME,
+			signature TEXT,
 			tags TEXT,
 			model TEXT,
 			provider TEXT,
@@ -1369,6 +1390,7 @@ func createSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_failures_session ON failures(session_id)",
 		"CREATE INDEX IF NOT EXISTS idx_failures_kind ON failures(kind)",
 		"CREATE INDEX IF NOT EXISTS idx_failures_resolution ON failures(resolution_status)",
+		"CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)",
 	}
 
 	// Execute table creation

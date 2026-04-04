@@ -27,8 +27,8 @@ func (ops *DatabaseOperations) PersistFailure(record *FailureRecord) error {
 			kind, scope_guess, explanation, human_needed_guess, evidence,
 			resolved_kind, resolved_scope, human_needed, affected_story_ids, triage_summary,
 			owner, action, resolution_status, resolution_outcome,
-			tags, model, provider, base_commit
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			signature, tags, model, provider, base_commit
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := ops.db.Exec(query,
@@ -38,7 +38,7 @@ func (ops *DatabaseOperations) PersistFailure(record *FailureRecord) error {
 		record.Kind, record.ScopeGuess, record.Explanation, record.HumanNeededGuess, record.Evidence,
 		record.ResolvedKind, record.ResolvedScope, record.HumanNeeded, record.AffectedStoryIDs, record.TriageSummary,
 		record.Owner, record.Action, record.ResolutionStatus, record.ResolutionOutcome,
-		record.Tags, record.Model, record.Provider, record.BaseCommit,
+		record.Signature, record.Tags, record.Model, record.Provider, record.BaseCommit,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to persist failure %s: %w", record.ID, err)
@@ -81,7 +81,7 @@ func (ops *DatabaseOperations) QueryFailuresByStory(storyID string) ([]*FailureR
 			kind, scope_guess, explanation, human_needed_guess, evidence,
 			resolved_kind, resolved_scope, human_needed, affected_story_ids, triage_summary,
 			owner, action, resolution_status, resolution_outcome,
-			tags, model, provider, base_commit
+			COALESCE(signature, '') as signature, tags, model, provider, base_commit
 		FROM failures
 		WHERE story_id = ? AND session_id = ?
 		ORDER BY created_at DESC
@@ -108,7 +108,7 @@ func scanFailureRecords(rows *sql.Rows) ([]*FailureRecord, error) {
 			&r.Kind, &r.ScopeGuess, &r.Explanation, &r.HumanNeededGuess, &r.Evidence,
 			&r.ResolvedKind, &r.ResolvedScope, &r.HumanNeeded, &r.AffectedStoryIDs, &r.TriageSummary,
 			&r.Owner, &r.Action, &r.ResolutionStatus, &r.ResolutionOutcome,
-			&r.Tags, &r.Model, &r.Provider, &r.BaseCommit,
+			&r.Signature, &r.Tags, &r.Model, &r.Provider, &r.BaseCommit,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan failure record: %w", err)
 		}
@@ -129,7 +129,7 @@ func (ops *DatabaseOperations) QueryFailureByID(id string) (*FailureRecord, erro
 			kind, scope_guess, explanation, human_needed_guess, evidence,
 			resolved_kind, resolved_scope, human_needed, affected_story_ids, triage_summary,
 			owner, action, resolution_status, resolution_outcome,
-			tags, model, provider, base_commit
+			COALESCE(signature, '') as signature, tags, model, provider, base_commit
 		FROM failures
 		WHERE id = ? AND session_id = ?
 	`
@@ -142,7 +142,7 @@ func (ops *DatabaseOperations) QueryFailureByID(id string) (*FailureRecord, erro
 		&r.Kind, &r.ScopeGuess, &r.Explanation, &r.HumanNeededGuess, &r.Evidence,
 		&r.ResolvedKind, &r.ResolvedScope, &r.HumanNeeded, &r.AffectedStoryIDs, &r.TriageSummary,
 		&r.Owner, &r.Action, &r.ResolutionStatus, &r.ResolutionOutcome,
-		&r.Tags, &r.Model, &r.Provider, &r.BaseCommit,
+		&r.Signature, &r.Tags, &r.Model, &r.Provider, &r.BaseCommit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query failure %s: %w", id, err)
@@ -228,7 +228,7 @@ func QueryFailuresBySessionForDB(db *sql.DB, sessionID string) ([]*FailureRecord
 			kind, scope_guess, explanation, human_needed_guess, evidence,
 			resolved_kind, resolved_scope, human_needed, affected_story_ids, triage_summary,
 			owner, action, resolution_status, resolution_outcome,
-			tags, model, provider, base_commit
+			COALESCE(signature, '') as signature, tags, model, provider, base_commit
 		FROM failures
 		WHERE session_id = ?
 		ORDER BY created_at ASC
