@@ -199,8 +199,8 @@ func TestComputeSignature_Stability(t *testing.T) {
 	if sig1 != sig2 {
 		t.Errorf("same failure family should produce same signature: %s vs %s", sig1, sig2)
 	}
-	if len(sig1) != 32 {
-		t.Errorf("signature should be 32 hex chars, got %d", len(sig1))
+	if len(sig1) != 64 {
+		t.Errorf("signature should be 64 hex chars, got %d", len(sig1))
 	}
 }
 

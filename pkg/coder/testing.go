@@ -271,8 +271,8 @@ func (c *Coder) runContainerInfrastructureTests(ctx context.Context, sm *agent.B
 }
 
 // executeTestFailureAndTransition executes a test failure effect and transitions to CODING state.
-// If the test output matches an environment or prerequisite failure pattern, transitions to ERROR
-// instead (same as report_blocked) so the architect can route recovery properly.
+// The coder LLM evaluates the test output and decides whether to fix code/tests or call
+// report_blocked for environment/prerequisite issues it cannot resolve.
 func (c *Coder) executeTestFailureAndTransition(ctx context.Context, sm *agent.BaseStateMachine, testFailureEff *effect.TestFailureEffect) (proto.State, bool, error) {
 	// All test failures route back to CODING. The coder LLM evaluates the output
 	// and decides whether to fix code/tests or call report_blocked for

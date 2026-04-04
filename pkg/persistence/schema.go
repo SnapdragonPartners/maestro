@@ -915,7 +915,6 @@ func migrateToVersion20(db *sql.DB) error {
 			resolution_requested_at DATETIME,
 			resolution_started_at DATETIME,
 			resolution_completed_at DATETIME,
-			signature TEXT,
 			tags TEXT,
 			model TEXT,
 			provider TEXT,
@@ -925,7 +924,6 @@ func migrateToVersion20(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_failures_session ON failures(session_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_failures_kind ON failures(kind)`,
 		`CREATE INDEX IF NOT EXISTS idx_failures_resolution ON failures(resolution_status)`,
-		`CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)`,
 	}
 
 	for _, migration := range failureMigrations {

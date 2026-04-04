@@ -1263,11 +1263,9 @@ Create synthetic failure records from SUSPEND events. In `EnterSuspend()`, creat
 
 Files: `pkg/agent/internal/core/machine.go`, `internal/supervisor/supervisor.go`, `pkg/proto/failure.go`
 
-#### Task 10: Classify test failures as blocked reports
+#### Task 10: Classify test failures as blocked reports — Superseded by Phase 3 Task 1
 
-TESTING runs procedurally (no toolloop), so `report_blocked` can't fire there. Instead, classify test failures procedurally: pattern-match test output for infrastructure issues (`cannot find package`, `permission denied`, `connection refused`, `executable not found`) → create FailureInfo with `kind=environment`, transition to ERROR (triggers existing requeue path). Test assertion failures continue returning to CODING as today. Container build/boot failures in DevOps testing get `kind=environment` + `scope=attempt`.
-
-Files: `pkg/coder/testing.go`
+Originally implemented a mechanical `classifyTestFailure()` pattern matcher. Superseded by Phase 3 Task 1 which removed the pattern matcher and routes all test failures back to CODING, where the coder LLM has full context to evaluate whether to fix code/tests or call `report_blocked` for environment/prerequisite issues.
 
 #### Task dependency graph
 
