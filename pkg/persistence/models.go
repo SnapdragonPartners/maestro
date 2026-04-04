@@ -218,6 +218,7 @@ type FailureRecord struct {
 	ResolutionOutcome string `json:"resolution_outcome,omitempty"`
 
 	// Analytics
+	Signature  string `json:"signature,omitempty"`
 	Tags       string `json:"tags,omitempty"` // JSON array
 	Model      string `json:"model,omitempty"`
 	Provider   string `json:"provider,omitempty"`

@@ -1293,17 +1293,17 @@ Removed mechanical `classifyTestFailure()` pattern matcher. All test failures no
 
 Files changed: `pkg/coder/testing.go`, `pkg/templates/coder/test_failure_instructions.tpl.md`, `pkg/templates/coder/devops_test_failure_instructions.tpl.md`
 
-#### Task 2: Normalized failure signatures
+#### Task 2: Normalized failure signatures — Done
 
-Hash of `kind+tool+state+explanation family` for grouping recurring failures with different error text. Enables pattern detection across sessions without requiring exact string matches. Stored alongside failure records in the database.
+Added `Signature` field to `FailureInfo` and `FailureRecord`. Computed via SHA-256 of `kind|failed_state|tool_name|normalized_explanation` where normalization strips variable details (hex hashes, UUIDs, timestamps, file paths, line numbers, PIDs) to produce stable "family" strings. DB migration 21 adds `signature TEXT` column with index. Signature is computed during `Sanitize()` or can be called standalone via `ComputeSignature()`.
 
-Files: `pkg/proto/failure.go`, `pkg/persistence/failure_ops.go`, `pkg/persistence/schema.go`
+Files changed: `pkg/proto/failure.go`, `pkg/persistence/models.go`, `pkg/persistence/failure_ops.go`, `pkg/persistence/schema.go`
 
-#### Task 3: Richer evidence capture with sanitization pipeline
+#### Task 3: Richer evidence capture with sanitization pipeline — Done
 
-Targeted snippets, secret redaction, and size budgets for failure evidence. Builds on the evidence capture from PR #175 to ensure data is both useful and safe to store/display. Evidence fields should respect configurable size limits and run through the secret scanner before persistence.
+Added `Sanitize(sanitizeFn)` method on `FailureInfo` that applies size limits and secret redaction at capture time (before DB persistence). Constants: `MaxExplanationLen=2000`, `MaxEvidenceSnippetLen=1000`, `MaxEvidenceSummaryLen=500`, `MaxEvidenceEntries=10`. Uses `utils.SanitizeString` (passed as parameter to avoid circular import). Called in both persistence callsites: architect driver and supervisor. Telemetry sender's existing sanitization remains as defense-in-depth.
 
-Files: `pkg/proto/failure.go`, `pkg/persistence/failure_ops.go`
+Files changed: `pkg/proto/failure.go`, `pkg/architect/driver.go`, `internal/supervisor/supervisor.go`
 
 ### Phase 4: Smarter triage and environment awareness
 

@@ -188,3 +188,67 @@ func TestFailureKindV2Constants(t *testing.T) {
 		t.Errorf("FailureKindPrerequisite = %q", FailureKindPrerequisite)
 	}
 }
+
+func TestComputeSignature_Stability(t *testing.T) {
+	fi1 := NewFailureInfo(FailureKindEnvironment, "no space left on device at /workspace/coder-001/src", "TESTING", "shell")
+	fi2 := NewFailureInfo(FailureKindEnvironment, "no space left on device at /workspace/coder-002/build", "TESTING", "shell")
+
+	sig1 := fi1.ComputeSignature()
+	sig2 := fi2.ComputeSignature()
+
+	if sig1 != sig2 {
+		t.Errorf("same failure family should produce same signature: %s vs %s", sig1, sig2)
+	}
+	if len(sig1) != 32 {
+		t.Errorf("signature should be 32 hex chars, got %d", len(sig1))
+	}
+}
+
+func TestComputeSignature_DifferentKinds(t *testing.T) {
+	fi1 := NewFailureInfo(FailureKindEnvironment, "connection refused", "CODING", "shell")
+	fi2 := NewFailureInfo(FailureKindPrerequisite, "connection refused", "CODING", "shell")
+
+	if fi1.ComputeSignature() == fi2.ComputeSignature() {
+		t.Error("different kinds should produce different signatures")
+	}
+}
+
+func TestComputeSignature_NormalizesVariableDetails(t *testing.T) {
+	fi1 := NewFailureInfo(FailureKindEnvironment,
+		"build failed at 2026-04-03T10:30:00Z with hash abc1234def in /tmp/workspace/foo.go:42",
+		"TESTING", "shell")
+	fi2 := NewFailureInfo(FailureKindEnvironment,
+		"build failed at 2026-05-15T22:00:00Z with hash 9876543abc in /opt/build/bar.go:99",
+		"TESTING", "shell")
+
+	if fi1.ComputeSignature() != fi2.ComputeSignature() {
+		t.Error("same failure pattern with different variable details should produce same signature")
+	}
+}
+
+func TestSanitize_CapsEvidence(t *testing.T) {
+	fi := NewFailureInfo(FailureKindEnvironment, "test failure", "TESTING", "")
+
+	// Add more than MaxEvidenceEntries
+	for i := 0; i < 15; i++ {
+		fi.Evidence = append(fi.Evidence, FailureEvidence{
+			Kind:    "test",
+			Summary: "summary",
+			Snippet: "snippet",
+		})
+	}
+
+	fi.Sanitize(func(s string, maxLen int) string {
+		if maxLen > 0 && len(s) > maxLen {
+			return s[:maxLen]
+		}
+		return s
+	})
+
+	if len(fi.Evidence) != MaxEvidenceEntries {
+		t.Errorf("expected %d evidence entries, got %d", MaxEvidenceEntries, len(fi.Evidence))
+	}
+	if fi.Signature == "" {
+		t.Error("Sanitize should compute signature")
+	}
+}
