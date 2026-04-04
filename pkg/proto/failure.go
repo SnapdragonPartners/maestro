@@ -280,7 +280,7 @@ var explanationNormalizers = []*regexp.Regexp{ //nolint:gochecknoglobals // comp
 func (fi *FailureInfo) ComputeSignature() string {
 	normalized := string(fi.Kind) + "|" + fi.FailedState + "|" + fi.ToolName + "|" + normalizeExplanation(fi.Explanation)
 	hash := sha256.Sum256([]byte(normalized))
-	return hex.EncodeToString(hash[:16]) // 32-char hex, sufficient for grouping
+	return hex.EncodeToString(hash[:]) // 64-char hex SHA-256 digest
 }
 
 // normalizeExplanation strips variable details to produce a stable family string.
