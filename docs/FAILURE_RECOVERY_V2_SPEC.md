@@ -1184,7 +1184,7 @@ All 10 Phase 2 tasks are complete:
 - Dispatch suppression is a boolean flag on Queue checked by `GetReadyStories()`. System-scoped failures suppress; manual release resumes.
 - Repair and human budget classes are defined with limits (MaxRepairAttempts=2, MaxHumanRoundTrips=1) and wired into budget tracking/reconstruction, but no control flow uses them yet (Phase 2.5 adds PM clarification + repair completion signals).
 - Transient failure adapter: supervisor persists failure records on SUSPEND with `action=retry_attempt, status=running`, updates to `succeeded` on resume or `failed` on SUSPEND→ERROR timeout.
-- Test failure classification: `classifyTestFailure()` in `testing.go` pattern-matches test output for environment patterns (disk, permissions, git corruption, docker) and prerequisite patterns (auth, SSL, API keys, rate limits). Matched failures transition to ERROR for architect routing instead of looping back to CODING.
+- Test failure classification: removed mechanical `classifyTestFailure()` pattern matcher (Phase 3 Task 1). All test failures now route back to CODING, where the coder LLM evaluates the output and calls `report_blocked` for environment/prerequisite issues. Test failure templates explicitly guide this decision. This avoids false positives from string matching (e.g., tests that exercise TLS or permission logic) and gives the LLM full context for classification.
 - TESTING state now allows ERROR transitions (added to valid transitions map in `coder_fsm.go`).
 
 ### Phase 2.5 Implementation Status
@@ -1283,10 +1283,36 @@ Task 9 (transient adapter) ── standalone
 Task 10 (TESTING failures) ── standalone (depends on Task 1 for kind values)
 ```
 
-### Phase 3: Add richer analytics and smarter triage
+### Phase 3: Improve failure classification and analytics
 
-- Normalized failure signatures (hash of kind+tool+state+explanation family) for grouping recurring failures with different error text
-- Workspace and environment fingerprints to distinguish same-cause vs different-context failures
-- Richer evidence capture with sanitization pipeline (targeted snippets, secret redaction, size budgets)
-- Architect-led LLM impact analysis for epoch-scoped failures (replaces mechanical scope widening with reasoning)
-- Full toolloop in TESTING state (replaces procedural classification from Phase 2 Task 10)
+Phase 3 focuses on making failure data more actionable and improving the coder's ability to recognize and report unrecoverable failures.
+
+#### Task 1: Improved test failure classification in CODING — Done
+
+Removed mechanical `classifyTestFailure()` pattern matcher. All test failures now route back to CODING, where the coder LLM evaluates output and calls `report_blocked` for environment/prerequisite issues. Updated test failure templates to explicitly guide this decision. Tests still run programmatically and must pass before code review — the LLM only interprets results, it cannot bypass testing.
+
+Files changed: `pkg/coder/testing.go`, `pkg/templates/coder/test_failure_instructions.tpl.md`, `pkg/templates/coder/devops_test_failure_instructions.tpl.md`
+
+#### Task 2: Normalized failure signatures
+
+Hash of `kind+tool+state+explanation family` for grouping recurring failures with different error text. Enables pattern detection across sessions without requiring exact string matches. Stored alongside failure records in the database.
+
+Files: `pkg/proto/failure.go`, `pkg/persistence/failure_ops.go`, `pkg/persistence/schema.go`
+
+#### Task 3: Richer evidence capture with sanitization pipeline
+
+Targeted snippets, secret redaction, and size budgets for failure evidence. Builds on the evidence capture from PR #175 to ensure data is both useful and safe to store/display. Evidence fields should respect configurable size limits and run through the secret scanner before persistence.
+
+Files: `pkg/proto/failure.go`, `pkg/persistence/failure_ops.go`
+
+### Phase 4: Smarter triage and environment awareness
+
+Phase 4 replaces mechanical heuristics with reasoning-based approaches. These items depend on having sufficient failure signature data (Phase 3) to evaluate whether the mechanical approaches are making wrong calls.
+
+#### Task 1: Workspace and environment fingerprints
+
+Fingerprints to distinguish same-cause vs different-context failures. Useful for determining whether two `environment` failures on different stories share a root cause (same broken workspace) or are independent (different containers, different symptoms).
+
+#### Task 2: Architect-led LLM impact analysis for epoch-scoped failures
+
+Replaces mechanical scope widening (Phase 2 Task 4) with architect LLM reasoning. When scope widening is triggered, instead of mechanically escalating based on recurrence count, the architect uses a toolloop to inspect affected stories, read failure evidence, and decide whether the scope should widen — and if so, which stories are actually affected. Higher fidelity but higher cost; requires failure signature data to evaluate ROI vs mechanical approach.
