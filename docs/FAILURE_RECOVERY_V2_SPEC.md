@@ -1278,7 +1278,7 @@ Task 4 (scope widening)  ──────┘                                �
                                                                 └── Task 8 (repair+human budgets)
 
 Task 9 (transient adapter) ── standalone
-Task 10 (TESTING failures) ── standalone (depends on Task 1 for kind values)
+Task 10 (TESTING failures) ── standalone (superseded by Phase 3 Task 1)
 ```
 
 ### Phase 3: Improve failure classification and analytics

@@ -936,19 +936,43 @@ func migrateToVersion20(db *sql.DB) error {
 }
 
 // migrateToVersion21 adds the signature column to the failures table for grouping recurring failures.
+// Idempotent: checks PRAGMA table_info before ALTER TABLE to handle partial migration state
+// (e.g., if the buggy v20 from PR #176's squash merge already created the column).
 func migrateToVersion21(db *sql.DB) error {
-	migrations := []string{
-		"ALTER TABLE failures ADD COLUMN signature TEXT",
-		"CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)",
-	}
-
-	for _, migration := range migrations {
-		if _, err := db.Exec(migration); err != nil {
-			return fmt.Errorf("failed to execute migration: %s: %w", migration, err)
+	if !tableHasColumn(db, "failures", "signature") {
+		if _, err := db.Exec("ALTER TABLE failures ADD COLUMN signature TEXT"); err != nil {
+			return fmt.Errorf("failed to add signature column: %w", err)
 		}
 	}
 
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_failures_signature ON failures(signature)"); err != nil {
+		return fmt.Errorf("failed to create signature index: %w", err)
+	}
+
 	return nil
+}
+
+// tableHasColumn checks if a table has a column with the given name using PRAGMA table_info.
+func tableHasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk); err != nil {
+			return false
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
 }
 
 // createSchema creates all required tables and indices.
