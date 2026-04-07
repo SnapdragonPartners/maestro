@@ -14,7 +14,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/tiktoken-go/tokenizer v0.7.0
 	golang.org/x/crypto v0.49.0
-	google.golang.org/genai v1.52.0
+	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.1
 )
