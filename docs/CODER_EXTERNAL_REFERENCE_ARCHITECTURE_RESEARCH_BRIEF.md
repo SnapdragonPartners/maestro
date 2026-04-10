@@ -188,7 +188,7 @@ It is reasonable to explore whether fuller context persistence would help debugg
 
 This is the current recommended order for implementation:
 
-1. Stage 1 + Stage 4A: Prompt refresh, contract cleanup, and narrow todo modernization
+1. ~~Stage 1 + Stage 4A: Prompt refresh, contract cleanup, and narrow todo modernization~~ — **COMPLETE** (PR #183)
 2. Stage 2A: Pre-call compaction check (practical prerequisite for Stage 3A)
 3. Stage 3A: Acceptance-criteria verification in `TESTING`
 4. Stage 2B: State re-injection after compaction + tool error circuit breaker
@@ -201,7 +201,7 @@ Stage 2A is split out because the new `TESTING` verification loop in Stage 3A wi
 
 ### Status
 
-`implement now`
+`complete` — PR #183
 
 ### Why this is first
 
@@ -274,7 +274,7 @@ Produce:
 
 ### Status
 
-`implement now`
+`complete` — PR #183 (combined with Stage 1)
 
 ### Why this moved up
 

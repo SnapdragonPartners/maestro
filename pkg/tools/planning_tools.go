@@ -253,7 +253,7 @@ func (s *SubmitPlanTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (s *SubmitPlanTool) PromptDocumentation() string {
 	return `- **submit_plan** - Submit implementation plan for architect approval
-  - Parameters: plan, confidence, todos (required), exploration_summary (optional)
+  - Parameters: plan, confidence, todos (required), exploration_summary, knowledge_pack (optional)
   - Include 1-20 ordered implementation todos that will track progress during coding
   - Advances to PLAN_REVIEW for architect approval
   - If the story requires no changes, use story_complete with evidence instead`
