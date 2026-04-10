@@ -189,7 +189,7 @@ It is reasonable to explore whether fuller context persistence would help debugg
 This is the current recommended order for implementation:
 
 1. ~~Stage 1 + Stage 4A: Prompt refresh, contract cleanup, and narrow todo modernization~~ — **COMPLETE** (PR #183)
-2. Stage 2A: Pre-call compaction check (practical prerequisite for Stage 3A)
+2. ~~Stage 2A: Pre-call compaction check (practical prerequisite for Stage 3A)~~ — **COMPLETE** (PR #184)
 3. Stage 3A: Acceptance-criteria verification in `TESTING`
 4. Stage 2B: State re-injection after compaction + tool error circuit breaker
 5. Stage 3B: Bounded adversarial probing in `TESTING`
@@ -437,8 +437,8 @@ Produce:
 
 `implement now`, but with deliberately narrow scope and split into two tranches:
 
-- **Stage 2A** (pre-call compaction check): implement before or alongside Stage 3A
-- **Stage 2B** (state re-injection + tool circuit breaker): implement after Stage 3A
+- **Stage 2A** (fix pre-call compaction accuracy + state re-injection): `complete` — PR #184
+- **Stage 2B** (tool circuit breaker): implement after Stage 3A
 
 ### Important framing
 
