@@ -16,7 +16,7 @@ func TestSignalDetector_SubmitPlan(t *testing.T) {
 			Input: map[string]any{
 				"plan":       "1. Do thing A\n2. Do thing B",
 				"confidence": "high",
-				"risks":      "None identified",
+				"todos":      []any{"Create module A", "Add tests for module A"},
 			},
 		},
 	})
@@ -35,8 +35,10 @@ func TestSignalDetector_SubmitPlan(t *testing.T) {
 	if input.Confidence != "high" {
 		t.Errorf("expected confidence 'high', got %q", input.Confidence)
 	}
-	if input.Risks != "None identified" {
-		t.Errorf("unexpected risks: %q", input.Risks)
+	if len(input.Todos) != 2 {
+		t.Errorf("expected 2 todos, got %d", len(input.Todos))
+	} else if input.Todos[0] != "Create module A" {
+		t.Errorf("unexpected first todo: %q", input.Todos[0])
 	}
 }
 

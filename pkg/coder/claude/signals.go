@@ -47,9 +47,9 @@ var signalToolNames = map[string]Signal{
 // SignalToolInput represents input to a signal tool call.
 type SignalToolInput struct {
 	// For submit_plan
-	Plan       string `json:"plan,omitempty"`
-	Confidence string `json:"confidence,omitempty"`
-	Risks      string `json:"risks,omitempty"`
+	Plan       string   `json:"plan,omitempty"`
+	Confidence string   `json:"confidence,omitempty"`
+	Todos      []string `json:"todos,omitempty"`
 
 	// For done
 	Summary string `json:"summary,omitempty"`
@@ -119,8 +119,12 @@ func parseSignalInput(input any) *SignalToolInput {
 		if confidence, ok := v["confidence"].(string); ok {
 			result.Confidence = confidence
 		}
-		if risks, ok := v["risks"].(string); ok {
-			result.Risks = risks
+		if todosRaw, ok := v["todos"].([]any); ok {
+			for _, item := range todosRaw {
+				if s, ok := item.(string); ok {
+					result.Todos = append(result.Todos, s)
+				}
+			}
 		}
 		if summary, ok := v["summary"].(string); ok {
 			result.Summary = summary

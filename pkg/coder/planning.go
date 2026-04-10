@@ -334,6 +334,26 @@ func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData
 	sm.SetStateData(string(stateDataKeyExplorationSummary), explorationSummary)
 	sm.SetStateData(KeyPlanningCompletedAt, time.Now().UTC())
 
+	// Extract and store todos from submit_plan if present
+	if todosRaw, ok := effectData["todos"]; ok {
+		if todosArray, ok := todosRaw.([]string); ok && len(todosArray) > 0 {
+			items := make([]TodoItem, len(todosArray))
+			for i, desc := range todosArray {
+				items[i] = TodoItem{
+					Description: desc,
+					Completed:   false,
+				}
+			}
+			todoList := &TodoList{
+				Items:   items,
+				Current: 0,
+			}
+			c.todoList = todoList
+			sm.SetStateData(KeyTodoList, todoList)
+			c.logger.Info("📋 Stored %d todos from submit_plan", len(todosArray))
+		}
+	}
+
 	// Store knowledge pack via persistence if available
 	if knowledgePack != "" {
 		storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")

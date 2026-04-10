@@ -28,8 +28,7 @@ type PlanningResult struct {
 	Plan               string
 	Confidence         string
 	ExplorationSummary string
-	Risks              string
-	Todos              []PlanTodo
+	Todos              []string
 	KnowledgePack      string
 }
 
@@ -80,18 +79,15 @@ func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResul
 				result.Plan = utils.GetMapFieldOr[string](resultMap, "plan", "")
 				result.Confidence = utils.GetMapFieldOr[string](resultMap, "confidence", "")
 				result.ExplorationSummary = utils.GetMapFieldOr[string](resultMap, "exploration_summary", "")
-				result.Risks = utils.GetMapFieldOr[string](resultMap, "risks", "")
 				result.KnowledgePack = utils.GetMapFieldOr[string](resultMap, "knowledge_pack", "")
 
-				// Extract todos if present
-				todos := utils.GetMapFieldOr[[]any](resultMap, "todos", []any{})
-				result.Todos = make([]PlanTodo, len(todos))
-				for j, todoItem := range todos {
-					if todoMap, ok := utils.SafeAssert[map[string]any](todoItem); ok {
-						result.Todos[j] = PlanTodo{
-							ID:          utils.GetMapFieldOr[string](todoMap, "id", ""),
-							Description: utils.GetMapFieldOr[string](todoMap, "description", ""),
-							Completed:   utils.GetMapFieldOr[bool](todoMap, "completed", false),
+				// Extract todos as []string
+				if todosRaw, ok := resultMap["todos"]; ok {
+					if todosArray, ok := todosRaw.([]any); ok {
+						for _, item := range todosArray {
+							if s, ok := item.(string); ok {
+								result.Todos = append(result.Todos, s)
+							}
 						}
 					}
 				}

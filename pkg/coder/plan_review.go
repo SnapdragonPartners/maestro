@@ -120,8 +120,13 @@ func (c *Coder) handlePlanReviewApproval(ctx context.Context, sm *agent.BaseStat
 			c.logger.Info("📋 Skipping todo collection in Claude Code mode (Claude Code manages its own todos)")
 			nextState = StateCoding
 			completed = false
+		} else if c.todoList != nil && len(c.todoList.Items) > 0 {
+			// Todos already populated from submit_plan - skip separate collection
+			c.logger.Info("📋 Todos already populated from submit_plan (%d items), skipping todo collection", len(c.todoList.Items))
+			nextState = StateCoding
+			completed = false
 		} else {
-			// Standard mode - collect todos FIRST (fail-fast principle)
+			// Standard mode fallback - collect todos via separate LLM pass
 			c.logger.Info("📋 [TODO] Requesting todo list from LLM after plan approval")
 			var err error
 			nextState, completed, err = c.requestTodoList(ctx, sm)

@@ -33,11 +33,15 @@ func (c *Coder) getTodoListStatus() string {
 		status += "**Completed**:\n" + strings.Join(completed, "\n") + "\n\n"
 	}
 
-	// Show remaining todos
+	// Show remaining todos (distinguish in-progress from pending)
 	remaining := []string{}
 	for i := range c.todoList.Items {
 		if !c.todoList.Items[i].Completed {
-			remaining = append(remaining, fmt.Sprintf("- ⏸️  %s", c.todoList.Items[i].Description))
+			if i == c.todoList.Current {
+				remaining = append(remaining, fmt.Sprintf("- 🔄 %s", c.todoList.Items[i].Description))
+			} else {
+				remaining = append(remaining, fmt.Sprintf("- ⏸️  %s", c.todoList.Items[i].Description))
+			}
 		}
 	}
 	if len(remaining) > 0 {

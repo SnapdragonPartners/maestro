@@ -142,22 +142,25 @@ When submitting your plan with `submit_plan`, you MUST provide:
 ### Required Parameters:
 - **`plan`**: Your complete infrastructure implementation plan (JSON format above)
 - **`confidence`**: "HIGH", "MEDIUM", or "LOW" based on exploration
+- **`todos`**: Ordered list of infrastructure implementation tasks (1-20 items, 3-10 recommended for typical stories)
+
+### Optional Parameters:
 - **`exploration_summary`**: Brief summary of infrastructure explored and findings
-- **`risks`**: Potential infrastructure challenges or risks identified
-- **`todos`**: **REQUIRED** - Ordered list of infrastructure implementation tasks
 
-### JSON example to follow exactly:
+### Example tool call:
 
-```json
-{
+```
+submit_plan({
+  "plan": "<your infrastructure implementation plan as JSON string>",
+  "confidence": "HIGH",
   "todos": [
     "Build and validate Docker container with required tools",
-    "Test container functionality and tool availability", 
+    "Test container functionality and tool availability",
     "Setup deployment configuration and scripts",
     "Validate complete infrastructure stack",
     "Document infrastructure setup and usage"
   ]
-}
+})
 ```
 
 **Important**: Todos will be used to track progress during implementation. Each todo should be:

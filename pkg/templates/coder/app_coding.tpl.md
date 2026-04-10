@@ -58,6 +58,8 @@ Key examples:
 
 ### Todo Management
 - **todo_complete**: Call this IMMEDIATELY after finishing the current task. Before calling, verify the work:
+  - Reading code is not verification. You must run a command to confirm the work before marking a todo complete.
+  - If you did not run a verification command, do not mark the todo complete.
 {{- if .TestCommand}}
   - Run tests to confirm functionality works: `shell({{"{"}}{{printf "\"command\": \"%s\"" .TestCommand}}}})`
 {{- else}}
