@@ -149,7 +149,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	}
 
 	// Test required parameters.
-	expectedRequired := []string{"plan", "confidence"}
+	expectedRequired := []string{"plan", "confidence", "todos"}
 	if len(def.InputSchema.Required) != len(expectedRequired) {
 		t.Errorf("Expected %d required parameters, got %d", len(expectedRequired), len(def.InputSchema.Required))
 	}
@@ -172,6 +172,7 @@ func TestSubmitPlanToolValidation(t *testing.T) {
 	validArgs := map[string]any{
 		"plan":                "Detailed implementation plan...",
 		"confidence":          string(proto.ConfidenceHigh),
+		"todos":               []any{"Create module", "Add tests"},
 		"exploration_summary": "Explored 15 files, found 3 patterns",
 		"knowledge_pack":      "digraph KG { A -> B; }",
 	}
@@ -265,6 +266,7 @@ func TestSubmitPlanToolErrorHandling(t *testing.T) {
 			args: map[string]any{
 				"plan":       "Minimal valid plan",
 				"confidence": "MEDIUM",
+				"todos":      []any{"First task"},
 			},
 			expectError: false,
 		},

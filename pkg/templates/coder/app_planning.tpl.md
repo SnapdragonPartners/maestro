@@ -133,30 +133,31 @@ Create a comprehensive application development plan based on your exploration:
 When submitting your plan with `submit_plan`, you MUST provide:
 
 ### Required Parameters:
-- **`plan`**: Your complete application development implementation plan (JSON format above)
+- **`plan`**: Your complete implementation plan (JSON format above)
 - **`confidence`**: "HIGH", "MEDIUM", or "LOW" based on exploration
+- **`todos`**: Ordered list of implementation tasks (1-20 items, 3-10 recommended for typical stories)
+
+### Optional Parameters:
 - **`exploration_summary`**: Brief summary of files explored and findings
-- **`risks`**: Potential development challenges or risks identified
-- **`todos`**: **REQUIRED** - Ordered list of implementation tasks
 
-### JSON example to follow exactly:
+### Example tool call:
 
-```json
-{
+```
+submit_plan({
+  "plan": "<your implementation plan as JSON string>",
+  "confidence": "HIGH",
   "todos": [
     "Create base module structure in pkg/mymodule/",
-    "Implement core functionality with proper error handling", 
+    "Implement core functionality with proper error handling",
     "Add comprehensive unit tests covering all public functions",
-    "Create integration tests with existing services",
-    "Update documentation and add usage examples",
-    "Integrate with existing service patterns and interfaces"
+    "Update documentation and add usage examples"
   ]
-}
+})
 ```
 
 **Important**: Todos will be used to track progress during implementation. Each todo should be:
 - **Development-focused**: Clear coding, testing, documentation tasks
-- **Ordered**: Dependencies implicit in sequence  
+- **Ordered**: Dependencies implicit in sequence
 - **Complete**: Covers all development work
 - **Testable**: Can be verified when done
 

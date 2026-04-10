@@ -6,9 +6,11 @@ I have completed the implementation and all tests are passing. Ready for code re
 
 {{.Extra.Summary}}
 
-## Evidence
+## Verification Evidence
 
 {{.Extra.Evidence}}
+
+**Note to reviewer**: This evidence reflects build, test, and lint results plus workspace inspection. Evaluate the implementation against the original story requirements independently.
 
 ## Confidence Level
 

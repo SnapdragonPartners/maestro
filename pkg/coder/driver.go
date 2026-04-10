@@ -241,9 +241,7 @@ type stateDataKey string
 const (
 	stateDataKeyPlan                     stateDataKey = KeyPlan
 	stateDataKeyPlanConfidence           stateDataKey = "plan_confidence"
-	stateDataKeyPlanTodos                stateDataKey = "plan_todos"
 	stateDataKeyExplorationSummary       stateDataKey = "exploration_summary"
-	stateDataKeyPlanRisks                stateDataKey = "plan_risks"
 	stateDataKeyKnowledgePack            stateDataKey = "knowledge_pack"
 	stateDataKeyPlanApprovalResult       stateDataKey = KeyPlanApprovalResult
 	stateDataKeyCompletionApprovalResult stateDataKey = "completion_approval_result"
@@ -257,13 +255,6 @@ const (
 
 	// BUDGET_REVIEW and other state keys - removed unused constants.
 )
-
-// PlanTodo represents a single task item in the implementation plan.
-type PlanTodo struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
-	Completed   bool   `json:"completed"`
-}
 
 // Docker container constants.
 const (

@@ -26,20 +26,8 @@ func TestExtractPlanningResult_SubmitPlan(t *testing.T) {
 			"plan":                "Implementation plan here",
 			"confidence":          "high",
 			"exploration_summary": "Explored the codebase",
-			"risks":               "Some risks",
 			"knowledge_pack":      "Key learnings",
-			"todos": []any{
-				map[string]any{
-					"id":          "1",
-					"description": "First task",
-					"completed":   false,
-				},
-				map[string]any{
-					"id":          "2",
-					"description": "Second task",
-					"completed":   true,
-				},
-			},
+			"todos":               []any{"First task", "Second task"},
 		},
 	}
 
@@ -60,20 +48,17 @@ func TestExtractPlanningResult_SubmitPlan(t *testing.T) {
 	if result.ExplorationSummary != "Explored the codebase" {
 		t.Errorf("Expected exploration_summary to be extracted")
 	}
-	if result.Risks != "Some risks" {
-		t.Errorf("Expected risks to be extracted")
-	}
 	if result.KnowledgePack != "Key learnings" {
 		t.Errorf("Expected knowledge_pack to be extracted")
 	}
 	if len(result.Todos) != 2 {
 		t.Errorf("Expected 2 todos, got %d", len(result.Todos))
 	}
-	if result.Todos[0].Description != "First task" {
-		t.Errorf("Expected first todo description 'First task', got: %s", result.Todos[0].Description)
+	if len(result.Todos) >= 1 && result.Todos[0] != "First task" {
+		t.Errorf("Expected first todo 'First task', got: %s", result.Todos[0])
 	}
-	if result.Todos[1].Completed != true {
-		t.Error("Expected second todo to be completed")
+	if len(result.Todos) >= 2 && result.Todos[1] != "Second task" {
+		t.Errorf("Expected second todo 'Second task', got: %s", result.Todos[1])
 	}
 }
 
@@ -421,11 +406,8 @@ func TestPlanningResultStruct(t *testing.T) {
 		Plan:               "Plan text",
 		Confidence:         "high",
 		ExplorationSummary: "Summary",
-		Risks:              "Risks",
-		Todos: []PlanTodo{
-			{ID: "1", Description: "Task", Completed: false},
-		},
-		KnowledgePack: "Knowledge",
+		Todos:              []string{"Task 1", "Task 2"},
+		KnowledgePack:      "Knowledge",
 	}
 
 	if result.Signal != "TEST" {
@@ -440,10 +422,7 @@ func TestPlanningResultStruct(t *testing.T) {
 	if result.ExplorationSummary != "Summary" {
 		t.Error("ExplorationSummary not set correctly")
 	}
-	if result.Risks != "Risks" {
-		t.Error("Risks not set correctly")
-	}
-	if len(result.Todos) != 1 {
+	if len(result.Todos) != 2 {
 		t.Error("Todos not set correctly")
 	}
 	if result.KnowledgePack != "Knowledge" {

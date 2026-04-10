@@ -215,12 +215,21 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"plan": {
 					Type:        "string",
-					Description: "Your implementation plan ready for architect approval (will be broken into todos in next phase)",
+					Description: "Your implementation plan ready for architect approval",
 				},
 				"confidence": {
 					Type:        "string",
 					Description: "Your confidence level based on codebase exploration",
 					Enum:        []string{string(proto.ConfidenceHigh), string(proto.ConfidenceMedium), string(proto.ConfidenceLow)},
+				},
+				"todos": {
+					Type:        "array",
+					Description: "Ordered list of implementation tasks. Each should start with an action verb and have clear completion criteria. Example: [\"Create main.go with basic structure\", \"Implement HTTP server setup\", \"Add error handling and tests\"]",
+					Items: &Property{
+						Type: "string",
+					},
+					MinItems: &[]int{1}[0],
+					MaxItems: &[]int{20}[0],
 				},
 				"exploration_summary": {
 					Type:        "string",
@@ -231,7 +240,7 @@ func (s *SubmitPlanTool) Definition() ToolDefinition {
 					Description: "Relevant knowledge graph subgraph in DOT format (auto-populated, optional)",
 				},
 			},
-			Required: []string{"plan", "confidence"},
+			Required: []string{"plan", "confidence", "todos"},
 		},
 	}
 }
@@ -244,37 +253,22 @@ func (s *SubmitPlanTool) Name() string {
 // PromptDocumentation returns markdown documentation for LLM prompts.
 func (s *SubmitPlanTool) PromptDocumentation() string {
 	return `- **submit_plan** - Submit implementation plan for architect approval
-  - Parameters: plan, confidence (required), exploration_summary (optional)
+  - Parameters: plan, confidence, todos (required), exploration_summary (optional)
+  - Include 1-20 ordered implementation todos that will track progress during coding
   - Advances to PLAN_REVIEW for architect approval
-  - If the story requires no changes, use done with a summary explaining why`
+  - If the story requires no changes, use story_complete with evidence instead`
 }
 
 // Exec executes the submit plan operation.
 func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
-	// Validate plan (required)
-	plan, ok := args["plan"]
-	if !ok {
-		return nil, fmt.Errorf("plan parameter is required")
+	planStr, err := extractRequiredString(args, "plan")
+	if err != nil {
+		return nil, err
 	}
 
-	planStr, ok := plan.(string)
-	if !ok {
-		return nil, fmt.Errorf("plan must be a string")
-	}
-
-	if planStr == "" {
-		return nil, fmt.Errorf("plan cannot be empty")
-	}
-
-	// Validate confidence (required)
-	confidence, ok := args["confidence"]
-	if !ok {
-		return nil, fmt.Errorf("confidence parameter is required")
-	}
-
-	confidenceStr, ok := confidence.(string)
-	if !ok {
-		return nil, fmt.Errorf("confidence must be a string")
+	confidenceStr, err := extractRequiredString(args, "confidence")
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate confidence level.
@@ -285,21 +279,13 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 		return nil, fmt.Errorf("confidence must be %s, %s, or %s", proto.ConfidenceHigh, proto.ConfidenceMedium, proto.ConfidenceLow)
 	}
 
-	// Extract optional exploration summary.
-	explorationSummary := ""
-	if expVal, hasExp := args["exploration_summary"]; hasExp {
-		if expStr, ok := expVal.(string); ok {
-			explorationSummary = expStr
-		}
+	validatedTodos, err := extractStringArray(args, "todos", 1, 20)
+	if err != nil {
+		return nil, err
 	}
 
-	// Extract optional knowledge_pack.
-	knowledgePack := ""
-	if packVal, hasPack := args["knowledge_pack"]; hasPack {
-		if packStr, ok := packVal.(string); ok {
-			knowledgePack = packStr
-		}
-	}
+	explorationSummary := extractOptionalString(args, "exploration_summary")
+	knowledgePack := extractOptionalString(args, "knowledge_pack")
 
 	// Return human-readable message for LLM context
 	// Return structured data via ProcessEffect.Data for state machine
@@ -310,9 +296,63 @@ func (s *SubmitPlanTool) Exec(_ context.Context, args map[string]any) (*ExecResu
 			Data: map[string]any{
 				"plan":                planStr,
 				"confidence":          confidenceStr,
+				"todos":               validatedTodos,
 				"exploration_summary": explorationSummary,
 				"knowledge_pack":      knowledgePack,
 			},
 		},
 	}, nil
+}
+
+// extractRequiredString extracts and validates a required string parameter from tool args.
+func extractRequiredString(args map[string]any, key string) (string, error) {
+	val, ok := args[key]
+	if !ok {
+		return "", fmt.Errorf("%s parameter is required", key)
+	}
+	str, ok := val.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string", key)
+	}
+	if str == "" {
+		return "", fmt.Errorf("%s cannot be empty", key)
+	}
+	return str, nil
+}
+
+// extractOptionalString extracts an optional string parameter from tool args.
+func extractOptionalString(args map[string]any, key string) string {
+	if val, ok := args[key]; ok {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+// extractStringArray extracts and validates a required array of strings from tool args.
+func extractStringArray(args map[string]any, key string, minItems, maxItems int) ([]string, error) {
+	raw, ok := args[key]
+	if !ok {
+		return nil, fmt.Errorf("%s parameter is required", key)
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", key)
+	}
+	if len(arr) < minItems || len(arr) > maxItems {
+		return nil, fmt.Errorf("%s must contain %d-%d items (got %d)", key, minItems, maxItems, len(arr))
+	}
+	result := make([]string, len(arr))
+	for i, item := range arr {
+		str, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s item %d must be a string", key, i)
+		}
+		if str == "" {
+			return nil, fmt.Errorf("%s item %d cannot be empty", key, i)
+		}
+		result[i] = str
+	}
+	return result, nil
 }
