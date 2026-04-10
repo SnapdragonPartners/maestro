@@ -827,3 +827,295 @@ func TestTerminalToolFailureContinuesLoop(t *testing.T) {
 		t.Errorf("expected terminal tool to be called 2 times, got %d", callCount)
 	}
 }
+
+// TestToolCircuitBreakerSkipsExecution verifies that a tool is skipped after
+// hitting the consecutive failure threshold.
+func TestToolCircuitBreakerSkipsExecution(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	execCount := 0
+	failingTool := &mockGeneralTool{
+		name: "shell",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			execCount++
+			return nil, fmt.Errorf("connection refused")
+		},
+	}
+
+	// LLM calls "shell" 5 times across 5 iterations, same params each time.
+	// 6th response: LLM calls terminal tool (adapted).
+	var responses []agent.CompletionResponse
+	for i := range 5 {
+		responses = append(responses, agent.CompletionResponse{
+			Content: "Trying shell",
+			ToolCalls: []agent.ToolCall{
+				{ID: fmt.Sprintf("call%d", i), Name: "shell", Parameters: map[string]any{"command": "make test"}},
+			},
+		})
+	}
+	responses = append(responses, agent.CompletionResponse{
+		Content: "Done",
+		ToolCalls: []agent.ToolCall{
+			{ID: "callfinal", Name: "submit", Parameters: map[string]any{}},
+		},
+	})
+
+	llmClient := &mockLLMClient{responses: responses}
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content:       "done",
+				ProcessEffect: &tools.ProcessEffect{Signal: "DONE", Data: map[string]any{}},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{failingTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  10,
+		MaxTokens:      1000,
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+		},
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect outcome, got %s (err: %v)", out.Kind, out.Err)
+	}
+
+	// Tool should have been executed only 3 times (threshold), not 5
+	if execCount != 3 {
+		t.Errorf("Expected tool to be executed 3 times (threshold), got %d", execCount)
+	}
+}
+
+// TestToolCircuitBreakerSemanticFailure verifies that semantic failures (success:false)
+// are detected and trip the breaker even when err == nil.
+func TestToolCircuitBreakerSemanticFailure(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	execCount := 0
+	semanticFailTool := &mockGeneralTool{
+		name: "file_edit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			execCount++
+			// Returns err == nil but success: false in content
+			return &tools.ExecResult{Content: `{"success": false, "error": "old_string not found"}`}, nil
+		},
+	}
+
+	var responses []agent.CompletionResponse
+	for i := range 4 {
+		responses = append(responses, agent.CompletionResponse{
+			Content: "Editing file",
+			ToolCalls: []agent.ToolCall{
+				{ID: fmt.Sprintf("call%d", i), Name: "file_edit", Parameters: map[string]any{"path": "main.go", "old_string": "foo"}},
+			},
+		})
+	}
+	responses = append(responses, agent.CompletionResponse{
+		Content: "Done",
+		ToolCalls: []agent.ToolCall{
+			{ID: "callfinal", Name: "submit", Parameters: map[string]any{}},
+		},
+	})
+
+	llmClient := &mockLLMClient{responses: responses}
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content:       "done",
+				ProcessEffect: &tools.ProcessEffect{Signal: "DONE", Data: map[string]any{}},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{semanticFailTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  10,
+		MaxTokens:      1000,
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+		},
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect outcome, got %s (err: %v)", out.Kind, out.Err)
+	}
+
+	// Semantic failures should trip: only 3 executions, 4th skipped
+	if execCount != 3 {
+		t.Errorf("Expected 3 executions (semantic failure trips at 3), got %d", execCount)
+	}
+}
+
+// TestToolCircuitBreakerTerminalToolGuard verifies that a tripped terminal tool
+// is marked as failed and does NOT auto-wrap as success.
+func TestToolCircuitBreakerTerminalToolGuard(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	execCount := 0
+	// Terminal tool that always fails
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			execCount++
+			return nil, fmt.Errorf("submit failed")
+		},
+	}
+
+	// LLM calls terminal tool 4 times (trips at 3, skipped at 4)
+	responses := make([]agent.CompletionResponse, 4)
+	for i := range responses {
+		responses[i] = agent.CompletionResponse{
+			Content: "Submitting",
+			ToolCalls: []agent.ToolCall{
+				{ID: fmt.Sprintf("call%d", i), Name: "submit", Parameters: map[string]any{}},
+			},
+		}
+	}
+
+	llmClient := &mockLLMClient{responses: responses}
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{},
+		TerminalTool:   terminalTool,
+		MaxIterations:  10,
+		MaxTokens:      1000,
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+		},
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+
+	// Should NOT be OutcomeProcessEffect (auto-wrap) — terminal tool was failed/skipped
+	if out.Kind == toolloop.OutcomeProcessEffect && out.Signal == "TERMINAL_COMPLETE" {
+		t.Error("Tripped terminal tool should NOT auto-wrap as TERMINAL_COMPLETE")
+	}
+
+	// Terminal tool should have been executed only 3 times
+	if execCount != 3 {
+		t.Errorf("Expected terminal tool executed 3 times, got %d", execCount)
+	}
+}
+
+// TestToolCircuitBreakerChangedError verifies that changing errors don't accumulate
+// toward the same trip threshold.
+func TestToolCircuitBreakerChangedError(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	callNum := 0
+	changingErrorTool := &mockGeneralTool{
+		name: "shell",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			callNum++
+			// Each call returns a different error
+			return nil, fmt.Errorf("error variant %d", callNum)
+		},
+	}
+
+	// 5 calls with different errors each time
+	responses := make([]agent.CompletionResponse, 5)
+	for i := range responses {
+		responses[i] = agent.CompletionResponse{
+			Content: "Trying",
+			ToolCalls: []agent.ToolCall{
+				{ID: fmt.Sprintf("call%d", i), Name: "shell", Parameters: map[string]any{"command": "test"}},
+			},
+		}
+	}
+
+	llmClient := &mockLLMClient{responses: responses}
+	terminalTool := &mockTerminalTool{name: "submit"}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{changingErrorTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+		},
+	}
+
+	toolloop.Run(loop, ctx, cfg)
+
+	// All 5 calls should have executed (different errors = different fingerprints)
+	if callNum != 5 {
+		t.Errorf("Expected all 5 calls to execute (different errors), got %d", callNum)
+	}
+}
+
+// TestToolCircuitBreakerResetOnSuccess verifies that a success resets the failure counter.
+func TestToolCircuitBreakerResetOnSuccess(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	callNum := 0
+	// Fails twice, succeeds once, fails twice more — should never trip (threshold 3)
+	intermittentTool := &mockGeneralTool{
+		name: "shell",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			callNum++
+			if callNum == 3 { // Third call succeeds
+				return &tools.ExecResult{Content: `{"exit_code": 0, "stdout": "ok"}`}, nil
+			}
+			return nil, fmt.Errorf("failed")
+		},
+	}
+
+	responses := make([]agent.CompletionResponse, 5)
+	for i := range responses {
+		responses[i] = agent.CompletionResponse{
+			Content: "Trying",
+			ToolCalls: []agent.ToolCall{
+				{ID: fmt.Sprintf("call%d", i), Name: "shell", Parameters: map[string]any{"command": "test"}},
+			},
+		}
+	}
+
+	llmClient := &mockLLMClient{responses: responses}
+	terminalTool := &mockTerminalTool{name: "submit"}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{intermittentTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+		},
+	}
+
+	toolloop.Run(loop, ctx, cfg)
+
+	// All 5 calls should have executed (success at 3 resets counter)
+	if callNum != 5 {
+		t.Errorf("Expected all 5 calls to execute (success resets counter), got %d", callNum)
+	}
+}
