@@ -3,6 +3,7 @@ package contextmgr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -101,19 +102,38 @@ type ToolResult struct {
 	IsError    bool
 }
 
+// TokenCounter provides token counting for context management.
+// Implemented by utils.TokenCounter — defined as an interface here to avoid
+// a dependency from contextmgr on pkg/utils.
+type TokenCounter interface {
+	CountTokens(text string) int
+}
+
+// CompactionCallback is invoked after compaction removes messages.
+// The callback receives the number of messages removed and should return
+// an optional state summary to inject as a synthetic message.
+// If empty string is returned, no summary is injected.
+type CompactionCallback func(removedCount int) string
+
+// defaultCharsPerToken is the approximate character-to-token ratio used as fallback
+// when no TokenCounter is configured. English/code averages ~4 chars per BPE token.
+const defaultCharsPerToken = 4
+
 // ContextManager manages conversation context and token counting.
 // Each instance is owned by a single agent goroutine, so no synchronization is needed.
 //
 //nolint:govet // Field alignment less important than logical grouping
 type ContextManager struct {
-	messages           []Message    // Core conversation messages
-	userBuffer         []Fragment   // Buffer for user content with provenance
-	modelName          string       // Model name for determining context limits
-	currentTemplate    string       // Current template name for change detection
-	chatService        ChatService  // Optional chat service for message injection
-	agentID            string       // Agent ID for chat message fetching
-	pendingToolCalls   []ToolCall   // Tool calls from last assistant message
-	pendingToolResults []ToolResult // Accumulated tool results for batching
+	messages           []Message          // Core conversation messages
+	userBuffer         []Fragment         // Buffer for user content with provenance
+	modelName          string             // Model name for determining context limits
+	currentTemplate    string             // Current template name for change detection
+	chatService        ChatService        // Optional chat service for message injection
+	agentID            string             // Agent ID for chat message fetching
+	pendingToolCalls   []ToolCall         // Tool calls from last assistant message
+	pendingToolResults []ToolResult       // Accumulated tool results for batching
+	tokenCounter       TokenCounter       // Optional: accurate token counting (e.g. tiktoken)
+	onCompaction       CompactionCallback // Called after compaction for state re-injection
 }
 
 // NewContextManager creates a new context manager instance.
@@ -138,6 +158,18 @@ func NewContextManagerWithModel(modelName string) *ContextManager {
 func (cm *ContextManager) SetChatService(chatService ChatService, agentID string) {
 	cm.chatService = chatService
 	cm.agentID = agentID
+}
+
+// SetTokenCounter configures accurate token counting for this context manager.
+// When set, CountTokens() uses the real counter; otherwise falls back to char/4 approximation.
+func (cm *ContextManager) SetTokenCounter(tc TokenCounter) {
+	cm.tokenCounter = tc
+}
+
+// SetCompactionCallback configures a callback invoked after compaction removes messages.
+// The callback should return a state summary to inject, or empty string to skip injection.
+func (cm *ContextManager) SetCompactionCallback(cb CompactionCallback) {
+	cm.onCompaction = cb
 }
 
 // AddMessage stores a provenance/content pair in the user buffer.
@@ -208,23 +240,63 @@ func (cm *ContextManager) Compact(maxTokens int) error {
 	return cm.performCompaction(maxTokens)
 }
 
-// CountTokens returns a simple token count based on message lengths.
-// This is a stub implementation that counts characters as a proxy for tokens.
+// CountTokens returns the approximate token count for all messages and buffered content.
+// Includes Role, Content, ToolCalls (name + parameters), and ToolResults (content).
+// Uses tiktoken when a TokenCounter is configured; otherwise falls back to char/4 approximation.
 func (cm *ContextManager) CountTokens() int {
-	totalLength := 0
+	if cm.tokenCounter != nil {
+		total := 0
+		for i := range cm.messages {
+			total += cm.messageChars(&cm.messages[i], true)
+		}
+		for i := range cm.userBuffer {
+			total += cm.tokenCounter.CountTokens(cm.userBuffer[i].Content)
+		}
+		return total
+	}
+	// Fallback: approximate ~4 characters per BPE token for English/code.
+	totalChars := 0
 	for i := range cm.messages {
-		message := &cm.messages[i]
-		// Count both role and content characters.
-		totalLength += len(message.Role) + len(message.Content)
+		totalChars += cm.messageChars(&cm.messages[i], false)
 	}
-
-	// Also count buffered user content
 	for i := range cm.userBuffer {
-		fragment := &cm.userBuffer[i]
-		totalLength += len(fragment.Content)
+		totalChars += len(cm.userBuffer[i].Content)
+	}
+	// Ceiling division: round up to avoid undercounting, which would delay
+	// compaction and risk exceeding model context limits.
+	return (totalChars + defaultCharsPerToken - 1) / defaultCharsPerToken
+}
+
+// messageChars returns the token or character count for a single message,
+// including its ToolCalls and ToolResults. When useCounter is true, uses the
+// TokenCounter for accurate counts; otherwise returns raw character length.
+//
+// ToolCalls and ToolResults are serialized to JSON for counting so that
+// structural overhead (brackets, quotes, keys) is included — matching what
+// the LLM provider actually sees.
+func (cm *ContextManager) messageChars(msg *Message, useCounter bool) int {
+	count := func(s string) int {
+		if useCounter && cm.tokenCounter != nil {
+			return cm.tokenCounter.CountTokens(s)
+		}
+		return len(s)
 	}
 
-	return totalLength
+	total := count(msg.Role + msg.Content)
+
+	for j := range msg.ToolCalls {
+		if b, err := json.Marshal(&msg.ToolCalls[j]); err == nil {
+			total += count(string(b))
+		}
+	}
+
+	for j := range msg.ToolResults {
+		if b, err := json.Marshal(&msg.ToolResults[j]); err == nil {
+			total += count(string(b))
+		}
+	}
+
+	return total
 }
 
 // CompactIfNeeded performs context compaction if needed.
@@ -264,6 +336,8 @@ func (cm *ContextManager) compactIfNeededLegacy(threshold int) error {
 }
 
 // performCompaction reduces context size to the target.
+// After sliding-window removal, it prefers the compaction callback for state re-injection
+// over the heuristic summarization fallback. Only one summary is ever injected — they do not stack.
 func (cm *ContextManager) performCompaction(targetTokens int) error {
 	// Always preserve index 0 (system prompt) and ensure minimum viable context
 	if len(cm.messages) <= 2 {
@@ -271,21 +345,67 @@ func (cm *ContextManager) performCompaction(targetTokens int) error {
 		return nil
 	}
 
-	// Try simple sliding window compaction first.
+	logger := logx.NewLogger("contextmgr")
 	originalLen := len(cm.messages)
+	originalTokens := cm.CountTokens()
+
+	// Sliding window: remove oldest non-system messages until under target.
 	for cm.CountTokens() > targetTokens && len(cm.messages) > 2 {
 		// Remove the second message (oldest non-system message)
 		// This maintains: [system, msg3, msg4, ...] -> [system, msg4, ...].
 		cm.messages = append(cm.messages[:1], cm.messages[2:]...)
 	}
 
-	// If we removed a significant amount of context (>50% of messages),
-	// and we're still over target, try summarization instead.
+	removedCount := originalLen - len(cm.messages)
+	if removedCount == 0 {
+		return nil
+	}
+
+	logger.Info("📦 Context compaction: removed %d/%d messages (%d→%d approx tokens)",
+		removedCount, originalLen, originalTokens, cm.CountTokens())
+
+	// State re-injection: prefer callback over heuristic summarization.
+	// Only one summary gets injected — they do not stack.
+	if cm.onCompaction != nil {
+		if summary := cm.onCompaction(removedCount); summary != "" {
+			cm.injectSummaryMessage(summary, "compaction-state-summary")
+			logger.Info("📦 Injected state summary after compaction (%d chars)", len(summary))
+
+			// Re-check: the injected summary may push us back over target.
+			// Remove more oldest messages (after system + summary) if needed.
+			for cm.CountTokens() > targetTokens && len(cm.messages) > 3 {
+				// Remove index 2 (oldest message after system+summary).
+				cm.messages = append(cm.messages[:2], cm.messages[3:]...)
+			}
+
+			if cm.CountTokens() > targetTokens {
+				logger.Warn("📦 Context still over target after compaction (%d tokens > %d target, %d messages remaining)",
+					cm.CountTokens(), targetTokens, len(cm.messages))
+			}
+
+			return nil // Skip heuristic summarization
+		}
+	}
+
+	// Fallback: heuristic summarization if no callback or callback returned empty.
 	if len(cm.messages) < originalLen/2 && cm.CountTokens() > targetTokens {
 		return cm.performSummarization(targetTokens)
 	}
 
 	return nil
+}
+
+// injectSummaryMessage inserts a synthetic assistant message at index 1 (after system prompt).
+func (cm *ContextManager) injectSummaryMessage(summary, provenance string) {
+	msg := Message{
+		Role:       "assistant",
+		Content:    summary,
+		Provenance: provenance,
+	}
+	newMsgs := make([]Message, 0, len(cm.messages)+1)
+	newMsgs = append(newMsgs, cm.messages[0], msg)
+	newMsgs = append(newMsgs, cm.messages[1:]...)
+	cm.messages = newMsgs
 }
 
 // performSummarization uses LLM-based context compression.
@@ -578,47 +698,84 @@ func (cm *ContextManager) truncateToolOutput(content string) string {
 	return cm.truncateOutputIfNeeded(content)
 }
 
+// contentLenInTokens returns the approximate token count for a string.
+func (cm *ContextManager) contentLenInTokens(content string) int {
+	if cm.tokenCounter != nil {
+		return cm.tokenCounter.CountTokens(content)
+	}
+	// Ceiling division to avoid undercounting.
+	return (len(content) + defaultCharsPerToken - 1) / defaultCharsPerToken
+}
+
+// tokensToChars converts a token count to approximate character count for truncation.
+func tokensToChars(tokens int) int {
+	return tokens * defaultCharsPerToken
+}
+
+// truncateToCharLimit truncates content to fit within a token budget, returning
+// the truncated string. When a TokenCounter is configured, verifies the result
+// actually fits and tightens the cut if the 4:1 approximation was too generous.
+func (cm *ContextManager) truncateToCharLimit(content string, maxTokens int) string {
+	charLimit := min(tokensToChars(maxTokens), len(content))
+	truncated := content[:charLimit]
+
+	// When we have a real token counter, verify the truncation actually fits.
+	// The fixed 4:1 ratio can be too generous for symbol-heavy inputs.
+	if cm.tokenCounter != nil {
+		for cm.tokenCounter.CountTokens(truncated) > maxTokens && len(truncated) > 100 {
+			// Shrink by 10% each iteration.
+			charLimit = len(truncated) * 9 / 10
+			truncated = content[:charLimit]
+		}
+	}
+
+	return truncated
+}
+
 // truncateOutputIfNeeded truncates content based on available context space.
+// Comparisons are done in approximate tokens; truncation slices use char offsets.
 // Used for both user messages and tool output (after hard limit check for tools).
 func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
-	// Get context limits for this model
+	// Get context limits for this model (in tokens)
 	maxContext, _ := cm.getContextLimits()
 
 	// Reserve 20% of context for response and buffer
 	const reserveRatio = 0.20
 	buffer := int(float64(maxContext) * reserveRatio)
-	maxSafeContent := maxContext - buffer
+	maxSafeTokens := maxContext - buffer
 
-	// Calculate current context usage (existing messages + buffered content)
+	// Calculate current context usage in tokens
 	currentTokens := cm.CountTokens()
+	contentTokens := cm.contentLenInTokens(content)
 
 	// Check if this single message is larger than the entire safe context limit
 	// (This catches pathologically large inputs like massive log files)
-	if len(content) > maxSafeContent {
-		truncated := content[:maxSafeContent]
-		return truncated + fmt.Sprintf("\n\n[... content truncated: original size %d chars exceeded safe context limit of %d chars ...]",
-			len(content), maxSafeContent)
+	if contentTokens > maxSafeTokens {
+		truncated := cm.truncateToCharLimit(content, maxSafeTokens)
+		return truncated + fmt.Sprintf("\n\n[... content truncated: ~%d tokens exceeded safe context limit of %d tokens ...]",
+			contentTokens, maxSafeTokens)
 	}
 
 	// Check if adding this content would overflow the safe context limit
-	projectedTotal := currentTokens + len(content)
-	if projectedTotal > maxSafeContent {
-		// Calculate how much we can safely add
-		available := maxSafeContent - currentTokens
-		if available <= 0 {
+	projectedTotal := currentTokens + contentTokens
+	if projectedTotal > maxSafeTokens {
+		// Calculate how many tokens we can safely add
+		availableTokens := maxSafeTokens - currentTokens
+		if availableTokens <= 0 {
 			// Context is already at or over limit - this should trigger compaction
 			// But return a minimal truncated message to prevent complete failure
 			const minSize = 1000
 			if len(content) > minSize {
 				return content[:minSize] + fmt.Sprintf("\n\n[... content truncated: context at capacity (%d/%d tokens) ...]",
-					currentTokens, maxSafeContent)
+					currentTokens, maxSafeTokens)
 			}
 		}
 
-		// Truncate to fit available space
-		if len(content) > available {
-			return content[:available] + fmt.Sprintf("\n\n[... content truncated to fit context: %d chars of %d shown ...]",
-				available, len(content))
+		// Truncate in chars, verified against token counter when available.
+		truncated := cm.truncateToCharLimit(content, availableTokens)
+		if len(truncated) < len(content) {
+			return truncated + fmt.Sprintf("\n\n[... content truncated to fit context: %d chars of %d shown ...]",
+				len(truncated), len(content))
 		}
 	}
 

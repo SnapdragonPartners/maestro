@@ -214,6 +214,10 @@ func (c *Coder) RestoreState(_ context.Context, db *sql.DB, sessionID string) er
 		}
 	}
 
+	// Apply compaction callback and token counting to restored context manager.
+	// Pass nil for chatService — chat is re-configured separately during attach.
+	c.configureContextManager(nil, agentID)
+
 	c.logger.Info("State restored successfully (state=%s)", state.State)
 	return nil
 }

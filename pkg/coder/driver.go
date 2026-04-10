@@ -521,12 +521,8 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 		containerName:       "", // Will be set during setup
 	}
 
-	// Configure chat service on context manager for automatic injection
-	if chatService != nil {
-		chatAdapter := contextmgr.NewChatServiceAdapter(chatService)
-		coder.contextManager.SetChatService(chatAdapter, agentID)
-		logger.Info("💬 Chat injection configured for coder %s", agentID)
-	}
+	// Configure context manager: token counting, compaction callback, and chat injection
+	coder.configureContextManager(chatService, agentID)
 
 	// Now that we have the coder (StateProvider), create LLM client with full middleware
 	// Use the shared factory to ensure proper rate limiting

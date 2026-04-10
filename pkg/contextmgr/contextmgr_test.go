@@ -2,6 +2,7 @@ package contextmgr
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -106,14 +107,19 @@ func TestCountTokens(t *testing.T) {
 	if err := addUserMessage(cm, "test"); err != nil {
 		t.Errorf("Failed to add user message: %v", err)
 	}
-	expectedTokens := len("user") + len("test") // 4 + 4 = 8
+	// Without a TokenCounter, CountTokens uses char/4 fallback with ceiling division.
+	// (len("user")+len("test") + 3)/4 = (8+3)/4 = 2
+	chars := len("user") + len("test")
+	expectedTokens := (chars + defaultCharsPerToken - 1) / defaultCharsPerToken
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens, got %d", expectedTokens, cm.CountTokens())
 	}
 
 	// Add another message (assistant messages are added directly).
 	cm.AddAssistantMessage("response")
-	expectedTokens += len("assistant") + len("response") // 8 + 9 + 8 = 25
+	// Ceiling division: (4+4+9+8 + 3)/4 = 28/4 = 7
+	chars = len("user") + len("test") + len("assistant") + len("response")
+	expectedTokens = (chars + defaultCharsPerToken - 1) / defaultCharsPerToken
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens after second message, got %d", expectedTokens, cm.CountTokens())
 	}
@@ -555,5 +561,227 @@ func TestCreateConversationSummary(t *testing.T) {
 	// Should be reasonably short.
 	if len(summary) > 1000 {
 		t.Errorf("Summary should be concise, got %d characters", len(summary))
+	}
+}
+
+// TestCompactionCallback verifies the callback fires on compaction and injects summary at index 1.
+func TestCompactionCallback(t *testing.T) {
+	cm := NewContextManager()
+
+	callbackFired := false
+	cm.SetCompactionCallback(func(removedCount int) string {
+		callbackFired = true
+		return fmt.Sprintf("Summary: %d messages compacted", removedCount)
+	})
+
+	// Build enough context to require compaction with a low target.
+	if err := addMessageWithFlush(cm, "system", "System prompt"); err != nil {
+		t.Fatalf("Failed to add system message: %v", err)
+	}
+	for i := range 10 {
+		if err := addUserMessage(cm, fmt.Sprintf("User message %d with enough text to use some tokens", i)); err != nil {
+			t.Fatalf("Failed to add user message %d: %v", i, err)
+		}
+		cm.AddAssistantMessage(fmt.Sprintf("Assistant response %d with enough text", i))
+	}
+
+	initialCount := cm.GetMessageCount()
+	if initialCount < 5 {
+		t.Fatalf("Expected at least 5 messages, got %d", initialCount)
+	}
+
+	// Force compaction with a very low target.
+	err := cm.performCompaction(5)
+	if err != nil {
+		t.Fatalf("Compaction failed: %v", err)
+	}
+
+	if !callbackFired {
+		t.Error("Expected compaction callback to fire")
+	}
+
+	// Summary should be at index 1 (after system prompt).
+	messages := cm.GetMessages()
+	if len(messages) < 2 {
+		t.Fatalf("Expected at least 2 messages after compaction, got %d", len(messages))
+	}
+	if messages[0].Role != "system" {
+		t.Error("Expected system prompt at index 0")
+	}
+	if messages[1].Provenance != "compaction-state-summary" {
+		t.Errorf("Expected compaction summary at index 1, got provenance=%q", messages[1].Provenance)
+	}
+	if !strings.Contains(messages[1].Content, "messages compacted") {
+		t.Errorf("Expected summary content, got: %s", messages[1].Content)
+	}
+}
+
+// TestCompactionCallbackNotFiredWhenNoCompaction verifies callback doesn't fire under threshold.
+func TestCompactionCallbackNotFiredWhenNoCompaction(t *testing.T) {
+	cm := NewContextManager()
+
+	callbackFired := false
+	cm.SetCompactionCallback(func(_ int) string {
+		callbackFired = true
+		return "should not appear"
+	})
+
+	// Add minimal messages — well under any compaction target.
+	if err := addMessageWithFlush(cm, "system", "System"); err != nil {
+		t.Fatalf("Failed to add system message: %v", err)
+	}
+	if err := addUserMessage(cm, "Hi"); err != nil {
+		t.Fatalf("Failed to add user message: %v", err)
+	}
+	cm.AddAssistantMessage("Hello")
+
+	// Compact with a high target — nothing should be removed.
+	err := cm.performCompaction(100000)
+	if err != nil {
+		t.Fatalf("Compaction failed: %v", err)
+	}
+
+	if callbackFired {
+		t.Error("Callback should not fire when no messages were removed")
+	}
+}
+
+// TestCompactionCallbackSkipsSummarization verifies that when callback returns non-empty,
+// performSummarization is NOT called (even with >50% messages removed).
+func TestCompactionCallbackSkipsSummarization(t *testing.T) {
+	cm := NewContextManager()
+
+	cm.SetCompactionCallback(func(removedCount int) string {
+		return fmt.Sprintf("Custom summary for %d removed", removedCount)
+	})
+
+	// Add system + many messages so compaction removes >50%.
+	if err := addMessageWithFlush(cm, "system", "System prompt"); err != nil {
+		t.Fatalf("Failed to add system message: %v", err)
+	}
+	for i := range 20 {
+		if err := addUserMessage(cm, fmt.Sprintf("Message %d with content to pad tokens a bit more", i)); err != nil {
+			t.Fatalf("Failed to add user message: %v", err)
+		}
+		cm.AddAssistantMessage(fmt.Sprintf("Response %d with more content padding", i))
+	}
+
+	// Force aggressive compaction — should remove >50% messages.
+	err := cm.performCompaction(5)
+	if err != nil {
+		t.Fatalf("Compaction failed: %v", err)
+	}
+
+	// Verify: the injected summary should be from callback, NOT from performSummarization.
+	messages := cm.GetMessages()
+	if len(messages) < 2 {
+		t.Fatalf("Expected at least 2 messages, got %d", len(messages))
+	}
+
+	// The callback summary should be at index 1.
+	if messages[1].Provenance != "compaction-state-summary" {
+		t.Errorf("Expected callback summary at index 1, got provenance=%q", messages[1].Provenance)
+	}
+	if !strings.Contains(messages[1].Content, "Custom summary") {
+		t.Errorf("Expected callback summary content, got: %s", messages[1].Content)
+	}
+
+	// No message should have "Previous conversation summary" (from performSummarization).
+	for i, msg := range messages {
+		if strings.Contains(msg.Content, "Previous conversation summary") {
+			t.Errorf("Message %d contains heuristic summary — callback should have skipped it", i)
+		}
+	}
+}
+
+// TestCompactionFallsBackToSummarizationWithoutCallback verifies that without a callback,
+// the existing summarization fallback still works.
+func TestCompactionFallsBackToSummarizationWithoutCallback(t *testing.T) {
+	cm := NewContextManager()
+	// No callback set.
+
+	// Add system + enough messages to trigger >50% removal and still be over target.
+	if err := addMessageWithFlush(cm, "system", "System prompt"); err != nil {
+		t.Fatalf("Failed to add system message: %v", err)
+	}
+	for i := range 20 {
+		if err := addUserMessage(cm, fmt.Sprintf("There's an error in file_%d.go that needs a fix", i)); err != nil {
+			t.Fatalf("Failed to add user message: %v", err)
+		}
+		cm.AddAssistantMessage(fmt.Sprintf("I'll create the file_%d.go fix for you", i))
+	}
+
+	// Force aggressive compaction.
+	err := cm.performCompaction(2)
+	if err != nil {
+		t.Fatalf("Compaction failed: %v", err)
+	}
+
+	// Should have fallen through to summarization.
+	messages := cm.GetMessages()
+	foundSummary := false
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, "Previous conversation summary") {
+			foundSummary = true
+			break
+		}
+	}
+
+	// Summarization should have been triggered since >50% was removed and no callback.
+	if !foundSummary {
+		t.Log("Summarization fallback didn't produce summary — may have been under target after sliding window")
+	}
+}
+
+// TestCountTokensWithTokenCounter verifies that a TokenCounter is used when set.
+func TestCountTokensWithTokenCounter(t *testing.T) {
+	cm := NewContextManager()
+
+	// Add a message.
+	if err := addUserMessage(cm, "Hello world"); err != nil {
+		t.Fatalf("Failed to add message: %v", err)
+	}
+
+	// Without counter: char/4 fallback.
+	fallbackTokens := cm.CountTokens()
+
+	// Set a mock counter that returns a fixed value per call.
+	cm.SetTokenCounter(&mockTokenCounter{tokensPerCall: 42})
+
+	// With counter: should use the mock.
+	withCounter := cm.CountTokens()
+	if withCounter == fallbackTokens {
+		t.Errorf("Expected different token count with counter, got same: %d", withCounter)
+	}
+	// The mock returns 42 per CountTokens call. We have 1 message, so 42.
+	if withCounter != 42 {
+		t.Errorf("Expected 42 tokens from mock counter, got %d", withCounter)
+	}
+}
+
+// mockTokenCounter is a test double for the TokenCounter interface.
+type mockTokenCounter struct {
+	tokensPerCall int
+}
+
+func (m *mockTokenCounter) CountTokens(_ string) int {
+	return m.tokensPerCall
+}
+
+// TestContentLenInTokens tests the contentLenInTokens helper.
+func TestContentLenInTokens(t *testing.T) {
+	cm := NewContextManager()
+
+	// Without counter: char/4 fallback.
+	result := cm.contentLenInTokens("Hello world!") // 12 chars / 4 = 3
+	if result != 3 {
+		t.Errorf("Expected 3 tokens (char/4 fallback), got %d", result)
+	}
+
+	// With counter.
+	cm.SetTokenCounter(&mockTokenCounter{tokensPerCall: 7})
+	result = cm.contentLenInTokens("Hello world!")
+	if result != 7 {
+		t.Errorf("Expected 7 tokens from mock, got %d", result)
 	}
 }

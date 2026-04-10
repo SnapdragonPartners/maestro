@@ -1129,7 +1129,8 @@ func TestHandlePlanning_WithMockLLM(t *testing.T) {
 	// Configure mock to return a plan submission
 	mockLLM.RespondWithToolCall("submit_plan", map[string]any{
 		"plan":       "1. Analyze requirements\n2. Implement solution",
-		"confidence": 0.85,
+		"confidence": "HIGH",
+		"todos":      []any{"Analyze requirements", "Implement solution"},
 	})
 
 	coder := createTestCoder(t, &testCoderOptions{
