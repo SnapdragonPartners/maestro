@@ -3,6 +3,7 @@ package contextmgr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -261,12 +262,18 @@ func (cm *ContextManager) CountTokens() int {
 	for i := range cm.userBuffer {
 		totalChars += len(cm.userBuffer[i].Content)
 	}
-	return totalChars / defaultCharsPerToken
+	// Ceiling division: round up to avoid undercounting, which would delay
+	// compaction and risk exceeding model context limits.
+	return (totalChars + defaultCharsPerToken - 1) / defaultCharsPerToken
 }
 
 // messageChars returns the token or character count for a single message,
 // including its ToolCalls and ToolResults. When useCounter is true, uses the
 // TokenCounter for accurate counts; otherwise returns raw character length.
+//
+// ToolCalls and ToolResults are serialized to JSON for counting so that
+// structural overhead (brackets, quotes, keys) is included — matching what
+// the LLM provider actually sees.
 func (cm *ContextManager) messageChars(msg *Message, useCounter bool) int {
 	count := func(s string) int {
 		if useCounter && cm.tokenCounter != nil {
@@ -278,16 +285,15 @@ func (cm *ContextManager) messageChars(msg *Message, useCounter bool) int {
 	total := count(msg.Role + msg.Content)
 
 	for j := range msg.ToolCalls {
-		tc := &msg.ToolCalls[j]
-		total += count(tc.ID + tc.Name)
-		for k, v := range tc.Parameters {
-			total += count(k + fmt.Sprintf("%v", v))
+		if b, err := json.Marshal(&msg.ToolCalls[j]); err == nil {
+			total += count(string(b))
 		}
 	}
 
 	for j := range msg.ToolResults {
-		tr := &msg.ToolResults[j]
-		total += count(tr.ToolCallID + tr.Content)
+		if b, err := json.Marshal(&msg.ToolResults[j]); err == nil {
+			total += count(string(b))
+		}
 	}
 
 	return total
@@ -370,6 +376,11 @@ func (cm *ContextManager) performCompaction(targetTokens int) error {
 			for cm.CountTokens() > targetTokens && len(cm.messages) > 3 {
 				// Remove index 2 (oldest message after system+summary).
 				cm.messages = append(cm.messages[:2], cm.messages[3:]...)
+			}
+
+			if cm.CountTokens() > targetTokens {
+				logger.Warn("📦 Context still over target after compaction (%d tokens > %d target, %d messages remaining)",
+					cm.CountTokens(), targetTokens, len(cm.messages))
 			}
 
 			return nil // Skip heuristic summarization
@@ -692,12 +703,33 @@ func (cm *ContextManager) contentLenInTokens(content string) int {
 	if cm.tokenCounter != nil {
 		return cm.tokenCounter.CountTokens(content)
 	}
-	return len(content) / defaultCharsPerToken
+	// Ceiling division to avoid undercounting.
+	return (len(content) + defaultCharsPerToken - 1) / defaultCharsPerToken
 }
 
 // tokensToChars converts a token count to approximate character count for truncation.
 func tokensToChars(tokens int) int {
 	return tokens * defaultCharsPerToken
+}
+
+// truncateToCharLimit truncates content to fit within a token budget, returning
+// the truncated string. When a TokenCounter is configured, verifies the result
+// actually fits and tightens the cut if the 4:1 approximation was too generous.
+func (cm *ContextManager) truncateToCharLimit(content string, maxTokens int) string {
+	charLimit := min(tokensToChars(maxTokens), len(content))
+	truncated := content[:charLimit]
+
+	// When we have a real token counter, verify the truncation actually fits.
+	// The fixed 4:1 ratio can be too generous for symbol-heavy inputs.
+	if cm.tokenCounter != nil {
+		for cm.tokenCounter.CountTokens(truncated) > maxTokens && len(truncated) > 100 {
+			// Shrink by 10% each iteration.
+			charLimit = len(truncated) * 9 / 10
+			truncated = content[:charLimit]
+		}
+	}
+
+	return truncated
 }
 
 // truncateOutputIfNeeded truncates content based on available context space.
@@ -719,9 +751,7 @@ func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
 	// Check if this single message is larger than the entire safe context limit
 	// (This catches pathologically large inputs like massive log files)
 	if contentTokens > maxSafeTokens {
-		// Truncate in chars: convert token limit to approximate char offset
-		charLimit := min(tokensToChars(maxSafeTokens), len(content))
-		truncated := content[:charLimit]
+		truncated := cm.truncateToCharLimit(content, maxSafeTokens)
 		return truncated + fmt.Sprintf("\n\n[... content truncated: ~%d tokens exceeded safe context limit of %d tokens ...]",
 			contentTokens, maxSafeTokens)
 	}
@@ -741,11 +771,11 @@ func (cm *ContextManager) truncateOutputIfNeeded(content string) string {
 			}
 		}
 
-		// Truncate in chars: convert available tokens to char offset
-		availableChars := min(tokensToChars(availableTokens), len(content))
-		if len(content) > availableChars {
-			return content[:availableChars] + fmt.Sprintf("\n\n[... content truncated to fit context: %d chars of %d shown ...]",
-				availableChars, len(content))
+		// Truncate in chars, verified against token counter when available.
+		truncated := cm.truncateToCharLimit(content, availableTokens)
+		if len(truncated) < len(content) {
+			return truncated + fmt.Sprintf("\n\n[... content truncated to fit context: %d chars of %d shown ...]",
+				len(truncated), len(content))
 		}
 	}
 

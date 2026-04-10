@@ -107,16 +107,19 @@ func TestCountTokens(t *testing.T) {
 	if err := addUserMessage(cm, "test"); err != nil {
 		t.Errorf("Failed to add user message: %v", err)
 	}
-	// Without a TokenCounter, CountTokens uses char/4 fallback: (len("user")+len("test"))/4 = 8/4 = 2
-	expectedTokens := (len("user") + len("test")) / defaultCharsPerToken
+	// Without a TokenCounter, CountTokens uses char/4 fallback with ceiling division.
+	// (len("user")+len("test") + 3)/4 = (8+3)/4 = 2
+	chars := len("user") + len("test")
+	expectedTokens := (chars + defaultCharsPerToken - 1) / defaultCharsPerToken
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens, got %d", expectedTokens, cm.CountTokens())
 	}
 
 	// Add another message (assistant messages are added directly).
 	cm.AddAssistantMessage("response")
-	// (4+4+9+8)/4 = 25/4 = 6
-	expectedTokens = (len("user") + len("test") + len("assistant") + len("response")) / defaultCharsPerToken
+	// Ceiling division: (4+4+9+8 + 3)/4 = 28/4 = 7
+	chars = len("user") + len("test") + len("assistant") + len("response")
+	expectedTokens = (chars + defaultCharsPerToken - 1) / defaultCharsPerToken
 	if cm.CountTokens() != expectedTokens {
 		t.Errorf("Expected %d tokens after second message, got %d", expectedTokens, cm.CountTokens())
 	}

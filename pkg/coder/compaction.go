@@ -20,10 +20,15 @@ func (c *Coder) configureContextManager(chatService *chat.Service, agentID strin
 	// Wire compaction callback for state re-injection
 	c.contextManager.SetCompactionCallback(c.buildCompactionStateSummary)
 
-	// Wire tiktoken for accurate token counting
-	tc, err := utils.NewTokenCounter("gpt-4")
+	// Wire tiktoken for accurate token counting, using the model configured
+	// on the context manager so tokenization matches the actual model in use.
+	modelName := c.contextManager.GetModelName()
+	if modelName == "" {
+		modelName = "gpt-4" // Safe default: all models currently use GPT-4 encoding
+	}
+	tc, err := utils.NewTokenCounter(modelName)
 	if err != nil {
-		logx.NewLogger("coder").Warn("Failed to create token counter: %v (using char/4 fallback)", err)
+		logx.NewLogger("coder").Warn("Failed to create token counter for %s: %v (using char/4 fallback)", modelName, err)
 	} else {
 		c.contextManager.SetTokenCounter(tc)
 	}
