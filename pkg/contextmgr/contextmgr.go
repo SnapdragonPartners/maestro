@@ -240,13 +240,13 @@ func (cm *ContextManager) Compact(maxTokens int) error {
 }
 
 // CountTokens returns the approximate token count for all messages and buffered content.
+// Includes Role, Content, ToolCalls (name + parameters), and ToolResults (content).
 // Uses tiktoken when a TokenCounter is configured; otherwise falls back to char/4 approximation.
 func (cm *ContextManager) CountTokens() int {
 	if cm.tokenCounter != nil {
 		total := 0
 		for i := range cm.messages {
-			msg := &cm.messages[i]
-			total += cm.tokenCounter.CountTokens(msg.Role + msg.Content)
+			total += cm.messageChars(&cm.messages[i], true)
 		}
 		for i := range cm.userBuffer {
 			total += cm.tokenCounter.CountTokens(cm.userBuffer[i].Content)
@@ -256,13 +256,41 @@ func (cm *ContextManager) CountTokens() int {
 	// Fallback: approximate ~4 characters per BPE token for English/code.
 	totalChars := 0
 	for i := range cm.messages {
-		msg := &cm.messages[i]
-		totalChars += len(msg.Role) + len(msg.Content)
+		totalChars += cm.messageChars(&cm.messages[i], false)
 	}
 	for i := range cm.userBuffer {
 		totalChars += len(cm.userBuffer[i].Content)
 	}
 	return totalChars / defaultCharsPerToken
+}
+
+// messageChars returns the token or character count for a single message,
+// including its ToolCalls and ToolResults. When useCounter is true, uses the
+// TokenCounter for accurate counts; otherwise returns raw character length.
+func (cm *ContextManager) messageChars(msg *Message, useCounter bool) int {
+	count := func(s string) int {
+		if useCounter && cm.tokenCounter != nil {
+			return cm.tokenCounter.CountTokens(s)
+		}
+		return len(s)
+	}
+
+	total := count(msg.Role + msg.Content)
+
+	for j := range msg.ToolCalls {
+		tc := &msg.ToolCalls[j]
+		total += count(tc.ID + tc.Name)
+		for k, v := range tc.Parameters {
+			total += count(k + fmt.Sprintf("%v", v))
+		}
+	}
+
+	for j := range msg.ToolResults {
+		tr := &msg.ToolResults[j]
+		total += count(tr.ToolCallID + tr.Content)
+	}
+
+	return total
 }
 
 // CompactIfNeeded performs context compaction if needed.
@@ -336,6 +364,14 @@ func (cm *ContextManager) performCompaction(targetTokens int) error {
 		if summary := cm.onCompaction(removedCount); summary != "" {
 			cm.injectSummaryMessage(summary, "compaction-state-summary")
 			logger.Info("📦 Injected state summary after compaction (%d chars)", len(summary))
+
+			// Re-check: the injected summary may push us back over target.
+			// Remove more oldest messages (after system + summary) if needed.
+			for cm.CountTokens() > targetTokens && len(cm.messages) > 3 {
+				// Remove index 2 (oldest message after system+summary).
+				cm.messages = append(cm.messages[:2], cm.messages[3:]...)
+			}
+
 			return nil // Skip heuristic summarization
 		}
 	}
