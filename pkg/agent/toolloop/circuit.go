@@ -99,8 +99,11 @@ func callKey(toolName string, params map[string]any) string {
 // fullFingerprint builds a breaker-state key from tool name, params, and error.
 // Different errors on the same call produce different fingerprints, so the counter
 // only accumulates when the same call fails the same way repeatedly.
+// The full error is hashed (not truncated) to avoid collisions between errors
+// that share a long common prefix.
 func fullFingerprint(toolName string, params map[string]any, errorDetail string) string {
-	return callKey(toolName, params) + ":" + firstLine(errorDetail, 100)
+	errHash := sha256.Sum256([]byte(errorDetail))
+	return callKey(toolName, params) + ":" + hex.EncodeToString(errHash[:8])
 }
 
 // checkTripped returns true if any fingerprint for this tool+params is tripped.
@@ -129,7 +132,7 @@ func (t *toolErrorTracker) recordFailure(toolName string, params map[string]any,
 	}
 
 	t.counts[fp]++
-	t.lastErr[key] = errorDetail
+	t.lastErr[key] = firstLine(errorDetail, 200)
 
 	if t.counts[fp] >= t.config.MaxConsecutiveFailures && !t.tripped[key] {
 		t.tripped[key] = true
