@@ -29,8 +29,12 @@ type ToolCircuitBreakerConfig struct {
 }
 
 // classifyToolResult checks tool execution results for both Go errors and semantic
-// failures (JSON "success": false, non-zero exit_code). Returns whether the result
-// represents a failure and a human-readable error detail string.
+// failures (JSON "success": false). Returns whether the result represents a failure
+// and a human-readable error detail string.
+//
+// Only "success": false is treated as a semantic failure. Non-zero exit_code alone
+// is NOT a failure — the shell tool explicitly returns non-zero exit codes as normal
+// data (grep, test -f, git diff --quiet all use non-zero exits for non-error conditions).
 func classifyToolResult(execResult *tools.ExecResult, execErr error) (isFailure bool, errorDetail string) {
 	// Go error is always a failure
 	if execErr != nil {
@@ -48,25 +52,13 @@ func classifyToolResult(execResult *tools.ExecResult, execErr error) (isFailure 
 		return false, ""
 	}
 
-	// Check "success": false
+	// Check "success": false — the canonical semantic failure signal.
+	// Tools like file_edit, read_file, list_files, build, test, lint all use this.
 	if success, ok := result["success"]; ok {
 		if successBool, ok := success.(bool); ok && !successBool {
 			detail := "success: false"
 			if errMsg, ok := result["error"].(string); ok && errMsg != "" {
 				detail = errMsg
-			}
-			return true, detail
-		}
-	}
-
-	// Check non-zero exit_code (shell commands return exit_code in JSON)
-	if exitCode, ok := result["exit_code"]; ok {
-		// JSON numbers unmarshal as float64
-		if exitFloat, ok := exitCode.(float64); ok && exitFloat != 0 {
-			detail := fmt.Sprintf("exit_code: %d", int(exitFloat))
-			if stderr, ok := result["stderr"].(string); ok && stderr != "" {
-				// Use first line of stderr as detail
-				detail = firstLine(stderr, 200)
 			}
 			return true, detail
 		}
@@ -121,9 +113,21 @@ func (t *toolErrorTracker) checkTripped(toolName string, params map[string]any) 
 }
 
 // recordFailure increments the counter for this specific fingerprint (tool+params+error).
+// When the error changes for the same callKey, old fingerprints are cleared so only
+// truly consecutive same-error failures accumulate toward the threshold.
 func (t *toolErrorTracker) recordFailure(toolName string, params map[string]any, errorDetail string) {
 	fp := fullFingerprint(toolName, params, errorDetail)
 	key := callKey(toolName, params)
+
+	// Clear other fingerprints for this callKey — if the error changed, the old
+	// error's count must not persist (A,A,B,A should NOT trip A at 3).
+	keyPrefix := key + ":"
+	for k := range t.counts {
+		if strings.HasPrefix(k, keyPrefix) && k != fp {
+			delete(t.counts, k)
+		}
+	}
+
 	t.counts[fp]++
 	t.lastErr[key] = errorDetail
 
@@ -137,25 +141,18 @@ func (t *toolErrorTracker) recordFailure(toolName string, params map[string]any,
 	}
 }
 
-// recordSuccess resets all failure tracking for the given tool name.
-// Any successful execution means the LLM adapted — clear everything for this tool.
-func (t *toolErrorTracker) recordSuccess(toolName string) {
-	prefix := toolName + ":"
+// recordSuccess resets failure tracking for the specific tool+params combination.
+// A successful shell(cmd=pwd) does NOT clear failures for shell(cmd=make test).
+func (t *toolErrorTracker) recordSuccess(toolName string, params map[string]any) {
+	key := callKey(toolName, params)
+	keyPrefix := key + ":"
 	for k := range t.counts {
-		if strings.HasPrefix(k, prefix) {
+		if strings.HasPrefix(k, keyPrefix) {
 			delete(t.counts, k)
 		}
 	}
-	for k := range t.tripped {
-		if strings.HasPrefix(k, prefix) {
-			delete(t.tripped, k)
-		}
-	}
-	for k := range t.lastErr {
-		if strings.HasPrefix(k, prefix) {
-			delete(t.lastErr, k)
-		}
-	}
+	delete(t.tripped, key)
+	delete(t.lastErr, key)
 }
 
 // hashParams produces a short hex hash of the canonicalized (sorted-key) JSON

@@ -4,6 +4,7 @@ package toolloop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -439,6 +440,10 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				if tracker != nil {
 					tracker.recordFailure(toolCall.Name, toolCall.Parameters, err.Error())
 				}
+				// Log provider lookup failure to persistence
+				if cfg.PersistenceChannel != nil {
+					agent.LogToolExecution(toolCall, err.Error(), err, 0, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
+				}
 				continue
 			}
 
@@ -452,7 +457,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			execResult, execErr := tool.Exec(toolCtx, toolCall.Parameters)
 			duration := time.Since(start)
 
-			// Classify result: Go errors AND semantic failures (JSON success:false, exit_code!=0)
+			// Classify result: Go errors AND semantic failures (JSON success:false)
 			isFailure, errorDetail := classifyToolResult(execResult, execErr)
 
 			var content string
@@ -491,16 +496,25 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				}
 
 				if tracker != nil {
-					tracker.recordSuccess(toolCall.Name)
+					tracker.recordSuccess(toolCall.Name, toolCall.Parameters)
 				}
 			}
 
 			// Add tool result to context
 			cfg.ContextManager.AddToolResult(toolCall.ID, content, isError)
 
-			// Log tool execution to database if persistence channel is configured
+			// Log tool execution to database if persistence channel is configured.
+			// For semantic failures (execErr == nil but classified as failure),
+			// pass the parsed JSON map so LogToolExecution can extract success/error fields.
 			if cfg.PersistenceChannel != nil {
-				agent.LogToolExecution(toolCall, content, execErr, duration, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
+				var logResult any = content
+				if isFailure && execErr == nil {
+					var parsed map[string]any
+					if json.Unmarshal([]byte(content), &parsed) == nil {
+						logResult = parsed
+					}
+				}
+				agent.LogToolExecution(toolCall, logResult, execErr, duration, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
 			}
 		}
 

@@ -44,25 +44,25 @@ func TestClassifyToolResult_SuccessFalseNoError(t *testing.T) {
 	}
 }
 
-func TestClassifyToolResult_NonZeroExitCode(t *testing.T) {
+func TestClassifyToolResult_NonZeroExitCodeAlone(t *testing.T) {
+	// Non-zero exit_code WITHOUT success:false is NOT a failure.
+	// Shell tool explicitly returns non-zero as data (grep, test -f, git diff --quiet).
 	result := &tools.ExecResult{Content: `{"exit_code": 1, "stderr": "make: *** [test] Error 1", "stdout": ""}`}
-	isFailure, detail := classifyToolResult(result, nil)
-	if !isFailure {
-		t.Error("Expected non-zero exit code to be classified as failure")
-	}
-	if detail != "make: *** [test] Error 1" {
-		t.Errorf("Expected stderr as detail, got %q", detail)
+	isFailure, _ := classifyToolResult(result, nil)
+	if isFailure {
+		t.Error("Expected non-zero exit_code alone to NOT be classified as failure")
 	}
 }
 
-func TestClassifyToolResult_NonZeroExitCodeNoStderr(t *testing.T) {
-	result := &tools.ExecResult{Content: `{"exit_code": 127, "stderr": "", "stdout": ""}`}
+func TestClassifyToolResult_SuccessFalseWithExitCode(t *testing.T) {
+	// success:false WITH exit_code is a failure (caught by the success check).
+	result := &tools.ExecResult{Content: `{"success": false, "exit_code": 1, "error": "build failed"}`}
 	isFailure, detail := classifyToolResult(result, nil)
 	if !isFailure {
-		t.Error("Expected non-zero exit code to be classified as failure")
+		t.Error("Expected success:false with exit_code to be classified as failure")
 	}
-	if detail != "exit_code: 127" {
-		t.Errorf("Expected 'exit_code: 127', got %q", detail)
+	if detail != "build failed" {
+		t.Errorf("Expected 'build failed', got %q", detail)
 	}
 }
 
@@ -152,23 +152,43 @@ func TestRecordFailureTrips(t *testing.T) {
 	}
 }
 
-func TestSuccessResetsAllFingerprintsForTool(t *testing.T) {
+func TestSuccessResetsCounterForSameCall(t *testing.T) {
 	tracker := newToolErrorTracker(&ToolCircuitBreakerConfig{MaxConsecutiveFailures: 3}, testLogger())
 	params := map[string]any{"command": "make test"}
 
 	// Two failures
-	tracker.recordFailure("shell", params, "exit_code: 1")
-	tracker.recordFailure("shell", params, "exit_code: 1")
+	tracker.recordFailure("shell", params, "build error")
+	tracker.recordFailure("shell", params, "build error")
 
-	// Success resets
-	tracker.recordSuccess("shell")
+	// Success on same call resets
+	tracker.recordSuccess("shell", params)
 
 	// Two more failures: should not trip (counter was reset)
-	tracker.recordFailure("shell", params, "exit_code: 1")
-	tracker.recordFailure("shell", params, "exit_code: 1")
+	tracker.recordFailure("shell", params, "build error")
+	tracker.recordFailure("shell", params, "build error")
 	tripped, _ := tracker.checkTripped("shell", params)
 	if tripped {
 		t.Error("Should not be tripped: success should have reset the counter")
+	}
+}
+
+func TestSuccessOnDifferentParamsDoesNotReset(t *testing.T) {
+	tracker := newToolErrorTracker(&ToolCircuitBreakerConfig{MaxConsecutiveFailures: 3}, testLogger())
+	failParams := map[string]any{"command": "make test"}
+	okParams := map[string]any{"command": "pwd"}
+
+	// Two failures on make test
+	tracker.recordFailure("shell", failParams, "build error")
+	tracker.recordFailure("shell", failParams, "build error")
+
+	// Success on pwd should NOT reset make test's counter
+	tracker.recordSuccess("shell", okParams)
+
+	// Third failure on make test should trip
+	tracker.recordFailure("shell", failParams, "build error")
+	tripped, _ := tracker.checkTripped("shell", failParams)
+	if !tripped {
+		t.Error("Should be tripped: success on different params should not reset this counter")
 	}
 }
 
@@ -205,6 +225,22 @@ func TestChangedErrorResetsCounting(t *testing.T) {
 	tripped, _ := tracker.checkTripped("shell", params)
 	if tripped {
 		t.Error("Should not be tripped: errors changed, so no fingerprint hit threshold")
+	}
+}
+
+func TestInterleavedErrorsDoNotAccumulate(t *testing.T) {
+	// A,A,B,A should NOT trip A at 3. The B resets A's consecutive count.
+	tracker := newToolErrorTracker(&ToolCircuitBreakerConfig{MaxConsecutiveFailures: 3}, testLogger())
+	params := map[string]any{"command": "make test"}
+
+	tracker.recordFailure("shell", params, "error A") // A=1
+	tracker.recordFailure("shell", params, "error A") // A=2
+	tracker.recordFailure("shell", params, "error B") // B=1, clears A
+	tracker.recordFailure("shell", params, "error A") // A=1 (reset)
+
+	tripped, _ := tracker.checkTripped("shell", params)
+	if tripped {
+		t.Error("Should NOT be tripped: A,A,B,A has only 1 consecutive A at the end")
 	}
 }
 
