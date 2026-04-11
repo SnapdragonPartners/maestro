@@ -26,6 +26,9 @@ import (
 
 // handleTesting processes the TESTING state.
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
+	// Clear stale verification evidence from any previous TESTING run
+	sm.SetStateData(KeyVerificationEvidence, nil)
+
 	// Get workspace path for running tests
 	workspacePath, exists := sm.GetStateValue(KeyWorkspacePath)
 	if !exists || workspacePath == "" {
@@ -557,16 +560,43 @@ func (c *Coder) proceedToCodeReview() (proto.State, bool, error) {
 	return StateCodeReview, false, nil
 }
 
-// proceedToCodeReviewWithLintCheck runs loopback lint check before transitioning to code review.
-// Returns to CODING state if loopback references are found in .env or compose files.
+// proceedToCodeReviewWithLintCheck runs loopback lint check and acceptance-criteria
+// verification before transitioning to code review.
+// Returns to CODING state if loopback references or verification gaps are found.
 func (c *Coder) proceedToCodeReviewWithLintCheck(ctx context.Context, sm *agent.BaseStateMachine, workspacePath string) (proto.State, bool, error) {
-	// Run loopback lint check if .env or compose files changed in the branch
+	// Step 1: Loopback lint check (existing)
 	if lintResult := c.runLoopbackLintCheck(workspacePath); lintResult != nil {
 		c.logger.Warn("🔍 Loopback lint check found issues, returning to CODING")
 		return c.executeTestFailureAndTransition(ctx, sm, lintResult)
 	}
 
-	return c.proceedToCodeReview()
+	// Step 2: Acceptance criteria verification (LLM-driven, read-only)
+	outcome := c.runAcceptanceCriteriaVerification(ctx, sm, workspacePath)
+
+	// Always store the outcome (pass, fail, or unavailable)
+	sm.SetStateData(KeyVerificationEvidence, outcome)
+
+	// Check for graceful shutdown (context cancelled during verification)
+	if ctx.Err() != nil {
+		c.logger.Info("🛑 Graceful shutdown during verification, exiting TESTING cleanly")
+		return StateTesting, true, nil //nolint:nilerr // intentional: clean exit on shutdown, matches driver.go pattern
+	}
+
+	switch outcome.Status {
+	case VerificationFail:
+		c.logger.Info("🔍 Verification found acceptance criteria gaps, returning to CODING")
+		gapMessage := buildVerificationFailureMessage(outcome.Evidence)
+		testFailureEff := effect.NewTestFailureEffect("acceptance_criteria_fix", gapMessage)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
+
+	case VerificationPass:
+		c.logger.Info("🔍 Verification passed, proceeding to CODE_REVIEW")
+		return c.proceedToCodeReview()
+
+	default: // VerificationUnavailable
+		c.logger.Warn("🔍 Verification unavailable (%s), proceeding to CODE_REVIEW", outcome.Reason)
+		return c.proceedToCodeReview()
+	}
 }
 
 // runLoopbackLintCheck scans for localhost/loopback references in .env and compose files.

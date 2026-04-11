@@ -190,7 +190,7 @@ This is the current recommended order for implementation:
 
 1. ~~Stage 1 + Stage 4A: Prompt refresh, contract cleanup, and narrow todo modernization~~ — **COMPLETE** (PR #183)
 2. ~~Stage 2A: Pre-call compaction check (practical prerequisite for Stage 3A)~~ — **COMPLETE** (PR #184)
-3. Stage 3A: Acceptance-criteria verification in `TESTING`
+3. ~~Stage 3A: Acceptance-criteria verification in `TESTING`~~ — **COMPLETE** (PR #186)
 4. ~~Stage 2B: Tool failure circuit breaker~~ — **COMPLETE** (PR #185)
 5. Stage 3B: Bounded adversarial probing in `TESTING`
 6. Revisit Stage 5 or Stage 6 only if operating evidence justifies them
@@ -327,7 +327,7 @@ Produce:
 
 ### Status
 
-`implement now`
+`complete` — PR #186
 
 ### Why this is the most important medium-complexity change
 

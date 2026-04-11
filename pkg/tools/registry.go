@@ -428,6 +428,15 @@ func getStoryCompleteSchema() InputSchema {
 	return NewStoryCompleteTool().Definition().InputSchema
 }
 
+// createSubmitVerificationTool creates a submit verification tool instance.
+func createSubmitVerificationTool(_ *AgentContext) (Tool, error) {
+	return NewSubmitVerificationTool(), nil
+}
+
+func getSubmitVerificationSchema() InputSchema {
+	return NewSubmitVerificationTool().Definition().InputSchema
+}
+
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
 	return NewBuildTool(buildSvc).Definition().InputSchema
@@ -817,6 +826,13 @@ func init() {
 		Name:        ToolTodoUpdate,
 		Description: "Update or remove a todo by index",
 		InputSchema: getTodoUpdateSchema(),
+	})
+
+	// Register verification tools
+	Register(ToolSubmitVerification, createSubmitVerificationTool, &ToolMeta{
+		Name:        ToolSubmitVerification,
+		Description: "Submit structured acceptance-criteria verification evidence",
+		InputSchema: getSubmitVerificationSchema(),
 	})
 
 	// Register architect read tools
