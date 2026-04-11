@@ -18,7 +18,9 @@ import (
 type VerificationStatus string
 
 const (
-	// VerificationPass means all acceptance criteria were verified as met.
+	// VerificationPass means no acceptance criteria were found to fail.
+	// Note: partial and unverified criteria also produce this status —
+	// only an explicit "fail" result triggers VerificationFail.
 	VerificationPass VerificationStatus = "pass"
 	// VerificationFail means one or more acceptance criteria failed verification.
 	VerificationFail VerificationStatus = "fail"
@@ -200,6 +202,13 @@ func (c *Coder) runAcceptanceCriteriaVerification(
 
 // createVerificationToolProvider creates a read-only, network-disabled ToolProvider
 // with only shell available for acceptance-criteria verification.
+//
+// LIMITATION: ReadOnly and NetworkDisabled are set on AgentContext and forwarded to
+// exec.Opts by the shell tool, but the long-running Docker executor's `docker exec`
+// path does not currently enforce these flags (it only applies user, workdir, and env).
+// The verification loop's read-only and network-disabled guarantees therefore rely on
+// the LLM following the system prompt constraints until executor-level enforcement
+// is added. See docker_long_running.go Run() for the exec path.
 func (c *Coder) createVerificationToolProvider() *tools.ToolProvider {
 	agentCtx := tools.AgentContext{
 		Executor:        c.longRunningExecutor,
@@ -223,20 +232,13 @@ func buildVerificationFailureMessage(evidence map[string]any) string {
 	var b strings.Builder
 	b.WriteString("Acceptance criteria verification found the following gaps:\n\n")
 
-	// Extract failed/partial criteria only
+	// Extract failed/partial criteria only.
+	// The tool emits []any of map[string]any; JSON roundtrip (resume) preserves this shape.
 	if criteria, ok := evidence["acceptance_criteria_checked"].([]any); ok {
 		for _, item := range criteria {
 			cm, ok := item.(map[string]any)
 			if !ok {
-				// Try map[string]string (from validated tool output)
-				if cms, ok := item.(map[string]string); ok {
-					cm = make(map[string]any, len(cms))
-					for k, v := range cms {
-						cm[k] = v
-					}
-				} else {
-					continue
-				}
+				continue
 			}
 
 			result, _ := cm["result"].(string)
@@ -261,7 +263,7 @@ func buildVerificationFailureMessage(evidence map[string]any) string {
 		}
 	}
 
-	// Add gaps
+	// Add gaps (tool emits []any of string; JSON roundtrip preserves this)
 	if gaps, ok := evidence["gaps"].([]any); ok && len(gaps) > 0 {
 		b.WriteString("\nAdditional gaps:\n")
 		for _, g := range gaps {
@@ -294,7 +296,7 @@ func formatVerificationEvidence(outcome VerificationOutcome) string {
 		return b.String()
 
 	case VerificationPass:
-		b.WriteString("✅ All acceptance criteria verified\n")
+		b.WriteString("✅ No acceptance criteria failures found\n")
 
 	case VerificationFail:
 		b.WriteString("❌ Acceptance criteria gaps found\n")
@@ -304,19 +306,13 @@ func formatVerificationEvidence(outcome VerificationOutcome) string {
 		return b.String()
 	}
 
-	// Format per-criterion results
+	// Format per-criterion results.
+	// The tool emits []any of map[string]any; JSON roundtrip (resume) preserves this shape.
 	if criteria, ok := outcome.Evidence["acceptance_criteria_checked"].([]any); ok {
 		for _, item := range criteria {
 			cm, ok := item.(map[string]any)
 			if !ok {
-				if cms, ok := item.(map[string]string); ok {
-					cm = make(map[string]any, len(cms))
-					for k, v := range cms {
-						cm[k] = v
-					}
-				} else {
-					continue
-				}
+				continue
 			}
 
 			result, _ := cm["result"].(string)
@@ -353,4 +349,33 @@ func formatVerificationEvidence(outcome VerificationOutcome) string {
 	}
 
 	return b.String()
+}
+
+// rehydrateVerificationOutcome converts raw state data back into a VerificationOutcome.
+// Handles both the direct in-memory path (typed struct) and the post-resume path
+// where state persistence round-trips through map[string]any.
+func rehydrateVerificationOutcome(raw any) (VerificationOutcome, bool) {
+	// Direct in-memory path: typed struct survives within a single process lifetime.
+	if outcome, ok := raw.(VerificationOutcome); ok {
+		return outcome, true
+	}
+
+	// Post-resume path: state persistence serializes to JSON and restores as map[string]any.
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return VerificationOutcome{}, false
+	}
+
+	outcome := VerificationOutcome{}
+	if status, ok := m["Status"].(string); ok {
+		outcome.Status = VerificationStatus(status)
+	}
+	if evidence, ok := m["Evidence"].(map[string]any); ok {
+		outcome.Evidence = evidence
+	}
+	if reason, ok := m["Reason"].(string); ok {
+		outcome.Reason = reason
+	}
+
+	return outcome, outcome.Status != ""
 }

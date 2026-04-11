@@ -45,6 +45,22 @@ func TestSubmitVerification_AllPass(t *testing.T) {
 	if data["confidence"] != "high" {
 		t.Errorf("Expected confidence 'high', got %v", data["confidence"])
 	}
+
+	// Verify emitted criteria are []any of map[string]any (not []map[string]string)
+	criteria, ok := data["acceptance_criteria_checked"].([]any)
+	if !ok {
+		t.Fatal("Expected acceptance_criteria_checked to be []any")
+	}
+	if len(criteria) != 2 {
+		t.Fatalf("Expected 2 criteria, got %d", len(criteria))
+	}
+	firstCriterion, ok := criteria[0].(map[string]any)
+	if !ok {
+		t.Fatal("Expected criterion item to be map[string]any")
+	}
+	if firstCriterion["criterion"] != "API endpoint returns 200" {
+		t.Errorf("Expected criterion text, got %v", firstCriterion["criterion"])
+	}
 }
 
 func TestSubmitVerification_OneFail(t *testing.T) {
@@ -82,9 +98,12 @@ func TestSubmitVerification_OneFail(t *testing.T) {
 	if !ok {
 		t.Fatal("Expected map[string]any data")
 	}
-	gaps, _ := data["gaps"].([]string)
-	if len(gaps) != 1 || gaps[0] != "Missing input validation" {
-		t.Errorf("Expected gaps to contain 'Missing input validation', got %v", gaps)
+	gaps, ok := data["gaps"].([]any)
+	if !ok || len(gaps) != 1 {
+		t.Fatalf("Expected gaps []any with 1 element, got %v", data["gaps"])
+	}
+	if gs, ok := gaps[0].(string); !ok || gs != "Missing input validation" {
+		t.Errorf("Expected gaps[0] to be 'Missing input validation', got %v", gaps[0])
 	}
 }
 

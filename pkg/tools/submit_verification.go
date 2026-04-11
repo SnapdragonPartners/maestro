@@ -118,9 +118,11 @@ func (s *SubmitVerificationTool) Exec(_ context.Context, args map[string]any) (*
 		return nil, fmt.Errorf("acceptance_criteria_checked must contain at least 1 item")
 	}
 
-	// Validate each criterion and determine pass/fail signal
+	// Validate each criterion and determine pass/fail signal.
+	// Emit []any of map[string]any so consumers see the same shape
+	// whether they receive data directly or after JSON-roundtrip (resume).
 	hasFail := false
-	validatedCriteria := make([]map[string]string, 0, len(criteriaArr))
+	validatedCriteria := make([]any, 0, len(criteriaArr))
 
 	for i, item := range criteriaArr {
 		criterion, ok := item.(map[string]any)
@@ -137,11 +139,16 @@ func (s *SubmitVerificationTool) Exec(_ context.Context, args map[string]any) (*
 			hasFail = true
 		}
 
-		validatedCriteria = append(validatedCriteria, validated)
+		// Convert map[string]string → map[string]any for consumer compatibility
+		criterionMap := make(map[string]any, len(validated))
+		for k, v := range validated {
+			criterionMap[k] = v
+		}
+		validatedCriteria = append(validatedCriteria, criterionMap)
 	}
 
-	// Extract optional gaps
-	var gaps []string
+	// Extract optional gaps as []any for consumer compatibility
+	var gaps []any
 	if gapsRaw, ok := args["gaps"]; ok {
 		if gapsArr, ok := gapsRaw.([]any); ok {
 			for _, g := range gapsArr {
