@@ -56,6 +56,8 @@ const (
 	AppCodingTemplate StateTemplate = "coder/app_coding.tpl.md"
 	// TestingTemplate is the template for coder testing state.
 	TestingTemplate StateTemplate = "coder/testing.tpl.md"
+	// TestingVerificationTemplate is the template for acceptance-criteria verification in TESTING.
+	TestingVerificationTemplate StateTemplate = "coder/testing_verification.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "coder/approval.tpl.md"
 	// AppCompletionApprovalTemplate is the template for app story completion approval.
@@ -171,6 +173,7 @@ func NewRenderer() (*Renderer, error) {
 		DevOpsCodingTemplate,
 		AppCodingTemplate,
 		TestingTemplate,
+		TestingVerificationTemplate,
 		ApprovalTemplate,
 		AppCompletionApprovalTemplate,
 		DevOpsCompletionApprovalTemplate,

@@ -90,12 +90,14 @@ const (
 	SignalStoryEditComplete    = "STORY_EDIT_COMPLETE"   // story_edit tool annotated story before requeue
 
 	// Coder signals.
-	SignalPlanReview    = "PLAN_REVIEW"    // submit_plan tool ready for architect review
-	SignalStoryComplete = "STORY_COMPLETE" // done tool empty-diff - story already implemented, no work needed
-	SignalCoding        = "CODING"         // todos_add tool ready to start coding
-	SignalTesting       = "TESTING"        // done tool ready for testing phase
-	SignalTodoComplete  = "TODO_COMPLETE"  // todo_complete tool marked a todo as done
-	SignalBlocked       = "BLOCKED"        // report_blocked tool: coder blocked by infrastructure or invalid story
+	SignalPlanReview       = "PLAN_REVIEW"       // submit_plan tool ready for architect review
+	SignalStoryComplete    = "STORY_COMPLETE"    // done tool empty-diff - story already implemented, no work needed
+	SignalCoding           = "CODING"            // todos_add tool ready to start coding
+	SignalTesting          = "TESTING"           // done tool ready for testing phase
+	SignalTodoComplete     = "TODO_COMPLETE"     // todo_complete tool marked a todo as done
+	SignalBlocked          = "BLOCKED"           // report_blocked tool: coder blocked by infrastructure or invalid story
+	SignalVerificationPass = "VERIFICATION_PASS" // submit_verification tool: all acceptance criteria verified
+	SignalVerificationFail = "VERIFICATION_FAIL" // submit_verification tool: acceptance criteria gaps found
 )
 
 // ExecResult is the result of executing a tool.

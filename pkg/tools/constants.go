@@ -42,6 +42,9 @@ const (
 	ToolTodoComplete = "todo_complete"
 	ToolTodoUpdate   = "todo_update"
 
+	// Verification tools.
+	ToolSubmitVerification = "submit_verification"
+
 	// Architect read tools.
 	ToolReadFile       = "read_file"
 	ToolListFiles      = "list_files"
@@ -164,6 +167,12 @@ var (
 		ToolTest,
 		ToolLint,
 		ToolBackendInfo,
+	}
+
+	// Verification tools - read-only shell for acceptance-criteria verification in TESTING.
+	// submit_verification is the terminal tool and is wired separately.
+	VerificationTools = []string{
+		ToolShell,
 	}
 
 	// Architect read tools - read-only access to coder workspaces.

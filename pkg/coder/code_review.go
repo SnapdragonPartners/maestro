@@ -50,6 +50,13 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	// Build comprehensive evidence section
 	evidence := c.buildCompletionEvidence(testsPassed, testOutput, storyType, workResult, headSHA)
 
+	// Append acceptance criteria verification evidence if available
+	if veRaw, exists := sm.GetStateValue(KeyVerificationEvidence); exists && veRaw != nil {
+		if outcome, ok := veRaw.(VerificationOutcome); ok {
+			evidence += formatVerificationEvidence(outcome)
+		}
+	}
+
 	if !workResult.HasWork {
 		// No work detected - request completion approval
 		c.logger.Info("🧑‍💻 No work detected (%s) - requesting completion approval",
