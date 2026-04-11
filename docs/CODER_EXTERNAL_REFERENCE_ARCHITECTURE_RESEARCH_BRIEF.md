@@ -192,7 +192,7 @@ This is the current recommended order for implementation:
 2. ~~Stage 2A: Pre-call compaction check (practical prerequisite for Stage 3A)~~ — **COMPLETE** (PR #184)
 3. ~~Stage 3A: Acceptance-criteria verification in `TESTING`~~ — **COMPLETE** (PR #186)
 4. ~~Stage 2B: Tool failure circuit breaker~~ — **COMPLETE** (PR #185)
-5. Stage 3B: Bounded adversarial probing in `TESTING`
+5. ~~Stage 3B: Bounded adversarial probing in `TESTING`~~ — **COMPLETE** (PR #187)
 6. Revisit Stage 5 or Stage 6 only if operating evidence justifies them
 
 Stage 2A is split out because the new `TESTING` verification loop in Stage 3A will immediately depend on compaction behaving correctly. The rest of Stage 2 can follow afterward.
@@ -529,7 +529,7 @@ Produce:
 
 ### Status
 
-`prototype`
+`complete` — PR #187
 
 ### Why this is not in the first implementation tranche
 
