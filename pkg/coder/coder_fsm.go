@@ -100,6 +100,7 @@ const (
 	KeyNeedsChangesCount       = "needs_changes_count"     // int: consecutive NEEDS_CHANGES from architect (for temperature laddering)
 	KeyFailureInfo             = "failure_info"            // proto.FailureInfo: structured failure context for blocked/error propagation
 	KeyVerificationEvidence    = "verification_evidence"   // VerificationOutcome: acceptance-criteria verification result
+	KeyProbingEvidence         = "probing_evidence"        // ProbingOutcome: adversarial probing result
 )
 
 // ValidateState checks if a state is valid for coder agents.

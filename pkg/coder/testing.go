@@ -26,8 +26,9 @@ import (
 
 // handleTesting processes the TESTING state.
 func (c *Coder) handleTesting(ctx context.Context, sm *agent.BaseStateMachine) (proto.State, bool, error) {
-	// Clear stale verification evidence from any previous TESTING run
+	// Clear stale verification and probing evidence from any previous TESTING run
 	sm.SetStateData(KeyVerificationEvidence, nil)
+	sm.SetStateData(KeyProbingEvidence, nil)
 
 	// Get workspace path for running tests
 	workspacePath, exists := sm.GetStateValue(KeyWorkspacePath)
@@ -590,11 +591,64 @@ func (c *Coder) proceedToCodeReviewWithLintCheck(ctx context.Context, sm *agent.
 		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 
 	case VerificationPass:
-		c.logger.Info("🔍 Verification passed, proceeding to CODE_REVIEW")
-		return c.proceedToCodeReview()
+		c.logger.Info("🔍 Verification passed, proceeding to adversarial probing")
+		return c.proceedWithAdversarialProbing(ctx, sm, workspacePath)
 
 	default: // VerificationUnavailable
-		c.logger.Warn("🔍 Verification unavailable (%s), proceeding to CODE_REVIEW", outcome.Reason)
+		c.logger.Warn("🔍 Verification unavailable (%s), skipping probing, proceeding to CODE_REVIEW", outcome.Reason)
+		sm.SetStateData(KeyProbingEvidence, ProbingOutcome{
+			Status: ProbingSkipped,
+			Reason: "verification unavailable",
+		})
+		return c.proceedToCodeReview()
+	}
+}
+
+// proceedWithAdversarialProbing runs adversarial probing if eligible, then routes to
+// CODE_REVIEW or back to CODING based on probing results.
+func (c *Coder) proceedWithAdversarialProbing(ctx context.Context, sm *agent.BaseStateMachine, workspacePath string) (proto.State, bool, error) {
+	// Check eligibility gate
+	if !shouldRunAdversarialProbing(sm) {
+		c.logger.Info("🔬 Adversarial probing skipped (story not eligible)")
+		sm.SetStateData(KeyProbingEvidence, ProbingOutcome{
+			Status: ProbingSkipped,
+			Reason: "story not eligible for probing",
+		})
+		return c.proceedToCodeReview()
+	}
+
+	// Get changed files for prompt context (best-effort, probing still runs on error)
+	changedFiles, err := loopback.GetBranchChangedFiles(workspacePath)
+	if err != nil {
+		c.logger.Warn("🔬 Could not get changed files for probing: %v", err)
+		changedFiles = nil
+	}
+
+	// Run probing loop
+	outcome := c.runAdversarialProbing(ctx, sm, workspacePath, changedFiles)
+
+	// Always store the outcome
+	sm.SetStateData(KeyProbingEvidence, outcome)
+
+	// Check for graceful shutdown (context cancelled during probing)
+	if ctx.Err() != nil {
+		c.logger.Info("🛑 Graceful shutdown during probing, exiting TESTING cleanly")
+		return StateTesting, true, nil //nolint:nilerr // intentional: clean exit on shutdown
+	}
+
+	switch outcome.Status {
+	case ProbingFail:
+		c.logger.Info("🔬 Probing found critical robustness issues, returning to CODING")
+		failMessage := buildProbingFailureMessage(outcome.Evidence)
+		testFailureEff := effect.NewTestFailureEffect("adversarial_probing_fix", failMessage)
+		return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
+
+	case ProbingPass:
+		c.logger.Info("🔬 Probing passed, proceeding to CODE_REVIEW")
+		return c.proceedToCodeReview()
+
+	default: // ProbingUnavailable
+		c.logger.Warn("🔬 Probing unavailable (%s), proceeding to CODE_REVIEW", outcome.Reason)
 		return c.proceedToCodeReview()
 	}
 }

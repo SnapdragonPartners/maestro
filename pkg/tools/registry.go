@@ -437,6 +437,15 @@ func getSubmitVerificationSchema() InputSchema {
 	return NewSubmitVerificationTool().Definition().InputSchema
 }
 
+// createSubmitProbingTool creates a submit probing tool instance.
+func createSubmitProbingTool(_ *AgentContext) (Tool, error) {
+	return NewSubmitProbingTool(), nil
+}
+
+func getSubmitProbingSchema() InputSchema {
+	return NewSubmitProbingTool().Definition().InputSchema
+}
+
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
 	return NewBuildTool(buildSvc).Definition().InputSchema
@@ -833,6 +842,13 @@ func init() {
 		Name:        ToolSubmitVerification,
 		Description: "Submit structured acceptance-criteria verification evidence",
 		InputSchema: getSubmitVerificationSchema(),
+	})
+
+	// Register probing tools
+	Register(ToolSubmitProbing, createSubmitProbingTool, &ToolMeta{
+		Name:        ToolSubmitProbing,
+		Description: "Submit structured robustness-probing findings",
+		InputSchema: getSubmitProbingSchema(),
 	})
 
 	// Register architect read tools

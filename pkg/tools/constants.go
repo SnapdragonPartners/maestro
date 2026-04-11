@@ -45,6 +45,9 @@ const (
 	// Verification tools.
 	ToolSubmitVerification = "submit_verification"
 
+	// Probing tools.
+	ToolSubmitProbing = "submit_probing"
+
 	// Architect read tools.
 	ToolReadFile       = "read_file"
 	ToolListFiles      = "list_files"

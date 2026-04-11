@@ -249,3 +249,63 @@ func TestSetDockerfilePath_Invalid(t *testing.T) {
 		})
 	}
 }
+
+// --- IsAdversarialProbingEnabled tests ---
+
+func TestIsAdversarialProbingEnabled_DefaultNoConfig(t *testing.T) {
+	SetConfigForTesting(nil)
+	defer SetConfigForTesting(nil)
+
+	// With no config loaded, default is enabled
+	if !IsAdversarialProbingEnabled() {
+		t.Error("Expected adversarial probing enabled by default (no config)")
+	}
+}
+
+func TestIsAdversarialProbingEnabled_AgentsNil(t *testing.T) {
+	SetConfigForTesting(&Config{})
+	defer SetConfigForTesting(nil)
+
+	if !IsAdversarialProbingEnabled() {
+		t.Error("Expected adversarial probing enabled when Agents is nil")
+	}
+}
+
+func TestIsAdversarialProbingEnabled_FieldNil(t *testing.T) {
+	SetConfigForTesting(&Config{
+		Agents: &AgentConfig{},
+	})
+	defer SetConfigForTesting(nil)
+
+	if !IsAdversarialProbingEnabled() {
+		t.Error("Expected adversarial probing enabled when field is nil")
+	}
+}
+
+func TestIsAdversarialProbingEnabled_ExplicitlyTrue(t *testing.T) {
+	enabled := true
+	SetConfigForTesting(&Config{
+		Agents: &AgentConfig{
+			AdversarialProbingEnabled: &enabled,
+		},
+	})
+	defer SetConfigForTesting(nil)
+
+	if !IsAdversarialProbingEnabled() {
+		t.Error("Expected adversarial probing enabled when explicitly true")
+	}
+}
+
+func TestIsAdversarialProbingEnabled_ExplicitlyFalse(t *testing.T) {
+	disabled := false
+	SetConfigForTesting(&Config{
+		Agents: &AgentConfig{
+			AdversarialProbingEnabled: &disabled,
+		},
+	})
+	defer SetConfigForTesting(nil)
+
+	if IsAdversarialProbingEnabled() {
+		t.Error("Expected adversarial probing disabled when explicitly false")
+	}
+}

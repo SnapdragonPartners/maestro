@@ -439,6 +439,9 @@ type AgentConfig struct {
 	CodingBudgetReviewTurns   int `json:"coding_budget_review_turns,omitempty"`   // Max coding iterations before budget review (default: 12)
 	PlanningBudgetReviewTurns int `json:"planning_budget_review_turns,omitempty"` // Max planning iterations before budget review (default: 10)
 
+	// Feature flags
+	AdversarialProbingEnabled *bool `json:"adversarial_probing_enabled,omitempty"` // Enable adversarial probing in TESTING (default: true)
+
 	// Airplane mode model overrides
 	Airplane *AirplaneAgentConfig `json:"airplane,omitempty"` // Model overrides for airplane (offline) mode
 }
@@ -881,6 +884,19 @@ func IsAgentshEnabled() bool {
 		return false
 	}
 	return cfg.Agentsh != nil && cfg.Agentsh.Enabled
+}
+
+// IsAdversarialProbingEnabled returns whether adversarial probing is enabled in TESTING.
+// Default is true (enabled). Returns true if config is not loaded or the field is nil.
+func IsAdversarialProbingEnabled() bool {
+	cfg, err := GetConfig()
+	if err != nil {
+		return true // default enabled
+	}
+	if cfg.Agents == nil || cfg.Agents.AdversarialProbingEnabled == nil {
+		return true // default enabled
+	}
+	return *cfg.Agents.AdversarialProbingEnabled
 }
 
 // GetAgentshConfig returns the agentsh configuration, or a disabled default if not configured.

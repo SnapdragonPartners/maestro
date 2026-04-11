@@ -98,6 +98,8 @@ const (
 	SignalBlocked          = "BLOCKED"           // report_blocked tool: coder blocked by infrastructure or invalid story
 	SignalVerificationPass = "VERIFICATION_PASS" // submit_verification tool: all acceptance criteria verified
 	SignalVerificationFail = "VERIFICATION_FAIL" // submit_verification tool: acceptance criteria gaps found
+	SignalProbingPass      = "PROBING_PASS"      // submit_probing tool: no critical robustness issues found
+	SignalProbingFail      = "PROBING_FAIL"      // submit_probing tool: critical robustness issues found
 )
 
 // ExecResult is the result of executing a tool.
