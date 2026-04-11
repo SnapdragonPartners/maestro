@@ -55,6 +55,8 @@ const (
 //
 // The loop is read-only (shell only, network disabled) and produces structured evidence.
 // Returns VerificationOutcome with explicit pass/fail/unavailable status.
+//
+//nolint:dupl // Outcome processing mirrors probing.go but with different types and signals
 func (c *Coder) runAcceptanceCriteriaVerification(
 	ctx context.Context,
 	sm *agent.BaseStateMachine,
@@ -355,6 +357,8 @@ func formatVerificationEvidence(outcome VerificationOutcome) string {
 // rehydrateVerificationOutcome converts raw state data back into a VerificationOutcome.
 // Handles both the direct in-memory path (typed struct) and the post-resume path
 // where state persistence round-trips through map[string]any.
+//
+//nolint:dupl // Structurally similar to rehydrateProbingOutcome but operates on different types
 func rehydrateVerificationOutcome(raw any) (VerificationOutcome, bool) {
 	// Direct in-memory path: typed struct survives within a single process lifetime.
 	if outcome, ok := raw.(VerificationOutcome); ok {

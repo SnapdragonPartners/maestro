@@ -59,6 +59,13 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 		}
 	}
 
+	// Append adversarial probing evidence if available.
+	if peRaw, exists := sm.GetStateValue(KeyProbingEvidence); exists && peRaw != nil {
+		if outcome, ok := rehydrateProbingOutcome(peRaw); ok {
+			evidence += formatProbingEvidence(outcome)
+		}
+	}
+
 	if !workResult.HasWork {
 		// No work detected - request completion approval
 		c.logger.Info("🧑‍💻 No work detected (%s) - requesting completion approval",
