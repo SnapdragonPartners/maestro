@@ -147,15 +147,21 @@ func (s *SubmitVerificationTool) Exec(_ context.Context, args map[string]any) (*
 		validatedCriteria = append(validatedCriteria, criterionMap)
 	}
 
-	// Extract optional gaps as []any for consumer compatibility
+	// Extract optional gaps as []any for consumer compatibility.
+	// If provided, gaps must be an array of strings — fail fast on invalid shapes.
 	var gaps []any
 	if gapsRaw, ok := args["gaps"]; ok {
-		if gapsArr, ok := gapsRaw.([]any); ok {
-			for _, g := range gapsArr {
-				if gs, ok := g.(string); ok {
-					gaps = append(gaps, gs)
-				}
+		gapsArr, ok := gapsRaw.([]any)
+		if !ok {
+			return nil, fmt.Errorf("gaps must be an array")
+		}
+		gaps = make([]any, 0, len(gapsArr))
+		for i, g := range gapsArr {
+			gs, ok := g.(string)
+			if !ok {
+				return nil, fmt.Errorf("gaps item %d must be a string", i)
 			}
+			gaps = append(gaps, gs)
 		}
 	}
 

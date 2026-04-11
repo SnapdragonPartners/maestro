@@ -272,6 +272,35 @@ func TestSubmitVerification_MalformedCriterionObject(t *testing.T) {
 	}
 }
 
+func TestSubmitVerification_InvalidGaps(t *testing.T) {
+	tool := NewSubmitVerificationTool()
+
+	tests := []struct {
+		name string
+		gaps any
+	}{
+		{"non-array gaps", "not an array"},
+		{"non-string gap item", []any{42}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := map[string]any{
+				"acceptance_criteria_checked": []any{
+					map[string]any{"criterion": "A", "method": "command", "result": "pass", "evidence": "ok"},
+				},
+				"gaps":       tt.gaps,
+				"confidence": "high",
+				"summary":    "done",
+			}
+			_, err := tool.Exec(context.Background(), args)
+			if err == nil {
+				t.Errorf("Expected error for %s", tt.name)
+			}
+		})
+	}
+}
+
 func TestSubmitVerification_NonObjectCriterion(t *testing.T) {
 	tool := NewSubmitVerificationTool()
 

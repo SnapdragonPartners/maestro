@@ -86,7 +86,7 @@ func (c *Coder) runAcceptanceCriteriaVerification(
 		TestResults: truncateOutput(testOutput),
 	}
 
-	// Render verification template with user instructions (includes MAESTRO.md)
+	// Render verification template with user instructions from .maestro/*instructions*.md
 	if c.renderer == nil {
 		c.logger.Warn("🔍 Template renderer not available, skipping verification")
 		return VerificationOutcome{
@@ -280,7 +280,8 @@ func buildVerificationFailureMessage(evidence map[string]any) string {
 
 	result := b.String()
 	if len(result) > maxFailureMessageLen {
-		result = result[:maxFailureMessageLen] + "\n\n[... truncated for context management ...]"
+		const truncationSuffix = "\n\n[... truncated for context management ...]"
+		result = result[:maxFailureMessageLen-len(truncationSuffix)] + truncationSuffix
 	}
 	return result
 }

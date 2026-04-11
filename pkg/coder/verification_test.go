@@ -80,8 +80,8 @@ func TestBuildVerificationFailureMessage_Truncation(t *testing.T) {
 
 	msg := buildVerificationFailureMessage(evidence)
 
-	// Should be within bounds (maxFailureMessageLen + truncation suffix)
-	if len(msg) > maxFailureMessageLen+100 {
+	// Should be strictly within maxFailureMessageLen (truncation reserves space for suffix)
+	if len(msg) > maxFailureMessageLen {
 		t.Errorf("Message too long: %d chars (max %d)", len(msg), maxFailureMessageLen)
 	}
 }
