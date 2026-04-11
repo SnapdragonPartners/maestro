@@ -4,6 +4,7 @@ package toolloop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -114,6 +115,12 @@ type Config[T any] struct {
 	// Escalation configuration for iteration limit handling (optional but recommended)
 	// When provided, enables soft/hard limit tracking with callbacks
 	Escalation *EscalationConfig
+
+	// ToolCircuitBreaker prevents endless retries when the same tool fails repeatedly
+	// with the same error pattern. When a (tool, params, error) fingerprint hits the
+	// threshold, execution is skipped and a synthetic error guides the LLM to try
+	// a different approach. Optional — nil disables the breaker.
+	ToolCircuitBreaker *ToolCircuitBreakerConfig
 
 	// Maximum tool call iterations
 	MaxIterations int
@@ -233,6 +240,12 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 
 	// Track consecutive turns without tool use
 	consecutiveNoToolTurns := 0
+
+	// Initialize per-tool circuit breaker if configured
+	var tracker *toolErrorTracker
+	if cfg.ToolCircuitBreaker != nil {
+		tracker = newToolErrorTracker(cfg.ToolCircuitBreaker, tl.logger)
+	}
 
 	// Main iteration loop
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
@@ -400,12 +413,37 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			toolCall := &resp.ToolCalls[i]
 			tl.logger.Info("Executing tool: %s", toolCall.Name)
 
+			// Circuit breaker: skip execution if this tool+params pattern is tripped
+			if tracker != nil {
+				if tripped, lastError := tracker.checkTripped(toolCall.Name, toolCall.Parameters); tripped {
+					label := displayLabel(toolCall.Name, toolCall.Parameters)
+					tl.logger.Warn("🔌 Circuit breaker: skipping %s (tripped)", label)
+					skipContent := fmt.Sprintf(
+						"⚠️ Tool circuit breaker: '%s' has failed %d consecutive times with the same error.\n"+
+							"Execution skipped. Try a different approach or tool.\nLast error: %s",
+						label, tracker.config.MaxConsecutiveFailures, lastError)
+					cfg.ContextManager.AddToolResult(toolCall.ID, skipContent, true)
+					failedTools[toolCall.Name] = true // Terminal tool guard
+					if cfg.PersistenceChannel != nil {
+						agent.LogToolExecution(toolCall, skipContent, fmt.Errorf("circuit breaker: skipped"), 0, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
+					}
+					continue
+				}
+			}
+
 			// Get tool from provider
 			tool, err := toolProvider.Get(toolCall.Name)
 			if err != nil {
 				tl.logger.Error("Failed to get tool %s: %v", toolCall.Name, err)
-				// Add error result to context
 				cfg.ContextManager.AddToolResult(toolCall.ID, err.Error(), true)
+				// Track provider lookup failures in breaker
+				if tracker != nil {
+					tracker.recordFailure(toolCall.Name, toolCall.Parameters, err.Error())
+				}
+				// Log provider lookup failure to persistence
+				if cfg.PersistenceChannel != nil {
+					agent.LogToolExecution(toolCall, err.Error(), err, 0, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
+				}
 				continue
 			}
 
@@ -416,25 +454,35 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 
 			start := time.Now()
-			execResult, err := tool.Exec(toolCtx, toolCall.Parameters)
+			execResult, execErr := tool.Exec(toolCtx, toolCall.Parameters)
 			duration := time.Since(start)
 
-			// Generate tool result content for LLM context
+			// Classify result: Go errors AND semantic failures (JSON success:false)
+			isFailure, errorDetail := classifyToolResult(execResult, execErr)
+
 			var content string
 			var isError bool
-			if err != nil {
-				tl.logger.Error("Tool %s failed after %.3fs: %v", toolCall.Name, duration.Seconds(), err)
-				content = fmt.Sprintf("Tool failed: %v", err)
+			if isFailure {
+				tl.logger.Error("Tool %s failed after %.3fs: %s", toolCall.Name, duration.Seconds(), errorDetail)
+				if execErr != nil {
+					content = fmt.Sprintf("Tool failed: %v", execErr)
+				} else {
+					// Semantic failure: keep structured JSON content for the LLM
+					content = execResult.Content
+				}
 				isError = true
 				failedTools[toolCall.Name] = true
 				if toolCall.Name == terminalToolName {
-					terminalToolErr = err
+					terminalToolErr = execErr // May be nil for semantic failures
+				}
+				if tracker != nil {
+					tracker.recordFailure(toolCall.Name, toolCall.Parameters, errorDetail)
 				}
 			} else {
 				tl.logger.Info("Tool %s completed in %.3fs", toolCall.Name, duration.Seconds())
 
 				// Use provided content or generate simple acknowledgment
-				if execResult.Content != "" {
+				if execResult != nil && execResult.Content != "" {
 					content = execResult.Content
 				} else {
 					content = "Tool executed successfully"
@@ -442,18 +490,31 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				isError = false
 
 				// Check if this tool wants to exit the loop for async effect processing
-				if execResult.ProcessEffect != nil && execResult.ProcessEffect.Signal != "" {
+				if execResult != nil && execResult.ProcessEffect != nil && execResult.ProcessEffect.Signal != "" {
 					tl.logger.Info("🔔 Tool %s returned ProcessEffect with signal: %s", toolCall.Name, execResult.ProcessEffect.Signal)
 					pendingEffect = execResult.ProcessEffect
+				}
+
+				if tracker != nil {
+					tracker.recordSuccess(toolCall.Name, toolCall.Parameters)
 				}
 			}
 
 			// Add tool result to context
 			cfg.ContextManager.AddToolResult(toolCall.ID, content, isError)
 
-			// Log tool execution to database if persistence channel is configured
+			// Log tool execution to database if persistence channel is configured.
+			// For semantic failures (execErr == nil but classified as failure),
+			// pass the parsed JSON map so LogToolExecution can extract success/error fields.
 			if cfg.PersistenceChannel != nil {
-				agent.LogToolExecution(toolCall, content, err, duration, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
+				var logResult any = content
+				if isFailure && execErr == nil {
+					var parsed map[string]any
+					if json.Unmarshal([]byte(content), &parsed) == nil {
+						logResult = parsed
+					}
+				}
+				agent.LogToolExecution(toolCall, logResult, execErr, duration, cfg.AgentID, cfg.StoryID, cfg.PersistenceChannel)
 			}
 		}
 

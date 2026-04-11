@@ -209,6 +209,12 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 		},
 		PersistenceChannel: c.persistenceChannel,
 		StoryID:            utils.GetStateValueOr[string](sm, KeyStoryID, ""),
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+			OnTrip: func(_, label string, count int) {
+				c.logger.Warn("🔌 Tool circuit breaker tripped in CODING: %s (%d failures)", label, count)
+			},
+		},
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)

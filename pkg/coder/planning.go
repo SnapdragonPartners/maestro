@@ -208,6 +208,12 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 		},
 		PersistenceChannel: c.persistenceChannel,
 		StoryID:            utils.GetStateValueOr[string](sm, KeyStoryID, ""),
+		ToolCircuitBreaker: &toolloop.ToolCircuitBreakerConfig{
+			MaxConsecutiveFailures: 3,
+			OnTrip: func(_, label string, count int) {
+				c.logger.Warn("🔌 Tool circuit breaker tripped in PLANNING: %s (%d failures)", label, count)
+			},
+		},
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
