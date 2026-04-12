@@ -65,14 +65,16 @@ func convertPropertyToAnthropicSchema(prop *tools.Property) map[string]any {
 		schema["enum"] = prop.Enum
 	}
 
-	// Recurse into array items.
-	if prop.Type == "array" && prop.Items != nil {
-		schema["items"] = convertPropertyToAnthropicSchema(prop.Items)
+	// Add array constraints at the array level, and recurse into items when present.
+	if prop.Type == "array" {
 		if prop.MinItems != nil {
 			schema["minItems"] = *prop.MinItems
 		}
 		if prop.MaxItems != nil {
 			schema["maxItems"] = *prop.MaxItems
+		}
+		if prop.Items != nil {
+			schema["items"] = convertPropertyToAnthropicSchema(prop.Items)
 		}
 	}
 

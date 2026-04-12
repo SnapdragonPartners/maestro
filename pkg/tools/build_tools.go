@@ -189,7 +189,7 @@ func (b *BuildTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"cwd": {
 					Type:        "string",
-					Description: "Working directory (defaults to current directory)",
+					Description: "Working directory (defaults to agent workspace)",
 				},
 				"timeout": {
 					Type:        "number",
@@ -274,7 +274,7 @@ func (t *TestTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"cwd": {
 					Type:        "string",
-					Description: "Working directory (defaults to current directory)",
+					Description: "Working directory (defaults to agent workspace)",
 				},
 				"timeout": {
 					Type:        "number",
@@ -333,7 +333,7 @@ func (l *LintTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"cwd": {
 					Type:        "string",
-					Description: "Working directory (defaults to current directory)",
+					Description: "Working directory (defaults to agent workspace)",
 				},
 				"timeout": {
 					Type:        "number",
@@ -737,7 +737,7 @@ func (b *BackendInfoTool) Definition() ToolDefinition {
 			Properties: map[string]Property{
 				"cwd": {
 					Type:        "string",
-					Description: "Working directory (defaults to current directory)",
+					Description: "Working directory (defaults to agent workspace)",
 				},
 			},
 			Required: []string{},
