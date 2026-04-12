@@ -382,7 +382,7 @@ var ProviderDefaults = map[string]ProviderLimits{
 		MaxConcurrency:  5,
 	},
 	ProviderOpenAI: {
-		TokensPerMinute: 1000000,
+		TokensPerMinute: 1200000, // Must be > MaxContextTokens/0.9 for GPT-5.4 (1.05M context)
 		MaxConcurrency:  5,
 	},
 	ProviderGoogle: {
@@ -1514,7 +1514,7 @@ func createDefaultConfig() *Config {
 						MaxConcurrency:  5,
 					},
 					OpenAI: ProviderLimits{
-						TokensPerMinute: 1000000,
+						TokensPerMinute: 1200000, // Must be > MaxContextTokens/0.9 for GPT-5.4
 						MaxConcurrency:  5,
 					},
 					Google: ProviderLimits{
@@ -2387,9 +2387,9 @@ func (p AvailableProviders) countAvailableProviders() int {
 func getSmartDefaultModel(agentType string, providers AvailableProviders) string {
 	switch agentType {
 	case AgentTypeArchitect:
-		// Architect prefers GPT-5.2 for reliability, then Anthropic, then Gemini
+		// Architect prefers GPT-5.4 for reliability, then Anthropic, then Gemini
 		if providers.OpenAI {
-			return ModelGPT52
+			return ModelGPT54
 		}
 		if providers.Anthropic {
 			return ModelClaudeOpus46
@@ -2404,7 +2404,7 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 			return ModelClaudeOpus46
 		}
 		if providers.OpenAI {
-			return ModelGPT52
+			return ModelGPT54
 		}
 		if providers.Google {
 			return ModelGemini3Pro
@@ -2413,10 +2413,10 @@ func getSmartDefaultModel(agentType string, providers AvailableProviders) string
 	case AgentTypeCoder:
 		// Coder prefers Anthropic for tool use, then OpenAI, then Google
 		if providers.Anthropic {
-			return ModelClaudeSonnet46
+			return ModelClaudeOpus46
 		}
 		if providers.OpenAI {
-			return ModelGPT52
+			return ModelGPT54
 		}
 		if providers.Google {
 			return ModelGemini3Pro

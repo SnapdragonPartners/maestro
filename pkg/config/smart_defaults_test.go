@@ -106,7 +106,7 @@ func TestGetSmartDefaultModel(t *testing.T) {
 			name:      "architect prefers openai",
 			agentType: AgentTypeArchitect,
 			providers: AvailableProviders{Anthropic: true, OpenAI: true, Google: true},
-			want:      ModelGPT52,
+			want:      ModelGPT54,
 		},
 		{
 			name:      "architect falls back to anthropic",
@@ -132,7 +132,7 @@ func TestGetSmartDefaultModel(t *testing.T) {
 			name:      "pm falls back to openai",
 			agentType: AgentTypePM,
 			providers: AvailableProviders{Anthropic: false, OpenAI: true, Google: true},
-			want:      ModelGPT52,
+			want:      ModelGPT54,
 		},
 		{
 			name:      "pm falls back to google",
@@ -146,13 +146,13 @@ func TestGetSmartDefaultModel(t *testing.T) {
 			name:      "coder prefers anthropic",
 			agentType: AgentTypeCoder,
 			providers: AvailableProviders{Anthropic: true, OpenAI: true, Google: true},
-			want:      ModelClaudeSonnet46,
+			want:      ModelClaudeOpus46,
 		},
 		{
 			name:      "coder falls back to openai",
 			agentType: AgentTypeCoder,
 			providers: AvailableProviders{Anthropic: false, OpenAI: true, Google: true},
-			want:      ModelGPT52,
+			want:      ModelGPT54,
 		},
 		{
 			name:      "coder falls back to google",
@@ -207,9 +207,9 @@ func TestApplySmartModelDefaults(t *testing.T) {
 			openai:             "sk-openai-test",
 			google:             "google-test",
 			wantSingleProvider: false,
-			wantCoderModel:     ModelClaudeSonnet46, // Anthropic preferred
-			wantArchitectModel: ModelGPT52,          // OpenAI preferred
-			wantPMModel:        ModelClaudeOpus46,   // Anthropic preferred
+			wantCoderModel:     ModelClaudeOpus46, // Anthropic preferred
+			wantArchitectModel: ModelGPT54,        // OpenAI preferred
+			wantPMModel:        ModelClaudeOpus46, // Anthropic preferred
 		},
 		{
 			name:               "anthropic only - single provider warning",
@@ -217,7 +217,7 @@ func TestApplySmartModelDefaults(t *testing.T) {
 			openai:             "",
 			google:             "",
 			wantSingleProvider: true,
-			wantCoderModel:     ModelClaudeSonnet46,
+			wantCoderModel:     ModelClaudeOpus46,
 			wantArchitectModel: ModelClaudeOpus46,
 			wantPMModel:        ModelClaudeOpus46,
 		},
@@ -237,7 +237,7 @@ func TestApplySmartModelDefaults(t *testing.T) {
 			openai:             "",
 			google:             "google-test",
 			wantSingleProvider: false,
-			wantCoderModel:     ModelClaudeSonnet46,
+			wantCoderModel:     ModelClaudeOpus46,
 			wantArchitectModel: ModelClaudeOpus46, // Anthropic preferred (no OpenAI)
 			wantPMModel:        ModelClaudeOpus46,
 		},
