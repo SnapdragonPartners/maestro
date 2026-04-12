@@ -60,15 +60,23 @@ func (d *Driver) processDevChatMessage(ctx context.Context, msg *persistence.Cha
 
 	d.logger.Info("Dev-chat: processing message %d from %s: %.100s", msg.ID, agentID, msg.Text)
 
-	// Scope context to the agent's current story (if any)
+	// Scope context to the agent's current story (if any).
+	// On failure, reset to a clean architect prompt to avoid stale/uninitialized context.
 	storyID := d.dispatcher.GetStoryForAgent(agentID)
 	if storyID != "" {
 		if _, err := d.ensureContextForStory(ctx, agentID, storyID); err != nil {
-			d.logger.Warn("Dev-chat: failed to scope context for %s story %s: %v", agentID, storyID, err)
+			d.logger.Warn("Dev-chat: failed to scope context for %s story %s: %v — resetting to clean state", agentID, storyID, err)
+			cm := d.getContextForAgent(agentID)
+			cm.ResetForNewTemplate("", "You are the architect agent. Respond to the following dev-chat message.")
+			d.clearReviewStreaks(agentID)
 		}
+	} else {
+		// No active story lease — ensure context has at least a minimal system prompt
+		cm := d.getContextForAgent(agentID)
+		cm.ResetForNewTemplate("", "You are the architect agent. Respond to the following dev-chat message.")
 	}
 
-	// Get agent-specific context
+	// Get agent-specific context (now guaranteed to have a system prompt)
 	cm := d.getContextForAgent(agentID)
 
 	// Build prompt from the chat message
@@ -123,9 +131,9 @@ Keep your response concise and actionable.`, agentID, msg.Text)
 	}
 
 	if replyText == "" {
-		// Fallback: LLM didn't produce a submit_reply — use a generic acknowledgment
-		replyText = "I've reviewed your message. Let me know if you need specific guidance."
-		d.logger.Warn("Dev-chat: no submit_reply produced for message %d, using fallback", msg.ID)
+		// Fallback: be honest that we couldn't process the message
+		replyText = "I received your message but wasn't able to fully process it. If you need help, please use the ask_question tool for a reliable response."
+		d.logger.Warn("Dev-chat: no submit_reply produced for message %d, using honest fallback", msg.ID)
 	}
 
 	// Post threaded reply back to development chat
