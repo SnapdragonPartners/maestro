@@ -206,6 +206,12 @@ func (c *Coder) runAdversarialProbing(
 				c.logger.Warn("🔌 Circuit breaker tripped in probing: %s (%d failures)", label, count)
 			},
 		},
+		BeforeIteration: func(iteration int, cm *contextmgr.ContextManager) {
+			if iteration == maxProbingIterations-1 {
+				c.logger.Info("🔍 Injecting submit reminder at probing iteration %d", iteration)
+				cm.AddMessage("user", "You have 1 tool call remaining. Call submit_probing now with your findings. If any area was not fully investigated, mark it as inconclusive and submit.")
+			}
+		},
 	}
 
 	// Run probing loop
