@@ -321,6 +321,15 @@ func TestRenderSimpleMiniTemplates(t *testing.T) {
 			expectedText: "ARCHITECT GUIDANCE",
 		},
 		{
+			name:     "Budget Review Approved Feedback",
+			template: BudgetReviewApprovedFeedbackTemplate,
+			data: map[string]any{
+				"Status":   "APPROVED",
+				"Feedback": "The work is complete. Call the done tool now.",
+			},
+			expectedText: "ARCHITECT GUIDANCE",
+		},
+		{
 			name:         "Git Push Failure",
 			template:     GitPushFailureTemplate,
 			data:         "fatal: could not read from remote repository",

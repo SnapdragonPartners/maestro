@@ -2,6 +2,7 @@ package coder
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"orchestrator/pkg/agent"
@@ -69,7 +70,7 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 		// Inject architect feedback if non-empty (e.g., "call done", "submit plan").
 		// Empty feedback is preserved as empty by the architect response builder for budget reviews,
 		// so this only fires when the architect has explicit guidance.
-		if feedback != "" && c.renderer != nil {
+		if strings.TrimSpace(feedback) != "" && c.renderer != nil {
 			templateData := map[string]any{
 				"Status":   status.String(),
 				"Feedback": feedback,
