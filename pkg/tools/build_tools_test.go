@@ -60,7 +60,7 @@ lint:
 
 	// Test BackendInfoTool.
 	t.Run("BackendInfoTool", func(t *testing.T) {
-		tool := NewBackendInfoTool(buildService)
+		tool := NewBackendInfoTool(buildService, tempDir)
 
 		// Test tool definition.
 		def := tool.Definition()
@@ -106,7 +106,7 @@ lint:
 
 	// Test BuildTool.
 	t.Run("BuildTool", func(t *testing.T) {
-		tool := NewBuildTool(buildService)
+		tool := NewBuildTool(buildService, tempDir)
 
 		// Test tool definition.
 		def := tool.Definition()
@@ -158,7 +158,7 @@ lint:
 
 	// Test TestTool.
 	t.Run("TestTool", func(t *testing.T) {
-		tool := NewTestTool(buildService)
+		tool := NewTestTool(buildService, tempDir)
 
 		// Test tool definition.
 		def := tool.Definition()
@@ -197,7 +197,7 @@ lint:
 
 	// Test LintTool.
 	t.Run("LintTool", func(t *testing.T) {
-		tool := NewLintTool(buildService)
+		tool := NewLintTool(buildService, tempDir)
 
 		// Test tool definition.
 		def := tool.Definition()
@@ -236,7 +236,7 @@ lint:
 
 	// Test error handling.
 	t.Run("ErrorHandling", func(t *testing.T) {
-		tool := NewBuildTool(buildService)
+		tool := NewBuildTool(buildService, tempDir)
 
 		// Test with non-existent directory.
 		args := map[string]any{
@@ -284,10 +284,10 @@ func TestBuildToolsDefinitions(t *testing.T) {
 
 	// Test all tool definitions.
 	tools := []Tool{
-		NewBuildTool(buildService),
-		NewTestTool(buildService),
-		NewLintTool(buildService),
-		NewBackendInfoTool(buildService),
+		NewBuildTool(buildService, ""),
+		NewTestTool(buildService, ""),
+		NewLintTool(buildService, ""),
+		NewBackendInfoTool(buildService, ""),
 	}
 
 	expectedNames := []string{"build", "test", "lint", "backend_info"}
@@ -314,12 +314,126 @@ func TestBuildToolsDefinitions(t *testing.T) {
 	}
 }
 
+// TestBuildToolsDefaultWorkDir verifies that build tools use defaultWorkDir
+// when cwd is omitted from the LLM's arguments, instead of falling back to os.Getwd().
+// Regression test: in production, the orchestrator's cwd is different from the agent
+// workspace, causing build validation to inspect the wrong directory.
+//
+// The test asserts on the Dir field recorded by MockExecutor to confirm the workspace
+// path actually reached the executor — not just that the tool call succeeded (which
+// would also pass under the broken os.Getwd fallback when the repo has its own Makefile).
+func TestBuildToolsDefaultWorkDir(t *testing.T) {
+	// Create a temporary workspace with a valid Go project.
+	workspace, err := os.MkdirTemp("", "build-default-cwd")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(workspace)
+
+	// Resolve symlinks so assertions match (macOS /var -> /private/var).
+	workspace, err = filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatalf("Failed to resolve symlinks: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module test\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("Failed to create go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "Makefile"), []byte("build:\n\t@echo ok\ntest:\n\t@echo ok\nlint:\n\t@echo ok\n"), 0644); err != nil {
+		t.Fatalf("Failed to create Makefile: %v", err)
+	}
+
+	// Build/test/lint tools go through the mock executor, so we can check Dir.
+	// BackendInfoTool doesn't call the executor (it only detects backend), so it's
+	// tested separately via the returned project_root field.
+	t.Run("BuildTestLint_MockDir", func(t *testing.T) {
+		tools := []struct {
+			name string
+			make func(*build.Service, string) Tool
+		}{
+			{"BuildTool", func(svc *build.Service, ws string) Tool { return NewBuildTool(svc, ws) }},
+			{"TestTool", func(svc *build.Service, ws string) Tool { return NewTestTool(svc, ws) }},
+			{"LintTool", func(svc *build.Service, ws string) Tool { return NewLintTool(svc, ws) }},
+		}
+
+		for _, tt := range tools {
+			t.Run(tt.name, func(t *testing.T) {
+				buildService := build.NewBuildService()
+				mockExec := build.NewMockExecutor()
+				buildService.SetExecutor(mockExec)
+
+				tool := tt.make(buildService, workspace)
+
+				// Deliberately omit cwd — tool should fall back to defaultWorkDir.
+				result, err := tool.Exec(context.Background(), map[string]any{})
+				if err != nil {
+					t.Fatalf("Exec returned error: %v", err)
+				}
+
+				var resultMap map[string]any
+				if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+					t.Fatalf("Failed to unmarshal result: %v", err)
+				}
+
+				success, _ := utils.GetMapField[bool](resultMap, "success")
+				if !success {
+					errMsg, _ := utils.GetMapField[string](resultMap, "error")
+					t.Fatalf("Expected success=true, got error: %s", errMsg)
+				}
+
+				// Key assertion: the mock executor must have received the workspace
+				// path, not the test runner's cwd.
+				if len(mockExec.Calls) == 0 {
+					t.Fatal("Expected mock executor to be called")
+				}
+				gotDir := mockExec.Calls[0].Dir
+				if gotDir != workspace {
+					t.Errorf("Executor received Dir=%q, want %q (defaultWorkDir)", gotDir, workspace)
+				}
+			})
+		}
+	})
+
+	// BackendInfoTool doesn't call the executor — verify via project_root in output.
+	t.Run("BackendInfoTool_ProjectRoot", func(t *testing.T) {
+		buildService := build.NewBuildService()
+		mockExec := build.NewMockExecutor()
+		buildService.SetExecutor(mockExec)
+
+		tool := NewBackendInfoTool(buildService, workspace)
+
+		result, err := tool.Exec(context.Background(), map[string]any{})
+		if err != nil {
+			t.Fatalf("Exec returned error: %v", err)
+		}
+
+		var resultMap map[string]any
+		if err := json.Unmarshal([]byte(result.Content), &resultMap); err != nil {
+			t.Fatalf("Failed to unmarshal result: %v", err)
+		}
+
+		success, _ := utils.GetMapField[bool](resultMap, "success")
+		if !success {
+			errMsg, _ := utils.GetMapField[string](resultMap, "error")
+			t.Fatalf("Expected success=true, got error: %s", errMsg)
+		}
+
+		projectRoot, err := utils.GetMapField[string](resultMap, "project_root")
+		if err != nil {
+			t.Fatalf("Expected project_root field: %v", err)
+		}
+		if projectRoot != workspace {
+			t.Errorf("project_root=%q, want %q (defaultWorkDir)", projectRoot, workspace)
+		}
+	})
+}
+
 func TestBuildServiceRequiresExecutor(t *testing.T) {
 	// Verify that build service fails gracefully without executor.
 	buildService := build.NewBuildService()
 	// Don't set an executor
 
-	tool := NewBuildTool(buildService)
+	tool := NewBuildTool(buildService, "")
 
 	args := map[string]any{
 		"cwd": "/tmp",

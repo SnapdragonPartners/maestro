@@ -276,21 +276,21 @@ func createStoryCompleteTool(_ *AgentContext) (Tool, error) {
 func createBuildTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
 	configureBuildServiceExecutor(buildSvc, ctx)
-	return NewBuildTool(buildSvc), nil
+	return NewBuildTool(buildSvc, ctx.WorkDir), nil
 }
 
 // createTestTool creates a test tool instance.
 func createTestTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
 	configureBuildServiceExecutor(buildSvc, ctx)
-	return NewTestTool(buildSvc), nil
+	return NewTestTool(buildSvc, ctx.WorkDir), nil
 }
 
 // createLintTool creates a lint tool instance.
 func createLintTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
 	configureBuildServiceExecutor(buildSvc, ctx)
-	return NewLintTool(buildSvc), nil
+	return NewLintTool(buildSvc, ctx.WorkDir), nil
 }
 
 // createDoneTool creates a done tool instance.
@@ -302,7 +302,7 @@ func createDoneTool(ctx *AgentContext) (Tool, error) {
 func createBackendInfoTool(ctx *AgentContext) (Tool, error) {
 	buildSvc := build.NewBuildService()
 	configureBuildServiceExecutor(buildSvc, ctx)
-	return NewBackendInfoTool(buildSvc), nil
+	return NewBackendInfoTool(buildSvc, ctx.WorkDir), nil
 }
 
 // configureBuildServiceExecutor sets up the executor for a build service based on context.
@@ -448,17 +448,17 @@ func getSubmitProbingSchema() InputSchema {
 
 func getBuildSchema() InputSchema {
 	buildSvc := build.NewBuildService()
-	return NewBuildTool(buildSvc).Definition().InputSchema
+	return NewBuildTool(buildSvc, "").Definition().InputSchema
 }
 
 func getTestSchema() InputSchema {
 	buildSvc := build.NewBuildService()
-	return NewTestTool(buildSvc).Definition().InputSchema
+	return NewTestTool(buildSvc, "").Definition().InputSchema
 }
 
 func getLintSchema() InputSchema {
 	buildSvc := build.NewBuildService()
-	return NewLintTool(buildSvc).Definition().InputSchema
+	return NewLintTool(buildSvc, "").Definition().InputSchema
 }
 
 func getDoneSchema() InputSchema {
@@ -467,7 +467,7 @@ func getDoneSchema() InputSchema {
 
 func getBackendInfoSchema() InputSchema {
 	buildSvc := build.NewBuildService()
-	return NewBackendInfoTool(buildSvc).Definition().InputSchema
+	return NewBackendInfoTool(buildSvc, "").Definition().InputSchema
 }
 
 func getContainerBuildSchema() InputSchema {

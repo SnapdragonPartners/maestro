@@ -30,7 +30,8 @@ func isExecutorUsable(e execpkg.Executor) bool {
 }
 
 // extractExecArgs extracts common arguments from tool execution.
-func extractExecArgs(args map[string]any) (cwd string, timeout int, err error) {
+// defaultCwd is used when the LLM omits the cwd parameter (typically AgentContext.WorkDir).
+func extractExecArgs(args map[string]any, defaultCwd string) (cwd string, timeout int, err error) {
 	// Extract working directory.
 	if cwdVal, hasCwd := args["cwd"]; hasCwd {
 		if cwdStr, ok := cwdVal.(string); ok {
@@ -38,7 +39,10 @@ func extractExecArgs(args map[string]any) (cwd string, timeout int, err error) {
 		}
 	}
 
-	// Use current directory if not specified.
+	// Fall back to the configured workspace directory, then os.Getwd as last resort.
+	if cwd == "" {
+		cwd = defaultCwd
+	}
 	if cwd == "" {
 		cwd, err = os.Getwd()
 		if err != nil {
@@ -163,13 +167,15 @@ func executeBuildOperation(ctx context.Context, buildService *build.Service, ope
 
 // BuildTool provides MCP interface for build operations.
 type BuildTool struct {
-	buildService *build.Service
+	buildService   *build.Service
+	defaultWorkDir string
 }
 
 // NewBuildTool creates a new build tool instance.
-func NewBuildTool(buildService *build.Service) *BuildTool {
+func NewBuildTool(buildService *build.Service, defaultWorkDir string) *BuildTool {
 	return &BuildTool{
-		buildService: buildService,
+		buildService:   buildService,
+		defaultWorkDir: defaultWorkDir,
 	}
 }
 
@@ -215,7 +221,7 @@ func (b *BuildTool) PromptDocumentation() string {
 
 // Exec executes the build operation.
 func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	cwd, timeout, err := extractExecArgs(args)
+	cwd, timeout, err := extractExecArgs(args, b.defaultWorkDir)
 	if err != nil {
 		return nil, err
 	}
@@ -246,13 +252,15 @@ func (b *BuildTool) Exec(ctx context.Context, args map[string]any) (*ExecResult,
 
 // TestTool provides MCP interface for test operations.
 type TestTool struct {
-	buildService *build.Service
+	buildService   *build.Service
+	defaultWorkDir string
 }
 
 // NewTestTool creates a new test tool instance.
-func NewTestTool(buildService *build.Service) *TestTool {
+func NewTestTool(buildService *build.Service, defaultWorkDir string) *TestTool {
 	return &TestTool{
-		buildService: buildService,
+		buildService:   buildService,
+		defaultWorkDir: defaultWorkDir,
 	}
 }
 
@@ -293,7 +301,7 @@ func (t *TestTool) PromptDocumentation() string {
 
 // Exec executes the test operation.
 func (t *TestTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	cwd, timeout, err := extractExecArgs(args)
+	cwd, timeout, err := extractExecArgs(args, t.defaultWorkDir)
 	if err != nil {
 		return nil, err
 	}
@@ -303,13 +311,15 @@ func (t *TestTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, 
 
 // LintTool provides MCP interface for linting operations.
 type LintTool struct {
-	buildService *build.Service
+	buildService   *build.Service
+	defaultWorkDir string
 }
 
 // NewLintTool creates a new lint tool instance.
-func NewLintTool(buildService *build.Service) *LintTool {
+func NewLintTool(buildService *build.Service, defaultWorkDir string) *LintTool {
 	return &LintTool{
-		buildService: buildService,
+		buildService:   buildService,
+		defaultWorkDir: defaultWorkDir,
 	}
 }
 
@@ -350,7 +360,7 @@ func (l *LintTool) PromptDocumentation() string {
 
 // Exec executes the lint operation.
 func (l *LintTool) Exec(ctx context.Context, args map[string]any) (*ExecResult, error) {
-	cwd, timeout, err := extractExecArgs(args)
+	cwd, timeout, err := extractExecArgs(args, l.defaultWorkDir)
 	if err != nil {
 		return nil, err
 	}
@@ -705,13 +715,15 @@ func (d *DoneTool) branchHasCommits(ctx context.Context, opts *execpkg.Opts) boo
 
 // BackendInfoTool provides MCP interface for backend information.
 type BackendInfoTool struct {
-	buildService *build.Service
+	buildService   *build.Service
+	defaultWorkDir string
 }
 
 // NewBackendInfoTool creates a new backend info tool instance.
-func NewBackendInfoTool(buildService *build.Service) *BackendInfoTool {
+func NewBackendInfoTool(buildService *build.Service, defaultWorkDir string) *BackendInfoTool {
 	return &BackendInfoTool{
-		buildService: buildService,
+		buildService:   buildService,
+		defaultWorkDir: defaultWorkDir,
 	}
 }
 
@@ -748,7 +760,7 @@ func (b *BackendInfoTool) PromptDocumentation() string {
 
 // Exec executes the backend info operation.
 func (b *BackendInfoTool) Exec(_ context.Context, args map[string]any) (*ExecResult, error) {
-	cwd, _, err := extractExecArgs(args)
+	cwd, _, err := extractExecArgs(args, b.defaultWorkDir)
 	if err != nil {
 		return nil, err
 	}
