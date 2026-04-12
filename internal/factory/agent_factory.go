@@ -127,8 +127,9 @@ func (f *AgentFactory) createArchitect(ctx context.Context, agentID string) (dis
 		f.dispatcher,
 		workDir,
 		f.persistenceChannel,
-		f.llmFactory, // Shared factory for rate limiting
-		chatAdapter,  // Chat service for escalations
+		f.llmFactory,  // Shared factory for rate limiting
+		chatAdapter,   // Chat service for escalations
+		f.chatService, // Dev chat service for channel-scoped reads
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create architect: %w", err)

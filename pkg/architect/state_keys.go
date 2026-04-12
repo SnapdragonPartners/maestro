@@ -44,6 +44,9 @@ const (
 	StateKeyStoriesGenerated = "stories_generated" // bool - stories have been generated
 	StateKeyStoriesCount     = "stories_count"     // int - number of stories generated
 
+	// Dev-chat tracking.
+	StateKeyDevChatPending = "dev_chat_pending" // bool - dev-chat messages waiting to be processed
+
 	// Lifecycle tracking.
 	StateKeyStartedAt = "started_at" // time.Time - when architect started
 )

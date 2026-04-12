@@ -211,12 +211,14 @@ func (s *Service) Post(ctx context.Context, req *PostRequest) (*PostResponse, er
 	}
 
 	// 7. Async persist to database (fire-and-forget)
-	go func() {
-		_, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.Channel, req.ReplyTo, postType)
-		if err != nil {
-			s.logger.Warn("Failed to persist chat message to DB (id=%d): %v", msgID, err)
-		}
-	}()
+	if s.dbOps != nil {
+		go func() {
+			_, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.Channel, req.ReplyTo, postType)
+			if err != nil {
+				s.logger.Warn("Failed to persist chat message to DB (id=%d): %v", msgID, err)
+			}
+		}()
+	}
 
 	return &PostResponse{
 		ID:      msgID,
@@ -356,14 +358,146 @@ func (s *Service) UpdateCursor(_ context.Context, agentID string, newPointer int
 	s.logger.Debug("Updated cursor for %s to %d (all channels)", agentID, newPointer)
 
 	// Async persist to database (fire-and-forget)
-	go func() {
-		for channel := range channelCursors {
-			err := s.dbOps.UpdateChatCursor(agentID, channel, newPointer)
-			if err != nil {
-				s.logger.Warn("Failed to persist cursor for %s channel %s: %v", agentID, channel, err)
+	if s.dbOps != nil {
+		go func() {
+			for channel := range channelCursors {
+				err := s.dbOps.UpdateChatCursor(agentID, channel, newPointer)
+				if err != nil {
+					s.logger.Warn("Failed to persist cursor for %s channel %s: %v", agentID, channel, err)
+				}
+			}
+		}()
+	}
+
+	return nil
+}
+
+// GetNewForChannel retrieves new messages for an agent from a specific channel only.
+// Unlike GetNew, this does not advance cursors — call UpdateCursorForChannel separately.
+func (s *Service) GetNewForChannel(_ context.Context, agentID, channel string) (*GetNewResponse, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agent_id is required")
+	}
+	if channel == "" {
+		return nil, fmt.Errorf("channel is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	channelCursors, ok := s.agentCursors[agentID]
+	if !ok {
+		return &GetNewResponse{
+			Messages:   []*persistence.ChatMessage{},
+			NewPointer: 0,
+		}, nil
+	}
+
+	cursor, hasAccess := channelCursors[channel]
+	if !hasAccess {
+		return &GetNewResponse{
+			Messages:   []*persistence.ChatMessage{},
+			NewPointer: cursor,
+		}, nil
+	}
+
+	var newMessages []*persistence.ChatMessage
+	maxCursor := cursor
+	expectedAuthor := FormatAuthor(agentID)
+
+	for _, msg := range s.messages {
+		if msg.Channel != channel {
+			continue
+		}
+		if msg.Author == expectedAuthor {
+			if msg.ID > maxCursor {
+				maxCursor = msg.ID
+			}
+			continue
+		}
+		if msg.ID > cursor {
+			newMessages = append(newMessages, msg)
+			if msg.ID > maxCursor {
+				maxCursor = msg.ID
 			}
 		}
-	}()
+	}
+
+	s.logger.Debug("GetNewForChannel %s/%s: %d new messages (pointer: %d)", agentID, channel, len(newMessages), maxCursor)
+
+	return &GetNewResponse{
+		Messages:   newMessages,
+		NewPointer: maxCursor,
+	}, nil
+}
+
+// HaveNewMessagesForChannel checks if an agent has new messages in a specific channel
+// without retrieving them or updating cursors.
+func (s *Service) HaveNewMessagesForChannel(agentID, channel string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	channelCursors, ok := s.agentCursors[agentID]
+	if !ok {
+		return false
+	}
+
+	cursor, hasAccess := channelCursors[channel]
+	if !hasAccess {
+		return false
+	}
+
+	expectedAuthor := FormatAuthor(agentID)
+
+	for _, msg := range s.messages {
+		if msg.Channel != channel {
+			continue
+		}
+		if msg.Author == expectedAuthor {
+			continue
+		}
+		if msg.ID > cursor {
+			return true
+		}
+	}
+
+	return false
+}
+
+// UpdateCursorForChannel updates an agent's cursor for a specific channel only.
+// Other channel cursors are left untouched.
+func (s *Service) UpdateCursorForChannel(_ context.Context, agentID, channel string, newPointer int64) error {
+	if agentID == "" {
+		return fmt.Errorf("agent_id is required")
+	}
+	if channel == "" {
+		return fmt.Errorf("channel is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	channelCursors, ok := s.agentCursors[agentID]
+	if !ok {
+		return fmt.Errorf("agent %s not registered", agentID)
+	}
+
+	if _, hasAccess := channelCursors[channel]; !hasAccess {
+		return fmt.Errorf("agent %s not registered for channel %s", agentID, channel)
+	}
+
+	channelCursors[channel] = newPointer
+
+	s.logger.Debug("Updated cursor for %s channel %s to %d", agentID, channel, newPointer)
+
+	// Async persist to database (fire-and-forget)
+	if s.dbOps != nil {
+		go func() {
+			if err := s.dbOps.UpdateChatCursor(agentID, channel, newPointer); err != nil {
+				s.logger.Warn("Failed to persist cursor for %s channel %s: %v", agentID, channel, err)
+			}
+		}()
+	}
 
 	return nil
 }

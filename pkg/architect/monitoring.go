@@ -42,7 +42,12 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 		return StateRequest, nil
 
 	case <-time.After(HeartbeatInterval):
-		// Heartbeat debug logging.
+		// Check for unread developer chat messages
+		if d.devChatService != nil && d.devChatService.HaveNewMessagesForChannel(d.GetAgentID(), "development") {
+			d.logger.Info("Dev-chat: new development messages detected, transitioning to REQUEST")
+			d.SetStateData(StateKeyDevChatPending, true)
+			return StateRequest, nil
+		}
 		return StateMonitoring, nil
 
 	case <-ctx.Done():
