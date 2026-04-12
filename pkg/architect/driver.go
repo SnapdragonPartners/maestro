@@ -11,6 +11,7 @@ import (
 
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/agent/toolloop"
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/contextmgr"
 	"orchestrator/pkg/dispatch"
@@ -104,6 +105,7 @@ type Driver struct {
 	logger                  *logx.Logger                          // Logger with proper agent prefixing
 	executor                *execpkg.ArchitectExecutor            // Container executor for file access tools
 	chatService             ChatServiceInterface                  // Chat service for escalations (nil check required)
+	devChatService          *chat.Service                         // Chat service for dev-chat listener (channel-scoped reads)
 	gitHubClient            GitHubMergeClient                     // GitHub client for merge operations (nil = create from config)
 	shutdownCtx             context.Context                       //nolint:containedctx // Driver-level context for graceful shutdown of background tasks
 	shutdownCancel          context.CancelFunc                    // Cancel function for shutdownCtx
@@ -206,7 +208,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 
 // NewArchitect creates a new architect with LLM integration.
 // Uses shared LLM factory for proper rate limiting across all agents.
-func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory, chatService ChatServiceInterface) (*Driver, error) {
+func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.Dispatcher, workDir string, persistenceChannel chan<- *persistence.Request, llmFactory *agent.LLMClientFactory, chatService ChatServiceInterface, devChatService *chat.Service) (*Driver, error) {
 	// Check for context cancellation before starting construction
 	select {
 	case <-ctx.Done():
@@ -230,6 +232,8 @@ func NewArchitect(ctx context.Context, architectID string, dispatcher *dispatch.
 
 	// Set chat service for escalations (may be nil in tests)
 	architect.chatService = chatService
+	// Set dev chat service for development channel listener (may be nil in tests)
+	architect.devChatService = devChatService
 
 	// NOTE: Workspace cloning is deferred to SETUP state.
 	// The architect boots in WAITING state with just a mountable directory (already created at startup).

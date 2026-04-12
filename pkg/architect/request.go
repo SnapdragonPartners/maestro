@@ -34,6 +34,16 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 	// Get state data
 	stateData := d.GetStateData()
 
+	// Check for dev-chat pending (set by MONITORING heartbeat)
+	if pending, ok := stateData[StateKeyDevChatPending].(bool); ok && pending {
+		d.SetStateData(StateKeyDevChatPending, false) // Clear the flag
+		if err := d.handleDevChat(ctx); err != nil {
+			d.logger.Error("Dev-chat handler error: %v", err)
+			// Non-fatal: return to monitoring even on error
+		}
+		return StateMonitoring, nil
+	}
+
 	// Get the current request from state data.
 	requestMsg, exists := stateData[StateKeyCurrentRequest].(*proto.AgentMsg)
 	if !exists || requestMsg == nil {
