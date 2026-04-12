@@ -217,12 +217,21 @@ var KnownModels = map[string]ModelInfo{
 		MaxOutputTokens:  4096,
 	},
 
-	// GPT-5.2 (latest GPT-5 series with improved capabilities)
+	// GPT-5.2
 	"gpt-5.2": {
 		Provider:         ProviderOpenAI,
 		InputCPM:         20.0,
 		OutputCPM:        60.0,
 		MaxContextTokens: 400000,
+		MaxOutputTokens:  128000,
+	},
+
+	// GPT-5.4 (latest GPT-5 series)
+	"gpt-5.4": {
+		Provider:         ProviderOpenAI,
+		InputCPM:         2.5,
+		OutputCPM:        15.0,
+		MaxContextTokens: 1050000,
 		MaxOutputTokens:  128000,
 	},
 
@@ -531,8 +540,9 @@ const (
 	ModelGPT4o            = "gpt-4o"
 	ModelGPT5             = "gpt-5"
 	ModelGPT52            = "gpt-5.2"
-	DefaultCoderModel     = ModelClaudeSonnet46
-	DefaultArchitectModel = ModelGPT52
+	ModelGPT54            = "gpt-5.4"
+	DefaultCoderModel     = ModelClaudeOpus46
+	DefaultArchitectModel = ModelGPT54
 	DefaultPMModel        = ModelClaudeOpus46
 
 	// Coder execution mode constants.
