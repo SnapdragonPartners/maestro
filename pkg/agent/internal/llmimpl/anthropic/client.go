@@ -16,6 +16,7 @@ import (
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/tools"
 )
 
 // ClaudeClient wraps the Anthropic API client to implement llm.LLMClient interface.
@@ -48,6 +49,50 @@ func NewClaudeClientWithModel(apiKey, model string) llm.LLMClient {
 		client: client,
 		model:  model,
 	}
+}
+
+// convertPropertyToAnthropicSchema recursively converts a tools.Property to the
+// map[string]any format expected by the Anthropic API. Handles nested objects,
+// array items, enums, required fields, and minItems at every depth.
+func convertPropertyToAnthropicSchema(prop *tools.Property) map[string]any {
+	schema := map[string]any{
+		"type": prop.Type,
+	}
+	if prop.Description != "" {
+		schema["description"] = prop.Description
+	}
+	if len(prop.Enum) > 0 {
+		schema["enum"] = prop.Enum
+	}
+
+	// Add array constraints at the array level, and recurse into items when present.
+	if prop.Type == "array" {
+		if prop.MinItems != nil {
+			schema["minItems"] = *prop.MinItems
+		}
+		if prop.MaxItems != nil {
+			schema["maxItems"] = *prop.MaxItems
+		}
+		if prop.Items != nil {
+			schema["items"] = convertPropertyToAnthropicSchema(prop.Items)
+		}
+	}
+
+	// Recurse into object properties.
+	if prop.Properties != nil {
+		childProps := make(map[string]any)
+		for name, childProp := range prop.Properties {
+			if childProp != nil {
+				childProps[name] = convertPropertyToAnthropicSchema(childProp)
+			}
+		}
+		schema["properties"] = childProps
+	}
+	if len(prop.Required) > 0 {
+		schema["required"] = prop.Required
+	}
+
+	return schema
 }
 
 // validatePreSend performs final validation before API call to catch common issues.
@@ -360,20 +405,13 @@ func (c *ClaudeClient) Complete(ctx context.Context, in llm.CompletionRequest) (
 			var properties any
 			var required []string
 
-			// Convert InputSchema properties to the format expected by Anthropic API.
+			// Convert InputSchema properties recursively to preserve nested schemas
+			// (array items, object properties, enums, required fields at all depths).
 			if len(tool.InputSchema.Properties) > 0 {
 				props := make(map[string]any)
 				for name := range tool.InputSchema.Properties { //nolint:gocritic // Need to copy properties
 					prop := tool.InputSchema.Properties[name]
-					propMap := make(map[string]any)
-					propMap["type"] = prop.Type
-					if prop.Description != "" {
-						propMap["description"] = prop.Description
-					}
-					if len(prop.Enum) > 0 {
-						propMap["enum"] = prop.Enum
-					}
-					props[name] = propMap
+					props[name] = convertPropertyToAnthropicSchema(&prop)
 				}
 				properties = props
 			}

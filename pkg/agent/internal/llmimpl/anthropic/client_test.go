@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"orchestrator/pkg/agent/llm"
+	"orchestrator/pkg/tools"
 )
 
 // TestEnsureAlternation tests the message alternation logic.
@@ -237,4 +238,221 @@ func hasSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestConvertPropertyToAnthropicSchema verifies that the Anthropic schema serializer
+// recursively converts nested Properties, including array items with object schemas,
+// enums, required fields, and minItems/maxItems.
+// Regression: the old flat serializer dropped Items, Properties, Required, and MinItems,
+// causing submit_verification and submit_probing to reach Claude without enum constraints.
+func TestConvertPropertyToAnthropicSchema(t *testing.T) {
+	t.Run("FlatStringProperty", func(t *testing.T) {
+		prop := &tools.Property{
+			Type:        "string",
+			Description: "A simple string",
+		}
+		schema := convertPropertyToAnthropicSchema(prop)
+
+		if schema["type"] != "string" {
+			t.Errorf("expected type=string, got %v", schema["type"])
+		}
+		if schema["description"] != "A simple string" {
+			t.Errorf("expected description, got %v", schema["description"])
+		}
+		if _, ok := schema["enum"]; ok {
+			t.Error("unexpected enum field")
+		}
+	})
+
+	t.Run("StringWithEnum", func(t *testing.T) {
+		prop := &tools.Property{
+			Type:        "string",
+			Description: "Confidence level",
+			Enum:        []string{"high", "medium", "low"},
+		}
+		schema := convertPropertyToAnthropicSchema(prop)
+
+		enum, ok := schema["enum"].([]string)
+		if !ok {
+			t.Fatal("expected enum to be []string")
+		}
+		if len(enum) != 3 || enum[0] != "high" {
+			t.Errorf("unexpected enum: %v", enum)
+		}
+	})
+
+	t.Run("ArrayOfObjects", func(t *testing.T) {
+		// Mirrors the submit_verification schema: array of criterion objects.
+		minItems := 1
+		prop := &tools.Property{
+			Type:        "array",
+			Description: "Criteria results",
+			MinItems:    &minItems,
+			Items: &tools.Property{
+				Type: "object",
+				Properties: map[string]*tools.Property{
+					"criterion": {
+						Type:        "string",
+						Description: "The criterion",
+					},
+					"method": {
+						Type:        "string",
+						Description: "How verified",
+						Enum:        []string{"command", "inspection"},
+					},
+					"result": {
+						Type:        "string",
+						Description: "Result",
+						Enum:        []string{"pass", "fail", "partial", "unverified"},
+					},
+				},
+				Required: []string{"criterion", "method", "result"},
+			},
+		}
+		schema := convertPropertyToAnthropicSchema(prop)
+
+		// Verify top-level array fields.
+		if schema["type"] != "array" {
+			t.Errorf("expected type=array, got %v", schema["type"])
+		}
+		if schema["minItems"] != 1 {
+			t.Errorf("expected minItems=1, got %v", schema["minItems"])
+		}
+
+		// Verify items object was serialized.
+		items, ok := schema["items"].(map[string]any)
+		if !ok {
+			t.Fatal("expected items to be map[string]any")
+		}
+		if items["type"] != "object" {
+			t.Errorf("expected items.type=object, got %v", items["type"])
+		}
+
+		// Verify nested properties exist.
+		itemProps, ok := items["properties"].(map[string]any)
+		if !ok {
+			t.Fatal("expected items.properties to be map[string]any")
+		}
+		if len(itemProps) != 3 {
+			t.Errorf("expected 3 properties, got %d", len(itemProps))
+		}
+
+		// Verify method enum is preserved.
+		method, ok := itemProps["method"].(map[string]any)
+		if !ok {
+			t.Fatal("expected method to be map[string]any")
+		}
+		methodEnum, ok := method["enum"].([]string)
+		if !ok {
+			t.Fatal("expected method.enum to be []string")
+		}
+		if len(methodEnum) != 2 || methodEnum[0] != "command" || methodEnum[1] != "inspection" {
+			t.Errorf("unexpected method enum: %v", methodEnum)
+		}
+
+		// Verify result enum is preserved.
+		result, ok := itemProps["result"].(map[string]any)
+		if !ok {
+			t.Fatal("expected result to be map[string]any")
+		}
+		resultEnum, ok := result["enum"].([]string)
+		if !ok {
+			t.Fatal("expected result.enum to be []string")
+		}
+		if len(resultEnum) != 4 {
+			t.Errorf("expected 4 result enum values, got %d", len(resultEnum))
+		}
+
+		// Verify required is preserved at the items level.
+		required, ok := items["required"].([]string)
+		if !ok {
+			t.Fatal("expected items.required to be []string")
+		}
+		if len(required) != 3 {
+			t.Errorf("expected 3 required fields, got %d", len(required))
+		}
+	})
+
+	t.Run("NestedObjectWithoutArray", func(t *testing.T) {
+		// Object property with nested properties (not inside an array).
+		prop := &tools.Property{
+			Type:        "object",
+			Description: "A nested object",
+			Properties: map[string]*tools.Property{
+				"name": {
+					Type:        "string",
+					Description: "Name field",
+				},
+			},
+			Required: []string{"name"},
+		}
+		schema := convertPropertyToAnthropicSchema(prop)
+
+		childProps, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatal("expected properties to be map[string]any")
+		}
+		if _, hasName := childProps["name"]; !hasName {
+			t.Error("expected name property")
+		}
+		required, ok := schema["required"].([]string)
+		if !ok {
+			t.Fatal("expected required to be []string")
+		}
+		if len(required) != 1 || required[0] != "name" {
+			t.Errorf("unexpected required: %v", required)
+		}
+	})
+
+	t.Run("MaxItemsPresent", func(t *testing.T) {
+		maxItems := 10
+		prop := &tools.Property{
+			Type:     "array",
+			MaxItems: &maxItems,
+			Items: &tools.Property{
+				Type: "string",
+			},
+		}
+		schema := convertPropertyToAnthropicSchema(prop)
+
+		if schema["maxItems"] != 10 {
+			t.Errorf("expected maxItems=10, got %v", schema["maxItems"])
+		}
+	})
+
+	// Integration-style: verify submit_verification Definition() round-trips correctly.
+	t.Run("SubmitVerificationFullSchema", func(t *testing.T) {
+		tool := tools.NewSubmitVerificationTool()
+		def := tool.Definition()
+
+		// Convert the top-level properties through our serializer.
+		result := make(map[string]any)
+		for name := range def.InputSchema.Properties {
+			prop := def.InputSchema.Properties[name]
+			result[name] = convertPropertyToAnthropicSchema(&prop)
+		}
+
+		// Verify acceptance_criteria_checked has nested items with enum.
+		acc, ok := result["acceptance_criteria_checked"].(map[string]any)
+		if !ok {
+			t.Fatal("expected acceptance_criteria_checked")
+		}
+		items, ok := acc["items"].(map[string]any)
+		if !ok {
+			t.Fatal("expected items in acceptance_criteria_checked")
+		}
+		props, ok := items["properties"].(map[string]any)
+		if !ok {
+			t.Fatal("expected properties in items")
+		}
+
+		// The method enum must survive serialization.
+		method, ok := props["method"].(map[string]any)
+		if !ok {
+			t.Fatal("expected method property in items")
+		}
+		if _, ok := method["enum"]; !ok {
+			t.Error("method enum was dropped during serialization — this was the production bug")
+		}
+	})
 }
