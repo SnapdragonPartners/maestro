@@ -61,6 +61,7 @@ func (c *Coder) runAcceptanceCriteriaVerification(
 	ctx context.Context,
 	sm *agent.BaseStateMachine,
 	_ string, // workspacePath — unused, shell tool uses executor's workdir
+	changedFiles []string,
 ) VerificationOutcome {
 	c.logger.Info("🔍 Starting acceptance-criteria verification")
 
@@ -86,6 +87,9 @@ func (c *Coder) runAcceptanceCriteriaVerification(
 		TaskContent: taskContent,
 		Plan:        plan,
 		TestResults: truncateOutput(testOutput),
+		Extra: map[string]any{
+			"ChangedFiles": formatChangedFilesForPrompt(changedFiles),
+		},
 	}
 
 	// Render verification template with user instructions from .maestro/*instructions*.md
@@ -147,6 +151,12 @@ func (c *Coder) runAcceptanceCriteriaVerification(
 			OnTrip: func(_ string, label string, count int) {
 				c.logger.Warn("🔌 Circuit breaker tripped in verification: %s (%d failures)", label, count)
 			},
+		},
+		BeforeIteration: func(iteration int, cm *contextmgr.ContextManager) {
+			if iteration == maxVerificationIterations-1 {
+				c.logger.Info("🔍 Injecting submit reminder at iteration %d", iteration)
+				cm.AddMessage("user", "You have 1 tool call remaining. Do not use shell again unless absolutely necessary. Call submit_verification now. If any criterion is not fully proven, mark it partial or unverified and submit.")
+			}
 		},
 	}
 

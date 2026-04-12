@@ -159,6 +159,12 @@ type Config[T any] struct {
 	// If nil, no checkpointing occurs.
 	OnLLMError func(err error, cm *contextmgr.ContextManager)
 
+	// BeforeIteration is called at the start of each iteration, before the LLM call.
+	// Receives the 1-indexed iteration number and the context manager.
+	// Use this to inject synthetic reminders (e.g., "submit now" nudges near the iteration limit).
+	// If nil, no pre-iteration callback occurs.
+	BeforeIteration func(iteration int, cm *contextmgr.ContextManager)
+
 	// PersistenceChannel for logging tool executions to the database.
 	// If nil, tool executions are not persisted (only logged to console).
 	PersistenceChannel chan<- *persistence.Request
@@ -274,6 +280,11 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		// Record activity heartbeat for watchdog monitoring
 		if cfg.ActivityTracker != nil && cfg.AgentID != "" {
 			cfg.ActivityTracker.RecordActivity(cfg.AgentID)
+		}
+
+		// Pre-iteration callback (e.g., inject synthetic reminders near iteration limit)
+		if cfg.BeforeIteration != nil {
+			cfg.BeforeIteration(currentIteration, cfg.ContextManager)
 		}
 
 		// Flush user buffer before LLM request

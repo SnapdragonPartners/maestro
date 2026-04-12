@@ -571,8 +571,15 @@ func (c *Coder) proceedToCodeReviewWithLintCheck(ctx context.Context, sm *agent.
 		return c.executeTestFailureAndTransition(ctx, sm, lintResult)
 	}
 
+	// Get changed files for verification prompt context (best-effort, verification still runs on error)
+	verificationChangedFiles, chErr := loopback.GetBranchChangedFiles(workspacePath)
+	if chErr != nil {
+		c.logger.Warn("🔍 Could not get changed files for verification: %v", chErr)
+		verificationChangedFiles = nil
+	}
+
 	// Step 2: Acceptance criteria verification (LLM-driven, read-only)
-	outcome := c.runAcceptanceCriteriaVerification(ctx, sm, workspacePath)
+	outcome := c.runAcceptanceCriteriaVerification(ctx, sm, workspacePath, verificationChangedFiles)
 
 	// Always store the outcome (pass, fail, or unavailable)
 	sm.SetStateData(KeyVerificationEvidence, outcome)

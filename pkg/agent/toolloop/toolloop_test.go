@@ -1119,3 +1119,109 @@ func TestToolCircuitBreakerResetOnSuccess(t *testing.T) {
 		t.Errorf("Expected all 5 calls to execute (success resets counter), got %d", callNum)
 	}
 }
+
+func TestBeforeIterationCallback(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// Track which iterations the callback was called for
+	var callbackIterations []int
+
+	// LLM returns general tool on iterations 1-2, then terminal on iteration 3
+	responses := []agent.CompletionResponse{
+		{Content: "Call 1", ToolCalls: []agent.ToolCall{{ID: "1", Name: "read", Parameters: map[string]any{}}}},
+		{Content: "Call 2", ToolCalls: []agent.ToolCall{{ID: "2", Name: "read", Parameters: map[string]any{}}}},
+		{Content: "Call 3", ToolCalls: []agent.ToolCall{{ID: "3", Name: "submit", Parameters: map[string]any{"result": "done"}}}},
+	}
+	llmClient := &mockLLMClient{responses: responses}
+
+	generalTool := &mockGeneralTool{
+		name: "read",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{Content: "ok"}, nil
+		},
+	}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "DONE",
+					Data:   map[string]any{"result": "done"},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{generalTool},
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		BeforeIteration: func(iteration int, iterCM *contextmgr.ContextManager) {
+			callbackIterations = append(callbackIterations, iteration)
+			if iteration == 3 {
+				iterCM.AddMessage("user", "Submit now!")
+			}
+		},
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect outcome, got %s (err: %v)", out.Kind, out.Err)
+	}
+
+	// Callback should have fired on iterations 1, 2, and 3
+	if len(callbackIterations) != 3 {
+		t.Fatalf("Expected 3 callback calls, got %d: %v", len(callbackIterations), callbackIterations)
+	}
+	for i, expected := range []int{1, 2, 3} {
+		if callbackIterations[i] != expected {
+			t.Errorf("Callback iteration %d: expected %d, got %d", i, expected, callbackIterations[i])
+		}
+	}
+}
+
+func TestBeforeIterationNilCallback(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	// LLM returns terminal tool immediately
+	responses := []agent.CompletionResponse{
+		{Content: "Done", ToolCalls: []agent.ToolCall{{ID: "1", Name: "submit", Parameters: map[string]any{"result": "done"}}}},
+	}
+	llmClient := &mockLLMClient{responses: responses}
+
+	terminalTool := &mockTerminalTool{
+		name: "submit",
+		execFunc: func(_ context.Context, _ map[string]any) (*tools.ExecResult, error) {
+			return &tools.ExecResult{
+				Content: "submitted",
+				ProcessEffect: &tools.ProcessEffect{
+					Signal: "DONE",
+					Data:   map[string]any{"result": "done"},
+				},
+			}, nil
+		},
+	}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		TerminalTool:   terminalTool,
+		MaxIterations:  5,
+		MaxTokens:      1000,
+		// BeforeIteration deliberately nil — should not panic
+	}
+
+	out := toolloop.Run(loop, ctx, cfg)
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected ProcessEffect outcome, got %s (err: %v)", out.Kind, out.Err)
+	}
+}
