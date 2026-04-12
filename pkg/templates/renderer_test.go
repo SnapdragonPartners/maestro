@@ -27,6 +27,7 @@ func TestNewRenderer(t *testing.T) {
 		TestFailureInstructionsTemplate,
 		DevOpsTestFailureInstructionsTemplate,
 		BudgetReviewFeedbackTemplate,
+		BudgetReviewApprovedFeedbackTemplate,
 		MergeFailureFeedbackTemplate,
 		GitCommitFailureTemplate,
 		GitPushFailureTemplate,
@@ -317,6 +318,15 @@ func TestRenderSimpleMiniTemplates(t *testing.T) {
 			name:         "Budget Review Feedback",
 			template:     BudgetReviewFeedbackTemplate,
 			data:         "Please reduce complexity and focus on core requirements",
+			expectedText: "ARCHITECT GUIDANCE",
+		},
+		{
+			name:     "Budget Review Approved Feedback",
+			template: BudgetReviewApprovedFeedbackTemplate,
+			data: map[string]any{
+				"Status":   "APPROVED",
+				"Feedback": "The work is complete. Call the done tool now.",
+			},
 			expectedText: "ARCHITECT GUIDANCE",
 		},
 		{

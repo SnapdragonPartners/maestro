@@ -45,9 +45,9 @@ The request above contains all context including budget details, recent messages
 - **IMPORTANT**: Do NOT use REJECTED for work that is genuinely complete. REJECTED means "abandon the story" — use it only for stories that are impossible or fundamentally blocked.
 
 **Issue**: Work appears complete but agent hasn't called 'done' tool
-- **Pattern**: Agent has created all required files, code compiles/runs successfully, but continues refining or rewriting working code
-- **Correct Response**: Use APPROVED status with empty feedback field. The budget approval message will automatically remind the agent to call 'done' if work is substantially complete.
-- **Why**: This lets the architect validate completion without micromanaging. The agent should recognize when requirements are met.
+- **Pattern**: Agent has created all required files, code compiles/runs successfully, but has not called `done`
+- **Correct Response**: Use APPROVED status with explicit feedback: "The work is complete and meets acceptance criteria. Call the `done` tool now to mark the story complete."
+- **Why**: Empty feedback is not forwarded to the agent. Always provide explicit instructions so the agent knows what to do next.
 
 **Issue**: Not following approved plan
 - **Wrong**: Deviating from planned implementation approach
@@ -62,6 +62,12 @@ The request above contains all context including budget details, recent messages
 - **Wrong**: Telling the coder to ignore the failures or accusing them of getting distracted
 - **Correct**: All tests must pass before a story can be merged, regardless of whether the failures originated from the current story. The coder should fix them. Provide guidance if the fix is obvious.
 - **Why**: The codebase must remain in a passing state. Pre-existing failures that slip through indicate a gap in prior validation, but the current coder is responsible for leaving the codebase green.
+
+**Issue**: Repeated budget reviews with the same guidance being ignored
+- **Pattern**: You have previously approved or given NEEDS_CHANGES to this agent with specific guidance (e.g., "call `done`", "submit your plan"), but the agent continues the same behavior without acting on it
+- **Detection**: The conversation context shows 2-3 prior budget review responses where you gave the same or equivalent feedback that was not acted upon
+- **Correct Response**: Use REJECTED status. If your guidance has been given multiple times and ignored, the agent is stuck in a loop it cannot break out of. Rejecting allows the system to reassign or escalate the story rather than burning tokens indefinitely.
+- **IMPORTANT**: Do not continue approving an agent that is ignoring your guidance. Repeated approval of a stuck agent wastes budget and risks crashing the system.
 
 **Issue**: Incomplete implementation
 - **Wrong**: Stopping before all requirements are met

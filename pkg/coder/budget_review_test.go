@@ -482,6 +482,124 @@ func TestFormatMessageForBudgetReview_MultipleToolCalls(t *testing.T) {
 	}
 }
 
+// TestBudgetReviewApproved_NonEmptyFeedbackInjected verifies that APPROVED with non-empty
+// feedback injects the architect's guidance into the coder's context.
+func TestBudgetReviewApproved_NonEmptyFeedbackInjected(t *testing.T) {
+	logger := logx.NewLogger("coder-test")
+	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+	sm.SetStateData(KeyOrigin, string(StateCoding))
+
+	renderer, rendererErr := templates.NewRenderer()
+	if rendererErr != nil {
+		t.Fatalf("Failed to create renderer: %v", rendererErr)
+	}
+	cm := contextmgr.NewContextManager()
+	cm.ResetSystemPrompt("You are a coding agent.")
+
+	c := &Coder{
+		BaseStateMachine: sm,
+		logger:           logger,
+		contextManager:   cm,
+		renderer:         renderer,
+	}
+
+	// Flush initial state to get a baseline message count
+	if flushErr := cm.FlushUserBuffer(context.Background()); flushErr != nil {
+		t.Fatalf("FlushUserBuffer failed: %v", flushErr)
+	}
+	baselineCount := cm.GetMessageCount()
+
+	// Process APPROVED with non-empty feedback
+	result := &effect.BudgetReviewResult{
+		Status:   proto.ApprovalStatusApproved,
+		Feedback: "The work is complete. Call the done tool now.",
+	}
+
+	nextState, _, err := c.processBudgetReviewResult(context.Background(), sm, result)
+	if err != nil {
+		t.Fatalf("processBudgetReviewResult failed: %v", err)
+	}
+
+	if nextState != StateCoding {
+		t.Errorf("Expected StateCoding, got %s", nextState)
+	}
+
+	// Flush the buffer so the injected message lands in messages
+	if flushErr := cm.FlushUserBuffer(context.Background()); flushErr != nil {
+		t.Fatalf("FlushUserBuffer failed: %v", flushErr)
+	}
+
+	// Verify a message was added (feedback was injected)
+	newCount := cm.GetMessageCount()
+	if newCount <= baselineCount {
+		t.Errorf("Expected message count to increase (feedback injection), got %d -> %d", baselineCount, newCount)
+	}
+
+	// Verify the injected message contains the feedback
+	messages := cm.GetMessages()
+	lastMsg := messages[len(messages)-1]
+	if !strings.Contains(lastMsg.Content, "Call the done tool now") {
+		t.Errorf("Injected message should contain feedback, got: %s", lastMsg.Content)
+	}
+	if !strings.Contains(lastMsg.Content, "ARCHITECT GUIDANCE") {
+		t.Errorf("Injected message should use approved template framing, got: %s", lastMsg.Content)
+	}
+}
+
+// TestBudgetReviewApproved_EmptyFeedbackNoOp verifies that APPROVED with empty feedback
+// does NOT inject anything into the coder's context.
+func TestBudgetReviewApproved_EmptyFeedbackNoOp(t *testing.T) {
+	logger := logx.NewLogger("coder-test")
+	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+	sm.SetStateData(KeyOrigin, string(StateCoding))
+
+	renderer, rendererErr := templates.NewRenderer()
+	if rendererErr != nil {
+		t.Fatalf("Failed to create renderer: %v", rendererErr)
+	}
+	cm := contextmgr.NewContextManager()
+	cm.ResetSystemPrompt("You are a coding agent.")
+
+	c := &Coder{
+		BaseStateMachine: sm,
+		logger:           logger,
+		contextManager:   cm,
+		renderer:         renderer,
+	}
+
+	// Flush initial state to get a baseline message count
+	if flushErr := cm.FlushUserBuffer(context.Background()); flushErr != nil {
+		t.Fatalf("FlushUserBuffer failed: %v", flushErr)
+	}
+	baselineCount := cm.GetMessageCount()
+
+	// Process APPROVED with empty feedback
+	result := &effect.BudgetReviewResult{
+		Status:   proto.ApprovalStatusApproved,
+		Feedback: "",
+	}
+
+	nextState, _, err := c.processBudgetReviewResult(context.Background(), sm, result)
+	if err != nil {
+		t.Fatalf("processBudgetReviewResult failed: %v", err)
+	}
+
+	if nextState != StateCoding {
+		t.Errorf("Expected StateCoding, got %s", nextState)
+	}
+
+	// Flush the buffer
+	if err := cm.FlushUserBuffer(context.Background()); err != nil {
+		t.Fatalf("FlushUserBuffer failed: %v", err)
+	}
+
+	// Verify NO message was added
+	newCount := cm.GetMessageCount()
+	if newCount != baselineCount {
+		t.Errorf("Expected no new messages (empty feedback), but count changed: %d -> %d", baselineCount, newCount)
+	}
+}
+
 // getMapKeys returns the keys of a map for debugging.
 func getMapKeys(m map[string]any) []string {
 	keys := make([]string, 0, len(m))

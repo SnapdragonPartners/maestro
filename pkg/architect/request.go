@@ -542,7 +542,10 @@ func (d *Driver) buildApprovalResponseFromReviewComplete(ctx context.Context, re
 		d.logger.Warn("Unknown status %s, defaulting to NEEDS_CHANGES", statusStr)
 	}
 
-	if feedback == "" {
+	// For budget reviews, preserve empty feedback so the coder-side empty check works
+	// (non-empty feedback gets injected into coder context; empty = no-op).
+	// For all other review types, use a generic placeholder to avoid empty responses.
+	if feedback == "" && approvalType != proto.ApprovalTypeBudgetReview {
 		feedback = "Review completed via single-turn review"
 	}
 
