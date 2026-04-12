@@ -346,13 +346,21 @@ func TestIntegration_PRLifecycle(t *testing.T) {
 	}
 	t.Logf("✅ PR closed")
 
-	// Verify PR is closed
-	closedPR, err := client.GetPR(ctx, fmt.Sprintf("%d", pr.Number))
-	if err != nil {
-		t.Fatalf("GetPR after close failed: %v", err)
+	// Verify PR is closed (retry briefly — GitHub API is eventually consistent)
+	prRef := fmt.Sprintf("%d", pr.Number)
+	var closedPR *PullRequest
+	for range 5 {
+		closedPR, err = client.GetPR(ctx, prRef)
+		if err != nil {
+			t.Fatalf("GetPR after close failed: %v", err)
+		}
+		if closedPR.Closed {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 	if !closedPR.Closed {
-		t.Errorf("PR closed = %v, want true", closedPR.Closed)
+		t.Errorf("PR closed = %v, want true (after retries)", closedPR.Closed)
 	}
 	t.Logf("✅ PR closure confirmed")
 }
