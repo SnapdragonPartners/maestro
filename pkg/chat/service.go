@@ -211,11 +211,12 @@ func (s *Service) Post(ctx context.Context, req *PostRequest) (*PostResponse, er
 	}
 
 	// 7. Async persist to database (fire-and-forget)
+	// Use msg fields (not req) to avoid races if caller mutates req after Post returns.
 	if s.dbOps != nil {
 		go func() {
-			_, err := s.dbOps.PostChatMessageWithType(req.Author, text, timestamp, req.Channel, req.ReplyTo, postType)
+			_, err := s.dbOps.PostChatMessageWithType(msg.Author, msg.Text, msg.Timestamp, msg.Channel, msg.ReplyTo, msg.PostType)
 			if err != nil {
-				s.logger.Warn("Failed to persist chat message to DB (id=%d): %v", msgID, err)
+				s.logger.Warn("Failed to persist chat message to DB (id=%d): %v", msg.ID, err)
 			}
 		}()
 	}
@@ -357,13 +358,19 @@ func (s *Service) UpdateCursor(_ context.Context, agentID string, newPointer int
 
 	s.logger.Debug("Updated cursor for %s to %d (all channels)", agentID, newPointer)
 
+	// Snapshot channel keys before releasing lock to avoid race in goroutine
+	channels := make([]string, 0, len(channelCursors))
+	for ch := range channelCursors {
+		channels = append(channels, ch)
+	}
+
 	// Async persist to database (fire-and-forget)
 	if s.dbOps != nil {
 		go func() {
-			for channel := range channelCursors {
-				err := s.dbOps.UpdateChatCursor(agentID, channel, newPointer)
+			for _, ch := range channels {
+				err := s.dbOps.UpdateChatCursor(agentID, ch, newPointer)
 				if err != nil {
-					s.logger.Warn("Failed to persist cursor for %s channel %s: %v", agentID, channel, err)
+					s.logger.Warn("Failed to persist cursor for %s channel %s: %v", agentID, ch, err)
 				}
 			}
 		}()
@@ -395,10 +402,7 @@ func (s *Service) GetNewForChannel(_ context.Context, agentID, channel string) (
 
 	cursor, hasAccess := channelCursors[channel]
 	if !hasAccess {
-		return &GetNewResponse{
-			Messages:   []*persistence.ChatMessage{},
-			NewPointer: cursor,
-		}, nil
+		return nil, fmt.Errorf("agent %s not registered for channel %s", agentID, channel)
 	}
 
 	var newMessages []*persistence.ChatMessage

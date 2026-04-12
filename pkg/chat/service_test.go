@@ -29,12 +29,7 @@ func addTestMessage(s *Service, id int64, author, channel, text string) {
 }
 
 func newTestService() *Service {
-	return &Service{
-		messages:            make([]*persistence.ChatMessage, 0),
-		agentCursors:        make(map[string]map[string]int64),
-		nextID:              1,
-		confirmationWaiters: make(map[int64]chan *persistence.ChatMessage),
-	}
+	return NewService(nil, nil)
 }
 
 func TestGetNewForChannel_OnlyReturnsRequestedChannel(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"orchestrator/pkg/chat"
 	"orchestrator/pkg/proto"
 )
 
@@ -43,7 +44,7 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 
 	case <-time.After(HeartbeatInterval):
 		// Check for unread developer chat messages
-		if d.devChatService != nil && d.devChatService.HaveNewMessagesForChannel(d.GetAgentID(), "development") {
+		if d.devChatService != nil && d.devChatService.HaveNewMessagesForChannel(d.GetAgentID(), chat.ChannelDevelopment) {
 			d.logger.Info("Dev-chat: new development messages detected, transitioning to REQUEST")
 			d.SetStateData(StateKeyDevChatPending, true)
 			return StateRequest, nil
