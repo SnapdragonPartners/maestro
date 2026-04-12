@@ -66,9 +66,22 @@ func (c *Coder) processBudgetReviewStatus(sm *agent.BaseStateMachine, status pro
 		// CONTINUE/PIVOT - return to origin state and reset counters.
 		c.logger.Info("🧑‍💻 Budget review approved, returning to origin state: %s", originStr)
 
-		// Note: We do NOT add architect messages here, as they add noise to the conversation
-		// and can confuse the LLM. The empty response validator will provide appropriate
-		// guidance if the LLM continues to have issues with tool usage.
+		// Inject architect feedback if non-empty (e.g., "call done", "submit plan").
+		// Empty feedback is preserved as empty by the architect response builder for budget reviews,
+		// so this only fires when the architect has explicit guidance.
+		if feedback != "" && c.renderer != nil {
+			templateData := map[string]any{
+				"Status":   status.String(),
+				"Feedback": feedback,
+			}
+			renderedMessage, err := c.renderer.RenderSimple(templates.BudgetReviewApprovedFeedbackTemplate, templateData)
+			if err != nil {
+				c.logger.Error("Failed to render approved budget review feedback: %v", err)
+				renderedMessage = feedback // Fallback to raw feedback
+			}
+			c.contextManager.AddMessage("architect", renderedMessage)
+			c.logger.Debug("🧑‍💻 Injected architect approved feedback into coder context")
+		}
 
 		// Reset NEEDS_CHANGES counter on approval
 		sm.SetStateData(KeyNeedsChangesCount, 0)

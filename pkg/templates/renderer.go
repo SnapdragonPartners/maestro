@@ -70,8 +70,10 @@ const (
 	TestFailureInstructionsTemplate StateTemplate = "coder/test_failure_instructions.tpl.md"
 	// DevOpsTestFailureInstructionsTemplate is the mini-template for devops test failure instructions.
 	DevOpsTestFailureInstructionsTemplate StateTemplate = "coder/devops_test_failure_instructions.tpl.md"
-	// BudgetReviewFeedbackTemplate is the mini-template for budget review feedback.
+	// BudgetReviewFeedbackTemplate is the mini-template for budget review feedback (NEEDS_CHANGES).
 	BudgetReviewFeedbackTemplate StateTemplate = "coder/budget_review_feedback.tpl.md"
+	// BudgetReviewApprovedFeedbackTemplate is the mini-template for budget review approved guidance.
+	BudgetReviewApprovedFeedbackTemplate StateTemplate = "coder/budget_review_approved_feedback.tpl.md"
 	// MergeFailureFeedbackTemplate is the mini-template for merge failure feedback.
 	MergeFailureFeedbackTemplate StateTemplate = "coder/merge_failure_feedback.tpl.md"
 	// GitCommitFailureTemplate is the mini-template for git commit failures.
@@ -183,6 +185,7 @@ func NewRenderer() (*Renderer, error) {
 		TestFailureInstructionsTemplate,
 		DevOpsTestFailureInstructionsTemplate,
 		BudgetReviewFeedbackTemplate,
+		BudgetReviewApprovedFeedbackTemplate,
 		MergeFailureFeedbackTemplate,
 		GitCommitFailureTemplate,
 		GitPushFailureTemplate,

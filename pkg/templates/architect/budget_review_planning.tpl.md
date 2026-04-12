@@ -51,6 +51,12 @@ The request above contains all context including budget details, recent messages
 - **Wrong**: Endless exploration without creating implementation plan
 - **Correct**: After 5-8 exploration commands, submit comprehensive plan
 
+**Issue**: Repeated budget reviews with the same guidance being ignored
+- **Pattern**: You have previously approved or given NEEDS_CHANGES to this agent with specific guidance (e.g., "submit your plan", "call `done`"), but the agent continues the same behavior without acting on it
+- **Detection**: The conversation context shows 2-3 prior budget review responses where you gave the same or equivalent feedback that was not acted upon
+- **Correct Response**: Use REJECTED status. If your guidance has been given multiple times and ignored, the agent is stuck in a loop it cannot break out of. Rejecting allows the system to reassign or escalate the story rather than burning tokens indefinitely.
+- **IMPORTANT**: Do not continue approving an agent that is ignoring your guidance. Repeated approval of a stuck agent wastes budget and risks crashing the system.
+
 ## Automated Pattern Analysis
 
 The budget review request includes automated detection of universal failure patterns:

@@ -27,6 +27,7 @@ func TestNewRenderer(t *testing.T) {
 		TestFailureInstructionsTemplate,
 		DevOpsTestFailureInstructionsTemplate,
 		BudgetReviewFeedbackTemplate,
+		BudgetReviewApprovedFeedbackTemplate,
 		MergeFailureFeedbackTemplate,
 		GitCommitFailureTemplate,
 		GitPushFailureTemplate,
