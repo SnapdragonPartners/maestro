@@ -328,25 +328,25 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 	}
 
 	// Add 'github' remote — always points to the GitHub URL from config.
-	// In standard mode, this is the push target.
-	// In airplane mode, this is preserved for sync-back to GitHub.
+	// When using GitHub forge, this is the push target.
+	// When using Gitea forge, this is preserved for sync-back to GitHub.
 	c.logger.Debug("Adding github remote: %s", c.getRepoURL())
 	_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "github", c.getRepoURL())
 	if err != nil {
 		return logx.Wrap(err, "failed to add github remote")
 	}
 
-	// In airplane mode, add 'forge' remote pointing to Gitea for push/fetch.
+	// When forge provider is Gitea, add 'forge' remote for push/fetch.
 	// Push/fetch helpers prefer 'forge' when it exists, falling back to 'github'.
-	if config.IsAirplaneMode() {
+	if config.GetForgeProvider() == "gitea" {
 		if forgeURL, forgeErr := buildForgeGitURL(); forgeErr == nil {
-			c.logger.Debug("Adding forge remote (airplane mode): %s", forgeURL)
+			c.logger.Debug("Adding forge remote (gitea provider): %s", forgeURL)
 			_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "forge", forgeURL)
 			if err != nil {
 				c.logger.Warn("Failed to add forge remote (non-fatal): %v", err)
 			}
 		} else {
-			c.logger.Warn("Could not build forge URL for airplane mode (non-fatal): %v", forgeErr)
+			c.logger.Warn("Could not build forge URL for gitea provider (non-fatal): %v", forgeErr)
 		}
 	}
 

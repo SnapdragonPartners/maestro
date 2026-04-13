@@ -574,6 +574,12 @@ const (
 	EnvOllamaHost      = "OLLAMA_HOST"
 )
 
+// ForgeConfig contains forge provider settings.
+// Controls which git forge (GitHub, Gitea) is used for PR creation and merging.
+type ForgeConfig struct {
+	Provider string `json:"provider,omitempty"` // "github", "gitea", or "" (auto: airplane→gitea, standard→github)
+}
+
 // GitConfig contains git repository settings for the project.
 // All git-related configuration is bundled here to eliminate redundancy.
 type GitConfig struct {
@@ -723,6 +729,7 @@ type Config struct {
 	Build       *BuildConfig       `json:"build"`       // Build commands and targets
 	Agents      *AgentConfig       `json:"agents"`      // Which models to use and rate limits for this project
 	Git         *GitConfig         `json:"git"`         // Git repository and branching settings
+	Forge       *ForgeConfig       `json:"forge"`       // Forge provider settings (github or gitea)
 	WebUI       *WebUIConfig       `json:"webui"`       // Web UI server settings
 	Chat        *ChatConfig        `json:"chat"`        // Agent chat system settings
 	Search      *SearchConfig      `json:"search"`      // Web search settings
@@ -1419,6 +1426,108 @@ func loadConfigFromFile(configPath string) (*Config, error) {
 	}
 
 	return &config, nil
+}
+
+// ApplyConfigFile loads a partial JSON config, deep-merges it into the current
+// project config, validates the result, and persists the merged config to disk.
+//
+// Merge semantics:
+// - Nested objects are merged recursively.
+// - Scalar values and arrays replace existing values.
+// - The merged result becomes the project's canonical persisted config.
+func ApplyConfigFile(configPath string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if config == nil {
+		return fmt.Errorf("config not initialized - call LoadConfig first")
+	}
+	if strings.TrimSpace(configPath) == "" {
+		return fmt.Errorf("config file path is required")
+	}
+
+	overrideMap, err := loadConfigOverrideMap(configPath)
+	if err != nil {
+		return err
+	}
+
+	baseMap, err := configToMap(config)
+	if err != nil {
+		return fmt.Errorf("failed to prepare base config for merge: %w", err)
+	}
+
+	mergedMap := mergeConfigMaps(baseMap, overrideMap)
+	mergedJSON, err := json.Marshal(mergedMap)
+	if err != nil {
+		return fmt.Errorf("failed to marshal merged config: %w", err)
+	}
+
+	var mergedConfig Config
+	if err := json.Unmarshal(mergedJSON, &mergedConfig); err != nil {
+		return fmt.Errorf("failed to parse merged config: %w", err)
+	}
+
+	applyDefaults(&mergedConfig)
+	if err := validateConfig(&mergedConfig); err != nil {
+		return fmt.Errorf("config validation failed after applying %s: %w", configPath, err)
+	}
+
+	mergedConfig.validTargetImage = validateTargetContainer(&mergedConfig)
+	config = &mergedConfig
+
+	if err := saveConfigLocked(); err != nil {
+		return fmt.Errorf("failed to persist merged config: %w", err)
+	}
+
+	getLogger().Info("✅ Applied config file %s", configPath)
+	return nil
+}
+
+func loadConfigOverrideMap(configPath string) (map[string]any, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config override file %s: %w", configPath, err)
+	}
+
+	var overrideMap map[string]any
+	if err := json.Unmarshal(data, &overrideMap); err != nil {
+		return nil, fmt.Errorf("failed to parse config override JSON %s: %w", configPath, err)
+	}
+	if overrideMap == nil {
+		overrideMap = make(map[string]any)
+	}
+
+	return overrideMap, nil
+}
+
+func configToMap(cfg *Config) (map[string]any, error) {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config map: %w", err)
+	}
+
+	return result, nil
+}
+
+func mergeConfigMaps(base, override map[string]any) map[string]any {
+	for key, overrideVal := range override {
+		if baseVal, exists := base[key]; exists {
+			baseMap, baseIsMap := baseVal.(map[string]any)
+			overrideMap, overrideIsMap := overrideVal.(map[string]any)
+			if baseIsMap && overrideIsMap {
+				base[key] = mergeConfigMaps(baseMap, overrideMap)
+				continue
+			}
+		}
+		base[key] = overrideVal
+	}
+
+	return base
 }
 
 // SetTelemetryEnabled updates the global config's TelemetryEnabled field.
@@ -2281,6 +2390,23 @@ func GetOperatingMode() string {
 // IsAirplaneMode returns true if currently operating in airplane (offline) mode.
 func IsAirplaneMode() bool {
 	return GetOperatingMode() == OperatingModeAirplane
+}
+
+// GetForgeProvider returns the configured forge provider name.
+// Priority: explicit config.forge.provider > airplane mode implies "gitea" > default "github".
+// This is the single decision point for all forge-related logic — call sites should
+// use this instead of IsAirplaneMode() when deciding between GitHub and Gitea.
+func GetForgeProvider() string {
+	mu.RLock()
+	cfg := config
+	mu.RUnlock()
+	if cfg.Forge != nil && cfg.Forge.Provider != "" {
+		return cfg.Forge.Provider
+	}
+	if IsAirplaneMode() {
+		return "gitea"
+	}
+	return "github"
 }
 
 // GetEffectiveCoderModel returns the coder model to use based on current operating mode.

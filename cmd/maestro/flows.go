@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/proto"
@@ -144,6 +145,21 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Handle initial spec if provided
 	if f.specFile != "" {
+		// Ensure mirror exists before spec injection when git.repo_url is configured.
+		// Without this, the spec races against PM mirror creation (async in SETUP state)
+		// and coders can't clone because the mirror doesn't exist yet.
+		cfg, cfgErr := config.GetConfig()
+		if cfgErr != nil {
+			return fmt.Errorf("config required before spec injection: %w", cfgErr)
+		}
+		if cfg.Git != nil && cfg.Git.RepoURL != "" {
+			mirrorMgr := mirror.NewManager(k.ProjectDir())
+			if _, mirrorErr := mirrorMgr.EnsureMirror(ctx); mirrorErr != nil {
+				return fmt.Errorf("mirror creation required before spec injection: %w", mirrorErr)
+			}
+			k.Logger.Info("✅ Mirror ready before spec injection")
+		}
+
 		specContent, err := os.ReadFile(f.specFile)
 		if err != nil {
 			return fmt.Errorf("failed to read spec file: %w", err)

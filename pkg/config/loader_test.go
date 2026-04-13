@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -171,5 +172,114 @@ func TestMaintenanceConfigDefaults(t *testing.T) {
 	if len(cfg.Maintenance.TodoScan.Markers) != len(expectedMarkers) {
 		t.Errorf("Expected %d markers, got %d",
 			len(expectedMarkers), len(cfg.Maintenance.TodoScan.Markers))
+	}
+}
+
+func TestApplyConfigFile_DeepMergesAndPersists(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "config-apply-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	defer SetConfigForTesting(nil)
+
+	maestroDir := filepath.Join(tempDir, ProjectConfigDir)
+	if mkdirErr := os.MkdirAll(maestroDir, 0755); mkdirErr != nil {
+		t.Fatalf("Failed to create .maestro dir: %v", mkdirErr)
+	}
+
+	if loadErr := LoadConfig(tempDir); loadErr != nil {
+		t.Fatalf("Failed to load config: %v", loadErr)
+	}
+
+	overridePath := filepath.Join(tempDir, "benchmark-config.json")
+	override := map[string]any{
+		"project": map[string]any{
+			"primary_platform": "python",
+			"pack_name":        "python",
+		},
+		"webui": map[string]any{
+			"enabled": false,
+		},
+		"maintenance": map[string]any{
+			"enabled": false,
+		},
+		"container": map[string]any{
+			"name": "python:3.11-slim",
+		},
+		"build": map[string]any{
+			"build": "true",
+			"test":  "pytest",
+			"lint":  "true",
+			"run":   "true",
+		},
+	}
+
+	overrideJSON, marshalErr := json.Marshal(override)
+	if marshalErr != nil {
+		t.Fatalf("Failed to marshal override JSON: %v", marshalErr)
+	}
+	if writeErr := os.WriteFile(overridePath, overrideJSON, 0644); writeErr != nil {
+		t.Fatalf("Failed to write override file: %v", writeErr)
+	}
+
+	if applyErr := ApplyConfigFile(overridePath); applyErr != nil {
+		t.Fatalf("ApplyConfigFile() failed: %v", applyErr)
+	}
+
+	cfg, err := GetConfig()
+	if err != nil {
+		t.Fatalf("Failed to get config after apply: %v", err)
+	}
+
+	if cfg.Project.PrimaryPlatform != "python" {
+		t.Errorf("Expected project.primary_platform 'python', got %q", cfg.Project.PrimaryPlatform)
+	}
+	if cfg.Project.PackName != "python" {
+		t.Errorf("Expected project.pack_name 'python', got %q", cfg.Project.PackName)
+	}
+	if cfg.WebUI == nil || cfg.WebUI.Enabled {
+		t.Fatalf("Expected webui.enabled to be false after override")
+	}
+	if cfg.WebUI.Port != 8080 {
+		t.Errorf("Expected webui.port default to survive merge, got %d", cfg.WebUI.Port)
+	}
+	if cfg.Maintenance == nil || cfg.Maintenance.Enabled {
+		t.Fatalf("Expected maintenance.enabled to be false after override")
+	}
+	if !cfg.Maintenance.Tasks.BranchCleanup {
+		t.Error("Expected maintenance task defaults to survive nested merge")
+	}
+	if cfg.Container == nil || cfg.Container.Name != "python:3.11-slim" {
+		t.Fatalf("Expected container.name override to persist, got %+v", cfg.Container)
+	}
+	if cfg.Container.Dockerfile != DefaultDockerfilePath {
+		t.Errorf("Expected default dockerfile to survive merge, got %q", cfg.Container.Dockerfile)
+	}
+	if cfg.Build == nil || cfg.Build.Test != "pytest" {
+		t.Fatalf("Expected build.test override 'pytest', got %+v", cfg.Build)
+	}
+	if cfg.Build.Build != "true" || cfg.Build.Lint != "true" || cfg.Build.Run != "true" {
+		t.Errorf("Expected build overrides to persist, got build=%q test=%q lint=%q run=%q",
+			cfg.Build.Build, cfg.Build.Test, cfg.Build.Lint, cfg.Build.Run)
+	}
+
+	SetConfigForTesting(nil)
+	if reloadErr := LoadConfig(tempDir); reloadErr != nil {
+		t.Fatalf("Failed to reload persisted config: %v", reloadErr)
+	}
+
+	reloaded, reloadGetErr := GetConfig()
+	if reloadGetErr != nil {
+		t.Fatalf("Failed to get reloaded config: %v", reloadGetErr)
+	}
+	if reloaded.WebUI == nil || reloaded.WebUI.Enabled {
+		t.Fatalf("Expected persisted webui.enabled false after reload")
+	}
+	if reloaded.Maintenance == nil || reloaded.Maintenance.Enabled {
+		t.Fatalf("Expected persisted maintenance.enabled false after reload")
+	}
+	if reloaded.Build == nil || reloaded.Build.Test != "pytest" {
+		t.Fatalf("Expected persisted build.test 'pytest' after reload, got %+v", reloaded.Build)
 	}
 }

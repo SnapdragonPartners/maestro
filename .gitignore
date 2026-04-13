@@ -54,3 +54,4 @@ dist/
 *.dmg
 
 /maestro
+/benchmark

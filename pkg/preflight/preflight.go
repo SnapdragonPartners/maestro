@@ -50,8 +50,8 @@ func RequiredProviders(_ *config.Config) []Provider {
 	// Docker is always required
 	providers[ProviderDocker] = true
 
-	// Determine git forge provider
-	if config.IsAirplaneMode() {
+	// Determine git forge provider based on config (not just operating mode)
+	if config.GetForgeProvider() == "gitea" {
 		providers[ProviderGitea] = true
 	} else {
 		providers[ProviderGitHub] = true

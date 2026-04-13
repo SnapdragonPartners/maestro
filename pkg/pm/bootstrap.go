@@ -323,20 +323,27 @@ func (bd *BootstrapDetector) detectMissingGitRepo() bool {
 }
 
 // validateGitURL validates that a git URL is properly formatted and accessible.
-// Validates GitHub HTTPS URLs and tests accessibility via gh CLI.
+// For GitHub forge: validates GitHub HTTPS URLs and tests accessibility via gh CLI.
+// For Gitea forge: accepts any HTTPS URL (Gitea URLs are local and don't need gh validation).
 func (bd *BootstrapDetector) validateGitURL(repoURL string) bool {
 	// Must be non-empty
 	if repoURL == "" {
 		return false
 	}
 
-	// Must start with https:// (we require HTTPS for GitHub)
-	if !strings.HasPrefix(repoURL, "https://") {
-		bd.logger.Debug("Git URL must use HTTPS protocol: %s", repoURL)
+	// Must start with https:// or http:// (Gitea may use http for local instances)
+	if !strings.HasPrefix(repoURL, "https://") && !strings.HasPrefix(repoURL, "http://") {
+		bd.logger.Debug("Git URL must use HTTP(S) protocol: %s", repoURL)
 		return false
 	}
 
-	// Must be a GitHub URL
+	// For Gitea forge, accept any well-formed HTTP(S) URL
+	if config.GetForgeProvider() == "gitea" {
+		bd.logger.Debug("Gitea forge: accepting URL without GitHub validation: %s", repoURL)
+		return true
+	}
+
+	// GitHub forge: require github.com domain
 	if !strings.Contains(repoURL, "github.com/") {
 		bd.logger.Debug("Git URL must be a GitHub repository: %s", repoURL)
 		return false

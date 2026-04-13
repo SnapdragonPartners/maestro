@@ -6,11 +6,10 @@ import (
 	"orchestrator/pkg/config"
 )
 
-// NewClient creates the appropriate forge client based on operating mode.
-// In airplane mode, it creates a Gitea client using runtime state.
-// In standard mode, it creates a GitHub client.
+// NewClient creates the appropriate forge client based on configured provider.
+// Provider is determined by config.GetForgeProvider(): explicit config > airplane mode > default github.
 func NewClient(projectDir string) (Client, error) {
-	if config.IsAirplaneMode() {
+	if config.GetForgeProvider() == "gitea" {
 		return newGiteaClient(projectDir)
 	}
 	return newGitHubClient()

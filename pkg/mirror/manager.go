@@ -34,17 +34,17 @@ func NewManager(projectDir string) *Manager {
 	}
 }
 
-// GetFetchURL returns the upstream URL based on operating mode.
-// In airplane mode, reads from runtime state (forge_state.json).
-// In standard mode, returns the configured GitHub URL.
+// GetFetchURL returns the upstream URL based on forge provider.
+// When using Gitea forge, reads from runtime state (forge_state.json).
+// When using GitHub forge, returns the configured GitHub URL.
 func (m *Manager) GetFetchURL() (string, error) {
-	if config.IsAirplaneMode() {
+	if config.GetForgeProvider() == "gitea" {
 		// Load forge state to get Gitea URL
 		state, err := forge.LoadState(m.projectDir)
 		if err != nil {
-			// Gitea not yet configured - fall back to GitHub URL
+			// Gitea not yet configured - fall back to config URL
 			// This can happen during initial setup before Gitea is ready
-			m.logger.Debug("Forge state not found, using GitHub URL: %v", err)
+			m.logger.Debug("Forge state not found, using config URL: %v", err)
 			return m.getGitHubURL()
 		}
 		// Return Gitea clone URL

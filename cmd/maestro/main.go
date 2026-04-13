@@ -26,6 +26,7 @@ func main() {
 	// Parse command line flags
 	var (
 		gitRepo       = flag.String("git-repo", "", "Git repository URL (optional)")
+		configFile    = flag.String("config", "", "Path to JSON config file to merge into project config and persist")
 		specFile      = flag.String("spec-file", "", "Path to specification file")
 		noWebUI       = flag.Bool("nowebui", false, "Disable web UI")
 		projectDir    = flag.String("projectdir", ".", "Project directory")
@@ -72,7 +73,7 @@ func main() {
 	}
 
 	// Run main logic and get exit code
-	exitCode := run(*projectDir, *gitRepo, *specFile, *noWebUI, *continueMode, *airplaneMode, *telemetryFlag)
+	exitCode := run(*projectDir, *gitRepo, *configFile, *specFile, *noWebUI, *continueMode, *airplaneMode, *telemetryFlag)
 
 	// Close log file before exiting
 	if closeErr := logx.CloseLogFile(); closeErr != nil {
@@ -84,14 +85,14 @@ func main() {
 
 // run contains the main application logic and returns an exit code.
 // This allows defers in main() to execute before os.Exit is called.
-func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMode bool, telemetryFlag string) int {
+func run(projectDir, gitRepo, configFile, specFile string, noWebUI, continueMode, airplaneMode bool, telemetryFlag string) int {
 	// Warn if projectdir is using default value
 	if projectDir == "." {
 		config.LogInfo("⚠️  -projectdir not set. Using the current directory.")
 	}
 
 	// Universal setup (Steps 1-3): Always run these regardless of mode
-	_, err := setupProjectInfrastructure(projectDir, gitRepo, specFile)
+	_, err := setupProjectInfrastructure(projectDir, gitRepo, configFile, specFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Project setup failed: %v\n", err)
 		return 1
@@ -140,7 +141,7 @@ func run(projectDir, gitRepo, specFile string, noWebUI, continueMode, airplaneMo
 // setupProjectInfrastructure handles universal setup steps 1-3:
 // 1. Load/create config, 2. Merge command line params, 3. Run VerifyProject
 // Returns whether config was created from defaults (indicating need for bootstrap).
-func setupProjectInfrastructure(projectDir, gitRepo, specFile string) (bool, error) {
+func setupProjectInfrastructure(projectDir, gitRepo, configFile, specFile string) (bool, error) {
 	// Step 1: Check if config exists before loading
 	configPath := filepath.Join(projectDir, ".maestro", "config.json")
 	configWasCreated := false
@@ -154,7 +155,7 @@ func setupProjectInfrastructure(projectDir, gitRepo, specFile string) (bool, err
 	}
 
 	// Step 2: Merge command line parameters into config
-	if err := mergeCommandLineParams(gitRepo, specFile); err != nil {
+	if err := mergeCommandLineParams(gitRepo, configFile, specFile); err != nil {
 		return false, fmt.Errorf("failed to merge command line params: %w", err)
 	}
 
@@ -185,14 +186,20 @@ func applyTelemetryFlag(flagValue string) {
 }
 
 // mergeCommandLineParams updates config with command line arguments.
-func mergeCommandLineParams(gitRepo, specFile string) error {
-	// Get current config
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return fmt.Errorf("failed to get config: %w", err)
+func mergeCommandLineParams(gitRepo, configFile, specFile string) error {
+	if configFile != "" {
+		if err := config.ApplyConfigFile(configFile); err != nil {
+			return fmt.Errorf("failed to apply config file %s: %w", configFile, err)
+		}
 	}
 
-	// Update git repo URL if provided
+	// Get current config after any config file merge.
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to get config after command line merge: %w", err)
+	}
+
+	// Update git repo URL if provided (CLI wins over injected config).
 	if gitRepo != "" && cfg.Git != nil {
 		cfg.Git.RepoURL = gitRepo
 		if err := config.UpdateGit(cfg.Git); err != nil {

@@ -399,8 +399,9 @@ func (c *Coder) executeShellCommand(ctx context.Context, args ...string) (string
 func (c *Coder) setupGitHubAuthentication(ctx context.Context) error {
 	c.logger.Info("🔑 Setting up git configuration")
 
-	// FATAL CHECK: GITHUB_TOKEN must exist in environment (for host-side push later)
-	if !config.HasGitHubToken() {
+	// FATAL CHECK: GITHUB_TOKEN must exist when using GitHub forge (for host-side push later).
+	// When using Gitea forge, auth is embedded in the forge remote URL — no env token needed.
+	if config.GetForgeProvider() != "gitea" && !config.HasGitHubToken() {
 		return fmt.Errorf("GITHUB_TOKEN not found in environment - this is required for git operations and cannot be fixed by coder")
 	}
 

@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks
+.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -34,6 +34,10 @@ build-mcp-proxy:
 # Build the maestro CLI tool
 maestro: build-mcp-proxy lint
 	go build -ldflags "$(LDFLAGS)" -o bin/maestro ./cmd/maestro
+
+# Build the benchmark runner
+benchmark: lint
+	go build -o bin/benchmark ./cmd/benchmark
 
 # Run all tests with coverage
 test:

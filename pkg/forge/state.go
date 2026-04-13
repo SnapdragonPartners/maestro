@@ -75,8 +75,15 @@ func SaveState(projectDir string, state *State) error {
 }
 
 // LoadState reads forge state from the project's .maestro directory.
+// Always resolves from the project root (config.GetProjectDir()) when available,
+// since forge_state.json is project-level state, not agent-workspace-level.
+// The projectDir parameter is used as fallback when GetProjectDir() is empty.
 // Returns ErrStateNotFound if the state file doesn't exist.
 func LoadState(projectDir string) (*State, error) {
+	// Always resolve from project root — callers may pass agent workspace dirs
+	if root := config.GetProjectDir(); root != "" {
+		projectDir = root
+	}
 	statePath := filepath.Join(projectDir, config.ProjectConfigDir, ForgeStateFile)
 
 	data, err := os.ReadFile(statePath)
@@ -96,7 +103,11 @@ func LoadState(projectDir string) (*State, error) {
 }
 
 // StateExists checks if a forge state file exists in the project directory.
+// Resolves from project root when available (same as LoadState).
 func StateExists(projectDir string) bool {
+	if root := config.GetProjectDir(); root != "" {
+		projectDir = root
+	}
 	statePath := filepath.Join(projectDir, config.ProjectConfigDir, ForgeStateFile)
 	_, err := os.Stat(statePath)
 	return err == nil
@@ -104,7 +115,11 @@ func StateExists(projectDir string) bool {
 
 // DeleteState removes the forge state file if it exists.
 // This is typically called when tearing down a Gitea instance.
+// Resolves from project root when available (same as LoadState).
 func DeleteState(projectDir string) error {
+	if root := config.GetProjectDir(); root != "" {
+		projectDir = root
+	}
 	statePath := filepath.Join(projectDir, config.ProjectConfigDir, ForgeStateFile)
 
 	err := os.Remove(statePath)
