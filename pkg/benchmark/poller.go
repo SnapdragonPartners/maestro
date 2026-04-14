@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"time"
 
 	_ "modernc.org/sqlite" // SQLite driver.
@@ -169,7 +170,7 @@ func queryStories(db *sql.DB, specID, sessionID string) ([]storyRow, error) {
 }
 
 func openReadOnly(dbPath string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?mode=ro&_journal_mode=WAL&_busy_timeout=5000", dbPath)
+	dsn := fmt.Sprintf("file:%s?mode=ro&_journal_mode=WAL&_busy_timeout=5000", url.PathEscape(dbPath))
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sql open: %w", err)

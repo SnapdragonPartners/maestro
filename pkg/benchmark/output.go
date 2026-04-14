@@ -70,9 +70,14 @@ func ArchiveArtifacts(projectDir, archiveDir, instanceID string) error {
 		{filepath.Join(projectDir, "logs", "run.log"), "run.log"},
 	}
 
+	var errs []error
 	for i := range artifacts {
-		// Non-fatal: skip missing files.
-		_ = copyFileIfExists(artifacts[i].src, filepath.Join(destDir, artifacts[i].dest))
+		if copyErr := copyFileIfExists(artifacts[i].src, filepath.Join(destDir, artifacts[i].dest)); copyErr != nil {
+			errs = append(errs, copyErr)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("archive artifacts: %d file(s) failed: %w", len(errs), errs[0])
 	}
 
 	return nil
@@ -81,6 +86,9 @@ func ArchiveArtifacts(projectDir, archiveDir, instanceID string) error {
 func copyFileIfExists(src, dest string) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // File doesn't exist — skip silently.
+		}
 		return fmt.Errorf("open source: %w", err)
 	}
 	defer func() { _ = srcFile.Close() }()

@@ -2065,11 +2065,24 @@ func validateConfig(config *Config) error {
 		}
 	}
 
+	// Validate forge provider if explicitly set.
+	if config.Forge != nil && config.Forge.Provider != "" {
+		switch config.Forge.Provider {
+		case ForgeProviderGitHub, ForgeProviderGitea:
+			// valid
+		default:
+			return fmt.Errorf("forge.provider must be %q or %q, got %q", ForgeProviderGitHub, ForgeProviderGitea, config.Forge.Provider)
+		}
+	}
+
 	// Validate Git settings format (RepoURL is optional - may not be using Git worktrees yet).
 	if config.Git != nil && config.Git.RepoURL != "" {
-		allowHTTP := config.Forge != nil && config.Forge.Provider == ForgeProviderGitea
+		allowHTTP := GetForgeProvider() == ForgeProviderGitea
 		if !strings.HasPrefix(config.Git.RepoURL, "git@") && !strings.HasPrefix(config.Git.RepoURL, "https://") &&
 			!(allowHTTP && strings.HasPrefix(config.Git.RepoURL, "http://")) {
+			if allowHTTP {
+				return fmt.Errorf("git repo_url must start with 'git@', 'https://', or 'http://'")
+			}
 			return fmt.Errorf("git repo_url must start with 'git@' or 'https://'")
 		}
 	}

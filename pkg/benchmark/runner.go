@@ -79,18 +79,18 @@ func RunInstance(ctx context.Context, inst *Instance, giteaMgr *BenchGitea, opts
 		return result
 	}
 
-	projectDir, setupErr := setupProjectDir(ctx, inst, giteaMgr, image, opts)
-	if setupErr != nil {
-		logger.Error("[%s] Setup: %v", inst.InstanceID, setupErr)
-		return result
-	}
-
-	// Always clean up the Gitea repo when done.
+	// Always clean up the Gitea repo when done (including partial setup failures).
 	defer func() {
 		if delErr := giteaMgr.DeleteRepo(ctx, inst.InstanceID); delErr != nil {
 			logger.Warn("[%s] Delete repo: %v", inst.InstanceID, delErr)
 		}
 	}()
+
+	projectDir, setupErr := setupProjectDir(ctx, inst, giteaMgr, image, opts)
+	if setupErr != nil {
+		logger.Error("[%s] Setup: %v", inst.InstanceID, setupErr)
+		return result
+	}
 
 	// Pre-pull Docker image.
 	logger.Info("[%s] Pre-pulling image %s", inst.InstanceID, image)
@@ -258,19 +258,46 @@ func launchAndPoll(ctx context.Context, inst *Instance, projectDir string, opts 
 // pollForCompletionWithRetry polls the DB once it exists, retrying the open
 // until the DB file appears or the process exits.
 func pollForCompletionWithRetry(ctx context.Context, cfg PollConfig, dbPath string, ps *processState, logger *logx.Logger, instanceID string) Outcome {
+	// Phase 1: Wait for DB to appear and discover spec/session IDs.
+	// Process may exit during this phase before any stories are created.
+	cfg, discovered := discoverWithRetry(ctx, cfg, dbPath, ps, logger, instanceID)
+	if !discovered {
+		// Context cancelled, or process exited before stories appeared.
+		if ctx.Err() != nil {
+			return OutcomeTimeout
+		}
+		if ps.err != nil {
+			logger.Warn("[%s] Maestro exited with error: %v", instanceID, ps.err)
+		} else {
+			logger.Warn("[%s] Maestro exited before stories were created", instanceID)
+		}
+		return OutcomeProcessError
+	}
+
+	// Phase 2: Poll for story completion (blocks until terminal).
+	logger.Info("[%s] Polling DB (spec=%s, session=%s)", instanceID, cfg.SpecID, cfg.SessionID)
+	outcome, pollErr := PollForCompletion(ctx, cfg)
+	if pollErr != nil {
+		logger.Warn("[%s] Poll error: %v", instanceID, pollErr)
+	}
+	if outcome != "" {
+		return outcome
+	}
+	return OutcomeProcessError
+}
+
+// discoverWithRetry waits for the DB file to appear and discovers the spec/session IDs.
+// Returns the updated config and true if discovery succeeded.
+func discoverWithRetry(ctx context.Context, cfg PollConfig, dbPath string, ps *processState, _ *logx.Logger, _ string) (PollConfig, bool) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			return OutcomeTimeout
+			return cfg, false
 		case <-ps.done:
-			if ps.err != nil {
-				logger.Warn("[%s] Maestro exited with error: %v", instanceID, ps.err)
-				return OutcomeProcessError
-			}
-			return OutcomeSuccess
+			return cfg, false
 		case <-ticker.C:
 			if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
 				continue
@@ -289,18 +316,7 @@ func pollForCompletionWithRetry(ctx context.Context, cfg PollConfig, dbPath stri
 			cfg.SpecID = specID
 			cfg.SessionID = sessionID
 			cfg.DBPath = dbPath
-
-			logger.Info("[%s] Polling DB (spec=%s, session=%s)", instanceID, specID, sessionID)
-			outcome, pollErr := PollForCompletion(ctx, cfg)
-			if pollErr != nil {
-				logger.Warn("[%s] Poll error: %v", instanceID, pollErr)
-			}
-			// Preserve the poller's outcome classification even when there's
-			// an error (e.g. context timeout returns OutcomeTimeout + error).
-			if outcome != "" {
-				return outcome
-			}
-			return OutcomeProcessError
+			return cfg, true
 		}
 	}
 }
