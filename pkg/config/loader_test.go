@@ -283,3 +283,53 @@ func TestApplyConfigFile_DeepMergesAndPersists(t *testing.T) {
 		t.Fatalf("Expected persisted build.test 'pytest' after reload, got %+v", reloaded.Build)
 	}
 }
+
+// TestLoadConfigWithGiteaForge verifies that a config with forge.provider = "gitea"
+// and an HTTP git URL loads without deadlock (regression test for validateConfig
+// calling GetForgeProvider under mu.Lock).
+func TestLoadConfigWithGiteaForge(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "config-gitea-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+	defer SetConfigForTesting(nil)
+
+	maestroDir := filepath.Join(tempDir, ProjectConfigDir)
+	if mkdirErr := os.MkdirAll(maestroDir, 0755); mkdirErr != nil {
+		t.Fatalf("Failed to create .maestro dir: %v", mkdirErr)
+	}
+
+	// Write a config that uses Gitea forge with an HTTP URL.
+	cfgJSON := `{
+		"forge": {"provider": "gitea"},
+		"git": {"repo_url": "http://localhost:3000/maestro/test-repo.git"}
+	}`
+	configPath := filepath.Join(maestroDir, "config.json")
+	if writeErr := os.WriteFile(configPath, []byte(cfgJSON), 0644); writeErr != nil {
+		t.Fatalf("Failed to write config: %v", writeErr)
+	}
+
+	// This would deadlock before the fix (validateConfig called GetForgeProvider
+	// which tries mu.RLock while LoadConfig holds mu.Lock).
+	if loadErr := LoadConfig(tempDir); loadErr != nil {
+		t.Fatalf("LoadConfig failed: %v", loadErr)
+	}
+
+	cfg, getErr := GetConfig()
+	if getErr != nil {
+		t.Fatalf("GetConfig failed: %v", getErr)
+	}
+
+	if cfg.Forge == nil || cfg.Forge.Provider != ForgeProviderGitea {
+		t.Errorf("Expected forge.provider %q, got %+v", ForgeProviderGitea, cfg.Forge)
+	}
+	if cfg.Git == nil || cfg.Git.RepoURL != "http://localhost:3000/maestro/test-repo.git" {
+		t.Errorf("Expected git.repo_url to be preserved, got %+v", cfg.Git)
+	}
+
+	// Verify GetForgeProvider resolves correctly post-load.
+	if provider := GetForgeProvider(); provider != ForgeProviderGitea {
+		t.Errorf("Expected GetForgeProvider() = %q, got %q", ForgeProviderGitea, provider)
+	}
+}

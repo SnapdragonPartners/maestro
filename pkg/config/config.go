@@ -2080,7 +2080,15 @@ func validateConfig(config *Config) error {
 
 	// Validate Git settings format (RepoURL is optional - may not be using Git worktrees yet).
 	if config.Git != nil && config.Git.RepoURL != "" {
-		allowHTTP := GetForgeProvider() == ForgeProviderGitea
+		// Derive forge provider from the config struct directly to avoid deadlock —
+		// validateConfig is called under mu.Lock, so we can't call GetForgeProvider().
+		forgeProvider := ForgeProviderGitHub
+		if config.Forge != nil && config.Forge.Provider != "" {
+			forgeProvider = config.Forge.Provider
+		} else if config.OperatingMode == OperatingModeAirplane {
+			forgeProvider = ForgeProviderGitea
+		}
+		allowHTTP := forgeProvider == ForgeProviderGitea
 		if !strings.HasPrefix(config.Git.RepoURL, "git@") && !strings.HasPrefix(config.Git.RepoURL, "https://") &&
 			!(allowHTTP && strings.HasPrefix(config.Git.RepoURL, "http://")) {
 			if allowHTTP {
