@@ -37,9 +37,40 @@ done
 
 Some repos (pandas, scikit-learn, dask) are large. Budget 10-30 minutes for the initial clones.
 
-### 2. Prepare the instance JSON
+### 2. Convert the SWE-EVO dataset
 
-Create a JSON file containing an array of instance objects:
+Use the conversion script to produce the instance JSON from the HuggingFace dataset:
+
+```bash
+pip install datasets
+python scripts/convert-swe-evo.py \
+    --dataset FSoft-AI4Code/SWE-EVO \
+    --output instances.json
+```
+
+For a pilot run, limit to a single instance or specific repos:
+
+```bash
+# Single instance
+python scripts/convert-swe-evo.py \
+    --dataset FSoft-AI4Code/SWE-EVO \
+    --limit 1 \
+    --output test-instance.json
+
+# Specific repos only
+python scripts/convert-swe-evo.py \
+    --dataset FSoft-AI4Code/SWE-EVO \
+    --repos psf/requests,pallets/flask \
+    --output instances.json
+```
+
+The script maps SWE-bench fields to the runner's format, derives eval image names (`xingyaoww/sweb.eval.x86_64.<project>:<tag>`), includes `hints_text` in the problem statement when available, and extracts `test_cmd` from the `FAIL_TO_PASS` field.
+
+You can also prepare the instance JSON manually if needed.
+
+### 3. Instance JSON format
+
+The instance JSON is an array of instance objects:
 
 ```json
 [
@@ -63,12 +94,12 @@ Create a JSON file containing an array of instance objects:
 | `test_cmd` | No | Test command override (defaults to `pytest`) |
 | `eval_image` | No | Per-instance Docker image (falls back to `-container` flag) |
 
-### 3. Ensure a container image is available
+### 4. Ensure a container image is available
 
-Each instance needs a Docker image for the coder agent to work in. Options:
+Maestro builds its own dev container from the configured language pack (e.g., `primary_platform: "python"`). The `-container` flag and `eval_image` field specify a **base image** for the container build, not a pre-built dev environment.
 
-- **Per-instance images** (`eval_image` field): Use the SWE-EVO evaluation images from Docker Hub (`xingyaoww/sweb.eval.x86_64.*`). These have the correct dependencies pre-installed.
-- **Shared default image** (`-container` flag): A generic Python image (e.g., `python:3.11`). Simpler to set up but may lack project-specific dependencies.
+- **Per-instance images** (`eval_image` field): Derived automatically by the conversion script from the SWE-EVO dataset (`xingyaoww/sweb.eval.x86_64.*`). These are SWE-bench scoring images — Maestro uses them as base images for its own container.
+- **Shared default image** (`-container` flag): A generic Python image (e.g., `python:3.11`). Simpler to set up.
 
 If neither `eval_image` nor `-container` is provided, the run will fail at config generation.
 
