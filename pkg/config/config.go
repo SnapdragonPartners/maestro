@@ -1741,6 +1741,9 @@ func validateAgentConfigInternal(agents *AgentConfig, _ *Config) error {
 	if agents.MaxCoders <= 0 {
 		return fmt.Errorf("max_coders must be positive")
 	}
+	if agents.MaxCoders > 100 {
+		return fmt.Errorf("max_coders must be <= 100")
+	}
 
 	// Validate coder model can be mapped to a provider
 	if _, err := GetModelProvider(agents.CoderModel); err != nil {
