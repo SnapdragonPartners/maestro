@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,6 +32,35 @@ type RunOptions struct {
 
 	// PollInterval is the DB polling interval (0 = default 10s).
 	PollInterval time.Duration
+}
+
+// processState tracks a Maestro subprocess lifecycle.
+// Multiple goroutines can observe the exit without consuming a channel value.
+type processState struct {
+	done chan struct{} // closed when process exits
+	err  error         // set before done is closed
+	once sync.Once
+}
+
+func newProcessState() *processState {
+	return &processState{done: make(chan struct{})}
+}
+
+func (ps *processState) finish(err error) {
+	ps.once.Do(func() {
+		ps.err = err
+		close(ps.done)
+	})
+}
+
+// exited returns true if the process has already exited.
+func (ps *processState) exited() bool {
+	select {
+	case <-ps.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // RunInstance orchestrates a single SWE-EVO benchmark instance from start to finish.
@@ -106,9 +136,16 @@ func resolveImage(inst *Instance, defaultImage string) string {
 }
 
 // setupProjectDir creates the project directory, seeds the Gitea repo, and writes
-// all config files needed for a Maestro run. Returns the project directory path.
+// all config files needed for a Maestro run. Returns an absolute project directory path.
 func setupProjectDir(ctx context.Context, inst *Instance, giteaMgr *BenchGitea, image string, opts *RunOptions) (string, error) {
-	projectDir := filepath.Join(opts.BaseDir, sanitizeRepoName(inst.InstanceID))
+	relDir := filepath.Join(opts.BaseDir, sanitizeRepoName(inst.InstanceID))
+
+	// Convert to absolute path so child processes resolve paths correctly.
+	projectDir, absErr := filepath.Abs(relDir)
+	if absErr != nil {
+		return "", fmt.Errorf("resolve absolute path for %s: %w", relDir, absErr)
+	}
+
 	if rmErr := os.RemoveAll(projectDir); rmErr != nil {
 		return "", fmt.Errorf("clean project dir: %w", rmErr)
 	}
@@ -194,10 +231,10 @@ func launchAndPoll(ctx context.Context, inst *Instance, projectDir string, opts 
 		return OutcomeProcessError
 	}
 
-	// Monitor process exit in background.
-	processDone := make(chan error, 1)
+	// Track process lifecycle via closeable channel (safe for multiple observers).
+	ps := newProcessState()
 	go func() {
-		processDone <- maestroCmd.Wait()
+		ps.finish(maestroCmd.Wait())
 		_ = logFile.Close()
 	}()
 
@@ -210,17 +247,17 @@ func launchAndPoll(ctx context.Context, inst *Instance, projectDir string, opts 
 		StallGrace: 5 * time.Minute,
 	}
 
-	pollOutcome := pollForCompletionWithRetry(maestroCtx, pollCfg, dbPath, processDone, logger, inst.InstanceID)
+	pollOutcome := pollForCompletionWithRetry(maestroCtx, pollCfg, dbPath, ps, logger, inst.InstanceID)
 
 	// Signal Maestro to stop.
-	signalMaestroStop(maestroCmd, processDone, logger, inst.InstanceID)
+	signalMaestroStop(maestroCmd, ps, logger, inst.InstanceID)
 
 	return pollOutcome
 }
 
 // pollForCompletionWithRetry polls the DB once it exists, retrying the open
 // until the DB file appears or the process exits.
-func pollForCompletionWithRetry(ctx context.Context, cfg PollConfig, dbPath string, processDone <-chan error, logger *logx.Logger, instanceID string) Outcome {
+func pollForCompletionWithRetry(ctx context.Context, cfg PollConfig, dbPath string, ps *processState, logger *logx.Logger, instanceID string) Outcome {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -228,9 +265,9 @@ func pollForCompletionWithRetry(ctx context.Context, cfg PollConfig, dbPath stri
 		select {
 		case <-ctx.Done():
 			return OutcomeTimeout
-		case procErr := <-processDone:
-			if procErr != nil {
-				logger.Warn("[%s] Maestro exited with error: %v", instanceID, procErr)
+		case <-ps.done:
+			if ps.err != nil {
+				logger.Warn("[%s] Maestro exited with error: %v", instanceID, ps.err)
 				return OutcomeProcessError
 			}
 			return OutcomeSuccess
@@ -257,9 +294,13 @@ func pollForCompletionWithRetry(ctx context.Context, cfg PollConfig, dbPath stri
 			outcome, pollErr := PollForCompletion(ctx, cfg)
 			if pollErr != nil {
 				logger.Warn("[%s] Poll error: %v", instanceID, pollErr)
-				return OutcomeProcessError
 			}
-			return outcome
+			// Preserve the poller's outcome classification even when there's
+			// an error (e.g. context timeout returns OutcomeTimeout + error).
+			if outcome != "" {
+				return outcome
+			}
+			return OutcomeProcessError
 		}
 	}
 }
@@ -297,16 +338,14 @@ func discoverSessionID(dbPath string) (string, error) {
 }
 
 // signalMaestroStop sends SIGTERM, waits briefly, then SIGKILL if needed.
-func signalMaestroStop(cmd *exec.Cmd, processDone <-chan error, logger *logx.Logger, instanceID string) {
+func signalMaestroStop(cmd *exec.Cmd, ps *processState, logger *logx.Logger, instanceID string) {
 	if cmd.Process == nil {
 		return
 	}
 
 	// Check if already exited.
-	select {
-	case <-processDone:
+	if ps.exited() {
 		return
-	default:
 	}
 
 	logger.Info("[%s] Sending SIGTERM to Maestro (pid=%d)", instanceID, cmd.Process.Pid)
@@ -314,11 +353,11 @@ func signalMaestroStop(cmd *exec.Cmd, processDone <-chan error, logger *logx.Log
 
 	// Wait up to 30 seconds for graceful shutdown.
 	select {
-	case <-processDone:
+	case <-ps.done:
 		return
 	case <-time.After(30 * time.Second):
 		logger.Warn("[%s] Maestro didn't exit after SIGTERM, sending SIGKILL", instanceID)
 		_ = cmd.Process.Kill()
-		<-processDone
+		<-ps.done
 	}
 }
