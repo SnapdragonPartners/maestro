@@ -12,9 +12,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"orchestrator/pkg/config"
-	"time"
 )
 
 // TestIntegration_BenchGitea_Lifecycle tests the full Gitea lifecycle:
@@ -93,29 +93,44 @@ func TestIntegration_BenchGitea_Lifecycle(t *testing.T) {
 	}
 	t.Logf("  Repo API: default_branch=%s empty=%v", repoInfo.DefaultBranch, repoInfo.Empty)
 
-	// Verify main branch has content via branches API (more reliable than repo.empty flag).
+	// Verify main branch has content via branches API.
+	// Gitea needs a moment to index after push — retry a few times.
 	branchURL := fmt.Sprintf("%s/api/v1/repos/maestro/%s/branches/main", g.baseURL, repoName)
-	branchReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, branchURL, http.NoBody)
-	branchReq.Header.Set("Authorization", "token "+g.token)
-	branchResp, branchErr := http.DefaultClient.Do(branchReq)
-	if branchErr != nil {
-		t.Fatalf("  Branch API check failed: %v", branchErr)
-	}
-	defer func() { _ = branchResp.Body.Close() }()
-
-	if branchResp.StatusCode != http.StatusOK {
-		branchBody, _ := io.ReadAll(branchResp.Body)
-		t.Fatalf("  Main branch not found (status %d): %s", branchResp.StatusCode, string(branchBody))
-	}
-
 	var branchInfo struct {
 		Name   string `json:"name"`
 		Commit struct {
 			ID string `json:"id"`
 		} `json:"commit"`
 	}
-	if decErr := json.NewDecoder(branchResp.Body).Decode(&branchInfo); decErr != nil {
-		t.Fatalf("  Decode branch info: %v", decErr)
+	branchVerified := false
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+		branchReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, branchURL, http.NoBody)
+		branchReq.Header.Set("Authorization", "token "+g.token)
+		branchResp, branchErr := http.DefaultClient.Do(branchReq)
+		if branchErr != nil {
+			t.Logf("  Branch API attempt %d: %v", attempt+1, branchErr)
+			continue
+		}
+		if branchResp.StatusCode != http.StatusOK {
+			_ = branchResp.Body.Close()
+			t.Logf("  Branch API attempt %d: status %d (Gitea indexing)", attempt+1, branchResp.StatusCode)
+			continue
+		}
+		if decErr := json.NewDecoder(branchResp.Body).Decode(&branchInfo); decErr != nil {
+			_ = branchResp.Body.Close()
+			t.Logf("  Branch API attempt %d: decode error: %v", attempt+1, decErr)
+			continue
+		}
+		_ = branchResp.Body.Close()
+		branchVerified = true
+		break
+	}
+
+	if !branchVerified {
+		t.Fatal("  Main branch not accessible after 5 attempts (Gitea indexing race)")
 	}
 	t.Logf("  Branch main exists: commit=%s", branchInfo.Commit.ID[:12])
 
