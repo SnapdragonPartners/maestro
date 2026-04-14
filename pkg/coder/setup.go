@@ -401,7 +401,7 @@ func (c *Coder) setupGitHubAuthentication(ctx context.Context) error {
 
 	// FATAL CHECK: GITHUB_TOKEN must exist when using GitHub forge (for host-side push later).
 	// When using Gitea forge, auth is embedded in the forge remote URL — no env token needed.
-	if config.GetForgeProvider() != "gitea" && !config.HasGitHubToken() {
+	if config.GetForgeProvider() != config.ForgeProviderGitea && !config.HasGitHubToken() {
 		return fmt.Errorf("GITHUB_TOKEN not found in environment - this is required for git operations and cannot be fixed by coder")
 	}
 

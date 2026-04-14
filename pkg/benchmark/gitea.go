@@ -121,8 +121,9 @@ func (g *BenchGitea) CreateAndSeedRepo(ctx context.Context, instanceID, repo, ba
 		return "", fmt.Errorf("checkout %s: %w\n%s", baseCommit, checkoutErr, string(out))
 	}
 
-	// Create a branch so we can push (detached HEAD can't push to main).
-	if out, branchErr := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "-b", "main").CombinedOutput(); branchErr != nil {
+	// Create (or reset) a local main branch at this commit so we can push.
+	// -B overwrites any existing main branch from the clone.
+	if out, branchErr := exec.CommandContext(ctx, "git", "-C", workDir, "checkout", "-B", "main").CombinedOutput(); branchErr != nil {
 		return "", fmt.Errorf("create main branch: %w\n%s", branchErr, string(out))
 	}
 

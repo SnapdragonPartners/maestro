@@ -555,7 +555,7 @@ func runSyncMode(projectDir string, dryRun bool) int {
 		return 1
 	}
 
-	if state.Provider != "gitea" {
+	if state.Provider != string(forge.ProviderGitea) {
 		fmt.Printf("❌ Sync is only needed when forge provider is gitea (currently: %s)\n", state.Provider)
 		return 1
 	}

@@ -3,6 +3,8 @@ package benchmark
 import (
 	"encoding/json"
 	"testing"
+
+	"orchestrator/pkg/config"
 )
 
 func TestGenerateConfig_Valid(t *testing.T) {
@@ -28,7 +30,7 @@ func TestGenerateConfig_Valid(t *testing.T) {
 	assertMapField(t, cfg, "project", "pack_name", "python")
 	assertMapField(t, cfg, "git", "repo_url", "http://localhost:3000/maestro/psf__requests-1234.git")
 	assertMapField(t, cfg, "git", "target_branch", "main")
-	assertMapField(t, cfg, "forge", "provider", "gitea")
+	assertMapField(t, cfg, "forge", "provider", config.ForgeProviderGitea)
 	assertMapField(t, cfg, "build", "test", "pytest tests/")
 	assertMapField(t, cfg, "container", "name", "swe-eval:requests")
 

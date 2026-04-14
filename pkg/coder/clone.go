@@ -338,7 +338,7 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 
 	// When forge provider is Gitea, add 'forge' remote for push/fetch.
 	// Push/fetch helpers prefer 'forge' when it exists, falling back to 'github'.
-	if config.GetForgeProvider() == "gitea" {
+	if config.GetForgeProvider() == config.ForgeProviderGitea {
 		if forgeURL, forgeErr := buildForgeGitURL(); forgeErr == nil {
 			c.logger.Debug("Adding forge remote (gitea provider): %s", forgeURL)
 			_, err = c.gitRunner.Run(ctx, agentWorkDir, "remote", "add", "forge", forgeURL)

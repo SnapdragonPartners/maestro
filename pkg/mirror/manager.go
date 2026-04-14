@@ -38,7 +38,7 @@ func NewManager(projectDir string) *Manager {
 // When using Gitea forge, reads from runtime state (forge_state.json).
 // When using GitHub forge, returns the configured GitHub URL.
 func (m *Manager) GetFetchURL() (string, error) {
-	if config.GetForgeProvider() == "gitea" {
+	if config.GetForgeProvider() == config.ForgeProviderGitea {
 		// Load forge state to get Gitea URL
 		state, err := forge.LoadState(m.projectDir)
 		if err != nil {

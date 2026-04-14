@@ -338,7 +338,7 @@ func (bd *BootstrapDetector) validateGitURL(repoURL string) bool {
 	}
 
 	// For Gitea forge, accept any well-formed HTTP(S) URL
-	if config.GetForgeProvider() == "gitea" {
+	if config.GetForgeProvider() == config.ForgeProviderGitea {
 		bd.logger.Debug("Gitea forge: accepting URL without GitHub validation: %s", repoURL)
 		return true
 	}

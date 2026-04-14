@@ -3,6 +3,8 @@ package benchmark
 import (
 	"encoding/json"
 	"fmt"
+
+	"orchestrator/pkg/config"
 )
 
 // GenerateConfig produces a Maestro JSON config for a single benchmark instance.
@@ -27,7 +29,7 @@ func GenerateConfig(inst *Instance, giteaRepoURL, containerImage string) ([]byte
 			"target_branch": "main",
 		},
 		"forge": map[string]any{
-			"provider": "gitea",
+			"provider": config.ForgeProviderGitea,
 		},
 		"maintenance": map[string]any{
 			"enabled": false,

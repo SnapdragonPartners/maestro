@@ -9,7 +9,7 @@ import (
 // NewClient creates the appropriate forge client based on configured provider.
 // Provider is determined by config.GetForgeProvider(): explicit config > airplane mode > default github.
 func NewClient(projectDir string) (Client, error) {
-	if config.GetForgeProvider() == "gitea" {
+	if config.GetForgeProvider() == config.ForgeProviderGitea {
 		return newGiteaClient(projectDir)
 	}
 	return newGitHubClient()

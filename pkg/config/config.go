@@ -574,6 +574,12 @@ const (
 	EnvOllamaHost      = "OLLAMA_HOST"
 )
 
+// Forge provider constants.
+const (
+	ForgeProviderGitHub = "github"
+	ForgeProviderGitea  = "gitea"
+)
+
 // ForgeConfig contains forge provider settings.
 // Controls which git forge (GitHub, Gitea) is used for PR creation and merging.
 type ForgeConfig struct {
@@ -2059,9 +2065,11 @@ func validateConfig(config *Config) error {
 		}
 	}
 
-	// Validate Git settings format (RepoURL is optional - may not be using Git worktrees yet)
+	// Validate Git settings format (RepoURL is optional - may not be using Git worktrees yet).
 	if config.Git != nil && config.Git.RepoURL != "" {
-		if !strings.HasPrefix(config.Git.RepoURL, "git@") && !strings.HasPrefix(config.Git.RepoURL, "https://") {
+		allowHTTP := config.Forge != nil && config.Forge.Provider == ForgeProviderGitea
+		if !strings.HasPrefix(config.Git.RepoURL, "git@") && !strings.HasPrefix(config.Git.RepoURL, "https://") &&
+			!(allowHTTP && strings.HasPrefix(config.Git.RepoURL, "http://")) {
 			return fmt.Errorf("git repo_url must start with 'git@' or 'https://'")
 		}
 	}
@@ -2404,9 +2412,9 @@ func GetForgeProvider() string {
 		return cfg.Forge.Provider
 	}
 	if IsAirplaneMode() {
-		return "gitea"
+		return ForgeProviderGitea
 	}
-	return "github"
+	return ForgeProviderGitHub
 }
 
 // GetEffectiveCoderModel returns the coder model to use based on current operating mode.
