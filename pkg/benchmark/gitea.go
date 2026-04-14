@@ -46,11 +46,23 @@ func NewBenchGitea(reposDir string) *BenchGitea {
 	}
 }
 
-// EnsureRunning starts the Gitea container (idempotent) and performs initial setup
+// EnsureRunning starts a fresh Gitea container and performs initial setup
 // (admin user, API token, organization). Must be called before CreateAndSeedRepo.
+//
+// For benchmark use, this always removes any existing container and volume first
+// to ensure clean state with known credentials. Benchmark Gitea instances are
+// ephemeral — there's no value in reusing stale state.
 func (g *BenchGitea) EnsureRunning(ctx context.Context) error {
 	cfg := gitea.ContainerConfig{
 		ProjectName: "benchmark",
+	}
+
+	// Force-remove any existing container and volume to ensure clean credentials.
+	// Setup generates a random admin password, so reusing a container with an
+	// old admin user from a prior run causes 401 on token creation.
+	containerName := gitea.ContainerName(cfg.ProjectName)
+	if rmErr := g.container.RemoveContainer(ctx, containerName, true); rmErr != nil {
+		g.logger.Warn("Remove existing container (may not exist): %v", rmErr)
 	}
 
 	info, err := g.container.EnsureContainer(ctx, cfg)
