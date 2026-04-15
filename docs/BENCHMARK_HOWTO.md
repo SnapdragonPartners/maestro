@@ -28,7 +28,7 @@ The directory layout must match the `repo` field in the instance JSON. For insta
 The full SWE-EVO dataset uses 7 repos:
 
 ```bash
-for repo in psf/requests pandas-dev/pandas conan-io/conan dask/dask iterative/dvc pydantic/pydantic scikit-learn/scikit-learn; do
+for repo in psf/requests conan-io/conan dask/dask iterative/dvc modin-project/modin pydantic/pydantic scikit-learn/scikit-learn; do
   org=$(dirname "$repo")
   mkdir -p /path/to/bare-repos/$org
   git clone --bare "https://github.com/$repo.git" "/path/to/bare-repos/$org/$(basename $repo).git"
@@ -44,7 +44,7 @@ Use the conversion script to produce the instance JSON from the HuggingFace data
 ```bash
 pip install datasets
 python scripts/convert-swe-evo.py \
-    --dataset FSoft-AI4Code/SWE-EVO \
+    --dataset Fsoft-AIC/SWE-EVO \
     --output instances.json
 ```
 
@@ -53,13 +53,13 @@ For a pilot run, limit to a single instance or specific repos:
 ```bash
 # Single instance
 python scripts/convert-swe-evo.py \
-    --dataset FSoft-AI4Code/SWE-EVO \
+    --dataset Fsoft-AIC/SWE-EVO \
     --limit 1 \
     --output test-instance.json
 
 # Specific repos only
 python scripts/convert-swe-evo.py \
-    --dataset FSoft-AI4Code/SWE-EVO \
+    --dataset Fsoft-AIC/SWE-EVO \
     --repos psf/requests,pallets/flask \
     --output instances.json
 ```

@@ -4,7 +4,7 @@
 Usage:
     # From HuggingFace Hub:
     python scripts/convert-swe-evo.py \
-        --dataset FSoft-AI4Code/SWE-EVO \
+        --dataset Fsoft-AIC/SWE-EVO \
         --output instances.json
 
     # From local Arrow/Parquet files:
@@ -14,13 +14,13 @@ Usage:
 
     # Filter to specific repos:
     python scripts/convert-swe-evo.py \
-        --dataset FSoft-AI4Code/SWE-EVO \
+        --dataset Fsoft-AIC/SWE-EVO \
         --repos psf/requests,pallets/flask \
         --output instances.json
 
     # Limit number of instances (useful for pilot runs):
     python scripts/convert-swe-evo.py \
-        --dataset FSoft-AI4Code/SWE-EVO \
+        --dataset Fsoft-AIC/SWE-EVO \
         --limit 5 \
         --output instances.json
 
@@ -118,7 +118,7 @@ def main():
     parser.add_argument(
         "--dataset",
         required=True,
-        help="HuggingFace dataset name (e.g. FSoft-AI4Code/SWE-EVO) or local path",
+        help="HuggingFace dataset name (e.g. Fsoft-AIC/SWE-EVO) or local path",
     )
     parser.add_argument(
         "--split",
