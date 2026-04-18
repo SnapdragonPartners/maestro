@@ -68,3 +68,10 @@ venv/
 instances.json
 *.arrow
 *.parquet
+
+# Benchmark run artifacts
+archives/
+runs/
+preds.json
+results.json
+test-instance.json
