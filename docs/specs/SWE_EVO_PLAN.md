@@ -2,778 +2,430 @@
 
 ## Goal
 
-Run Maestro against all 48 SWE-EVO instances, capture results as unified diff patches, and evaluate using SWE-EVO's provided harness. Measure whether multi-agent orchestration (architect decomposing release notes into stories, coders implementing in parallel) improves on single-agent baselines.
+Run Maestro against SWE-EVO with the smallest product surface change that still gives us a fair, repeatable benchmark path.
 
-## Background
+For v1, the goal is:
 
-SWE-EVO presents release notes describing changes between two versions of a Python project. The agent must evolve the codebase from `start_version` to `end_version`. Output is a unified diff patch. Evaluation runs in Docker containers with pre-built images per instance.
+1. Run benchmark instances end to end with a real Maestro subprocess.
+2. Produce canonical unified diff patches in a deterministic way.
+3. Avoid changing normal Maestro behavior or defaults for non-benchmark usage.
 
-**Current best**: 21% resolved rate (GPT-5 with OpenHands).
+This plan is intentionally optimized for **benchmark readiness**, not for introducing a general-purpose autonomous mode on day one.
 
----
+## Current Reality
 
-## Key Design Decision: One Maestro Run Per Instance
+The current codebase matters more than the old plan:
 
-Maestro does not support changing repos after launch. Each SWE-EVO instance is a different repo at a different commit. **Each instance runs as a completely independent Maestro session** — fresh config, fresh project directory, fresh Maestro process. This requires **zero changes to Maestro's repo management**.
+- Maestro already has `--spec-file`, which injects a spec directly to the architect.
+- Maestro already has `--config`, which deep-merges a JSON file into the project config and persists the result.
+- The main Maestro process does **not** exit when work completes; it stays alive until `SIGINT` or `SIGTERM`.
+- The architect already emits an internal `all_stories_complete` notification to PM, but that is an internal agent signal, not a clean per-spec external contract in its current implementation.
+- Maintenance mode is enabled by default and can enqueue unrelated follow-up work after the benchmark task finishes.
+- WebUI is enabled by default and should be disabled for headless benchmark runs.
+- Current config defaults are not benchmark-safe for SWE-EVO Python repos:
+  - container defaults point at the bootstrap container
+  - build defaults assume `make build`, `make test`, `make lint`, `make run`
+- Mirror creation currently happens inside PM setup and coder clone logic, not at startup. If `git.repo_url` is configured and `--spec-file` is used, the first spec injection can race against infrastructure setup.
+- Architect story-generation prompts infer platform from spec text rather than reading `project.primary_platform` from config, which is weak for raw benchmark inputs.
 
-The benchmark runner is an outer harness that:
-1. Configures a Maestro project for the instance (repo URL, base commit, spec file)
-2. Launches Maestro as a subprocess
-3. Waits for completion or timeout
-4. Collects the output diff
-5. Shuts down Maestro
-6. Repeats for the next instance
+The old plan assumed process exit, incomplete zero-shot coverage, and stale config fields. This replacement plan does not.
 
-This means the only Maestro-internal change is **zero-shot mode** (`--zeroshot <specfile>`):
-- PM runs autonomously (never blocks on human input)
-- Architect and coder auto-resolve escalations
-- Spec injected via file instead of human interview
-- Everything else — git workflow, forge integration, architect review, coder execution, container management — works as-is.
+## Design Decisions
 
-## Terminology
+### 1. Use the existing `--spec-file` path for benchmark v1
 
-To avoid ambiguity, this document uses these terms consistently:
+Benchmark v1 should launch Maestro with the existing spec injection path instead of starting with PM zero-shot work.
 
-- **Zero-shot mode**: A Maestro product feature (`--zeroshot <specfile>`). Autonomous execution with no human in the loop. Useful for benchmarks and any scenario where you have a spec and want hands-off execution.
-- **Benchmark runner**: The outer harness (`cmd/benchmark/`). Manages SWE-EVO instances, launches Maestro subprocesses, collects patches, invokes evaluation. Not part of Maestro core.
-- **Benchmark config**: Runner-provided settings (instance data, GitHub repo URL, output paths). Separate from Maestro's `.maestro/config.json`.
+Why:
 
-## Architecture Overview
+- It is already implemented.
+- It avoids broad changes to PM behavior.
+- It keeps benchmark work mostly outside the core product path.
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    Benchmark Runner                           │
-│  (cmd/benchmark/)  — outer harness, NOT inside Maestro       │
-│                                                              │
-│  for each instance:                                          │
-│    1. Create/reset GitHub repo with base_commit              │
-│    2. Generate Maestro project config                        │
-│    3. Write spec file (release notes) to project dir         │
-│    4. Launch: maestro --zeroshot spec.md --projectdir ...   │
-│    5. Wait for completion / timeout                          │
-│    6. Validate and collect patch from remote main            │
-│    7. Tag, archive logs, shut down                           │
-│    8. Append validated result to preds.json                  │
-│                                                              │
-│  after all instances:                                        │
-│    9. Invoke SWE-EVO evaluation harness                      │
-└──────────┬───────────────────────────────────┬───────────────┘
-           │  (per instance)                   │  (once, at end)
-           ▼                                   ▼
-┌─────────────────────┐             ┌─────────────────────┐
-│  Maestro Process    │             │  SWE-EVO Evaluator  │
-│  (--zeroshot mode)  │             │  (evaluate_instance) │
-│                     │             │                      │
-│  PM (zero-shot):    │             │  - Pulls Docker image│
-│   validate spec →   │             │  - Applies patch     │
-│   bootstrap detect →│             │  - Runs tests        │
-│   submit to arch    │             │  - Scores results    │
-│                     │             │                      │
-│  Architect:         │             └─────────────────────┘
-│   spec → stories    │
-│   review → merge    │
-│   (full iterative)  │
-│                     │
-│  Coders (3+hotfix): │
-│   branch → code →   │
-│   commit → push →   │
-│   PR → review →     │
-│   squash-merge      │
-│                     │
-│  Forge: GitHub      │
-│  (regular mode)     │
-└─────────────────────┘
-```
+This means benchmark v1 is:
 
----
+- **low-risk**
+- **good enough to run real benchmark instances**
+- **not yet a guarantee that every human-dependent edge case is autonomously resolved**
 
-## Phase 1: Zero-Shot Execution Mode
+That tradeoff is acceptable for the first benchmark-ready version.
 
-Maestro currently requires human input at two points: the PM interviews the user to refine specs, and both PM and architect can escalate to humans when stuck. Zero-shot mode removes the human dependency while preserving the full multi-agent workflow.
+### 2. Pass benchmark input through verbatim
 
-### 1.1 CLI Interface
+The runner should pass the SWE-EVO `problem_statement` through to Maestro without normalization or reformatting.
 
-```bash
-maestro --zeroshot <specfile>
-```
+On the current `--spec-file` path, Maestro reads the file and injects its raw contents as the architect approval payload, and the architect templates already say to extract value from incomplete or poorly formatted specs. If benchmark inputs need extra structure, platform hints, or normalization, that should happen inside Maestro's prompts, not in the harness.
 
-This is the primary entry point. The `--zeroshot` flag:
-- Enables zero-shot mode across all agents
-- Loads the spec file and injects it into the PM (as if uploaded via WebUI)
-- The full PM → Architect → Coder pipeline runs, just with no human in the loop
+This keeps the harness simple and ensures any input-handling improvements benefit all Maestro users, not just benchmark runs.
 
-This is useful beyond benchmarks — any scenario where you have a spec and want Maestro to execute it autonomously.
+### 3. Keep the benchmark runner external
 
-### 1.2 Design: Keep All Agents, Remove Human Dependency
+The runner should live outside the normal Maestro runtime as a separate harness.
 
-**Key insight**: The maintenance story flow already shows the pattern we want — architect operates autonomously with full iterative review, no PM involvement needed for dispatch or approval. But rather than skip the PM entirely, we keep it for its heterogeneous model advantage (PM runs a different model than the architect, so PM↔architect Q&A produces better reasoning than either alone).
+Responsibilities:
 
-**Behavior changes in zero-shot mode:**
+- load SWE-EVO instances
+- prepare per-instance repos on the benchmark forge
+- generate benchmark-specific Maestro config
+- launch Maestro as a subprocess
+- detect completion
+- collect the output patch
+- write benchmark outputs in SWE-bench-compatible format
+- clean up ephemeral forge repos after each instance
 
-| Component | Normal Mode | Zero-Shot Mode |
-|-----------|-------------|----------------|
-| PM agent | Interviews human, refines spec | **Receives spec file directly**, validates, submits to architect. No human interview. |
-| PM AWAIT_USER | Blocks on human chat input | **Fatal transition** — PM must never block on human. See §1.3. |
-| Architect escalation | Posts to chat, waits 2hr for human | **Auto-resolves** — makes judgment call, continues |
-| Coder escalation | Posts to chat, waits for human | **Auto-resolves** — same pattern |
-| PM↔Architect Q&A | Normal (architect asks PM questions) | **Normal** — preserved. PM answers using its own judgment. |
-| Architect review | Full iterative code review | **Normal** — preserved. This is the value proposition. |
-| Coders | 3 coders + hotfix agent (default) | **Normal** — default parallelism preserved. |
+This keeps benchmark orchestration isolated from normal app usage.
 
-### 1.3 PM Zero-Shot Mode
+### 4. Use Gitea as the default benchmark forge
 
-The PM receives the spec file and processes it through its normal flow, but with one critical constraint: **it must never enter AWAIT_USER**.
+The current successful Maestro path merges work through a forge PR+merge API. The architect handles merge requests by calling the forge merge API, marks the story accepted on success, and the coder only reaches `DONE` after receiving that approved merge result. This means every benchmark instance needs a forge-backed repo.
 
-**Current PM states and zero-shot behavior:**
+For benchmark runs, the default forge should be a **local Gitea instance** running in Docker.
 
-| State | Normal | Zero-Shot |
-|-------|--------|-----------|
-| WAITING | Waits for user to start interview | Receives injected spec, transitions to WORKING |
-| SETUP | Bootstrap detection | **Normal** — still runs, still useful |
-| WORKING | LLM tool loop (interview, spec drafting) | **Normal** — PM validates spec, handles architect Q&A |
-| AWAIT_USER | Blocks on human chat | **AUTO_RESOLVE** — see below |
-| PREVIEW | User reviews spec in WebUI | **Auto-submit** — skip preview, submit directly to architect |
-| AWAIT_ARCHITECT | Blocks on architect response | **Normal** — preserved |
+Why Gitea:
 
-**AUTO_RESOLVE behavior** (replaces AWAIT_USER in zero-shot mode):
-When the PM would transition to AWAIT_USER:
-1. Log what the PM wanted to ask the human (for debugging/analysis)
-2. Inject a system prompt: "You are in autonomous mode. There is no human available. You must use your best judgment based on the spec and available context. Make a reasonable decision and proceed."
-3. Transition back to WORKING (not AWAIT_USER)
+- Lightweight, single-binary, runs in Docker
+- Scriptable repo creation/deletion via REST API
+- No external rate limits or API dependencies
+- Keeps the entire benchmark self-contained
+- Free and open source
 
-This is the same pattern as architect self-resolution but applied to the PM. The PM synthesizes its best answer from available context rather than blocking.
+**Ephemeral repo model**: The runner should create repos inside one persistent Gitea instance and delete them after each instance completes. This bounds live repo count by active worker concurrency, not by the full benchmark dataset size. Even for the full SWE-bench-lite set (~300 instances), only one repo exists at a time under serial execution.
 
-**Graceful failure**: If the PM enters a loop (AUTO_RESOLVE → WORKING → would-AWAIT_USER repeatedly), cap at N iterations and transition to ERROR with a descriptive message about what the PM couldn't resolve. This is better than a hard fatal because it preserves logs of what happened.
+Runner responsibilities for forge management:
 
-### 1.4 Architect Zero-Shot Mode
+1. Start Gitea (or verify it's running) before the benchmark begins.
+2. Create an ephemeral repo per instance, seed it at the SWE-EVO `base_commit`.
+3. Configure `git.repo_url` to point at the Gitea repo.
+4. After patch collection, delete the ephemeral repo.
+5. Optionally tear down Gitea after the full benchmark run.
 
-Follows the maintenance story pattern — architect operates autonomously with full review authority.
+### 5. Do not use process exit as the completion contract
 
-**Key change**: When the architect would enter ESCALATED state:
-```go
-if zeroShotMode {
-    // Inject: "You must use your best judgment to proceed.
-    // There is no human available. Make a reasonable decision and continue."
-    // Return to prior state (DISPATCHING, ANSWERING, REVIEWING, etc.)
-}
-```
+The runner must not assume Maestro exits when a spec completes.
 
-States affected:
-- **ESCALATED** → auto-resolve with judgment prompt, return to prior state
-- **ANSWERING** → architect answers its own questions using workspace context
-- All review states (iterative approval, spec review) → **normal operation**, no changes needed
+For v1, completion should be based on **database-visible story state**:
 
-### 1.5 Spec Injection Flow
+- success: all stories for the benchmark `spec_id` have `status = 'done'`
+- terminal failure: all stories for the benchmark `spec_id` are terminal and at least one has `status = 'failed'`
+- stalled: all non-`done` stories for the benchmark `spec_id` have been `on_hold` for longer than 5 minutes
+- timeout: no terminal condition reached before the per-instance timeout (default: 60 minutes)
 
-The existing `--spec-file` CLI flag (`cmd/maestro/main.go:29`) feeds through `flows.InjectSpec()` which sends a REQUEST directly to the architect. For zero-shot mode, we modify this slightly:
+Once the runner detects success, terminal failure, or stall, it should send `SIGTERM` to Maestro and let Maestro shut down cleanly.
 
-```
---zeroshot <specfile>
-    ↓
-PM receives spec (as if uploaded via WebUI)
-    ↓
-PM validates, runs bootstrap detection
-    ↓
-PM submits to architect (auto-skips PREVIEW, never enters AWAIT_USER)
-    ↓
-Architect processes spec → generates stories → dispatches
-    ↓
-Normal coder flow (3 coders + hotfix, default config)
-```
+**`on_hold` handling**: Internally, `on_hold` is non-terminal and can be released back to `pending`. However, in benchmark context there is no human to release holds. Rather than inspecting `hold_reason` or tracking progress windows (v2 complexity), v1 uses a simple grace period: if all remaining stories have been `on_hold` for 5 minutes with no state changes, treat it as terminal failure.
 
-This preserves the PM's bootstrap detection (ensuring the project has a Dockerfile, Makefile, etc.) which is valuable for benchmark instances where we're working with unfamiliar repos.
+**Maintenance story filtering**: With `maintenance.enabled = false`, maintenance stories are not created. Stories are also scoped by `spec_id`, and maintenance stories belong to a separate maintenance spec. So the completion rule does not need a `story_type` filter — just check all stories for the target `spec_id`.
 
----
+### 6. Treat the PM completion signal as internal, not canonical
 
-## Phase 2: Benchmark Runner
+The existing architect -> PM `all_stories_complete` notification is useful confirmation that the system already has a completion concept.
 
-### 2.1 New Binary: `cmd/benchmark/main.go`
+We should use its **semantics**, but not couple the runner to that internal message for v1, because:
 
-An **external harness** that launches independent Maestro processes. Not a Maestro plugin — a separate binary that treats Maestro as a subprocess.
+- it is an internal agent-level signal
+- it is not a clean per-spec external contract in its current implementation
+- it is not the cleanest observable surface for an external harness
+
+DB polling is the right v1 contract because it is observable, current with the codebase, independent of internal PM messaging, and independent of process lifetime.
+
+If we later want a productized benchmark/autonomous mode, we can expose an explicit completion signal or mark the session `completed`.
+
+### 7. Use `--config` for benchmark profiles
+
+Benchmark runs should not rely on ordinary defaults.
+
+The benchmark control surface should be a single config injection flag:
 
 ```bash
-# Run single pilot instance
-maestro-bench run \
-  --instance "psf__requests_2.31.0_2.32.0" \
-  --dataset ./swe-evo/instances.json \
-  --output ./results/ \
-  --maestro-bin ./bin/maestro
-
-# Run first 3 instances (stage 2)
-maestro-bench run \
-  --instances "psf__requests_2.31.0_2.32.0,psf__requests_2.32.0_2.32.1,psf__requests_2.32.1_2.32.2" \
-  --dataset ./swe-evo/instances.json \
-  --output ./results/
-
-# Run all 48 instances (stage 3)
-maestro-bench run \
-  --dataset ./swe-evo/instances.json \
-  --output ./results/ \
-  --parallel 4
-
-# Evaluate results
-maestro-bench evaluate \
-  --results ./results/preds.json \
-  --swe-evo-path ./SWE-EVO/
+maestro --config benchmark.json --spec-file problem_statement.md --projectdir <instance-project-dir>
 ```
 
-### 2.2 Instance Loading
-
-Load from pre-converted JSON (convert from HuggingFace Arrow once, commit to benchmark config). Each instance has:
-
-```go
-type SWEEvoInstance struct {
-    InstanceID       string   `json:"instance_id"`       // e.g. "conan-io__conan_2.0.14_2.0.15"
-    Repo             string   `json:"repo"`              // e.g. "conan-io/conan"
-    StartVersion     string   `json:"start_version"`     // e.g. "2.0.14"
-    EndVersion       string   `json:"end_version"`       // e.g. "2.0.15"
-    BaseCommit       string   `json:"base_commit"`       // SHA to check out
-    ProblemStatement string   `json:"problem_statement"` // Release note text
-    FailToPass       []string `json:"FAIL_TO_PASS"`      // Tests that must start passing (NOT given to agents)
-    PassToPass       []string `json:"PASS_TO_PASS"`      // Tests that must remain passing (NOT given to agents)
-    Image            string   `json:"image"`             // Docker eval image
-}
-```
-
-Note: `FAIL_TO_PASS` and `PASS_TO_PASS` are loaded by the runner for evaluation only. They are **never** passed to Maestro or any agent.
-
-### 2.3 Per-Instance Execution Flow
-
-Each instance is a **fully independent Maestro run**. No state carries between instances.
+`--config` is already implemented. Its behavior:
 
-```
-for each instance:
+- load or create the project config as usual
+- deep-merge the provided JSON file into the current config
+- validate the merged result
+- persist the merged result back to `.maestro/config.json`
 
-  1. FORGE SETUP (runner)
-     - Create GitHub repo for this instance via `gh` CLI
-       (e.g., maestro-bench/swe-evo-psf-requests-2.31.0)
-     - Clone upstream repo locally, checkout base_commit
-     - Push to GitHub as initial `main`
-     - Store repo URL for config generation
+This is intentionally a **persistent** apply model, not a one-shot in-memory override. It works naturally with resume/restart, and benchmark runs already use fresh per-instance project directories, so persistence is a feature, not a liability.
 
-  2. PROJECT SETUP (runner)
-     - Create fresh Maestro project directory:
-       benchmark-runs/{instance_id}/
-     - Generate .maestro/config.json with:
-       - git.repo_url → GitHub repo from step 1
-       - git.target_branch → "main"
-       - pack → "python" (all SWE-EVO repos are Python)
-       - Standard agent config (3 coders + hotfix, default)
-     - Write spec file (problem_statement) as release-note.md
-     - Tag base_commit as `benchmark-base` in the repo
+For SWE-EVO, the injected benchmark config must override at least:
 
-  3. LAUNCH MAESTRO (runner)
-     - exec: `maestro --zeroshot release-note.md --projectdir benchmark-runs/{instance_id}/`
-     - Maestro starts in zero-shot mode:
-       - PM receives spec file, validates, runs bootstrap detection
-       - PM submits spec to architect (auto-skips preview, never blocks on human)
-       - Architect decomposes into stories, dispatches to coders
-       - 3 coders + hotfix agent (default config)
-       - Full iterative architect review on each story
-       - Each story: branch → code → commit → push → PR → review → squash-merge
-     - Runner monitors Maestro process (stdout/stderr, exit code)
-     - Timeout: kill after task_timeout_minutes
+- `project.primary_platform = "python"`
+- `project.pack_name = "python"`
+- `git.repo_url = <Gitea repo URL for this instance>`
+- `git.target_branch = "main"`
+- `maintenance.enabled = false`
+- `webui.enabled = false`
+- `agents.max_coders = 1`
 
-  4. WAIT FOR COMPLETION (runner)
-     - Maestro exits when:
-       a. All stories reach DONE (clean exit)
-       b. Timeout reached (runner sends SIGTERM → Maestro graceful shutdown)
-       c. Unrecoverable error (non-zero exit)
-     - In all cases, the validated diff from `benchmark-base..github/main` is the result
+**Build command overrides**:
 
-  5. OUTPUT COLLECTION (runner)
-     - cd into project dir, fetch latest main from GitHub
-     - git diff benchmark-base..main → patch.diff
-     - Append to preds.json in SWE-agent format
-     - Archive: logs, stories.json, event log, git log
+- `build.build = "true"` (no-op — Python repos have no build step)
+- `build.lint = "true"` (no-op)
+- `build.run = "true"` (no-op)
+- `build.test = <instance test command>` when available, otherwise `"pytest"`
 
-  6. TAG & CLEANUP (runner)
-     - Tag final state: `git tag benchmark/swe-evo/{instance_id}/run-{NNN}`
-     - Push tag to GitHub
-     - Maestro process already exited (or was killed)
-     - Docker containers cleaned up by Maestro's shutdown
-     - Keep GitHub repo for inspection (delete optionally in full suite)
-```
+Empty strings are not a skip signal — config defaulting fills them back to `make *` defaults. Explicit `"true"` is the correct no-op.
 
-### 2.4 Forge Management Strategy
+**Container override**:
 
-The forge (GitHub in regular mode, Gitea in airplane mode) is **core Maestro infrastructure**, not a benchmark convenience. The PR workflow — branch creation, push, PR review, squash-merge — is part of what we're testing. Removing it would make the benchmark results non-representative of how Maestro actually works.
+- `container.name = <SWE-EVO evaluation image>` when available, otherwise an explicit Python base image
 
-Each instance needs a GitHub repo. The runner manages this via `gh` CLI.
+`container.name` is the only essential field. The coder runtime prefers it over Dockerfile mode, so Maestro will use the image directly. The runner should **pre-pull the image** before launching Maestro, since startup inspects the image locally rather than pulling it.
 
-**MVP (pilot + stage 2)**: One persistent repo per instance under a GitHub org.
-- e.g., `maestro-bench/swe-evo-psf-requests-2.31.0`
-- Keep repos after run for PR inspection and debugging
-- Create manually or via runner script
+### 8. Disable maintenance for benchmark runs
 
-**Full suite (stage 3)**: Automated repo creation/teardown.
-- Runner creates repo, runs instance, archives results
-- Option to keep or delete repos after evaluation
-- For parallel execution: create N repos up front, one per parallel slot
+Benchmark runs should set `maintenance.enabled = false`.
 
-**Airplane mode (future)**: Runner spins up local Gitea, creates repos there instead of GitHub. Same Maestro flow, different forge. Tests both modes on same benchmark.
+Reason:
 
-### 2.5 Parallelism Strategy
+- maintenance is expensive
+- maintenance is not part of the benchmark task
+- maintenance mutates `main` after spec completion
+- maintenance would pollute the submitted diff with unrelated work
 
-**Within-instance**: Use Maestro's default configuration — 3 coders + hotfix agent. No artificial limits. This is how Maestro works in production and is what we're benchmarking.
+This is the one benchmark-specific runtime behavior change that is clearly worth making.
 
-**Cross-instance**: Sequential for stages 1-2. For stage 3 (full suite), multiple Maestro processes with separate project dirs and GitHub repos. Each instance uses ~5 containers (1 architect + 3 coders + 1 hotfix), so Docker network pool (~24 containers) limits to ~4-5 parallel instances.
+### 9. Canonical output should come from benchmark-specific base -> forge `main`
 
-**No benchmark requirement restricts parallelism.** SWE-EVO evaluates the output patch, not how it was produced. We run Maestro as Maestro works.
+The benchmark output should be defined against the merged forge state, not local worktrees.
 
-### 2.6 GitHub Tagging After Completion
+Canonical patch:
 
-After each benchmark instance completes, the runner tags the final state on `main`:
+`git diff benchmark-base..origin/main`
 
-```
-benchmark/swe-evo/{instance_id}/run-{NNN}
-```
+where `benchmark-base` is a benchmark-specific tag created by the runner immediately after seeding the instance repo at the SWE-EVO base commit.
 
-e.g., `benchmark/swe-evo/psf__requests_2.31.0_2.32.0/run-001`
+Why this is valid:
 
-This is useful beyond benchmarks — tagging spec completions in Maestro generally would let users track what state the repo was in after each piece of work. Tags should be lightweight (no release workflows). The runner pushes tags to GitHub after collecting the diff.
+- the current successful path really does merge into the target branch — the architect calls the forge merge API, and the coder only reaches `DONE` after receiving the approved merge result
+- it reflects what Maestro actually merged
+- it excludes abandoned local work
+- it is reproducible and easy to archive
+- it matches the benchmark's patch-based output model
 
-**For Maestro core** (future feature): Tag each spec completion on main with `maestro/spec-{id}/complete`. Needs a config flag to avoid triggering CI/CD workflows (e.g., `git.tag_completions: true`, with a configurable prefix).
+Local mirrors and agent workspaces are useful debug artifacts, but they should not be the source of truth for the submitted patch.
 
----
+### 10. Human-dependent paths are v1 failure modes, not v1 product work
 
-## Phase 3: Input Adapter (Release Notes → Spec File)
+Even on the `--spec-file` path, current Maestro can still hit human-dependent flows:
 
-### 3.1 Primary Path: Spec Through PM (Zero-Shot)
+- architect escalation
+- PM clarification requests for prerequisite failures
 
-The benchmark runner writes the SWE-EVO `problem_statement` as a markdown spec file. Maestro's `--zeroshot` flag injects it into the PM, which validates it, runs bootstrap detection, and submits to the architect for decomposition. This is the standard PM → Architect → Coder pipeline with no human in the loop.
+Benchmark v1 should **not** broaden product behavior to auto-resolve all of these up front.
 
-```markdown
-# Release Note: {repo} {start_version} → {end_version}
+Instead:
 
-{problem_statement text from SWE-EVO instance}
-```
+- the runner records them as ordinary timeouts, stalls, or failures if they block progress
+- we measure how often they occur in a pilot
+- only then decide whether benchmark-specific autonomy work is worth adding
 
-The PM receives this as if the user uploaded a spec file via WebUI. Normal flow from there.
+That keeps v1 small and honest.
 
-### 3.2 Ablation Paths (Experiment Variants Only)
+## Benchmark Runner Flow
 
-For the experiment matrix, some variants bypass the PM:
+Each SWE-EVO instance is a completely separate Maestro project directory and process. V1 executes instances **serially** to avoid API rate limit contention across multiple Maestro processes.
 
-- **No-decompose**: Spec goes to PM → architect, but architect is configured to create a single story instead of decomposing.
-- **Single-agent**: Spec content is injected directly as a single story to one coder, bypassing both PM and architect. This requires a separate code path.
+### Per-instance flow
 
-These are **not the primary architecture.** They exist only for controlled comparison experiments in Stage 4. Engineers should implement the primary PM path first; ablation paths are deferred.
-
----
-
-## Phase 4: Output Collector
-
-### 4.1 Git History After Completion
-
-Maestro's git workflow produces this history for a single benchmark task:
-
-```
-base_commit (tagged: benchmark-base)
-    │
-    ├── [squash merge] Story 1: "Add conan lock remove command"
-    ├── [squash merge] Story 2: "Fix auth token refresh"
-    ├── [squash merge] Story 3: "Update dependency resolver caching"
-    │
-    └── main HEAD (after all stories merged)
-```
-
-Each story: branches from `main` → coder commits → PR → architect review → squash-merge to `main` → branch deleted. After all stories complete, `main` has N squash commits on top of `base_commit`.
-
-### 4.2 Run Terminal States
-
-Every instance run ends in one of these states. The runner **must** classify before collecting output:
-
-| Terminal State | Condition | Enters preds.json? |
-|---------------|-----------|-------------------|
-| `completed_clean` | Maestro exited 0, all stories DONE | Yes |
-| `completed_partial` | Maestro exited 0, some stories DONE, others ERROR/timeout | Yes (partial credit via Fix Rate) |
-| `timeout` | Runner killed Maestro after deadline | Yes (whatever merged to main) |
-| `error` | Maestro exited non-zero | Yes (whatever merged to main, may be empty) |
-| `invalid_workspace` | Local repo state is corrupt, dirty, or base tag missing | **No** — log error, skip instance |
-| `invalid_patch` | Patch fails validation (see §4.4) | **No** — log error, skip instance |
-
-All states are recorded in the instance metadata. `preds.json` only contains validated patches.
-
-### 4.3 Canonical Patch Source: Remote Main
-
-**Remote `main` on GitHub is the single source of truth.** The runner fetches from the forge, not from a local workspace, to ensure it captures exactly what was squash-merged through PRs.
-
-```go
-// cmd/benchmark/collector.go
-
-func CollectPatch(repoDir string, githubRepo string, baseTag string) (*PatchResult, error) {
-    // 1. Fetch latest main from GitHub (canonical source)
-    git.Run(repoDir, "fetch", "github", "main")
-
-    // 2. Generate cumulative diff: base_commit → remote main
-    result, err := git.Run(repoDir, "diff", baseTag+"..github/main")
-    if err != nil {
-        return nil, fmt.Errorf("failed to generate diff: %w", err)
-    }
-    patch := result.Stdout
-
-    // 3. Validate (see §4.4)
-    if err := validatePatch(repoDir, baseTag, patch); err != nil {
-        return &PatchResult{State: "invalid_patch", Error: err.Error()}, nil
-    }
-
-    return &PatchResult{
-        State:      determineTerminalState(maestroExitCode, storyStatuses),
-        Patch:      patch,
-        FinalSHA:   getRemoteMainSHA(repoDir),
-    }, nil
-}
-```
-
-Local workspace state is captured for diagnostics only (git log, uncommitted changes check), not used for the canonical patch.
-
-### 4.4 Patch Validation
-
-Before a patch enters `preds.json`, it must pass two checks:
-
-1. **Applies cleanly to base_commit**: Check out `base_commit` in a temp worktree, apply the patch with `git apply --check`. If it fails, the patch is invalid (workspace corruption, encoding issues, etc.).
-
-2. **Encoding and content safety**: Verify the patch is valid UTF-8 text, contains no binary hunks, and is non-empty (empty patches are valid but scored as 0%).
-
-Patches that fail validation are recorded as `invalid_patch` in metadata but excluded from `preds.json`.
-
-### 4.5 Output Format
-
-SWE-agent format:
-
-```json
-{
-    "conan-io__conan_2.0.14_2.0.15": {
-        "model_patch": "diff --git a/conan/cli/commands/lock.py ...\n..."
-    },
-    "pandas-dev__pandas_2.1.0_2.1.1": {
-        "model_patch": "diff --git a/pandas/core/frame.py ...\n..."
-    }
-}
-```
-
-Written incrementally as instances complete (crash-safe — don't lose results if a later instance fails).
-
-### 4.6 Per-Instance Metadata (Required Schema)
-
-Every instance produces a structured metadata record, regardless of terminal state:
-
-```json
-{
-    "instance_id": "conan-io__conan_2.0.14_2.0.15",
-    "terminal_state": "completed_clean",
-    "base_commit": "4614b3abbff15627b3fabdd98bee419721f423ce",
-    "final_main_sha": "a1b2c3d4...",
-    "maestro_commit_sha": "deadbeef...",
-    "benchmark_runner_commit_sha": "cafebabe...",
-    "dataset_sha256": "abc123...",
-    "zeroshot_config": { /* snapshot of Maestro config used */ },
-    "eval_image_digest": "sha256:abc123...",
-    "coder_image_digest": "sha256:def456...",
-    "timeout_seconds": 7200,
-    "timeout_reason": null,
-    "wall_clock_seconds": 3842,
-    "total_tokens": 847293,
-    "estimated_cost_usd": 24.50,
-    "stories_generated": 5,
-    "stories_completed": 4,
-    "stories_failed": 1,
-    "stories_merged": 4,
-    "review_iterations_total": 12,
-    "rebase_conflicts": 0,
-    "pm_auto_resolves": 1,
-    "architect_auto_resolves": 0,
-    "patch_lines_added": 342,
-    "patch_lines_removed": 87,
-    "patch_files_changed": 18
-}
-```
-
-### 4.7 Results Directory Structure
-
-```
-results/
-├── preds.json                              # SWE-agent format (validated patches only)
-├── metadata.json                           # Array of per-instance metadata records
-├── instances/
-│   ├── conan-io__conan_2.0.14_2.0.15/
-│   │   ├── patch.diff                      # Raw unified diff
-│   │   ├── metadata.json                   # Instance metadata (same as in top-level array)
-│   │   ├── stories.json                    # Stories architect generated
-│   │   ├── maestro_config.json             # Maestro config snapshot
-│   │   ├── maestro_events.jsonl            # Full event log
-│   │   └── git_log.txt                     # git log benchmark-base..github/main
-│   └── ...
-├── summary.json                            # Aggregate: pass/fail counts, total cost, timing
-└── runner_config.json                      # Benchmark runner config for reproducibility
-```
-
----
-
-## Phase 5: Evaluation Integration
-
-### 5.1 Running the SWE-EVO Evaluator
-
-After all instances produce patches:
+1. Ensure the Gitea forge is running.
+2. Create an ephemeral repo on Gitea for the instance.
+3. Seed it at the SWE-EVO `base_commit`.
+4. Tag that starting point as `benchmark-base`.
+5. Create a fresh Maestro project directory for the instance.
+6. Generate a benchmark config file for the instance.
+7. Write the SWE-EVO `problem_statement` verbatim to a spec file in the project dir.
+8. Pre-pull the container image if not already local.
+9. Launch Maestro:
 
 ```bash
-# Install SWE-EVO
-pip install -e ./SWE-EVO/
-
-# Run evaluation
-python SWE-EVO/SWE-bench/evaluate_instance.py \
-    --trajectories_path ./results/ \
-    --max_workers 8 \
-    --scaffold maestro  # Need to add this scaffold parser
+maestro --config benchmark.json --spec-file problem_statement.md --projectdir <instance-project-dir>
 ```
 
-### 5.2 Custom Scaffold Parser
+10. Poll the instance database for completion (see Completion Detection).
+11. On success, terminal failure, stall, or timeout, send `SIGTERM` and wait for graceful shutdown.
+12. Fetch `origin/main` from the Gitea repo and collect `git diff benchmark-base..origin/main`.
+13. Write the result to benchmark output JSON.
+14. Archive logs and DB artifacts for debugging.
+15. Delete the ephemeral Gitea repo.
 
-Add a Maestro scaffold to `evaluate_instance.py` (minimal change, ~15 lines):
+## Completion Detection
 
-```python
-# In evaluate_instance.py, add to scaffold parsing:
-elif scaffold == "maestro":
-    with open(os.path.join(trajectories_path, "preds.json")) as f:
-        preds = json.load(f)
-    for instance_id, data in preds.items():
-        patches[instance_id] = data["model_patch"]
-```
+Because each benchmark instance gets a fresh project directory, the runner can treat the instance database as single-session state.
 
-Or, simpler: output in the existing SWE-agent format and use `--scaffold SWE-agent` directly.
+### Runner behavior
 
-### 5.3 Docker Image Handling
+1. Wait for the first stories for the session to appear in `.maestro/maestro.db`.
+2. Capture the benchmark `spec_id` from those rows.
+3. Poll story state for that `spec_id`.
 
-Evaluation images (`xingyaoww/sweb.eval.x86_64.*`) need to be available:
-- **x86_64 Linux**: Pull directly from Docker Hub
-- **macOS ARM**: Build locally with `--namespace ''` flag (slower, but works)
-- Pre-pull all 48 images before starting evaluation to avoid timeout issues
+**Success**: all stories for the target `spec_id` have `status = 'done'`.
 
----
+**Terminal failure**: all stories for the target `spec_id` are in a terminal state, and at least one has `status = 'failed'`.
 
-## Phase 6: Container Strategy for Coder Execution
+**Stalled**: all non-`done` stories for the target `spec_id` have been `on_hold` for longer than 5 minutes with no state changes. This covers architect escalation and other human-blocked paths that will never resolve in benchmark context.
 
-### 6.1 Coder Container Requirements
+**Timeout**: no terminal condition reached before the per-instance timeout (default: 60 minutes).
 
-Each of the 7 Python repos needs a working development environment:
-- Correct Python version with project dependencies installed
-- Build tools (setuptools, pip, etc.)
-- Test framework (pytest)
-- Project-specific system dependencies
-- Maestro development tooling (git, make, etc.)
+**Everything else**: remains in progress; continue polling.
 
-### 6.2 Approach: Derive from Evaluation Images
+SQLite contention is not a concern. Maestro opens the DB in WAL mode with a 5-second busy timeout, so concurrent reads during writes are expected. The runner should use its own read-only connection and retry `SQLITE_BUSY` / `database is locked` defensively.
 
-**The environment is part of the test.** If the coder container diverges from the evaluation container, we risk false negatives (code works in dev, fails in eval) and wasted time debugging environment issues instead of agent behavior.
+## Output Contract
 
-**Strategy**: Start from SWE-EVO's per-instance evaluation images (`xingyaoww/sweb.eval.x86_64.*`) and add Maestro's required tooling:
+For every instance, the runner should record:
 
-```dockerfile
-# Per-instance Dockerfile, generated by benchmark runner
-FROM xingyaoww/sweb.eval.x86_64.{instance_image}:latest
+- benchmark instance id
+- Maestro run outcome: `success`, `terminal_failure`, `stalled`, `timeout`, or `process_error`
+- canonical patch from `benchmark-base..origin/main`
+- elapsed wall-clock time
+- archived artifacts path
 
-# Add Maestro development tooling
-RUN apt-get update && apt-get install -y \
-    git make curl jq \
-    && rm -rf /var/lib/apt/lists/*
-
-# Maestro workspace conventions
-WORKDIR /workspace
-```
-
-**Trade-offs accepted:**
-- 48 derived images (one per instance, not one per repo) — build once, cache
-- Evaluation images may lack some dev tools — the thin Dockerfile layer adds them
-- x86_64 images on ARM Macs need Rosetta or remote build — acceptable for benchmark use
-
-**Why not Maestro's Python language pack:** The Python pack uses `python:3.12-slim` which may differ from the evaluation image's Python version, system libraries, and pre-installed dependencies. Any environment mismatch creates ambiguity about whether a failure is an agent issue or an environment issue. Starting from the eval image eliminates this class of problems.
-
-**Image digest tracking:** The runner records both the eval image digest and the derived coder image digest in per-instance metadata for reproducibility.
-
----
-
-## Phase 7: Experiment Design
-
-### 7.1 Configurations to Test
-
-The primary run uses Maestro's default configuration. Variant runs isolate which capabilities contribute to the score.
-
-| Run | PM | Architect | Coders | What it tests |
-|-----|-----|-----------|--------|---------------|
-| **Default** | Yes (zero-shot) | Full decomposition + review | 3 + hotfix | **Maestro as Maestro works.** Primary result. |
-| **No-decompose** | Yes | Single story, full review | 1 | Does decomposition help? Architect still reviews but doesn't break work into stories. |
-| **No-review** | Yes | Decomposition, auto-merge | 3 + hotfix | Does iterative review help? Architect decomposes but auto-approves on first attempt. |
-| **Single-agent** | No | No | 1 | True single-agent baseline. Coder gets release note directly. Comparison point for published results. |
-| **Sequential** | Yes | Full decomposition + review | 1 | Does parallelism help? Same decomposition/review but stories execute one at a time. |
-
-**Rationale**: Each variant removes one Maestro capability to measure its contribution:
-- Default vs No-decompose → value of story decomposition
-- Default vs No-review → value of architect review
-- Default vs Sequential → value of parallel execution
-- Default vs Single-agent → total value of orchestration
-
-**Equal-substrate guarantee**: All variants share the same execution substrate unless explicitly varied. Specifically:
-- Same container image (derived from SWE-EVO evaluation image)
-- Same tool access (file read/write, git, shell, test execution)
-- Same iterative edit-and-test loop within each coder
-- Same timeout per instance
-- Same model family (Claude for coders across all variants)
-- The single-agent baseline gets the same coder with the same tools — it just doesn't have PM or architect orchestration on top.
-
-### 7.2 Metrics to Report
-
-**Primary:**
-- **Resolved Rate**: Binary pass/fail per instance. The headline number.
-- **Fix Rate**: Partial credit — fraction of FAIL_TO_PASS tests passing (with no PASS_TO_PASS regressions).
-
-**Decomposition quality** (not compared to gold PRs — there is no single canonical decomposition):
-- Story count per instance
-- Dependency depth (max chain length in story dependency graph)
-- File overlap between stories (how many files touched by >1 story)
-- Rebase/conflict rate (how often parallel stories conflict)
-- First-pass merge rate (% of stories approved by architect on first review)
-
-**Efficiency:**
-- Wall clock time per instance (total, and broken down by phase)
-- Total LLM tokens consumed per instance
-- Estimated cost (USD) per instance
-- Per-story success rate (fraction of generated stories that reach DONE)
-
-### 7.3 Expected Challenges
-
-1. **Large release notes** (up to 22K words) may exceed context windows or confuse decomposition
-2. **Implicit dependencies** between changes described in release notes — architect may not detect them
-3. **Test infrastructure** — some repos have complex test setups (custom pytest plugins, fixtures, etc.)
-4. **Scale** — avg 21 files / 610 lines per task is a lot of coordinated changes
-5. **PM auto-resolve loops** — PM may repeatedly try to ask the human the same question; cap and error handling needed
-
----
-
-## Implementation Roadmap
-
-### Stage 0: Prerequisites & Setup
-- [ ] Clone SWE-EVO repo, install Python dependencies
-- [ ] Convert HuggingFace Arrow dataset → JSON for the pilot instance
-- [ ] Select pilot instance (recommend: smallest psf/requests version bump)
-- [ ] Create GitHub org/repo for pilot (e.g., `maestro-bench/swe-evo-pilot`)
-- [ ] Push pilot instance's upstream repo at `base_commit` to GitHub repo
-- [ ] Pre-pull the SWE-EVO evaluation Docker image for the pilot instance
-- [ ] Build derived coder image from evaluation image (add git, make, Maestro tooling)
-- [ ] Verify evaluation harness works standalone (apply gold patch, confirm scoring)
-
-### Stage 1: Single Instance Pilot
-
-**Goal**: One SWE-EVO instance runs end-to-end through Maestro and produces a scoreable patch.
-
-#### Milestone 1A: Zero-Shot Mode in Maestro
-- [ ] Add `--zeroshot <specfile>` CLI flag to `cmd/maestro/main.go`
-- [ ] PM zero-shot mode:
-  - [ ] Receive spec file as if uploaded (reuse existing `UploadSpec` path)
-  - [ ] AUTO_RESOLVE: when PM would enter AWAIT_USER, log the question, inject "use your judgment" prompt, return to WORKING
-  - [ ] Auto-skip PREVIEW state (submit directly to architect)
-  - [ ] Iteration cap on AUTO_RESOLVE (3 attempts → ERROR with descriptive log)
-- [ ] Architect zero-shot mode:
-  - [ ] When would enter ESCALATED, inject "use your judgment" prompt, return to prior state
-  - [ ] Follows maintenance story pattern for autonomous operation
-- [ ] Coder zero-shot mode:
-  - [ ] Auto-resolve any coder escalations (same pattern)
-- [ ] Tests: unit tests with mock LLM verifying zero-shot flow through PM → Architect → Coder
+The patch should always be collected, even for failure, stall, or timeout, because partial merged work is still useful for evaluation and debugging.
 
-#### Milestone 1B: Benchmark Runner (single instance)
-- [ ] Create `cmd/benchmark/main.go` — external harness binary
-- [ ] Instance loader (read single instance from JSON)
-- [ ] GitHub repo setup (create repo, push base_commit to main via `gh` CLI)
-- [ ] Config generator — produce `.maestro/config.json` for the instance
-  - repo URL, target branch, default agent config (3 coders + hotfix)
-- [ ] Spec file writer (problem_statement → release-note.md)
-- [ ] Coder image builder (derive from evaluation image, add Maestro tooling)
-- [ ] Maestro subprocess management (launch `--zeroshot`, monitor, timeout, SIGTERM)
-- [ ] Output collector with validation:
-  - [ ] Fetch remote main (canonical source)
-  - [ ] `git diff benchmark-base..github/main` → patch
-  - [ ] Validate: patch applies cleanly to base_commit, valid UTF-8, no binary hunks
-  - [ ] Classify terminal state (completed_clean / completed_partial / timeout / error / invalid_*)
-  - [ ] Write validated patch to `preds.json`, structured metadata to `metadata.json`
-- [ ] GitHub tagging (`benchmark/swe-evo/{instance_id}/run-{NNN}`)
-- [ ] Per-instance archival (logs, stories, config snapshot, git log)
+### SWE-bench-compatible output
 
-#### Milestone 1C: Evaluation
-- [ ] Run `evaluate_instance.py` against pilot patch (use `--scaffold SWE-agent` format)
-- [ ] Parse and display results (resolved rate, fix rate, test details)
-- [ ] Debug cycle: inspect what the architect decomposed, what coders produced, what tests failed
+The runner should produce a `preds.json` file mapping `instance_id` to `{"model_patch": "..."}` for compatibility with the SWE-bench evaluation harness.
 
-#### Milestone 1D: Iterate on Pilot
-- [ ] Fix any issues found (container env, test failures, timeout tuning, etc.)
-- [ ] Re-run until the harness works cleanly end-to-end (not chasing score, just reliability)
-- [ ] Document lessons learned, update this plan
+### Retry policy
 
-### Stage 2: Three Instances
+V1 should not auto-retry crashed instances. Record `process_error` and move on. Retry logic is deferred to v2 if pilot data shows crashes are common enough to warrant it.
 
-**Goal**: Verify the harness generalizes beyond one repo/instance. Catch issues with different project structures.
+## Benchmark Config Profile
 
-- [ ] Select 3 instances across different repos (e.g., psf/requests, pydantic, conan-io/conan)
-- [ ] Create GitHub repos for each
-- [ ] Run sequentially, collect all 3 patches
-- [ ] Evaluate all 3 together
-- [ ] Fix any per-repo issues (dependency installation, test commands, container setup)
+The runner-generated config should be benchmark-specific and current with the schema.
 
-### Stage 3: Full Suite (48 instances)
+### Required fields
 
-**Goal**: Run all 48 instances and produce a complete benchmark result.
+- `project.name`
+- `project.primary_platform = "python"`
+- `project.pack_name = "python"`
+- `git.repo_url = <Gitea repo URL>`
+- `git.target_branch = "main"`
+- `maintenance.enabled = false`
+- `webui.enabled = false`
+- `agents.max_coders = 1`
 
-- [ ] Automate GitHub repo creation/teardown for all instances
-- [ ] Sequential run of all 48 (no parallelism yet — reliability first)
-- [ ] Full evaluation, compare against published baselines
-- [ ] Cost accounting (total tokens, time, dollars)
+### Build overrides
 
-### Stage 4: Experiment Configurations
+- `build.build = "true"` (no-op)
+- `build.lint = "true"` (no-op)
+- `build.run = "true"` (no-op)
+- `build.test = <instance test command or "pytest">`
 
-**Goal**: Demonstrate that orchestration adds value by comparing configurations (see §7.1 for full matrix).
+### Container overrides
 
-- [ ] Default run (Maestro as Maestro works — primary result)
-- [ ] No-decompose variant (single story, full review)
-- [ ] No-review variant (decomposition, auto-merge)
-- [ ] Sequential variant (decomposition + review, 1 coder)
-- [ ] Single-agent baseline (coder only, no PM/architect)
-- [ ] Analysis: resolved rate, fix rate, per-variant attribution, cost, timing
-- Note: Start with a representative subset (e.g., 10-12 instances across all 7 repos) before running all variants on all 48. Saves cost while debugging attribution effects.
+- `container.name = <SWE-EVO evaluation image or Python base image>`
+- Runner must pre-pull the image before launching Maestro
 
-### Stage 5: Optimization & Polish
+### Required policy
 
-- [ ] Parallel cross-instance execution
-- [ ] Container image caching/reuse across instances sharing a repo
-- [ ] Result caching (skip completed instances on re-run)
-- [ ] Airplane mode (Gitea) runs for comparison
-- [ ] Cloud runner for x86_64 Linux (CI/CD integration)
-- [ ] Publishable results and methodology writeup
+- do not leave the run on bootstrap container defaults
+- do not leave Python benchmark repos on default `make *` build commands
+- do not enable maintenance
+- do not rely on WebUI
 
----
+The injected config is expected to become the persisted project config for that benchmark project directory.
 
-## Resolved Decisions
+## Required Maestro Changes (Stage 1)
 
-1. **Test oracle**: **No.** Coders do NOT get FAIL_TO_PASS test lists. They rely on the project's existing test suite via Maestro's normal TESTING state. This matches the standard protocol used by all agents on the SWE-bench leaderboard. Coders use the repo's normal test commands and Maestro's standard testing state; the benchmark runner does not inject benchmark-specific test targets or test lists.
+Two small Maestro-side changes are required for benchmark correctness:
 
-2. **Forge/PRs**: **Required.** Full PR workflow through a forge is non-negotiable — it's core Maestro functionality. MVP uses **regular mode (GitHub)**. Future runs will also test **airplane mode (Gitea)** for comparison.
+### 1. Ensure mirror and workspaces before first spec injection
 
-3. **Architect review**: **Full normal operating mode.** Iterative code review exactly as in production. This is the Maestro value proposition — disabling it would undermine the entire point.
+Mirror creation currently happens inside PM setup and coder clone logic, not at startup. When `git.repo_url` is configured and `--spec-file` is used (bypassing PM), the first spec injection can race against infrastructure setup.
 
-4. **Cost budget**: **No hard cap.** Measured on pilot instance first. Estimated $700-1,500 for all 48 instances at Opus rates. Acceptable.
+**Change**: if `git.repo_url` is configured, ensure the mirror and coder workspaces exist before injecting `--spec-file`. This should happen in the startup sequence, after config is loaded but before the spec is dispatched.
 
-5. **Rollout strategy**: **Incremental.** Single instance → 3 instances → full 48. Do not expand until the harness is verified working on the prior stage.
+### 2. Pass `project.primary_platform` into architect prompts
 
-6. **Story decomposition**: Use Maestro's default decomposition mechanism. We're testing Maestro as Maestro works.
+The architect's story-generation prompt currently infers platform from spec text, which is unreliable for raw benchmark inputs (GitHub issue bodies, release notes). The architect should read `project.primary_platform` from config and include it as explicit context in story-generation and spec-analysis prompts.
 
-7. **Parallelism**: Use default config (3 coders + hotfix agent). No artificial limits. No benchmark requirement restricts this.
+**Change**: thread `project.primary_platform` into the architect's spec analysis and story generation template context so the architect does not have to guess.
 
-8. **PM**: Keep the PM in the loop (zero-shot mode, not skipped). Heterogeneous model advantage is worth preserving. PM must never enter AWAIT_USER — auto-resolves or fails gracefully.
+### Contingent: improve raw benchmark-input handling
 
-9. **GitHub tagging**: Tag final state on main after each instance completes. Lightweight tags, no release workflows.
+If Stage 0 pilot runs show the architect misreads release-note-style or GitHub-issue-style inputs (generating irrelevant stories, missing the actual bug, etc.), add targeted prompt improvements to the architect's spec analysis and story generation templates. This is scoped as contingent work — only pursued if pilot data shows it's needed.
 
-10. **One Maestro run per instance**: Each SWE-EVO instance is a separate Maestro process with its own project dir and config. No repo-switching needed — zero changes to Maestro's repo management.
+## Phased Rollout
 
-## Open Questions
+### Stage 0: Pilot validation
 
-1. **Pilot instance selection**: Leaning toward a psf/requests version bump (smallest repo, simplest changes). Need to inspect the actual instances to pick the best candidate.
+Run 1-2 SWE-EVO instances and validate:
 
-2. **PM AUTO_RESOLVE iteration cap**: How many times should the PM auto-resolve before giving up? Need to balance "try harder" vs. "stuck in a loop." Suggest 3 attempts, then ERROR with descriptive log.
+- the benchmark config overrides are sufficient
+- completion polling works
+- canonical patch collection works
+- the Gitea forge lifecycle works end to end
+- human-dependent stalls are rare enough to tolerate initially
+- the architect correctly interprets raw benchmark inputs
+
+### Stage 1: Benchmark-ready v1
+
+**Maestro-side** (required):
+
+- ensure mirror/workspaces before first spec injection when `git.repo_url` is configured
+- pass `project.primary_platform` into architect prompts
+
+**Maestro-side** (contingent):
+
+- improve raw benchmark-input handling if pilot data shows architect misreads
+
+**Harness-side**:
+
+- external benchmark runner with serial execution
+- Gitea-backed ephemeral repos (live repo count bounded by concurrency, not dataset size)
+- benchmark config generation with `max_coders: 1`
+- DB-based completion detection with `on_hold` grace period
+- canonical patch collection from `benchmark-base..origin/main`
+- `preds.json` output in SWE-bench-compatible format
+- archive/output writing
+
+### Stage 2: Optional autonomy improvements
+
+Only pursue this if pilot data justifies it.
+
+Candidate follow-ups:
+
+- explicit benchmark completion signal
+- session status `completed`
+- benchmark-specific auto-exit after terminal completion
+- benchmark-specific handling for architect escalation
+- benchmark-specific handling for PM clarification paths
+- parallel instance execution with rate limit coordination
+- auto-retry for `process_error` outcomes
+
+These are intentionally deferred.
+
+## Effect On Normal Usage
+
+This design should not impair normal Maestro usage.
+
+Why:
+
+- benchmark logic lives in the external runner
+- the benchmark profile is generated only for benchmark runs
+- `--config` is an existing persistent apply, not hidden behavior
+- maintenance remains enabled by default for normal usage
+- WebUI remains enabled by default for normal usage
+- PM and architect behavior do not need to change for v1
+- the two required Maestro changes (mirror readiness, platform prompting) improve general robustness, not just benchmark behavior
+
+The only benchmark-specific runtime differences are in the applied benchmark config and in how the external runner interprets completion.
+
+## Recommendation Summary
+
+For the first benchmark-capable version, we should:
+
+1. Use `--spec-file`, not PM zero-shot. Pass benchmark input verbatim.
+2. Use DB story state, not process exit, as the completion contract.
+3. Disable maintenance.
+4. Run against a local Gitea forge with ephemeral repos.
+5. Collect the canonical patch from `benchmark-base..origin/main`.
+6. Use `--config` to persist a benchmark-specific config that overrides container, build, maintenance, WebUI, and agent count defaults.
+7. Make two small Maestro-side changes: mirror readiness at startup, and platform context in architect prompts.
+8. Run instances serially with `max_coders: 1`.
+
+That is enough to produce a current, runnable, low-risk SWE-EVO benchmark path without changing the normal app experience.

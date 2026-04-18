@@ -73,6 +73,11 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 			"infrastructure_spec": infrastructureSpec, // Infrastructure requirements (bootstrap) if any
 		}
 
+		// Thread platform from config so the architect doesn't have to infer it from spec text
+		if platformCfg, cfgErr := config.GetConfig(); cfgErr == nil && platformCfg.Project != nil && platformCfg.Project.PrimaryPlatform != "" {
+			extra["primary_platform"] = platformCfg.Project.PrimaryPlatform
+		}
+
 		// Add bootstrap-specific guidance when reviewing a bootstrap spec (Spec 0)
 		if isBootstrapSpec {
 			extra["bootstrap_guidance"] = "This is a **bootstrap infrastructure spec (Spec 0)** submitted " +
@@ -226,9 +231,13 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 	}
 
 	// Prepare template data for story generation
+	storyGenExtra := map[string]any{}
+	if platformCfg, cfgErr := config.GetConfig(); cfgErr == nil && platformCfg.Project != nil && platformCfg.Project.PrimaryPlatform != "" {
+		storyGenExtra["primary_platform"] = platformCfg.Project.PrimaryPlatform
+	}
 	storyGenData := &templates.TemplateData{
 		TaskContent: completeSpec,
-		Extra:       map[string]any{},
+		Extra:       storyGenExtra,
 	}
 
 	// Render story generation template (second toolloop phase)
