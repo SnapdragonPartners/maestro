@@ -47,7 +47,7 @@ Files: `supervisor.go`, `supervisor_test.go`
 ### Phase 4: Bug #3 — Killed Agents Never Restart
 **Status:** COMPLETE
 
-Detect unexpected agent exits (Run() returns without state notification) and restart. Guard against double-restart with `exitHandled` map. Distinguish system shutdown from watchdog kills.
+Detect unexpected agent exits (Run() returns without state notification) and restart. Guard against double-restart with monotonic `agentGeneration` counter. Distinguish system shutdown from watchdog kills.
 
 Files: `supervisor.go`, `supervisor_test.go`
 

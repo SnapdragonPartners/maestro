@@ -591,11 +591,20 @@ func TestUnexpectedExitRestartsCoderAgent(t *testing.T) {
 	// Call with current generation — should attempt restart
 	supervisor.handleUnexpectedExit(ctx, agentID, 1)
 
-	// The agent type was cleaned up by the restart attempt (cleanupAgentResources)
-	if _, exists := supervisor.AgentTypes[agentID]; exists {
-		t.Log("Agent type still present — restart may have completed or factory created new agent")
-	} else {
-		t.Log("Agent type cleaned up — restart was attempted (factory may have failed)")
+	// Verify restart was attempted: cleanupAgentResources deletes the agent type entry,
+	// and since the factory won't find a real agent config in tests, the entry stays deleted.
+	supervisor.activityMu.Lock()
+	_, typeExists := supervisor.AgentTypes[agentID]
+	genAfter := supervisor.agentGeneration[agentID]
+	supervisor.activityMu.Unlock()
+
+	if typeExists {
+		t.Error("Expected AgentTypes entry to be cleaned up by restart attempt")
+	}
+	// Generation should still be 1 (cleanup doesn't delete it, and factory failed so
+	// RegisterAgent was never called to increment it)
+	if genAfter != 1 {
+		t.Errorf("Expected generation to remain 1 (factory fails in test), got %d", genAfter)
 	}
 }
 
