@@ -155,10 +155,10 @@ type Supervisor struct {
 	pollCancel       context.CancelFunc // Cancel function for API polling goroutine
 
 	// Coding watchdog: between-turns activity tracking
-	lastActivity map[string]time.Time   // agentID → last toolloop iteration start
-	agentStates  map[string]proto.State // agentID → current FSM state (for watchdog filtering)
-	exitHandled  map[string]bool        // agentID → true if DONE/ERROR state change already processed
-	activityMu   sync.Mutex
+	lastActivity    map[string]time.Time   // agentID → last toolloop iteration start
+	agentStates     map[string]proto.State // agentID → current FSM state (for watchdog filtering)
+	agentGeneration map[string]uint64      // agentID → monotonic generation counter (prevents stale goroutine restarts)
+	activityMu      sync.Mutex
 }
 
 // NewSupervisor creates a new supervisor with the given kernel.
@@ -187,9 +187,9 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		suspendedAgents:  make(map[string]bool),
 		suspendFailureID: make(map[string]string),
 		// Coding watchdog
-		lastActivity: make(map[string]time.Time),
-		agentStates:  make(map[string]proto.State),
-		exitHandled:  make(map[string]bool),
+		lastActivity:    make(map[string]time.Time),
+		agentStates:     make(map[string]proto.State),
+		agentGeneration: make(map[string]uint64),
 	}
 
 	// Wire up the restore channel to the factory for SUSPEND state support
@@ -275,13 +275,6 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 	if agentType == "" {
 		s.Logger.Error("Unknown agent type for agent %s", notification.AgentID)
 		return
-	}
-
-	// Mark terminal states as handled so the goroutine exit handler doesn't double-restart
-	if notification.ToState == proto.StateDone || notification.ToState == proto.StateError {
-		s.activityMu.Lock()
-		s.exitHandled[notification.AgentID] = true
-		s.activityMu.Unlock()
 	}
 
 	// Handle DONE state transitions
@@ -438,7 +431,8 @@ func (s *Supervisor) cleanupAgentResources(agentID string) {
 	delete(s.AgentContexts, agentID)
 	s.activityMu.Lock()
 	delete(s.agentStates, agentID)
-	delete(s.exitHandled, agentID)
+	// Note: agentGeneration is NOT deleted here — stale goroutines need to see the
+	// incremented generation to avoid double-restarts. It's cleaned up lazily.
 	s.activityMu.Unlock()
 
 	// Work directory cleanup is handled by agent SETUP state for fresh workspace
@@ -447,20 +441,26 @@ func (s *Supervisor) cleanupAgentResources(agentID string) {
 // handleUnexpectedExit detects when an agent's Run() goroutine exits without
 // a corresponding DONE/ERROR state notification (e.g., watchdog context cancellation)
 // and restarts the agent to prevent permanent loss.
-func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string) {
+//
+// The generation parameter prevents races with the normal restart path: if a DONE/ERROR
+// notification already triggered restartAgent (which increments the generation via
+// RegisterAgent), the old goroutine sees a stale generation and skips the restart.
+func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string, generation uint64) {
 	// System shutdown — don't restart anything
 	if ctx.Err() != nil {
 		s.Logger.Info("Agent %s exited during system shutdown, not restarting", agentID)
 		return
 	}
 
-	// Check if state change handler already processed this exit (DONE/ERROR)
+	// Check if this goroutine's generation is still current. If a DONE/ERROR state
+	// notification already triggered restartAgent → cleanupAgentResources → RegisterAgent,
+	// the generation will have been incremented and this goroutine is stale.
 	s.activityMu.Lock()
-	handled := s.exitHandled[agentID]
+	currentGen := s.agentGeneration[agentID]
 	s.activityMu.Unlock()
 
-	if handled {
-		s.Logger.Debug("Agent %s exit already handled via state notification", agentID)
+	if generation != currentGen {
+		s.Logger.Debug("Agent %s exit handler skipped: generation %d is stale (current: %d)", agentID, generation, currentGen)
 		return
 	}
 
@@ -471,7 +471,7 @@ func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string) {
 		return
 	}
 
-	s.Logger.Warn("🔄 Agent %s exited without state notification (likely watchdog kill), restarting", agentID)
+	s.Logger.Warn("🔄 Agent %s (gen %d) exited without state notification (likely watchdog kill), restarting", agentID, generation)
 
 	// Requeue the story if the agent had one
 	storyID := s.Kernel.Dispatcher.GetLease(agentID)
@@ -503,10 +503,24 @@ func (s *Supervisor) getAgentType(agentID string) string {
 func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType string, agent dispatch.Agent) {
 	s.AgentTypes[agentID] = agentType
 	s.Agents[agentID] = agent
+
+	// Set initial state from the agent if it exposes its current state (e.g., restored agents),
+	// otherwise default to WAITING. This prevents restored CODING agents from being
+	// incorrectly marked WAITING and skipped by the watchdog.
 	s.activityMu.Lock()
-	s.agentStates[agentID] = proto.StateWaiting
+	s.agentGeneration[agentID]++
+	gen := s.agentGeneration[agentID]
+	if stateGetter, ok := agent.(interface{ GetCurrentState() proto.State }); ok {
+		if state := stateGetter.GetCurrentState(); state != "" {
+			s.agentStates[agentID] = state
+		} else {
+			s.agentStates[agentID] = proto.StateWaiting
+		}
+	} else {
+		s.agentStates[agentID] = proto.StateWaiting
+	}
 	s.activityMu.Unlock()
-	s.Logger.Info("Registered agent %s (type: %s)", agentID, agentType)
+	s.Logger.Info("Registered agent %s (type: %s, gen: %d)", agentID, agentType, gen)
 
 	// Wire up activity tracker for coder agents (watchdog monitoring)
 	if agentType == "coder" {
@@ -534,7 +548,7 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 				s.Logger.Error("Agent %s state machine failed: %v", agentID, err)
 			}
 			s.Logger.Info("Agent %s state machine exited", agentID)
-			s.handleUnexpectedExit(ctx, agentID)
+			s.handleUnexpectedExit(ctx, agentID, gen)
 		}()
 	} else {
 		s.Logger.Debug("Agent %s does not implement Run method", agentID)
@@ -840,8 +854,12 @@ func (s *Supervisor) checkCodingActivity() {
 		if time.Since(lastTime) > timeout {
 			// Only check coder agents
 			if agentType, exists := s.AgentTypes[agentID]; exists && agentType == "coder" {
-				// Skip agents in WAITING state — they're idle by design, not stuck
-				if state, ok := s.agentStates[agentID]; ok && state == proto.StateWaiting {
+				// Only kill agents in states where toolloop activity is expected.
+				// States like PLAN_REVIEW, CODE_REVIEW, QUESTION, and BUDGET_REVIEW
+				// block on ExecuteEffect() waiting for architect responses — no
+				// toolloop iterations means no heartbeat, but the agent is healthy.
+				state := s.agentStates[agentID]
+				if state != proto.State("PLANNING") && state != proto.State("CODING") && state != proto.State("TESTING") {
 					continue
 				}
 				staleAgents[agentID] = lastTime
