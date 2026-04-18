@@ -169,17 +169,17 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		shutdown:          make(chan struct{}),
 		running:           false,
 		storyCh:           make(chan *proto.AgentMsg, storyChannelSize(cfg.Agents.MaxCoders)), // S-5: Buffer size = factor × numCoders (clamped)
-		hotfixStoryCh:     make(chan *proto.AgentMsg, 10),                                                       // Hotfix stories channel (dedicated coder)
-		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                              // Buffer size from config
-		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                                       // Buffered channel for PM interview requests
-		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                             // Buffered channel for status updates
-		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                                           // Buffered channel for requeue requests
-		replyChannels:     make(map[string]chan *proto.AgentMsg),                                                // Per-agent reply channels
-		errCh:             make(chan AgentError, 10),                                                            // Buffered channel for error reporting
-		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                                       // Buffered channel for state change notifications
-		cancelRequestsCh:  make(chan *proto.AgentCancelRequest, 20),                                             // Buffered channel for agent cancellation requests
-		leases:            make(map[string]string),                                                              // Story lease tracking
-		runStrat:          &goroutineStrategy{},                                                                 // Default to production goroutine strategy
+		hotfixStoryCh:     make(chan *proto.AgentMsg, 10),                                     // Hotfix stories channel (dedicated coder)
+		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),            // Buffer size from config
+		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                     // Buffered channel for PM interview requests
+		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                           // Buffered channel for status updates
+		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                         // Buffered channel for requeue requests
+		replyChannels:     make(map[string]chan *proto.AgentMsg),                              // Per-agent reply channels
+		errCh:             make(chan AgentError, 10),                                          // Buffered channel for error reporting
+		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                     // Buffered channel for state change notifications
+		cancelRequestsCh:  make(chan *proto.AgentCancelRequest, 20),                           // Buffered channel for agent cancellation requests
+		leases:            make(map[string]string),                                            // Story lease tracking
+		runStrat:          &goroutineStrategy{},                                               // Default to production goroutine strategy
 	}, nil
 }
 

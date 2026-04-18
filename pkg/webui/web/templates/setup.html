@@ -105,6 +105,12 @@
         const form = document.getElementById('add-key-form');
         const select = document.getElementById('key-select');
 
+        // Auto-redirect if setup mode is off (e.g., login triggered auto-exit)
+        if (data.setup_mode === false) {
+            window.location.href = '/';
+            return;
+        }
+
         if (!keysData.length) {
             list.innerHTML = '<p class="text-gray-500 text-sm">No API keys required.</p>';
             continueBtn.disabled = false;
@@ -172,12 +178,67 @@
         }
     }
 
+    async function fetchValidationResults() {
+        try {
+            const resp = await fetch('/api/setup/validation-results');
+            if (!resp.ok) return null;
+            return await resp.json();
+        } catch (e) {
+            console.error('Validation results fetch error:', e);
+            return null;
+        }
+    }
+
+    function renderValidationResults(data) {
+        if (!data) return;
+
+        const resultsDiv = document.getElementById('validation-results');
+        const listDiv = document.getElementById('validation-list');
+
+        const errors = data.validation_errors || [];
+        const warnings = data.warnings || [];
+        if (errors.length === 0 && warnings.length === 0) {
+            resultsDiv.classList.add('hidden');
+            return;
+        }
+
+        resultsDiv.classList.remove('hidden');
+        const all = errors.concat(warnings);
+        listDiv.innerHTML = all.map(r => {
+            let icon, badgeClass;
+            switch(r.status) {
+                case 'valid': icon = '\u2705'; badgeClass = 'bg-green-100 text-green-800'; break;
+                case 'missing': icon = '\u2014'; badgeClass = 'bg-gray-100 text-gray-800'; break;
+                case 'unauthorized': icon = '\u274C'; badgeClass = 'bg-red-100 text-red-800'; break;
+                case 'forbidden': icon = '\u26A0\uFE0F'; badgeClass = 'bg-yellow-100 text-yellow-800'; break;
+                case 'unreachable': icon = '\uD83D\uDD0C'; badgeClass = 'bg-orange-100 text-orange-800'; break;
+                default: icon = '\u2753'; badgeClass = 'bg-red-100 text-red-800'; break;
+            }
+            const latency = r.latency_ms > 0 ? ' (' + r.latency_ms + 'ms)' : '';
+            return '<div class="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">' +
+                '<div><span class="text-sm font-mono text-gray-800">' + r.env_var + '</span>' +
+                '<span class="ml-2 text-xs text-gray-500">(' + r.provider + ')</span></div>' +
+                '<div class="flex items-center gap-2">' +
+                '<span class="text-xs text-gray-400">' + latency + '</span>' +
+                '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ' + badgeClass + '">' +
+                icon + ' ' + r.status + '</span></div></div>';
+        }).join('');
+
+        // Disable continue if there are blocking errors
+        if (errors.length > 0) {
+            document.getElementById('continue-btn').disabled = true;
+        }
+    }
+
     async function recheckKeys() {
         try {
             const resp = await fetch('/api/setup/recheck', {method: 'POST'});
             if (!resp.ok) throw new Error('Recheck failed');
             const data = await resp.json();
             renderKeys(data);
+            // Also refresh validation results (recheck triggers re-evaluation)
+            const valData = await fetchValidationResults();
+            renderValidationResults(valData);
         } catch (e) {
             console.error('Recheck error:', e);
         }
@@ -186,6 +247,9 @@
     async function refreshStatus() {
         const data = await fetchStatus();
         if (data) renderKeys(data);
+        // Auto-fetch validation results on load
+        const valData = await fetchValidationResults();
+        renderValidationResults(valData);
     }
 
     async function continueSetup() {
@@ -204,6 +268,17 @@
                 const data = await fetchStatus();
                 if (data && !data.setup_mode) {
                     window.location.href = '/';
+                    return;
+                }
+                // Refresh validation results to show updated state
+                if (data) renderKeys(data);
+                const valData = await fetchValidationResults();
+                renderValidationResults(valData);
+                // If validation errors appeared, stop polling and let user fix
+                if (valData && valData.validation_errors && valData.validation_errors.length > 0) {
+                    status.textContent = 'Some API keys are invalid. Please fix them and try again.';
+                    btn.disabled = false;
+                    btn.textContent = 'Continue Setup';
                     return;
                 }
             }

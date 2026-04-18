@@ -138,7 +138,7 @@ func (s *Server) handleSecretsSet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Signal setup mode if active (belt-and-suspenders with frontend auto-recheck)
-	s.notifySetupIfReady()
+	s.notifySetupIfReady(r.Context())
 
 	response := map[string]interface{}{
 		"success": true,

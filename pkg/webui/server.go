@@ -30,6 +30,7 @@ import (
 	"orchestrator/pkg/dispatch"
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/persistence"
+	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/version"
 )
 
@@ -73,6 +74,9 @@ type Server struct {
 	// Password recovery: verify Basic Auth against verifier file when no password in memory
 	passwordRecovered atomic.Bool
 	recoverMu         sync.Mutex
+	// Startup key validation results (persisted for setup page display)
+	validationResults   *preflight.ReadinessResult
+	validationResultsMu sync.RWMutex
 	// Issue reporting HTTP client (injectable for tests)
 	issueHTTPClient *http.Client
 	// Session token auth: one-time token exchange for cookie-based browser auth
@@ -121,6 +125,20 @@ func (s *Server) SetDemoService(demoService DemoService) {
 // PM implements this to indicate when bootstrap is complete and demo is available.
 func (s *Server) SetDemoAvailabilityChecker(checker DemoAvailabilityChecker) {
 	s.demoAvailabilityChecker = checker
+}
+
+// setValidationResults stores the latest readiness evaluation for the setup page.
+func (s *Server) setValidationResults(result *preflight.ReadinessResult) {
+	s.validationResultsMu.Lock()
+	defer s.validationResultsMu.Unlock()
+	s.validationResults = result
+}
+
+// getValidationResults retrieves the latest readiness evaluation.
+func (s *Server) getValidationResults() *preflight.ReadinessResult {
+	s.validationResultsMu.RLock()
+	defer s.validationResultsMu.RUnlock()
+	return s.validationResults
 }
 
 // handleSessionAuth implements GET /auth/session?token=<token>.
@@ -282,7 +300,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Slow path: no password in memory, try to recover via verifier file
 		if config.PasswordVerifierExists(s.workDir) {
-			if s.tryRecoverPassword(password) {
+			if s.tryRecoverPassword(r.Context(), password) {
 				next(w, r)
 				return
 			}
@@ -304,7 +322,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 // caches it in memory and decrypts the secrets file if present.
 // This runs at most once per process — after success, GetWebUIPassword() returns the
 // cached value and requireAuth uses the fast path.
-func (s *Server) tryRecoverPassword(password string) bool {
+func (s *Server) tryRecoverPassword(ctx context.Context, password string) bool {
 	// Already recovered — shouldn't reach here, but guard anyway
 	if s.passwordRecovered.Load() {
 		return false
@@ -347,7 +365,7 @@ func (s *Server) tryRecoverPassword(password string) bool {
 	s.passwordRecovered.Store(true)
 
 	// Signal setup mode in case API keys are now available from decrypted secrets
-	s.notifySetupIfReady()
+	s.notifySetupIfReady(ctx)
 
 	return true
 }
@@ -362,6 +380,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/setup", s.requireAuth(s.handleSetupPage))
 	mux.HandleFunc("/api/setup/status", s.requireAuth(s.handleSetupStatus))
 	mux.HandleFunc("/api/setup/recheck", s.requireAuth(s.handleSetupRecheck))
+	mux.HandleFunc("/api/setup/validation-results", s.requireAuth(s.handleValidationResults))
 
 	// Serve static files from embedded filesystem - protected by basic auth
 	staticSubFS, err := fs.Sub(staticFS, "web/static")
