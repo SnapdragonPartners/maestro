@@ -149,8 +149,9 @@ func (d *Driver) convertToolResultToRequirements(toolResult map[string]any) ([]R
 // New stories are gated on any pre-existing stories already in the queue (bootstrap stories).
 // The resulting DAG is validated for cycles before returning.
 func (d *Driver) loadStoriesFromSubmitResultData(_ context.Context, specMarkdown string, effectData map[string]any) (string, []string, error) {
-	// Reset PM notification flag so new spec lifecycle can re-notify
+	// Reset PM notification flags so new spec lifecycle can re-notify
 	d.pmAllCompleteNotified = false
+	d.pmAllTerminalNotified = false
 
 	// Convert ProcessEffect.Data directly to Requirements (no JSON round-trip)
 	requirements, err := d.convertToolResultToRequirements(effectData)

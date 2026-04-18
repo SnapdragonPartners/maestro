@@ -45,6 +45,7 @@ const (
 	PayloadKindAllStoriesComplete   PayloadKind = "all_stories_complete"  // All stories completed notification
 	PayloadKindStoryBlocked         PayloadKind = "story_blocked"         // Story blocked/failed notification
 	PayloadKindClarificationRequest PayloadKind = "clarification_request" // Request PM to relay clarification to human
+	PayloadKindAllStoriesTerminal   PayloadKind = "all_stories_terminal"  // All stories terminal (some failed) notification
 	PayloadKindRepairComplete       PayloadKind = "repair_complete"       // Signal that system repair is done
 
 	// Generic key-value payloads for miscellaneous data.
@@ -348,6 +349,42 @@ func (p *MessagePayload) ExtractAllStoriesComplete() (*AllStoriesCompletePayload
 	var result AllStoriesCompletePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal all stories complete payload: %w", err)
+	}
+	return &result, nil
+}
+
+// FailedStoryDetail summarizes one failed story for the terminal notification.
+type FailedStoryDetail struct {
+	StoryID string `json:"story_id"`
+	Title   string `json:"title"`
+	Reason  string `json:"reason"`
+}
+
+// AllStoriesTerminalPayload is sent when all stories are done or failed (not all successful).
+type AllStoriesTerminalPayload struct {
+	SpecID        string              `json:"spec_id"`
+	TotalStories  int                 `json:"total_stories"`
+	FailedStories []FailedStoryDetail `json:"failed_stories"`
+	Timestamp     string              `json:"timestamp"`
+}
+
+// NewAllStoriesTerminalPayload creates a payload for the all-stories-terminal notification.
+func NewAllStoriesTerminalPayload(data *AllStoriesTerminalPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindAllStoriesTerminal,
+		Data: raw,
+	}
+}
+
+// ExtractAllStoriesTerminal extracts an all-stories-terminal payload.
+func (p *MessagePayload) ExtractAllStoriesTerminal() (*AllStoriesTerminalPayload, error) {
+	if p.Kind != PayloadKindAllStoriesTerminal {
+		return nil, fmt.Errorf("expected all_stories_terminal payload, got %s", p.Kind)
+	}
+	var result AllStoriesTerminalPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal all stories terminal payload: %w", err)
 	}
 	return &result, nil
 }

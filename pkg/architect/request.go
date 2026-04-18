@@ -825,6 +825,55 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 	return nil
 }
 
+// notifyPMAllStoriesTerminal sends an all-stories-terminal notification to PM
+// when all stories are done or failed (but not all succeeded). This clears in_flight
+// so the PM can accept new specs.
+func (d *Driver) notifyPMAllStoriesTerminal(ctx context.Context) error {
+	if d.pmAllTerminalNotified {
+		return nil
+	}
+
+	specID := ""
+	totalStories := 0
+	var failedDetails []proto.FailedStoryDetail
+
+	if d.queue != nil {
+		allStories := d.queue.GetAllStories()
+		totalStories = len(allStories)
+		if totalStories > 0 {
+			specID = allStories[0].SpecID
+		}
+		for _, s := range allStories {
+			if s.GetStatus() == StatusFailed {
+				failedDetails = append(failedDetails, proto.FailedStoryDetail{
+					StoryID: s.ID,
+					Title:   s.Title,
+					Reason:  s.LastFailReason,
+				})
+			}
+		}
+	}
+
+	payload := &proto.AllStoriesTerminalPayload{
+		SpecID:        specID,
+		TotalStories:  totalStories,
+		FailedStories: failedDetails,
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+	}
+
+	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	notifyMsg.SetTypedPayload(proto.NewAllStoriesTerminalPayload(payload))
+
+	sendEffect := &SendMessageEffect{Message: notifyMsg}
+	if err := d.ExecuteEffect(ctx, sendEffect); err != nil {
+		return fmt.Errorf("failed to send all-stories-terminal notification: %w", err)
+	}
+
+	d.pmAllTerminalNotified = true
+	d.logger.Info("📋 Notified PM that all %d stories are terminal (%d failed, spec=%s)", totalStories, len(failedDetails), specID)
+	return nil
+}
+
 // notifyPMOfBlockedStory sends a story blocked notification to PM.
 // willRetry indicates whether the story is being requeued (true) or abandoned (false).
 // storyEdited indicates whether the architect modified the story before retry.

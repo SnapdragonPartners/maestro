@@ -27,7 +27,7 @@ Files: `coder_fsm.go`, `coding.go`, `claudecode_coding.go`, `code_review.go`, `c
 ---
 
 ### Phase 2: Bug #4 — Dispatcher Rejects repair_complete
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 Add `repair_complete` to story-independent message exemptions in dispatcher validation. Pattern matches existing `HotfixRequestPayload` exemption.
 
@@ -36,7 +36,7 @@ Files: `dispatcher.go`, dispatcher tests
 ---
 
 ### Phase 3: Bug #2 — Watchdog Kills WAITING Agents
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 Add `AgentStates` map to supervisor, updated via state change notifications. Watchdog skips agents in WAITING state.
 
@@ -45,7 +45,7 @@ Files: `supervisor.go`, `supervisor_test.go`
 ---
 
 ### Phase 4: Bug #3 — Killed Agents Never Restart
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 Detect unexpected agent exits (Run() returns without state notification) and restart. Guard against double-restart with `exitHandled` map. Distinguish system shutdown from watchdog kills.
 
@@ -54,7 +54,7 @@ Files: `supervisor.go`, `supervisor_test.go`
 ---
 
 ### Phase 5: Bug #5 — Failed Story Limbo
-**Status:** NOT STARTED
+**Status:** COMPLETE
 
 Add `AllStoriesTerminal` check to DISPATCHING and MONITORING handlers. New `AllStoriesTerminalPayload` notifies PM with failure summary. PM clears `in_flight` flag so new specs can be accepted.
 

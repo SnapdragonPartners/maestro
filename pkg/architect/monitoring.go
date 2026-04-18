@@ -20,7 +20,17 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 		// Send AllStoriesComplete notification to PM so it clears in_flight flag
 		if err := d.notifyPMAllStoriesComplete(ctx); err != nil {
 			d.logger.Warn("⚠️ Failed to notify PM of all stories complete: %v", err)
-			// Continue anyway - this is not a fatal error
+		}
+
+		return StateDone, nil
+	}
+
+	// Check if all stories are terminal (some failed) — notify PM and finish
+	if d.queue.AllStoriesTerminal() {
+		d.logger.Info("🚀 MONITORING → DONE: All stories terminal (some failed)")
+
+		if err := d.notifyPMAllStoriesTerminal(ctx); err != nil {
+			d.logger.Warn("⚠️ Failed to notify PM of all stories terminal: %v", err)
 		}
 
 		return StateDone, nil
