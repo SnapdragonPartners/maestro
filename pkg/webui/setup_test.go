@@ -12,6 +12,7 @@ import (
 
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/preflight"
 )
 
 func TestSetupMode_Toggle(t *testing.T) {
@@ -165,7 +166,21 @@ func TestSetupStatus_Response(t *testing.T) {
 	}
 }
 
+// allValidValidator returns a ValidatorFunc that reports all keys as valid.
+func allValidValidator() preflight.ValidatorFunc {
+	return func(_ context.Context, _ *config.Config) []preflight.KeyCheckResult {
+		return []preflight.KeyCheckResult{
+			{Provider: "anthropic", EnvVar: "ANTHROPIC_API_KEY", Status: preflight.KeyStatusValid, Message: "ok"},
+			{Provider: "openai", EnvVar: "OPENAI_API_KEY", Status: preflight.KeyStatusValid, Message: "ok"},
+			{Provider: "github", EnvVar: "GITHUB_TOKEN", Status: preflight.KeyStatusValid, Message: "ok"},
+		}
+	}
+}
+
 func TestNotifySetupIfReady_SignalsWhenReady(t *testing.T) {
+	preflight.SetValidatorFunc(allValidValidator())
+	defer preflight.SetValidatorFunc(nil)
+
 	cfg := &config.Config{
 		OperatingMode: config.OperatingModeStandard,
 		Agents: &config.AgentConfig{
@@ -195,7 +210,7 @@ func TestNotifySetupIfReady_SignalsWhenReady(t *testing.T) {
 	}
 	s.SetSetupMode(true)
 
-	s.notifySetupIfReady()
+	s.notifySetupIfReady(context.Background())
 
 	select {
 	case <-s.setupReady:
@@ -236,7 +251,7 @@ func TestNotifySetupIfReady_NoSignalWhenMissing(t *testing.T) {
 	}
 	s.SetSetupMode(true)
 
-	s.notifySetupIfReady()
+	s.notifySetupIfReady(context.Background())
 
 	select {
 	case <-s.setupReady:
@@ -246,7 +261,9 @@ func TestNotifySetupIfReady_NoSignalWhenMissing(t *testing.T) {
 	}
 }
 
-func TestNotifySetupIfReady_MultipleSignalsNoPanic(_ *testing.T) {
+func TestNotifySetupIfReady_MultipleSignalsNoPanic(_ *testing.T) { //nolint:revive // t unused but needed for test signature
+	preflight.SetValidatorFunc(allValidValidator())
+	defer preflight.SetValidatorFunc(nil)
 	cfg := &config.Config{
 		OperatingMode: config.OperatingModeStandard,
 		Agents: &config.AgentConfig{
@@ -277,11 +294,13 @@ func TestNotifySetupIfReady_MultipleSignalsNoPanic(_ *testing.T) {
 
 	// Multiple signals should not panic
 	for i := 0; i < 10; i++ {
-		s.notifySetupIfReady()
+		s.notifySetupIfReady(context.Background())
 	}
 }
 
 func TestWaitForSetup_ReturnsImmediatelyWhenReady(t *testing.T) {
+	preflight.SetValidatorFunc(allValidValidator())
+	defer preflight.SetValidatorFunc(nil)
 	cfg := &config.Config{
 		OperatingMode: config.OperatingModeStandard,
 		Agents: &config.AgentConfig{
@@ -321,6 +340,8 @@ func TestWaitForSetup_ReturnsImmediatelyWhenReady(t *testing.T) {
 }
 
 func TestWaitForSetup_BlocksAndUnblocks(t *testing.T) {
+	preflight.SetValidatorFunc(allValidValidator())
+	defer preflight.SetValidatorFunc(nil)
 	cfg := &config.Config{
 		OperatingMode: config.OperatingModeStandard,
 		Agents: &config.AgentConfig{
@@ -370,7 +391,7 @@ func TestWaitForSetup_BlocksAndUnblocks(t *testing.T) {
 
 	// Simulate adding the missing key
 	os.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-	s.notifySetupIfReady()
+	s.notifySetupIfReady(context.Background())
 
 	select {
 	case err := <-done:
