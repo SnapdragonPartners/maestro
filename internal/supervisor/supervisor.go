@@ -157,6 +157,7 @@ type Supervisor struct {
 	// Coding watchdog: between-turns activity tracking
 	lastActivity map[string]time.Time   // agentID → last toolloop iteration start
 	agentStates  map[string]proto.State // agentID → current FSM state (for watchdog filtering)
+	exitHandled  map[string]bool        // agentID → true if DONE/ERROR state change already processed
 	activityMu   sync.Mutex
 }
 
@@ -188,6 +189,7 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		// Coding watchdog
 		lastActivity: make(map[string]time.Time),
 		agentStates:  make(map[string]proto.State),
+		exitHandled:  make(map[string]bool),
 	}
 
 	// Wire up the restore channel to the factory for SUSPEND state support
@@ -273,6 +275,13 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 	if agentType == "" {
 		s.Logger.Error("Unknown agent type for agent %s", notification.AgentID)
 		return
+	}
+
+	// Mark terminal states as handled so the goroutine exit handler doesn't double-restart
+	if notification.ToState == proto.StateDone || notification.ToState == proto.StateError {
+		s.activityMu.Lock()
+		s.exitHandled[notification.AgentID] = true
+		s.activityMu.Unlock()
 	}
 
 	// Handle DONE state transitions
@@ -429,9 +438,55 @@ func (s *Supervisor) cleanupAgentResources(agentID string) {
 	delete(s.AgentContexts, agentID)
 	s.activityMu.Lock()
 	delete(s.agentStates, agentID)
+	delete(s.exitHandled, agentID)
 	s.activityMu.Unlock()
 
 	// Work directory cleanup is handled by agent SETUP state for fresh workspace
+}
+
+// handleUnexpectedExit detects when an agent's Run() goroutine exits without
+// a corresponding DONE/ERROR state notification (e.g., watchdog context cancellation)
+// and restarts the agent to prevent permanent loss.
+func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string) {
+	// System shutdown — don't restart anything
+	if ctx.Err() != nil {
+		s.Logger.Info("Agent %s exited during system shutdown, not restarting", agentID)
+		return
+	}
+
+	// Check if state change handler already processed this exit (DONE/ERROR)
+	s.activityMu.Lock()
+	handled := s.exitHandled[agentID]
+	s.activityMu.Unlock()
+
+	if handled {
+		s.Logger.Debug("Agent %s exit already handled via state notification", agentID)
+		return
+	}
+
+	// Only restart coder agents — architect/PM unexpected exits are fatal
+	agentType := s.getAgentType(agentID)
+	if agentType != string(agent.TypeCoder) {
+		s.Logger.Error("Non-coder agent %s (%s) exited unexpectedly without state notification", agentID, agentType)
+		return
+	}
+
+	s.Logger.Warn("🔄 Agent %s exited without state notification (likely watchdog kill), restarting", agentID)
+
+	// Requeue the story if the agent had one
+	storyID := s.Kernel.Dispatcher.GetLease(agentID)
+	if storyID != "" {
+		s.Kernel.Dispatcher.ClearLease(agentID)
+		if err := s.Kernel.Dispatcher.UpdateStoryRequeue(storyID, agentID, "agent killed by watchdog without state notification", nil); err != nil {
+			s.Logger.Error("Failed to requeue story %s from unexpectedly exited agent %s: %v", storyID, agentID, err)
+		} else {
+			s.Logger.Info("Requeued story %s from unexpectedly exited agent %s", storyID, agentID)
+		}
+	}
+
+	if err := s.restartAgent(ctx, agentID); err != nil {
+		s.Logger.Error("Failed to restart unexpectedly exited agent %s: %v", agentID, err)
+	}
 }
 
 // getAgentType returns the type of an agent by ID.
@@ -479,6 +534,7 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 				s.Logger.Error("Agent %s state machine failed: %v", agentID, err)
 			}
 			s.Logger.Info("Agent %s state machine exited", agentID)
+			s.handleUnexpectedExit(ctx, agentID)
 		}()
 	} else {
 		s.Logger.Debug("Agent %s does not implement Run method", agentID)
