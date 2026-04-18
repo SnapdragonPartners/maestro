@@ -155,7 +155,8 @@ type Supervisor struct {
 	pollCancel       context.CancelFunc // Cancel function for API polling goroutine
 
 	// Coding watchdog: between-turns activity tracking
-	lastActivity map[string]time.Time // agentID → last toolloop iteration start
+	lastActivity map[string]time.Time   // agentID → last toolloop iteration start
+	agentStates  map[string]proto.State // agentID → current FSM state (for watchdog filtering)
 	activityMu   sync.Mutex
 }
 
@@ -186,6 +187,7 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		suspendFailureID: make(map[string]string),
 		// Coding watchdog
 		lastActivity: make(map[string]time.Time),
+		agentStates:  make(map[string]proto.State),
 	}
 
 	// Wire up the restore channel to the factory for SUSPEND state support
@@ -261,6 +263,10 @@ func (s *Supervisor) Start(ctx context.Context) {
 func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.StateChangeNotification) {
 	s.Logger.Info("Agent %s state changed: %s -> %s",
 		notification.AgentID, notification.FromState, notification.ToState)
+
+	s.activityMu.Lock()
+	s.agentStates[notification.AgentID] = notification.ToState
+	s.activityMu.Unlock()
 
 	// Determine agent type from stored configuration
 	agentType := s.getAgentType(notification.AgentID)
@@ -421,6 +427,9 @@ func (s *Supervisor) cleanupAgentResources(agentID string) {
 	delete(s.Agents, agentID)
 	delete(s.AgentTypes, agentID)
 	delete(s.AgentContexts, agentID)
+	s.activityMu.Lock()
+	delete(s.agentStates, agentID)
+	s.activityMu.Unlock()
 
 	// Work directory cleanup is handled by agent SETUP state for fresh workspace
 }
@@ -439,6 +448,9 @@ func (s *Supervisor) getAgentType(agentID string) string {
 func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType string, agent dispatch.Agent) {
 	s.AgentTypes[agentID] = agentType
 	s.Agents[agentID] = agent
+	s.activityMu.Lock()
+	s.agentStates[agentID] = proto.StateWaiting
+	s.activityMu.Unlock()
 	s.Logger.Info("Registered agent %s (type: %s)", agentID, agentType)
 
 	// Wire up activity tracker for coder agents (watchdog monitoring)
@@ -772,6 +784,10 @@ func (s *Supervisor) checkCodingActivity() {
 		if time.Since(lastTime) > timeout {
 			// Only check coder agents
 			if agentType, exists := s.AgentTypes[agentID]; exists && agentType == "coder" {
+				// Skip agents in WAITING state — they're idle by design, not stuck
+				if state, ok := s.agentStates[agentID]; ok && state == proto.StateWaiting {
+					continue
+				}
 				staleAgents[agentID] = lastTime
 			}
 		}

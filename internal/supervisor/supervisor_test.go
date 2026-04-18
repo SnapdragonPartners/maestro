@@ -469,3 +469,148 @@ func TestWaitForAgentsShutdownTimeout(t *testing.T) {
 	// Clean up: decrement the waitgroup
 	supervisor.agentWg.Done()
 }
+
+func TestWatchdogSkipsWaitingAgents(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-watchdog-waiting-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-001"
+	mockAgent := &MockAgent{id: agentID, state: proto.StateWaiting}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Record activity far in the past — would normally trigger watchdog kill
+	supervisor.activityMu.Lock()
+	supervisor.lastActivity[agentID] = time.Now().Add(-2 * time.Hour)
+	supervisor.agentStates[agentID] = proto.StateWaiting
+	supervisor.activityMu.Unlock()
+
+	// Set up a cancel func to detect if watchdog tries to kill the agent
+	agentCtx, cancel := context.WithCancel(ctx)
+	supervisor.AgentContexts[agentID] = cancel
+
+	supervisor.checkCodingActivity()
+
+	// Context should NOT have been cancelled — agent is WAITING
+	select {
+	case <-agentCtx.Done():
+		t.Error("Watchdog should NOT cancel WAITING agents")
+	default:
+		// Expected: context still alive
+	}
+}
+
+func TestWatchdogKillsStuckCodingAgent(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-watchdog-stuck-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-002"
+	mockAgent := &MockAgent{id: agentID, state: proto.State("CODING")}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Record activity far in the past
+	supervisor.activityMu.Lock()
+	supervisor.lastActivity[agentID] = time.Now().Add(-2 * time.Hour)
+	supervisor.agentStates[agentID] = proto.State("CODING")
+	supervisor.activityMu.Unlock()
+
+	agentCtx, cancel := context.WithCancel(ctx)
+	supervisor.AgentContexts[agentID] = cancel
+
+	supervisor.checkCodingActivity()
+
+	// Context SHOULD have been cancelled — agent is stuck in CODING
+	select {
+	case <-agentCtx.Done():
+		// Expected: watchdog killed it
+	default:
+		t.Error("Watchdog should cancel stuck CODING agents")
+	}
+}
+
+func TestAgentStateTrackedThroughLifecycle(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-state-track-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-003"
+	mockAgent := &MockAgent{id: agentID}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Simulate registration sets WAITING
+	supervisor.activityMu.Lock()
+	supervisor.agentStates[agentID] = proto.StateWaiting
+	supervisor.activityMu.Unlock()
+
+	// Simulate state change to CODING
+	supervisor.handleStateChange(ctx, &proto.StateChangeNotification{
+		AgentID:   agentID,
+		FromState: proto.StateWaiting,
+		ToState:   proto.State("CODING"),
+	})
+
+	supervisor.activityMu.Lock()
+	state := supervisor.agentStates[agentID]
+	supervisor.activityMu.Unlock()
+
+	if state != proto.State("CODING") {
+		t.Errorf("Expected state CODING after state change, got: %s", state)
+	}
+
+	// Simulate cleanup removes state
+	supervisor.cleanupAgentResources(agentID)
+
+	supervisor.activityMu.Lock()
+	_, exists := supervisor.agentStates[agentID]
+	supervisor.activityMu.Unlock()
+
+	if exists {
+		t.Error("Expected agent state to be cleaned up after resource cleanup")
+	}
+}
