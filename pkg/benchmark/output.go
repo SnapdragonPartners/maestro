@@ -66,6 +66,7 @@ func ArchiveArtifacts(projectDir, archiveDir, instanceID string) error {
 		{filepath.Join(projectDir, ".maestro", "maestro.db"), "maestro.db"},
 		{filepath.Join(projectDir, ".maestro", "config.json"), "config.json"},
 		{filepath.Join(projectDir, ".maestro", "forge_state.json"), "forge_state.json"},
+		{filepath.Join(projectDir, "logs", "maestro-stdout.log"), "maestro-stdout.log"},
 		{filepath.Join(projectDir, "logs", "events.jsonl"), "events.jsonl"},
 		{filepath.Join(projectDir, "logs", "run.log"), "run.log"},
 	}

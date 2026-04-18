@@ -107,7 +107,7 @@ func RunInstance(ctx context.Context, inst *Instance, giteaMgr *BenchGitea, opts
 	// Collect patch (always attempt).
 	cloneURL := fmt.Sprintf("%s/%s/%s.git", giteaMgr.baseURL, "maestro", sanitizeRepoName(inst.InstanceID))
 	logger.Info("[%s] Collecting patch", inst.InstanceID)
-	patch, patchErr := CollectPatch(cloneURL, projectDir)
+	patch, patchErr := CollectPatch(ctx, cloneURL, projectDir)
 	if patchErr != nil {
 		logger.Warn("[%s] Collect patch: %v", inst.InstanceID, patchErr)
 	} else {

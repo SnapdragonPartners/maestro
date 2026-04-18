@@ -141,15 +141,11 @@ def main():
         help="Max number of instances to output (0 = all)",
     )
     parser.add_argument(
-        "--pretty",
-        action="store_true",
+        "--pretty/--no-pretty",
+        action=argparse.BooleanOptionalAction,
+        dest="pretty",
         default=True,
         help="Pretty-print JSON output (default: true)",
-    )
-    parser.add_argument(
-        "--no-pretty",
-        action="store_true",
-        help="Compact JSON output",
     )
     args = parser.parse_args()
 
@@ -180,7 +176,7 @@ def main():
     print(f"Repos ({len(repos)}): {', '.join(repos)}", file=sys.stderr)
 
     # Write output
-    indent = 2 if (args.pretty and not args.no_pretty) else None
+    indent = 2 if args.pretty else None
     output = json.dumps(instances, indent=indent, ensure_ascii=False)
 
     output_path = Path(args.output)

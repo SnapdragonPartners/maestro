@@ -101,7 +101,11 @@ func run() int {
 			result.Outcome, result.ElapsedSecs, len(result.Patch))
 	}
 
-	writeOutputs(allResults, flags, logger)
+	if writeErr := writeOutputs(allResults, flags, logger); writeErr != nil {
+		logger.Error("Write outputs: %v", writeErr)
+		printSummary(allResults, logger)
+		return 1
+	}
 	printSummary(allResults, logger)
 	return 0
 }
@@ -157,28 +161,20 @@ func loadAndValidate(flags *cliFlags, logger *logx.Logger) []benchmark.Instance 
 	}
 	logger.Info("Running %d instances", len(runInstances))
 
-	for i := range runInstances {
-		if runInstances[i].EvalImage == "" && flags.container == "" {
-			logger.Error("Instance %s has no eval_image and no -container flag provided", runInstances[i].InstanceID)
-			return nil
-		}
-	}
-
 	return runInstances
 }
 
-func writeOutputs(results []benchmark.Result, flags *cliFlags, logger *logx.Logger) {
+func writeOutputs(results []benchmark.Result, flags *cliFlags, logger *logx.Logger) error {
 	if predsErr := benchmark.WritePreds(results, flags.output); predsErr != nil {
-		logger.Error("Write preds: %v", predsErr)
-	} else {
-		logger.Info("Predictions written to %s", flags.output)
+		return fmt.Errorf("write preds: %w", predsErr)
 	}
+	logger.Info("Predictions written to %s", flags.output)
 
 	if resultsErr := benchmark.WriteFullResults(results, flags.results); resultsErr != nil {
-		logger.Error("Write results: %v", resultsErr)
-	} else {
-		logger.Info("Full results written to %s", flags.results)
+		return fmt.Errorf("write results: %w", resultsErr)
 	}
+	logger.Info("Full results written to %s", flags.results)
+	return nil
 }
 
 func printSummary(results []benchmark.Result, logger *logx.Logger) {

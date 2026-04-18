@@ -151,6 +151,14 @@ type Result struct {
 	Error   error
 }
 
+// storyChannelSize returns a bounded buffer size for the story channel.
+// Clamps maxCoders to [1, 100] before multiplying by the channel factor,
+// guaranteeing the result fits in a small int (max 1600).
+func storyChannelSize(maxCoders int) int {
+	n := min(max(maxCoders, 1), 100)
+	return config.StoryChannelFactor * n
+}
+
 // NewDispatcher creates a new message dispatcher with the given configuration.
 func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 	return &Dispatcher{
@@ -160,7 +168,7 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:          make(chan struct{}),
 		running:           false,
-		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*min(cfg.Agents.MaxCoders, 100)), // S-5: Buffer size = factor × numCoders (clamped)
+		storyCh:           make(chan *proto.AgentMsg, storyChannelSize(cfg.Agents.MaxCoders)), // S-5: Buffer size = factor × numCoders (clamped)
 		hotfixStoryCh:     make(chan *proto.AgentMsg, 10),                                                       // Hotfix stories channel (dedicated coder)
 		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                              // Buffer size from config
 		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                                       // Buffered channel for PM interview requests
