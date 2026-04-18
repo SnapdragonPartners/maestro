@@ -257,7 +257,7 @@ func (c *Coder) handlePlanning(ctx context.Context, sm *agent.BaseStateMachine) 
 			}
 
 			// Extract and store story complete data, sets up ApprovalTypeCompletion request
-			if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
+			if err := c.processPlanningCompletionFromEffect(sm, effectData); err != nil {
 				return proto.StateError, false, logx.Wrap(err, "failed to process story complete data")
 			}
 
@@ -380,12 +380,13 @@ func (c *Coder) processPlanDataFromEffect(sm *agent.BaseStateMachine, effectData
 	return nil
 }
 
-// processStoryCompleteDataFromEffect extracts and stores story complete data from ProcessEffect.Data.
-// Called when story_complete tool (planning) or done tool empty-diff Case A (coding) returns SignalStoryComplete.
-// Sets up ApprovalTypeCompletion request for architect verification.
+// processPlanningCompletionFromEffect extracts and stores story complete data from ProcessEffect.Data.
+// Called when story_complete tool fires during PLANNING state (SignalStoryComplete).
+// Sets up ApprovalTypeCompletion request for PLAN_REVIEW architect verification.
+// Coding-side completion claims bypass this and go directly to CODE_REVIEW.
 //
 //nolint:unparam // error return reserved for future validation logic
-func (c *Coder) processStoryCompleteDataFromEffect(sm *agent.BaseStateMachine, effectData map[string]any) error {
+func (c *Coder) processPlanningCompletionFromEffect(sm *agent.BaseStateMachine, effectData map[string]any) error {
 	// Extract story complete data from effect
 	evidence := utils.GetMapFieldOr[string](effectData, "evidence", "")
 	confidence := utils.GetMapFieldOr[string](effectData, "confidence", "")

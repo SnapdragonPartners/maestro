@@ -88,6 +88,7 @@ func TestIsValidCoderTransition_AllowedTransitions(t *testing.T) {
 
 		// CODING transitions
 		{StateCoding, StateTesting},
+		{StateCoding, StateCodeReview}, // Zero-diff completion bypasses TESTING
 		{StateCoding, StateBudgetReview},
 		{StateCoding, StateQuestion},
 		{StateCoding, proto.StateError},
