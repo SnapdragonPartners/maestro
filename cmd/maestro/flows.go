@@ -165,6 +165,20 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 			return fmt.Errorf("failed to read spec file: %w", err)
 		}
 
+		// Register a reply channel for "cli" so architect spec review responses
+		// don't get dropped. Drain it in a goroutine that logs feedback.
+		cliReplyCh := k.Dispatcher.RegisterReplyChannel("cli")
+		go func() {
+			for msg := range cliReplyCh {
+				k.Logger.Info("📬 Spec review response from %s: %s", msg.FromAgent, msg.Type)
+				if payload := msg.GetTypedPayload(); payload != nil {
+					if approval, aErr := payload.ExtractApprovalResponse(); aErr == nil {
+						k.Logger.Info("📋 Spec review status: %s — %s", approval.Status, approval.Feedback)
+					}
+				}
+			}
+		}()
+
 		if err := InjectSpec(k.Dispatcher, "cli", specContent); err != nil {
 			return fmt.Errorf("failed to inject initial spec: %w", err)
 		}

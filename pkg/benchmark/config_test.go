@@ -69,7 +69,7 @@ func TestGenerateConfig_DefaultTestCmd(t *testing.T) {
 	assertMapField(t, cfg, "build", "test", "pytest")
 }
 
-func TestGenerateConfig_MissingImage(t *testing.T) {
+func TestGenerateConfig_NoImage_Bootstrap(t *testing.T) {
 	inst := &Instance{
 		InstanceID:       "test-1",
 		Repo:             "org/repo",
@@ -77,9 +77,19 @@ func TestGenerateConfig_MissingImage(t *testing.T) {
 		ProblemStatement: "fix",
 	}
 
-	_, err := GenerateConfig(inst, "http://localhost:3000/repo.git", "")
-	if err == nil {
-		t.Fatal("expected error for empty container image")
+	data, err := GenerateConfig(inst, "http://localhost:3000/repo.git", "")
+	if err != nil {
+		t.Fatalf("GenerateConfig() error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// container section should be absent — Maestro bootstraps from language pack.
+	if _, ok := cfg["container"]; ok {
+		t.Error("expected no container section when image is empty")
 	}
 }
 

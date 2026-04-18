@@ -276,6 +276,18 @@ func (d *Dispatcher) UnregisterAgent(agentID string) error {
 	return nil
 }
 
+// RegisterReplyChannel creates a reply channel for a virtual agent ID that is not
+// backed by a real agent. Used by --spec-file injection so the architect's spec
+// review responses have somewhere to land instead of being dropped.
+func (d *Dispatcher) RegisterReplyChannel(agentID string) <-chan *proto.AgentMsg {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ch := make(chan *proto.AgentMsg, 1)
+	d.replyChannels[agentID] = ch
+	return ch
+}
+
 // routeToReplyCh routes ANSWER/RESULT messages to the appropriate coder's reply channel.
 func (d *Dispatcher) routeToReplyCh(msg *proto.AgentMsg) {
 	targetAgent := msg.ToAgent
@@ -615,8 +627,10 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			isStoryIndependentMessage = true
 		}
 	} else if msg.Type == proto.MsgTypeRESPONSE {
-		// Check if this is a response to PM (spec approval responses)
-		if strings.HasPrefix(msg.ToAgent, "pm-") {
+		// Check if this is a response to PM (spec approval responses).
+		// "cli" is the origin agent for --spec-file injection, which follows
+		// the same spec review flow as PM-originated specs.
+		if strings.HasPrefix(msg.ToAgent, "pm-") || msg.ToAgent == "cli" {
 			isStoryIndependentMessage = true
 		}
 	}

@@ -73,11 +73,8 @@ func RunInstance(ctx context.Context, inst *Instance, giteaMgr *BenchGitea, opts
 		Outcome:    OutcomeProcessError,
 	}
 
+	// Container image is optional — when empty, Maestro bootstraps from the language pack.
 	image := resolveImage(inst, opts.ContainerImage)
-	if image == "" {
-		logger.Error("No container image for instance %s", inst.InstanceID)
-		return result
-	}
 
 	// Always clean up the Gitea repo when done (including partial setup failures).
 	defer func() {
@@ -92,11 +89,13 @@ func RunInstance(ctx context.Context, inst *Instance, giteaMgr *BenchGitea, opts
 		return result
 	}
 
-	// Pre-pull Docker image.
-	logger.Info("[%s] Pre-pulling image %s", inst.InstanceID, image)
-	pullCmd := exec.CommandContext(ctx, "docker", "pull", image)
-	if pullOut, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
-		logger.Warn("[%s] Docker pull failed (continuing): %v\n%s", inst.InstanceID, pullErr, string(pullOut))
+	// Pre-pull Docker image (skip when Maestro is bootstrapping its own).
+	if image != "" {
+		logger.Info("[%s] Pre-pulling image %s", inst.InstanceID, image)
+		pullCmd := exec.CommandContext(ctx, "docker", "pull", image)
+		if pullOut, pullErr := pullCmd.CombinedOutput(); pullErr != nil {
+			logger.Warn("[%s] Docker pull failed (continuing): %v\n%s", inst.InstanceID, pullErr, string(pullOut))
+		}
 	}
 
 	// Launch Maestro and poll for completion.
@@ -128,10 +127,10 @@ func RunInstance(ctx context.Context, inst *Instance, giteaMgr *BenchGitea, opts
 	return result
 }
 
-func resolveImage(inst *Instance, defaultImage string) string {
-	if inst.EvalImage != "" {
-		return inst.EvalImage
-	}
+// resolveImage returns the explicit container image override, if any.
+// When empty, Maestro bootstraps its own container from the language pack.
+// EvalImage is scoring metadata only — never used as Maestro's dev container.
+func resolveImage(_ *Instance, defaultImage string) string {
 	return defaultImage
 }
 
@@ -197,6 +196,10 @@ func launchAndPoll(ctx context.Context, inst *Instance, projectDir string, opts 
 	maestroBin := opts.MaestroBin
 	if maestroBin == "" {
 		maestroBin = "maestro"
+	}
+	// Resolve to absolute path so it works when cwd changes to projectDir.
+	if absBin, absErr := filepath.Abs(maestroBin); absErr == nil {
+		maestroBin = absBin
 	}
 
 	configPath := filepath.Join(projectDir, "benchmark-config.json")
