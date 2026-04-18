@@ -614,8 +614,9 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	// Story-independent messages include:
 	// 1. REQUEST with ApprovalTypeSpec - spec approval requests from PM to architect
 	// 2. REQUEST with HotfixRequestPayload - hotfix approval requests from PM to architect
-	// 3. RESPONSE to PM - spec approval responses from architect to PM
-	// 4. REQUEST to PM - interview requests (for future escalations)
+	// 3. REQUEST with RepairCompletePayload - system-level repair notifications from PM to architect
+	// 4. RESPONSE to PM - spec approval responses from architect to PM
+	// 5. REQUEST to PM - interview requests (for future escalations)
 	isStoryIndependentMessage := false
 	if msg.Type == proto.MsgTypeREQUEST {
 		// Check if this is a spec approval request by examining the approval type in the payload
@@ -626,6 +627,12 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			// Check if this is a hotfix request (also story-independent - story created after approval)
 			if !isStoryIndependentMessage {
 				if _, err := payload.ExtractHotfixRequest(); err == nil {
+					isStoryIndependentMessage = true
+				}
+			}
+			// Check if this is a repair_complete signal (system-level, not story-scoped)
+			if !isStoryIndependentMessage {
+				if _, err := payload.ExtractRepairComplete(); err == nil {
 					isStoryIndependentMessage = true
 				}
 			}

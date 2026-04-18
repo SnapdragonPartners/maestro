@@ -1122,6 +1122,45 @@ func TestHotfixRequestStoryIndependent(t *testing.T) {
 	t.Log("Hotfix REQUEST correctly accepted without story_id")
 }
 
+func TestRepairCompleteStoryIndependent(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := dispatcher.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer stopCancel()
+		dispatcher.Stop(stopCtx)
+	}()
+
+	repairPayload := &proto.RepairCompletePayload{
+		Reason:    "Fixed corrupted git state",
+		Timestamp: "2026-04-18T12:00:00Z",
+	}
+
+	repairMsg := &proto.AgentMsg{
+		ID:        "repair-complete-001",
+		Type:      proto.MsgTypeREQUEST,
+		FromAgent: "pm-001",
+		ToAgent:   "architect",
+		Payload:   proto.NewRepairCompletePayload(repairPayload),
+	}
+
+	err = dispatcher.DispatchMessage(repairMsg)
+	if err != nil {
+		t.Errorf("RepairComplete REQUEST without story_id should be allowed (story-independent), got error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	t.Log("RepairComplete REQUEST correctly accepted without story_id")
+}
+
 func TestLeaseOperationsExtended(t *testing.T) {
 	dispatcher := createTestDispatcher(t)
 
