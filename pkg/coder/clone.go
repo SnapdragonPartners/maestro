@@ -246,7 +246,9 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 	} else {
 		// Update existing mirror - fetch all branches and tags with pruning.
 		// Use file locking to prevent concurrent git remote update operations.
-		lockPath := filepath.Join(mirrorPath, ".update.lock")
+		// Lock file lives in the parent directory so it survives mirror deletion
+		// during corruption recovery (deleting mirrorPath would destroy an in-dir lock).
+		lockPath := filepath.Join(filepath.Dir(mirrorPath), ".mirror-update.lock")
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return "", logx.Wrap(err, fmt.Sprintf("failed to create lock file %s", lockPath))

@@ -3,7 +3,6 @@
 package build
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -227,10 +226,9 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 	duration := time.Since(startTime)
 	output := outputBuffer.String()
 
-	// Handle "target not found" as a skip (not a failure).
-	// This happens when a Makefile or specific target doesn't exist yet (e.g., during
-	// bootstrap when infrastructure stories run in parallel with feature stories).
-	skipped := errors.Is(operationErr, ErrTargetNotFound)
+	// Handle "target not found" as a skip for test only — a missing test target during
+	// bootstrap is expected, but missing build/lint targets should still fail.
+	skipped := errors.Is(operationErr, ErrTargetNotFound) && req.Operation == "test"
 	if skipped {
 		operationErr = nil
 	}
@@ -360,11 +358,11 @@ func (s *Service) GetCacheStatus() map[string]interface{} {
 // This is used by backends that delegate to Makefiles.
 // Returns ErrTargetNotFound if the Makefile or target doesn't exist.
 func runMakeTarget(ctx context.Context, exec Executor, execDir string, stream io.Writer, target string) error {
-	var stderrBuf bytes.Buffer
+	stderrBuf := &cappedBuffer{max: 4096}
 	opts := ExecOpts{
 		Dir:    execDir,
 		Stdout: stream,
-		Stderr: io.MultiWriter(stream, &stderrBuf),
+		Stderr: io.MultiWriter(stream, stderrBuf),
 	}
 
 	exitCode, err := exec.Run(ctx, []string{"make", target}, opts)
@@ -397,6 +395,28 @@ func isMakeTargetMissing(stderr string) bool {
 		}
 	}
 	return false
+}
+
+// cappedBuffer captures up to max bytes, silently discarding the rest.
+// Used to capture stderr for pattern matching without unbounded memory growth.
+type cappedBuffer struct {
+	buf []byte
+	max int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	remaining := c.max - len(c.buf)
+	if remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		c.buf = append(c.buf, p...)
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string {
+	return string(c.buf)
 }
 
 // isHostExecutor returns true if the executor runs commands on the host.
