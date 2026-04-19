@@ -210,7 +210,7 @@ func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, testStatus
 		evidence += "📋 No code changes required — tests not applicable\n"
 	} else if testStatus == "skipped" {
 		evidence += fmt.Sprintf("⚠️ Programmatic tests skipped: %s\n", testSkipReason)
-		evidence += "  Acceptance-criteria verification and adversarial probing were still run.\n"
+		evidence += "  See verification and probing evidence below for actual validation status.\n"
 	} else if testsPassed {
 		evidence += "✅ All tests passing\n"
 		if testOutput != "" {

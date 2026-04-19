@@ -94,6 +94,11 @@ func (m *Manager) RefreshFromForge(ctx context.Context) error {
 		return fmt.Errorf("failed to update mirror: %w", err)
 	}
 
+	// Validate after fetch — a corrupted fetch can silently poison downstream clones
+	if fsckErr := ValidateRepo(ctx, mirrorPath); fsckErr != nil {
+		return fmt.Errorf("mirror corrupt after refresh: %w", fsckErr)
+	}
+
 	m.logger.Info("✅ Mirror refreshed successfully")
 	return nil
 }
@@ -120,6 +125,11 @@ func (m *Manager) SwitchUpstream(ctx context.Context, newURL string) error {
 	// Fetch from new upstream
 	if err := updateGitMirror(ctx, mirrorPath); err != nil {
 		return fmt.Errorf("failed to fetch from new upstream: %w", err)
+	}
+
+	// Validate after fetch — a corrupted fetch can silently poison downstream clones
+	if fsckErr := ValidateRepo(ctx, mirrorPath); fsckErr != nil {
+		return fmt.Errorf("mirror corrupt after upstream switch: %w", fsckErr)
 	}
 
 	m.logger.Info("✅ Mirror upstream switched successfully")

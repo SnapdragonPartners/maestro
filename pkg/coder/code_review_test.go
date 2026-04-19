@@ -159,8 +159,8 @@ func TestBuildCompletionEvidence_TestsSkipped(t *testing.T) {
 	if !strings.Contains(evidence, "Makefile missing") {
 		t.Error("Expected skip reason in evidence")
 	}
-	if !strings.Contains(evidence, "verification and adversarial probing") {
-		t.Error("Expected note about verification still running")
+	if !strings.Contains(evidence, "verification and probing evidence below") {
+		t.Error("Expected reference to verification/probing evidence section")
 	}
 	if strings.Contains(evidence, "✅ All tests passing") {
 		t.Error("Skipped tests should NOT show as passing")
