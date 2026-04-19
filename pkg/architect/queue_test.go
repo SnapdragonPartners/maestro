@@ -124,25 +124,24 @@ func TestRetryFailedStory_DoneStory(t *testing.T) {
 }
 
 // --- RequeueOrphanedDispatched tests ---
+// These tests use leasedStoryIDs (the dispatcher's lease table) as the source of truth
+// for whether a dispatched story is orphaned, matching the live dispatch flow.
 
 func TestRequeueOrphanedDispatched(t *testing.T) {
 	q := newTestQueue()
 
-	// story-1: dispatched, assigned to coder-001 (active)
-	s1 := addQueueStory(q, "story-1", StatusDispatched)
-	s1.AssignedAgent = "coder-001"
-	s1.ApprovedPlan = "plan for story-1"
+	// story-1: dispatched, leased to a coder (in lease table)
+	addQueueStory(q, "story-1", StatusDispatched)
 
-	// story-2: dispatched, assigned to coder-002 (NOT in active list)
-	s2 := addQueueStory(q, "story-2", StatusDispatched)
-	s2.AssignedAgent = "coder-002"
-	s2.ApprovedPlan = "plan for story-2"
+	// story-2: dispatched, NOT in lease table (orphaned)
+	addQueueStory(q, "story-2", StatusDispatched)
 
 	// story-3: pending (should be untouched)
 	addQueueStory(q, "story-3", StatusPending)
 
-	// Only coder-001 is active
-	requeued := q.RequeueOrphanedDispatched([]string{"coder-001"})
+	// Only story-1 is leased
+	leased := map[string]bool{"story-1": true}
+	requeued := q.RequeueOrphanedDispatched(leased)
 
 	// Only story-2 should be requeued (orphaned)
 	if len(requeued) != 1 {
@@ -167,13 +166,10 @@ func TestRequeueOrphanedDispatched(t *testing.T) {
 		t.Errorf("story-2: expected nil StartedAt, got %v", updated2.StartedAt)
 	}
 
-	// Verify story-1 is still dispatched (active agent)
+	// Verify story-1 is still dispatched (leased)
 	updated1, _ := q.GetStory("story-1")
 	if updated1.GetStatus() != StatusDispatched {
 		t.Errorf("story-1: expected status %q, got %q", StatusDispatched, updated1.GetStatus())
-	}
-	if updated1.AssignedAgent != "coder-001" {
-		t.Errorf("story-1: expected AssignedAgent coder-001, got %q", updated1.AssignedAgent)
 	}
 
 	// Verify story-3 is still pending (untouched)
@@ -186,34 +182,29 @@ func TestRequeueOrphanedDispatched(t *testing.T) {
 func TestRequeueOrphanedDispatched_NoOrphans(t *testing.T) {
 	q := newTestQueue()
 
-	s1 := addQueueStory(q, "story-1", StatusDispatched)
-	s1.AssignedAgent = "coder-001"
+	addQueueStory(q, "story-1", StatusDispatched)
+	addQueueStory(q, "story-2", StatusDispatched)
 
-	s2 := addQueueStory(q, "story-2", StatusDispatched)
-	s2.AssignedAgent = "coder-002"
-
-	// Both agents are active
-	requeued := q.RequeueOrphanedDispatched([]string{"coder-001", "coder-002"})
+	// Both stories are leased
+	leased := map[string]bool{"story-1": true, "story-2": true}
+	requeued := q.RequeueOrphanedDispatched(leased)
 
 	if len(requeued) != 0 {
-		t.Errorf("expected 0 requeued stories when all agents active, got %d: %v", len(requeued), requeued)
+		t.Errorf("expected 0 requeued stories when all are leased, got %d: %v", len(requeued), requeued)
 	}
 }
 
 func TestRequeueOrphanedDispatched_AllOrphans(t *testing.T) {
 	q := newTestQueue()
 
-	s1 := addQueueStory(q, "story-1", StatusDispatched)
-	s1.AssignedAgent = "coder-001"
+	addQueueStory(q, "story-1", StatusDispatched)
+	addQueueStory(q, "story-2", StatusDispatched)
 
-	s2 := addQueueStory(q, "story-2", StatusDispatched)
-	s2.AssignedAgent = "coder-002"
-
-	// No active agents
-	requeued := q.RequeueOrphanedDispatched([]string{})
+	// No leases — all dispatched stories are orphaned
+	requeued := q.RequeueOrphanedDispatched(map[string]bool{})
 
 	if len(requeued) != 2 {
-		t.Errorf("expected 2 requeued stories when no agents active, got %d: %v", len(requeued), requeued)
+		t.Errorf("expected 2 requeued stories when no leases exist, got %d: %v", len(requeued), requeued)
 	}
 
 	// Verify both are pending now
@@ -234,8 +225,8 @@ func TestRequeueOrphanedDispatched_SkipsNonDispatched(t *testing.T) {
 	addQueueStory(q, "story-done", StatusDone)
 	addQueueStory(q, "story-failed", StatusFailed)
 
-	// No active agents - but none of these are dispatched
-	requeued := q.RequeueOrphanedDispatched([]string{})
+	// No leases — but none of these are dispatched so none should be requeued
+	requeued := q.RequeueOrphanedDispatched(map[string]bool{})
 
 	if len(requeued) != 0 {
 		t.Errorf("expected 0 requeued stories for non-dispatched statuses, got %d: %v", len(requeued), requeued)
@@ -245,7 +236,7 @@ func TestRequeueOrphanedDispatched_SkipsNonDispatched(t *testing.T) {
 func TestRequeueOrphanedDispatched_EmptyQueue(t *testing.T) {
 	q := newTestQueue()
 
-	requeued := q.RequeueOrphanedDispatched([]string{"coder-001"})
+	requeued := q.RequeueOrphanedDispatched(map[string]bool{"story-1": true})
 
 	if len(requeued) != 0 {
 		t.Errorf("expected 0 requeued stories for empty queue, got %d", len(requeued))

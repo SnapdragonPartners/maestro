@@ -1137,22 +1137,19 @@ func (q *Queue) RetryFailedStory(storyID string) error {
 	return nil
 }
 
-// RequeueOrphanedDispatched finds stories in StatusDispatched whose AssignedAgent
-// is not in the activeAgentIDs set and requeues them to StatusPending.
+// RequeueOrphanedDispatched finds stories in StatusDispatched that are not in the
+// leasedStoryIDs set (from the dispatcher's lease table) and requeues them to StatusPending.
+// The lease table is the source of truth for agent-story ownership; QueuedStory.AssignedAgent
+// is not populated during live dispatch.
 // Returns the IDs of requeued stories.
-func (q *Queue) RequeueOrphanedDispatched(activeAgentIDs []string) []string {
-	activeSet := make(map[string]bool, len(activeAgentIDs))
-	for _, id := range activeAgentIDs {
-		activeSet[id] = true
-	}
-
+func (q *Queue) RequeueOrphanedDispatched(leasedStoryIDs map[string]bool) []string {
 	q.mutex.Lock()
 	requeued := make([]string, 0, len(q.stories))
 	for _, story := range q.stories {
 		if story.GetStatus() != StatusDispatched {
 			continue
 		}
-		if activeSet[story.AssignedAgent] {
+		if leasedStoryIDs[story.ID] {
 			continue
 		}
 		_ = story.SetStatus(StatusPending)

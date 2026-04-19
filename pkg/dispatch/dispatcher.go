@@ -1181,6 +1181,17 @@ func (d *Dispatcher) GetLease(agentID string) string {
 	return storyID
 }
 
+// GetLeasedStoryIDs returns the set of story IDs that are currently leased to any agent.
+func (d *Dispatcher) GetLeasedStoryIDs() map[string]bool {
+	d.leasesMutex.Lock()
+	defer d.leasesMutex.Unlock()
+	result := make(map[string]bool, len(d.leases))
+	for _, storyID := range d.leases {
+		result[storyID] = true
+	}
+	return result
+}
+
 // ClearLease removes an agent's story assignment.
 func (d *Dispatcher) ClearLease(agentID string) {
 	d.leasesMutex.Lock()

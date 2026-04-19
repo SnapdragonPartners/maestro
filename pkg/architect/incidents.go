@@ -331,9 +331,11 @@ func (d *Driver) handleIncidentAction(ctx context.Context, msg *proto.AgentMsg) 
 }
 
 func (d *Driver) resumeSystemIdle(ctx context.Context, action *proto.IncidentActionPayload, _ *proto.Incident) proto.State {
-	// Sweep orphaned dispatched stories before re-dispatching
-	activeAgents := d.getActiveCoderIDs()
-	requeued := d.queue.RequeueOrphanedDispatched(activeAgents)
+	// Sweep orphaned dispatched stories before re-dispatching.
+	// Use the dispatcher's lease table as source of truth for ownership —
+	// QueuedStory.AssignedAgent is not populated during live dispatch.
+	leasedStoryIDs := d.dispatcher.GetLeasedStoryIDs()
+	requeued := d.queue.RequeueOrphanedDispatched(leasedStoryIDs)
 	if len(requeued) > 0 {
 		d.logger.Info("🔄 Requeued %d orphaned dispatched stories: %v", len(requeued), requeued)
 	}
@@ -370,7 +372,6 @@ func (d *Driver) resumeStoryBlocked(ctx context.Context, action *proto.IncidentA
 		d.logger.Info("🔄 Retrying failed story %s", inc.StoryID)
 
 	case StatusOnHold:
-		// Delegate to repair/release path by failure ID
 		failureID := inc.FailureID
 		if failureID == "" {
 			d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
@@ -378,6 +379,11 @@ func (d *Driver) resumeStoryBlocked(ctx context.Context, action *proto.IncidentA
 			return ""
 		}
 		released, _ := d.queue.ReleaseHeldStoriesByFailure(failureID, action.Reason)
+		if len(released) == 0 {
+			d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+				fmt.Sprintf("No held stories released for failure %s — story may have already been resumed", failureID))
+			return ""
+		}
 		d.logger.Info("🔓 Released %d held stories for failure %s", len(released), failureID)
 
 	default:
@@ -396,7 +402,6 @@ func (d *Driver) resumeStoryBlocked(ctx context.Context, action *proto.IncidentA
 	if inc.FailureID != "" {
 		d.resolveIncidentsByFailureID(ctx, inc.FailureID, "resumed", action.Reason)
 	}
-	// Also resolve this specific incident if it wasn't caught by failure ID
 	d.resolveIncident(ctx, action.IncidentID, "resumed", action.Reason)
 
 	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
@@ -413,6 +418,11 @@ func (d *Driver) resumeClarification(ctx context.Context, action *proto.Incident
 	}
 
 	released, _ := d.queue.ReleaseHeldStoriesByFailure(failureID, action.Reason)
+	if len(released) == 0 {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("No held stories released for failure %s — issue may have already been resolved", failureID))
+		return ""
+	}
 	d.logger.Info("🔓 Released %d held stories for failure %s", len(released), failureID)
 
 	// Resume dispatch if suppressed
@@ -442,20 +452,4 @@ func (d *Driver) sendIncidentActionResult(ctx context.Context, incidentID, actio
 	if err := d.ExecuteEffect(ctx, &SendMessageEffect{Message: msg}); err != nil {
 		d.logger.Warn("Failed to send incident_action_result: %v", err)
 	}
-}
-
-// getActiveCoderIDs returns agent IDs of coders in active states.
-func (d *Driver) getActiveCoderIDs() []string {
-	var ids []string
-	agents := d.dispatcher.GetRegisteredAgents()
-	for i := range agents {
-		if agents[i].Type != "coder" {
-			continue
-		}
-		switch agents[i].State {
-		case "PLANNING", "CODING", "TESTING", "AWAIT_APPROVAL", "PREPARE_MERGE":
-			ids = append(ids, agents[i].ID)
-		}
-	}
-	return ids
 }
