@@ -12,6 +12,7 @@ import (
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/forge"
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/utils"
 )
 
@@ -245,7 +246,9 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 	} else {
 		// Update existing mirror - fetch all branches and tags with pruning.
 		// Use file locking to prevent concurrent git remote update operations.
-		lockPath := filepath.Join(mirrorPath, ".update.lock")
+		// Lock file lives in the parent directory so it survives mirror deletion
+		// during corruption recovery (deleting mirrorPath would destroy an in-dir lock).
+		lockPath := filepath.Join(filepath.Dir(mirrorPath), ".mirror-update.lock")
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return "", logx.Wrap(err, fmt.Sprintf("failed to create lock file %s", lockPath))
@@ -263,6 +266,19 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 		_, err = c.retryGitNetworkOp(ctx, mirrorPath, "remote", "update", "--prune")
 		if err != nil {
 			return "", logx.Wrap(err, fmt.Sprintf("failed to update mirror %s", mirrorPath))
+		}
+
+		// Revalidate after update — same check as mirror.Manager to keep paths consistent
+		if fsckErr := mirror.ValidateRepo(ctx, mirrorPath); fsckErr != nil {
+			c.logger.Warn("Mirror corrupt after update (%v), removing for reclone", fsckErr)
+			if removeErr := os.RemoveAll(mirrorPath); removeErr != nil {
+				return "", logx.Wrap(removeErr, "failed to remove corrupt mirror")
+			}
+			// Reclone
+			_, cloneErr := c.retryGitNetworkOp(ctx, "", "clone", "--bare", c.getRepoURL(), mirrorPath)
+			if cloneErr != nil {
+				return "", logx.Wrap(cloneErr, "failed to reclone mirror after corruption")
+			}
 		}
 	}
 
@@ -318,6 +334,13 @@ func (c *CloneManager) createFreshClone(ctx context.Context, mirrorPath, agentWo
 	_, err = c.gitRunner.Run(ctx, agentWorkDir, "fetch", "origin", "--tags")
 	if err != nil {
 		return logx.Wrap(err, "git fetch from origin (mirror) failed")
+	}
+
+	// Validate workspace integrity before proceeding — catches corruption from
+	// bad mirrors or macOS/Docker bind mount issues before any coder work starts.
+	c.logger.Debug("Validating workspace integrity after fetch")
+	if _, fsckErr := c.gitRunner.Run(ctx, agentWorkDir, "fsck", "--no-progress"); fsckErr != nil {
+		return logx.Wrap(fsckErr, "workspace integrity check failed after clone — mirror may be corrupt")
 	}
 
 	// Checkout the base branch from origin.

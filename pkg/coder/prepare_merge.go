@@ -163,16 +163,16 @@ func (c *Coder) handlePrepareMerge(ctx context.Context, sm *agent.BaseStateMachi
 
 			// Run tests to verify rebased code
 			if c.buildService != nil {
-				passed, output, testErr := c.runTestWithBuildService(ctx, c.workDir)
+				testResult, testErr := c.runTestWithBuildService(ctx, c.workDir)
 				if testErr != nil {
 					c.logger.Warn("🔀 Post-rebase tests failed with error: %v", testErr)
 					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", testErr.Error())
 					sm.SetStateData(KeyResumeInput, testFailureMsg)
 					return StateCoding, false, nil
 				}
-				if !passed {
+				if !testResult.passed && !testResult.skipped {
 					c.logger.Warn("🔀 Post-rebase tests failed")
-					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", truncateOutput(output))
+					testFailureMsg := fmt.Sprintf("Tests failed after rebase:\n\n%s\n\nPlease fix the issues and try again.", truncateOutput(testResult.output))
 					sm.SetStateData(KeyResumeInput, testFailureMsg)
 					return StateCoding, false, nil
 				}

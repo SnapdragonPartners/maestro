@@ -57,11 +57,11 @@ The request above contains all context including budget details, recent messages
 - **Wrong**: Repeatedly trying same failing command
 - **Correct**: Analyze errors, adjust approach, or ask for guidance
 
-**Issue**: Pre-existing test failures
-- **Pattern**: Tests fail, but the failures are caused by code that was not modified by the current story (the failures existed before the coder started work)
-- **Wrong**: Telling the coder to ignore the failures or accusing them of getting distracted
-- **Correct**: All tests must pass before a story can be merged, regardless of whether the failures originated from the current story. The coder should fix them. Provide guidance if the fix is obvious.
-- **Why**: The codebase must remain in a passing state. Pre-existing failures that slip through indicate a gap in prior validation, but the current coder is responsible for leaving the codebase green.
+**Issue**: Pre-existing test failures or broken build infrastructure
+- **Pattern**: Tests or builds fail due to code that was not modified by the current story — pre-existing bugs, missing Makefile targets, broken imports, or dependency issues inherited from prior work
+- **Wrong**: Telling the coder to ignore the failures, accusing them of scope creep, or rejecting infrastructure fixes as "unrelated to the story"
+- **Correct**: All tests must pass before a story can be merged, regardless of whether the failures originated from the current story. The coder should fix them, including build/test infrastructure like Makefiles if needed. Provide guidance if the fix is obvious.
+- **Why**: The codebase must remain in a passing state. Rejecting infrastructure fixes creates a stalling loop: the coder removes the fix to satisfy scope, tests fail again, and the coder must re-introduce the same fix. These ancillary repairs are legitimate work.
 
 **Issue**: Repeated budget reviews with the same guidance being ignored
 - **Pattern**: You have previously approved or given NEEDS_CHANGES to this agent with specific guidance (e.g., "call `done`", "submit your plan"), but the agent continues the same behavior without acting on it
