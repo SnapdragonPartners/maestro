@@ -318,14 +318,51 @@ func (d *Driver) handleIncidentAction(ctx context.Context, msg *proto.AgentMsg) 
 
 	switch incidentCopy.Kind {
 	case proto.IncidentKindSystemIdle:
-		return d.resumeSystemIdle(ctx, action, &incidentCopy)
+		return d.handleSystemIdleAction(ctx, action, &incidentCopy)
 	case proto.IncidentKindStoryBlocked:
-		return d.resumeStoryBlocked(ctx, action, &incidentCopy)
+		return d.handleStoryBlockedAction(ctx, action, &incidentCopy)
 	case proto.IncidentKindClarification:
-		return d.resumeClarification(ctx, action, &incidentCopy)
+		return d.handleClarificationAction(ctx, action, &incidentCopy)
 	default:
 		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
 			fmt.Sprintf("Unknown incident kind: %s", incidentCopy.Kind))
+		return ""
+	}
+}
+
+func (d *Driver) handleSystemIdleAction(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	switch action.Action {
+	case string(proto.IncidentActionResume), string(proto.IncidentActionTryAgain):
+		return d.resumeSystemIdle(ctx, action, inc)
+	default:
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Action %q not supported for system_idle incidents", action.Action))
+		return ""
+	}
+}
+
+func (d *Driver) handleStoryBlockedAction(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	switch action.Action {
+	case string(proto.IncidentActionResume), string(proto.IncidentActionTryAgain):
+		return d.resumeStoryBlocked(ctx, action, inc)
+	case string(proto.IncidentActionSkip):
+		return d.skipStoryBlocked(ctx, action, inc)
+	case string(proto.IncidentActionChangeRequest):
+		return d.changeRequestStoryBlocked(ctx, action, inc)
+	default:
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Action %q not supported for story_blocked incidents", action.Action))
+		return ""
+	}
+}
+
+func (d *Driver) handleClarificationAction(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	switch action.Action {
+	case string(proto.IncidentActionResume):
+		return d.resumeClarification(ctx, action, inc)
+	default:
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Action %q not supported for clarification incidents", action.Action))
 		return ""
 	}
 }
@@ -437,6 +474,74 @@ func (d *Driver) resumeClarification(ctx context.Context, action *proto.Incident
 
 	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
 		fmt.Sprintf("Released %d held stories, clarification resolved", len(released)))
+	return StateDispatching
+}
+
+func (d *Driver) skipStoryBlocked(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	if err := d.queue.SkipStory(inc.StoryID); err != nil {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Failed to skip story %s: %v", inc.StoryID, err))
+		return ""
+	}
+	d.logger.Info("⏭️ Skipped story %s: %s", inc.StoryID, action.Reason)
+
+	// Resume dispatch if suppressed
+	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
+		d.queue.ResumeDispatch()
+		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
+	}
+
+	// Resolve only this specific incident — skip does NOT release failure-group siblings
+	d.resolveIncident(ctx, action.IncidentID, "skipped", action.Reason)
+
+	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
+		fmt.Sprintf("Story %s skipped", inc.StoryID))
+	return StateDispatching
+}
+
+func (d *Driver) changeRequestStoryBlocked(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	story, exists := d.queue.GetStory(inc.StoryID)
+	if !exists {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Story %s not found", inc.StoryID))
+		return ""
+	}
+
+	if story.GetStatus() != StatusFailed {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("change_request requires a failed story (status=%s); use resume to release held stories", story.GetStatus()))
+		return ""
+	}
+
+	if action.Content != "" {
+		story.Content += "\n\n## Change Request (User)\n\n" + action.Content
+		d.logger.Info("📝 Appended change request to story %s (%d chars)", inc.StoryID, len(action.Content))
+	}
+
+	// Reset attempt count for a fresh budget
+	story.AttemptCount = 0
+
+	if retryErr := d.queue.RetryFailedStory(inc.StoryID); retryErr != nil {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Failed to retry story %s after change request: %v", inc.StoryID, retryErr))
+		return ""
+	}
+	d.logger.Info("🔄 Retrying story %s with change request", inc.StoryID)
+
+	// Resume dispatch if suppressed
+	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
+		d.queue.ResumeDispatch()
+		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
+	}
+
+	// Resolve incidents by failure ID (same as resume for failed stories)
+	if inc.FailureID != "" {
+		d.resolveIncidentsByFailureID(ctx, inc.FailureID, "change_request", action.Reason)
+	}
+	d.resolveIncident(ctx, action.IncidentID, "change_request", action.Reason)
+
+	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
+		fmt.Sprintf("Story %s modified and retried with fresh budget", inc.StoryID))
 	return StateDispatching
 }
 

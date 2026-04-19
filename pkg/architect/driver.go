@@ -920,7 +920,7 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 
 				// Check if all stories are now terminal — if so, notify PM and finish
 				if d.queue.AllStoriesTerminal() {
-					d.logger.Info("📋 All stories are terminal (done or failed). Transitioning to DONE.")
+					d.logger.Info("📋 All stories are terminal (done, failed, or skipped). Transitioning to DONE.")
 					if err := d.notifyPMAllStoriesTerminal(ctx); err != nil {
 						d.logger.Warn("⚠️ Failed to notify PM of all stories terminal: %v", err)
 					}

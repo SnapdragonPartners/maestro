@@ -19,7 +19,6 @@ func getIncidentActionSchema() InputSchema {
 }
 
 // IncidentActionTool allows PM to request an action on an open incident.
-// Phase 1.5 supports only the "resume" action.
 type IncidentActionTool struct {
 	agentCtx *AgentContext
 }
@@ -38,7 +37,7 @@ func (t *IncidentActionTool) Name() string {
 func (t *IncidentActionTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        ToolIncidentAction,
-		Description: "Request an action on an open incident. Currently only 'resume' is supported, which tells the development system to retry or resume work related to the incident.",
+		Description: "Request an action on an open incident. Actions: resume (retry/resume work), try_again (same as resume), skip (abandon the story), change_request (modify the story and retry).",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -48,12 +47,16 @@ func (t *IncidentActionTool) Definition() ToolDefinition {
 				},
 				"action": {
 					Type:        "string",
-					Description: "The action to take. Currently only 'resume' is supported.",
-					Enum:        []string{"resume"},
+					Description: "The action to take: 'resume' to retry/resume, 'try_again' to retry, 'skip' to permanently abandon the story, 'change_request' to modify the story requirements and retry.",
+					Enum:        []string{"resume", "try_again", "skip", "change_request"},
 				},
 				"reason": {
 					Type:        "string",
-					Description: "Brief explanation of why this action is being taken (e.g., 'user requested retry', 'underlying issue resolved')",
+					Description: "Brief explanation of why this action is being taken",
+				},
+				"content": {
+					Type:        "string",
+					Description: "Required when action is 'change_request': describes what changes the user wants made to the story requirements before retrying.",
 				},
 			},
 			Required: []string{"incident_id", "action", "reason"},
@@ -73,13 +76,19 @@ func (t *IncidentActionTool) Exec(_ context.Context, args map[string]any) (*Exec
 		return nil, fmt.Errorf("action is required")
 	}
 
-	if action != "resume" {
-		return nil, fmt.Errorf("unsupported action %q: only 'resume' is supported", action)
+	validActions := map[string]bool{"resume": true, "try_again": true, "skip": true, "change_request": true}
+	if !validActions[action] {
+		return nil, fmt.Errorf("unsupported action %q: valid actions are resume, try_again, skip, change_request", action)
 	}
 
 	reason, ok := utils.SafeAssert[string](args["reason"])
 	if !ok || reason == "" {
 		return nil, fmt.Errorf("reason is required")
+	}
+
+	content, _ := utils.SafeAssert[string](args["content"])
+	if action == "change_request" && content == "" {
+		return nil, fmt.Errorf("content is required when action is 'change_request'")
 	}
 
 	return &ExecResult{
@@ -90,6 +99,7 @@ func (t *IncidentActionTool) Exec(_ context.Context, args map[string]any) (*Exec
 				"incident_id": incidentID,
 				"action":      action,
 				"reason":      reason,
+				"content":     content,
 			},
 		},
 	}, nil
@@ -101,12 +111,15 @@ func (t *IncidentActionTool) PromptDocumentation() string {
 
 Request an action on an open incident reported by the development system.
 
-Currently only the 'resume' action is supported. Use this when the user wants to retry
-work that has stalled or failed. The system will attempt to recover and resume work
-associated with the incident.
+Actions:
+- resume: Signal that the blocking condition has been resolved and work should resume.
+- try_again: Retry the failed or stalled work (same recovery as resume).
+- skip: Permanently abandon the story. Cannot be used if other stories depend on it.
+- change_request: Modify the story requirements before retrying. Requires the 'content' parameter describing the changes. Resets the retry budget for a fresh start.
 
 Parameters:
-- incident_id (required): The incident ID from the incident summary (e.g., "incident-system_idle-system-20260419T154212Z")
-- action (required): The action to take (currently only "resume")
-- reason (required): Why this action is being taken (e.g., "user requested retry")`
+- incident_id (required): The incident ID from the incident summary
+- action (required): One of "resume", "try_again", "skip", "change_request"
+- reason (required): Why this action is being taken
+- content (required for change_request): Description of what changes the user wants made`
 }

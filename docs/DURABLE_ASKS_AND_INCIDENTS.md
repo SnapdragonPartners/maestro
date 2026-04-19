@@ -179,14 +179,33 @@ Adds a structured `incident_action` PM tool with `resume` as the only supported 
 - `incident_action_result` RESPONSE payload delivers typed success/failure back to PM.
 - Orphan recovery in `system_idle`: dispatched stories whose assigned coder is no longer active are requeued to pending before re-dispatching.
 
-### Phase 2 (follow-up)
+### Phase 2: Full Action Semantics
 
-- Full action semantics: `try_again`, `skip`, `change_request`
-- `try_again` requeues the story (possibly with edited content)
-- `skip` marks the story as permanently abandoned
-- `change_request` modifies story before retry
-- `resume` signals external resolution of the blocking condition
-- Phase 2 may also replace the existing `story_blocked` and `clarification_request` notifications entirely with incidents
+Implemented. Four actions on the `incident_action` tool:
+
+| Action | Description |
+|---|---|
+| `resume` | External blocker resolved — release held stories and re-dispatch |
+| `try_again` | Identical to `resume` (PM picks the word that fits the context) |
+| `skip` | Intentionally abandon a story — marks it `StatusSkipped` (new terminal state) |
+| `change_request` | Append user instructions to story content, reset retry budget, requeue |
+
+**Action × incident-kind matrix:**
+
+| Action | `system_idle` | `story_blocked` | `clarification_needed` |
+|---|---|---|---|
+| `resume` / `try_again` | orphan sweep + re-dispatch | Failed→retry; OnHold→release holds | release holds + re-dispatch |
+| `skip` | N/A | mark story skipped (no sibling release) | N/A |
+| `change_request` | N/A | StatusFailed only; append + reset + retry | N/A |
+
+**Key design decisions:**
+
+- **`StatusSkipped`** is a new terminal status distinct from `StatusFailed`. Terminal guards, `AllStoriesTerminal()`, deadlock detection, session summaries, and PM notifications all include it. `AllStoriesCompleted()` does *not* — skipped ≠ completed. Dependencies on a skipped story are never satisfied.
+- **Reverse-dependency gating:** `SkipStory` rejects if non-terminal stories depend on the target (they would become permanently unstartable).
+- **Skip does not release siblings:** Failure-group holds represent shared blockers. Skipping one story doesn't resolve the shared condition, so siblings stay on hold. Only `resume` releases failure groups.
+- **`change_request` restricted to `StatusFailed`:** For group-scoped incidents (`StatusOnHold`, `clarification_needed`), annotating one story and resuming the group would leave siblings without the annotation. `change_request` only operates on story-local (failed) incidents.
+- **AttemptCount reset:** `change_request` resets attempts to 0 — a user-supplied change is a new direction and deserves a fresh retry budget.
+- **Content annotation:** Appends `"## Change Request (User)"` section to story content, consistent with existing `"## Implementation Notes (Auto-generated)"` and `"## Failure Context (Auto-generated)"` patterns.
 
 ---
 

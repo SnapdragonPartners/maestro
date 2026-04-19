@@ -277,7 +277,7 @@ func (d *Driver) detectDeadlock() bool {
 	var unreleasedStories []*QueuedStory
 	for _, story := range allStories {
 		status := story.GetStatus()
-		if status != StatusDone && status != StatusFailed && status != StatusOnHold {
+		if status != StatusDone && status != StatusFailed && status != StatusSkipped && status != StatusOnHold {
 			unreleasedStories = append(unreleasedStories, story)
 		}
 	}

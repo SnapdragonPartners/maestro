@@ -119,7 +119,7 @@ func (d *Driver) handleAllStoriesCompleteNotification(payload *proto.MessagePayl
 }
 
 // handleAllStoriesTerminalNotification processes the all_stories_terminal notification.
-// Clears in_flight so PM can accept new specs and informs user of failures.
+// Clears in_flight so PM can accept new specs and informs user of failures/skips.
 func (d *Driver) handleAllStoriesTerminalNotification(payload *proto.MessagePayload) (proto.State, error) {
 	terminal, err := payload.ExtractAllStoriesTerminal()
 	if err != nil {
@@ -127,19 +127,29 @@ func (d *Driver) handleAllStoriesTerminalNotification(payload *proto.MessagePayl
 		return StateAwaitUser, nil
 	}
 
-	d.logger.Info("📋 All stories terminal: %d total, %d failed (spec: %s)",
-		terminal.TotalStories, len(terminal.FailedStories), terminal.SpecID)
+	d.logger.Info("📋 All stories terminal: %d total, %d failed, %d skipped (spec: %s)",
+		terminal.TotalStories, len(terminal.FailedStories), len(terminal.SkippedStories), terminal.SpecID)
 
 	d.SetStateData(StateKeyInFlight, false)
 
 	msg := fmt.Sprintf(
-		"Development work is complete but %d out of %d stories failed. ",
-		len(terminal.FailedStories), terminal.TotalStories)
-	for i := range terminal.FailedStories {
-		fs := &terminal.FailedStories[i]
-		msg += fmt.Sprintf("\n- %s (%s): %s", fs.StoryID, fs.Title, fs.Reason)
+		"Development work is complete but %d out of %d stories did not succeed. ",
+		len(terminal.FailedStories)+len(terminal.SkippedStories), terminal.TotalStories)
+	if len(terminal.FailedStories) > 0 {
+		msg += fmt.Sprintf("\n\nFailed stories (%d):", len(terminal.FailedStories))
+		for i := range terminal.FailedStories {
+			fs := &terminal.FailedStories[i]
+			msg += fmt.Sprintf("\n- %s (%s): %s", fs.StoryID, fs.Title, fs.Reason)
+		}
 	}
-	msg += "\n\nUse chat_ask_user to inform the user about the failed stories and ask how they'd like to proceed."
+	if len(terminal.SkippedStories) > 0 {
+		msg += fmt.Sprintf("\n\nSkipped stories (%d):", len(terminal.SkippedStories))
+		for i := range terminal.SkippedStories {
+			ss := &terminal.SkippedStories[i]
+			msg += fmt.Sprintf("\n- %s (%s)", ss.StoryID, ss.Title)
+		}
+	}
+	msg += "\n\nUse chat_ask_user to inform the user about the outcome and ask how they'd like to proceed."
 
 	d.contextManager.AddMessage("user", msg)
 	return StateWorking, nil

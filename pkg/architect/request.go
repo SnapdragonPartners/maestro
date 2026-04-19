@@ -833,7 +833,7 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 }
 
 // notifyPMAllStoriesTerminal sends an all-stories-terminal notification to PM
-// when all stories are done or failed (but not all succeeded). This clears in_flight
+// when all stories are done, failed, or skipped (but not all succeeded). This clears in_flight
 // so the PM can accept new specs.
 func (d *Driver) notifyPMAllStoriesTerminal(ctx context.Context) error {
 	if d.pmAllTerminalNotified {
@@ -843,6 +843,7 @@ func (d *Driver) notifyPMAllStoriesTerminal(ctx context.Context) error {
 	specID := ""
 	totalStories := 0
 	var failedDetails []proto.FailedStoryDetail
+	var skippedDetails []proto.SkippedStoryDetail
 
 	if d.queue != nil {
 		allStories := d.queue.GetAllStories()
@@ -851,21 +852,28 @@ func (d *Driver) notifyPMAllStoriesTerminal(ctx context.Context) error {
 			specID = allStories[0].SpecID
 		}
 		for _, s := range allStories {
-			if s.GetStatus() == StatusFailed {
+			switch s.GetStatus() {
+			case StatusFailed:
 				failedDetails = append(failedDetails, proto.FailedStoryDetail{
 					StoryID: s.ID,
 					Title:   s.Title,
 					Reason:  s.LastFailReason,
+				})
+			case StatusSkipped:
+				skippedDetails = append(skippedDetails, proto.SkippedStoryDetail{
+					StoryID: s.ID,
+					Title:   s.Title,
 				})
 			}
 		}
 	}
 
 	payload := &proto.AllStoriesTerminalPayload{
-		SpecID:        specID,
-		TotalStories:  totalStories,
-		FailedStories: failedDetails,
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		SpecID:         specID,
+		TotalStories:   totalStories,
+		FailedStories:  failedDetails,
+		SkippedStories: skippedDetails,
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
 	}
 
 	notifyMsg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
@@ -877,8 +885,8 @@ func (d *Driver) notifyPMAllStoriesTerminal(ctx context.Context) error {
 	}
 
 	d.pmAllTerminalNotified = true
-	d.resolveAllIncidents(ctx, "all_terminal", fmt.Sprintf("All stories terminal (%d failed)", len(failedDetails)))
-	d.logger.Info("📋 Notified PM that all %d stories are terminal (%d failed, spec=%s)", totalStories, len(failedDetails), specID)
+	d.resolveAllIncidents(ctx, "all_terminal", fmt.Sprintf("All stories terminal (%d failed, %d skipped)", len(failedDetails), len(skippedDetails)))
+	d.logger.Info("📋 Notified PM that all %d stories are terminal (%d failed, %d skipped, spec=%s)", totalStories, len(failedDetails), len(skippedDetails), specID)
 	return nil
 }
 
@@ -1038,7 +1046,7 @@ func (d *Driver) notifyPMOfClarificationNeeded(ctx context.Context, story *Queue
 		Title:            fmt.Sprintf("Clarification needed: %s", story.Title),
 		Summary:          question,
 		AffectedStoryIDs: heldStoryIDs,
-		AllowedActions:   []proto.IncidentAction{proto.IncidentActionResume, proto.IncidentActionChangeRequest},
+		AllowedActions:   []proto.IncidentAction{proto.IncidentActionResume},
 		Blocking:         true,
 		OpenedAt:         time.Now().UTC().Format(time.RFC3339),
 	}

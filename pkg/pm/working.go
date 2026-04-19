@@ -483,6 +483,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				incidentID := utils.GetMapFieldOr[string](effectData, "incident_id", "")
 				action := utils.GetMapFieldOr[string](effectData, "action", "")
 				reason := utils.GetMapFieldOr[string](effectData, "reason", "")
+				content := utils.GetMapFieldOr[string](effectData, "content", "")
 
 				// Validate action is allowed for this incident
 				if inc, exists := d.openIncidents[incidentID]; exists {
@@ -505,6 +506,7 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 					IncidentID: incidentID,
 					Action:     action,
 					Reason:     reason,
+					Content:    content,
 				}))
 				if dispErr := d.dispatcher.DispatchMessage(actionMsg); dispErr != nil {
 					d.logger.Error("❌ Failed to send incident_action to architect: %v", dispErr)

@@ -364,12 +364,19 @@ type FailedStoryDetail struct {
 	Reason  string `json:"reason"`
 }
 
-// AllStoriesTerminalPayload is sent when all stories are done or failed (not all successful).
+// SkippedStoryDetail summarizes one skipped story for the terminal notification.
+type SkippedStoryDetail struct {
+	StoryID string `json:"story_id"`
+	Title   string `json:"title"`
+}
+
+// AllStoriesTerminalPayload is sent when all stories are done, failed, or skipped (not all successful).
 type AllStoriesTerminalPayload struct {
-	SpecID        string              `json:"spec_id"`
-	TotalStories  int                 `json:"total_stories"`
-	FailedStories []FailedStoryDetail `json:"failed_stories"`
-	Timestamp     string              `json:"timestamp"`
+	SpecID         string               `json:"spec_id"`
+	TotalStories   int                  `json:"total_stories"`
+	FailedStories  []FailedStoryDetail  `json:"failed_stories"`
+	SkippedStories []SkippedStoryDetail `json:"skipped_stories,omitempty"`
+	Timestamp      string               `json:"timestamp"`
 }
 
 // NewAllStoriesTerminalPayload creates a payload for the all-stories-terminal notification.
@@ -546,11 +553,11 @@ func (p *MessagePayload) ExtractIncidentResolved() (*IncidentResolvedPayload, er
 }
 
 // IncidentActionPayload requests an action on an open incident.
-// Phase 1.5 supports only the "resume" action.
 type IncidentActionPayload struct {
 	IncidentID string `json:"incident_id"`
-	Action     string `json:"action"` // "resume"
-	Reason     string `json:"reason"`
+	Action     string `json:"action"`            // "resume", "try_again", "skip", "change_request"
+	Reason     string `json:"reason"`            // Why the action is being taken
+	Content    string `json:"content,omitempty"` // For change_request: user-supplied changes to apply
 }
 
 // NewIncidentActionPayload creates a payload for incident action requests.

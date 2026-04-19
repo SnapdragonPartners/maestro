@@ -32,6 +32,8 @@ const (
 	StatusFailed StoryStatus = "failed"
 	// StatusOnHold indicates the story is paused but recoverable (e.g., blocked by a failure under recovery).
 	StatusOnHold StoryStatus = "on_hold"
+	// StatusSkipped indicates the story was intentionally abandoned by user decision.
+	StatusSkipped StoryStatus = "skipped"
 )
 
 // ToDatabaseStatus converts StoryStatus to persistence package status string.
@@ -52,6 +54,8 @@ func (s StoryStatus) ToDatabaseStatus() string {
 		return persistence.StatusFailed
 	case StatusOnHold:
 		return persistence.StatusOnHold
+	case StatusSkipped:
+		return persistence.StatusSkipped
 	default:
 		return persistence.StatusNew
 	}
@@ -101,6 +105,9 @@ func (s *QueuedStory) SetStatus(status StoryStatus) error {
 	}
 	if current == StatusFailed {
 		return fmt.Errorf("cannot change status of failed story %s from failed to %s: failed stories are terminal", s.ID, status)
+	}
+	if current == StatusSkipped {
+		return fmt.Errorf("cannot change status of skipped story %s from skipped to %s: skipped stories are terminal", s.ID, status)
 	}
 	s.Status = string(status)
 	return nil
@@ -306,7 +313,7 @@ func (q *Queue) AllStoriesCompleted() bool {
 	return true
 }
 
-// AllStoriesTerminal checks if all stories in the queue are in a terminal state (done or failed).
+// AllStoriesTerminal checks if all stories are in a terminal state (done, failed, or skipped).
 // Used by the circuit breaker to detect "no more work to do" without implying success.
 // This is distinct from AllStoriesCompleted which only checks for success (StatusDone).
 func (q *Queue) AllStoriesTerminal() bool {
@@ -315,7 +322,7 @@ func (q *Queue) AllStoriesTerminal() bool {
 
 	for _, story := range q.stories {
 		status := story.GetStatus()
-		if status != StatusDone && status != StatusFailed {
+		if status != StatusDone && status != StatusFailed && status != StatusSkipped {
 			return false
 		}
 	}
@@ -494,7 +501,7 @@ func (q *Queue) RequeueStory(storyID string) error {
 	}
 
 	// Protect terminal stories from requeue
-	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed {
+	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed || story.GetStatus() == StatusSkipped {
 		return fmt.Errorf("cannot requeue terminal story %s (status=%s)", storyID, story.GetStatus())
 	}
 
@@ -716,7 +723,7 @@ func (q *Queue) UpdateStoryStatus(storyID string, status StoryStatus) error {
 	}
 
 	// Protect terminal stories from status changes
-	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed {
+	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed || story.GetStatus() == StatusSkipped {
 		q.mutex.Unlock()
 		return fmt.Errorf("cannot update status of terminal story %s (status=%s)", storyID, story.GetStatus())
 	}
@@ -1014,7 +1021,7 @@ func (q *Queue) HoldStory(storyID, reason, owner, failureID, note string) error 
 		return fmt.Errorf("story %s not found in queue", storyID)
 	}
 
-	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed {
+	if story.GetStatus() == StatusDone || story.GetStatus() == StatusFailed || story.GetStatus() == StatusSkipped {
 		q.mutex.Unlock()
 		return fmt.Errorf("cannot hold terminal story %s (status=%s)", storyID, story.GetStatus())
 	}
@@ -1123,6 +1130,80 @@ func (q *Queue) RetryFailedStory(storyID string) error {
 	story.AssignedAgent = ""
 	story.ApprovedPlan = ""
 	story.StartedAt = nil
+	story.LastUpdated = time.Now().UTC()
+
+	var dbStory *persistence.Story
+	if q.persistenceChannel != nil {
+		dbStory = story.ToPersistenceStory()
+	}
+	q.mutex.Unlock()
+
+	if dbStory != nil {
+		persistence.PersistStory(dbStory, q.persistenceChannel)
+	}
+	return nil
+}
+
+// DependentInfo identifies a story that depends on another.
+type DependentInfo struct {
+	ID    string
+	Title string
+}
+
+// GetNonTerminalDependents returns stories that depend on the given story and are not terminal.
+// Used by SkipStory to prevent skipping a story that has active dependents.
+func (q *Queue) GetNonTerminalDependents(storyID string) []DependentInfo {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+	var deps []DependentInfo
+	for _, story := range q.stories {
+		status := story.GetStatus()
+		if status == StatusDone || status == StatusFailed || status == StatusSkipped {
+			continue
+		}
+		for _, depID := range story.DependsOn {
+			if depID == storyID {
+				deps = append(deps, DependentInfo{ID: story.ID, Title: story.Title})
+				break
+			}
+		}
+	}
+	return deps
+}
+
+// SkipStory marks a failed or on_hold story as skipped (intentionally abandoned by user).
+// Rejects if the story has non-terminal dependents that would become permanently unstartable.
+// Bypasses SetStatus's terminal guard since the story may be in StatusFailed.
+func (q *Queue) SkipStory(storyID string) error {
+	dependents := q.GetNonTerminalDependents(storyID)
+	if len(dependents) > 0 {
+		ids := make([]string, len(dependents))
+		for i := range dependents {
+			ids[i] = fmt.Sprintf("%s (%s)", dependents[i].ID, dependents[i].Title)
+		}
+		return fmt.Errorf("cannot skip story %s: %d non-terminal stories depend on it: %v",
+			storyID, len(dependents), ids)
+	}
+
+	q.mutex.Lock()
+	story, exists := q.stories[storyID]
+	if !exists {
+		q.mutex.Unlock()
+		return fmt.Errorf("story %s not found", storyID)
+	}
+	status := story.GetStatus()
+	if status != StatusFailed && status != StatusOnHold {
+		q.mutex.Unlock()
+		return fmt.Errorf("story %s cannot be skipped (status=%s): only failed or on_hold stories can be skipped", storyID, status)
+	}
+
+	story.Status = string(StatusSkipped)
+	story.AssignedAgent = ""
+	story.HoldReason = ""
+	story.HoldSince = nil
+	story.HoldOwner = ""
+	story.HoldNote = ""
+	story.BlockedByFailureID = ""
 	story.LastUpdated = time.Now().UTC()
 
 	var dbStory *persistence.Story

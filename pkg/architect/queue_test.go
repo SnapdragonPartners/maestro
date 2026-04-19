@@ -242,3 +242,194 @@ func TestRequeueOrphanedDispatched_EmptyQueue(t *testing.T) {
 		t.Errorf("expected 0 requeued stories for empty queue, got %d", len(requeued))
 	}
 }
+
+// --- SkipStory tests ---
+
+func TestSkipStory_FromFailed(t *testing.T) {
+	q := newTestQueue()
+	story := addQueueStory(q, "story-1", StatusFailed)
+	story.AssignedAgent = "coder-001"
+	story.AttemptCount = 3
+	story.LastFailReason = "build failed"
+
+	if err := q.SkipStory("story-1"); err != nil {
+		t.Fatalf("SkipStory failed: %v", err)
+	}
+
+	story, _ = q.GetStory("story-1")
+	if story.GetStatus() != StatusSkipped {
+		t.Errorf("expected status %s, got %s", StatusSkipped, story.GetStatus())
+	}
+	if story.AssignedAgent != "" {
+		t.Errorf("expected AssignedAgent cleared, got %q", story.AssignedAgent)
+	}
+	if story.AttemptCount != 3 {
+		t.Errorf("expected AttemptCount preserved at 3, got %d", story.AttemptCount)
+	}
+}
+
+func TestSkipStory_FromOnHold(t *testing.T) {
+	q := newTestQueue()
+	story := addQueueStory(q, "story-1", StatusOnHold)
+	story.HoldReason = "blocked by failure"
+	story.HoldOwner = "architect"
+	story.HoldNote = "needs fix"
+	story.BlockedByFailureID = "fail-123"
+
+	if err := q.SkipStory("story-1"); err != nil {
+		t.Fatalf("SkipStory failed: %v", err)
+	}
+
+	story, _ = q.GetStory("story-1")
+	if story.GetStatus() != StatusSkipped {
+		t.Errorf("expected status %s, got %s", StatusSkipped, story.GetStatus())
+	}
+	if story.HoldReason != "" {
+		t.Errorf("expected HoldReason cleared, got %q", story.HoldReason)
+	}
+	if story.HoldOwner != "" {
+		t.Errorf("expected HoldOwner cleared, got %q", story.HoldOwner)
+	}
+	if story.HoldNote != "" {
+		t.Errorf("expected HoldNote cleared, got %q", story.HoldNote)
+	}
+	if story.BlockedByFailureID != "" {
+		t.Errorf("expected BlockedByFailureID cleared, got %q", story.BlockedByFailureID)
+	}
+}
+
+func TestSkipStory_FromPending_Rejected(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "story-1", StatusPending)
+
+	err := q.SkipStory("story-1")
+	if err == nil {
+		t.Fatal("expected error when skipping pending story")
+	}
+	if story, _ := q.GetStory("story-1"); story.GetStatus() != StatusPending {
+		t.Errorf("status should remain pending, got %s", story.GetStatus())
+	}
+}
+
+func TestSkipStory_NotFound(t *testing.T) {
+	q := newTestQueue()
+
+	err := q.SkipStory("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing story")
+	}
+}
+
+func TestSkipStory_WithNonTerminalDependents_Rejected(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "story-a", StatusFailed)
+	storyB := addQueueStory(q, "story-b", StatusPending)
+	storyB.DependsOn = []string{"story-a"}
+
+	err := q.SkipStory("story-a")
+	if err == nil {
+		t.Fatal("expected error when skipping story with non-terminal dependents")
+	}
+
+	if storyA, _ := q.GetStory("story-a"); storyA.GetStatus() != StatusFailed {
+		t.Errorf("story-a status should remain failed, got %s", storyA.GetStatus())
+	}
+}
+
+func TestSkipStory_WithTerminalDependents_Allowed(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "story-a", StatusFailed)
+	storyB := addQueueStory(q, "story-b", StatusDone)
+	storyB.DependsOn = []string{"story-a"}
+
+	if err := q.SkipStory("story-a"); err != nil {
+		t.Fatalf("SkipStory should succeed when dependents are terminal: %v", err)
+	}
+
+	if storyA, _ := q.GetStory("story-a"); storyA.GetStatus() != StatusSkipped {
+		t.Errorf("expected status skipped, got %s", storyA.GetStatus())
+	}
+}
+
+// --- GetNonTerminalDependents tests ---
+
+func TestGetNonTerminalDependents(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "story-a", StatusFailed)
+	storyB := addQueueStory(q, "story-b", StatusPending)
+	storyB.DependsOn = []string{"story-a"}
+	storyC := addQueueStory(q, "story-c", StatusDone)
+	storyC.DependsOn = []string{"story-a"}
+	storyD := addQueueStory(q, "story-d", StatusOnHold)
+	storyD.DependsOn = []string{"story-a"}
+
+	deps := q.GetNonTerminalDependents("story-a")
+
+	// story-b (pending) and story-d (on_hold) are non-terminal; story-c (done) is terminal
+	if len(deps) != 2 {
+		t.Fatalf("expected 2 non-terminal dependents, got %d: %+v", len(deps), deps)
+	}
+
+	ids := map[string]bool{}
+	for _, d := range deps {
+		ids[d.ID] = true
+	}
+	if !ids["story-b"] {
+		t.Error("expected story-b in non-terminal dependents")
+	}
+	if !ids["story-d"] {
+		t.Error("expected story-d in non-terminal dependents")
+	}
+}
+
+func TestGetNonTerminalDependents_SkippedIsTerminal(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "story-a", StatusFailed)
+	storyB := addQueueStory(q, "story-b", StatusSkipped)
+	storyB.DependsOn = []string{"story-a"}
+
+	deps := q.GetNonTerminalDependents("story-a")
+	if len(deps) != 0 {
+		t.Errorf("expected 0 non-terminal dependents (skipped is terminal), got %d", len(deps))
+	}
+}
+
+// --- AllStoriesTerminal / AllStoriesCompleted with skipped ---
+
+func TestAllStoriesTerminal_WithSkipped(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "s1", StatusDone)
+	addQueueStory(q, "s2", StatusSkipped)
+	addQueueStory(q, "s3", StatusFailed)
+
+	if !q.AllStoriesTerminal() {
+		t.Error("AllStoriesTerminal should be true when all stories are done, failed, or skipped")
+	}
+}
+
+func TestAllStoriesCompleted_WithSkipped(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "s1", StatusDone)
+	addQueueStory(q, "s2", StatusSkipped)
+
+	if q.AllStoriesCompleted() {
+		t.Error("AllStoriesCompleted should be false when a story is skipped (not done)")
+	}
+}
+
+// --- SetStatus guard for skipped ---
+
+func TestSetStatus_RejectsFromSkipped(t *testing.T) {
+	q := newTestQueue()
+	story := addQueueStory(q, "story-1", StatusSkipped)
+
+	if err := story.SetStatus(StatusPending); err == nil {
+		t.Error("should not be able to transition from skipped to pending")
+	}
+	if err := story.SetStatus(StatusDone); err == nil {
+		t.Error("should not be able to transition from skipped to done")
+	}
+	if story.GetStatus() != StatusSkipped {
+		t.Errorf("status should remain skipped, got %s", story.GetStatus())
+	}
+}

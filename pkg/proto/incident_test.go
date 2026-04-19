@@ -282,3 +282,43 @@ func TestIncidentActionResultPayload_WrongKind(t *testing.T) {
 		t.Error("expected error when extracting incident_action_result from incident_action payload")
 	}
 }
+
+func TestIncidentActionPayload_WithContent_RoundTrip(t *testing.T) {
+	original := &IncidentActionPayload{
+		IncidentID: "inc-100",
+		Action:     "change_request",
+		Reason:     "User wants different approach",
+		Content:    "Please use PostgreSQL instead of SQLite for the database layer.",
+	}
+
+	payload := NewIncidentActionPayload(original)
+	extracted, err := payload.ExtractIncidentAction()
+	if err != nil {
+		t.Fatalf("ExtractIncidentAction failed: %v", err)
+	}
+
+	if extracted.Content != original.Content {
+		t.Errorf("Content: got %q, want %q", extracted.Content, original.Content)
+	}
+	if extracted.Action != original.Action {
+		t.Errorf("Action: got %q, want %q", extracted.Action, original.Action)
+	}
+}
+
+func TestIncidentActionPayload_ContentOmittedWhenEmpty(t *testing.T) {
+	original := &IncidentActionPayload{
+		IncidentID: "inc-101",
+		Action:     "resume",
+		Reason:     "Fixed the issue",
+	}
+
+	payload := NewIncidentActionPayload(original)
+	extracted, err := payload.ExtractIncidentAction()
+	if err != nil {
+		t.Fatalf("ExtractIncidentAction failed: %v", err)
+	}
+
+	if extracted.Content != "" {
+		t.Errorf("Content should be empty for resume, got %q", extracted.Content)
+	}
+}
