@@ -60,6 +60,8 @@ const (
 	KeyTestError               = "test_error"
 	KeyTestsPassed             = "tests_passed"
 	KeyTestOutput              = "test_output"
+	KeyTestStatus              = "test_status"
+	KeyTestSkipReason          = "test_skip_reason"
 	KeyTestingCompletedAt      = "testing_completed_at"
 	KeyCodeReviewCompletedAt   = "code_review_completed_at"
 	KeyMergeResult             = "merge_result"

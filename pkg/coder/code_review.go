@@ -25,6 +25,8 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
 	testsPassed := utils.GetStateValueOr[bool](sm, KeyTestsPassed, false)
 	testOutput := utils.GetStateValueOr[string](sm, KeyTestOutput, "")
+	testStatus := utils.GetStateValueOr[string](sm, KeyTestStatus, "")
+	testSkipReason := utils.GetStateValueOr[string](sm, KeyTestSkipReason, "")
 	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
 
 	var approvalEff *effect.ApprovalEffect
@@ -48,7 +50,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	headSHA := c.resolveHeadSHA(ctx)
 
 	// Build comprehensive evidence section
-	evidence := c.buildCompletionEvidence(testsPassed, testOutput, storyType, workResult, headSHA)
+	evidence := c.buildCompletionEvidence(testsPassed, testOutput, testStatus, testSkipReason, storyType, workResult, headSHA)
 
 	// Append acceptance criteria verification evidence if available.
 	// Uses rehydrateVerificationOutcome to handle both the direct in-memory path
@@ -200,12 +202,15 @@ func (c *Coder) resolveHeadSHA(ctx context.Context) string {
 }
 
 // buildCompletionEvidence builds evidence section based on story type and results.
-func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, storyType string, workResult *git.WorkDoneResult, headSHA string) string {
+func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, testStatus, testSkipReason, storyType string, workResult *git.WorkDoneResult, headSHA string) string {
 	evidence := ""
 
 	// Add test evidence
 	if !workResult.HasWork {
 		evidence += "📋 No code changes required — tests not applicable\n"
+	} else if testStatus == "skipped" {
+		evidence += fmt.Sprintf("⚠️ Programmatic tests skipped: %s\n", testSkipReason)
+		evidence += "  Acceptance-criteria verification and adversarial probing were still run.\n"
 	} else if testsPassed {
 		evidence += "✅ All tests passing\n"
 		if testOutput != "" {

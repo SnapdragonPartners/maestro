@@ -3,7 +3,9 @@
 package build
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -13,6 +15,10 @@ import (
 	"orchestrator/pkg/logx"
 	"orchestrator/pkg/utils"
 )
+
+// ErrTargetNotFound indicates that a make target or Makefile does not exist.
+// Callers should treat this as "operation not applicable" rather than a failure.
+var ErrTargetNotFound = errors.New("make target not found")
 
 // DefaultExecDir is the default working directory inside containers.
 const DefaultExecDir = "/workspace"
@@ -48,14 +54,16 @@ type Request struct {
 //
 //nolint:govet // JSON serialization struct, logical order preferred
 type Response struct {
-	Success   bool              `json:"success"`
-	Backend   string            `json:"backend"`
-	Operation string            `json:"operation"`
-	Output    string            `json:"output"`
-	Duration  time.Duration     `json:"duration"`
-	Error     string            `json:"error,omitempty"`
-	Metadata  map[string]string `json:"metadata"`
-	RequestID string            `json:"request_id"`
+	Success    bool              `json:"success"`
+	Skipped    bool              `json:"skipped,omitempty"`
+	SkipReason string            `json:"skip_reason,omitempty"`
+	Backend    string            `json:"backend"`
+	Operation  string            `json:"operation"`
+	Output     string            `json:"output"`
+	Duration   time.Duration     `json:"duration"`
+	Error      string            `json:"error,omitempty"`
+	Metadata   map[string]string `json:"metadata"`
+	RequestID  string            `json:"request_id"`
 }
 
 // NewBuildService creates a new build service.
@@ -219,20 +227,35 @@ func (s *Service) ExecuteBuild(ctx context.Context, req *Request) (*Response, er
 	duration := time.Since(startTime)
 	output := outputBuffer.String()
 
+	// Handle "target not found" as a skip (not a failure).
+	// This happens when a Makefile or specific target doesn't exist yet (e.g., during
+	// bootstrap when infrastructure stories run in parallel with feature stories).
+	skipped := errors.Is(operationErr, ErrTargetNotFound)
+	if skipped {
+		operationErr = nil
+	}
+
 	// Build response.
 	response := &Response{
-		Success:   operationErr == nil,
-		Backend:   backend.Name(),
-		Operation: req.Operation,
-		Output:    output,
-		Duration:  duration,
-		RequestID: requestID,
+		Success:    operationErr == nil,
+		Skipped:    skipped,
+		SkipReason: "",
+		Backend:    backend.Name(),
+		Operation:  req.Operation,
+		Output:     output,
+		Duration:   duration,
+		RequestID:  requestID,
 		Metadata: map[string]string{
 			"backend":     backend.Name(),
 			"duration_ms": fmt.Sprintf("%d", duration.Milliseconds()),
 			"project":     req.ProjectRoot,
 			"executor":    s.executor.Name(),
 		},
+	}
+
+	if skipped {
+		response.SkipReason = fmt.Sprintf("make %s target not available (Makefile missing or target undefined)", req.Operation)
+		response.Metadata["error_type"] = "target_not_found"
 	}
 
 	if operationErr != nil {
@@ -335,11 +358,13 @@ func (s *Service) GetCacheStatus() map[string]interface{} {
 
 // runMakeTarget is a helper that executes a make target using the provided executor.
 // This is used by backends that delegate to Makefiles.
+// Returns ErrTargetNotFound if the Makefile or target doesn't exist.
 func runMakeTarget(ctx context.Context, exec Executor, execDir string, stream io.Writer, target string) error {
+	var stderrBuf bytes.Buffer
 	opts := ExecOpts{
 		Dir:    execDir,
 		Stdout: stream,
-		Stderr: stream,
+		Stderr: io.MultiWriter(stream, &stderrBuf),
 	}
 
 	exitCode, err := exec.Run(ctx, []string{"make", target}, opts)
@@ -348,10 +373,30 @@ func runMakeTarget(ctx context.Context, exec Executor, execDir string, stream io
 	}
 
 	if exitCode != 0 {
+		if isMakeTargetMissing(stderrBuf.String()) {
+			_, _ = fmt.Fprintf(stream, "⚠️ make %s target not available, skipping\n", target)
+			return fmt.Errorf("%w: make %s (Makefile missing or target undefined)", ErrTargetNotFound, target)
+		}
 		return fmt.Errorf("make %s failed with exit code %d", target, exitCode)
 	}
 
 	return nil
+}
+
+// isMakeTargetMissing checks stderr for patterns indicating the Makefile or target doesn't exist.
+func isMakeTargetMissing(stderr string) bool {
+	lower := strings.ToLower(stderr)
+	patterns := []string{
+		"no rule to make target",
+		"no targets specified and no makefile found",
+		"no makefile found",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // isHostExecutor returns true if the executor runs commands on the host.
