@@ -59,6 +59,9 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		// No notifications, continue working
 	}
 
+	// Inject pending items summary if the digest has changed
+	d.maybeInjectPendingItemsSummary()
+
 	// Get conversation state
 	turnCount := utils.GetStateValueOr[int](d.BaseStateMachine, StateKeyTurnCount, 0)
 	expertise := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserExpertise, DefaultExpertise)
@@ -441,6 +444,18 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			case tools.SignalAwaitUser:
 				// chat_ask_user was called - transition to AWAIT_USER state
 				d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
+				// Create durable UserAsk from the tool's message
+				if effectData, ok := utils.SafeAssert[map[string]any](out.EffectData); ok {
+					if askMsg := utils.GetMapFieldOr[string](effectData, "message", ""); askMsg != "" {
+						d.currentAsk = &proto.UserAsk{
+							ID:       fmt.Sprintf("ask-decision-%s", time.Now().UTC().Format("20060102T150405Z")),
+							Prompt:   askMsg,
+							Kind:     "decision_required",
+							OpenedAt: time.Now().UTC().Format(time.RFC3339),
+						}
+						d.syncAskToStateData()
+					}
+				}
 				return tools.SignalAwaitUser, nil
 
 			case tools.SignalReleaseHeld:

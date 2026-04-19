@@ -821,6 +821,7 @@ func (d *Driver) notifyPMAllStoriesComplete(ctx context.Context) error {
 	}
 
 	d.pmAllCompleteNotified = true
+	d.resolveAllIncidents(ctx, "all_terminal", "All stories completed successfully")
 	d.logger.Info("🎉 Notified PM that all %d stories are complete (spec=%s)", totalStories, specID)
 	return nil
 }
@@ -870,6 +871,7 @@ func (d *Driver) notifyPMAllStoriesTerminal(ctx context.Context) error {
 	}
 
 	d.pmAllTerminalNotified = true
+	d.resolveAllIncidents(ctx, "all_terminal", fmt.Sprintf("All stories terminal (%d failed)", len(failedDetails)))
 	d.logger.Info("📋 Notified PM that all %d stories are terminal (%d failed, spec=%s)", totalStories, len(failedDetails), specID)
 	return nil
 }
@@ -903,13 +905,30 @@ func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory,
 	} else {
 		d.logger.Info("📬 Notified PM of blocked story %s (kind=%s, willRetry=%v)", story.ID, fi.Kind, willRetry)
 	}
+
+	// Open durable incident for abandoned stories (not retries)
+	if !willRetry {
+		incident := &proto.Incident{
+			ID:             fmt.Sprintf("incident-story_blocked-%s-%s", story.ID, fi.ID),
+			Kind:           proto.IncidentKindStoryBlocked,
+			Scope:          "story",
+			StoryID:        story.ID,
+			FailureID:      fi.ID,
+			Title:          fmt.Sprintf("Story abandoned: %s", story.Title),
+			Summary:        fi.Explanation,
+			AllowedActions: []proto.IncidentAction{proto.IncidentActionTryAgain, proto.IncidentActionChangeRequest, proto.IncidentActionSkip, proto.IncidentActionResume},
+			Blocking:       true,
+			OpenedAt:       time.Now().UTC().Format(time.RFC3339),
+		}
+		d.openIncident(ctx, incident)
+	}
 }
 
 // handleRepairComplete processes a repair_complete signal from PM.
 // Releases held stories and resumes dispatch if it was suppressed.
 // Returns StateDispatching if stories were released so the caller can
 // return it as the next state, or "" to let the default path continue.
-func (d *Driver) handleRepairComplete(_ context.Context, msg *proto.AgentMsg) proto.State {
+func (d *Driver) handleRepairComplete(ctx context.Context, msg *proto.AgentMsg) proto.State {
 	typedPayload := msg.GetTypedPayload()
 	if typedPayload == nil {
 		d.logger.Warn("Repair complete message has no payload")
@@ -923,6 +942,13 @@ func (d *Driver) handleRepairComplete(_ context.Context, msg *proto.AgentMsg) pr
 	}
 
 	d.logger.Info("🔧 Repair complete signal received: %s", repair.Reason)
+
+	// Resolve incidents associated with this repair
+	if repair.FailureID != "" {
+		d.resolveIncidentsByFailureID(ctx, repair.FailureID, "manual", "User indicated repair complete: "+repair.Reason)
+	} else {
+		d.resolveAllIncidents(ctx, "manual", "User indicated repair complete: "+repair.Reason)
+	}
 
 	// Release held stories
 	var released []string
@@ -995,6 +1021,22 @@ func (d *Driver) notifyPMOfClarificationNeeded(ctx context.Context, story *Queue
 	} else {
 		d.logger.Info("❓ Sent clarification request to PM for story %s (%s: %s)", story.ID, fi.ResolvedKind, question)
 	}
+
+	// Open durable clarification incident
+	incident := &proto.Incident{
+		ID:               fmt.Sprintf("incident-clarification-%s-%s", story.ID, fi.ID),
+		Kind:             proto.IncidentKindClarification,
+		Scope:            "story",
+		StoryID:          story.ID,
+		FailureID:        fi.ID,
+		Title:            fmt.Sprintf("Clarification needed: %s", story.Title),
+		Summary:          question,
+		AffectedStoryIDs: heldStoryIDs,
+		AllowedActions:   []proto.IncidentAction{proto.IncidentActionResume, proto.IncidentActionChangeRequest},
+		Blocking:         true,
+		OpenedAt:         time.Now().UTC().Format(time.RFC3339),
+	}
+	d.openIncident(ctx, incident)
 }
 
 // Response formatting methods using templates

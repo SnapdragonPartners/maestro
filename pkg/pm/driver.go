@@ -86,6 +86,11 @@ const (
 	// StateKeyAwaitingSpecType tracks which type of spec the PM is awaiting
 	// architect response for. Values: "bootstrap", "user", "hotfix".
 	StateKeyAwaitingSpecType = "awaiting_spec_type"
+
+	// Incident/ask tracking (durable asks & incidents system).
+	StateKeyCurrentAsk         = "current_ask"          // string (JSON) - active UserAsk or empty
+	StateKeyOpenIncidents      = "open_incidents"       // string (JSON) - mirrored incidents from architect
+	StateKeyPendingSummaryHash = "pending_summary_hash" // string - hash for change-detected injection
 )
 
 // Driver implements the PM (Product Manager) agent.
@@ -102,9 +107,11 @@ type Driver struct {
 	chatService             *chat.Service    // Chat service for polling new messages
 	executor                execpkg.Executor // PM executor for running tools
 	workDir                 string
-	replyCh                 <-chan *proto.AgentMsg // Receives RESULT messages from architect
-	toolProvider            ToolProvider           // Tool provider for spec_submit tool
-	demoAvailable           bool                   // True when bootstrap is complete (no missing components)
+	replyCh                 <-chan *proto.AgentMsg     // Receives RESULT messages from architect
+	toolProvider            ToolProvider               // Tool provider for spec_submit tool
+	demoAvailable           bool                       // True when bootstrap is complete (no missing components)
+	currentAsk              *proto.UserAsk             // At most one active ask (PM-owned)
+	openIncidents           map[string]*proto.Incident // Mirrored from architect (architect-owned)
 }
 
 // NewPM creates a new PM agent with all dependencies initialized.
@@ -260,6 +267,7 @@ func NewDriver(
 		persistenceChannel: persistenceChannel,
 		executor:           executor,
 		workDir:            workDir,
+		openIncidents:      make(map[string]*proto.Incident),
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 21
+const CurrentSchemaVersion = 22
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -133,6 +133,8 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion20(db)
 	case 21:
 		return migrateToVersion21(db)
+	case 22:
+		return migrateToVersion22(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -952,6 +954,26 @@ func migrateToVersion21(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion22 adds durable asks and incidents columns for PM and architect state.
+func migrateToVersion22(db *sql.DB) error {
+	if !tableHasColumn(db, "pm_state", "current_ask_json") {
+		if _, err := db.Exec("ALTER TABLE pm_state ADD COLUMN current_ask_json TEXT"); err != nil {
+			return fmt.Errorf("failed to add current_ask_json to pm_state: %w", err)
+		}
+	}
+	if !tableHasColumn(db, "pm_state", "open_incidents_json") {
+		if _, err := db.Exec("ALTER TABLE pm_state ADD COLUMN open_incidents_json TEXT"); err != nil {
+			return fmt.Errorf("failed to add open_incidents_json to pm_state: %w", err)
+		}
+	}
+	if !tableHasColumn(db, "architect_state", "open_incidents_json") {
+		if _, err := db.Exec("ALTER TABLE architect_state ADD COLUMN open_incidents_json TEXT"); err != nil {
+			return fmt.Errorf("failed to add open_incidents_json to architect_state: %w", err)
+		}
+	}
+	return nil
+}
+
 // tableHasColumn checks if a table has a column with the given name using PRAGMA table_info.
 func tableHasColumn(db *sql.DB, table, column string) bool {
 	rows, err := db.Query("PRAGMA table_info(" + table + ")")
@@ -1260,6 +1282,7 @@ func createSchema(db *sql.DB) error {
 			session_id TEXT NOT NULL PRIMARY KEY,
 			state TEXT NOT NULL,
 			escalation_counts_json TEXT,
+			open_incidents_json TEXT,
 			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 
@@ -1269,6 +1292,8 @@ func createSchema(db *sql.DB) error {
 			state TEXT NOT NULL,
 			spec_content TEXT,
 			bootstrap_params_json TEXT,
+			current_ask_json TEXT,
+			open_incidents_json TEXT,
 			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 

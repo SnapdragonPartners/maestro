@@ -47,6 +47,8 @@ const (
 	PayloadKindClarificationRequest PayloadKind = "clarification_request" // Request PM to relay clarification to human
 	PayloadKindAllStoriesTerminal   PayloadKind = "all_stories_terminal"  // All stories terminal (some failed) notification
 	PayloadKindRepairComplete       PayloadKind = "repair_complete"       // Signal that system repair is done
+	PayloadKindIncidentOpened       PayloadKind = "incident_opened"       // Architect opened a durable incident
+	PayloadKindIncidentResolved     PayloadKind = "incident_resolved"     // Architect resolved a durable incident
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -487,6 +489,56 @@ func (p *MessagePayload) ExtractRepairComplete() (*RepairCompletePayload, error)
 	var result RepairCompletePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal repair complete payload: %w", err)
+	}
+	return &result, nil
+}
+
+// IncidentResolvedPayload contains data for an incident resolution notification.
+type IncidentResolvedPayload struct {
+	IncidentID string `json:"incident_id"`
+	Resolution string `json:"resolution"` // "work_resumed" | "story_requeued" | "all_terminal" | "manual"
+	Message    string `json:"message"`
+	Timestamp  string `json:"timestamp"`
+}
+
+// NewIncidentOpenedPayload creates a payload wrapping an Incident struct.
+func NewIncidentOpenedPayload(incident *Incident) *MessagePayload {
+	raw, _ := json.Marshal(incident)
+	return &MessagePayload{
+		Kind: PayloadKindIncidentOpened,
+		Data: raw,
+	}
+}
+
+// ExtractIncidentOpened extracts an incident from an incident_opened payload.
+func (p *MessagePayload) ExtractIncidentOpened() (*Incident, error) {
+	if p.Kind != PayloadKindIncidentOpened {
+		return nil, fmt.Errorf("expected incident_opened payload, got %s", p.Kind)
+	}
+	var result Incident
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal incident opened payload: %w", err)
+	}
+	return &result, nil
+}
+
+// NewIncidentResolvedPayload creates a payload for incident resolution notifications.
+func NewIncidentResolvedPayload(data *IncidentResolvedPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindIncidentResolved,
+		Data: raw,
+	}
+}
+
+// ExtractIncidentResolved extracts an incident resolution payload.
+func (p *MessagePayload) ExtractIncidentResolved() (*IncidentResolvedPayload, error) {
+	if p.Kind != PayloadKindIncidentResolved {
+		return nil, fmt.Errorf("expected incident_resolved payload, got %s", p.Kind)
+	}
+	var result IncidentResolvedPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal incident resolved payload: %w", err)
 	}
 	return &result, nil
 }

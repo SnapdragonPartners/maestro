@@ -36,6 +36,7 @@ func (d *Driver) handleAwaitUser(ctx context.Context) (proto.State, error) {
 		// Timeout - check for user messages
 		if d.chatService.HaveNewMessages(d.GetAgentID()) {
 			d.logger.Info("📬 New user messages received, PM resuming work")
+			d.resolveCurrentAsk()
 			return StateWorking, nil
 		}
 		// No messages on either channel, stay in AWAIT_USER
@@ -104,6 +105,12 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 
 	case proto.PayloadKindClarificationRequest:
 		return d.handleClarificationRequest(typedPayload)
+
+	case proto.PayloadKindIncidentOpened:
+		return d.handleIncidentOpened(typedPayload)
+
+	case proto.PayloadKindIncidentResolved:
+		return d.handleIncidentResolved(typedPayload)
 
 	default:
 		d.logger.Warn("⚠️ Unhandled architect notification kind: %s", typedPayload.Kind)

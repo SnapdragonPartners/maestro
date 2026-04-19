@@ -107,6 +107,36 @@ Each type uses appropriate review logic and tools for its domain.
 
 ---
 
+## Durable Incident Lifecycle
+
+The architect maintains a map of open `Incident` objects — architect-owned operational blockers. See `docs/DURABLE_ASKS_AND_INCIDENTS.md` for the full design.
+
+### Incident Opening Triggers
+| Kind | Trigger | Location |
+|------|---------|----------|
+| `story_blocked` | Story abandoned (exhausted retries) | `notifyPMOfBlockedStory` |
+| `clarification_needed` | Failure requires human input | `notifyPMOfClarificationNeeded` |
+| `system_idle` | No active coders + pending work + idle > 60s | `checkAndOpenIdleIncident` in MONITORING |
+
+### Incident Closing Triggers
+| Kind | Trigger | Resolution |
+|------|---------|------------|
+| `story_blocked` | Story no longer failed/on_hold | `"story_requeued"` |
+| `clarification_needed` | Hold released via `repair_complete` | `"manual"` |
+| `system_idle` | Idle predicate false (coder becomes active) | `"work_resumed"` |
+| Any | All stories terminal | `"all_terminal"` |
+
+### System Idle Detection (MONITORING state)
+Each monitoring tick runs `reconcileOpenIncidents()` then `checkAndOpenIdleIncident()`:
+- **Opening** uses a 60s debounce guard to avoid false positives during dispatch transitions
+- **Closing** is predicate-based only — no timing guard; once work resumes, close immediately
+- `monitoringIdleSince` is a non-persistent debounce timestamp, reset when a coder message arrives
+
+### Ownership Rule
+Architect opens and closes incidents. User replies do NOT automatically resolve incidents — only PM-owned asks. The PM receives `incident_opened`/`incident_resolved` payloads and mirrors the state.
+
+---
+
 ## Error handling
 
 * The agent enters **ERROR** when:

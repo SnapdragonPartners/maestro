@@ -115,6 +115,8 @@ type Driver struct {
 	scopeWidener            *ScopeWidener                         // Tracks failure recurrence for scope auto-escalation
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
+	openIncidents           map[string]*proto.Incident            // Durable incidents keyed by incident ID
+	monitoringIdleSince     time.Time                             // Debounce guard for system_idle detection (not persisted)
 	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
 	pmAllTerminalNotified   bool                                  // Guard: PM "all stories terminal" (with failures) notification already sent
 }
@@ -190,6 +192,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		BaseStateMachine:   sm,
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
 		reviewStreaks:      make(map[string]map[string]int),             // Initialize streak tracking
+		openIncidents:      make(map[string]*proto.Incident),            // Initialize incident tracking
 		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
