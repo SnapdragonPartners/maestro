@@ -157,11 +157,27 @@ Both asks and incidents must survive process restart:
 - `AllowedActions` populated as advisory metadata
 - User acts through natural language via PM; PM routes to architect as needed
 
-### Phase 1.5 (follow-up)
+### Phase 1.5 — `incident_action` tool with `resume`
 
-- Add `incident_action` tool with `resume` action only
-- PM can call `incident_action(id, "resume")` which sends a typed message to architect
-- Architect processes the action and resolves the incident if conditions are met
+Adds a structured `incident_action` PM tool with `resume` as the only supported action. Closes the loop: PM detects incident → tells user → user says retry → PM calls tool → architect recovers.
+
+**Routing:** `PayloadKindIncidentAction` maps to `RequestKindExecution` (no new request kind).
+
+**Resume semantics per incident kind:**
+
+| Kind | Story Status | Recovery Action |
+|------|-------------|-----------------|
+| `system_idle` | N/A | Sweep orphaned dispatched stories (no live coder), resume dispatch |
+| `story_blocked` | `StatusFailed` | `RetryFailedStory` — reset to pending for fresh attempt (preserves attempt count) |
+| `story_blocked` | `StatusOnHold` | Release held stories by failure ID (same as repair_complete path) |
+| `clarification_needed` | `StatusOnHold` | Release held stories by failure ID, resume dispatch |
+
+**Key rules:**
+- Recovery executes *before* incident resolution. If recovery fails, incident stays open and PM gets a failure result.
+- When resuming by failure ID, *all* related incidents for that failure are resolved (not just the clicked one). A single prerequisite failure can open both `story_blocked` and `clarification_needed`.
+- Both PM (tool side) and architect (handler side) validate `resume` ∈ `AllowedActions`.
+- `incident_action_result` RESPONSE payload delivers typed success/failure back to PM.
+- Orphan recovery in `system_idle`: dispatched stories whose assigned coder is no longer active are requeued to pending before re-dispatching.
 
 ### Phase 2 (follow-up)
 

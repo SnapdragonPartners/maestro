@@ -58,40 +58,9 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 
 	switch typedPayload.Kind {
 	case proto.PayloadKindStoryComplete:
-		// Individual story completion - log and inform user
-		storyComplete, err := typedPayload.ExtractStoryComplete()
-		if err != nil {
-			d.logger.Error("❌ Failed to parse story_complete payload: %v", err)
-			return StateAwaitUser, nil
+		if err := d.handleStoryCompleteNotification(typedPayload); err != nil {
+			return StateAwaitUser, nil //nolint:nilerr // parse failure already logged, stay in AWAIT_USER
 		}
-
-		if storyComplete.IsHotfix {
-			d.logger.Info("🔧 Hotfix completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
-		} else {
-			d.logger.Info("✅ Story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
-		}
-
-		// Check if demo should become available after this story
-		// Stories may create bootstrap components (Dockerfile, Makefile, etc.)
-		if !d.demoAvailable {
-			d.logger.Debug("Story completed, checking if bootstrap is now complete...")
-			//nolint:contextcheck // Bootstrap detection is a quick local operation, context.Background() is appropriate
-			d.detectAndStoreBootstrapRequirements(context.Background())
-		}
-
-		// Inject message so PM can inform user
-		completionMsg := fmt.Sprintf(
-			"A story has been completed by the development team. Story: %q (ID: %s). ",
-			storyComplete.Title, storyComplete.StoryID)
-		if storyComplete.IsHotfix {
-			completionMsg += "This was a hotfix request. "
-		}
-		if storyComplete.Summary != "" {
-			completionMsg += fmt.Sprintf("Summary: %s ", storyComplete.Summary)
-		}
-		completionMsg += "Use chat_ask_user to inform the user about this progress."
-
-		d.contextManager.AddMessage("user", completionMsg)
 		return StateWorking, nil
 
 	case proto.PayloadKindAllStoriesComplete:
@@ -111,6 +80,9 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 
 	case proto.PayloadKindIncidentResolved:
 		return d.handleIncidentResolved(typedPayload)
+
+	case proto.PayloadKindIncidentActionResult:
+		return d.handleIncidentActionResult(typedPayload)
 
 	default:
 		d.logger.Warn("⚠️ Unhandled architect notification kind: %s", typedPayload.Kind)

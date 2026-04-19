@@ -269,3 +269,193 @@ func (d *Driver) reconcileOpenIncidents(ctx context.Context) {
 		d.resolveIncident(ctx, toResolve[i].id, toResolve[i].reason, toResolve[i].message)
 	}
 }
+
+// handleIncidentAction processes an incident_action request from PM.
+// Performs recovery first, resolves incident on success. Returns next state or "".
+func (d *Driver) handleIncidentAction(ctx context.Context, msg *proto.AgentMsg) proto.State {
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		d.logger.Warn("Incident action has no payload")
+		return ""
+	}
+
+	action, err := typedPayload.ExtractIncidentAction()
+	if err != nil {
+		d.logger.Warn("Failed to extract incident_action payload: %v", err)
+		return ""
+	}
+
+	d.logger.Info("🔧 Incident action received: %s on %s (%s)", action.Action, action.IncidentID, action.Reason)
+
+	// Look up incident under lock and take a snapshot
+	d.incidentsMu.Lock()
+	inc, exists := d.openIncidents[action.IncidentID]
+	var incidentCopy proto.Incident
+	if exists {
+		incidentCopy = *inc
+	}
+	d.incidentsMu.Unlock()
+
+	if !exists {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Incident %s not found", action.IncidentID))
+		return ""
+	}
+
+	// Validate action is allowed
+	allowed := false
+	for _, a := range incidentCopy.AllowedActions {
+		if string(a) == action.Action {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Action %q not allowed for incident %s", action.Action, action.IncidentID))
+		return ""
+	}
+
+	switch incidentCopy.Kind {
+	case proto.IncidentKindSystemIdle:
+		return d.resumeSystemIdle(ctx, action, &incidentCopy)
+	case proto.IncidentKindStoryBlocked:
+		return d.resumeStoryBlocked(ctx, action, &incidentCopy)
+	case proto.IncidentKindClarification:
+		return d.resumeClarification(ctx, action, &incidentCopy)
+	default:
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Unknown incident kind: %s", incidentCopy.Kind))
+		return ""
+	}
+}
+
+func (d *Driver) resumeSystemIdle(ctx context.Context, action *proto.IncidentActionPayload, _ *proto.Incident) proto.State {
+	// Sweep orphaned dispatched stories before re-dispatching
+	activeAgents := d.getActiveCoderIDs()
+	requeued := d.queue.RequeueOrphanedDispatched(activeAgents)
+	if len(requeued) > 0 {
+		d.logger.Info("🔄 Requeued %d orphaned dispatched stories: %v", len(requeued), requeued)
+	}
+
+	// Resume dispatch if suppressed
+	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
+		d.queue.ResumeDispatch()
+		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
+	}
+
+	d.resolveIncident(ctx, action.IncidentID, "resumed", action.Reason)
+	d.monitoringIdleSince = time.Time{}
+	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
+		fmt.Sprintf("System resumed, %d orphaned stories requeued", len(requeued)))
+	return StateDispatching
+}
+
+func (d *Driver) resumeStoryBlocked(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	story, exists := d.queue.GetStory(inc.StoryID)
+	if !exists {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Story %s not found", inc.StoryID))
+		return ""
+	}
+
+	status := story.GetStatus()
+	switch status {
+	case StatusFailed:
+		if retryErr := d.queue.RetryFailedStory(inc.StoryID); retryErr != nil {
+			d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+				fmt.Sprintf("Failed to retry story %s: %v", inc.StoryID, retryErr))
+			return ""
+		}
+		d.logger.Info("🔄 Retrying failed story %s", inc.StoryID)
+
+	case StatusOnHold:
+		// Delegate to repair/release path by failure ID
+		failureID := inc.FailureID
+		if failureID == "" {
+			d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+				"Story is on_hold but incident has no failure ID")
+			return ""
+		}
+		released, _ := d.queue.ReleaseHeldStoriesByFailure(failureID, action.Reason)
+		d.logger.Info("🔓 Released %d held stories for failure %s", len(released), failureID)
+
+	default:
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			fmt.Sprintf("Story %s is in unexpected status %s", inc.StoryID, status))
+		return ""
+	}
+
+	// Resume dispatch if suppressed
+	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
+		d.queue.ResumeDispatch()
+		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
+	}
+
+	// Resolve all incidents with matching failure ID (not just this one)
+	if inc.FailureID != "" {
+		d.resolveIncidentsByFailureID(ctx, inc.FailureID, "resumed", action.Reason)
+	}
+	// Also resolve this specific incident if it wasn't caught by failure ID
+	d.resolveIncident(ctx, action.IncidentID, "resumed", action.Reason)
+
+	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
+		fmt.Sprintf("Story %s recovery initiated", inc.StoryID))
+	return StateDispatching
+}
+
+func (d *Driver) resumeClarification(ctx context.Context, action *proto.IncidentActionPayload, inc *proto.Incident) proto.State {
+	failureID := inc.FailureID
+	if failureID == "" {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			"Clarification incident has no failure ID")
+		return ""
+	}
+
+	released, _ := d.queue.ReleaseHeldStoriesByFailure(failureID, action.Reason)
+	d.logger.Info("🔓 Released %d held stories for failure %s", len(released), failureID)
+
+	// Resume dispatch if suppressed
+	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
+		d.queue.ResumeDispatch()
+		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
+	}
+
+	// Resolve all incidents with matching failure ID
+	d.resolveIncidentsByFailureID(ctx, failureID, "resumed", action.Reason)
+	d.resolveIncident(ctx, action.IncidentID, "resumed", action.Reason)
+
+	d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, true,
+		fmt.Sprintf("Released %d held stories, clarification resolved", len(released)))
+	return StateDispatching
+}
+
+// sendIncidentActionResult sends the outcome of an incident action back to PM.
+func (d *Driver) sendIncidentActionResult(ctx context.Context, incidentID, action string, success bool, message string) {
+	msg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
+	msg.SetTypedPayload(proto.NewIncidentActionResultPayload(&proto.IncidentActionResultPayload{
+		IncidentID: incidentID,
+		Action:     action,
+		Success:    success,
+		Message:    message,
+	}))
+	if err := d.ExecuteEffect(ctx, &SendMessageEffect{Message: msg}); err != nil {
+		d.logger.Warn("Failed to send incident_action_result: %v", err)
+	}
+}
+
+// getActiveCoderIDs returns agent IDs of coders in active states.
+func (d *Driver) getActiveCoderIDs() []string {
+	var ids []string
+	agents := d.dispatcher.GetRegisteredAgents()
+	for i := range agents {
+		if agents[i].Type != "coder" {
+			continue
+		}
+		switch agents[i].State {
+		case "PLANNING", "CODING", "TESTING", "AWAIT_APPROVAL", "PREPARE_MERGE":
+			ids = append(ids, agents[i].ID)
+		}
+	}
+	return ids
+}

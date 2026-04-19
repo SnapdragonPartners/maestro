@@ -123,6 +123,12 @@ func (d *Driver) handleRequest(ctx context.Context) (proto.State, error) {
 				return repairNextState, nil
 			}
 			response = nil // No response needed
+		case proto.RequestKindExecution:
+			execNextState := d.handleExecutionRequest(ctx, requestMsg)
+			if execNextState != "" {
+				return execNextState, nil
+			}
+			response = nil
 		default:
 			return StateError, fmt.Errorf("unknown request kind: %s", requestKind)
 		}
@@ -1037,6 +1043,23 @@ func (d *Driver) notifyPMOfClarificationNeeded(ctx context.Context, story *Queue
 		OpenedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
 	d.openIncident(ctx, incident)
+}
+
+// handleExecutionRequest dispatches execution requests by payload kind.
+func (d *Driver) handleExecutionRequest(ctx context.Context, msg *proto.AgentMsg) proto.State {
+	typedPayload := msg.GetTypedPayload()
+	if typedPayload == nil {
+		d.logger.Warn("Execution request has no payload")
+		return ""
+	}
+
+	switch typedPayload.Kind {
+	case proto.PayloadKindIncidentAction:
+		return d.handleIncidentAction(ctx, msg)
+	default:
+		d.logger.Warn("Unknown execution request payload kind: %s", typedPayload.Kind)
+		return ""
+	}
 }
 
 // Response formatting methods using templates

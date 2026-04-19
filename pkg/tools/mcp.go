@@ -80,6 +80,7 @@ const (
 	SignalBootstrapComplete = "BOOTSTRAP_COMPLETE"  // bootstrap tool completed configuration
 	SignalAwaitUser         = "AWAIT_USER"          // chat_ask_user tool waiting for human response
 	SignalReleaseHeld       = "RELEASE_HELD"        // release_held_stories tool: signal architect to release held stories
+	SignalIncidentAction    = "INCIDENT_ACTION"     // incident_action tool: signal architect to act on an incident
 	SignalMaestroMdComplete = "MAESTRO_MD_COMPLETE" // maestro_md_submit tool completed
 
 	// Architect signals.

@@ -65,6 +65,7 @@ const (
 	ToolChatAskUser     = "chat_ask_user"
 	ToolBootstrap       = "bootstrap"
 	ToolMaestroMdSubmit = "maestro_md_submit"
+	ToolIncidentAction  = "incident_action"
 
 	// Research tools.
 	// Note: ToolWebSearch is defined in web_search.go to keep tool name with its implementation.
@@ -202,6 +203,7 @@ var (
 		ToolWebSearch,
 		ToolWebFetch,
 		ToolReleaseHeldStories,
+		ToolIncidentAction,
 	}
 
 	// PMMaestroMdTools - tools for MAESTRO.md generation phase.

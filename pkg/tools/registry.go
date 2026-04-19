@@ -939,6 +939,11 @@ func init() {
 		Description: "Release held stories after a system repair or prerequisite issue is resolved",
 		InputSchema: getReleaseHeldStoriesSchema(),
 	})
+	Register(ToolIncidentAction, createIncidentActionTool, &ToolMeta{
+		Name:        ToolIncidentAction,
+		Description: "Request an action on an open incident (resume stalled or failed work)",
+		InputSchema: getIncidentActionSchema(),
+	})
 
 	// Register research tools
 	Register(ToolWebSearch, createWebSearchTool, &ToolMeta{

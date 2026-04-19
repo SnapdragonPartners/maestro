@@ -478,6 +478,41 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				}
 				return "", nil
 
+			case tools.SignalIncidentAction:
+				effectData, _ := utils.SafeAssert[map[string]any](out.EffectData)
+				incidentID := utils.GetMapFieldOr[string](effectData, "incident_id", "")
+				action := utils.GetMapFieldOr[string](effectData, "action", "")
+				reason := utils.GetMapFieldOr[string](effectData, "reason", "")
+
+				// Validate action is allowed for this incident
+				if inc, exists := d.openIncidents[incidentID]; exists {
+					allowed := false
+					for _, a := range inc.AllowedActions {
+						if string(a) == action {
+							allowed = true
+							break
+						}
+					}
+					if !allowed {
+						d.logger.Warn("Action %q not in AllowedActions for incident %s", action, incidentID)
+						return "", fmt.Errorf("action %q not allowed for incident %s", action, incidentID)
+					}
+				}
+
+				d.logger.Info("🔧 Incident action '%s' for %s: %s", action, incidentID, reason)
+				actionMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, d.GetAgentID(), "architect")
+				actionMsg.SetTypedPayload(proto.NewIncidentActionPayload(&proto.IncidentActionPayload{
+					IncidentID: incidentID,
+					Action:     action,
+					Reason:     reason,
+				}))
+				if dispErr := d.dispatcher.DispatchMessage(actionMsg); dispErr != nil {
+					d.logger.Error("❌ Failed to send incident_action to architect: %v", dispErr)
+				} else {
+					d.logger.Info("✅ Sent incident_action to architect (%s on %s)", action, incidentID)
+				}
+				return "", nil
+
 			default:
 				return "", fmt.Errorf("unknown ProcessEffect signal: %s", out.Signal)
 			}

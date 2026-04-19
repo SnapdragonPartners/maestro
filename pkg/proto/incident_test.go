@@ -173,3 +173,112 @@ func TestIncidentActionConstants(t *testing.T) {
 		t.Errorf("IncidentActionResume = %q", IncidentActionResume)
 	}
 }
+
+func TestIncidentActionPayload_RoundTrip(t *testing.T) {
+	original := &IncidentActionPayload{
+		IncidentID: "inc-042",
+		Action:     "resume",
+		Reason:     "Docker daemon restarted, environment should be healthy now",
+	}
+
+	payload := NewIncidentActionPayload(original)
+	if payload.Kind != PayloadKindIncidentAction {
+		t.Errorf("expected kind %q, got %q", PayloadKindIncidentAction, payload.Kind)
+	}
+
+	extracted, err := payload.ExtractIncidentAction()
+	if err != nil {
+		t.Fatalf("ExtractIncidentAction failed: %v", err)
+	}
+
+	if extracted.IncidentID != original.IncidentID {
+		t.Errorf("IncidentID: got %q, want %q", extracted.IncidentID, original.IncidentID)
+	}
+	if extracted.Action != original.Action {
+		t.Errorf("Action: got %q, want %q", extracted.Action, original.Action)
+	}
+	if extracted.Reason != original.Reason {
+		t.Errorf("Reason: got %q, want %q", extracted.Reason, original.Reason)
+	}
+}
+
+func TestIncidentActionResultPayload_RoundTrip(t *testing.T) {
+	original := &IncidentActionResultPayload{
+		IncidentID: "inc-042",
+		Action:     "resume",
+		Success:    true,
+		Message:    "Incident resolved, 2 stories released from hold",
+	}
+
+	payload := NewIncidentActionResultPayload(original)
+	if payload.Kind != PayloadKindIncidentActionResult {
+		t.Errorf("expected kind %q, got %q", PayloadKindIncidentActionResult, payload.Kind)
+	}
+
+	extracted, err := payload.ExtractIncidentActionResult()
+	if err != nil {
+		t.Fatalf("ExtractIncidentActionResult failed: %v", err)
+	}
+
+	if extracted.IncidentID != original.IncidentID {
+		t.Errorf("IncidentID: got %q, want %q", extracted.IncidentID, original.IncidentID)
+	}
+	if extracted.Action != original.Action {
+		t.Errorf("Action: got %q, want %q", extracted.Action, original.Action)
+	}
+	if extracted.Success != original.Success {
+		t.Errorf("Success: got %v, want %v", extracted.Success, original.Success)
+	}
+	if extracted.Message != original.Message {
+		t.Errorf("Message: got %q, want %q", extracted.Message, original.Message)
+	}
+}
+
+func TestIncidentActionResultPayload_Failure(t *testing.T) {
+	original := &IncidentActionResultPayload{
+		IncidentID: "inc-099",
+		Action:     "resume",
+		Success:    false,
+		Message:    "Incident inc-099 not found or already resolved",
+	}
+
+	payload := NewIncidentActionResultPayload(original)
+	extracted, err := payload.ExtractIncidentActionResult()
+	if err != nil {
+		t.Fatalf("ExtractIncidentActionResult failed: %v", err)
+	}
+
+	if extracted.Success {
+		t.Error("expected Success=false for failed action result")
+	}
+	if extracted.Message != original.Message {
+		t.Errorf("Message: got %q, want %q", extracted.Message, original.Message)
+	}
+}
+
+func TestIncidentActionPayload_WrongKind(t *testing.T) {
+	// Create an incident_opened payload, then try to extract as incident_action
+	payload := NewIncidentOpenedPayload(&Incident{
+		ID:    "inc-001",
+		Title: "test incident",
+	})
+
+	_, err := payload.ExtractIncidentAction()
+	if err == nil {
+		t.Error("expected error when extracting incident_action from incident_opened payload")
+	}
+}
+
+func TestIncidentActionResultPayload_WrongKind(t *testing.T) {
+	// Create an incident_action payload, then try to extract as incident_action_result
+	payload := NewIncidentActionPayload(&IncidentActionPayload{
+		IncidentID: "inc-001",
+		Action:     "resume",
+		Reason:     "test",
+	})
+
+	_, err := payload.ExtractIncidentActionResult()
+	if err == nil {
+		t.Error("expected error when extracting incident_action_result from incident_action payload")
+	}
+}

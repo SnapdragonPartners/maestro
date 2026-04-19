@@ -86,6 +86,27 @@ func (d *Driver) handleIncidentResolved(payload *proto.MessagePayload) (proto.St
 	return StateWorking, nil
 }
 
+// handleIncidentActionResult processes the architect's response to an incident_action request.
+func (d *Driver) handleIncidentActionResult(payload *proto.MessagePayload) (proto.State, error) {
+	result, err := payload.ExtractIncidentActionResult()
+	if err != nil {
+		d.logger.Warn("Failed to extract incident_action_result payload: %v", err)
+		return StateWorking, nil
+	}
+
+	if result.Success {
+		d.logger.Info("Incident action succeeded: %s (%s)", result.IncidentID, result.Message)
+		msg := fmt.Sprintf("[SYSTEM] Incident action accepted for %s: %s", result.IncidentID, result.Message)
+		d.contextManager.AddMessage("user", msg)
+	} else {
+		d.logger.Warn("Incident action failed: %s (%s)", result.IncidentID, result.Message)
+		msg := fmt.Sprintf("[SYSTEM] Incident action failed for %s: %s. The incident remains open — you may need to ask the user for more information.", result.IncidentID, result.Message)
+		d.contextManager.AddMessage("user", msg)
+	}
+
+	return StateWorking, nil
+}
+
 // maybeInjectPendingItemsSummary injects a summary of pending asks/incidents into context,
 // but only when the digest changes to avoid bloating context on handleWorking re-entry.
 func (d *Driver) maybeInjectPendingItemsSummary() {

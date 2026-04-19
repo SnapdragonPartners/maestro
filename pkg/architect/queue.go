@@ -1104,6 +1104,81 @@ func (q *Queue) ReleaseHeldStoriesByFailure(failureID, cause string) ([]string, 
 	return q.ReleaseHeldStories(matchingIDs, cause)
 }
 
+// RetryFailedStory resets a failed story back to pending for a fresh attempt.
+// Preserves AttemptCount for budget tracking. Returns error if story is not failed.
+func (q *Queue) RetryFailedStory(storyID string) error {
+	q.mutex.Lock()
+	story, exists := q.stories[storyID]
+	if !exists {
+		q.mutex.Unlock()
+		return fmt.Errorf("story %s not found", storyID)
+	}
+	if story.GetStatus() != StatusFailed {
+		q.mutex.Unlock()
+		return fmt.Errorf("story %s is not failed (status=%s)", storyID, story.GetStatus())
+	}
+
+	// Bypass SetStatus which rejects transitions from terminal states
+	story.Status = string(StatusPending)
+	story.AssignedAgent = ""
+	story.ApprovedPlan = ""
+	story.StartedAt = nil
+	story.LastUpdated = time.Now().UTC()
+
+	var dbStory *persistence.Story
+	if q.persistenceChannel != nil {
+		dbStory = story.ToPersistenceStory()
+	}
+	q.mutex.Unlock()
+
+	if dbStory != nil {
+		persistence.PersistStory(dbStory, q.persistenceChannel)
+	}
+	return nil
+}
+
+// RequeueOrphanedDispatched finds stories in StatusDispatched whose AssignedAgent
+// is not in the activeAgentIDs set and requeues them to StatusPending.
+// Returns the IDs of requeued stories.
+func (q *Queue) RequeueOrphanedDispatched(activeAgentIDs []string) []string {
+	activeSet := make(map[string]bool, len(activeAgentIDs))
+	for _, id := range activeAgentIDs {
+		activeSet[id] = true
+	}
+
+	q.mutex.Lock()
+	requeued := make([]string, 0, len(q.stories))
+	for _, story := range q.stories {
+		if story.GetStatus() != StatusDispatched {
+			continue
+		}
+		if activeSet[story.AssignedAgent] {
+			continue
+		}
+		_ = story.SetStatus(StatusPending)
+		story.AssignedAgent = ""
+		story.ApprovedPlan = ""
+		story.StartedAt = nil
+		story.LastUpdated = time.Now().UTC()
+		requeued = append(requeued, story.ID)
+	}
+
+	var toPersist []*persistence.Story
+	if q.persistenceChannel != nil {
+		for _, storyID := range requeued {
+			if story, exists := q.stories[storyID]; exists {
+				toPersist = append(toPersist, story.ToPersistenceStory())
+			}
+		}
+	}
+	q.mutex.Unlock()
+
+	for _, dbStory := range toPersist {
+		persistence.PersistStory(dbStory, q.persistenceChannel)
+	}
+	return requeued
+}
+
 // GetAssignedAgent returns the agent ID assigned to the given story, or empty if unassigned.
 func (q *Queue) GetAssignedAgent(storyID string) string {
 	q.mutex.RLock()

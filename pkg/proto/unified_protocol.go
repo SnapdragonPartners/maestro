@@ -219,6 +219,8 @@ func GetRequestKind(msg *AgentMsg) (RequestKind, bool) {
 		return RequestKindHotfix, true
 	case PayloadKindRepairComplete:
 		return RequestKindRepairComplete, true
+	case PayloadKindIncidentAction:
+		return RequestKindExecution, true
 	default:
 		return "", false
 	}
