@@ -130,7 +130,7 @@ The architect maintains a map of open `Incident` objects — architect-owned ope
 Each monitoring tick runs `reconcileOpenIncidents()` then `checkAndOpenIdleIncident()`:
 - **Opening** uses a 60s debounce guard to avoid false positives during dispatch transitions
 - **Closing** is predicate-based only — no timing guard; once work resumes, close immediately
-- `monitoringIdleSince` is a non-persistent debounce timestamp, reset when a coder message arrives
+- `monitoringIdleSince` is a non-persistent debounce timestamp, set when the idle predicate first becomes true, reset when predicate becomes false or a coder message arrives
 
 ### Ownership Rule
 Architect opens and closes incidents. User replies do NOT automatically resolve incidents — only PM-owned asks. The PM receives `incident_opened`/`incident_resolved` payloads and mirrors the state.

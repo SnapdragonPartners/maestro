@@ -13,11 +13,6 @@ import (
 func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 	// State: waiting for coder requests and review completions
 
-	// Track when monitoring entered idle state (for system_idle debounce)
-	if d.monitoringIdleSince.IsZero() {
-		d.monitoringIdleSince = time.Now()
-	}
-
 	// Check if all stories are completed.
 	if d.queue.AllStoriesCompleted() {
 		d.logger.Info("🚀 MONITORING → DONE: All stories completed successfully")

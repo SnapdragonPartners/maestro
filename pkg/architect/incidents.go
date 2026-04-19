@@ -10,9 +10,12 @@ import (
 )
 
 // openIncident stores an incident locally and notifies the PM.
+// Thread-safe: acquires incidentsMu.
 func (d *Driver) openIncident(ctx context.Context, incident *proto.Incident) {
+	d.incidentsMu.Lock()
 	d.openIncidents[incident.ID] = incident
-	d.syncIncidentsToStateData()
+	d.syncIncidentsToStateDataLocked()
+	d.incidentsMu.Unlock()
 
 	msg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
 	msg.SetTypedPayload(proto.NewIncidentOpenedPayload(incident))
@@ -23,17 +26,18 @@ func (d *Driver) openIncident(ctx context.Context, incident *proto.Incident) {
 	d.logger.Info("Opened incident %s: %s", incident.ID, incident.Title)
 }
 
-// resolveIncident closes an open incident and notifies the PM.
-func (d *Driver) resolveIncident(ctx context.Context, incidentID, resolution, message string) {
+// resolveIncidentLocked closes an open incident and returns the notification to send.
+// Caller must hold incidentsMu.
+func (d *Driver) resolveIncidentLocked(incidentID, resolution, message string) *proto.AgentMsg {
 	inc, exists := d.openIncidents[incidentID]
 	if !exists {
-		return
+		return nil
 	}
 
 	inc.ResolvedAt = time.Now().UTC().Format(time.RFC3339)
 	inc.Resolution = resolution
 	delete(d.openIncidents, incidentID)
-	d.syncIncidentsToStateData()
+	d.syncIncidentsToStateDataLocked()
 
 	msg := proto.NewAgentMsg(proto.MsgTypeRESPONSE, d.GetAgentID(), "pm-001")
 	msg.SetTypedPayload(proto.NewIncidentResolvedPayload(&proto.IncidentResolvedPayload{
@@ -42,31 +46,68 @@ func (d *Driver) resolveIncident(ctx context.Context, incidentID, resolution, me
 		Message:    message,
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 	}))
+	return msg
+}
+
+// resolveIncident closes an open incident and notifies the PM.
+// Thread-safe: acquires incidentsMu.
+func (d *Driver) resolveIncident(ctx context.Context, incidentID, resolution, message string) {
+	d.incidentsMu.Lock()
+	msg := d.resolveIncidentLocked(incidentID, resolution, message)
+	d.incidentsMu.Unlock()
+
+	if msg == nil {
+		return
+	}
 	if err := d.ExecuteEffect(ctx, &SendMessageEffect{Message: msg}); err != nil {
 		d.logger.Warn("Failed to send incident_resolved for %s: %v", incidentID, err)
 	}
-
 	d.logger.Info("Resolved incident %s: %s (%s)", incidentID, resolution, message)
 }
 
 // resolveAllIncidents closes all open incidents with the given resolution.
+// Thread-safe: acquires incidentsMu.
 func (d *Driver) resolveAllIncidents(ctx context.Context, resolution, message string) {
+	d.incidentsMu.Lock()
+	var msgs []*proto.AgentMsg
 	for id := range d.openIncidents {
-		d.resolveIncident(ctx, id, resolution, message)
+		if msg := d.resolveIncidentLocked(id, resolution, message); msg != nil {
+			msgs = append(msgs, msg)
+		}
 	}
-}
+	d.incidentsMu.Unlock()
 
-// resolveIncidentsByFailureID closes incidents matching a specific failure ID.
-func (d *Driver) resolveIncidentsByFailureID(ctx context.Context, failureID, resolution, message string) {
-	for id, inc := range d.openIncidents {
-		if inc.FailureID == failureID {
-			d.resolveIncident(ctx, id, resolution, message)
+	for _, msg := range msgs {
+		if err := d.ExecuteEffect(ctx, &SendMessageEffect{Message: msg}); err != nil {
+			d.logger.Warn("Failed to send incident_resolved: %v", err)
 		}
 	}
 }
 
-// syncIncidentsToStateData mirrors open incidents to a state data key for FSM visibility.
-func (d *Driver) syncIncidentsToStateData() {
+// resolveIncidentsByFailureID closes incidents matching a specific failure ID.
+// Thread-safe: acquires incidentsMu.
+func (d *Driver) resolveIncidentsByFailureID(ctx context.Context, failureID, resolution, message string) {
+	d.incidentsMu.Lock()
+	var msgs []*proto.AgentMsg
+	for id, inc := range d.openIncidents {
+		if inc.FailureID == failureID {
+			if msg := d.resolveIncidentLocked(id, resolution, message); msg != nil {
+				msgs = append(msgs, msg)
+			}
+		}
+	}
+	d.incidentsMu.Unlock()
+
+	for _, msg := range msgs {
+		if err := d.ExecuteEffect(ctx, &SendMessageEffect{Message: msg}); err != nil {
+			d.logger.Warn("Failed to send incident_resolved: %v", err)
+		}
+	}
+}
+
+// syncIncidentsToStateDataLocked mirrors open incidents to a state data key.
+// Caller must hold incidentsMu.
+func (d *Driver) syncIncidentsToStateDataLocked() {
 	if len(d.openIncidents) == 0 {
 		d.SetStateData(StateKeyOpenIncidents, "")
 		return
@@ -80,7 +121,11 @@ func (d *Driver) syncIncidentsToStateData() {
 }
 
 // collectOpenIncidentsJSON serializes open incidents as a JSON string for persistence.
+// Thread-safe: acquires incidentsMu.
 func (d *Driver) collectOpenIncidentsJSON() *string {
+	d.incidentsMu.Lock()
+	defer d.incidentsMu.Unlock()
+
 	if len(d.openIncidents) == 0 {
 		return nil
 	}
@@ -95,6 +140,7 @@ func (d *Driver) collectOpenIncidentsJSON() *string {
 
 // isSystemIdlePredicate checks the core idle conditions (1-3) without timing or blocking-incident guards.
 // Used for closing idle incidents — once work resumes, close immediately.
+// Does NOT acquire incidentsMu (no map access).
 func (d *Driver) isSystemIdlePredicate() bool {
 	if d.queue.AllStoriesTerminal() {
 		return false
@@ -120,9 +166,10 @@ func (d *Driver) isSystemIdlePredicate() bool {
 	return true
 }
 
-// isSystemIdle checks all five conditions for opening a system_idle incident.
+// isSystemIdleLocked checks all five conditions for opening a system_idle incident.
 // Includes 60s debounce guard and blocking-incident check.
-func (d *Driver) isSystemIdle() bool {
+// Caller must hold incidentsMu.
+func (d *Driver) isSystemIdleLocked() bool {
 	if !d.isSystemIdlePredicate() {
 		return false
 	}
@@ -140,16 +187,33 @@ func (d *Driver) isSystemIdle() bool {
 }
 
 // checkAndOpenIdleIncident opens a system_idle incident if conditions are met.
+// Thread-safe: acquires incidentsMu.
 func (d *Driver) checkAndOpenIdleIncident(ctx context.Context) {
+	// Update debounce timer based on current idle predicate.
+	// This ensures the 60s guard measures time since idle predicate first became true,
+	// not time since entering MONITORING.
+	if d.isSystemIdlePredicate() {
+		if d.monitoringIdleSince.IsZero() {
+			d.monitoringIdleSince = time.Now()
+		}
+	} else {
+		d.monitoringIdleSince = time.Time{}
+		return
+	}
+
+	d.incidentsMu.Lock()
 	for _, inc := range d.openIncidents {
 		if inc.Kind == proto.IncidentKindSystemIdle {
+			d.incidentsMu.Unlock()
 			return
 		}
 	}
 
-	if !d.isSystemIdle() {
+	if !d.isSystemIdleLocked() {
+		d.incidentsMu.Unlock()
 		return
 	}
+	d.incidentsMu.Unlock()
 
 	pending := d.queue.GetStoriesByStatus(StatusPending)
 	dispatched := d.queue.GetStoriesByStatus(StatusDispatched)
@@ -176,20 +240,32 @@ func (d *Driver) checkAndOpenIdleIncident(ctx context.Context) {
 }
 
 // reconcileOpenIncidents auto-closes incidents whose conditions are no longer true.
+// Thread-safe: acquires incidentsMu for snapshot, then resolves outside lock.
 func (d *Driver) reconcileOpenIncidents(ctx context.Context) {
+	type resolution struct {
+		id, reason, message string
+	}
+	var toResolve []resolution
+
+	d.incidentsMu.Lock()
 	for id, inc := range d.openIncidents {
 		switch inc.Kind {
 		case proto.IncidentKindSystemIdle:
 			if !d.isSystemIdlePredicate() {
-				d.resolveIncident(ctx, id, "work_resumed", "Active coder detected, system no longer idle")
+				toResolve = append(toResolve, resolution{id, "work_resumed", "Active coder detected, system no longer idle"})
 			}
 		case proto.IncidentKindStoryBlocked:
 			story, exists := d.queue.GetStory(inc.StoryID)
 			if exists && story.GetStatus() != StatusFailed && story.GetStatus() != StatusOnHold {
-				d.resolveIncident(ctx, id, "story_requeued", fmt.Sprintf("Story %s resumed", inc.StoryID))
+				toResolve = append(toResolve, resolution{id, "story_requeued", fmt.Sprintf("Story %s resumed", inc.StoryID)})
 			}
 		case proto.IncidentKindClarification:
 			// Closed by repair_complete handler, not by reconciliation
 		}
+	}
+	d.incidentsMu.Unlock()
+
+	for i := range toResolve {
+		d.resolveIncident(ctx, toResolve[i].id, toResolve[i].reason, toResolve[i].message)
 	}
 }

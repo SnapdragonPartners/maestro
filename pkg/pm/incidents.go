@@ -4,10 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/utils"
 )
 
 // syncAskToStateData mirrors the current ask to a state data key for FSM visibility.
@@ -96,7 +98,7 @@ func (d *Driver) maybeInjectPendingItemsSummary() {
 	hash := sha256Hex(summary)
 	prevHash := ""
 	if v, ok := d.GetStateValue(StateKeyPendingSummaryHash); ok {
-		if s, ok := v.(string); ok {
+		if s, ok := utils.SafeAssert[string](v); ok {
 			prevHash = s
 		}
 	}
@@ -118,7 +120,13 @@ func (d *Driver) buildPendingSummary() string {
 	var sb strings.Builder
 	sb.WriteString("[SYSTEM] Pending items requiring attention:\n\n")
 
-	for _, inc := range d.openIncidents {
+	ids := make([]string, 0, len(d.openIncidents))
+	for id := range d.openIncidents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		inc := d.openIncidents[id]
 		fmt.Fprintf(&sb, "INCIDENT [%s]: %s\n  %s\n  Allowed actions: %v\n\n",
 			inc.ID, inc.Title, inc.Summary, inc.AllowedActions)
 	}

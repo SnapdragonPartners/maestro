@@ -221,6 +221,7 @@ func NewPM(
 		executor:           pmExecutor,
 		workDir:            workDir,
 		toolProvider:       toolProvider,
+		openIncidents:      make(map[string]*proto.Incident),
 	}
 
 	// Now create LLM client with context (passing driver as StateProvider)

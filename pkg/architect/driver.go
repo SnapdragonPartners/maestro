@@ -115,6 +115,7 @@ type Driver struct {
 	scopeWidener            *ScopeWidener                         // Tracks failure recurrence for scope auto-escalation
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
+	incidentsMu             sync.Mutex                            // Protects openIncidents from concurrent access
 	openIncidents           map[string]*proto.Incident            // Durable incidents keyed by incident ID
 	monitoringIdleSince     time.Time                             // Debounce guard for system_idle detection (not persisted)
 	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent

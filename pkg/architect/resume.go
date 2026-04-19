@@ -97,8 +97,10 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 		if unmarshalErr := json.Unmarshal([]byte(*state.OpenIncidentsJSON), &incidents); unmarshalErr != nil {
 			d.logger.Warn("Failed to unmarshal open incidents: %v", unmarshalErr)
 		} else {
+			d.incidentsMu.Lock()
 			d.openIncidents = incidents
-			d.syncIncidentsToStateData()
+			d.syncIncidentsToStateDataLocked()
+			d.incidentsMu.Unlock()
 		}
 	}
 

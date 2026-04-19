@@ -126,6 +126,36 @@ func TestBuildPendingSummary_BothAskAndIncident(t *testing.T) {
 	}
 }
 
+func TestBuildPendingSummary_DeterministicOrder(t *testing.T) {
+	d := createIncidentTestDriver()
+	d.openIncidents["inc-zzz"] = &proto.Incident{
+		ID: "inc-zzz", Title: "Zulu incident", Summary: "last alphabetically",
+		AllowedActions: []proto.IncidentAction{proto.IncidentActionResume},
+	}
+	d.openIncidents["inc-aaa"] = &proto.Incident{
+		ID: "inc-aaa", Title: "Alpha incident", Summary: "first alphabetically",
+		AllowedActions: []proto.IncidentAction{proto.IncidentActionTryAgain},
+	}
+	d.openIncidents["inc-mmm"] = &proto.Incident{
+		ID: "inc-mmm", Title: "Middle incident", Summary: "middle alphabetically",
+		AllowedActions: []proto.IncidentAction{proto.IncidentActionSkip},
+	}
+
+	first := d.buildPendingSummary()
+	for i := 0; i < 20; i++ {
+		if got := d.buildPendingSummary(); got != first {
+			t.Fatalf("buildPendingSummary is nondeterministic: iteration %d differs", i)
+		}
+	}
+
+	aaaIdx := strings.Index(first, "inc-aaa")
+	mmmIdx := strings.Index(first, "inc-mmm")
+	zzzIdx := strings.Index(first, "inc-zzz")
+	if aaaIdx > mmmIdx || mmmIdx > zzzIdx {
+		t.Errorf("incidents should appear in sorted order: aaa@%d, mmm@%d, zzz@%d", aaaIdx, mmmIdx, zzzIdx)
+	}
+}
+
 func TestSha256Hex_Determinism(t *testing.T) {
 	input := "test input for hashing"
 
