@@ -407,10 +407,11 @@ type cappedBuffer struct {
 func (c *cappedBuffer) Write(p []byte) (int, error) {
 	remaining := c.max - len(c.buf)
 	if remaining > 0 {
-		if len(p) > remaining {
-			p = p[:remaining]
+		n := len(p)
+		if n > remaining {
+			n = remaining
 		}
-		c.buf = append(c.buf, p...)
+		c.buf = append(c.buf, p[:n]...)
 	}
 	return len(p), nil
 }

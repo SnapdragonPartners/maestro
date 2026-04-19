@@ -628,7 +628,7 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 func (d *DoneTool) attemptCommit(ctx context.Context, opts *execpkg.Opts, summary string) commitResult {
 	// Remove common macOS filesystem artifacts before staging to prevent them
 	// from polluting the git index (defense-in-depth for macOS/Docker bind mounts)
-	d.executor.Run(ctx, []string{"git", "clean", "-f", "-x", "--", "*.DS_Store", ".DS_Store", "._*"}, opts) //nolint:errcheck // best-effort cleanup
+	d.executor.Run(ctx, []string{"git", "clean", "-f", "-x", "--", ":(glob)**/.DS_Store", ":(glob)**/._*"}, opts) //nolint:errcheck // best-effort cleanup
 
 	// Stage all changes
 	result, err := d.executor.Run(ctx, []string{"git", "add", "-A"}, opts)
