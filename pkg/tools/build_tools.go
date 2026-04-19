@@ -549,6 +549,9 @@ func classifyCommitFailure(stderr string, exitCode int) proto.FailureKind {
 		"cannot lock ref",
 		"fatal: unable to",
 		"error: bad object",
+		"invalid object",
+		"failed to insert into database",
+		"resource deadlock avoided",
 		"permission denied",
 		"no space left on device",
 		"read-only file system",
@@ -623,6 +626,10 @@ func (d *DoneTool) commitChanges(ctx context.Context, summary string) commitResu
 
 // attemptCommit performs a single git add + diff check + commit attempt.
 func (d *DoneTool) attemptCommit(ctx context.Context, opts *execpkg.Opts, summary string) commitResult {
+	// Remove common macOS filesystem artifacts before staging to prevent them
+	// from polluting the git index (defense-in-depth for macOS/Docker bind mounts)
+	d.executor.Run(ctx, []string{"git", "clean", "-f", "-x", "--", "*.DS_Store", ".DS_Store", "._*"}, opts) //nolint:errcheck // best-effort cleanup
+
 	// Stage all changes
 	result, err := d.executor.Run(ctx, []string{"git", "add", "-A"}, opts)
 	if err != nil || result.ExitCode != 0 {
