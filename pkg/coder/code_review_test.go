@@ -340,3 +340,86 @@ func TestProcessApprovalResult_UnknownStatus(t *testing.T) {
 		t.Error("Expected done=false")
 	}
 }
+
+// =============================================================================
+// Completion review tests (Phase 1 stalling fixes)
+// =============================================================================
+
+func TestProcessApprovalResult_CompletionApproved_Bookkeeping(t *testing.T) {
+	coder := createTestCoder(t, nil)
+	sm := coder.BaseStateMachine
+
+	sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCompletion))
+
+	result := &effect.ApprovalResult{
+		Status:   proto.ApprovalStatusApproved,
+		Feedback: "Story is complete",
+	}
+
+	ctx := context.Background()
+	nextState, _, err := coder.processApprovalResult(ctx, sm, result)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if nextState != proto.StateDone {
+		t.Errorf("Expected DONE state for approved completion, got: %s", nextState)
+	}
+	if _, exists := sm.GetStateValue(KeyStoryCompletedAt); !exists {
+		t.Error("Expected KeyStoryCompletedAt to be set on completion approval")
+	}
+	if status, exists := sm.GetStateValue(KeyCompletionStatus); !exists || status != "APPROVED" {
+		t.Errorf("Expected KeyCompletionStatus='APPROVED', got: %v", status)
+	}
+}
+
+func TestProcessApprovalResult_CompletionRejected_ErrorWithFailureInfo(t *testing.T) {
+	coder := createTestCoder(t, nil)
+	sm := coder.BaseStateMachine
+
+	sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCompletion))
+
+	result := &effect.ApprovalResult{
+		Status:   proto.ApprovalStatusRejected,
+		Feedback: "Story needs real implementation work",
+	}
+
+	ctx := context.Background()
+	nextState, _, err := coder.processApprovalResult(ctx, sm, result)
+
+	if err != nil {
+		t.Errorf("Unexpected error (should return nil err with StateError): %v", err)
+	}
+	if nextState != proto.StateError {
+		t.Errorf("Expected ERROR state for rejected completion, got: %s", nextState)
+	}
+
+	fiRaw, exists := sm.GetStateValue(KeyFailureInfo)
+	if !exists {
+		t.Fatal("Expected KeyFailureInfo to be set on completion rejection")
+	}
+	fi, ok := fiRaw.(proto.FailureInfo)
+	if !ok {
+		t.Fatalf("Expected FailureInfo type, got: %T", fiRaw)
+	}
+	if fi.Kind != proto.FailureKindStoryInvalid {
+		t.Errorf("Expected FailureKindStoryInvalid, got: %s", fi.Kind)
+	}
+	if !strings.Contains(fi.Explanation, "Story needs real implementation work") {
+		t.Error("Expected rejection feedback in FailureInfo.Explanation")
+	}
+}
+
+func TestBuildCompletionEvidence_NoWorkTestsNotApplicable(t *testing.T) {
+	coder := createTestCoder(t, nil)
+
+	workResult := &git.WorkDoneResult{HasWork: false}
+	evidence := coder.buildCompletionEvidence(false, "", string(proto.StoryTypeApp), workResult, "")
+
+	if !strings.Contains(evidence, "No code changes required") {
+		t.Error("Expected 'No code changes required' for zero-diff completion")
+	}
+	if strings.Contains(evidence, "Tests not run or failed") {
+		t.Error("Should not show 'Tests not run or failed' for zero-diff completion")
+	}
+}

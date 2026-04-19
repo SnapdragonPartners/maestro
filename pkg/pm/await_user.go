@@ -94,33 +94,10 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 		return StateWorking, nil
 
 	case proto.PayloadKindAllStoriesComplete:
-		// All stories complete - set in_flight to false and inform user
-		allComplete, err := typedPayload.ExtractAllStoriesComplete()
-		if err != nil {
-			d.logger.Error("❌ Failed to parse all_stories_complete payload: %v", err)
-			return StateAwaitUser, nil
-		}
+		return d.handleAllStoriesCompleteNotification(typedPayload)
 
-		d.logger.Info("🎉 All stories complete! Spec: %s, Total: %d stories", allComplete.SpecID, allComplete.TotalStories)
-
-		// Clear in_flight flag - PM can now accept full specs again
-		d.SetStateData(StateKeyInFlight, false)
-
-		// Inject message so PM can inform user
-		completionMsg := fmt.Sprintf(
-			"Great news! All development work has been completed. "+
-				"Total of %d stories were implemented successfully. ",
-			allComplete.TotalStories)
-		if allComplete.DemoReady {
-			completionMsg += "The demo is now ready - the user can access it from the Demo tab. "
-		}
-		if allComplete.Message != "" {
-			completionMsg += allComplete.Message + " "
-		}
-		completionMsg += "Use chat_ask_user to inform the user about this exciting milestone and ask if they'd like to try the demo or request any changes."
-
-		d.contextManager.AddMessage("user", completionMsg)
-		return StateWorking, nil
+	case proto.PayloadKindAllStoriesTerminal:
+		return d.handleAllStoriesTerminalNotification(typedPayload)
 
 	case proto.PayloadKindStoryBlocked:
 		return d.handleStoryBlockedNotification(typedPayload)
@@ -132,6 +109,61 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 		d.logger.Warn("⚠️ Unhandled architect notification kind: %s", typedPayload.Kind)
 		return StateAwaitUser, nil
 	}
+}
+
+// handleAllStoriesCompleteNotification processes the all_stories_complete notification.
+func (d *Driver) handleAllStoriesCompleteNotification(payload *proto.MessagePayload) (proto.State, error) {
+	allComplete, err := payload.ExtractAllStoriesComplete()
+	if err != nil {
+		d.logger.Error("❌ Failed to parse all_stories_complete payload: %v", err)
+		return StateAwaitUser, nil
+	}
+
+	d.logger.Info("🎉 All stories complete! Spec: %s, Total: %d stories", allComplete.SpecID, allComplete.TotalStories)
+
+	d.SetStateData(StateKeyInFlight, false)
+
+	completionMsg := fmt.Sprintf(
+		"Great news! All development work has been completed. "+
+			"Total of %d stories were implemented successfully. ",
+		allComplete.TotalStories)
+	if allComplete.DemoReady {
+		completionMsg += "The demo is now ready - the user can access it from the Demo tab. "
+	}
+	if allComplete.Message != "" {
+		completionMsg += allComplete.Message + " "
+	}
+	completionMsg += "Use chat_ask_user to inform the user about this exciting milestone and ask if they'd like to try the demo or request any changes."
+
+	d.contextManager.AddMessage("user", completionMsg)
+	return StateWorking, nil
+}
+
+// handleAllStoriesTerminalNotification processes the all_stories_terminal notification.
+// Clears in_flight so PM can accept new specs and informs user of failures.
+func (d *Driver) handleAllStoriesTerminalNotification(payload *proto.MessagePayload) (proto.State, error) {
+	terminal, err := payload.ExtractAllStoriesTerminal()
+	if err != nil {
+		d.logger.Error("❌ Failed to parse all_stories_terminal payload: %v", err)
+		return StateAwaitUser, nil
+	}
+
+	d.logger.Info("📋 All stories terminal: %d total, %d failed (spec: %s)",
+		terminal.TotalStories, len(terminal.FailedStories), terminal.SpecID)
+
+	d.SetStateData(StateKeyInFlight, false)
+
+	msg := fmt.Sprintf(
+		"Development work is complete but %d out of %d stories failed. ",
+		len(terminal.FailedStories), terminal.TotalStories)
+	for i := range terminal.FailedStories {
+		fs := &terminal.FailedStories[i]
+		msg += fmt.Sprintf("\n- %s (%s): %s", fs.StoryID, fs.Title, fs.Reason)
+	}
+	msg += "\n\nUse chat_ask_user to inform the user about the failed stories and ask how they'd like to proceed."
+
+	d.contextManager.AddMessage("user", msg)
+	return StateWorking, nil
 }
 
 // handleStoryBlockedNotification processes a story_blocked notification from the architect.

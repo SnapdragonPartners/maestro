@@ -116,6 +116,7 @@ type Driver struct {
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
 	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
+	pmAllTerminalNotified   bool                                  // Guard: PM "all stories terminal" (with failures) notification already sent
 }
 
 // GitHubMergeClient defines the subset of GitHub operations needed for merge requests.
@@ -913,9 +914,12 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, false, false)
 				}
 
-				// Check if all stories are now terminal — if so, architect is done
+				// Check if all stories are now terminal — if so, notify PM and finish
 				if d.queue.AllStoriesTerminal() {
 					d.logger.Info("📋 All stories are terminal (done or failed). Transitioning to DONE.")
+					if err := d.notifyPMAllStoriesTerminal(ctx); err != nil {
+						d.logger.Warn("⚠️ Failed to notify PM of all stories terminal: %v", err)
+					}
 					if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
 						d.logger.Error("❌ Failed to transition to DONE state: %v", transErr)
 					}
@@ -1024,6 +1028,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
 					if d.queue.AllStoriesTerminal() {
 						d.logger.Info("📋 All stories are terminal. Transitioning to DONE.")
+						if err := d.notifyPMAllStoriesTerminal(ctx); err != nil {
+							d.logger.Warn("⚠️ Failed to notify PM of all stories terminal: %v", err)
+						}
 						if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
 							d.logger.Error("❌ Failed to transition to DONE: %v", transErr)
 						}

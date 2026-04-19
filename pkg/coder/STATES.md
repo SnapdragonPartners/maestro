@@ -37,6 +37,7 @@ stateDiagram-v2
 
     %% Coding / testing loop
     CODING        --> TESTING          : code complete
+    CODING        --> CODE_REVIEW      : zero-diff completion
     CODING        --> QUESTION         : clarification
     CODING        --> BUDGET_REVIEW    : budget exceeded
     CODING        --> ERROR            : unrecoverable error 
@@ -102,7 +103,7 @@ stateDiagram-v2
 | **SETUP**           | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | –    | ✔︎    |
 | **PLANNING**        | –       | –     | ✔︎           | –        | –      | –       | –            | –              | ✔︎             | –            | ✔︎       | –    | –     |
 | **PLAN\_REVIEW**    | –       | –     | –            | ✔︎       | ✔︎     | –       | –            | –              | –              | –            | –        | ✔︎   | ✔︎    |
-| **CODING**          | –       | –     | –            | –        | –      | ✔︎      | –            | –              | ✔︎             | –            | ✔︎       | –    | ✔︎    |
+| **CODING**          | –       | –     | –            | –        | –      | ✔︎      | ✔︎           | –              | ✔︎             | –            | ✔︎       | –    | ✔︎    |
 | **TESTING**         | –       | –     | –            | –        | ✔︎     | –       | ✔︎           | –              | –              | –            | –        | –    | –     |
 | **CODE\_REVIEW**    | –       | –     | –            | –        | ✔︎     | –       | –            | ✔︎             | –              | –            | –        | –    | ✔︎    |
 | **PREPARE\_MERGE**  | –       | –     | –            | –        | ✔︎     | –       | –            | –              | –              | ✔︎           | –        | –    | ✔︎    |
@@ -141,18 +142,23 @@ This ensures approved plans aren't discarded due to execution issues.
 
 ## Plan & Completion Review
 
-Plan reviews (including completion claims) support three-way decisions:
+Plan reviews support three-way decisions:
 
 | Approval Result      | Status Code           | Next state                                                                           |
 | -------------------- | -------------------- | ------------------------------------------------------------------------------------ |
-| **APPROVED**         | `ApprovalStatusApproved` | Proceed to `CODING` (for plans) or `DONE` (for completion claims) |
+| **APPROVED**         | `ApprovalStatusApproved` | Proceed to `CODING` (for plans) or `DONE` (for planning-side completion claims) |
 | **NEEDS_CHANGES**    | `ApprovalStatusNeedsChanges` | Return to `PLANNING` with feedback for refinement |
 | **REJECTED**         | `ApprovalStatusRejected` | Move to `ERROR` (abandon story as impossible) |
 
-**Completion Claims**: When coder uses `story_complete` tool, architect can:
+**Completion Claims** have two paths depending on origin:
+
+- **Planning-side** (`story_complete` tool during PLANNING) → `PLAN_REVIEW`
+- **Coding-side** (`done` tool with empty diff during CODING) → `CODE_REVIEW` (bypasses TESTING)
+
+Completion review semantics are the same in both paths:
 - **APPROVED**: Story is truly complete → `DONE`
-- **NEEDS_CHANGES**: Missing work identified (tests, docs, etc.) → back to `PLANNING`  
-- **REJECTED**: Story approach fundamentally flawed → `ERROR`
+- **NEEDS_CHANGES**: Evidence insufficient or minor work identified → coder continues (`PLANNING` or `CODING`)
+- **REJECTED**: Fundamental misassessment → `ERROR` (story abandoned, may be rewritten)
 
 ---
 
