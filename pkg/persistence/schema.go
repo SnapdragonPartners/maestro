@@ -13,7 +13,7 @@ import (
 )
 
 // CurrentSchemaVersion defines the current schema version for migration support.
-const CurrentSchemaVersion = 21
+const CurrentSchemaVersion = 23
 
 // InitializeDatabase creates and initializes the SQLite database with the required schema.
 // This function is idempotent and safe to call multiple times.
@@ -133,6 +133,10 @@ func runMigration(db *sql.DB, version int) error {
 		return migrateToVersion20(db)
 	case 21:
 		return migrateToVersion21(db)
+	case 22:
+		return migrateToVersion22(db)
+	case 23:
+		return migrateToVersion23(db)
 	default:
 		return fmt.Errorf("unknown migration version: %d", version)
 	}
@@ -710,6 +714,8 @@ func migrateToVersion17(db *sql.DB) error {
 // Maintenance stories are tracked separately for querying when maintenance last ran.
 // Uses a single connection to ensure PRAGMA foreign_keys state is consistent,
 // since database/sql connection pooling can route statements to different connections.
+//
+//nolint:dupl // Table-swap migrations are intentionally self-contained per version
 func migrateToVersion18(db *sql.DB) error {
 	ctx := context.Background()
 
@@ -838,7 +844,7 @@ func migrateToVersion20(db *sql.DB) error {
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
-			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed')),
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed','skipped')),
 			priority INTEGER DEFAULT 0,
 			approved_plan TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -952,6 +958,92 @@ func migrateToVersion21(db *sql.DB) error {
 	return nil
 }
 
+// migrateToVersion22 adds durable asks and incidents columns for PM and architect state.
+func migrateToVersion22(db *sql.DB) error {
+	if !tableHasColumn(db, "pm_state", "current_ask_json") {
+		if _, err := db.Exec("ALTER TABLE pm_state ADD COLUMN current_ask_json TEXT"); err != nil {
+			return fmt.Errorf("failed to add current_ask_json to pm_state: %w", err)
+		}
+	}
+	if !tableHasColumn(db, "pm_state", "open_incidents_json") {
+		if _, err := db.Exec("ALTER TABLE pm_state ADD COLUMN open_incidents_json TEXT"); err != nil {
+			return fmt.Errorf("failed to add open_incidents_json to pm_state: %w", err)
+		}
+	}
+	if !tableHasColumn(db, "architect_state", "open_incidents_json") {
+		if _, err := db.Exec("ALTER TABLE architect_state ADD COLUMN open_incidents_json TEXT"); err != nil {
+			return fmt.Errorf("failed to add open_incidents_json to architect_state: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateToVersion23 adds 'skipped' to the stories status CHECK constraint.
+// Uses table-swap pattern (same as v20).
+//
+//nolint:dupl // Table-swap migrations are intentionally self-contained per version
+func migrateToVersion23(db *sql.DB) error {
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire connection for migration: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("failed to disable foreign keys: %w", err)
+	}
+	defer func() {
+		_, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+	}()
+
+	migrations := []string{
+		`CREATE TABLE IF NOT EXISTS stories_new (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			spec_id TEXT REFERENCES specs(id),
+			title TEXT NOT NULL,
+			content TEXT NOT NULL,
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed','skipped')),
+			priority INTEGER DEFAULT 0,
+			approved_plan TEXT,
+			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+			started_at DATETIME,
+			completed_at DATETIME,
+			assigned_agent TEXT,
+			tokens_used BIGINT DEFAULT 0,
+			cost_usd DECIMAL(10,4) DEFAULT 0.0,
+			metadata TEXT,
+			story_type TEXT DEFAULT 'app' CHECK (story_type IN ('devops', 'app', 'maintenance')),
+			pr_id TEXT,
+			commit_hash TEXT,
+			completion_summary TEXT,
+			hold_reason TEXT,
+			hold_since DATETIME,
+			hold_owner TEXT,
+			hold_note TEXT,
+			blocked_by_failure_id TEXT
+		)`,
+		`INSERT INTO stories_new SELECT * FROM stories`,
+		`DROP TABLE stories`,
+		`ALTER TABLE stories_new RENAME TO stories`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_session ON stories(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_status ON stories(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_agent ON stories(assigned_agent)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_type ON stories(story_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_stories_spec ON stories(spec_id)`,
+	}
+
+	for _, migration := range migrations {
+		if _, err := conn.ExecContext(ctx, migration); err != nil {
+			return fmt.Errorf("failed to execute stories migration: %s: %w", migration, err)
+		}
+	}
+
+	return nil
+}
+
 // tableHasColumn checks if a table has a column with the given name using PRAGMA table_info.
 func tableHasColumn(db *sql.DB, table, column string) bool {
 	rows, err := db.Query("PRAGMA table_info(" + table + ")")
@@ -1015,7 +1107,7 @@ func createSchema(db *sql.DB) error {
 			spec_id TEXT REFERENCES specs(id),
 			title TEXT NOT NULL,
 			content TEXT NOT NULL,
-			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed')),
+			status TEXT DEFAULT 'new' CHECK (status IN ('new','pending','dispatched','planning','coding','done','on_hold','failed','skipped')),
 			priority INTEGER DEFAULT 0,
 			approved_plan TEXT,
 			created_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -1260,6 +1352,7 @@ func createSchema(db *sql.DB) error {
 			session_id TEXT NOT NULL PRIMARY KEY,
 			state TEXT NOT NULL,
 			escalation_counts_json TEXT,
+			open_incidents_json TEXT,
 			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 
@@ -1269,6 +1362,8 @@ func createSchema(db *sql.DB) error {
 			state TEXT NOT NULL,
 			spec_content TEXT,
 			bootstrap_params_json TEXT,
+			current_ask_json TEXT,
+			open_incidents_json TEXT,
 			updated_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 

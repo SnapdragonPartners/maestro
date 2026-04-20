@@ -36,6 +36,10 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 		return StateDone, nil
 	}
 
+	// Reconcile open incidents and check for system idle
+	d.reconcileOpenIncidents(ctx)
+	d.checkAndOpenIdleIncident(ctx)
+
 	// In monitoring state, we wait for either:
 	// 1. Coder questions/requests (transition to REQUEST).
 	// 2. Heartbeat to check for new ready stories.
@@ -48,6 +52,7 @@ func (d *Driver) handleMonitoring(ctx context.Context) (proto.State, error) {
 		if questionMsg == nil {
 			return StateMonitoring, nil
 		}
+		d.monitoringIdleSince = time.Time{} // Reset idle timer on coder activity
 		// Store the question for processing in REQUEST state.
 		d.SetStateData(StateKeyCurrentRequest, questionMsg)
 		return StateRequest, nil

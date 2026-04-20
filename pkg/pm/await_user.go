@@ -36,6 +36,7 @@ func (d *Driver) handleAwaitUser(ctx context.Context) (proto.State, error) {
 		// Timeout - check for user messages
 		if d.chatService.HaveNewMessages(d.GetAgentID()) {
 			d.logger.Info("📬 New user messages received, PM resuming work")
+			d.resolveCurrentAsk()
 			return StateWorking, nil
 		}
 		// No messages on either channel, stay in AWAIT_USER
@@ -57,40 +58,9 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 
 	switch typedPayload.Kind {
 	case proto.PayloadKindStoryComplete:
-		// Individual story completion - log and inform user
-		storyComplete, err := typedPayload.ExtractStoryComplete()
-		if err != nil {
-			d.logger.Error("❌ Failed to parse story_complete payload: %v", err)
-			return StateAwaitUser, nil
+		if err := d.handleStoryCompleteNotification(typedPayload); err != nil {
+			return StateAwaitUser, nil //nolint:nilerr // parse failure already logged, stay in AWAIT_USER
 		}
-
-		if storyComplete.IsHotfix {
-			d.logger.Info("🔧 Hotfix completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
-		} else {
-			d.logger.Info("✅ Story completed: %s - %s", storyComplete.StoryID, storyComplete.Title)
-		}
-
-		// Check if demo should become available after this story
-		// Stories may create bootstrap components (Dockerfile, Makefile, etc.)
-		if !d.demoAvailable {
-			d.logger.Debug("Story completed, checking if bootstrap is now complete...")
-			//nolint:contextcheck // Bootstrap detection is a quick local operation, context.Background() is appropriate
-			d.detectAndStoreBootstrapRequirements(context.Background())
-		}
-
-		// Inject message so PM can inform user
-		completionMsg := fmt.Sprintf(
-			"A story has been completed by the development team. Story: %q (ID: %s). ",
-			storyComplete.Title, storyComplete.StoryID)
-		if storyComplete.IsHotfix {
-			completionMsg += "This was a hotfix request. "
-		}
-		if storyComplete.Summary != "" {
-			completionMsg += fmt.Sprintf("Summary: %s ", storyComplete.Summary)
-		}
-		completionMsg += "Use chat_ask_user to inform the user about this progress."
-
-		d.contextManager.AddMessage("user", completionMsg)
 		return StateWorking, nil
 
 	case proto.PayloadKindAllStoriesComplete:
@@ -104,6 +74,15 @@ func (d *Driver) handleArchitectNotification(msg *proto.AgentMsg) (proto.State, 
 
 	case proto.PayloadKindClarificationRequest:
 		return d.handleClarificationRequest(typedPayload)
+
+	case proto.PayloadKindIncidentOpened:
+		return d.handleIncidentOpened(typedPayload)
+
+	case proto.PayloadKindIncidentResolved:
+		return d.handleIncidentResolved(typedPayload)
+
+	case proto.PayloadKindIncidentActionResult:
+		return d.handleIncidentActionResult(typedPayload)
 
 	default:
 		d.logger.Warn("⚠️ Unhandled architect notification kind: %s", typedPayload.Kind)
@@ -140,7 +119,7 @@ func (d *Driver) handleAllStoriesCompleteNotification(payload *proto.MessagePayl
 }
 
 // handleAllStoriesTerminalNotification processes the all_stories_terminal notification.
-// Clears in_flight so PM can accept new specs and informs user of failures.
+// Clears in_flight so PM can accept new specs and informs user of failures/skips.
 func (d *Driver) handleAllStoriesTerminalNotification(payload *proto.MessagePayload) (proto.State, error) {
 	terminal, err := payload.ExtractAllStoriesTerminal()
 	if err != nil {
@@ -148,19 +127,29 @@ func (d *Driver) handleAllStoriesTerminalNotification(payload *proto.MessagePayl
 		return StateAwaitUser, nil
 	}
 
-	d.logger.Info("📋 All stories terminal: %d total, %d failed (spec: %s)",
-		terminal.TotalStories, len(terminal.FailedStories), terminal.SpecID)
+	d.logger.Info("📋 All stories terminal: %d total, %d failed, %d skipped (spec: %s)",
+		terminal.TotalStories, len(terminal.FailedStories), len(terminal.SkippedStories), terminal.SpecID)
 
 	d.SetStateData(StateKeyInFlight, false)
 
 	msg := fmt.Sprintf(
-		"Development work is complete but %d out of %d stories failed. ",
-		len(terminal.FailedStories), terminal.TotalStories)
-	for i := range terminal.FailedStories {
-		fs := &terminal.FailedStories[i]
-		msg += fmt.Sprintf("\n- %s (%s): %s", fs.StoryID, fs.Title, fs.Reason)
+		"Development work is complete but %d out of %d stories did not succeed. ",
+		len(terminal.FailedStories)+len(terminal.SkippedStories), terminal.TotalStories)
+	if len(terminal.FailedStories) > 0 {
+		msg += fmt.Sprintf("\n\nFailed stories (%d):", len(terminal.FailedStories))
+		for i := range terminal.FailedStories {
+			fs := &terminal.FailedStories[i]
+			msg += fmt.Sprintf("\n- %s (%s): %s", fs.StoryID, fs.Title, fs.Reason)
+		}
 	}
-	msg += "\n\nUse chat_ask_user to inform the user about the failed stories and ask how they'd like to proceed."
+	if len(terminal.SkippedStories) > 0 {
+		msg += fmt.Sprintf("\n\nSkipped stories (%d):", len(terminal.SkippedStories))
+		for i := range terminal.SkippedStories {
+			ss := &terminal.SkippedStories[i]
+			msg += fmt.Sprintf("\n- %s (%s)", ss.StoryID, ss.Title)
+		}
+	}
+	msg += "\n\nUse chat_ask_user to inform the user about the outcome and ask how they'd like to proceed."
 
 	d.contextManager.AddMessage("user", msg)
 	return StateWorking, nil

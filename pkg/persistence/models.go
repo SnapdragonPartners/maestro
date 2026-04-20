@@ -92,6 +92,7 @@ const (
 	StatusDone       = "done"
 	StatusOnHold     = "on_hold"
 	StatusFailed     = "failed"
+	StatusSkipped    = "skipped"
 )
 
 // GenerateSpecID generates a new UUID for a spec.

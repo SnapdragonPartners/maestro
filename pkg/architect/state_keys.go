@@ -49,6 +49,9 @@ const (
 
 	// Lifecycle tracking.
 	StateKeyStartedAt = "started_at" // time.Time - when architect started
+
+	// Incident tracking (durable asks & incidents system).
+	StateKeyOpenIncidents = "open_incidents" // string (JSON) - mirrored for FSM visibility
 )
 
 // Dynamic state key patterns (use with fmt.Sprintf).

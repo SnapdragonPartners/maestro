@@ -25,10 +25,14 @@ func (d *Driver) SerializeState(_ context.Context, _ *sql.DB, sessionID string) 
 	// Get current state from state machine.
 	currentState := d.GetCurrentState()
 
+	// Serialize open incidents.
+	openIncidentsJSON := d.collectOpenIncidentsJSON()
+
 	// Build architect state.
 	state := &persistence.ArchitectState{
-		SessionID: sessionID,
-		State:     string(currentState),
+		SessionID:         sessionID,
+		State:             string(currentState),
+		OpenIncidentsJSON: openIncidentsJSON,
 	}
 
 	// Build per-agent contexts.
@@ -85,6 +89,19 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 		}
 		// The escalation handler manages its own state via files.
 		// We would need to add a method to restore counts if needed.
+	}
+
+	// Restore open incidents.
+	if state.OpenIncidentsJSON != nil {
+		var incidents map[string]*proto.Incident
+		if unmarshalErr := json.Unmarshal([]byte(*state.OpenIncidentsJSON), &incidents); unmarshalErr != nil {
+			d.logger.Warn("Failed to unmarshal open incidents: %v", unmarshalErr)
+		} else {
+			d.incidentsMu.Lock()
+			d.openIncidents = incidents
+			d.syncIncidentsToStateDataLocked()
+			d.incidentsMu.Unlock()
+		}
 	}
 
 	// Restore per-agent contexts.
@@ -156,9 +173,11 @@ func (d *Driver) Checkpoint(sessionID string) {
 
 	// Build architect state
 	currentState := d.GetCurrentState()
+	openIncidentsJSON := d.collectOpenIncidentsJSON()
 	state := &persistence.ArchitectState{
-		SessionID: sessionID,
-		State:     string(currentState),
+		SessionID:         sessionID,
+		State:             string(currentState),
+		OpenIncidentsJSON: openIncidentsJSON,
 	}
 
 	// Build per-agent contexts

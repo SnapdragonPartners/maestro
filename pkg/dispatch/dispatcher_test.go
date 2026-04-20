@@ -554,6 +554,23 @@ func TestLeaseOperations(t *testing.T) {
 
 	// Test clearing non-existent lease (should not panic)
 	dispatcher.ClearLease("non-existent")
+
+	// Test GetLeasedStoryIDs
+	dispatcher.SetLease("agent-001", "story-001")
+	dispatcher.SetLease("agent-002", "story-002")
+	leased := dispatcher.GetLeasedStoryIDs()
+	if len(leased) != 2 {
+		t.Errorf("Expected 2 leased stories, got %d", len(leased))
+	}
+	if !leased["story-001"] || !leased["story-002"] {
+		t.Errorf("Expected story-001 and story-002 in leased set, got %v", leased)
+	}
+
+	dispatcher.ClearLease("agent-001")
+	leased = dispatcher.GetLeasedStoryIDs()
+	if len(leased) != 1 || !leased["story-002"] {
+		t.Errorf("Expected only story-002 in leased set after clear, got %v", leased)
+	}
 }
 
 func TestSendRequeue(t *testing.T) {

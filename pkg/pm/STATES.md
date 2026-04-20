@@ -209,9 +209,20 @@ PM uses LLM reasoning to decide when to:
 **Purpose:** Wait for user's response in chat
 
 **Behavior:**
-- Polls chat channel for new messages (1-second intervals)
+- Polls chat channel for new messages (500ms timeout intervals)
 - Transitions to WORKING when new messages arrive
 - Uses chat middleware to track read position
+- On user message arrival, resolves the active `UserAsk` (if any)
+- Also receives architect notifications on `replyCh` (story completions, incidents)
+
+### Durable Ask Lifecycle
+
+PM maintains at most one active `UserAsk` — a PM-owned conversational obligation:
+- **Created** when `chat_ask_user` tool is called (in WORKING → SignalAwaitUser handler)
+- **Resolved** when user sends a chat message (in AWAIT_USER poll check)
+- **Superseded** if PM issues a new `chat_ask_user` before prior ask is resolved
+- **Persisted** via `PMState.CurrentAskJSON` column and mirrored to `StateKeyCurrentAsk` state data
+- User replies resolve asks; they do NOT resolve architect-owned incidents
 
 ### WORKING State
 
@@ -221,6 +232,9 @@ PM uses LLM reasoning to decide when to:
 - `list_files` - List files in workspace
 - `await_user` - Wait for user input (triggers AWAIT_USER transition)
 - `spec_submit` - Generate spec for preview (triggers PREVIEW transition)
+
+**Pending Items Injection:**
+On each entry to WORKING, `maybeInjectPendingItemsSummary()` checks for unresolved asks and incidents. Uses a hash (`StateKeyPendingSummaryHash`) to avoid re-injecting the same summary on re-entry loops.
 
 **LLM Reasoning Flow:**
 1. PM receives conversation history and any architect feedback

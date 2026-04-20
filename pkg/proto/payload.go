@@ -41,12 +41,16 @@ const (
 	PayloadKindShutdown PayloadKind = "shutdown"
 
 	// Notification payloads.
-	PayloadKindStoryComplete        PayloadKind = "story_complete"        // Story completion notification
-	PayloadKindAllStoriesComplete   PayloadKind = "all_stories_complete"  // All stories completed notification
-	PayloadKindStoryBlocked         PayloadKind = "story_blocked"         // Story blocked/failed notification
-	PayloadKindClarificationRequest PayloadKind = "clarification_request" // Request PM to relay clarification to human
-	PayloadKindAllStoriesTerminal   PayloadKind = "all_stories_terminal"  // All stories terminal (some failed) notification
-	PayloadKindRepairComplete       PayloadKind = "repair_complete"       // Signal that system repair is done
+	PayloadKindStoryComplete        PayloadKind = "story_complete"         // Story completion notification
+	PayloadKindAllStoriesComplete   PayloadKind = "all_stories_complete"   // All stories completed notification
+	PayloadKindStoryBlocked         PayloadKind = "story_blocked"          // Story blocked/failed notification
+	PayloadKindClarificationRequest PayloadKind = "clarification_request"  // Request PM to relay clarification to human
+	PayloadKindAllStoriesTerminal   PayloadKind = "all_stories_terminal"   // All stories terminal (some failed) notification
+	PayloadKindRepairComplete       PayloadKind = "repair_complete"        // Signal that system repair is done
+	PayloadKindIncidentOpened       PayloadKind = "incident_opened"        // Architect opened a durable incident
+	PayloadKindIncidentResolved     PayloadKind = "incident_resolved"      // Architect resolved a durable incident
+	PayloadKindIncidentAction       PayloadKind = "incident_action"        // PM requests action on an incident
+	PayloadKindIncidentActionResult PayloadKind = "incident_action_result" // Architect returns action outcome to PM
 
 	// Generic key-value payloads for miscellaneous data.
 	PayloadKindGeneric PayloadKind = "generic"
@@ -360,12 +364,19 @@ type FailedStoryDetail struct {
 	Reason  string `json:"reason"`
 }
 
-// AllStoriesTerminalPayload is sent when all stories are done or failed (not all successful).
+// SkippedStoryDetail summarizes one skipped story for the terminal notification.
+type SkippedStoryDetail struct {
+	StoryID string `json:"story_id"`
+	Title   string `json:"title"`
+}
+
+// AllStoriesTerminalPayload is sent when all stories are done, failed, or skipped (not all successful).
 type AllStoriesTerminalPayload struct {
-	SpecID        string              `json:"spec_id"`
-	TotalStories  int                 `json:"total_stories"`
-	FailedStories []FailedStoryDetail `json:"failed_stories"`
-	Timestamp     string              `json:"timestamp"`
+	SpecID         string               `json:"spec_id"`
+	TotalStories   int                  `json:"total_stories"`
+	FailedStories  []FailedStoryDetail  `json:"failed_stories"`
+	SkippedStories []SkippedStoryDetail `json:"skipped_stories,omitempty"`
+	Timestamp      string               `json:"timestamp"`
 }
 
 // NewAllStoriesTerminalPayload creates a payload for the all-stories-terminal notification.
@@ -487,6 +498,114 @@ func (p *MessagePayload) ExtractRepairComplete() (*RepairCompletePayload, error)
 	var result RepairCompletePayload
 	if err := json.Unmarshal(p.Data, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal repair complete payload: %w", err)
+	}
+	return &result, nil
+}
+
+// IncidentResolvedPayload contains data for an incident resolution notification.
+type IncidentResolvedPayload struct {
+	IncidentID string `json:"incident_id"`
+	Resolution string `json:"resolution"` // "work_resumed" | "story_requeued" | "all_terminal" | "manual" | "resumed" | "skipped" | "change_request"
+	Message    string `json:"message"`
+	Timestamp  string `json:"timestamp"`
+}
+
+// NewIncidentOpenedPayload creates a payload wrapping an Incident struct.
+func NewIncidentOpenedPayload(incident *Incident) *MessagePayload {
+	raw, _ := json.Marshal(incident)
+	return &MessagePayload{
+		Kind: PayloadKindIncidentOpened,
+		Data: raw,
+	}
+}
+
+// ExtractIncidentOpened extracts an incident from an incident_opened payload.
+func (p *MessagePayload) ExtractIncidentOpened() (*Incident, error) {
+	if p.Kind != PayloadKindIncidentOpened {
+		return nil, fmt.Errorf("expected incident_opened payload, got %s", p.Kind)
+	}
+	var result Incident
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal incident opened payload: %w", err)
+	}
+	return &result, nil
+}
+
+// NewIncidentResolvedPayload creates a payload for incident resolution notifications.
+func NewIncidentResolvedPayload(data *IncidentResolvedPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindIncidentResolved,
+		Data: raw,
+	}
+}
+
+// ExtractIncidentResolved extracts an incident resolution payload.
+func (p *MessagePayload) ExtractIncidentResolved() (*IncidentResolvedPayload, error) {
+	if p.Kind != PayloadKindIncidentResolved {
+		return nil, fmt.Errorf("expected incident_resolved payload, got %s", p.Kind)
+	}
+	var result IncidentResolvedPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal incident resolved payload: %w", err)
+	}
+	return &result, nil
+}
+
+// IncidentActionPayload requests an action on an open incident.
+type IncidentActionPayload struct {
+	IncidentID string `json:"incident_id"`
+	Action     string `json:"action"`            // "resume", "try_again", "skip", "change_request"
+	Reason     string `json:"reason"`            // Why the action is being taken
+	Content    string `json:"content,omitempty"` // For change_request: user-supplied changes to apply
+}
+
+// NewIncidentActionPayload creates a payload for incident action requests.
+func NewIncidentActionPayload(data *IncidentActionPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindIncidentAction,
+		Data: raw,
+	}
+}
+
+// ExtractIncidentAction extracts an incident action payload.
+func (p *MessagePayload) ExtractIncidentAction() (*IncidentActionPayload, error) {
+	if p.Kind != PayloadKindIncidentAction {
+		return nil, fmt.Errorf("expected incident_action payload, got %s", p.Kind)
+	}
+	var result IncidentActionPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal incident action payload: %w", err)
+	}
+	return &result, nil
+}
+
+// IncidentActionResultPayload returns the outcome of an incident action to PM.
+type IncidentActionResultPayload struct {
+	IncidentID string `json:"incident_id"`
+	Action     string `json:"action"`
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+}
+
+// NewIncidentActionResultPayload creates a payload for incident action results.
+func NewIncidentActionResultPayload(data *IncidentActionResultPayload) *MessagePayload {
+	raw, _ := json.Marshal(data)
+	return &MessagePayload{
+		Kind: PayloadKindIncidentActionResult,
+		Data: raw,
+	}
+}
+
+// ExtractIncidentActionResult extracts an incident action result payload.
+func (p *MessagePayload) ExtractIncidentActionResult() (*IncidentActionResultPayload, error) {
+	if p.Kind != PayloadKindIncidentActionResult {
+		return nil, fmt.Errorf("expected incident_action_result payload, got %s", p.Kind)
+	}
+	var result IncidentActionResultPayload
+	if err := json.Unmarshal(p.Data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal incident action result payload: %w", err)
 	}
 	return &result, nil
 }
