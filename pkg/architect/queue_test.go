@@ -451,6 +451,37 @@ func TestResetAllBudgets_NotFound(_ *testing.T) {
 	q.ResetAllBudgets("nonexistent")
 }
 
+// --- HasHeldStoriesForFailure tests ---
+
+func TestHasHeldStoriesForFailure_True(t *testing.T) {
+	q := newTestQueue()
+	story := addQueueStory(q, "story-1", StatusOnHold)
+	story.BlockedByFailureID = "fail-abc"
+
+	if !q.HasHeldStoriesForFailure("fail-abc") {
+		t.Error("expected true when a story is held by the given failure ID")
+	}
+}
+
+func TestHasHeldStoriesForFailure_False(t *testing.T) {
+	q := newTestQueue()
+	addQueueStory(q, "story-1", StatusFailed)
+
+	if q.HasHeldStoriesForFailure("fail-abc") {
+		t.Error("expected false when no stories are held by the given failure ID")
+	}
+}
+
+func TestHasHeldStoriesForFailure_DifferentFailureID(t *testing.T) {
+	q := newTestQueue()
+	story := addQueueStory(q, "story-1", StatusOnHold)
+	story.BlockedByFailureID = "fail-xyz"
+
+	if q.HasHeldStoriesForFailure("fail-abc") {
+		t.Error("expected false when held story has a different failure ID")
+	}
+}
+
 // --- SetStatus guard for skipped ---
 
 func TestSetStatus_RejectsFromSkipped(t *testing.T) {

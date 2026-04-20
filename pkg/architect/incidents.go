@@ -510,6 +510,12 @@ func (d *Driver) changeRequestStoryBlocked(ctx context.Context, action *proto.In
 		return ""
 	}
 
+	if inc.FailureID != "" && d.queue.HasHeldStoriesForFailure(inc.FailureID) {
+		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
+			"change_request cannot be used while sibling stories are held by the same failure; use resume to release them first, or revise the story through the spec")
+		return ""
+	}
+
 	if action.Content != "" {
 		story.Content += "\n\n## Change Request (User)\n\n" + action.Content
 		d.logger.Info("📝 Appended change request to story %s (%d chars)", inc.StoryID, len(action.Content))

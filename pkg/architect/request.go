@@ -930,7 +930,7 @@ func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory,
 			FailureID:      fi.ID,
 			Title:          fmt.Sprintf("Story abandoned: %s", story.Title),
 			Summary:        fi.Explanation,
-			AllowedActions: storyBlockedAllowedActions(fi),
+			AllowedActions: storyBlockedAllowedActions(fi, story.GetStatus()),
 			Blocking:       true,
 			OpenedAt:       time.Now().UTC().Format(time.RFC3339),
 		}
@@ -939,12 +939,13 @@ func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory,
 }
 
 // storyBlockedAllowedActions returns the set of allowed incident actions for a
-// story_blocked incident. change_request is only offered for story-scoped failures
-// (where the content might need changing). For wider-scoped failures (epoch/system),
-// the issue is environmental and change_request would modify the wrong thing.
-func storyBlockedAllowedActions(fi *proto.FailureInfo) []proto.IncidentAction {
+// story_blocked incident. change_request is only offered when:
+//   - the story is actually StatusFailed (not on_hold from a prerequisite hold)
+//   - the failure scope is story-local (story/attempt), not environmental (epoch/system)
+func storyBlockedAllowedActions(fi *proto.FailureInfo, storyStatus StoryStatus) []proto.IncidentAction {
 	actions := []proto.IncidentAction{proto.IncidentActionTryAgain, proto.IncidentActionSkip, proto.IncidentActionResume}
-	if fi.ResolvedScope == proto.FailureScopeStory || fi.ResolvedScope == proto.FailureScopeAttempt || fi.ResolvedScope == "" {
+	isStoryLocal := fi.ResolvedScope == proto.FailureScopeStory || fi.ResolvedScope == proto.FailureScopeAttempt || fi.ResolvedScope == ""
+	if storyStatus == StatusFailed && isStoryLocal {
 		actions = append(actions, proto.IncidentActionChangeRequest)
 	}
 	return actions

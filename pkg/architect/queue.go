@@ -1109,6 +1109,18 @@ func (q *Queue) ReleaseHeldStories(storyIDs []string, _ string) ([]string, error
 	return released, nil
 }
 
+// HasHeldStoriesForFailure returns true if any stories are on_hold with the given failure ID.
+func (q *Queue) HasHeldStoriesForFailure(failureID string) bool {
+	q.mutex.RLock()
+	defer q.mutex.RUnlock()
+	for _, story := range q.stories {
+		if story.GetStatus() == StatusOnHold && story.BlockedByFailureID == failureID {
+			return true
+		}
+	}
+	return false
+}
+
 // ReleaseHeldStoriesByFailure releases all stories held by a specific failure ID.
 // Returns the IDs of stories that were released.
 func (q *Queue) ReleaseHeldStoriesByFailure(failureID, cause string) ([]string, error) {
