@@ -485,19 +485,22 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 				reason := utils.GetMapFieldOr[string](effectData, "reason", "")
 				content := utils.GetMapFieldOr[string](effectData, "content", "")
 
-				// Validate action is allowed for this incident
-				if inc, exists := d.openIncidents[incidentID]; exists {
-					allowed := false
-					for _, a := range inc.AllowedActions {
-						if string(a) == action {
-							allowed = true
-							break
-						}
+				// Validate incident exists and action is allowed
+				inc, exists := d.openIncidents[incidentID]
+				if !exists {
+					d.logger.Warn("Incident %s not found in open incidents for action %q", incidentID, action)
+					return "", fmt.Errorf("incident %s is not open or does not exist", incidentID)
+				}
+				allowed := false
+				for _, a := range inc.AllowedActions {
+					if string(a) == action {
+						allowed = true
+						break
 					}
-					if !allowed {
-						d.logger.Warn("Action %q not in AllowedActions for incident %s", action, incidentID)
-						return "", fmt.Errorf("action %q not allowed for incident %s", action, incidentID)
-					}
+				}
+				if !allowed {
+					d.logger.Warn("Action %q not in AllowedActions for incident %s", action, incidentID)
+					return "", fmt.Errorf("action %q not allowed for incident %s", action, incidentID)
 				}
 
 				d.logger.Info("🔧 Incident action '%s' for %s: %s", action, incidentID, reason)

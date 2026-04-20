@@ -505,7 +505,7 @@ func (p *MessagePayload) ExtractRepairComplete() (*RepairCompletePayload, error)
 // IncidentResolvedPayload contains data for an incident resolution notification.
 type IncidentResolvedPayload struct {
 	IncidentID string `json:"incident_id"`
-	Resolution string `json:"resolution"` // "work_resumed" | "story_requeued" | "all_terminal" | "manual"
+	Resolution string `json:"resolution"` // "work_resumed" | "story_requeued" | "all_terminal" | "manual" | "resumed" | "skipped" | "change_request"
 	Message    string `json:"message"`
 	Timestamp  string `json:"timestamp"`
 }

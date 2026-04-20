@@ -69,8 +69,12 @@ func (d *Driver) resolveIncident(ctx context.Context, incidentID, resolution, me
 // Thread-safe: acquires incidentsMu.
 func (d *Driver) resolveAllIncidents(ctx context.Context, resolution, message string) {
 	d.incidentsMu.Lock()
-	var msgs []*proto.AgentMsg
+	ids := make([]string, 0, len(d.openIncidents))
 	for id := range d.openIncidents {
+		ids = append(ids, id)
+	}
+	var msgs []*proto.AgentMsg
+	for _, id := range ids {
 		if msg := d.resolveIncidentLocked(id, resolution, message); msg != nil {
 			msgs = append(msgs, msg)
 		}
@@ -88,12 +92,16 @@ func (d *Driver) resolveAllIncidents(ctx context.Context, resolution, message st
 // Thread-safe: acquires incidentsMu.
 func (d *Driver) resolveIncidentsByFailureID(ctx context.Context, failureID, resolution, message string) {
 	d.incidentsMu.Lock()
-	var msgs []*proto.AgentMsg
+	var matchIDs []string
 	for id, inc := range d.openIncidents {
 		if inc.FailureID == failureID {
-			if msg := d.resolveIncidentLocked(id, resolution, message); msg != nil {
-				msgs = append(msgs, msg)
-			}
+			matchIDs = append(matchIDs, id)
+		}
+	}
+	var msgs []*proto.AgentMsg
+	for _, id := range matchIDs {
+		if msg := d.resolveIncidentLocked(id, resolution, message); msg != nil {
+			msgs = append(msgs, msg)
 		}
 	}
 	d.incidentsMu.Unlock()
