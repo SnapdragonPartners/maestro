@@ -419,6 +419,40 @@ func TestAllStoriesCompleted_WithSkipped(t *testing.T) {
 
 // --- SetStatus guard for skipped ---
 
+// --- ResetAllBudgets tests ---
+
+func TestResetAllBudgets(t *testing.T) {
+	q := newTestQueue()
+	story := addQueueStory(q, "story-1", StatusFailed)
+	story.AttemptRetryBudget = 3
+	story.RewriteBudget = 2
+	story.RepairBudget = 1
+	story.HumanBudget = 1
+
+	q.ResetAllBudgets("story-1")
+
+	if story.AttemptRetryBudget != 0 {
+		t.Errorf("AttemptRetryBudget: expected 0, got %d", story.AttemptRetryBudget)
+	}
+	if story.RewriteBudget != 0 {
+		t.Errorf("RewriteBudget: expected 0, got %d", story.RewriteBudget)
+	}
+	if story.RepairBudget != 0 {
+		t.Errorf("RepairBudget: expected 0, got %d", story.RepairBudget)
+	}
+	if story.HumanBudget != 0 {
+		t.Errorf("HumanBudget: expected 0, got %d", story.HumanBudget)
+	}
+}
+
+func TestResetAllBudgets_NotFound(_ *testing.T) {
+	q := newTestQueue()
+	// Should not panic
+	q.ResetAllBudgets("nonexistent")
+}
+
+// --- SetStatus guard for skipped ---
+
 func TestSetStatus_RejectsFromSkipped(t *testing.T) {
 	q := newTestQueue()
 	story := addQueueStory(q, "story-1", StatusSkipped)

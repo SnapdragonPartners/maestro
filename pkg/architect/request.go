@@ -930,12 +930,24 @@ func (d *Driver) notifyPMOfBlockedStory(ctx context.Context, story *QueuedStory,
 			FailureID:      fi.ID,
 			Title:          fmt.Sprintf("Story abandoned: %s", story.Title),
 			Summary:        fi.Explanation,
-			AllowedActions: []proto.IncidentAction{proto.IncidentActionTryAgain, proto.IncidentActionChangeRequest, proto.IncidentActionSkip, proto.IncidentActionResume},
+			AllowedActions: storyBlockedAllowedActions(fi),
 			Blocking:       true,
 			OpenedAt:       time.Now().UTC().Format(time.RFC3339),
 		}
 		d.openIncident(ctx, incident)
 	}
+}
+
+// storyBlockedAllowedActions returns the set of allowed incident actions for a
+// story_blocked incident. change_request is only offered for story-scoped failures
+// (where the content might need changing). For wider-scoped failures (epoch/system),
+// the issue is environmental and change_request would modify the wrong thing.
+func storyBlockedAllowedActions(fi *proto.FailureInfo) []proto.IncidentAction {
+	actions := []proto.IncidentAction{proto.IncidentActionTryAgain, proto.IncidentActionSkip, proto.IncidentActionResume}
+	if fi.ResolvedScope == proto.FailureScopeStory || fi.ResolvedScope == proto.FailureScopeAttempt || fi.ResolvedScope == "" {
+		actions = append(actions, proto.IncidentActionChangeRequest)
+	}
+	return actions
 }
 
 // handleRepairComplete processes a repair_complete signal from PM.

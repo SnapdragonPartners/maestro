@@ -147,7 +147,7 @@ func scanSession(row *sql.Row) (*Session, error) {
 // ResumableSessionInfo contains a resumable session along with story statistics.
 type ResumableSessionInfo struct {
 	Session           *Session
-	IncompleteStories int // Count of stories not in 'done' or 'failed' status
+	IncompleteStories int // Count of stories not in 'done', 'failed', or 'skipped' status
 	DoneStories       int // Count of completed stories
 }
 
@@ -178,7 +178,7 @@ func GetResumableSession(db *sql.DB) (*Session, error) {
 // 1. Its status is 'shutdown', 'crashed', or 'active' (not 'completed')
 //   - 'active' sessions are treated as crashed (the process died unexpectedly)
 //
-// 2. It has at least one incomplete story (status not in 'done', 'failed')
+// 2. It has at least one incomplete story (status not in 'done', 'failed', 'skipped')
 //
 // If an 'active' session is found, its status is updated to 'crashed' before returning.
 // Returns nil, nil if no resumable session exists (this is not an error condition).
@@ -216,7 +216,7 @@ func GetMostRecentResumableSession(db *sql.DB) (*ResumableSessionInfo, error) {
 	var incompleteCount, doneCount int
 	err = db.QueryRow(`
 		SELECT
-			COALESCE(SUM(CASE WHEN status NOT IN ('done', 'failed') THEN 1 ELSE 0 END), 0) as incomplete,
+			COALESCE(SUM(CASE WHEN status NOT IN ('done', 'failed', 'skipped') THEN 1 ELSE 0 END), 0) as incomplete,
 			COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) as done
 		FROM stories
 		WHERE session_id = ?

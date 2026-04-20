@@ -992,6 +992,23 @@ func (q *Queue) ReconstructBudgetsFromFailures(storyID string, failureCounts map
 	}
 }
 
+// ResetAllBudgets zeroes every per-class retry budget for a story.
+// Used by change_request to give a user-modified story a completely fresh start.
+func (q *Queue) ResetAllBudgets(storyID string) {
+	q.mutex.Lock()
+	defer q.mutex.Unlock()
+
+	story, exists := q.stories[storyID]
+	if !exists {
+		return
+	}
+
+	story.AttemptRetryBudget = 0
+	story.RewriteBudget = 0
+	story.RepairBudget = 0
+	story.HumanBudget = 0
+}
+
 // GetHeldStories returns all stories currently on hold.
 func (q *Queue) GetHeldStories() []*QueuedStory {
 	q.mutex.RLock()

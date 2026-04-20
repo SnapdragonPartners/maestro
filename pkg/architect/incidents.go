@@ -485,11 +485,8 @@ func (d *Driver) skipStoryBlocked(ctx context.Context, action *proto.IncidentAct
 	}
 	d.logger.Info("⏭️ Skipped story %s: %s", inc.StoryID, action.Reason)
 
-	// Resume dispatch if suppressed
-	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
-		d.queue.ResumeDispatch()
-		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
-	}
+	// Do NOT lift dispatch suppression — skip is a story-local action and
+	// suppression is a global flag set for system-scoped repairs. Only resume lifts it.
 
 	// Resolve only this specific incident — skip does NOT release failure-group siblings
 	d.resolveIncident(ctx, action.IncidentID, "skipped", action.Reason)
@@ -518,8 +515,9 @@ func (d *Driver) changeRequestStoryBlocked(ctx context.Context, action *proto.In
 		d.logger.Info("📝 Appended change request to story %s (%d chars)", inc.StoryID, len(action.Content))
 	}
 
-	// Reset attempt count for a fresh budget
+	// Reset all budgets for a fresh start
 	story.AttemptCount = 0
+	d.queue.ResetAllBudgets(inc.StoryID)
 
 	if retryErr := d.queue.RetryFailedStory(inc.StoryID); retryErr != nil {
 		d.sendIncidentActionResult(ctx, action.IncidentID, action.Action, false,
@@ -528,11 +526,8 @@ func (d *Driver) changeRequestStoryBlocked(ctx context.Context, action *proto.In
 	}
 	d.logger.Info("🔄 Retrying story %s with change request", inc.StoryID)
 
-	// Resume dispatch if suppressed
-	if suppressed, reason := d.queue.IsDispatchSuppressed(); suppressed {
-		d.queue.ResumeDispatch()
-		d.logger.Info("▶️ Dispatch resumed (was suppressed: %s)", reason)
-	}
+	// Do NOT lift dispatch suppression — change_request is a story-local action and
+	// suppression is a global flag set for system-scoped repairs. Only resume lifts it.
 
 	// Resolve incidents by failure ID (same as resume for failed stories)
 	if inc.FailureID != "" {
