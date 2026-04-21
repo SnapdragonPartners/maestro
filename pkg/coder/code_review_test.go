@@ -25,7 +25,7 @@ func TestBuildCompletionEvidence_TestsPassed(t *testing.T) {
 		Untracked: true,
 	}
 
-	evidence := coder.buildCompletionEvidence(true, "All 5 tests passed", string(proto.StoryTypeApp), workResult, "abc123")
+	evidence := coder.buildCompletionEvidence(true, "All 5 tests passed", "", "", string(proto.StoryTypeApp), workResult, "abc123")
 
 	if !strings.Contains(evidence, "✅ All tests passing") {
 		t.Error("Expected passing test indicator")
@@ -53,7 +53,7 @@ func TestBuildCompletionEvidence_TestsFailed(t *testing.T) {
 		Unstaged: true,
 	}
 
-	evidence := coder.buildCompletionEvidence(false, "Test failure output", string(proto.StoryTypeApp), workResult, "abc123")
+	evidence := coder.buildCompletionEvidence(false, "Test failure output", "", "", string(proto.StoryTypeApp), workResult, "abc123")
 
 	if !strings.Contains(evidence, "❌ Tests not run or failed") {
 		t.Error("Expected failing test indicator")
@@ -72,7 +72,7 @@ func TestBuildCompletionEvidence_DevOpsStory(t *testing.T) {
 		Ahead:   true,
 	}
 
-	evidence := coder.buildCompletionEvidence(true, "", string(proto.StoryTypeDevOps), workResult, "abc123")
+	evidence := coder.buildCompletionEvidence(true, "", "", "", string(proto.StoryTypeDevOps), workResult, "abc123")
 
 	if !strings.Contains(evidence, "🐳 DevOps story") {
 		t.Error("Expected DevOps story indicator")
@@ -93,7 +93,7 @@ func TestBuildCompletionEvidence_NoWorkRequired(t *testing.T) {
 		Reasons: []string{"existing implementation is correct"},
 	}
 
-	evidence := coder.buildCompletionEvidence(true, "", string(proto.StoryTypeApp), workResult, "abc123")
+	evidence := coder.buildCompletionEvidence(true, "", "", "", string(proto.StoryTypeApp), workResult, "abc123")
 
 	if !strings.Contains(evidence, "No work required") {
 		t.Error("Expected no work required indicator")
@@ -110,7 +110,7 @@ func TestBuildCompletionEvidence_WithWork(t *testing.T) {
 	coder := createTestCoder(t, nil)
 
 	workResult := &git.WorkDoneResult{HasWork: true, Reasons: []string{"staged changes"}}
-	evidence := coder.buildCompletionEvidence(true, "", string(proto.StoryTypeApp), workResult, "abc123")
+	evidence := coder.buildCompletionEvidence(true, "", "", "", string(proto.StoryTypeApp), workResult, "abc123")
 
 	if !strings.Contains(evidence, "📝 Code changes made") {
 		t.Error("Expected code changes indicator when work detected")
@@ -121,7 +121,7 @@ func TestBuildCompletionEvidence_NoWork(t *testing.T) {
 	coder := createTestCoder(t, nil)
 
 	workResult := &git.WorkDoneResult{HasWork: false}
-	evidence := coder.buildCompletionEvidence(true, "", string(proto.StoryTypeApp), workResult, "abc123")
+	evidence := coder.buildCompletionEvidence(true, "", "", "", string(proto.StoryTypeApp), workResult, "abc123")
 
 	if !strings.Contains(evidence, "📝 No code changes required") {
 		t.Error("Expected no changes indicator")
@@ -132,13 +132,38 @@ func TestBuildCompletionEvidence_IncludesHeadSHA(t *testing.T) {
 	coder := createTestCoder(t, nil)
 
 	workResult := &git.WorkDoneResult{HasWork: true}
-	evidence := coder.buildCompletionEvidence(true, "", string(proto.StoryTypeApp), workResult, "deadbeef123")
+	evidence := coder.buildCompletionEvidence(true, "", "", "", string(proto.StoryTypeApp), workResult, "deadbeef123")
 
 	if !strings.Contains(evidence, "deadbeef123") {
 		t.Error("Expected HEAD SHA in evidence")
 	}
 	if !strings.Contains(evidence, "Workspace HEAD") {
 		t.Error("Expected Workspace HEAD label")
+	}
+}
+
+func TestBuildCompletionEvidence_TestsSkipped(t *testing.T) {
+	coder := createTestCoder(t, nil)
+
+	workResult := &git.WorkDoneResult{
+		HasWork: true,
+		Reasons: []string{"staged changes"},
+		Staged:  true,
+	}
+
+	evidence := coder.buildCompletionEvidence(true, "", "skipped", "make test target not available (Makefile missing)", string(proto.StoryTypeApp), workResult, "abc123")
+
+	if !strings.Contains(evidence, "⚠️ Programmatic tests skipped") {
+		t.Error("Expected skipped test indicator")
+	}
+	if !strings.Contains(evidence, "Makefile missing") {
+		t.Error("Expected skip reason in evidence")
+	}
+	if !strings.Contains(evidence, "verification and probing evidence below") {
+		t.Error("Expected reference to verification/probing evidence section")
+	}
+	if strings.Contains(evidence, "✅ All tests passing") {
+		t.Error("Skipped tests should NOT show as passing")
 	}
 }
 
@@ -338,5 +363,88 @@ func TestProcessApprovalResult_UnknownStatus(t *testing.T) {
 	}
 	if done {
 		t.Error("Expected done=false")
+	}
+}
+
+// =============================================================================
+// Completion review tests (Phase 1 stalling fixes)
+// =============================================================================
+
+func TestProcessApprovalResult_CompletionApproved_Bookkeeping(t *testing.T) {
+	coder := createTestCoder(t, nil)
+	sm := coder.BaseStateMachine
+
+	sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCompletion))
+
+	result := &effect.ApprovalResult{
+		Status:   proto.ApprovalStatusApproved,
+		Feedback: "Story is complete",
+	}
+
+	ctx := context.Background()
+	nextState, _, err := coder.processApprovalResult(ctx, sm, result)
+
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if nextState != proto.StateDone {
+		t.Errorf("Expected DONE state for approved completion, got: %s", nextState)
+	}
+	if _, exists := sm.GetStateValue(KeyStoryCompletedAt); !exists {
+		t.Error("Expected KeyStoryCompletedAt to be set on completion approval")
+	}
+	if status, exists := sm.GetStateValue(KeyCompletionStatus); !exists || status != "APPROVED" {
+		t.Errorf("Expected KeyCompletionStatus='APPROVED', got: %v", status)
+	}
+}
+
+func TestProcessApprovalResult_CompletionRejected_ErrorWithFailureInfo(t *testing.T) {
+	coder := createTestCoder(t, nil)
+	sm := coder.BaseStateMachine
+
+	sm.SetStateData(KeyCodeApprovalResult, string(proto.ApprovalTypeCompletion))
+
+	result := &effect.ApprovalResult{
+		Status:   proto.ApprovalStatusRejected,
+		Feedback: "Story needs real implementation work",
+	}
+
+	ctx := context.Background()
+	nextState, _, err := coder.processApprovalResult(ctx, sm, result)
+
+	if err != nil {
+		t.Errorf("Unexpected error (should return nil err with StateError): %v", err)
+	}
+	if nextState != proto.StateError {
+		t.Errorf("Expected ERROR state for rejected completion, got: %s", nextState)
+	}
+
+	fiRaw, exists := sm.GetStateValue(KeyFailureInfo)
+	if !exists {
+		t.Fatal("Expected KeyFailureInfo to be set on completion rejection")
+	}
+	fi, ok := fiRaw.(proto.FailureInfo)
+	if !ok {
+		t.Fatalf("Expected FailureInfo type, got: %T", fiRaw)
+	}
+	if fi.Kind != proto.FailureKindStoryInvalid {
+		t.Errorf("Expected FailureKindStoryInvalid, got: %s", fi.Kind)
+	}
+	if !strings.Contains(fi.Explanation, "Story needs real implementation work") {
+		t.Error("Expected rejection feedback in FailureInfo.Explanation")
+	}
+}
+
+func TestBuildCompletionEvidence_NoWorkTestsNotApplicable(t *testing.T) {
+	coder := createTestCoder(t, nil)
+
+	workResult := &git.WorkDoneResult{HasWork: false}
+	evidence := coder.buildCompletionEvidence(false, "", "", "", string(proto.StoryTypeApp), workResult, "")
+
+	if !strings.Contains(evidence, "No code changes required") {
+		t.Error("Expected 'No code changes required' for zero-diff completion")
+	}
+	if strings.Contains(evidence, "Tests not run or failed") {
+		t.Error("Should not show 'Tests not run or failed' for zero-diff completion")
 	}
 }

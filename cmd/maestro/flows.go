@@ -15,6 +15,7 @@ import (
 	"orchestrator/pkg/agent"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/dispatch"
+	"orchestrator/pkg/mirror"
 	"orchestrator/pkg/persistence"
 	"orchestrator/pkg/preflight"
 	"orchestrator/pkg/proto"
@@ -144,10 +145,39 @@ func (f *OrchestratorFlow) Run(ctx context.Context, k *kernel.Kernel) error {
 
 	// Handle initial spec if provided
 	if f.specFile != "" {
+		// Ensure mirror exists before spec injection when git.repo_url is configured.
+		// Without this, the spec races against PM mirror creation (async in SETUP state)
+		// and coders can't clone because the mirror doesn't exist yet.
+		cfg, cfgErr := config.GetConfig()
+		if cfgErr != nil {
+			return fmt.Errorf("config required before spec injection: %w", cfgErr)
+		}
+		if cfg.Git != nil && cfg.Git.RepoURL != "" {
+			mirrorMgr := mirror.NewManager(k.ProjectDir())
+			if _, mirrorErr := mirrorMgr.EnsureMirror(ctx); mirrorErr != nil {
+				return fmt.Errorf("mirror creation required before spec injection: %w", mirrorErr)
+			}
+			k.Logger.Info("✅ Mirror ready before spec injection")
+		}
+
 		specContent, err := os.ReadFile(f.specFile)
 		if err != nil {
 			return fmt.Errorf("failed to read spec file: %w", err)
 		}
+
+		// Register a reply channel for "cli" so architect spec review responses
+		// don't get dropped. Drain it in a goroutine that logs feedback.
+		cliReplyCh := k.Dispatcher.RegisterReplyChannel("cli")
+		go func() {
+			for msg := range cliReplyCh {
+				k.Logger.Info("📬 Spec review response from %s: %s", msg.FromAgent, msg.Type)
+				if payload := msg.GetTypedPayload(); payload != nil {
+					if approval, aErr := payload.ExtractApprovalResponse(); aErr == nil {
+						k.Logger.Info("📋 Spec review status: %s — %s", approval.Status, approval.Feedback)
+					}
+				}
+			}
+		}()
 
 		if err := InjectSpec(k.Dispatcher, "cli", specContent); err != nil {
 			return fmt.Errorf("failed to inject initial spec: %w", err)

@@ -59,6 +59,9 @@ func (d *Driver) handleWorking(ctx context.Context) (proto.State, error) {
 		// No notifications, continue working
 	}
 
+	// Inject pending items summary if the digest has changed
+	d.maybeInjectPendingItemsSummary()
+
 	// Get conversation state
 	turnCount := utils.GetStateValueOr[int](d.BaseStateMachine, StateKeyTurnCount, 0)
 	expertise := utils.GetStateValueOr[string](d.BaseStateMachine, StateKeyUserExpertise, DefaultExpertise)
@@ -441,6 +444,18 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 			case tools.SignalAwaitUser:
 				// chat_ask_user was called - transition to AWAIT_USER state
 				d.logger.Info("⏸️  PM waiting for user response via chat_ask_user")
+				// Create durable UserAsk from the tool's message
+				if effectData, ok := utils.SafeAssert[map[string]any](out.EffectData); ok {
+					if askMsg := utils.GetMapFieldOr[string](effectData, "message", ""); askMsg != "" {
+						d.currentAsk = &proto.UserAsk{
+							ID:       fmt.Sprintf("ask-decision-%s", time.Now().UTC().Format("20060102T150405Z")),
+							Prompt:   askMsg,
+							Kind:     "decision_required",
+							OpenedAt: time.Now().UTC().Format(time.RFC3339),
+						}
+						d.syncAskToStateData()
+					}
+				}
 				return tools.SignalAwaitUser, nil
 
 			case tools.SignalReleaseHeld:
@@ -460,6 +475,46 @@ func (d *Driver) callLLMWithTools(ctx context.Context, prompt string) (string, e
 					d.logger.Error("❌ Failed to send repair_complete to architect: %v", dispErr)
 				} else {
 					d.logger.Info("✅ Sent repair_complete to architect (reason: %s)", reason)
+				}
+				return "", nil
+
+			case tools.SignalIncidentAction:
+				effectData, _ := utils.SafeAssert[map[string]any](out.EffectData)
+				incidentID := utils.GetMapFieldOr[string](effectData, "incident_id", "")
+				action := utils.GetMapFieldOr[string](effectData, "action", "")
+				reason := utils.GetMapFieldOr[string](effectData, "reason", "")
+				content := utils.GetMapFieldOr[string](effectData, "content", "")
+
+				// Validate incident exists and action is allowed
+				inc, exists := d.openIncidents[incidentID]
+				if !exists {
+					d.logger.Warn("Incident %s not found in open incidents for action %q", incidentID, action)
+					return "", fmt.Errorf("incident %s is not open or does not exist", incidentID)
+				}
+				allowed := false
+				for _, a := range inc.AllowedActions {
+					if string(a) == action {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					d.logger.Warn("Action %q not in AllowedActions for incident %s", action, incidentID)
+					return "", fmt.Errorf("action %q not allowed for incident %s", action, incidentID)
+				}
+
+				d.logger.Info("🔧 Incident action '%s' for %s: %s", action, incidentID, reason)
+				actionMsg := proto.NewAgentMsg(proto.MsgTypeREQUEST, d.GetAgentID(), "architect")
+				actionMsg.SetTypedPayload(proto.NewIncidentActionPayload(&proto.IncidentActionPayload{
+					IncidentID: incidentID,
+					Action:     action,
+					Reason:     reason,
+					Content:    content,
+				}))
+				if dispErr := d.dispatcher.DispatchMessage(actionMsg); dispErr != nil {
+					d.logger.Error("❌ Failed to send incident_action to architect: %v", dispErr)
+				} else {
+					d.logger.Info("✅ Sent incident_action to architect (%s on %s)", action, incidentID)
 				}
 				return "", nil
 

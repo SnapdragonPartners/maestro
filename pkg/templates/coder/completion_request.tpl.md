@@ -24,5 +24,5 @@ I have analyzed the story and determined that no code changes are needed. The re
 2. **Additional work needed** - I missed something that should be implemented
    - If yes: Use **NEEDS_CHANGES** with specific guidance on what work is required
 
-3. **Wrong assessment** - Story clearly needs implementation
-   - If yes: Use **REJECTED** and I will return to planning/coding
+3. **Fundamental misassessment** - Story clearly needs implementation
+   - If yes: Use **REJECTED** — story will be abandoned and may be rewritten

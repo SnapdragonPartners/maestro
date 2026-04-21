@@ -213,31 +213,14 @@ func (c *Coder) processClaudeCodeCodingResult(sm *agent.BaseStateMachine, result
 		return proto.StateError, false, logx.Errorf("Claude Code coding error: %s", errMsg)
 
 	case claude.SignalStoryComplete:
-		// done tool detected empty diff (Case A) - story already implemented
+		// done tool detected empty diff (Case A) - story already implemented.
+		// Bypass TESTING and go directly to CODE_REVIEW for completion verification.
 		sm.SetStateData(KeyCodingCompletedAt, time.Now().UTC())
-
-		// Store evidence from Claude Code result
 		if result.Evidence != "" {
 			sm.SetStateData(KeyCompletionDetails, result.Evidence)
 		}
-
-		// Build effect data for processStoryCompleteDataFromEffect
-		effectData := map[string]any{
-			"evidence":            result.Evidence,
-			"exploration_summary": result.ExplorationSummary,
-		}
-		// Confidence is required by processStoryCompleteDataFromEffect but
-		// Claude Code may not provide it; default to HIGH since the coder is confident
-		if result.Evidence != "" {
-			effectData["confidence"] = "HIGH"
-		}
-
-		if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
-			return proto.StateError, false, logx.Wrap(err, "failed to process story complete data from Claude Code")
-		}
-
-		c.logger.Info("✅ Story completion claim from Claude Code coding, transitioning to PLAN_REVIEW")
-		return StatePlanReview, false, nil
+		c.logger.Info("✅ Story completion claim from Claude Code coding, bypassing TESTING to CODE_REVIEW")
+		return StateCodeReview, false, nil
 
 	case claude.SignalPlanComplete:
 		// Unexpected - we're in coding mode, not planning

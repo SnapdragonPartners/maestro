@@ -588,3 +588,83 @@ func TestStoryBlockedPayload_Abandoned(t *testing.T) {
 		t.Error("expected ActionRequired=true for abandoned story")
 	}
 }
+
+func TestAllStoriesTerminalPayload_RoundTrip(t *testing.T) {
+	original := &AllStoriesTerminalPayload{
+		SpecID:       "spec-42",
+		TotalStories: 5,
+		FailedStories: []FailedStoryDetail{
+			{StoryID: "s3", Title: "Fix auth", Reason: "git corruption"},
+			{StoryID: "s5", Title: "Add logging", Reason: "story invalid"},
+		},
+		Timestamp: "2026-04-18T12:00:00Z",
+	}
+
+	payload := NewAllStoriesTerminalPayload(original)
+	if payload.Kind != PayloadKindAllStoriesTerminal {
+		t.Errorf("expected kind %s, got %s", PayloadKindAllStoriesTerminal, payload.Kind)
+	}
+
+	extracted, err := payload.ExtractAllStoriesTerminal()
+	if err != nil {
+		t.Fatalf("ExtractAllStoriesTerminal failed: %v", err)
+	}
+
+	if extracted.SpecID != "spec-42" {
+		t.Errorf("SpecID: expected spec-42, got %s", extracted.SpecID)
+	}
+	if extracted.TotalStories != 5 {
+		t.Errorf("TotalStories: expected 5, got %d", extracted.TotalStories)
+	}
+	if len(extracted.FailedStories) != 2 {
+		t.Fatalf("FailedStories: expected 2, got %d", len(extracted.FailedStories))
+	}
+	if extracted.FailedStories[0].StoryID != "s3" {
+		t.Errorf("FailedStories[0].StoryID: expected s3, got %s", extracted.FailedStories[0].StoryID)
+	}
+	if extracted.FailedStories[1].Reason != "story invalid" {
+		t.Errorf("FailedStories[1].Reason: expected 'story invalid', got %s", extracted.FailedStories[1].Reason)
+	}
+}
+
+func TestAllStoriesTerminalPayload_WithSkipped_RoundTrip(t *testing.T) {
+	original := &AllStoriesTerminalPayload{
+		SpecID:       "spec-99",
+		TotalStories: 4,
+		FailedStories: []FailedStoryDetail{
+			{StoryID: "s2", Title: "Fix auth", Reason: "git corruption"},
+		},
+		SkippedStories: []SkippedStoryDetail{
+			{StoryID: "s3", Title: "Add caching"},
+			{StoryID: "s4", Title: "Add monitoring"},
+		},
+		Timestamp: "2026-04-19T12:00:00Z",
+	}
+
+	payload := NewAllStoriesTerminalPayload(original)
+	extracted, err := payload.ExtractAllStoriesTerminal()
+	if err != nil {
+		t.Fatalf("ExtractAllStoriesTerminal failed: %v", err)
+	}
+
+	if len(extracted.SkippedStories) != 2 {
+		t.Fatalf("SkippedStories: expected 2, got %d", len(extracted.SkippedStories))
+	}
+	if extracted.SkippedStories[0].StoryID != "s3" {
+		t.Errorf("SkippedStories[0].StoryID: expected s3, got %s", extracted.SkippedStories[0].StoryID)
+	}
+	if extracted.SkippedStories[1].Title != "Add monitoring" {
+		t.Errorf("SkippedStories[1].Title: expected 'Add monitoring', got %s", extracted.SkippedStories[1].Title)
+	}
+	if len(extracted.FailedStories) != 1 {
+		t.Errorf("FailedStories: expected 1, got %d", len(extracted.FailedStories))
+	}
+}
+
+func TestAllStoriesTerminalPayload_WrongKind(t *testing.T) {
+	payload := NewAllStoriesCompletePayload(&AllStoriesCompletePayload{})
+	_, err := payload.ExtractAllStoriesTerminal()
+	if err == nil {
+		t.Error("expected error when extracting all_stories_terminal from all_stories_complete payload")
+	}
+}

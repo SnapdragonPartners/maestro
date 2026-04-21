@@ -216,7 +216,7 @@ func (c *Coder) getPlanApprovalContent(sm *agent.BaseStateMachine) string {
 
 // getCompletionContent generates completion request content using templates.
 func (c *Coder) getCompletionContent(sm *agent.BaseStateMachine) string {
-	// Get completion evidence from state (stored by processStoryCompleteDataFromEffect)
+	// Get completion evidence from state (stored by processPlanningCompletionFromEffect)
 	evidence := utils.GetStateValueOr[string](sm, KeyCompletionDetails, "")
 
 	// Get completion summary from context

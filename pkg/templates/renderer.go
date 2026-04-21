@@ -62,10 +62,6 @@ const (
 	TestingAdversarialProbingTemplate StateTemplate = "coder/testing_adversarial_probing.tpl.md"
 	// ApprovalTemplate is the template for code approval requests.
 	ApprovalTemplate StateTemplate = "coder/approval.tpl.md"
-	// AppCompletionApprovalTemplate is the template for app story completion approval.
-	AppCompletionApprovalTemplate StateTemplate = "coder/app_completion_approval.tpl.md"
-	// DevOpsCompletionApprovalTemplate is the template for devops story completion approval.
-	DevOpsCompletionApprovalTemplate StateTemplate = "coder/devops_completion_approval.tpl.md"
 	// TestFailureInstructionsTemplate is the mini-template for app test failure instructions.
 	TestFailureInstructionsTemplate StateTemplate = "coder/test_failure_instructions.tpl.md"
 	// DevOpsTestFailureInstructionsTemplate is the mini-template for devops test failure instructions.
@@ -180,8 +176,6 @@ func NewRenderer() (*Renderer, error) {
 		TestingVerificationTemplate,
 		TestingAdversarialProbingTemplate,
 		ApprovalTemplate,
-		AppCompletionApprovalTemplate,
-		DevOpsCompletionApprovalTemplate,
 		TestFailureInstructionsTemplate,
 		DevOpsTestFailureInstructionsTemplate,
 		BudgetReviewFeedbackTemplate,

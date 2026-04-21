@@ -151,6 +151,14 @@ type Result struct {
 	Error   error
 }
 
+// storyChannelSize returns a bounded buffer size for the story channel.
+// Clamps maxCoders to [1, 100] before multiplying by the channel factor,
+// guaranteeing the result fits in a small int (max 1600).
+func storyChannelSize(maxCoders int) int {
+	n := min(max(maxCoders, 1), 100)
+	return config.StoryChannelFactor * n
+}
+
 // NewDispatcher creates a new message dispatcher with the given configuration.
 func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 	return &Dispatcher{
@@ -160,18 +168,18 @@ func NewDispatcher(cfg *config.Config) (*Dispatcher, error) {
 		inputChan:         make(chan *proto.AgentMsg, 100), // Buffered channel for message queue
 		shutdown:          make(chan struct{}),
 		running:           false,
-		storyCh:           make(chan *proto.AgentMsg, config.StoryChannelFactor*cfg.Agents.MaxCoders), // S-5: Buffer size = factor × numCoders
-		hotfixStoryCh:     make(chan *proto.AgentMsg, 10),                                             // Hotfix stories channel (dedicated coder)
-		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),                    // Buffer size from config
-		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                             // Buffered channel for PM interview requests
-		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                                   // Buffered channel for status updates
-		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                                 // Buffered channel for requeue requests
-		replyChannels:     make(map[string]chan *proto.AgentMsg),                                      // Per-agent reply channels
-		errCh:             make(chan AgentError, 10),                                                  // Buffered channel for error reporting
-		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                             // Buffered channel for state change notifications
-		cancelRequestsCh:  make(chan *proto.AgentCancelRequest, 20),                                   // Buffered channel for agent cancellation requests
-		leases:            make(map[string]string),                                                    // Story lease tracking
-		runStrat:          &goroutineStrategy{},                                                       // Default to production goroutine strategy
+		storyCh:           make(chan *proto.AgentMsg, storyChannelSize(cfg.Agents.MaxCoders)), // S-5: Buffer size = factor × numCoders (clamped)
+		hotfixStoryCh:     make(chan *proto.AgentMsg, 10),                                     // Hotfix stories channel (dedicated coder)
+		questionsCh:       make(chan *proto.AgentMsg, config.QuestionsChannelSize),            // Buffer size from config
+		pmRequestsCh:      make(chan *proto.AgentMsg, 10),                                     // Buffered channel for PM interview requests
+		statusUpdatesCh:   make(chan *proto.StoryStatusUpdate, 100),                           // Buffered channel for status updates
+		requeueRequestsCh: make(chan *proto.StoryRequeueRequest, 100),                         // Buffered channel for requeue requests
+		replyChannels:     make(map[string]chan *proto.AgentMsg),                              // Per-agent reply channels
+		errCh:             make(chan AgentError, 10),                                          // Buffered channel for error reporting
+		stateChangeCh:     make(chan *proto.StateChangeNotification, 100),                     // Buffered channel for state change notifications
+		cancelRequestsCh:  make(chan *proto.AgentCancelRequest, 20),                           // Buffered channel for agent cancellation requests
+		leases:            make(map[string]string),                                            // Story lease tracking
+		runStrat:          &goroutineStrategy{},                                               // Default to production goroutine strategy
 	}, nil
 }
 
@@ -274,6 +282,18 @@ func (d *Dispatcher) UnregisterAgent(agentID string) error {
 	d.logger.Warn("UnregisterAgent is deprecated, use defer detach() instead for agent %s", agentID)
 	d.detach(agentID)
 	return nil
+}
+
+// RegisterReplyChannel creates a reply channel for a virtual agent ID that is not
+// backed by a real agent. Used by --spec-file injection so the architect's spec
+// review responses have somewhere to land instead of being dropped.
+func (d *Dispatcher) RegisterReplyChannel(agentID string) <-chan *proto.AgentMsg {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ch := make(chan *proto.AgentMsg, 1)
+	d.replyChannels[agentID] = ch
+	return ch
 }
 
 // routeToReplyCh routes ANSWER/RESULT messages to the appropriate coder's reply channel.
@@ -594,8 +614,9 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	// Story-independent messages include:
 	// 1. REQUEST with ApprovalTypeSpec - spec approval requests from PM to architect
 	// 2. REQUEST with HotfixRequestPayload - hotfix approval requests from PM to architect
-	// 3. RESPONSE to PM - spec approval responses from architect to PM
-	// 4. REQUEST to PM - interview requests (for future escalations)
+	// 3. REQUEST with RepairCompletePayload - system-level repair notifications from PM to architect
+	// 4. RESPONSE to PM - spec approval responses from architect to PM
+	// 5. REQUEST to PM - interview requests (for future escalations)
 	isStoryIndependentMessage := false
 	if msg.Type == proto.MsgTypeREQUEST {
 		// Check if this is a spec approval request by examining the approval type in the payload
@@ -609,14 +630,22 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 					isStoryIndependentMessage = true
 				}
 			}
+			// Check if this is a repair_complete signal (system-level, not story-scoped)
+			if !isStoryIndependentMessage {
+				if _, err := payload.ExtractRepairComplete(); err == nil {
+					isStoryIndependentMessage = true
+				}
+			}
 		}
 		// Also allow PM-destined requests (interview requests from WebUI)
 		if !isStoryIndependentMessage && strings.HasPrefix(msg.ToAgent, "pm-") {
 			isStoryIndependentMessage = true
 		}
 	} else if msg.Type == proto.MsgTypeRESPONSE {
-		// Check if this is a response to PM (spec approval responses)
-		if strings.HasPrefix(msg.ToAgent, "pm-") {
+		// Check if this is a response to PM (spec approval responses).
+		// "cli" is the origin agent for --spec-file injection, which follows
+		// the same spec review flow as PM-originated specs.
+		if strings.HasPrefix(msg.ToAgent, "pm-") || msg.ToAgent == "cli" {
 			isStoryIndependentMessage = true
 		}
 	}
@@ -1150,6 +1179,17 @@ func (d *Dispatcher) GetLease(agentID string) string {
 	defer d.leasesMutex.Unlock()
 	storyID := d.leases[agentID]
 	return storyID
+}
+
+// GetLeasedStoryIDs returns the set of story IDs that are currently leased to any agent.
+func (d *Dispatcher) GetLeasedStoryIDs() map[string]bool {
+	d.leasesMutex.Lock()
+	defer d.leasesMutex.Unlock()
+	result := make(map[string]bool, len(d.leases))
+	for _, storyID := range d.leases {
+		result[storyID] = true
+	}
+	return result
 }
 
 // ClearLease removes an agent's story assignment.

@@ -25,6 +25,8 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	storyID := utils.GetStateValueOr[string](sm, KeyStoryID, "")
 	testsPassed := utils.GetStateValueOr[bool](sm, KeyTestsPassed, false)
 	testOutput := utils.GetStateValueOr[string](sm, KeyTestOutput, "")
+	testStatus := utils.GetStateValueOr[string](sm, KeyTestStatus, "")
+	testSkipReason := utils.GetStateValueOr[string](sm, KeyTestSkipReason, "")
 	storyType := utils.GetStateValueOr[string](sm, proto.KeyStoryType, string(proto.StoryTypeApp))
 
 	var approvalEff *effect.ApprovalEffect
@@ -48,7 +50,7 @@ func (c *Coder) handleCodeReview(ctx context.Context, sm *agent.BaseStateMachine
 	headSHA := c.resolveHeadSHA(ctx)
 
 	// Build comprehensive evidence section
-	evidence := c.buildCompletionEvidence(testsPassed, testOutput, storyType, workResult, headSHA)
+	evidence := c.buildCompletionEvidence(testsPassed, testOutput, testStatus, testSkipReason, storyType, workResult, headSHA)
 
 	// Append acceptance criteria verification evidence if available.
 	// Uses rehydrateVerificationOutcome to handle both the direct in-memory path
@@ -143,6 +145,8 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 		// Route based on approval type (not unreliable string matching)
 		if approvalTypeStr == string(proto.ApprovalTypeCompletion) {
 			c.logger.Info("🧑‍💻 Completion approved - story finished successfully")
+			sm.SetStateData(KeyStoryCompletedAt, time.Now().UTC())
+			sm.SetStateData(KeyCompletionStatus, "APPROVED")
 			return proto.StateDone, false, nil
 		} else {
 			c.logger.Info("🧑‍💻 Code approved - preparing merge")
@@ -165,14 +169,14 @@ func (c *Coder) processApprovalResult(_ context.Context, sm *agent.BaseStateMach
 		// Handle rejection differently based on approval type
 		if approvalTypeStr == string(proto.ApprovalTypeCompletion) {
 			c.logger.Error("🧑‍💻 Completion rejected by architect: %s", result.Feedback)
-			// Return to CODING to do the work that was deemed missing
-			rejectionMessage := fmt.Sprintf("Code completion rejected by architect:\n\n%s\n\nPlease continue implementation to address these concerns.", result.Feedback)
-			c.contextManager.AddMessage("architect-rejection", rejectionMessage)
-
-			// Set resume input for Claude Code mode (will be used if session exists)
-			sm.SetStateData(KeyResumeInput, rejectionMessage)
-
-			return StateCoding, false, nil
+			fi := proto.NewFailureInfo(
+				proto.FailureKindStoryInvalid,
+				fmt.Sprintf("Completion claim rejected: %s", result.Feedback),
+				"CODE_REVIEW", "")
+			fi.ScopeGuess = proto.FailureScopeAttempt
+			sm.SetStateData(KeyFailureInfo, fi)
+			sm.SetStateData(KeyErrorMessage, fi.Explanation)
+			return proto.StateError, false, nil
 		} else {
 			c.logger.Error("🧑‍💻 Code rejected by architect: %s", result.Feedback)
 			return proto.StateError, false, logx.Errorf("code rejected by architect: %s", result.Feedback)
@@ -198,11 +202,16 @@ func (c *Coder) resolveHeadSHA(ctx context.Context) string {
 }
 
 // buildCompletionEvidence builds evidence section based on story type and results.
-func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, storyType string, workResult *git.WorkDoneResult, headSHA string) string {
+func (c *Coder) buildCompletionEvidence(testsPassed bool, testOutput, testStatus, testSkipReason, storyType string, workResult *git.WorkDoneResult, headSHA string) string {
 	evidence := ""
 
 	// Add test evidence
-	if testsPassed {
+	if !workResult.HasWork {
+		evidence += "📋 No code changes required — tests not applicable\n"
+	} else if testStatus == "skipped" {
+		evidence += fmt.Sprintf("⚠️ Programmatic tests skipped: %s\n", testSkipReason)
+		evidence += "  See verification and probing evidence below for actual validation status.\n"
+	} else if testsPassed {
 		evidence += "✅ All tests passing\n"
 		if testOutput != "" {
 			evidence += fmt.Sprintf("Test output: %s\n", testOutput)

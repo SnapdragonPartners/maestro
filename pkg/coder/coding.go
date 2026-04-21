@@ -245,18 +245,19 @@ func (c *Coder) executeCodingWithTemplate(ctx context.Context, sm *agent.BaseSta
 			c.logger.Info("🧑‍💻 Advancing to TESTING state")
 			return StateTesting, false, nil
 		case tools.SignalStoryComplete:
-			// done tool detected empty diff (Case A) - story already implemented
+			// done tool detected empty diff (Case A) - story already implemented.
+			// Bypass TESTING and go directly to CODE_REVIEW for completion verification.
 			effectData, ok := utils.SafeAssert[map[string]any](out.EffectData)
 			if !ok {
 				return proto.StateError, false, logx.Errorf("STORY_COMPLETE effect data is not map[string]any: %T", out.EffectData)
 			}
-
-			if err := c.processStoryCompleteDataFromEffect(sm, effectData); err != nil {
-				return proto.StateError, false, logx.Wrap(err, "failed to process story complete data")
+			evidence := utils.GetMapFieldOr[string](effectData, "evidence", "")
+			if evidence == "" {
+				return proto.StateError, false, logx.Errorf("evidence is required for story completion claim")
 			}
-
-			c.logger.Info("✅ Story completion claim submitted from CODING, transitioning to PLAN_REVIEW")
-			return StatePlanReview, false, nil
+			sm.SetStateData(KeyCompletionDetails, evidence)
+			c.logger.Info("✅ Story completion claim from CODING, bypassing TESTING to CODE_REVIEW")
+			return StateCodeReview, false, nil
 		case tools.SignalBlocked:
 			// report_blocked was called - coder is blocked by infrastructure or invalid story
 			failureInfo := extractFailureInfoFromEffect(out.EffectData)

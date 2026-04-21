@@ -30,8 +30,10 @@ Generate implementation stories from this approved specification. You MUST call 
 You do not have access to exploration tools in this phase - story generation should be based solely on the approved specification content.
 
 ## Story Generation Guidelines
-
-**CRITICAL**: First identify the platform/language specified in the specification. Look for explicit declarations like "Platform: Go", "Platform: Python", etc.
+{{if .Extra.primary_platform}}
+**PROJECT PLATFORM**: This project's configured platform is **{{.Extra.primary_platform}}**. Use this as the baseline platform unless the specification explicitly declares a different one.
+{{end}}
+**CRITICAL**: First identify the platform/language. If the specification explicitly declares one (e.g., "Platform: Go", "Platform: Python"), use that.{{if .Extra.primary_platform}} Otherwise, use the configured platform: **{{.Extra.primary_platform}}**.{{else}} Otherwise, infer from the specification content.{{end}}
 
 **PLATFORM CONSISTENCY RULE**: All requirements, examples, tools, and implementation details MUST be consistent with the identified platform. Do not mix platforms or suggest tools from different languages.
 

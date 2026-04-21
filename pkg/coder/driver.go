@@ -239,19 +239,18 @@ type stateDataKey string
 
 // State data keys - using typed constants to prevent key mismatch bugs.
 const (
-	stateDataKeyPlan                     stateDataKey = KeyPlan
-	stateDataKeyPlanConfidence           stateDataKey = "plan_confidence"
-	stateDataKeyExplorationSummary       stateDataKey = "exploration_summary"
-	stateDataKeyKnowledgePack            stateDataKey = "knowledge_pack"
-	stateDataKeyPlanApprovalResult       stateDataKey = KeyPlanApprovalResult
-	stateDataKeyCompletionApprovalResult stateDataKey = "completion_approval_result"
-	stateDataKeyCodeApprovalResult       stateDataKey = KeyCodeApprovalResult
-	stateDataKeyBudgetApprovalResult     stateDataKey = "budget_approval_result"
-	stateDataKeyArchitectAnswer          stateDataKey = "architect_answer"
-	stateDataKeyTaskContent              stateDataKey = KeyTaskContent
-	stateDataKeyStartedAt                stateDataKey = "started_at"
-	stateDataKeyCodingIterations         stateDataKey = "coding_iterations"
-	stateDataKeyPlanningIterations       stateDataKey = "planning_iterations"
+	stateDataKeyPlan                 stateDataKey = KeyPlan
+	stateDataKeyPlanConfidence       stateDataKey = "plan_confidence"
+	stateDataKeyExplorationSummary   stateDataKey = "exploration_summary"
+	stateDataKeyKnowledgePack        stateDataKey = "knowledge_pack"
+	stateDataKeyPlanApprovalResult   stateDataKey = KeyPlanApprovalResult
+	stateDataKeyCodeApprovalResult   stateDataKey = KeyCodeApprovalResult
+	stateDataKeyBudgetApprovalResult stateDataKey = "budget_approval_result"
+	stateDataKeyArchitectAnswer      stateDataKey = "architect_answer"
+	stateDataKeyTaskContent          stateDataKey = KeyTaskContent
+	stateDataKeyStartedAt            stateDataKey = "started_at"
+	stateDataKeyCodingIterations     stateDataKey = "coding_iterations"
+	stateDataKeyPlanningIterations   stateDataKey = "planning_iterations"
 
 	// BUDGET_REVIEW and other state keys - removed unused constants.
 )

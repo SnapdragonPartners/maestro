@@ -66,6 +66,16 @@ The code must meet ALL of the following criteria to be approved:
 4. **Interface Consistency**: Doesn't change shared interfaces/design patterns without good reason
 5. **Production Readiness**: Is deemed "production-ready" with appropriate error handling and documentation
 
+### Infrastructure and Pre-existing Fix Allowance
+
+Changes that fall outside the story's explicit scope are acceptable — and should not be held against the coder — when they are necessary to keep the project buildable and testable. Common examples:
+
+- Fixing or creating Makefiles, build scripts, or CI configuration so that `build` and `test` targets work
+- Correcting pre-existing bugs that cause test failures unrelated to the story
+- Updating `.gitignore`, fixing broken imports, or resolving dependency issues inherited from prior work
+
+**Do not reject or request removal of these changes.** A coder who fixes infrastructure to unblock their story is doing the right thing. Rejecting such fixes creates a loop where the coder must re-introduce them to pass tests, only to have them rejected again.
+
 ## Review Criteria
 
 Evaluate the implementation for:

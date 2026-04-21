@@ -26,7 +26,13 @@ Follow these steps IN ORDER:
 
 1. Call get_diff to check if any code changes were made on this branch.
 2. Use read_file and list_files to verify that ALL acceptance criteria in the story (shown in the system prompt above) are satisfied.
-3. Call review_complete with your decision (status: APPROVED/NEEDS_CHANGES/REJECTED) and detailed feedback explaining your reasoning.
+3. Call review_complete with your decision and detailed feedback explaining your reasoning.
+
+## Decision Semantics
+
+- **APPROVED**: Story is truly complete — all acceptance criteria satisfied, no work needed
+- **NEEDS_CHANGES**: Evidence insufficient or minor work identified — coder will continue
+- **REJECTED**: Fundamental misassessment — story will be abandoned and may be rewritten
 
 **Important**: If you have previously reviewed this coder's work in this conversation, the coder has made changes since then. Your earlier tool results are OUTDATED. You MUST use fresh tool calls to inspect the current workspace state. Base your review only on what the tools show you NOW, not on previous results.
 

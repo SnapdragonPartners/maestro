@@ -63,7 +63,7 @@ Review this specification for completeness, clarity, and implementability. You m
 1. **Clarity**: Are requirements clear and unambiguous?
 2. **Completeness**: Is enough information provided for implementation?
 3. **Feasibility**: Are requirements technically feasible?
-4. **Platform Consistency**: Are all requirements appropriate for the project's platform/language?
+4. **Platform Consistency**: Are all requirements appropriate for the project's platform/language?{{if .Extra.primary_platform}} The configured platform is **{{.Extra.primary_platform}}**.{{end}}
 5. **Missing Information**: Are there gaps that need clarification?
 6. **Requirement Harmonization**: When user requirements overlap with infrastructure baselines, ensure the more comprehensive approach is taken (user requirements can enhance but not reduce infrastructure minimums)
 

@@ -251,6 +251,7 @@ type SessionSummary struct {
 	StoriesTotal     int    `json:"stories_total"`
 	StoriesCompleted int    `json:"stories_completed"`
 	StoriesFailed    int    `json:"stories_failed"`
+	StoriesSkipped   int    `json:"stories_skipped"`
 	StoriesHeld      int    `json:"stories_held"`
 }
 
@@ -295,6 +296,8 @@ func QuerySessionSummary(db *sql.DB, sessionID string) (*SessionSummary, error) 
 			summary.StoriesCompleted += count
 		case StatusFailed:
 			summary.StoriesFailed += count
+		case StatusSkipped:
+			summary.StoriesSkipped += count
 		case StatusOnHold:
 			summary.StoriesHeld += count
 		}
