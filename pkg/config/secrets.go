@@ -119,10 +119,15 @@ func SetDecryptedSecrets(secrets *StructuredSecrets) {
 }
 
 // GetSecret returns a secret value by name using precedence:
-// 1. User secrets (in memory)
-// 2. System secrets (in memory)
-// 3. Environment variables.
+// 1. MAESTRO_-prefixed environment variable (explicit Maestro override)
+// 2. User secrets (in memory)
+// 3. System secrets (in memory)
+// 4. Standard environment variable.
 func GetSecret(name string) (string, error) {
+	if value := os.Getenv("MAESTRO_" + name); value != "" {
+		return value, nil
+	}
+
 	decryptedSecretsMux.RLock()
 	if decryptedSecrets != nil {
 		// User secrets take precedence over system secrets
@@ -148,7 +153,12 @@ func GetSecret(name string) (string, error) {
 // GetSystemSecret returns a secret value for Maestro's own use (API keys, tokens).
 // Only checks system secrets and environment variables — never user secrets.
 // User secrets are for container injection only and should not be used by Maestro itself.
+// Precedence: MAESTRO_-prefixed env var > system secrets > standard env var.
 func GetSystemSecret(name string) (string, error) {
+	if value := os.Getenv("MAESTRO_" + name); value != "" {
+		return value, nil
+	}
+
 	decryptedSecretsMux.RLock()
 	if decryptedSecrets != nil {
 		if value, exists := decryptedSecrets.System[name]; exists && value != "" {

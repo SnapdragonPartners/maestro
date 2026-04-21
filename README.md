@@ -65,6 +65,8 @@ This project is developed and actively maintained by Snapdragon Partners. Tokens
 > export GOOGLE_SEARCH_CX=...  # Your Custom Search Engine ID
 > ```
 >
+> **Tip:** If you use Claude Code or other tools that read `ANTHROPIC_API_KEY`, you can set `MAESTRO_ANTHROPIC_API_KEY` instead — Maestro checks `MAESTRO_`-prefixed env vars first, letting you use different keys for Maestro and other tools. This works for all providers: `MAESTRO_OPENAI_API_KEY`, `MAESTRO_GOOGLE_GENAI_API_KEY`, `MAESTRO_GITHUB_TOKEN`.
+>
 > **Option B: Configure via Web UI** (easier)
 >
 > Skip this step entirely and just run Maestro. If any required API keys are missing, Maestro will automatically open a setup page in the Web UI where you can paste your keys into a browser form. Keys are encrypted and stored locally.
