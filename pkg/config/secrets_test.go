@@ -196,82 +196,91 @@ func TestGetSecretPrecedence(t *testing.T) {
 }
 
 func TestGetSecretMaestroPrefixPrecedence(t *testing.T) {
-	defer func() {
-		SetDecryptedSecrets(nil)
-		os.Unsetenv("TEST_KEY")
-		os.Unsetenv("MAESTRO_TEST_KEY")
-	}()
+	t.Run("maestro env wins over all", func(t *testing.T) {
+		t.Cleanup(func() { SetDecryptedSecrets(nil) })
+		SetDecryptedSecrets(&StructuredSecrets{
+			System: map[string]string{"TEST_KEY": "from-system"},
+			User:   map[string]string{"TEST_KEY": "from-user"},
+		})
+		t.Setenv("TEST_KEY", "from-env")
+		t.Setenv("MAESTRO_TEST_KEY", "from-maestro-env")
 
-	// MAESTRO_ env var beats user secrets, system secrets, and standard env var
-	SetDecryptedSecrets(&StructuredSecrets{
-		System: map[string]string{"TEST_KEY": "from-system"},
-		User:   map[string]string{"TEST_KEY": "from-user"},
+		secret, err := GetSecret("TEST_KEY")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret != "from-maestro-env" {
+			t.Errorf("expected MAESTRO_ env var to win, got: %q", secret)
+		}
 	})
-	os.Setenv("TEST_KEY", "from-env")
-	os.Setenv("MAESTRO_TEST_KEY", "from-maestro-env")
 
-	secret, err := GetSecret("TEST_KEY")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if secret != "from-maestro-env" {
-		t.Errorf("expected MAESTRO_ env var to win, got: %q", secret)
-	}
+	t.Run("falls back to user secret without maestro env", func(t *testing.T) {
+		t.Cleanup(func() { SetDecryptedSecrets(nil) })
+		SetDecryptedSecrets(&StructuredSecrets{
+			System: map[string]string{"TEST_KEY": "from-system"},
+			User:   map[string]string{"TEST_KEY": "from-user"},
+		})
+		t.Setenv("TEST_KEY", "from-env")
 
-	// Without MAESTRO_ prefix, falls back to user secret
-	os.Unsetenv("MAESTRO_TEST_KEY")
-	secret, err = GetSecret("TEST_KEY")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if secret != "from-user" {
-		t.Errorf("expected user secret without MAESTRO_ prefix, got: %q", secret)
-	}
+		secret, err := GetSecret("TEST_KEY")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret != "from-user" {
+			t.Errorf("expected user secret without MAESTRO_ prefix, got: %q", secret)
+		}
+	})
 }
 
 func TestGetSystemSecretMaestroPrefixPrecedence(t *testing.T) {
-	defer func() {
-		SetDecryptedSecrets(nil)
-		os.Unsetenv("TEST_KEY")
-		os.Unsetenv("MAESTRO_TEST_KEY")
-	}()
+	t.Run("maestro env wins over system secret and env", func(t *testing.T) {
+		t.Cleanup(func() { SetDecryptedSecrets(nil) })
+		SetDecryptedSecrets(&StructuredSecrets{
+			System: map[string]string{"TEST_KEY": "from-system"},
+		})
+		t.Setenv("TEST_KEY", "from-env")
+		t.Setenv("MAESTRO_TEST_KEY", "from-maestro-env")
 
-	// MAESTRO_ env var beats system secrets and standard env var
-	SetDecryptedSecrets(&StructuredSecrets{
-		System: map[string]string{"TEST_KEY": "from-system"},
+		secret, err := GetSystemSecret("TEST_KEY")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret != "from-maestro-env" {
+			t.Errorf("expected MAESTRO_ env var to win, got: %q", secret)
+		}
 	})
-	os.Setenv("TEST_KEY", "from-env")
-	os.Setenv("MAESTRO_TEST_KEY", "from-maestro-env")
 
-	secret, err := GetSystemSecret("TEST_KEY")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if secret != "from-maestro-env" {
-		t.Errorf("expected MAESTRO_ env var to win, got: %q", secret)
-	}
+	t.Run("falls back to system secret without maestro env", func(t *testing.T) {
+		t.Cleanup(func() { SetDecryptedSecrets(nil) })
+		SetDecryptedSecrets(&StructuredSecrets{
+			System: map[string]string{"TEST_KEY": "from-system"},
+		})
+		t.Setenv("TEST_KEY", "from-env")
 
-	// Without MAESTRO_ prefix, falls back to system secret (not env var)
-	os.Unsetenv("MAESTRO_TEST_KEY")
-	secret, err = GetSystemSecret("TEST_KEY")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if secret != "from-system" {
-		t.Errorf("expected system secret without MAESTRO_ prefix, got: %q", secret)
-	}
-
-	// Without system secret, falls back to standard env var
-	SetDecryptedSecrets(&StructuredSecrets{
-		System: map[string]string{},
+		secret, err := GetSystemSecret("TEST_KEY")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret != "from-system" {
+			t.Errorf("expected system secret without MAESTRO_ prefix, got: %q", secret)
+		}
 	})
-	secret, err = GetSystemSecret("TEST_KEY")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if secret != "from-env" {
-		t.Errorf("expected standard env var as final fallback, got: %q", secret)
-	}
+
+	t.Run("falls back to standard env var without secrets", func(t *testing.T) {
+		t.Cleanup(func() { SetDecryptedSecrets(nil) })
+		SetDecryptedSecrets(&StructuredSecrets{
+			System: map[string]string{},
+		})
+		t.Setenv("TEST_KEY", "from-env")
+
+		secret, err := GetSystemSecret("TEST_KEY")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if secret != "from-env" {
+			t.Errorf("expected standard env var as final fallback, got: %q", secret)
+		}
+	})
 }
 
 func TestProjectPasswordMemory(t *testing.T) {
