@@ -16,7 +16,7 @@ require (
 	golang.org/x/crypto v0.49.0
 	google.golang.org/genai v1.52.1
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.48.1
+	modernc.org/sqlite v1.48.2
 )
 
 require (
