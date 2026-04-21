@@ -91,27 +91,34 @@ func (c *Coder) handleAppStoryTesting(ctx context.Context, sm *agent.BaseStateMa
 		c.logger.Info("App story testing: using build service with backend %s", backendInfo.Name)
 
 		// Run tests using build service
-		testsPassed, testOutput, err := c.runTestWithBuildService(ctx, workspacePathStr)
+		testResult, err := c.runTestWithBuildService(ctx, workspacePathStr)
 		if err != nil {
 			c.logger.Error("Failed to run tests: %v", err)
-			// Create test failure effect with truncated error message
 			errorStr := err.Error()
 			truncatedError := truncateOutput(errorStr)
-			sm.SetStateData(KeyTestError, errorStr) // Keep full error for logging
+			sm.SetStateData(KeyTestError, errorStr)
 
 			testFailureEff := effect.NewGenericTestFailureEffect(truncatedError)
 			return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
 		}
 
 		// Store test results
-		sm.SetStateData(KeyTestsPassed, testsPassed)
-		sm.SetStateData(KeyTestOutput, testOutput)
+		sm.SetStateData(KeyTestsPassed, testResult.passed)
+		sm.SetStateData(KeyTestOutput, testResult.output)
 		sm.SetStateData(KeyTestingCompletedAt, time.Now().UTC())
 
-		if !testsPassed {
+		if testResult.skipped {
+			sm.SetStateData(KeyTestStatus, "skipped")
+			sm.SetStateData(KeyTestSkipReason, testResult.skipReason)
+			c.logger.Info("Programmatic tests skipped: %s. Proceeding with verification checks.", testResult.skipReason)
+			return c.proceedToCodeReviewWithLintCheck(ctx, sm, workspacePathStr)
+		}
+
+		sm.SetStateData(KeyTestStatus, "ran")
+
+		if !testResult.passed {
 			c.logger.Info("App story tests failed, transitioning to CODING state for fixes")
-			// Create test failure effect with truncated test output
-			truncatedOutput := truncateOutput(testOutput)
+			truncatedOutput := truncateOutput(testResult.output)
 
 			testFailureEff := effect.NewGenericTestFailureEffect(truncatedOutput)
 			return c.executeTestFailureAndTransition(ctx, sm, testFailureEff)
@@ -512,45 +519,56 @@ func (c *Coder) runMakeTest(ctx context.Context, workspacePath string) (bool, st
 	return true, outputStr, nil
 }
 
+//nolint:govet // Logical field ordering preferred over memory alignment
+type buildTestResult struct {
+	passed     bool
+	skipped    bool
+	skipReason string
+	output     string
+}
+
 // runTestWithBuildService runs tests using build service instead of direct backend calls.
-func (c *Coder) runTestWithBuildService(ctx context.Context, workspacePath string) (bool, string, error) {
+func (c *Coder) runTestWithBuildService(ctx context.Context, workspacePath string) (buildTestResult, error) {
 	c.logger.Info("Running tests via build service in %s", workspacePath)
 
-	// Create context with timeout for test execution
 	testCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	// Create test request
 	req := &build.Request{
 		ProjectRoot: workspacePath,
 		Operation:   "test",
-		Timeout:     300, // 5 minutes
+		Timeout:     300,
 		Context:     make(map[string]string),
 	}
 
-	// Execute test via build service
 	response, err := c.buildService.ExecuteBuild(testCtx, req)
 	if err != nil {
-		return false, "", logx.Wrap(err, "build service test execution failed")
+		return buildTestResult{}, logx.Wrap(err, "build service test execution failed")
 	}
 
-	// Log test output for debugging
 	c.logger.Info("Test output: %s", response.Output)
 
-	if !response.Success {
-		// Check if timeout occurred
-		if testCtx.Err() == context.DeadlineExceeded {
-			return false, response.Output, logx.Errorf("tests timed out after 5 minutes")
-		}
-
-		// Tests failed - expected when tests fail
-		c.logger.Info("Tests failed: %s", response.Error)
-		return false, response.Output, nil
+	if response.Skipped {
+		c.logger.Info("Tests skipped: %s", response.SkipReason)
+		return buildTestResult{
+			passed:     true,
+			skipped:    true,
+			skipReason: response.SkipReason,
+			output:     response.Output,
+		}, nil
 	}
 
-	// Tests succeeded
+	if !response.Success {
+		if testCtx.Err() == context.DeadlineExceeded {
+			return buildTestResult{}, logx.Errorf("tests timed out after 5 minutes")
+		}
+
+		c.logger.Info("Tests failed: %s", response.Error)
+		return buildTestResult{passed: false, output: response.Output}, nil
+	}
+
 	c.logger.Info("Tests completed successfully via build service")
-	return true, response.Output, nil
+	return buildTestResult{passed: true, output: response.Output}, nil
 }
 
 // proceedToCodeReview transitions to CODE_REVIEW state after successful testing.

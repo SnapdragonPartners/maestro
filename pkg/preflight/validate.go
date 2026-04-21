@@ -60,17 +60,36 @@ var validateMu sync.Mutex //nolint:gochecknoglobals // protects against concurre
 // ValidateKeys checks all configured API keys by making real API calls.
 // Keys that are present get validated; missing keys are reported as "missing".
 // All providers are checked concurrently with per-provider timeouts.
+// Used by the "Check Keys" button to validate all known providers.
 func ValidateKeys(ctx context.Context) []KeyCheckResult {
+	return validateProviders(ctx, []Provider{ProviderAnthropic, ProviderOpenAI, ProviderGoogle, ProviderGitHub})
+}
+
+// ValidateRequiredKeys checks only providers required by the current config.
+// Providers without API key mappings (docker, gitea, ollama) are skipped.
+// Used by startup readiness evaluation.
+func ValidateRequiredKeys(ctx context.Context, cfg *config.Config) []KeyCheckResult {
+	return validateProviders(ctx, RequiredProviders(cfg))
+}
+
+// validateProviders validates a set of providers concurrently.
+// Providers without API key mappings (docker, gitea, ollama) are silently skipped.
+func validateProviders(ctx context.Context, providers []Provider) []KeyCheckResult {
 	validateMu.Lock()
 	defer validateMu.Unlock()
 
-	// Check all providers that have env var mappings (LLM + GitHub)
-	providers := []Provider{ProviderAnthropic, ProviderOpenAI, ProviderGoogle, ProviderGitHub}
+	// Filter to providers that use API keys
+	var apiProviders []Provider
+	for _, p := range providers {
+		if _, ok := providerEnvVar[p]; ok {
+			apiProviders = append(apiProviders, p)
+		}
+	}
 
 	var wg sync.WaitGroup
-	results := make([]KeyCheckResult, len(providers))
+	results := make([]KeyCheckResult, len(apiProviders))
 
-	for i, provider := range providers {
+	for i, provider := range apiProviders {
 		envVar := providerEnvVar[provider]
 		value, _ := config.GetSystemSecret(envVar)
 

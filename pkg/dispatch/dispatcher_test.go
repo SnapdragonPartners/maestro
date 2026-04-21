@@ -554,6 +554,23 @@ func TestLeaseOperations(t *testing.T) {
 
 	// Test clearing non-existent lease (should not panic)
 	dispatcher.ClearLease("non-existent")
+
+	// Test GetLeasedStoryIDs
+	dispatcher.SetLease("agent-001", "story-001")
+	dispatcher.SetLease("agent-002", "story-002")
+	leased := dispatcher.GetLeasedStoryIDs()
+	if len(leased) != 2 {
+		t.Errorf("Expected 2 leased stories, got %d", len(leased))
+	}
+	if !leased["story-001"] || !leased["story-002"] {
+		t.Errorf("Expected story-001 and story-002 in leased set, got %v", leased)
+	}
+
+	dispatcher.ClearLease("agent-001")
+	leased = dispatcher.GetLeasedStoryIDs()
+	if len(leased) != 1 || !leased["story-002"] {
+		t.Errorf("Expected only story-002 in leased set after clear, got %v", leased)
+	}
 }
 
 func TestSendRequeue(t *testing.T) {
@@ -1120,6 +1137,45 @@ func TestHotfixRequestStoryIndependent(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	t.Log("Hotfix REQUEST correctly accepted without story_id")
+}
+
+func TestRepairCompleteStoryIndependent(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := dispatcher.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer stopCancel()
+		dispatcher.Stop(stopCtx)
+	}()
+
+	repairPayload := &proto.RepairCompletePayload{
+		Reason:    "Fixed corrupted git state",
+		Timestamp: "2026-04-18T12:00:00Z",
+	}
+
+	repairMsg := &proto.AgentMsg{
+		ID:        "repair-complete-001",
+		Type:      proto.MsgTypeREQUEST,
+		FromAgent: "pm-001",
+		ToAgent:   "architect",
+		Payload:   proto.NewRepairCompletePayload(repairPayload),
+	}
+
+	err = dispatcher.DispatchMessage(repairMsg)
+	if err != nil {
+		t.Errorf("RepairComplete REQUEST without story_id should be allowed (story-independent), got error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	t.Log("RepairComplete REQUEST correctly accepted without story_id")
 }
 
 func TestLeaseOperationsExtended(t *testing.T) {

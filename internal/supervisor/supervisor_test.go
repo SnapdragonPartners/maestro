@@ -469,3 +469,399 @@ func TestWaitForAgentsShutdownTimeout(t *testing.T) {
 	// Clean up: decrement the waitgroup
 	supervisor.agentWg.Done()
 }
+
+func TestWatchdogSkipsWaitingAgents(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-watchdog-waiting-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-001"
+	mockAgent := &MockAgent{id: agentID, state: proto.StateWaiting}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Record activity far in the past — would normally trigger watchdog kill
+	supervisor.activityMu.Lock()
+	supervisor.lastActivity[agentID] = time.Now().Add(-2 * time.Hour)
+	supervisor.agentStates[agentID] = proto.StateWaiting
+	supervisor.activityMu.Unlock()
+
+	// Set up a cancel func to detect if watchdog tries to kill the agent
+	agentCtx, cancel := context.WithCancel(ctx)
+	supervisor.AgentContexts[agentID] = cancel
+
+	supervisor.checkCodingActivity()
+
+	// Context should NOT have been cancelled — agent is WAITING
+	select {
+	case <-agentCtx.Done():
+		t.Error("Watchdog should NOT cancel WAITING agents")
+	default:
+		// Expected: context still alive
+	}
+}
+
+func TestWatchdogKillsStuckCodingAgent(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-watchdog-stuck-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-002"
+	mockAgent := &MockAgent{id: agentID, state: proto.State("CODING")}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Record activity far in the past
+	supervisor.activityMu.Lock()
+	supervisor.lastActivity[agentID] = time.Now().Add(-2 * time.Hour)
+	supervisor.agentStates[agentID] = proto.State("CODING")
+	supervisor.activityMu.Unlock()
+
+	agentCtx, cancel := context.WithCancel(ctx)
+	supervisor.AgentContexts[agentID] = cancel
+
+	supervisor.checkCodingActivity()
+
+	// Context SHOULD have been cancelled — agent is stuck in CODING
+	select {
+	case <-agentCtx.Done():
+		// Expected: watchdog killed it
+	default:
+		t.Error("Watchdog should cancel stuck CODING agents")
+	}
+}
+
+func TestUnexpectedExitRestartsCoderAgent(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-unexpected-exit-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-010"
+	mockAgent := &MockAgent{id: agentID, state: proto.StateWaiting}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	supervisor.activityMu.Lock()
+	supervisor.agentGeneration[agentID] = 1
+	supervisor.agentStates[agentID] = proto.State("CODING")
+	supervisor.activityMu.Unlock()
+
+	// Call with current generation — should attempt restart
+	supervisor.handleUnexpectedExit(ctx, agentID, 1)
+
+	// Verify restart was attempted: cleanupAgentResources deletes the agent type entry,
+	// and since the factory won't find a real agent config in tests, the entry stays deleted.
+	supervisor.activityMu.Lock()
+	_, typeExists := supervisor.AgentTypes[agentID]
+	genAfter := supervisor.agentGeneration[agentID]
+	supervisor.activityMu.Unlock()
+
+	if typeExists {
+		t.Error("Expected AgentTypes entry to be cleaned up by restart attempt")
+	}
+	// Generation should still be 1 (cleanup doesn't delete it, and factory failed so
+	// RegisterAgent was never called to increment it)
+	if genAfter != 1 {
+		t.Errorf("Expected generation to remain 1 (factory fails in test), got %d", genAfter)
+	}
+}
+
+func TestNoRestartDuringShutdown(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-no-restart-shutdown-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	parentCtx := context.Background()
+	k, err := kernel.NewKernel(parentCtx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-011"
+	mockAgent := &MockAgent{id: agentID, state: proto.State("CODING")}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	supervisor.activityMu.Lock()
+	supervisor.agentGeneration[agentID] = 1
+	supervisor.activityMu.Unlock()
+
+	cancelledCtx, cancel := context.WithCancel(parentCtx)
+	cancel()
+
+	supervisor.handleUnexpectedExit(cancelledCtx, agentID, 1)
+
+	// Agent should NOT have been cleaned up (no restart attempted)
+	if _, exists := supervisor.AgentTypes[agentID]; !exists {
+		t.Error("Agent should not be restarted during system shutdown")
+	}
+}
+
+func TestNoDoubleRestartViaGeneration(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-no-double-restart-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-012"
+	mockAgent := &MockAgent{id: agentID, state: proto.State("DONE")}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Simulate: DONE notification triggered restartAgent which incremented generation to 2
+	supervisor.activityMu.Lock()
+	supervisor.agentGeneration[agentID] = 2
+	supervisor.activityMu.Unlock()
+
+	// Old goroutine calls handleUnexpectedExit with stale generation 1
+	supervisor.handleUnexpectedExit(ctx, agentID, 1)
+
+	// Agent should still be present — stale generation was detected
+	if _, exists := supervisor.AgentTypes[agentID]; !exists {
+		t.Error("Stale goroutine should not restart when generation has advanced")
+	}
+}
+
+func TestWatchdogSkipsBlockingStates(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-watchdog-blocking-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	// Test that watchdog skips all states where coder blocks on external input
+	blockingStates := []proto.State{
+		proto.StateWaiting,
+		proto.State("SETUP"),
+		proto.State("PLAN_REVIEW"),
+		proto.State("CODE_REVIEW"),
+		proto.State("QUESTION"),
+		proto.State("BUDGET_REVIEW"),
+		proto.State("PREPARE_MERGE"),
+		proto.State("AWAIT_MERGE"),
+	}
+
+	for _, state := range blockingStates {
+		t.Run(string(state), func(t *testing.T) {
+			supervisor := NewSupervisor(k)
+
+			agentID := "coder-blocking"
+			mockAgent := &MockAgent{id: agentID, state: state}
+			supervisor.Agents[agentID] = mockAgent
+			supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+			supervisor.activityMu.Lock()
+			supervisor.lastActivity[agentID] = time.Now().Add(-2 * time.Hour)
+			supervisor.agentStates[agentID] = state
+			supervisor.activityMu.Unlock()
+
+			agentCtx, cancel := context.WithCancel(ctx)
+			supervisor.AgentContexts[agentID] = cancel
+
+			supervisor.checkCodingActivity()
+
+			select {
+			case <-agentCtx.Done():
+				t.Errorf("Watchdog should NOT cancel agents in %s state", state)
+			default:
+			}
+		})
+	}
+}
+
+func TestRegisteredAgentGetsStateFromAgent(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-initial-state-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	// Agent that reports CODING as its current state (simulates restored agent)
+	agentID := "coder-restored"
+	mockAgent := &MockAgent{id: agentID, state: proto.State("CODING")}
+
+	supervisor.RegisterAgent(ctx, agentID, string(agent.TypeCoder), mockAgent)
+
+	supervisor.activityMu.Lock()
+	state := supervisor.agentStates[agentID]
+	supervisor.activityMu.Unlock()
+
+	if state != proto.State("CODING") {
+		t.Errorf("Expected initial state CODING from agent, got: %s", state)
+	}
+}
+
+func TestRegisteredAgentDefaultsToWaiting(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-default-state-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	// Agent that reports empty state (fresh agent)
+	agentID := "coder-fresh"
+	mockAgent := &MockAgent{id: agentID, state: ""}
+
+	supervisor.RegisterAgent(ctx, agentID, string(agent.TypeCoder), mockAgent)
+
+	supervisor.activityMu.Lock()
+	state := supervisor.agentStates[agentID]
+	supervisor.activityMu.Unlock()
+
+	if state != proto.StateWaiting {
+		t.Errorf("Expected default state WAITING for fresh agent, got: %s", state)
+	}
+}
+
+func TestAgentStateTrackedThroughLifecycle(t *testing.T) {
+	resetPersistence(t)
+
+	tempDir, err := os.MkdirTemp("", "supervisor-state-track-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	cfg := createTestConfig()
+	ctx := context.Background()
+	k, err := kernel.NewKernel(ctx, &cfg, tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create kernel: %v", err)
+	}
+	defer k.Stop()
+
+	supervisor := NewSupervisor(k)
+
+	agentID := "coder-003"
+	mockAgent := &MockAgent{id: agentID}
+	supervisor.Agents[agentID] = mockAgent
+	supervisor.AgentTypes[agentID] = string(agent.TypeCoder)
+
+	// Simulate registration sets WAITING
+	supervisor.activityMu.Lock()
+	supervisor.agentStates[agentID] = proto.StateWaiting
+	supervisor.activityMu.Unlock()
+
+	// Simulate state change to CODING
+	supervisor.handleStateChange(ctx, &proto.StateChangeNotification{
+		AgentID:   agentID,
+		FromState: proto.StateWaiting,
+		ToState:   proto.State("CODING"),
+	})
+
+	supervisor.activityMu.Lock()
+	state := supervisor.agentStates[agentID]
+	supervisor.activityMu.Unlock()
+
+	if state != proto.State("CODING") {
+		t.Errorf("Expected state CODING after state change, got: %s", state)
+	}
+
+	// Simulate cleanup removes state
+	supervisor.cleanupAgentResources(agentID)
+
+	supervisor.activityMu.Lock()
+	_, exists := supervisor.agentStates[agentID]
+	supervisor.activityMu.Unlock()
+
+	if exists {
+		t.Error("Expected agent state to be cleaned up after resource cleanup")
+	}
+}

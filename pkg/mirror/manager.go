@@ -34,17 +34,17 @@ func NewManager(projectDir string) *Manager {
 	}
 }
 
-// GetFetchURL returns the upstream URL based on operating mode.
-// In airplane mode, reads from runtime state (forge_state.json).
-// In standard mode, returns the configured GitHub URL.
+// GetFetchURL returns the upstream URL based on forge provider.
+// When using Gitea forge, reads from runtime state (forge_state.json).
+// When using GitHub forge, returns the configured GitHub URL.
 func (m *Manager) GetFetchURL() (string, error) {
-	if config.IsAirplaneMode() {
+	if config.GetForgeProvider() == config.ForgeProviderGitea {
 		// Load forge state to get Gitea URL
 		state, err := forge.LoadState(m.projectDir)
 		if err != nil {
-			// Gitea not yet configured - fall back to GitHub URL
+			// Gitea not yet configured - fall back to config URL
 			// This can happen during initial setup before Gitea is ready
-			m.logger.Debug("Forge state not found, using GitHub URL: %v", err)
+			m.logger.Debug("Forge state not found, using config URL: %v", err)
 			return m.getGitHubURL()
 		}
 		// Return Gitea clone URL
@@ -94,6 +94,11 @@ func (m *Manager) RefreshFromForge(ctx context.Context) error {
 		return fmt.Errorf("failed to update mirror: %w", err)
 	}
 
+	// Validate after fetch — a corrupted fetch can silently poison downstream clones
+	if fsckErr := ValidateRepo(ctx, mirrorPath); fsckErr != nil {
+		return fmt.Errorf("mirror corrupt after refresh: %w", fsckErr)
+	}
+
 	m.logger.Info("✅ Mirror refreshed successfully")
 	return nil
 }
@@ -120,6 +125,11 @@ func (m *Manager) SwitchUpstream(ctx context.Context, newURL string) error {
 	// Fetch from new upstream
 	if err := updateGitMirror(ctx, mirrorPath); err != nil {
 		return fmt.Errorf("failed to fetch from new upstream: %w", err)
+	}
+
+	// Validate after fetch — a corrupted fetch can silently poison downstream clones
+	if fsckErr := ValidateRepo(ctx, mirrorPath); fsckErr != nil {
+		return fmt.Errorf("mirror corrupt after upstream switch: %w", fsckErr)
 	}
 
 	m.logger.Info("✅ Mirror upstream switched successfully")
@@ -232,7 +242,17 @@ func (m *Manager) validateOrRecoverMirror(ctx context.Context, mirrorPath, repoU
 		return true, nil
 	}
 
-	m.logger.Info("✅ Git mirror updated successfully")
+	// Revalidate after update — fetched objects may be corrupt (e.g., macOS/Docker
+	// bind mount issues). Catching it here prevents feeding bad objects to workspaces.
+	if postErr := ValidateRepo(ctx, mirrorPath); postErr != nil {
+		m.logger.Warn("⚠️  Mirror corrupt after update (%v), removing for fresh clone", postErr)
+		if removeErr := os.RemoveAll(mirrorPath); removeErr != nil {
+			return false, fmt.Errorf("failed to remove corrupt mirror: %w", removeErr)
+		}
+		return true, nil
+	}
+
+	m.logger.Info("✅ Git mirror updated and validated successfully")
 	return false, nil
 }
 
@@ -402,13 +422,23 @@ func (m *Manager) validateMirror(ctx context.Context, mirrorPath string) error {
 		return fmt.Errorf("origin remote missing: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
 
-	// Check 3: structural integrity (connectivity check only — fast, no object content verification)
-	fsckCmd := exec.CommandContext(ctx, "git", "fsck", "--connectivity-only", "--no-progress")
-	fsckCmd.Dir = mirrorPath
+	// Check 3: full object + connectivity integrity check.
+	// Previous version used --connectivity-only which skips blob content verification,
+	// but the MAE-0006/0007 incidents involved missing/invalid blobs that only a full
+	// check catches. For typical project mirrors this is still sub-second.
+	return ValidateRepo(ctx, mirrorPath)
+}
+
+// ValidateRepo runs git fsck on a repository to verify object and connectivity integrity.
+// This is a full check (not --connectivity-only) that catches missing blobs, invalid
+// objects, and other corruption. For typical project repos this is sub-second.
+// Exported so coder workspace setup can reuse the same validation.
+func ValidateRepo(ctx context.Context, repoPath string) error {
+	fsckCmd := exec.CommandContext(ctx, "git", "fsck", "--no-progress")
+	fsckCmd.Dir = repoPath
 	if output, err := fsckCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("repository integrity check failed: %w (output: %s)", err, strings.TrimSpace(string(output)))
 	}
-
 	return nil
 }
 

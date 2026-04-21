@@ -242,3 +242,107 @@ func TestBuildRequestValidation(t *testing.T) {
 		t.Error("Expected success=false for empty operation")
 	}
 }
+
+func TestIsMakeTargetMissing(t *testing.T) {
+	tests := []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{"no rule to make target", "make: *** No rule to make target 'test'.  Stop.", true},
+		{"no makefile found", "make: *** No targets specified and no makefile found.  Stop.", true},
+		{"no makefile simple", "make: No makefile found.", true},
+		{"actual test failure", "FAIL: TestSomething\nmake: *** [test] Error 1", false},
+		{"empty", "", false},
+		{"case insensitive", "MAKE: *** NO RULE TO MAKE TARGET 'test'.", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMakeTargetMissing(tt.stderr); got != tt.want {
+				t.Errorf("isMakeTargetMissing(%q) = %v, want %v", tt.stderr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestErrTargetNotFoundSkipsInResponse(t *testing.T) {
+	service := NewBuildService()
+	mock := &MockExecutor{
+		ExitCode:     2,
+		StderrOutput: "make: *** No rule to make target 'test'.  Stop.\n",
+	}
+	service.SetExecutor(mock)
+
+	tempDir, err := os.MkdirTemp("", "target-not-found-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a Makefile so the Make backend is detected (but it has no test target)
+	if writeErr := os.WriteFile(filepath.Join(tempDir, "Makefile"), []byte("build:\n\techo build\n"), 0644); writeErr != nil {
+		t.Fatalf("Failed to create Makefile: %v", writeErr)
+	}
+
+	ctx := context.Background()
+	req := &Request{
+		ProjectRoot: tempDir,
+		Operation:   "test",
+		Timeout:     10,
+		Context:     make(map[string]string),
+	}
+
+	response, err := service.ExecuteBuild(ctx, req)
+	if err != nil {
+		t.Fatalf("ExecuteBuild should not return error for skipped target: %v", err)
+	}
+
+	if !response.Success {
+		t.Error("Expected Success=true for skipped target")
+	}
+	if !response.Skipped {
+		t.Error("Expected Skipped=true")
+	}
+	if response.SkipReason == "" {
+		t.Error("Expected non-empty SkipReason")
+	}
+}
+
+func TestErrTargetNotFoundFailsForBuild(t *testing.T) {
+	service := NewBuildService()
+	mock := &MockExecutor{
+		ExitCode:     2,
+		StderrOutput: "make: *** No rule to make target 'build'.  Stop.\n",
+	}
+	service.SetExecutor(mock)
+
+	tempDir, err := os.MkdirTemp("", "target-not-found-build-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	if writeErr := os.WriteFile(filepath.Join(tempDir, "Makefile"), []byte("test:\n\techo test\n"), 0644); writeErr != nil {
+		t.Fatalf("Failed to create Makefile: %v", writeErr)
+	}
+
+	ctx := context.Background()
+	req := &Request{
+		ProjectRoot: tempDir,
+		Operation:   "build",
+		Timeout:     10,
+		Context:     make(map[string]string),
+	}
+
+	response, err := service.ExecuteBuild(ctx, req)
+	if err != nil {
+		t.Fatalf("ExecuteBuild should not return execution error: %v", err)
+	}
+
+	if response.Success {
+		t.Error("Expected Success=false for missing build target")
+	}
+	if response.Skipped {
+		t.Error("Missing build target should NOT be skipped, only test targets can be skipped")
+	}
+}

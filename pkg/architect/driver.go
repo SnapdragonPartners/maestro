@@ -115,7 +115,11 @@ type Driver struct {
 	scopeWidener            *ScopeWidener                         // Tracks failure recurrence for scope auto-escalation
 	workDir                 string                                // Workspace directory
 	reviewStreaks           map[string]map[string]int             // Per-coder, per-review-type consecutive NEEDS_CHANGES count
+	incidentsMu             sync.Mutex                            // Protects openIncidents from concurrent access
+	openIncidents           map[string]*proto.Incident            // Durable incidents keyed by incident ID
+	monitoringIdleSince     time.Time                             // Debounce guard for system_idle detection (not persisted)
 	pmAllCompleteNotified   bool                                  // Guard: PM "all stories complete" notification already sent
+	pmAllTerminalNotified   bool                                  // Guard: PM "all stories terminal" (with failures) notification already sent
 }
 
 // GitHubMergeClient defines the subset of GitHub operations needed for merge requests.
@@ -189,6 +193,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 		BaseStateMachine:   sm,
 		agentContexts:      make(map[string]*contextmgr.ContextManager), // Initialize context map
 		reviewStreaks:      make(map[string]map[string]int),             // Initialize streak tracking
+		openIncidents:      make(map[string]*proto.Incident),            // Initialize incident tracking
 		toolLoop:           nil,                                         // Set via SetLLMClient
 		renderer:           renderer,
 		workDir:            workDir,
@@ -913,9 +918,12 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.notifyPMOfBlockedStory(ctx, story, requeueRequest.FailureInfo, false, false)
 				}
 
-				// Check if all stories are now terminal — if so, architect is done
+				// Check if all stories are now terminal — if so, notify PM and finish
 				if d.queue.AllStoriesTerminal() {
-					d.logger.Info("📋 All stories are terminal (done or failed). Transitioning to DONE.")
+					d.logger.Info("📋 All stories are terminal (done, failed, or skipped). Transitioning to DONE.")
+					if err := d.notifyPMAllStoriesTerminal(ctx); err != nil {
+						d.logger.Warn("⚠️ Failed to notify PM of all stories terminal: %v", err)
+					}
 					if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
 						d.logger.Error("❌ Failed to transition to DONE state: %v", transErr)
 					}
@@ -1024,6 +1032,9 @@ func (d *Driver) processRequeueRequests(ctx context.Context) {
 					d.notifyPMOfBlockedStory(ctx, story, fi, false, false)
 					if d.queue.AllStoriesTerminal() {
 						d.logger.Info("📋 All stories are terminal. Transitioning to DONE.")
+						if err := d.notifyPMAllStoriesTerminal(ctx); err != nil {
+							d.logger.Warn("⚠️ Failed to notify PM of all stories terminal: %v", err)
+						}
 						if transErr := d.TransitionTo(ctx, StateDone, nil); transErr != nil {
 							d.logger.Error("❌ Failed to transition to DONE: %v", transErr)
 						}

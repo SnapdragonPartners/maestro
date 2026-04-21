@@ -155,8 +155,10 @@ type Supervisor struct {
 	pollCancel       context.CancelFunc // Cancel function for API polling goroutine
 
 	// Coding watchdog: between-turns activity tracking
-	lastActivity map[string]time.Time // agentID → last toolloop iteration start
-	activityMu   sync.Mutex
+	lastActivity    map[string]time.Time   // agentID → last toolloop iteration start
+	agentStates     map[string]proto.State // agentID → current FSM state (for watchdog filtering)
+	agentGeneration map[string]uint64      // agentID → monotonic generation counter (prevents stale goroutine restarts)
+	activityMu      sync.Mutex
 }
 
 // NewSupervisor creates a new supervisor with the given kernel.
@@ -185,7 +187,9 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		suspendedAgents:  make(map[string]bool),
 		suspendFailureID: make(map[string]string),
 		// Coding watchdog
-		lastActivity: make(map[string]time.Time),
+		lastActivity:    make(map[string]time.Time),
+		agentStates:     make(map[string]proto.State),
+		agentGeneration: make(map[string]uint64),
 	}
 
 	// Wire up the restore channel to the factory for SUSPEND state support
@@ -261,6 +265,10 @@ func (s *Supervisor) Start(ctx context.Context) {
 func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.StateChangeNotification) {
 	s.Logger.Info("Agent %s state changed: %s -> %s",
 		notification.AgentID, notification.FromState, notification.ToState)
+
+	s.activityMu.Lock()
+	s.agentStates[notification.AgentID] = notification.ToState
+	s.activityMu.Unlock()
 
 	// Determine agent type from stored configuration
 	agentType := s.getAgentType(notification.AgentID)
@@ -391,7 +399,10 @@ func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 	}
 
 	// Terminate existing agent by cancelling its context
-	if cancelFunc, exists := s.AgentContexts[agentID]; exists {
+	s.activityMu.Lock()
+	cancelFunc, exists := s.AgentContexts[agentID]
+	s.activityMu.Unlock()
+	if exists {
 		s.Logger.Info("Cancelling context for agent: %s", agentID)
 		cancelFunc()
 	}
@@ -417,18 +428,81 @@ func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 func (s *Supervisor) cleanupAgentResources(agentID string) {
 	s.Logger.Info("Cleaning up resources for agent: %s", agentID)
 
-	// Remove from tracking maps
+	// Remove from tracking maps under activityMu to synchronize with the watchdog's
+	// concurrent reads of AgentTypes and AgentContexts in checkCodingActivity.
+	s.activityMu.Lock()
 	delete(s.Agents, agentID)
 	delete(s.AgentTypes, agentID)
 	delete(s.AgentContexts, agentID)
+	delete(s.agentStates, agentID)
+	// Note: agentGeneration is NOT deleted here — stale goroutines need to see the
+	// incremented generation to avoid double-restarts. It's cleaned up lazily.
+	s.activityMu.Unlock()
 
 	// Work directory cleanup is handled by agent SETUP state for fresh workspace
+}
+
+// handleUnexpectedExit detects when an agent's Run() goroutine exits without
+// a corresponding DONE/ERROR state notification (e.g., watchdog context cancellation)
+// and restarts the agent to prevent permanent loss.
+//
+// The generation parameter prevents races with the normal restart path: if a DONE/ERROR
+// notification already triggered restartAgent (which increments the generation via
+// RegisterAgent), the old goroutine sees a stale generation and skips the restart.
+func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string, generation uint64) {
+	// System shutdown — don't restart anything
+	if ctx.Err() != nil {
+		s.Logger.Info("Agent %s exited during system shutdown, not restarting", agentID)
+		return
+	}
+
+	// Check if this goroutine's generation is still current. If a DONE/ERROR state
+	// notification already triggered restartAgent → cleanupAgentResources → RegisterAgent,
+	// the generation will have been incremented and this goroutine is stale.
+	s.activityMu.Lock()
+	currentGen := s.agentGeneration[agentID]
+	s.activityMu.Unlock()
+
+	if generation != currentGen {
+		s.Logger.Debug("Agent %s exit handler skipped: generation %d is stale (current: %d)", agentID, generation, currentGen)
+		return
+	}
+
+	// Only restart coder agents — architect/PM unexpected exits are fatal.
+	// If agent type metadata is missing (e.g., cleanupAgentResources ran during a failed
+	// prior restart attempt), treat as restartable since coders are the common case.
+	if agentType := s.getAgentType(agentID); agentType == "" {
+		s.Logger.Warn("Agent %s (gen %d) exited unexpectedly but agent type metadata is missing; attempting restart as coder", agentID, generation)
+	} else if agentType != string(agent.TypeCoder) {
+		s.Logger.Error("Non-coder agent %s (%s) exited unexpectedly without state notification", agentID, agentType)
+		return
+	}
+
+	s.Logger.Warn("🔄 Agent %s (gen %d) exited without state notification (likely watchdog kill), restarting", agentID, generation)
+
+	// Requeue the story if the agent had one
+	storyID := s.Kernel.Dispatcher.GetLease(agentID)
+	if storyID != "" {
+		s.Kernel.Dispatcher.ClearLease(agentID)
+		if err := s.Kernel.Dispatcher.UpdateStoryRequeue(storyID, agentID, "agent killed by watchdog without state notification", nil); err != nil {
+			s.Logger.Error("Failed to requeue story %s from unexpectedly exited agent %s: %v", storyID, agentID, err)
+		} else {
+			s.Logger.Info("Requeued story %s from unexpectedly exited agent %s", storyID, agentID)
+		}
+	}
+
+	if err := s.restartAgent(ctx, agentID); err != nil {
+		s.Logger.Error("Failed to restart unexpectedly exited agent %s: %v", agentID, err)
+	}
 }
 
 // getAgentType returns the type of an agent by ID.
 // This preserves the getAgentType logic from the old orchestrator.
 func (s *Supervisor) getAgentType(agentID string) string {
-	if agentType, exists := s.AgentTypes[agentID]; exists {
+	s.activityMu.Lock()
+	agentType, exists := s.AgentTypes[agentID]
+	s.activityMu.Unlock()
+	if exists {
 		return agentType
 	}
 	return ""
@@ -437,9 +511,24 @@ func (s *Supervisor) getAgentType(agentID string) string {
 // RegisterAgent adds an agent to the supervisor's tracking and starts its state machine.
 // Creates individual context for the agent to enable graceful shutdown.
 func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType string, agent dispatch.Agent) {
+	// All map writes under activityMu to synchronize with the watchdog's
+	// concurrent reads of AgentTypes/AgentContexts in checkCodingActivity.
+	s.activityMu.Lock()
 	s.AgentTypes[agentID] = agentType
 	s.Agents[agentID] = agent
-	s.Logger.Info("Registered agent %s (type: %s)", agentID, agentType)
+	s.agentGeneration[agentID]++
+	gen := s.agentGeneration[agentID]
+	if stateGetter, ok := agent.(interface{ GetCurrentState() proto.State }); ok {
+		if state := stateGetter.GetCurrentState(); state != "" {
+			s.agentStates[agentID] = state
+		} else {
+			s.agentStates[agentID] = proto.StateWaiting
+		}
+	} else {
+		s.agentStates[agentID] = proto.StateWaiting
+	}
+	s.activityMu.Unlock()
+	s.Logger.Info("Registered agent %s (type: %s, gen: %d)", agentID, agentType, gen)
 
 	// Wire up activity tracker for coder agents (watchdog monitoring)
 	if agentType == "coder" {
@@ -455,7 +544,9 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 	if runnable, ok := agent.(interface{ Run(context.Context) error }); ok {
 		// Create individual context for this agent (child of main context)
 		agentCtx, cancel := context.WithCancel(ctx)
+		s.activityMu.Lock()
 		s.AgentContexts[agentID] = cancel
+		s.activityMu.Unlock()
 
 		// Track this agent goroutine for graceful shutdown
 		s.agentWg.Add(1)
@@ -467,6 +558,7 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 				s.Logger.Error("Agent %s state machine failed: %v", agentID, err)
 			}
 			s.Logger.Info("Agent %s state machine exited", agentID)
+			s.handleUnexpectedExit(ctx, agentID, gen)
 		}()
 	} else {
 		s.Logger.Debug("Agent %s does not implement Run method", agentID)
@@ -475,6 +567,9 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 
 // GetAgents returns a copy of the current agent tracking maps.
 func (s *Supervisor) GetAgents() (map[string]dispatch.Agent, map[string]string) {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+
 	agents := make(map[string]dispatch.Agent)
 	agentTypes := make(map[string]string)
 
@@ -765,27 +860,42 @@ func (s *Supervisor) checkCodingActivity() {
 		return
 	}
 
+	type staleAgent struct {
+		lastTime time.Time
+		cancel   context.CancelFunc
+	}
+
 	s.activityMu.Lock()
-	// Copy the activity map under lock to avoid holding it during cancel operations
-	staleAgents := make(map[string]time.Time)
+	// Snapshot stale agents under lock — AgentTypes, AgentContexts, and agentStates
+	// are all protected by activityMu to prevent concurrent map read/write panics.
+	staleAgents := make(map[string]*staleAgent)
 	for agentID, lastTime := range s.lastActivity {
 		if time.Since(lastTime) > timeout {
-			// Only check coder agents
 			if agentType, exists := s.AgentTypes[agentID]; exists && agentType == "coder" {
-				staleAgents[agentID] = lastTime
+				// Only kill agents in states where toolloop activity is expected.
+				// States like PLAN_REVIEW, CODE_REVIEW, QUESTION, and BUDGET_REVIEW
+				// block on ExecuteEffect() waiting for architect responses — no
+				// toolloop iterations means no heartbeat, but the agent is healthy.
+				state := s.agentStates[agentID]
+				if state != proto.State("PLANNING") && state != proto.State("CODING") && state != proto.State("TESTING") {
+					continue
+				}
+				staleAgents[agentID] = &staleAgent{
+					lastTime: lastTime,
+					cancel:   s.AgentContexts[agentID],
+				}
 			}
 		}
 	}
 	s.activityMu.Unlock()
 
 	// Cancel stale agents outside the lock
-	for agentID, lastTime := range staleAgents {
+	for agentID, info := range staleAgents {
 		s.Logger.Error("🐕 Coding watchdog timeout: agent %s has had no toolloop activity for %v (last: %s). Cancelling agent.",
-			agentID, time.Since(lastTime).Round(time.Second), lastTime.Format(time.RFC3339))
+			agentID, time.Since(info.lastTime).Round(time.Second), info.lastTime.Format(time.RFC3339))
 
-		// Cancel the agent's context for a clean exit via OutcomeGracefulShutdown
-		if cancel, exists := s.AgentContexts[agentID]; exists {
-			cancel()
+		if info.cancel != nil {
+			info.cancel()
 		}
 
 		// Remove from activity tracking to avoid re-firing

@@ -25,9 +25,12 @@ func (s *Server) IsSetupMode() bool {
 	return s.setupMode.Load() == 1
 }
 
-// notifySetupIfReady checks API key readiness and, if all keys are present,
-// sends a non-blocking signal on the setupReady channel.
-func (s *Server) notifySetupIfReady() {
+// notifySetupIfReady evaluates full readiness (presence + validation) and,
+// if all required keys are accessible and valid, sends a non-blocking signal
+// on the setupReady channel. Always persists the latest result so the setup
+// UI reflects current state even when readiness is still false (e.g., keys
+// decrypted after login but unauthorized).
+func (s *Server) notifySetupIfReady(ctx context.Context) {
 	if !s.IsSetupMode() {
 		return
 	}
@@ -37,8 +40,12 @@ func (s *Server) notifySetupIfReady() {
 		return
 	}
 
-	_, allPresent := preflight.CheckRequiredAPIKeys(&cfg)
-	if allPresent {
+	result := preflight.EvaluateSetupReadiness(ctx, &cfg)
+
+	// Always persist so the setup UI can reflect the latest state.
+	s.setValidationResults(result)
+
+	if result.Ready {
 		select {
 		case s.setupReady <- struct{}{}:
 		default:
@@ -122,7 +129,7 @@ func (s *Server) handleSetupRecheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.notifySetupIfReady()
+	s.notifySetupIfReady(r.Context())
 
 	cfg, err := config.GetConfig()
 	if err != nil {
@@ -165,29 +172,47 @@ func (s *Server) handleKeysCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// WaitForSetup blocks until all required API keys are configured.
-// If all keys are already present, returns immediately without entering setup mode.
-// If WebUI is not available, this is a no-op (agent creation will fail with its own error).
-func (s *Server) WaitForSetup(ctx context.Context, cfg *config.Config) error {
-	keys, allPresent := preflight.CheckRequiredAPIKeys(cfg)
-	if allPresent {
-		return nil
+// handleValidationResults implements GET /api/setup/validation-results.
+// Returns the latest readiness evaluation stored by WaitForSetup or notifySetupIfReady.
+func (s *Server) handleValidationResults(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
-	// Enter setup mode
-	s.SetSetupMode(true)
-	defer s.SetSetupMode(false)
+	result := s.getValidationResults()
+	if result == nil {
+		// No results yet — return empty object
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ready":false,"all_present":false,"key_info":[]}`))
+		return
+	}
 
-	// Print terminal guidance
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		s.logger.Error("Failed to encode validation results: %v", err)
+	}
+}
+
+// printSetupGuidance prints terminal guidance about missing or invalid keys.
+func printSetupGuidance(result *preflight.ReadinessResult, cfg *config.Config) {
 	fmt.Println()
-	fmt.Println("Missing API keys:")
-	for i := range keys {
-		if !keys[i].Present {
-			fmt.Printf("  - %s\n", keys[i].EnvVarName)
+	if !result.AllPresent {
+		fmt.Println("Missing API keys:")
+		for i := range result.KeyInfo {
+			if !result.KeyInfo[i].Present {
+				fmt.Printf("  - %s\n", result.KeyInfo[i].EnvVarName)
+			}
+		}
+	}
+	if len(result.ValidationErrors) > 0 {
+		fmt.Println("Invalid API keys:")
+		for i := range result.ValidationErrors {
+			e := &result.ValidationErrors[i]
+			fmt.Printf("  - %s: %s\n", e.EnvVar, e.Status)
 		}
 	}
 
-	// Determine WebUI URL
 	protocol := "http"
 	if cfg.WebUI != nil && cfg.WebUI.SSL {
 		protocol = "https"
@@ -206,19 +231,47 @@ func (s *Server) WaitForSetup(ctx context.Context, cfg *config.Config) error {
 	fmt.Printf("Configure them in the WebUI at %s://%s:%d/setup\n", protocol, host, port)
 	fmt.Println("Press Ctrl+C to cancel.")
 	fmt.Println()
+}
 
-	// Wait for keys to be configured
+// WaitForSetup blocks until all required API keys are configured and valid.
+// If all keys are already present and valid, returns immediately without entering setup mode.
+// If keys are missing or invalid (unauthorized/forbidden), enters setup mode and waits.
+// Transient errors (unreachable) are logged as warnings but don't block startup.
+func (s *Server) WaitForSetup(ctx context.Context, cfg *config.Config) error {
+	result := preflight.EvaluateSetupReadiness(ctx, cfg)
+
+	// Log warnings for transient provider issues (non-blocking)
+	for i := range result.Warnings {
+		w := &result.Warnings[i]
+		s.logger.Warn("⚠️  %s: %s (non-blocking)", w.Provider, w.Message)
+	}
+
+	if result.Ready {
+		return nil
+	}
+
+	// Store results for the setup page to display on load
+	s.setValidationResults(result)
+
+	// Enter setup mode
+	s.SetSetupMode(true)
+	defer s.SetSetupMode(false)
+
+	printSetupGuidance(result, cfg)
+
+	// Wait for keys to be configured and validated
 	for {
 		select {
 		case <-s.setupReady:
 			// Re-verify — channel signal may be a false positive
-			_, allPresent := preflight.CheckRequiredAPIKeys(cfg)
-			if allPresent {
-				s.logger.Info("All API keys configured. Continuing startup...")
-				fmt.Println("All API keys configured. Continuing startup...")
+			fresh := preflight.EvaluateSetupReadiness(ctx, cfg)
+			if fresh.Ready {
+				s.logger.Info("All API keys configured and valid. Continuing startup...")
+				fmt.Println("All API keys configured and valid. Continuing startup...")
 				return nil
 			}
-			// Not all present yet, keep waiting
+			// Not ready yet — update stored results and keep waiting
+			s.setValidationResults(fresh)
 		case <-ctx.Done():
 			return fmt.Errorf("waiting for API keys: %w", ctx.Err())
 		}

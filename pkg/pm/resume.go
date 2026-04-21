@@ -35,12 +35,17 @@ func (d *Driver) SerializeState(_ context.Context, _ *sql.DB, sessionID string) 
 	// Serialize bootstrap params from state data.
 	bootstrapParamsJSON := d.collectBootstrapParamsJSON()
 
+	// Serialize durable asks/incidents.
+	currentAskJSON, openIncidentsJSON := d.collectAsksAndIncidentsJSON()
+
 	// Build PM state.
 	state := &persistence.PMState{
 		SessionID:           sessionID,
 		State:               string(currentState),
 		SpecContent:         specContent,
 		BootstrapParamsJSON: bootstrapParamsJSON,
+		CurrentAskJSON:      currentAskJSON,
+		OpenIncidentsJSON:   openIncidentsJSON,
 	}
 
 	// Build context if available.
@@ -104,6 +109,26 @@ func (d *Driver) RestoreState(_ context.Context, db *sql.DB, sessionID string) e
 		}
 	}
 
+	// Restore durable asks/incidents.
+	if state.CurrentAskJSON != nil {
+		var ask proto.UserAsk
+		if unmarshalErr := json.Unmarshal([]byte(*state.CurrentAskJSON), &ask); unmarshalErr != nil {
+			d.logger.Warn("Failed to unmarshal current ask: %v", unmarshalErr)
+		} else {
+			d.currentAsk = &ask
+			d.syncAskToStateData()
+		}
+	}
+	if state.OpenIncidentsJSON != nil {
+		var incidents map[string]*proto.Incident
+		if unmarshalErr := json.Unmarshal([]byte(*state.OpenIncidentsJSON), &incidents); unmarshalErr != nil {
+			d.logger.Warn("Failed to unmarshal open incidents: %v", unmarshalErr)
+		} else {
+			d.openIncidents = incidents
+			d.syncIncidentsToStateData()
+		}
+	}
+
 	// Restore context manager.
 	contexts, err := persistence.GetAgentContexts(db, sessionID, d.GetAgentID())
 	if err != nil {
@@ -147,12 +172,17 @@ func (d *Driver) Checkpoint(sessionID string) {
 	// Serialize bootstrap params from state data.
 	bootstrapParamsJSON := d.collectBootstrapParamsJSON()
 
+	// Serialize durable asks/incidents.
+	currentAskJSON, openIncidentsJSON := d.collectAsksAndIncidentsJSON()
+
 	// Build PM state
 	state := &persistence.PMState{
 		SessionID:           sessionID,
 		State:               string(currentState),
 		SpecContent:         specContent,
 		BootstrapParamsJSON: bootstrapParamsJSON,
+		CurrentAskJSON:      currentAskJSON,
+		OpenIncidentsJSON:   openIncidentsJSON,
 	}
 
 	// Build context if available
@@ -184,6 +214,29 @@ func (d *Driver) Checkpoint(sessionID string) {
 	default:
 		d.logger.Warn("Persistence channel full, checkpoint skipped")
 	}
+}
+
+// collectAsksAndIncidentsJSON serializes the current ask and open incidents as JSON strings.
+func (d *Driver) collectAsksAndIncidentsJSON() (currentAskJSON, openIncidentsJSON *string) {
+	if d.currentAsk != nil {
+		data, err := json.Marshal(d.currentAsk)
+		if err != nil {
+			d.logger.Warn("Failed to marshal current ask: %v", err)
+		} else {
+			s := string(data)
+			currentAskJSON = &s
+		}
+	}
+	if len(d.openIncidents) > 0 {
+		data, err := json.Marshal(d.openIncidents)
+		if err != nil {
+			d.logger.Warn("Failed to marshal open incidents: %v", err)
+		} else {
+			s := string(data)
+			openIncidentsJSON = &s
+		}
+	}
+	return
 }
 
 // collectBootstrapParamsJSON collects bootstrap-related state data and returns it as JSON.

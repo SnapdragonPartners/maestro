@@ -65,6 +65,7 @@ type ArchitectState struct {
 	SessionID            string    `json:"session_id"`
 	State                string    `json:"state"`
 	EscalationCountsJSON *string   `json:"escalation_counts_json,omitempty"`
+	OpenIncidentsJSON    *string   `json:"open_incidents_json,omitempty"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
@@ -76,6 +77,8 @@ type PMState struct {
 	State               string    `json:"state"`
 	SpecContent         *string   `json:"spec_content,omitempty"`
 	BootstrapParamsJSON *string   `json:"bootstrap_params_json,omitempty"`
+	CurrentAskJSON      *string   `json:"current_ask_json,omitempty"`
+	OpenIncidentsJSON   *string   `json:"open_incidents_json,omitempty"`
 	UpdatedAt           time.Time `json:"updated_at"`
 }
 
@@ -144,7 +147,7 @@ func scanSession(row *sql.Row) (*Session, error) {
 // ResumableSessionInfo contains a resumable session along with story statistics.
 type ResumableSessionInfo struct {
 	Session           *Session
-	IncompleteStories int // Count of stories not in 'done' or 'failed' status
+	IncompleteStories int // Count of stories not in 'done', 'failed', or 'skipped' status
 	DoneStories       int // Count of completed stories
 }
 
@@ -175,7 +178,7 @@ func GetResumableSession(db *sql.DB) (*Session, error) {
 // 1. Its status is 'shutdown', 'crashed', or 'active' (not 'completed')
 //   - 'active' sessions are treated as crashed (the process died unexpectedly)
 //
-// 2. It has at least one incomplete story (status not in 'done', 'failed')
+// 2. It has at least one incomplete story (status not in 'done', 'failed', 'skipped')
 //
 // If an 'active' session is found, its status is updated to 'crashed' before returning.
 // Returns nil, nil if no resumable session exists (this is not an error condition).
@@ -213,7 +216,7 @@ func GetMostRecentResumableSession(db *sql.DB) (*ResumableSessionInfo, error) {
 	var incompleteCount, doneCount int
 	err = db.QueryRow(`
 		SELECT
-			COALESCE(SUM(CASE WHEN status NOT IN ('done', 'failed') THEN 1 ELSE 0 END), 0) as incomplete,
+			COALESCE(SUM(CASE WHEN status NOT IN ('done', 'failed', 'skipped') THEN 1 ELSE 0 END), 0) as incomplete,
 			COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) as done
 		FROM stories
 		WHERE session_id = ?
@@ -416,13 +419,14 @@ func GetAllCoderStates(db *sql.DB, sessionID string) ([]CoderState, error) {
 // SaveArchitectState saves or updates the architect's state for resume.
 func SaveArchitectState(db *sql.DB, state *ArchitectState) error {
 	_, err := db.Exec(`
-		INSERT INTO architect_state (session_id, state, escalation_counts_json, updated_at)
-		VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		INSERT INTO architect_state (session_id, state, escalation_counts_json, open_incidents_json, updated_at)
+		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		ON CONFLICT(session_id) DO UPDATE SET
 			state = excluded.state,
 			escalation_counts_json = excluded.escalation_counts_json,
+			open_incidents_json = excluded.open_incidents_json,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-	`, state.SessionID, state.State, state.EscalationCountsJSON)
+	`, state.SessionID, state.State, state.EscalationCountsJSON, state.OpenIncidentsJSON)
 	if err != nil {
 		return fmt.Errorf("failed to save architect state: %w", err)
 	}
@@ -433,13 +437,13 @@ func SaveArchitectState(db *sql.DB, state *ArchitectState) error {
 // Returns ErrSessionNotFound if no state exists for the architect.
 func GetArchitectState(db *sql.DB, sessionID string) (*ArchitectState, error) {
 	row := db.QueryRow(`
-		SELECT session_id, state, escalation_counts_json, updated_at
+		SELECT session_id, state, escalation_counts_json, open_incidents_json, updated_at
 		FROM architect_state
 		WHERE session_id = ?
 	`, sessionID)
 
 	var state ArchitectState
-	err := row.Scan(&state.SessionID, &state.State, &state.EscalationCountsJSON, &state.UpdatedAt)
+	err := row.Scan(&state.SessionID, &state.State, &state.EscalationCountsJSON, &state.OpenIncidentsJSON, &state.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
@@ -452,14 +456,16 @@ func GetArchitectState(db *sql.DB, sessionID string) (*ArchitectState, error) {
 // SavePMState saves or updates the PM's state for resume.
 func SavePMState(db *sql.DB, state *PMState) error {
 	_, err := db.Exec(`
-		INSERT INTO pm_state (session_id, state, spec_content, bootstrap_params_json, updated_at)
-		VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		INSERT INTO pm_state (session_id, state, spec_content, bootstrap_params_json, current_ask_json, open_incidents_json, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		ON CONFLICT(session_id) DO UPDATE SET
 			state = excluded.state,
 			spec_content = excluded.spec_content,
 			bootstrap_params_json = excluded.bootstrap_params_json,
+			current_ask_json = excluded.current_ask_json,
+			open_incidents_json = excluded.open_incidents_json,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-	`, state.SessionID, state.State, state.SpecContent, state.BootstrapParamsJSON)
+	`, state.SessionID, state.State, state.SpecContent, state.BootstrapParamsJSON, state.CurrentAskJSON, state.OpenIncidentsJSON)
 	if err != nil {
 		return fmt.Errorf("failed to save PM state: %w", err)
 	}
@@ -470,13 +476,13 @@ func SavePMState(db *sql.DB, state *PMState) error {
 // Returns ErrSessionNotFound if no state exists for the PM.
 func GetPMState(db *sql.DB, sessionID string) (*PMState, error) {
 	row := db.QueryRow(`
-		SELECT session_id, state, spec_content, bootstrap_params_json, updated_at
+		SELECT session_id, state, spec_content, bootstrap_params_json, current_ask_json, open_incidents_json, updated_at
 		FROM pm_state
 		WHERE session_id = ?
 	`, sessionID)
 
 	var state PMState
-	err := row.Scan(&state.SessionID, &state.State, &state.SpecContent, &state.BootstrapParamsJSON, &state.UpdatedAt)
+	err := row.Scan(&state.SessionID, &state.State, &state.SpecContent, &state.BootstrapParamsJSON, &state.CurrentAskJSON, &state.OpenIncidentsJSON, &state.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}

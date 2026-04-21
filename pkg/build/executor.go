@@ -316,6 +316,8 @@ type MockExecutor struct {
 	Error error
 	// Output is written to stdout when Run is called.
 	Output string
+	// StderrOutput is written to stderr when Run is called.
+	StderrOutput string
 	// Calls records all calls to Run for assertions.
 	Calls []MockExecCall
 }
@@ -352,6 +354,9 @@ func (m *MockExecutor) Run(_ context.Context, argv []string, opts ExecOpts) (int
 	// Write output if configured.
 	if m.Output != "" && opts.Stdout != nil {
 		_, _ = fmt.Fprintf(opts.Stdout, "%s", m.Output)
+	}
+	if m.StderrOutput != "" && opts.Stderr != nil {
+		_, _ = fmt.Fprintf(opts.Stderr, "%s", m.StderrOutput)
 	}
 
 	return m.ExitCode, m.Error
