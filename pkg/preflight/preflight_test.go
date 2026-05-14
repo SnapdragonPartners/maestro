@@ -263,14 +263,9 @@ func TestCheckOpenAI(t *testing.T) {
 func TestCheckAnthropic(t *testing.T) {
 	ctx := context.Background()
 
-	// Save and clear ANTHROPIC_API_KEY
-	originalKey := os.Getenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	defer func() {
-		if originalKey != "" {
-			os.Setenv("ANTHROPIC_API_KEY", originalKey)
-		}
-	}()
+	// snapshotAPIKeyEnv handles both the bare and MAESTRO_-prefixed names,
+	// since config.GetSystemSecret consults MAESTRO_-prefixed env first.
+	defer snapshotAPIKeyEnv("ANTHROPIC_API_KEY")()
 
 	result := checkAnthropic(ctx)
 	if result.Passed {

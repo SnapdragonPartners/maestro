@@ -232,19 +232,7 @@ func TestNotifySetupIfReady_NoSignalWhenMissing(t *testing.T) {
 	config.SetConfigForTesting(cfg)
 	defer config.SetConfigForTesting(nil)
 
-	// Clear all keys
-	origAnthropic := os.Getenv("ANTHROPIC_API_KEY")
-	origOpenAI := os.Getenv("OPENAI_API_KEY")
-	origGitHub := os.Getenv("GITHUB_TOKEN")
-	defer func() {
-		restoreEnv("ANTHROPIC_API_KEY", origAnthropic)
-		restoreEnv("OPENAI_API_KEY", origOpenAI)
-		restoreEnv("GITHUB_TOKEN", origGitHub)
-	}()
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("OPENAI_API_KEY")
-	os.Unsetenv("GITHUB_TOKEN")
-	config.SetDecryptedSecrets(nil)
+	defer clearSystemSecrets("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN")()
 
 	s := &Server{
 		setupReady: make(chan struct{}, 1),
@@ -357,20 +345,10 @@ func TestWaitForSetup_BlocksAndUnblocks(t *testing.T) {
 	config.SetConfigForTesting(cfg)
 	defer config.SetConfigForTesting(nil)
 
-	// Start with missing keys
-	origAnthropic := os.Getenv("ANTHROPIC_API_KEY")
-	origOpenAI := os.Getenv("OPENAI_API_KEY")
-	origGitHub := os.Getenv("GITHUB_TOKEN")
-	defer func() {
-		restoreEnv("ANTHROPIC_API_KEY", origAnthropic)
-		restoreEnv("OPENAI_API_KEY", origOpenAI)
-		restoreEnv("GITHUB_TOKEN", origGitHub)
-		config.SetDecryptedSecrets(nil)
-	}()
-	os.Unsetenv("ANTHROPIC_API_KEY")
+	// Start with ANTHROPIC missing; OPENAI/GITHUB present.
+	defer clearSystemSecrets("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN")()
 	os.Setenv("OPENAI_API_KEY", "sk-openai-test")
 	os.Setenv("GITHUB_TOKEN", "ghp_test")
-	config.SetDecryptedSecrets(nil)
 
 	s := &Server{
 		setupReady: make(chan struct{}, 1),
@@ -419,19 +397,7 @@ func TestWaitForSetup_RespectsContextCancellation(t *testing.T) {
 	config.SetConfigForTesting(cfg)
 	defer config.SetConfigForTesting(nil)
 
-	// Clear all keys
-	origAnthropic := os.Getenv("ANTHROPIC_API_KEY")
-	origOpenAI := os.Getenv("OPENAI_API_KEY")
-	origGitHub := os.Getenv("GITHUB_TOKEN")
-	defer func() {
-		restoreEnv("ANTHROPIC_API_KEY", origAnthropic)
-		restoreEnv("OPENAI_API_KEY", origOpenAI)
-		restoreEnv("GITHUB_TOKEN", origGitHub)
-	}()
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("OPENAI_API_KEY")
-	os.Unsetenv("GITHUB_TOKEN")
-	config.SetDecryptedSecrets(nil)
+	defer clearSystemSecrets("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN")()
 
 	s := &Server{
 		setupReady: make(chan struct{}, 1),
@@ -463,5 +429,28 @@ func restoreEnv(key, value string) {
 		os.Setenv(key, value)
 	} else {
 		os.Unsetenv(key)
+	}
+}
+
+// clearSystemSecrets unsets each named env var AND its MAESTRO_-prefixed
+// variant — preflight.GetSystemSecret checks the MAESTRO_-prefixed name
+// first, so without this a test running in a shell that has, say,
+// MAESTRO_ANTHROPIC_API_KEY set will see the secret as present even after
+// os.Unsetenv("ANTHROPIC_API_KEY"). Also clears the decrypted-secrets cache.
+// Returns a restore function suitable for defer.
+func clearSystemSecrets(keys ...string) func() {
+	orig := make(map[string]string, len(keys)*2)
+	for _, k := range keys {
+		orig[k] = os.Getenv(k)
+		mk := "MAESTRO_" + k
+		orig[mk] = os.Getenv(mk)
+		os.Unsetenv(k)
+		os.Unsetenv(mk)
+	}
+	config.SetDecryptedSecrets(nil)
+	return func() {
+		for k, v := range orig {
+			restoreEnv(k, v)
+		}
 	}
 }

@@ -52,22 +52,8 @@ func TestCheckRequiredAPIKeys_SomeMissing(t *testing.T) {
 	)
 	defer cleanup()
 
-	// Clear all keys
-	origAnthropic := os.Getenv("ANTHROPIC_API_KEY")
-	origOpenAI := os.Getenv("OPENAI_API_KEY")
-	origGitHub := os.Getenv("GITHUB_TOKEN")
-	defer func() {
-		restoreEnv("ANTHROPIC_API_KEY", origAnthropic)
-		restoreEnv("OPENAI_API_KEY", origOpenAI)
-		restoreEnv("GITHUB_TOKEN", origGitHub)
-	}()
-
-	os.Unsetenv("ANTHROPIC_API_KEY")
+	defer snapshotAPIKeyEnv("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN")()
 	os.Setenv("OPENAI_API_KEY", "sk-openai-test")
-	os.Unsetenv("GITHUB_TOKEN")
-
-	// Clear secrets store too
-	config.SetDecryptedSecrets(nil)
 
 	cfg, _ := config.GetConfig()
 	keys, allPresent := CheckRequiredAPIKeys(&cfg)
@@ -209,5 +195,28 @@ func restoreEnv(key, value string) {
 		os.Setenv(key, value)
 	} else {
 		os.Unsetenv(key)
+	}
+}
+
+// snapshotAPIKeyEnv saves the current values of each given env var and its
+// MAESTRO_-prefixed variant, then unsets both. config.GetSecret consults the
+// MAESTRO_-prefixed name first, so tests that try to simulate a missing key
+// by calling os.Unsetenv on the bare name must also clear the MAESTRO_-
+// prefixed variant — otherwise a shell-level MAESTRO_ANTHROPIC_API_KEY (or
+// similar) leaks through. Returns a restore func suitable for defer.
+func snapshotAPIKeyEnv(keys ...string) func() {
+	orig := make(map[string]string, len(keys)*2)
+	for _, k := range keys {
+		orig[k] = os.Getenv(k)
+		mk := "MAESTRO_" + k
+		orig[mk] = os.Getenv(mk)
+		os.Unsetenv(k)
+		os.Unsetenv(mk)
+	}
+	config.SetDecryptedSecrets(nil)
+	return func() {
+		for k, v := range orig {
+			restoreEnv(k, v)
+		}
 	}
 }
