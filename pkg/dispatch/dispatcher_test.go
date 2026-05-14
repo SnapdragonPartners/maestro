@@ -1178,6 +1178,46 @@ func TestRepairCompleteStoryIndependent(t *testing.T) {
 	t.Log("RepairComplete REQUEST correctly accepted without story_id")
 }
 
+func TestIncidentActionStoryIndependent(t *testing.T) {
+	dispatcher := createTestDispatcher(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := dispatcher.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start dispatcher: %v", err)
+	}
+
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer stopCancel()
+		dispatcher.Stop(stopCtx)
+	}()
+
+	incidentPayload := &proto.IncidentActionPayload{
+		IncidentID: "incident-001",
+		Action:     "resume",
+		Reason:     "user confirmed resume from system_idle",
+	}
+
+	incidentMsg := &proto.AgentMsg{
+		ID:        "incident-action-001",
+		Type:      proto.MsgTypeREQUEST,
+		FromAgent: "pm-001",
+		ToAgent:   "architect",
+		Payload:   proto.NewIncidentActionPayload(incidentPayload),
+	}
+
+	err = dispatcher.DispatchMessage(incidentMsg)
+	if err != nil {
+		t.Errorf("IncidentAction REQUEST without story_id should be allowed (story-independent), got error: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	t.Log("IncidentAction REQUEST correctly accepted without story_id")
+}
+
 func TestLeaseOperationsExtended(t *testing.T) {
 	dispatcher := createTestDispatcher(t)
 

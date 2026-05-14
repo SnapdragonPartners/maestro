@@ -617,6 +617,7 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 	// 3. REQUEST with RepairCompletePayload - system-level repair notifications from PM to architect
 	// 4. RESPONSE to PM - spec approval responses from architect to PM
 	// 5. REQUEST to PM - interview requests (for future escalations)
+	// 6. REQUEST with IncidentActionPayload - user-initiated incident actions (resume/skip/etc.) from PM to architect
 	isStoryIndependentMessage := false
 	if msg.Type == proto.MsgTypeREQUEST {
 		// Check if this is a spec approval request by examining the approval type in the payload
@@ -633,6 +634,12 @@ func (d *Dispatcher) processMessage(ctx context.Context, msg *proto.AgentMsg) {
 			// Check if this is a repair_complete signal (system-level, not story-scoped)
 			if !isStoryIndependentMessage {
 				if _, err := payload.ExtractRepairComplete(); err == nil {
+					isStoryIndependentMessage = true
+				}
+			}
+			// Check if this is an incident action (system-level, not story-scoped)
+			if !isStoryIndependentMessage {
+				if _, err := payload.ExtractIncidentAction(); err == nil {
 					isStoryIndependentMessage = true
 				}
 			}
