@@ -43,8 +43,9 @@ to the concrete Maestro code site that must change.
    `ProviderLimits`) is tokens/min + concurrency only; there is no existing
    daily budget. Not a cut-over concern; logged as a possible future toolkit
    feature in §7.
-7. **Go directive tweak added** (§2) — align `maestro-llms` `go 1.26.3` with
-   Maestro's `go 1.26` / `toolchain go1.26.1`.
+7. **Go directive decided** (§2) — Maestro bumps to ≥ `go 1.26.3` (earlier
+   `1.26.x` has known vulns); the toolkit's directive stays. G1 (Gemini
+   multi-turn) explicitly punted to phase-5 live testing.
 8. **New §9 "Ownership split"** — what lives in Maestro vs. what could move
    into the toolkit, per the team's "what belongs where."
 
@@ -73,11 +74,12 @@ streaming (unused today, not implemented by the toolkit).
 
 **Go directive:** `maestro-llms` declares `go 1.26.3`; Maestro declares
 `go 1.26` with `toolchain go1.26.1`. Go module resolution will demand the
-higher `go` directive. Resolution (pick one, decide with extraction team):
-either Maestro bumps its `go`/`toolchain` to ≥ `1.26.3`, **or** the toolkit
-lowers its `go` directive to `1.26` if it has no patch-level language/std
-dependency. This must be settled in phase 1 (§6 step 1) — it gates the
-build.
+higher `go` directive. **Decided:** Maestro bumps its `go`/`toolchain` to
+≥ `1.26.3` — the toolkit's directive stays. Rationale: significant
+vulnerabilities were found in earlier `1.26.x` releases, so moving Maestro
+forward is preferable to pinning the shared toolkit back. Action in phase 1
+(§6 step 1): set `go 1.26.3` (or later patch) and `toolchain` accordingly in
+Maestro's `go.mod`; verify the build/lint/test gate and CI Go version pass.
 
 ## 3. Prune inventory (≈3,700 LOC removed)
 
@@ -241,10 +243,12 @@ is the cut-over acceptance checklist.
    composable window/quota limiter is logged as a possible future toolkit
    feature (§9), not migration scope.
 
-4. **Gemini multi-turn (G1):** ⏳ **Defer to live validation.** No
-   mitigation pre-committed; if live runs show real degradation, request a
-   stateless thought-signature encoding in the toolkit (§9). Not a blocker
-   for the architecture.
+4. **Gemini multi-turn (G1):** ⏳ **Explicitly punted to real testing.** No
+   mitigation pre-committed and not investigated further now — we accept the
+   unknown and will only assess after live multi-turn Gemini tool-loop runs
+   during phase 5. If those runs show real degradation, request a stateless
+   thought-signature encoding in the toolkit (§9). Not a blocker for the
+   architecture or for starting implementation.
 
 5. **`CacheBreakpoint` economics (A5):** ✅ **Resolved.** Toolkit supports
    multiple breakpoints up to Anthropic's 4-marker cap; Maestro sets 2
