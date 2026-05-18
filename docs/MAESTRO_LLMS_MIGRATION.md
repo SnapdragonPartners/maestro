@@ -1,6 +1,6 @@
 # Maestro → `maestro-llms` Migration Spec
 
-**Status:** Draft for review by the `maestro-llms` extraction team
+**Status:** Revised after extraction-team review (round 1)
 **Branch:** `spec/maestro-llms-migration`
 **Scope:** Replace Maestro's in-tree LLM provider clients + resilience
 middleware with the extracted [`maestro-llms`](https://github.com/SnapdragonPartners/maestro-llms)
@@ -11,11 +11,42 @@ checklist. It maps every row of the toolkit's
 [`docs/MAESTRO_DIVERGENCES.md`](https://github.com/SnapdragonPartners/maestro-llms/blob/main/docs/MAESTRO_DIVERGENCES.md)
 to the concrete Maestro code site that must change.
 
-> **Extraction team:** please sanity-check Sections 4 (adapter seam),
-> 5 (behaviors to preserve), and 7 (open questions). The open questions are
-> where Maestro might need a toolkit affordance that doesn't exist yet.
+> **Review status:** Round-1 extraction-team feedback incorporated. Changes
+> from the original draft are summarized in §0. The open questions in §7 are
+> resolved (kept for the record with their resolutions).
 
 ---
+
+## 0. Changes from round-1 review
+
+1. **New §4.2 "Adapter transcript normalization"** — the adapter must split
+   Maestro's combined `RoleUser`+tool-results messages into toolkit
+   `RoleTool` then optional `RoleUser`, and drop the `"Tool results:"`
+   placeholder. This was missing entirely from the draft.
+2. **Tool-choice is now explicit, not a blanket adapter default** (OC2/G2).
+   `ToolChoice` is threaded through `toolloop.Config` and
+   `CompletionRequest`; `Required` for unattended loops, `Auto` for
+   finalizing turns. Reverses the original "force Required when tools
+   present" plan, which would have silently changed Anthropic behavior.
+3. **SUSPEND mapping promoted to its own boundary helper** (§5 M4) — a
+   single Maestro-side `llmsuspend` wrapper maps `*CircuitOpenError` **and**
+   exhausted retryable `*ProviderError`/`*LimitError` to the suspend path
+   that `llmerrors.IsServiceUnavailable` handlers expect today.
+4. **Stop-reason normalization broadened beyond Ollama** (§4.2, §5) — the
+   adapter normalizes provider stop reasons to Maestro's legacy strings
+   (esp. `max_tokens`) so the toolloop truncation branch keeps working.
+5. **Metrics placement called out** (§5 M2) — `RecommendedChat` puts metrics
+   innermost; Maestro hand-composes the chain (or adds an outer metrics
+   pass) to keep observing validation/limiter/circuit/retry-exhaustion as
+   one event.
+6. **Daily-budget row removed** — Maestro config (`pkg/config/config.go:360`
+   `ProviderLimits`) is tokens/min + concurrency only; there is no existing
+   daily budget. Not a cut-over concern; logged as a possible future toolkit
+   feature in §7.
+7. **Go directive tweak added** (§2) — align `maestro-llms` `go 1.26.3` with
+   Maestro's `go 1.26` / `toolchain go1.26.1`.
+8. **New §9 "Ownership split"** — what lives in Maestro vs. what could move
+   into the toolkit, per the team's "what belongs where."
 
 ## 1. Goal & non-goals
 
@@ -33,12 +64,20 @@ streaming (unused today, not implemented by the toolkit).
 
 | Dimension | Maestro | maestro-llms | Verdict |
 |---|---|---|---|
-| Go version | `go 1.26` | `go 1.26.3` | Compatible |
+| Go version | `go 1.26` / `toolchain go1.26.1` | `go 1.26.3` | **Needs tweak** — see below |
 | Anthropic SDK | `anthropic-sdk-go v1.37.0` | `v1.37.0` | Identical (now indirect) |
 | OpenAI SDK | `openai-go v1.12.0` | `v1.12.0` | Identical (now indirect) |
 | Gemini | `google.golang.org/genai` | `genai v1.54.0` | Compatible |
 | Ollama | `github.com/ollama/ollama v0.21.0` | none (hand-rolled HTTP) | **Dep removed — clears govulncheck gate** |
 | Streaming | `Stream()` defined, **unused** outside impl/middleware/tests | not implemented | Drop from adapter |
+
+**Go directive:** `maestro-llms` declares `go 1.26.3`; Maestro declares
+`go 1.26` with `toolchain go1.26.1`. Go module resolution will demand the
+higher `go` directive. Resolution (pick one, decide with extraction team):
+either Maestro bumps its `go`/`toolchain` to ≥ `1.26.3`, **or** the toolkit
+lowers its `go` directive to `1.26` if it has no patch-level language/std
+dependency. This must be settled in phase 1 (§6 step 1) — it gates the
+build.
 
 ## 3. Prune inventory (≈3,700 LOC removed)
 
@@ -70,9 +109,9 @@ all bind to `llm.LLMClient`. An adapter contains the change to ~1 new file +
 ```
 consumers ─► llm.LLMClient (unchanged)
                   │
-            llmadapter (NEW: translate types, split system, map cache hint)
+            llmadapter (NEW: type map §4.1 + transcript normalization §4.2 + llmsuspend boundary)
                   │
-   middleware.RecommendedChat( validation? ► retry ► timeout ► circuit ► ratelimit ► metrics )
+   hand-composed chain (≈ RecommendedChat order; metrics positioned to see aggregate failures — M2)
                   │
         llms.ChatClient  (anthropic | openai | google | ollama)
 ```
@@ -98,6 +137,45 @@ via adapter unmarshal):**
 **Consumer sites that set `CacheControl` (map to `CacheBreakpoint`):**
 `pkg/coder/driver.go:159,204,210` (system prompt + last cacheable context).
 
+### 4.2 Adapter transcript normalization
+
+Maestro's conversation shape is **not** what `maestro-llms` validation
+accepts. The adapter must normalize the transcript on every request. Three
+distinct rewrites:
+
+**(a) Tool-result message splitting.**
+`ContextManager.FlushUserBuffer` (`pkg/contextmgr/contextmgr.go:805`)
+combines pending tool results **and** user-buffer text into **one**
+`RoleUser` message, and when there is no buffered text it injects the
+placeholder string `"Tool results:"` (added only because the Anthropic SDK
+rejected an empty content field). `maestro-llms` validation
+(`llms/middleware/validation.go:81`) requires tool results in a `RoleTool`
+message and **rejects mixed text + tool-result content**. The adapter must
+split each such Maestro message into:
+
+```
+Message{Role: RoleTool, Content: [tool_result, ...]}
+(optional) Message{Role: RoleUser, Content: [text]}   // only if real text exists
+```
+
+and **drop the `"Tool results:"` placeholder** entirely (the toolkit does
+not need non-empty content; emitting it would create a spurious user turn).
+
+**(b) System extraction (A3).** Leading/in-band `role=system` messages →
+`ChatRequest.System` (text-only), as in §4.1.
+
+**(c) Stop-reason normalization.** The toolloop branches on the legacy
+canonical string `"max_tokens"` to detect truncated tool calls
+(`pkg/agent/toolloop/toolloop.go:357`). Toolkit stop reasons are
+provider-specific and *not* normalized: OpenAI derives from response status
+(`llms/providers/openai/chatconvert.go:236`), Ollama returns raw
+`done_reason`, Gemini returns SDK finish enums. The adapter must map each
+provider's "output truncated" / "max tokens" / "length" reason back to
+Maestro's legacy `"max_tokens"` (and any other canonical strings consumers
+or tests assert on) so the toolloop and existing tests keep working without
+touching every consumer. Audit all `resp.StopReason ==` comparisons before
+choosing the canonical set.
+
 ## 5. Behaviors to preserve (divergence → code site)
 
 Each row is a toolkit-intentional divergence that Maestro must absorb. This
@@ -105,74 +183,120 @@ is the cut-over acceptance checklist.
 
 | # | Divergence | Maestro code site | Required action | Risk |
 |---|---|---|---|---|
-| **A3** | System via `ChatRequest.System`, text-only; not in-band | adapter; mirrors `llmimpl/anthropic` `ensureAlternation` | Adapter extracts system parts before send | Low |
+| **A3** | System via `ChatRequest.System`, text-only; not in-band | adapter §4.2(b); mirrors `llmimpl/anthropic` `ensureAlternation` | Adapter extracts system parts before send | Low |
 | **A2** | Tool args are raw JSON, not `map[string]any` | adapter + 5 sites in §4.1 | Adapter unmarshals; no consumer change | Low |
-| **A5** | `CacheBreakpoint` hint replaces `CacheControl`; only Anthropic caches | `pkg/coder/driver.go:159/204/210` | Map non-nil → hint; accept Gemini/OpenAI no longer get explicit caching | Low–med (cost only) |
-| **M3** | No agent-aware empty-response retry | `pkg/agent/middleware/validation/empty_response.go` | **Keep** this middleware; rework to wrap the toolkit client and stop emitting `llmerrors.ErrorTypeEmptyResponse` (own sentinel) | Med |
-| **M4 / X3** | Circuit-open = non-retryable `*middleware.CircuitOpenError`; no `ServiceUnavailableError` | `pkg/pm/working.go:546` (`llmerrors.IsServiceUnavailable`), `pkg/pm/driver.go:367`, audit architect/coder equivalents | Replace with `errors.As(err, **middleware.CircuitOpenError)` to drive SUSPEND | **Med–high** (escalation path) |
-| **M2 / X4** | Neutral `Observer`; no cost/story/StateProvider | `pkg/agent/middleware/metrics/*` | Reimplement Maestro `Recorder` as a toolkit `Observer`; cost via `config.CalculateCost` stays app-side; `Usage` now reliably populated | Med |
-| **M1 / X3** | Retry iff `llms.Retryable` (not blocklist) | `pkg/agent/factory.go` middleware assembly | Use `middleware.RecommendedChat`; audit flows that assumed "retry almost everything" | Med |
-| **OC2 / G2** | Caller-controlled `ToolChoice`; not forced when tools present | adapter + toolloop (`pkg/agent/toolloop`) | **Verify first.** Maestro toolloop relies on the model calling tools. Preserve old behavior by setting `ToolChoice{Type: ToolChoiceRequired}` when `len(Tools)>0` (in adapter, or thread through `CompletionRequest`) | **High** |
-| **G1** | Gemini thought-signature replay dropped (stateless clients) | n/a (toolkit) | Live-validate multi-turn Gemini tool loops; possible quality regression | **High** (needs live test) |
-| **OL1/OL3** | Hand-rolled Ollama; raw `done_reason` | any consumer reading canonical stop strings | Audit `StopReason` consumers; remove `ollama/ollama` dep | Low |
+| **TR** | Mixed text + tool-result message rejected by toolkit validation (toolkit-structural, not a numbered divergence) | `pkg/contextmgr/contextmgr.go:805` → adapter §4.2(a); validation `llms/middleware/validation.go:81` | Split into `RoleTool` + optional `RoleUser`; drop `"Tool results:"` placeholder | **Med** |
+| **A5** | `CacheBreakpoint` hint replaces `CacheControl`; only Anthropic caches (≤4 markers) | `pkg/coder/driver.go:159/204/210` | Map non-nil → hint; we set 2, under the cap; Gemini/OpenAI lose explicit caching (cost only) | Low–med (cost only) |
+| **M3** | No agent-aware empty-response retry; toolkit **passes empty through** | `pkg/agent/middleware/validation/empty_response.go` | **Keep** this middleware; rework to wrap the toolkit client and stop emitting `llmerrors.ErrorTypeEmptyResponse` (own sentinel) | Med |
+| **M4 / X3** | Circuit-open = non-retryable `*middleware.CircuitOpenError`; exhausted retry returns the **final retryable error** (no synthesized `ServiceUnavailableError`) | old behavior `pkg/agent/middleware/resilience/retry/middleware.go:57`; consumers `pkg/pm/working.go:546`, `pkg/pm/driver.go:367`, `pkg/coder/planning.go:284`, audit architect equivalents | Add a Maestro-side boundary helper (`llmsuspend`) that maps `*CircuitOpenError` **and** exhausted retryable `*llms.ProviderError`/`*llms.LimitError` into the existing suspend path; keep `llmerrors.IsServiceUnavailable`-style call sites working via this helper | **Med–high** (escalation path) |
+| **M2 / X4** | Neutral `Observer`, **innermost** in `RecommendedChat` (does not see validation/limiter/circuit-open/retry-exhaustion) | `pkg/agent/middleware/metrics/*`, `pkg/agent/factory.go:240`, `llms/middleware/recommended.go:31` | Reimplement `Recorder` as an `Observer` (cost via `config.CalculateCost` app-side; `Usage` now reliable) **and** hand-compose the chain or add an outer metrics pass so aggregate failures are still observed | Med |
+| **M1 / X3** | Retry iff `llms.Retryable` (not blocklist) | `pkg/agent/factory.go` middleware assembly | Use `middleware.RecommendedChat` or hand-composed chain; audit flows that assumed "retry almost everything" | Med |
+| **OC2 / G2** | Caller-controlled `ToolChoice`; Anthropic default was `auto`, OpenAI/Gemini forced internally | `pkg/agent/toolloop/toolloop.go:303` (no `ToolChoice` set today); old defaults `anthropic/client.go:437`, `openaiofficial/client.go:181`, `google/client.go:80` | **Thread explicit `ToolChoice`** through `toolloop.Config` + `CompletionRequest`: `Required` for unattended tool loops, `Auto` for text/finalizing turns. **No blanket adapter default** (would change Anthropic behavior) | **High** |
+| **G1** | Gemini thought-signature replay dropped (stateless clients) | n/a (toolkit) | Live-validate multi-turn Gemini tool loops; possible quality regression. If real degradation, request stateless encoding in toolkit (§9) | **High** (needs live test) |
+| **OL1/OL3** | Hand-rolled Ollama; raw `done_reason`; provider-specific stop reasons broadly | adapter §4.2(c); `pkg/agent/toolloop/toolloop.go:357`; `llms/providers/openai/chatconvert.go:236` | Normalize stop reasons to legacy canonical strings in adapter; remove `ollama/ollama` dep | **Med** (was Low — broader than Ollama) |
 | **X1** | SDK retries default 0; retry is middleware's job | `pkg/agent/factory.go` | Ensure every client is wrapped in retry middleware | Low |
 | **X5** | `context.Canceled` passes through (not a `ProviderError`) | shutdown/cancel paths | Confirm code switches on `errors.Is(err, context.Canceled)` | Low |
-| — | Daily token **budget** enforcement | old `ratelimit` config | `llms/ratelimit` does tokens/min + concurrency only. If daily budget still required → custom `ratelimit.Limiter` or app-side gate (see §7 Q3) | Med |
 
 ## 6. Phased plan
 
-1. **Scaffold (flagged):** add `maestro-llms` dep; build `llmadapter` + a
-   factory path behind a config flag; old path remains default. Build green.
-2. **Middleware + observability:** wire `middleware.RecommendedChat`;
-   reimplement metrics as `Observer`; map `*CircuitOpenError` → SUSPEND
-   (M4); confirm retry classifier (M1).
+1. **Scaffold (flagged):** align Go directives (§2); add `maestro-llms` dep;
+   build `llmadapter` (type mapping §4.1 + transcript normalization §4.2) +
+   a factory path behind a config flag; old path remains default. Build
+   green.
+2. **Middleware + observability:** hand-compose the chain (or
+   `RecommendedChat` + outer metrics pass) so metrics still see aggregate
+   failures (M2); reimplement `Recorder` as `Observer`; add the `llmsuspend`
+   boundary helper mapping `*CircuitOpenError` + exhausted retryable errors
+   to SUSPEND (M4); confirm retry classifier (M1).
 3. **Empty-response:** keep/rework agent-aware validation around the new
-   client (M3).
-4. **Tool-choice & live validation:** resolve OC2/G2 (force `Required` when
-   tools present, or thread `ToolChoice`); live-validate A5, G1, OL1/OL3,
-   M4 against real Anthropic + Gemini + Ollama architect/coder runs.
-5. **Cut over & prune:** flip default; delete `internal/llmimpl/`,
+   client (M3); toolkit passes empty responses through (confirmed), so the
+   middleware still sees them.
+4. **Tool-choice plumbing:** thread explicit `ToolChoice` through
+   `toolloop.Config` + `CompletionRequest` — `Required` for unattended tool
+   loops, `Auto` for finalizing turns (OC2/G2). No blanket adapter default.
+5. **Acceptance tests (see §8.1):** unit-test transcript normalization,
+   suspend mapping, and stop-reason normalization; then live-validate A5,
+   G1, OL1/OL3, M4 against real Anthropic + Gemini + Ollama architect/coder
+   runs.
+6. **Cut over & prune:** flip default; delete `internal/llmimpl/`,
    `llmerrors/`, `resilience/{retry,circuit,timeout,ratelimit}`,
    `llm/chain.go`; drop `github.com/ollama/ollama`; update `CLAUDE.md`.
 
-## 7. Open questions for the extraction team
+## 7. Open questions — resolved in round 1
 
-1. **Tool-choice default (OC2/G2):** Maestro's toolloop assumes the model
-   will call a tool each turn (old behavior forced `required`/ANY). We plan
-   to set `ToolChoiceRequired` whenever `len(Tools)>0` in the adapter. Is
-   that the intended migration path, or do you recommend threading an
-   explicit per-request `ToolChoice` (the toolloop sometimes wants `auto`
-   for the final summarizing turn)? Any precedent from Morris?
+1. **Tool-choice default (OC2/G2):** ✅ **Resolved.** Do *not* use a blanket
+   adapter default (it would silently change Anthropic's `auto` behavior).
+   Thread explicit `ToolChoice` through `toolloop.Config` /
+   `CompletionRequest`: `Required` for unattended loops, `Auto` for
+   finalizing turns. (§5 OC2/G2, §6 step 4.)
 
-2. **Empty-response retry (M3):** Confirmed Maestro owns this app-side. Does
-   the toolkit's validation middleware *reject* an empty assistant response
-   structurally, or pass it through? We need it to pass through so our
-   agent-aware retry sees it.
+2. **Empty-response retry (M3):** ✅ **Resolved.** Toolkit validation
+   *passes* empty assistant responses through; Maestro's agent-aware retry
+   still sees them. Keep the middleware app-side.
 
-3. **Daily budget:** `llms/ratelimit` exposes tokens/min + concurrency.
-   Maestro previously enforced a per-provider **daily token budget**. Is the
-   intended answer "implement a custom `ratelimit.Limiter`," or is a
-   budget-style limiter in scope for the toolkit?
+3. **Daily budget:** ✅ **Resolved — non-issue.** Current Maestro config
+   (`pkg/config/config.go:360` `ProviderLimits`; `docs/RATE_LIMIT.md:341`)
+   enforces tokens/minute + concurrency only — there is **no** existing
+   daily token/dollar budget. Removed from the cut-over checklist. A generic
+   composable window/quota limiter is logged as a possible future toolkit
+   feature (§9), not migration scope.
 
-4. **Gemini multi-turn (G1):** Without thought-signature replay, how much
-   quality regression have you observed on multi-turn tool loops with
-   thinking models? Any recommended mitigation short of a stateless
-   encoding?
+4. **Gemini multi-turn (G1):** ⏳ **Defer to live validation.** No
+   mitigation pre-committed; if live runs show real degradation, request a
+   stateless thought-signature encoding in the toolkit (§9). Not a blocker
+   for the architecture.
 
-5. **`CacheBreakpoint` economics (A5):** Maestro currently marks the system
-   prompt + last cacheable context. Confirm the toolkit maps exactly one (or
-   N) `CacheBreakpoint` parts to Anthropic `cache_control: ephemeral`, and
-   whether multiple breakpoints are supported (we set two).
+5. **`CacheBreakpoint` economics (A5):** ✅ **Resolved.** Toolkit supports
+   multiple breakpoints up to Anthropic's 4-marker cap; Maestro sets 2
+   (system prompt + last cacheable context) — within the cap.
 
 ## 8. Effort estimate
 
 | Workstream | Estimate |
 |---|---|
-| Adapter + factory rewiring + prune | 1–2 days |
-| Behavior preservation (M1–M4, OC2/G2, budget) | 2–3 days |
-| Live integration validation (A5, G1, OL1, M4) | 1–2 days |
-| **Total** | **~1 week**, dominated by validation, not coding |
+| Adapter (type map + transcript normalization) + factory rewiring + prune | 2–3 days |
+| Behavior preservation (M1–M4, OC2/G2 plumbing, TR split) | 2–3 days |
+| Acceptance tests + live integration validation | 2 days |
+| **Total** | **~1.5 weeks**, dominated by adapter normalization + validation |
 
 **Net:** low architectural risk (adapter contains it); behavioral risk
-concentrated in tool-choice (OC2/G2) and Gemini multi-turn (G1), neither
-unit-testable — both need live agent runs.
+concentrated in tool-choice plumbing (OC2/G2), transcript normalization
+(TR), suspend mapping (M4), and Gemini multi-turn (G1) — the last is the
+only one not unit-testable and needs live agent runs.
+
+### 8.1 Acceptance tests to add before cut-over
+
+Per round-1 feedback, strengthen tests around the three behaviors most
+likely to regress silently:
+
+- **Transcript normalization (§4.2):** table tests asserting Maestro
+  `RoleUser`+tool-results+placeholder messages produce exactly
+  `RoleTool` (+ optional `RoleUser`), placeholder dropped, and that the
+  result passes `llms/middleware` validation.
+- **Suspend mapping (M4):** `*CircuitOpenError`, exhausted-retry
+  `*ProviderError`, and `*LimitError` each route through `llmsuspend` to the
+  same SUSPEND outcome the `llmerrors.IsServiceUnavailable` handlers
+  (`pkg/pm/working.go:546`, `pkg/coder/planning.go:284`) expect today.
+- **Stop-reason normalization (§4.2c):** each provider's truncation/length
+  reason maps to legacy `"max_tokens"`, exercising the toolloop truncation
+  branch (`toolloop.go:357`).
+
+## 9. Ownership split (per round-1 "what belongs where")
+
+**Stays in Maestro:** the `llm.LLMClient` adapter; transcript normalization
+(ToolResults split, system extraction, stop-reason mapping); explicit
+tool-choice policy; empty-response / pause-turn behavior; the `llmsuspend`
+boundary mapping; cost/story metrics; rate-limit UI stat shape; any
+Maestro-specific budget policy.
+
+**Could move into `maestro-llms`** if multiple consumers need it (out of
+migration scope; raise separately): lowering the Go directive; a generic
+retry-exhausted error or observer signal (so consumers don't reconstruct
+"service unavailable" from the final error); a generic composable
+daily/window quota limiter; possibly a stateless Gemini thought-signature
+encoding *if* G1 live validation shows real degradation.
+
+**Already well-covered in `maestro-llms`** (no Maestro work):
+`ToolChoiceRequired`, empty-response pass-through, `CacheBreakpoint` with
+Anthropic's 4-marker cap, typed provider errors, the generic limiter
+interface.
