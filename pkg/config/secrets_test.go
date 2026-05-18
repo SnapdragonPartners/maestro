@@ -593,6 +593,22 @@ func TestValidateSecretName(t *testing.T) {
 }
 
 func TestDeleteSecretWithType(t *testing.T) {
+	// GetSecret consults MAESTRO_-prefixed env vars first, so a leak from the
+	// runner's shell (e.g., MAESTRO_ANTHROPIC_API_KEY) would shadow the test's
+	// system secret. Clear both the bare and MAESTRO_-prefixed names up front.
+	origBare := os.Getenv("ANTHROPIC_API_KEY")
+	origMaestro := os.Getenv("MAESTRO_ANTHROPIC_API_KEY")
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	os.Unsetenv("MAESTRO_ANTHROPIC_API_KEY")
+	defer func() {
+		if origBare != "" {
+			os.Setenv("ANTHROPIC_API_KEY", origBare)
+		}
+		if origMaestro != "" {
+			os.Setenv("MAESTRO_ANTHROPIC_API_KEY", origMaestro)
+		}
+	}()
+
 	SetDecryptedSecrets(&StructuredSecrets{
 		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
 		User:   map[string]string{"MY_SECRET": "my-value"},
@@ -620,14 +636,6 @@ func TestDeleteSecretWithType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to delete system secret: %v", err)
 	}
-	// Temporarily unset env var to test that the secret is truly gone
-	origEnv := os.Getenv("ANTHROPIC_API_KEY")
-	os.Unsetenv("ANTHROPIC_API_KEY")
-	defer func() {
-		if origEnv != "" {
-			os.Setenv("ANTHROPIC_API_KEY", origEnv)
-		}
-	}()
 	_, err = GetSecret("ANTHROPIC_API_KEY")
 	if err == nil {
 		t.Error("Expected system secret to be deleted")

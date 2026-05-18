@@ -5,16 +5,39 @@ import (
 	"testing"
 )
 
+// snapshotAPIKeyEnv saves the current values of each given env var and its
+// MAESTRO_-prefixed variant, then unsets both. GetSecret consults the
+// MAESTRO_-prefixed name before falling back to the bare name and decrypted
+// secrets, so tests that try to simulate a missing key by setting the bare
+// name to "" must also clear the MAESTRO_-prefixed variant — otherwise a
+// shell-level MAESTRO_ANTHROPIC_API_KEY (or similar) leaks through. It also
+// clears the decrypted-secrets cache, since getAvailableProviders() ->
+// GetSecret() falls back to decrypted secrets after the env vars; leaving a
+// populated cache from a prior test would make these tests order-dependent.
+// Returns a restore func suitable for defer.
+func snapshotAPIKeyEnv(keys ...string) func() {
+	orig := make(map[string]string, len(keys)*2)
+	for _, k := range keys {
+		orig[k] = os.Getenv(k)
+		mk := "MAESTRO_" + k
+		orig[mk] = os.Getenv(mk)
+		os.Unsetenv(k)
+		os.Unsetenv(mk)
+	}
+	SetDecryptedSecrets(nil)
+	return func() {
+		for k, v := range orig {
+			if v != "" {
+				os.Setenv(k, v)
+			} else {
+				os.Unsetenv(k)
+			}
+		}
+	}
+}
+
 func TestGetAvailableProviders(t *testing.T) {
-	// Save and restore environment
-	origAnthropic := os.Getenv(EnvAnthropicAPIKey)
-	origOpenAI := os.Getenv(EnvOpenAIAPIKey)
-	origGoogle := os.Getenv(EnvGoogleAPIKey)
-	defer func() {
-		os.Setenv(EnvAnthropicAPIKey, origAnthropic)
-		os.Setenv(EnvOpenAIAPIKey, origOpenAI)
-		os.Setenv(EnvGoogleAPIKey, origGoogle)
-	}()
+	defer snapshotAPIKeyEnv(EnvAnthropicAPIKey, EnvOpenAIAPIKey, EnvGoogleAPIKey)()
 
 	tests := []struct {
 		name      string
@@ -181,15 +204,7 @@ func TestGetSmartDefaultModel(t *testing.T) {
 }
 
 func TestApplySmartModelDefaults(t *testing.T) {
-	// Save and restore environment
-	origAnthropic := os.Getenv(EnvAnthropicAPIKey)
-	origOpenAI := os.Getenv(EnvOpenAIAPIKey)
-	origGoogle := os.Getenv(EnvGoogleAPIKey)
-	defer func() {
-		os.Setenv(EnvAnthropicAPIKey, origAnthropic)
-		os.Setenv(EnvOpenAIAPIKey, origOpenAI)
-		os.Setenv(EnvGoogleAPIKey, origGoogle)
-	}()
+	defer snapshotAPIKeyEnv(EnvAnthropicAPIKey, EnvOpenAIAPIKey, EnvGoogleAPIKey)()
 
 	tests := []struct {
 		name               string
@@ -272,15 +287,7 @@ func TestApplySmartModelDefaults(t *testing.T) {
 }
 
 func TestApplySmartModelDefaults_RespectsExistingConfig(t *testing.T) {
-	// Save and restore environment
-	origAnthropic := os.Getenv(EnvAnthropicAPIKey)
-	origOpenAI := os.Getenv(EnvOpenAIAPIKey)
-	origGoogle := os.Getenv(EnvGoogleAPIKey)
-	defer func() {
-		os.Setenv(EnvAnthropicAPIKey, origAnthropic)
-		os.Setenv(EnvOpenAIAPIKey, origOpenAI)
-		os.Setenv(EnvGoogleAPIKey, origGoogle)
-	}()
+	defer snapshotAPIKeyEnv(EnvAnthropicAPIKey, EnvOpenAIAPIKey, EnvGoogleAPIKey)()
 
 	// Set all providers available
 	os.Setenv(EnvAnthropicAPIKey, "sk-ant-test")

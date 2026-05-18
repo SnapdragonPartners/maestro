@@ -383,6 +383,18 @@ func TestHandleSecretsDelete_NoPassword(t *testing.T) {
 }
 
 func TestHandleSecretsDelete_WithType(t *testing.T) {
+	// GetSecret consults MAESTRO_-prefixed env vars before decrypted secrets, so
+	// any value the user has in MAESTRO_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY)
+	// would mask the user-override secret this test sets up.
+	origMaestro := os.Getenv("MAESTRO_ANTHROPIC_API_KEY")
+	origBare := os.Getenv("ANTHROPIC_API_KEY")
+	os.Unsetenv("MAESTRO_ANTHROPIC_API_KEY")
+	os.Unsetenv("ANTHROPIC_API_KEY")
+	defer func() {
+		restoreEnv("MAESTRO_ANTHROPIC_API_KEY", origMaestro)
+		restoreEnv("ANTHROPIC_API_KEY", origBare)
+	}()
+
 	config.SetDecryptedSecrets(&config.StructuredSecrets{
 		System: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-test"},
 		User:   map[string]string{"ANTHROPIC_API_KEY": "user-override"},
