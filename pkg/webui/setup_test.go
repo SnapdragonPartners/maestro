@@ -433,8 +433,8 @@ func restoreEnv(key, value string) {
 }
 
 // clearSystemSecrets unsets each named env var AND its MAESTRO_-prefixed
-// variant — preflight.GetSystemSecret checks the MAESTRO_-prefixed name
-// first, so without this a test running in a shell that has, say,
+// variant — config.GetSystemSecret / config.GetSecret check the
+// MAESTRO_-prefixed name first, so without this a test running in a shell that has, say,
 // MAESTRO_ANTHROPIC_API_KEY set will see the secret as present even after
 // os.Unsetenv("ANTHROPIC_API_KEY"). Also clears the decrypted-secrets cache.
 // Returns a restore function suitable for defer.

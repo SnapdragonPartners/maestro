@@ -1208,14 +1208,28 @@ func TestIncidentActionStoryIndependent(t *testing.T) {
 		Payload:   proto.NewIncidentActionPayload(incidentPayload),
 	}
 
+	// Watch the questions channel directly. DispatchMessage only queues the
+	// message; story_id validation/rejection happens asynchronously in
+	// processMessage. Asserting the message reaches questionsCh (rather than
+	// just that DispatchMessage returns nil) is what actually exercises the
+	// fix — without the IncidentActionPayload exemption the message would be
+	// rejected with an error response instead of being routed here.
+	questionsCh := dispatcher.GetQuestionsCh()
+
 	err = dispatcher.DispatchMessage(incidentMsg)
 	if err != nil {
 		t.Errorf("IncidentAction REQUEST without story_id should be allowed (story-independent), got error: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
-	t.Log("IncidentAction REQUEST correctly accepted without story_id")
+	select {
+	case got := <-questionsCh:
+		if got.ID != incidentMsg.ID {
+			t.Errorf("Expected message %s on questions channel, got %s", incidentMsg.ID, got.ID)
+		}
+		t.Log("IncidentAction REQUEST correctly accepted without story_id and routed to architect")
+	case <-time.After(2 * time.Second):
+		t.Fatal("IncidentAction REQUEST was not routed to questions channel (likely rejected for missing story_id)")
+	}
 }
 
 func TestLeaseOperationsExtended(t *testing.T) {

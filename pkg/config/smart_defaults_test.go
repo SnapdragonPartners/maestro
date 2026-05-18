@@ -10,7 +10,10 @@ import (
 // MAESTRO_-prefixed name before falling back to the bare name and decrypted
 // secrets, so tests that try to simulate a missing key by setting the bare
 // name to "" must also clear the MAESTRO_-prefixed variant — otherwise a
-// shell-level MAESTRO_ANTHROPIC_API_KEY (or similar) leaks through.
+// shell-level MAESTRO_ANTHROPIC_API_KEY (or similar) leaks through. It also
+// clears the decrypted-secrets cache, since getAvailableProviders() ->
+// GetSecret() falls back to decrypted secrets after the env vars; leaving a
+// populated cache from a prior test would make these tests order-dependent.
 // Returns a restore func suitable for defer.
 func snapshotAPIKeyEnv(keys ...string) func() {
 	orig := make(map[string]string, len(keys)*2)
@@ -21,6 +24,7 @@ func snapshotAPIKeyEnv(keys ...string) func() {
 		os.Unsetenv(k)
 		os.Unsetenv(mk)
 	}
+	SetDecryptedSecrets(nil)
 	return func() {
 		for k, v := range orig {
 			if v != "" {
