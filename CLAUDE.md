@@ -338,6 +338,8 @@ When making changes:
 
 **Important**: Always work on feature branches. Never attempt to push directly to `main` as it will be rejected by branch protection rules.
 
+**Resolving PR review comments**: After addressing a PR review comment (including automated reviewers like Copilot) — by fixing it, or by determining it's a non-issue — push the change and **mark that review thread resolved** (e.g. `gh api graphql` `resolveReviewThread`), with a brief reply noting how it was addressed. Don't leave addressed threads open; do not resolve a thread without actually addressing it. Re-check for new threads after each push, since reviewers re-run on new commits.
+
 ### Pull Request Guidelines
 
 When creating PRs for features with specification documents:
