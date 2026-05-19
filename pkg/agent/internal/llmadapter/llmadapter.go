@@ -53,10 +53,10 @@ type Adapter struct {
 // Verify the contract at compile time.
 var _ llm.LLMClient = (*Adapter)(nil)
 
-// New builds an Adapter for the given provider. SDK-level retries are left at
-// the toolkit default (0); the resilience chain is the middleware's job and is
-// wired in phase 2 (§5 X1).
-func New(provider, apiKey, model string) (*Adapter, error) {
+// NewChatClient builds the bare maestro-llms provider client (no middleware).
+// SDK-level retries are left at the toolkit default (0); the resilience chain
+// is the middleware's job (§5 X1) and is composed by the factory (phase 2).
+func NewChatClient(provider, apiKey, model string) (mllms.ChatClient, error) {
 	var (
 		client mllms.ChatClient
 		err    error
@@ -77,7 +77,23 @@ func New(provider, apiKey, model string) (*Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("llmadapter: constructing %s client: %w", provider, err)
 	}
-	return &Adapter{client: client, provider: provider, model: model}, nil
+	return client, nil
+}
+
+// Wrap adapts an existing maestro-llms ChatClient (typically already decorated
+// with the toolkit middleware chain) to llm.LLMClient.
+func Wrap(client mllms.ChatClient, provider, model string) *Adapter {
+	return &Adapter{client: client, provider: provider, model: model}
+}
+
+// New builds a bare Adapter (no middleware) for the given provider. Used by
+// the preflight/raw path; the agent path composes middleware then calls Wrap.
+func New(provider, apiKey, model string) (*Adapter, error) {
+	client, err := NewChatClient(provider, apiKey, model)
+	if err != nil {
+		return nil, err
+	}
+	return Wrap(client, provider, model), nil
 }
 
 // GetModelName returns the configured model name.

@@ -180,15 +180,15 @@ func CreateRawClient(provider, apiKey, model string) (LLMClient, error) {
 	}
 }
 
-// createClientWithMiddleware creates a client with the full middleware chain.
 // useMaestroLLMs reports whether the maestro-llms migration path is enabled.
-// Temporary scaffold flag (docs/MAESTRO_LLMS_MIGRATION.md phase 1): gated via
-// the MAESTRO_USE_LLMS env var, default false. Removed at cut-over (phase 6).
+// Temporary migration flag (docs/MAESTRO_LLMS_MIGRATION.md): gated via the
+// MAESTRO_USE_LLMS env var, default false. Removed at cut-over (phase 6).
 func useMaestroLLMs() bool {
 	v, err := strconv.ParseBool(os.Getenv("MAESTRO_USE_LLMS"))
 	return err == nil && v
 }
 
+// createClientWithMiddleware creates a client with the full middleware chain.
 func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	// Create the raw LLM client based on provider
 	provider, err := config.GetModelProvider(modelName)
@@ -202,32 +202,29 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 		return nil, fmt.Errorf("failed to get API key for provider %s: %w", provider, err)
 	}
 
-	var rawClient LLMClient
+	// Migration path (docs/MAESTRO_LLMS_MIGRATION.md phase 2): the entire
+	// client — provider, toolkit middleware chain, adapter, and SUSPEND
+	// boundary — is built by buildMaestroLLMsClient. The legacy llm.Chain
+	// below is bypassed entirely. Gated OFF by default via MAESTRO_USE_LLMS.
 	if useMaestroLLMs() {
-		// Migration path (docs/MAESTRO_LLMS_MIGRATION.md): the raw client is
-		// the maestro-llms adapter. The existing middleware chain below still
-		// wraps it in phase 1; phase 2 swaps in the toolkit's own middleware.
-		// Gated OFF by default via MAESTRO_USE_LLMS.
-		rawClient, err = llmadapter.New(provider, apiKey, modelName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create maestro-llms adapter: %w", err)
-		}
-	} else {
-		switch provider {
-		case config.ProviderAnthropic:
-			rawClient = anthropic.NewClaudeClientWithModel(apiKey, modelName)
-		case config.ProviderOpenAI:
-			// Use official OpenAI SDK with Responses API for all OpenAI models
-			// Supports tool calling via Responses API (o4-mini, gpt-4o, etc.)
-			rawClient = openaiofficial.NewOfficialClientWithModel(apiKey, modelName)
-		case config.ProviderGoogle:
-			rawClient = google.NewGeminiClientWithModel(apiKey, modelName)
-		case config.ProviderOllama:
-			// For Ollama, apiKey contains the host URL (e.g., "http://localhost:11434")
-			rawClient = ollama.NewOllamaClientWithModel(apiKey, modelName)
-		default:
-			return nil, fmt.Errorf("unsupported provider: %s", provider)
-		}
+		return f.buildMaestroLLMsClient(modelName, provider, apiKey, stateProvider, logger)
+	}
+
+	var rawClient LLMClient
+	switch provider {
+	case config.ProviderAnthropic:
+		rawClient = anthropic.NewClaudeClientWithModel(apiKey, modelName)
+	case config.ProviderOpenAI:
+		// Use official OpenAI SDK with Responses API for all OpenAI models
+		// Supports tool calling via Responses API (o4-mini, gpt-4o, etc.)
+		rawClient = openaiofficial.NewOfficialClientWithModel(apiKey, modelName)
+	case config.ProviderGoogle:
+		rawClient = google.NewGeminiClientWithModel(apiKey, modelName)
+	case config.ProviderOllama:
+		// For Ollama, apiKey contains the host URL (e.g., "http://localhost:11434")
+		rawClient = ollama.NewOllamaClientWithModel(apiKey, modelName)
+	default:
+		return nil, fmt.Errorf("unsupported provider: %s", provider)
 	}
 
 	// Get the circuit breaker for this provider

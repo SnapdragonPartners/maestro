@@ -61,6 +61,32 @@ to the concrete Maestro code site that must change.
     implementation agents use (matters most for Ollama: old SDK vs. new
     hand-rolled HTTP differ by design).
 
+### Phase 2 implemented (middleware + observability)
+
+11. **Chain hand-composed, metrics OUTERMOST** (`factory_llms.go`
+    `buildMaestroLLMsClient`) — order `metrics → validation → retry →
+    timeout → circuit → rate limit → provider`. Resolves the M2 tradeoff by
+    relocating the single metrics layer from RecommendedChat's innermost to
+    outermost: one aggregate `Event` per logical call still observes
+    validation/limiter/circuit-open/retry-exhaustion (matches Maestro's
+    current semantics). Documented tradeoff: latency now includes retry
+    backoff; per-attempt granularity is not separately emitted.
+12. **M4 SUSPEND boundary = `suspendBoundary` + `mapSuspend`** — concrete
+    `llm.LLMClient` (not `llm.WrapClient`, so phase-6 chain.go deletion is
+    safe). Maps `*middleware.CircuitOpenError` and retry-exhausted
+    retryable `*llms.ProviderError`/`*llms.LimitError` →
+    `llmerrors.NewServiceUnavailableError`, preserving the existing
+    `IsServiceUnavailable` handler contract. `context.Canceled` passes
+    through (X5). Non-retryable provider errors (auth/bad_request) pass
+    through (M1: fail fast, no longer "retry almost everything").
+13. **M2 metrics = `metricsObserver`** — toolkit `Observer` →
+    `metrics.Recorder`; cost via `config.CalculateCost` stays app-side;
+    uses the toolkit's now-reliable `Usage` instead of tokenizer
+    estimation (X4); nil-safe `stateProvider`/`logger`.
+14. **Rate limiting** = per-provider `ratelimit.NewInMemoryLimiter` from
+    existing `ProviderLimits` config (tokens/min + concurrency). No daily
+    budget (confirmed non-existent, §7 Q3).
+
 ## 1. Goal & non-goals
 
 **Goal:** delete Maestro's bespoke provider clients and resilience stack;
