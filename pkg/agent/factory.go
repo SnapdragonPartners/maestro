@@ -89,13 +89,14 @@ func (f *LLMClientFactory) Stop() {}
 // web UI congestion display.
 func (f *LLMClientFactory) GetRateLimitStats(ctx context.Context) map[string]RateLimitStat {
 	out := make(map[string]RateLimitStat, len(f.mllmsLimiters))
+	logger := logx.NewLogger("factory")
 	for provider, lim := range f.mllmsLimiters {
-		stats, ok := any(lim).(mrl.LimiterStats)
-		if !ok {
-			continue
-		}
-		snap, err := stats.Stats(ctx)
+		// lim is the concrete *mrl.InMemoryLimiter, which has Stats() —
+		// no capability assertion needed (compile-time guaranteed).
+		snap, err := lim.Stats(ctx)
 		if err != nil {
+			// Surface rather than silently drop the provider's section.
+			logger.Warn("rate-limit stats unavailable for provider %s: %v", provider, err)
 			continue
 		}
 		out[provider] = RateLimitStat{
