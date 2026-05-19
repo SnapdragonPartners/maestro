@@ -242,7 +242,7 @@ class MaestroUI {
                 <div class="border border-gray-200 rounded-lg p-4">
                     <div class="flex items-center justify-between mb-3">
                         <h3 class="font-medium text-gray-900">${provider}</h3>
-                        <span class="text-xs text-gray-500">${stats.tracked_acquisitions || 0} in-flight</span>
+                        <span class="text-xs text-gray-500">${stats.active_requests || 0} in-flight</span>
                     </div>
                     <div class="grid grid-cols-2 gap-4">
                         <!-- Token Limits -->
