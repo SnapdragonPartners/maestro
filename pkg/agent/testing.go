@@ -4,78 +4,47 @@ package agent
 import (
 	"fmt"
 
-	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
-	"orchestrator/pkg/agent/internal/llmimpl/google"
-	"orchestrator/pkg/agent/internal/llmimpl/ollama"
-	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
+	"orchestrator/pkg/agent/internal/llmadapter"
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/agent/middleware/logging"
 	"orchestrator/pkg/agent/middleware/validation"
 	"orchestrator/pkg/config"
 )
 
-// NewTestLLMClient creates a raw LLM client for integration testing.
-// This bypasses the middleware chain for simpler testing.
-// Returns an error if the API key is not available.
+// NewTestLLMClient creates a raw maestro-llms-backed client for integration
+// testing (no middleware). Returns an error if the API key is unavailable.
 func NewTestLLMClient(modelName string) (llm.LLMClient, error) {
 	provider, err := config.GetModelProvider(modelName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get model provider for %s: %w", modelName, err)
 	}
-
 	apiKey, err := config.GetAPIKey(provider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get API key for provider %s: %w", provider, err)
 	}
-
-	var client llm.LLMClient
-	switch provider {
-	case config.ProviderAnthropic:
-		client = anthropic.NewClaudeClientWithModel(apiKey, modelName)
-	case config.ProviderOpenAI:
-		client = openaiofficial.NewOfficialClientWithModel(apiKey, modelName)
-	case config.ProviderGoogle:
-		client = google.NewGeminiClientWithModel(apiKey, modelName)
-	case config.ProviderOllama:
-		client = ollama.NewOllamaClientWithModel(apiKey, modelName)
-	default:
-		return nil, fmt.Errorf("unsupported provider: %s", provider)
+	client, err := llmadapter.New(provider, apiKey, modelName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create maestro-llms client: %w", err)
 	}
-
 	return client, nil
 }
 
-// NewTestLLMClientWithMiddleware creates an LLM client with validation and logging middleware.
-// This more closely matches the production middleware chain for integration testing.
-// The agentType parameter determines agent-specific validation behavior:
-//   - TypeArchitect: Architect agent (can respond with text only).
-//   - TypeCoder: Coder agent (must use tools).
+// NewTestLLMClientWithMiddleware wraps the raw client in the agent-aware
+// empty-response validation decorator (the production app-side behavior),
+// for integration tests that exercise that path. Resilience middleware now
+// lives in the maestro-llms chain and is not part of this lightweight helper.
 func NewTestLLMClientWithMiddleware(modelName string, agentType Type) (llm.LLMClient, error) {
-	// First get the raw client
 	rawClient, err := NewTestLLMClient(modelName)
 	if err != nil {
 		return nil, err
 	}
 
-	// Determine validation agent type
-	var validationType validation.AgentType
+	validationType := validation.AgentTypeCoder
 	switch agentType {
-	case TypeArchitect:
+	case TypeArchitect, TypePM: // PM responds with text like the architect
 		validationType = validation.AgentTypeArchitect
-	case TypePM:
-		validationType = validation.AgentTypeArchitect // PM can respond with text
-	default:
+	case TypeCoder:
 		validationType = validation.AgentTypeCoder
 	}
 
-	// Apply validation and logging middleware (subset of production chain)
-	// Note: We skip rate limiting, circuit breaker, and timeout for simpler testing
-	validator := validation.NewEmptyResponseValidator(validationType)
-
-	client := llm.Chain(rawClient,
-		validator.Middleware(),                   // Agent-aware empty response validation
-		logging.EmptyResponseLoggingMiddleware(), // Log empty responses
-	)
-
-	return client, nil
+	return validation.NewEmptyResponseValidator(validationType).Wrap(rawClient), nil
 }
