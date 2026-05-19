@@ -5,6 +5,17 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # LLM provider SDKs are now indirect deps owned by maestro-llms (the
+    # cut-over removed all direct imports). Their versions are pinned by
+    # maestro-llms's own go.mod and validated by its CI; bumping them here
+    # would only force an untested transitive version under the toolkit.
+    # Bump them in the maestro-llms repo instead — Maestro inherits via the
+    # (still dependabot-tracked) maestro-llms dependency. These churn often,
+    # which was a motivation for the extraction.
+    ignore:
+      - dependency-name: "github.com/anthropics/anthropic-sdk-go"
+      - dependency-name: "github.com/openai/openai-go"
+      - dependency-name: "google.golang.org/genai"
 
   - package-ecosystem: "github-actions"
     directory: "/"
