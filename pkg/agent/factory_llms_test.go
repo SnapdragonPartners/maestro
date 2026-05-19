@@ -9,7 +9,10 @@ import (
 
 	mllms "github.com/SnapdragonPartners/maestro-llms/llms"
 	mmw "github.com/SnapdragonPartners/maestro-llms/llms/middleware"
+	"github.com/SnapdragonPartners/maestro-llms/llms/testllm"
 
+	"orchestrator/pkg/agent/internal/llmadapter"
+	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
 )
 
@@ -123,5 +126,49 @@ func TestMetricsObserver_RecordsUsage(t *testing.T) {
 	obs.Observe(mmw.Event{Model: "m", Err: errors.New("provider down")})
 	if rec.calls != 2 || rec.success {
 		t.Fatalf("failure event not recorded as failure: %+v", rec)
+	}
+}
+
+// TestSuspendBoundary_EndToEnd exercises the full Maestro-owned M4 path:
+// a toolkit-typed terminal error → real llmadapter.Wrap (which wraps it with
+// fmt.Errorf %w exactly as in production) → real suspendBoundary → Maestro's
+// llmerrors.IsServiceUnavailable SUSPEND contract.
+//
+// This deliberately uses a testllm fake as the "provider": the toolkit owns
+// (and tests) that its retry middleware returns the final error and its
+// circuit returns *CircuitOpenError. Maestro owns only the translation of
+// that error contract onto its SUSPEND policy — that is what this asserts,
+// without re-testing toolkit retry/circuit internals.
+func TestSuspendBoundary_EndToEnd(t *testing.T) {
+	tests := []struct {
+		name        string
+		err         error
+		wantSuspend bool
+	}{
+		{"circuit open", &mmw.CircuitOpenError{Provider: "anthropic", Model: "m"}, true},
+		{"retry-exhausted retryable provider error", &mllms.ProviderError{Provider: "anthropic", Kind: mllms.ErrorKindUnavailable}, true},
+		{"limit error", &mllms.LimitError{Provider: "anthropic", Reason: "tpm"}, true},
+		{"non-retryable auth error passes through", &mllms.ProviderError{Provider: "anthropic", Kind: mllms.ErrorKindAuth}, false},
+		{"context canceled passes through", context.Canceled, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &testllm.FakeChatClient{Err: tc.err}
+			client := &suspendBoundary{inner: llmadapter.Wrap(fake, "anthropic", "claude-haiku-4-5-20251001")}
+
+			_, err := client.Complete(context.Background(), llm.CompletionRequest{
+				Messages: []llm.CompletionMessage{{Role: llm.RoleUser, Content: "hi"}},
+			})
+			if err == nil {
+				t.Fatalf("expected an error")
+			}
+			gotSuspend := llmerrors.IsServiceUnavailable(err)
+			if gotSuspend != tc.wantSuspend {
+				t.Fatalf("IsServiceUnavailable=%v, want %v (err=%T: %v)", gotSuspend, tc.wantSuspend, err, err)
+			}
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("error chain must still wrap the original cause (errors.Is)")
+			}
+		})
 	}
 }

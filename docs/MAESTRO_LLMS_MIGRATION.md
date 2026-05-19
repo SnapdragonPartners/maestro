@@ -345,10 +345,34 @@ concentrated in tool-choice plumbing (OC2/G2), transcript normalization
 (TR), suspend mapping (M4), and Gemini multi-turn (G1) — the last is the
 only one not unit-testable and needs live agent runs.
 
-### 8.1 Acceptance tests to add before cut-over
+### 8.1 Acceptance tests — status
 
-Per round-1 feedback, strengthen tests around the three behaviors most
-likely to regress silently:
+Per round-1 feedback, strengthen tests around the behaviors most likely to
+regress silently. **Status after phase-5:** transcript normalization,
+tool-choice, empty-response, and stop-reason are unit-covered; the two
+fault-only paths (M4 suspend, P2 OpenAI-`incomplete`) — which can't be
+exercised by happy-path live runs — are now closed by **deterministic,
+hermetic tests** (no API keys, normal CI gate), so they are **no longer
+cut-over blockers**:
+
+- **M4 — `TestSuspendBoundary_EndToEnd`** (`pkg/agent`): a toolkit-typed
+  terminal error (`*CircuitOpenError`, retry-exhausted `*ProviderError`,
+  `*LimitError`) → real `llmadapter.Wrap` (production `fmt.Errorf %w`
+  wrapping) → real `suspendBoundary` → asserts
+  `llmerrors.IsServiceUnavailable`; non-retryable/`context.Canceled` pass
+  through. Uses a `testllm` fake as the provider — Maestro tests only its
+  own translation of the toolkit's error *contract*, not toolkit
+  retry/circuit internals (those are the toolkit's to test).
+- **P2 — `TestOpenAIIncompleteRawCouplingGuard`**
+  (`pkg/agent/internal/llmadapter`): real `openai-go` SDK + toolkit OpenAI
+  provider via `httptest`, returning a truncated Responses body
+  (`status:"incomplete"`, `incomplete_details.reason:"max_output_tokens"`,
+  a function call). Asserts the adapter yields `StopReason "max_tokens"`
+  and preserves the tool call. **Narrow drift guard only** for the `Raw`
+  coupling — not a re-test of the toolkit's parser. Delete this test *and*
+  the `rawStopReason` workaround when the upstream fix (below) lands.
+
+Detailed list of the unit-covered behaviors:
 
 - **Transcript normalization (§4.2):** table tests asserting Maestro
   `RoleUser`+tool-results+placeholder messages produce exactly
@@ -378,11 +402,21 @@ tool-choice policy; empty-response / pause-turn behavior; the `llmsuspend`
 boundary mapping; cost/story metrics; rate-limit UI stat shape; any
 Maestro-specific budget policy.
 
+**Upstream ask filed to maestro-llms (P2):** the OpenAI provider should
+surface the incomplete reason in `ChatResponse.StopReason`. Today
+`StopReason = StopReason(resp.Status)`, so a max-output truncation arrives
+as `"incomplete"` and the real reason is only in
+`Raw.(*responses.Response).IncompleteDetails.Reason`. Requested: when
+`status=="incomplete"`, derive `StopReason` from `incomplete_details.reason`
+(or expose a typed field). Provider-level hermetic test owned upstream
+(`httptest` Responses body with `incomplete`/`max_output_tokens` + a
+function call → assert `StopReason` reflects truncation, tool calls
+preserved). **Until that lands, Maestro carries a temporary `rawStopReason`
+`Raw` workaround guarded by `TestOpenAIIncompleteRawCouplingGuard`; both are
+deleted at the toolkit bump that ships the fix.**
+
 **Could move into `maestro-llms`** if multiple consumers need it (out of
-migration scope; raise separately): surfacing OpenAI's
-`incomplete_details.reason` as the `ChatResponse.StopReason` (or a typed
-field) so consumers don't have to reach into provider `Raw` — **filed as a
-candidate upstream fix from the P2 review finding**; a generic
+migration scope; raise separately): a generic
 retry-exhausted error or observer signal (so consumers don't reconstruct
 "service unavailable" from the final error); a generic composable
 daily/window quota limiter; possibly a stateless Gemini thought-signature
