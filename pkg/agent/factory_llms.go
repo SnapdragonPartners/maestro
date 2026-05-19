@@ -197,7 +197,7 @@ func (f *LLMClientFactory) buildMaestroLLMsClient(modelName, provider, apiKey, a
 	}
 
 	chain := mmw.ChainChat(base, mws...)
-	adapter := llmadapter.Wrap(chain, provider, modelName)
+	adapter := llmadapter.Wrap(chain, modelName)
 
 	// §5 M3: agent-aware empty-response/pause-turn handling stays app-side
 	// (the toolkit passes empty responses through). It must wrap at the

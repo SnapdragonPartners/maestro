@@ -363,14 +363,17 @@ cut-over blockers**:
   through. Uses a `testllm` fake as the provider — Maestro tests only its
   own translation of the toolkit's error *contract*, not toolkit
   retry/circuit internals (those are the toolkit's to test).
-- **P2 — `TestOpenAIIncompleteRawCouplingGuard`**
-  (`pkg/agent/internal/llmadapter`): real `openai-go` SDK + toolkit OpenAI
-  provider via `httptest`, returning a truncated Responses body
-  (`status:"incomplete"`, `incomplete_details.reason:"max_output_tokens"`,
-  a function call). Asserts the adapter yields `StopReason "max_tokens"`
-  and preserves the tool call. **Narrow drift guard only** for the `Raw`
-  coupling — not a re-test of the toolkit's parser. Delete this test *and*
-  the `rawStopReason` workaround when the upstream fix (below) lands.
+- **P2 — RESOLVED upstream (maestro-llms v0.4.1, divergence OC4).** The
+  toolkit's OpenAI adapter now surfaces the raw finish reason
+  (`max_output_tokens` / `content_filter`) as `StopReason`, consistent with
+  the other providers' raw-passthrough. Maestro bumped to v0.4.1; the
+  `rawStopReason` `Raw` coupling and both guard tests
+  (`TestOpenAIIncompleteRawCouplingGuard`,
+  `TestFromChatResponse_OpenAIIncompleteTruncation`) were **deleted**.
+  Zero-friction landing: `normalizeStopReason` already mapped
+  `max_output_tokens`→`max_tokens` / `content_filter`→`refusal`, so no
+  other Maestro change was needed (still covered by `TestNormalizeStopReason`
+  + `TestFromChatResponse_OpenAITruncationNormalized`).
 
 Detailed list of the unit-covered behaviors:
 
@@ -402,18 +405,16 @@ tool-choice policy; empty-response / pause-turn behavior; the `llmsuspend`
 boundary mapping; cost/story metrics; rate-limit UI stat shape; any
 Maestro-specific budget policy.
 
-**Upstream ask filed to maestro-llms (P2):** the OpenAI provider should
-surface the incomplete reason in `ChatResponse.StopReason`. Today
-`StopReason = StopReason(resp.Status)`, so a max-output truncation arrives
-as `"incomplete"` and the real reason is only in
-`Raw.(*responses.Response).IncompleteDetails.Reason`. Requested: when
-`status=="incomplete"`, derive `StopReason` from `incomplete_details.reason`
-(or expose a typed field). Provider-level hermetic test owned upstream
-(`httptest` Responses body with `incomplete`/`max_output_tokens` + a
-function call → assert `StopReason` reflects truncation, tool calls
-preserved). **Until that lands, Maestro carries a temporary `rawStopReason`
-`Raw` workaround guarded by `TestOpenAIIncompleteRawCouplingGuard`; both are
-deleted at the toolkit bump that ships the fix.**
+**Upstream fix SHIPPED (maestro-llms v0.4.1, divergence OC4) — P2 closed.**
+The OpenAI adapter now derives `StopReason` from `incomplete_details.reason`
+when `status=="incomplete"` (raw `max_output_tokens` / `content_filter`),
+matching the per-provider raw-passthrough convention. The team declined the
+"typed `StopReason`" alternative (correctly: it would be a cross-cutting
+core+spec+all-provider change contradicting the passthrough model, vs.
+G3/OL3 — an ADR-scale decision, not an OpenAI bugfix). Maestro bumped to
+v0.4.1 and **deleted** the `rawStopReason` `Raw` coupling + both guard
+tests; the provider-level hermetic test is now owned upstream. No residual
+Maestro coupling.
 
 **Could move into `maestro-llms`** if multiple consumers need it (out of
 migration scope; raise separately): a generic

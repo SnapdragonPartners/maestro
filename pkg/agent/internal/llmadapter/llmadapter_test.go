@@ -4,10 +4,8 @@ import (
 	"testing"
 
 	mllms "github.com/SnapdragonPartners/maestro-llms/llms"
-	"github.com/openai/openai-go/responses"
 
 	"orchestrator/pkg/agent/llm"
-	"orchestrator/pkg/config"
 	"orchestrator/pkg/tools"
 )
 
@@ -137,7 +135,7 @@ func TestFromChatResponse_ToolParamsToMap(t *testing.T) {
 			{ID: "t1", Name: "run", Parameters: []byte(`{"path":"/tmp","n":3}`)},
 		},
 	}
-	out, err := fromChatResponse(config.ProviderAnthropic, resp)
+	out, err := fromChatResponse(resp)
 	if err != nil {
 		t.Fatalf("fromChatResponse: %v", err)
 	}
@@ -193,27 +191,18 @@ func TestToChatRequest_NoBlanketToolForcing(t *testing.T) {
 	}
 }
 
-// TestFromChatResponse_OpenAIIncompleteTruncation verifies the P2 fix: OpenAI
-// reports max-output truncation as status "incomplete"; the adapter must dig
-// the real reason out of Raw so the toolloop's max_tokens guard fires.
-func TestFromChatResponse_OpenAIIncompleteTruncation(t *testing.T) {
-	raw := &responses.Response{Status: "incomplete"}
-	raw.IncompleteDetails.Reason = "max_output_tokens"
-	resp := &mllms.ChatResponse{
-		Text:       "partial",
-		StopReason: "incomplete", // toolkit maps OpenAI status, not the reason
-		Raw:        raw,
-	}
-	out, err := fromChatResponse(config.ProviderOpenAI, resp)
+// OpenAI max-output truncation: maestro-llms v0.4.1 (divergence OC4) now
+// surfaces the raw finish reason "max_output_tokens" as StopReason (the prior
+// v0.4.0 status-only behavior + Maestro Raw workaround were removed). The
+// adapter just normalizes it; that "max_output_tokens" → "max_tokens" mapping
+// is covered by TestNormalizeStopReason, plus the end-to-end pass-through here.
+func TestFromChatResponse_OpenAITruncationNormalized(t *testing.T) {
+	resp := &mllms.ChatResponse{Text: "partial", StopReason: "max_output_tokens"}
+	out, err := fromChatResponse(resp)
 	if err != nil {
 		t.Fatalf("fromChatResponse: %v", err)
 	}
 	if out.StopReason != "max_tokens" {
-		t.Fatalf("OpenAI incomplete truncation not mapped to max_tokens, got %q", out.StopReason)
-	}
-
-	// Non-OpenAI provider with the same status must NOT be reinterpreted.
-	if got, _ := fromChatResponse(config.ProviderAnthropic, resp); got.StopReason == "max_tokens" {
-		t.Fatalf("non-OpenAI 'incomplete' should not become max_tokens")
+		t.Fatalf("v0.4.1 raw truncation reason not normalized to max_tokens, got %q", out.StopReason)
 	}
 }

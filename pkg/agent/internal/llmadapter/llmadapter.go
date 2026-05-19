@@ -26,7 +26,6 @@ import (
 	mgoogle "github.com/SnapdragonPartners/maestro-llms/llms/providers/google"
 	mollama "github.com/SnapdragonPartners/maestro-llms/llms/providers/ollama"
 	mopenai "github.com/SnapdragonPartners/maestro-llms/llms/providers/openai"
-	"github.com/openai/openai-go/responses"
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/config"
@@ -45,9 +44,8 @@ const stopEndTurn = "end_turn"
 
 // Adapter implements llm.LLMClient over a maestro-llms ChatClient.
 type Adapter struct {
-	client   mllms.ChatClient
-	provider string
-	model    string
+	client mllms.ChatClient
+	model  string
 }
 
 // Verify the contract at compile time.
@@ -82,8 +80,8 @@ func NewChatClient(provider, apiKey, model string) (mllms.ChatClient, error) {
 
 // Wrap adapts an existing maestro-llms ChatClient (typically already decorated
 // with the toolkit middleware chain) to llm.LLMClient.
-func Wrap(client mllms.ChatClient, provider, model string) *Adapter {
-	return &Adapter{client: client, provider: provider, model: model}
+func Wrap(client mllms.ChatClient, model string) *Adapter {
+	return &Adapter{client: client, model: model}
 }
 
 // New builds a bare Adapter (no middleware) for the given provider. Used by
@@ -93,7 +91,7 @@ func New(provider, apiKey, model string) (*Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Wrap(client, provider, model), nil
+	return Wrap(client, model), nil
 }
 
 // GetModelName returns the configured model name.
@@ -122,7 +120,7 @@ func (a *Adapter) Complete(ctx context.Context, in llm.CompletionRequest) (llm.C
 		// preserve the cause (errors.Is/As) until that mapping lands.
 		return llm.CompletionResponse{}, fmt.Errorf("llmadapter: provider call failed: %w", err)
 	}
-	return fromChatResponse(a.provider, &resp)
+	return fromChatResponse(&resp)
 }
 
 // toChatRequest performs §4.1 type mapping plus §4.2 transcript normalization.
@@ -276,7 +274,7 @@ func toToolDefinitions(in []tools.ToolDefinition) ([]mllms.ToolDefinition, error
 // fromChatResponse maps the toolkit response back, unmarshaling raw tool-call
 // params to map[string]any (§4.1 / A2) so existing consumers are untouched,
 // and normalizing the stop reason to Maestro's legacy strings (§4.2c).
-func fromChatResponse(provider string, resp *mllms.ChatResponse) (llm.CompletionResponse, error) {
+func fromChatResponse(resp *mllms.ChatResponse) (llm.CompletionResponse, error) {
 	calls := make([]llm.ToolCall, 0, len(resp.ToolCalls))
 	for i := range resp.ToolCalls {
 		tc := &resp.ToolCalls[i]
@@ -288,31 +286,17 @@ func fromChatResponse(provider string, resp *mllms.ChatResponse) (llm.Completion
 		}
 		calls = append(calls, llm.ToolCall{ID: tc.ID, Name: tc.Name, Parameters: params})
 	}
+	// maestro-llms v0.4.1 (divergence OC4) surfaces the real OpenAI finish
+	// reason: on truncation StopReason is the raw "max_output_tokens" /
+	// "content_filter", consistent with the other providers' raw-passthrough.
+	// normalizeStopReason already maps those to the legacy "max_tokens" /
+	// "refusal" the toolloop keys on — so no provider-specific Raw coupling
+	// is needed (the prior v0.4.0 rawStopReason workaround was removed here).
 	return llm.CompletionResponse{
 		ToolCalls:  calls,
 		Content:    resp.Text,
-		StopReason: normalizeStopReason(rawStopReason(provider, resp)),
+		StopReason: normalizeStopReason(string(resp.StopReason)),
 	}, nil
-}
-
-// rawStopReason resolves the provider's true stop reason before generic
-// normalization. maestro-llms v0.4.0 maps OpenAI's *response status* to
-// StopReason, so a max-output truncation surfaces as "incomplete" rather than
-// a length reason — the toolloop's max_tokens guard would miss it and process
-// truncated tool-call params. Until the toolkit surfaces the incomplete
-// reason itself, inspect the OpenAI Raw response (a deliberate,
-// provider-scoped coupling; Raw is outside the toolkit stability contract so
-// the type assertion is defensive). Tracked in docs/MAESTRO_LLMS_MIGRATION.md
-// §5 OL1/OL3 and §9 as a candidate upstream fix.
-func rawStopReason(provider string, resp *mllms.ChatResponse) string {
-	reason := string(resp.StopReason)
-	if provider != config.ProviderOpenAI || reason != "incomplete" {
-		return reason
-	}
-	if r, ok := resp.Raw.(*responses.Response); ok && r.IncompleteDetails.Reason != "" {
-		return r.IncompleteDetails.Reason // "max_output_tokens" | "content_filter"
-	}
-	return reason
 }
 
 // normalizeStopReason maps provider-specific stop reasons back to the legacy

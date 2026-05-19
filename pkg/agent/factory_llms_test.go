@@ -154,7 +154,7 @@ func TestSuspendBoundary_EndToEnd(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &testllm.FakeChatClient{Err: tc.err}
-			client := &suspendBoundary{inner: llmadapter.Wrap(fake, "anthropic", "claude-haiku-4-5-20251001")}
+			client := &suspendBoundary{inner: llmadapter.Wrap(fake, "claude-haiku-4-5-20251001")}
 
 			_, err := client.Complete(context.Background(), llm.CompletionRequest{
 				Messages: []llm.CompletionMessage{{Role: llm.RoleUser, Content: "hi"}},
