@@ -4,8 +4,10 @@ import (
 	"testing"
 
 	mllms "github.com/SnapdragonPartners/maestro-llms/llms"
+	"github.com/openai/openai-go/responses"
 
 	"orchestrator/pkg/agent/llm"
+	"orchestrator/pkg/config"
 )
 
 // TestToChatRequest_SystemExtraction verifies §4.2b/A3: in-band system
@@ -134,7 +136,7 @@ func TestFromChatResponse_ToolParamsToMap(t *testing.T) {
 			{ID: "t1", Name: "run", Parameters: []byte(`{"path":"/tmp","n":3}`)},
 		},
 	}
-	out, err := fromChatResponse(resp)
+	out, err := fromChatResponse(config.ProviderAnthropic, resp)
 	if err != nil {
 		t.Fatalf("fromChatResponse: %v", err)
 	}
@@ -143,5 +145,30 @@ func TestFromChatResponse_ToolParamsToMap(t *testing.T) {
 	}
 	if len(out.ToolCalls) != 1 || out.ToolCalls[0].Parameters["path"] != "/tmp" {
 		t.Fatalf("tool params not unmarshaled to map: %+v", out.ToolCalls)
+	}
+}
+
+// TestFromChatResponse_OpenAIIncompleteTruncation verifies the P2 fix: OpenAI
+// reports max-output truncation as status "incomplete"; the adapter must dig
+// the real reason out of Raw so the toolloop's max_tokens guard fires.
+func TestFromChatResponse_OpenAIIncompleteTruncation(t *testing.T) {
+	raw := &responses.Response{Status: "incomplete"}
+	raw.IncompleteDetails.Reason = "max_output_tokens"
+	resp := &mllms.ChatResponse{
+		Text:       "partial",
+		StopReason: "incomplete", // toolkit maps OpenAI status, not the reason
+		Raw:        raw,
+	}
+	out, err := fromChatResponse(config.ProviderOpenAI, resp)
+	if err != nil {
+		t.Fatalf("fromChatResponse: %v", err)
+	}
+	if out.StopReason != "max_tokens" {
+		t.Fatalf("OpenAI incomplete truncation not mapped to max_tokens, got %q", out.StopReason)
+	}
+
+	// Non-OpenAI provider with the same status must NOT be reinterpreted.
+	if got, _ := fromChatResponse(config.ProviderAnthropic, resp); got.StopReason == "max_tokens" {
+		t.Fatalf("non-OpenAI 'incomplete' should not become max_tokens")
 	}
 }

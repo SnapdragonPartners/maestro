@@ -155,6 +155,17 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 // CreateRawClient creates a bare LLM client with no middleware for the given provider and API key.
 // Used for lightweight validation (e.g., key checking) where the full middleware stack is not needed.
 func CreateRawClient(provider, apiKey, model string) (LLMClient, error) {
+	// Honor the migration flag here too so preflight/key validation exercises
+	// the SAME implementation agents will use (esp. Ollama, where the old SDK
+	// and the new hand-rolled HTTP client differ by design). See
+	// docs/MAESTRO_LLMS_MIGRATION.md.
+	if useMaestroLLMs() {
+		c, err := llmadapter.New(provider, apiKey, model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create maestro-llms adapter: %w", err)
+		}
+		return c, nil
+	}
 	switch provider {
 	case config.ProviderAnthropic:
 		return anthropic.NewClaudeClientWithModel(apiKey, model), nil

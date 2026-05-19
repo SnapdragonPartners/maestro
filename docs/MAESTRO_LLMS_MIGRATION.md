@@ -49,6 +49,18 @@ to the concrete Maestro code site that must change.
 8. **New §9 "Ownership split"** — what lives in Maestro vs. what could move
    into the toolkit, per the team's "what belongs where."
 
+### Round-2 review (phase-1 scaffold) fixes
+
+9. **[P2] OpenAI `incomplete` truncation** (§8.1, §9) — the adapter now
+   resolves OpenAI's real stop reason from `Raw.IncompleteDetails.Reason`
+   (status `"incomplete"` alone would miss the toolloop's `max_tokens`
+   guard). Upstream fix filed as a §9 toolkit candidate.
+10. **[P3] Preflight honors the flag** (§2, factory `CreateRawClient`) —
+    `MAESTRO_USE_LLMS` now also routes the bare preflight/key-validation
+    client through the adapter, so preflight exercises the same
+    implementation agents use (matters most for Ollama: old SDK vs. new
+    hand-rolled HTTP differ by design).
+
 ## 1. Goal & non-goals
 
 **Goal:** delete Maestro's bespoke provider clients and resilience stack;
@@ -283,7 +295,15 @@ likely to regress silently:
   (`pkg/pm/working.go:546`, `pkg/coder/planning.go:284`) expect today.
 - **Stop-reason normalization (§4.2c):** each provider's truncation/length
   reason maps to legacy `"max_tokens"`, exercising the toolloop truncation
-  branch (`toolloop.go:357`).
+  branch (`toolloop.go:357`). **Includes the OpenAI `incomplete` case:**
+  maestro-llms v0.4.0 maps OpenAI's *response status* to `StopReason`, so a
+  max-output truncation arrives as `"incomplete"`, not a length reason. The
+  adapter resolves the real reason from `resp.Raw.(*responses.Response)
+  .IncompleteDetails.Reason` (`"max_output_tokens"`→`max_tokens`,
+  `"content_filter"`→`refusal`) before generic normalization. This is a
+  deliberate, provider-scoped, defensive coupling to `Raw` (outside the
+  toolkit stability contract) until the toolkit surfaces the incomplete
+  reason itself — see §9.
 
 ## 9. Ownership split (per round-1 "what belongs where")
 
@@ -294,7 +314,10 @@ boundary mapping; cost/story metrics; rate-limit UI stat shape; any
 Maestro-specific budget policy.
 
 **Could move into `maestro-llms`** if multiple consumers need it (out of
-migration scope; raise separately): lowering the Go directive; a generic
+migration scope; raise separately): surfacing OpenAI's
+`incomplete_details.reason` as the `ChatResponse.StopReason` (or a typed
+field) so consumers don't have to reach into provider `Raw` — **filed as a
+candidate upstream fix from the P2 review finding**; a generic
 retry-exhausted error or observer signal (so consumers don't reconstruct
 "service unavailable" from the final error); a generic composable
 daily/window quota limiter; possibly a stateless Gemini thought-signature
