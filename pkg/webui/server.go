@@ -483,17 +483,16 @@ func (s *Server) handleServicesStatus(w http.ResponseWriter, r *http.Request) {
 	// Get rate limit stats from LLM factory
 	rateLimitStats := make(map[string]interface{})
 	if s.llmFactory != nil {
-		stats := s.llmFactory.GetRateLimitStats()
+		stats := s.llmFactory.GetRateLimitStats(r.Context())
 		for provider := range stats {
 			stat := stats[provider]
 			rateLimitStats[provider] = map[string]interface{}{
-				"available_tokens":     stat.AvailableTokens,
-				"max_capacity":         stat.MaxCapacity,
-				"active_requests":      stat.ActiveRequests,
-				"max_concurrency":      stat.MaxConcurrency,
-				"token_limit_hits":     stat.TokenLimitHits,
-				"concurrency_hits":     stat.ConcurrencyHits,
-				"tracked_acquisitions": stat.TrackedAcquisitions,
+				"available_tokens": stat.AvailableTokens,
+				"max_capacity":     stat.MaxCapacity,
+				"active_requests":  stat.ActiveRequests,
+				"max_concurrency":  stat.MaxConcurrency,
+				"token_limit_hits": stat.TokenLimitHits,
+				"concurrency_hits": stat.ConcurrencyHits,
 			}
 		}
 	}

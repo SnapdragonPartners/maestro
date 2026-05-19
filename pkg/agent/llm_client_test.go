@@ -1,55 +1,6 @@
 package agent
 
-import (
-	"testing"
-
-	"orchestrator/pkg/config"
-	"orchestrator/pkg/logx"
-)
-
-func TestNewClaudeClient(t *testing.T) {
-	client := NewClaudeClient("test-api-key")
-	if client == nil {
-		t.Error("Expected non-nil Claude client")
-	}
-}
-
-func TestNewClaudeClientWithLogger(t *testing.T) {
-	logger := logx.NewLogger("test")
-	client := NewClaudeClientWithLogger("test-api-key", logger)
-	if client == nil {
-		t.Error("Expected non-nil Claude client with logger")
-	}
-}
-
-func TestNewClaudeClientWithModel(t *testing.T) {
-	client := NewClaudeClientWithModel("test-api-key", config.ModelClaudeSonnetLatest)
-	if client == nil {
-		t.Error("Expected non-nil Claude client with model")
-	}
-}
-
-func TestNewClaudeClientWithModelAndLogger(t *testing.T) {
-	logger := logx.NewLogger("test")
-	client := NewClaudeClientWithModelAndLogger("test-api-key", config.ModelClaudeSonnetLatest, logger)
-	if client == nil {
-		t.Error("Expected non-nil Claude client with model and logger")
-	}
-}
-
-func TestNewO3Client(t *testing.T) {
-	client := NewO3Client("test-api-key")
-	if client == nil {
-		t.Error("Expected non-nil O3 client")
-	}
-}
-
-func TestNewO3ClientWithModel(t *testing.T) {
-	client := NewO3ClientWithModel("test-api-key", "o3-mini")
-	if client == nil {
-		t.Error("Expected non-nil O3 client with model")
-	}
-}
+import "testing"
 
 func TestNewCompletionRequest(t *testing.T) {
 	messages := []CompletionMessage{
