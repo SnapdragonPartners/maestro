@@ -45,119 +45,153 @@ func NewEmptyResponseValidator(agentType AgentType) *EmptyResponseValidator {
 // - Coder agents: Any response without tool calls is considered invalid.
 func (v *EmptyResponseValidator) Middleware() llm.Middleware {
 	return func(next llm.LLMClient) llm.LLMClient {
-		return llm.WrapClient(
-			// Complete implementation with agent-aware validation and retry with guidance
-			func(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
-				// Track empty response attempts (max 2: original + 1 retry with guidance)
-				const maxEmptyAttempts = 2
-				const maxPauseTurnAttempts = 5 // Limit pause_turn resumes to prevent infinite loops
+		return v.Wrap(next)
+	}
+}
 
-				logger := logx.NewLogger("empty-response-validator")
+// Wrap decorates next with agent-aware empty-response validation, returning a
+// concrete llm.LLMClient. Used directly on the maestro-llms path
+// (docs/MAESTRO_LLMS_MIGRATION.md §5 M3): the toolkit passes empty responses
+// through as ordinary responses, so the isEmptyResponse heuristic — not a
+// provider-synthesized error — is what triggers guidance/retry. Concrete
+// (not llm.WrapClient) so it survives the phase-6 deletion of llm/chain.go.
+//
+// NOTE: still emits llmerrors.ErrorTypeEmptyResponse so existing coder
+// handlers (pkg/coder/{coding,planning}.go isEmptyResponseError) keep working
+// unchanged; relocating that sentinel off the to-be-deleted llmerrors package
+// is phase-6 scope, moved together with its consumers.
+func (v *EmptyResponseValidator) Wrap(next llm.LLMClient) llm.LLMClient {
+	return &emptyResponseClient{next: next, v: v}
+}
 
-				// Outer loop handles pause_turn resumption
-				pauseTurnAttempts := 0
-				for {
-					if pauseTurnAttempts >= maxPauseTurnAttempts {
-						logger.Error("❌ Max pause_turn attempts exceeded (%d)", maxPauseTurnAttempts)
-						return llm.CompletionResponse{}, llmerrors.NewError(
-							llmerrors.ErrorTypeEmptyResponse,
-							"exceeded maximum pause_turn resume attempts",
-						)
-					}
-					pauseTurnAttempts++
+// emptyResponseClient is the concrete decorator produced by Wrap/Middleware.
+type emptyResponseClient struct {
+	next llm.LLMClient
+	v    *EmptyResponseValidator
+}
 
-					// Inner loop handles empty response retries with guidance
-					var lastResp llm.CompletionResponse
-					var lastErr error
+func (c *emptyResponseClient) GetModelName() string { return c.next.GetModelName() }
 
-					for attempt := 1; attempt <= maxEmptyAttempts; attempt++ {
-						// Make the request
-						resp, err := next.Complete(ctx, req)
-						lastResp = resp
-						lastErr = err
+//nolint:gocritic // hugeParam: signature is fixed by the llm.LLMClient interface.
+func (c *emptyResponseClient) Stream(ctx context.Context, req llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
+	//nolint:wrapcheck // pass through unchanged; validation is not applicable to streaming
+	return c.next.Stream(ctx, req)
+}
 
-						// Handle pause_turn first - this requires immediate resume
-						if err == nil && resp.StopReason == "pause_turn" {
-							logger.Info("⏸️ PAUSE_TURN detected: Model paused mid-turn, resuming automatically (attempt %d/%d)", pauseTurnAttempts, maxPauseTurnAttempts)
+// Complete runs agent-aware validation and retry with guidance.
+//
+// For empty responses (retry pattern):
+//   - First occurrence: adds guidance message to request, retries immediately
+//   - Second occurrence: returns ErrorTypeEmptyResponse for the state handler
+//
+// Agent-specific behavior:
+//   - Architect agents: only truly empty content is invalid
+//   - Coder agents: any response without tool calls is invalid
+//
+//nolint:gocritic // hugeParam: signature is fixed by the llm.LLMClient interface.
+func (c *emptyResponseClient) Complete(ctx context.Context, req llm.CompletionRequest) (llm.CompletionResponse, error) {
+	next := c.next
+	v := c.v
 
-							// Append the assistant's partial response and retry
-							// This is the documented way to resume a paused turn
-							req.Messages = append(req.Messages, llm.CompletionMessage{
-								Role:    llm.RoleAssistant,
-								Content: resp.Content,
-							})
+	// Track empty response attempts (max 2: original + 1 retry with guidance)
+	const maxEmptyAttempts = 2
+	const maxPauseTurnAttempts = 5 // Limit pause_turn resumes to prevent infinite loops
 
-							// Break inner loop to resume in outer loop
-							break
-						}
+	logger := logx.NewLogger("empty-response-validator")
 
-						// If there's a non-empty-response error, pass it through immediately
-						if err != nil && !llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse) {
-							//nolint:wrapcheck // Middleware intentionally passes through errors unchanged
-							return resp, err
-						}
+	// Outer loop handles pause_turn resumption
+	pauseTurnAttempts := 0
+	for {
+		if pauseTurnAttempts >= maxPauseTurnAttempts {
+			logger.Error("❌ Max pause_turn attempts exceeded (%d)", maxPauseTurnAttempts)
+			return llm.CompletionResponse{}, llmerrors.NewError(
+				llmerrors.ErrorTypeEmptyResponse,
+				"exceeded maximum pause_turn resume attempts",
+			)
+		}
+		pauseTurnAttempts++
 
-						// Check if this response should be considered empty
-						// (either from ErrorTypeEmptyResponse error or from our validation)
-						isEmpty := err != nil || v.isEmptyResponse(resp, req)
+		// Inner loop handles empty response retries with guidance
+		var lastResp llm.CompletionResponse
+		var lastErr error
 
-						if !isEmpty {
-							// Good response, return it
-							return resp, nil
-						}
+		for attempt := 1; attempt <= maxEmptyAttempts; attempt++ {
+			// Make the request
+			resp, err := next.Complete(ctx, req)
+			lastResp = resp
+			lastErr = err
 
-						// Empty response detected - log details
-						v.logEmptyResponseDetails(logger, attempt, resp, err)
+			// Handle pause_turn first - this requires immediate resume
+			if err == nil && resp.StopReason == "pause_turn" {
+				logger.Info("⏸️ PAUSE_TURN detected: Model paused mid-turn, resuming automatically (attempt %d/%d)", pauseTurnAttempts, maxPauseTurnAttempts)
 
-						if attempt == 1 {
-							// First attempt: add guidance and retry
-							logger.Warn("🔄 AUTO-RETRY: Empty response will NOT be added to context history")
-							logger.Warn("🔄 AUTO-RETRY: Adding guidance message and retrying (attempt 1→2)")
-							guidanceMessage := v.createGuidanceMessage(req)
-							logger.Debug("🔄 Guidance message: %s", guidanceMessage)
+				// Append the assistant's partial response and retry
+				// This is the documented way to resume a paused turn
+				req.Messages = append(req.Messages, llm.CompletionMessage{
+					Role:    llm.RoleAssistant,
+					Content: resp.Content,
+				})
 
-							// IMPORTANT: Do NOT append the bad response to context
-							// The bad response (resp) is discarded here - only guidance is added
-							// This prevents "Tool shell invoked" text from polluting conversation history
-							modifiedReq := req
-							modifiedReq.Messages = append(modifiedReq.Messages, llm.CompletionMessage{
-								Role:    llm.RoleUser,
-								Content: guidanceMessage,
-							})
+				// Break inner loop to resume in outer loop
+				break
+			}
 
-							// Update req for next iteration (without the bad assistant response)
-							req = modifiedReq
-							continue
-						}
+			// If there's a non-empty-response error, pass it through immediately
+			if err != nil && !llmerrors.Is(err, llmerrors.ErrorTypeEmptyResponse) {
+				//nolint:wrapcheck // Middleware intentionally passes through errors unchanged
+				return resp, err
+			}
 
-						// Second attempt failed - break inner loop
-						logger.Error("❌ AUTO-RETRY FAILED: Both attempts returned empty responses, escalating to state handler")
-						break
-					}
+			// Check if this response should be considered empty
+			// (either from ErrorTypeEmptyResponse error or from our validation)
+			isEmpty := err != nil || v.isEmptyResponse(resp, req)
 
-					// Check if we should continue outer loop (pause_turn) or return error
-					if lastErr == nil && lastResp.StopReason == "pause_turn" {
-						// Continue outer loop to resume
-						continue
-					}
+			if !isEmpty {
+				// Good response, return it
+				return resp, nil
+			}
 
-					// No pause_turn, so we're done - return the error
-					emptyErr := llmerrors.NewError(
-						llmerrors.ErrorTypeEmptyResponse,
-						"received inadequate response after guidance: no meaningful content or tool usage",
-					)
-					return llm.CompletionResponse{}, emptyErr
-				}
-			},
-			// Stream implementation - pass through unchanged (validation less applicable to streaming)
-			func(ctx context.Context, req llm.CompletionRequest) (<-chan llm.StreamChunk, error) {
-				return next.Stream(ctx, req)
-			},
-			// Delegate GetDefaultConfig to the next client
-			func() string {
-				return next.GetModelName()
-			},
+			// Empty response detected - log details
+			v.logEmptyResponseDetails(logger, attempt, resp, err)
+
+			if attempt == 1 {
+				// First attempt: add guidance and retry
+				logger.Warn("🔄 AUTO-RETRY: Empty response will NOT be added to context history")
+				logger.Warn("🔄 AUTO-RETRY: Adding guidance message and retrying (attempt 1→2)")
+				guidanceMessage := v.createGuidanceMessage(req)
+				logger.Debug("🔄 Guidance message: %s", guidanceMessage)
+
+				// IMPORTANT: Do NOT append the bad response to context
+				// The bad response (resp) is discarded here - only guidance is added
+				// This prevents "Tool shell invoked" text from polluting conversation history
+				modifiedReq := req
+				modifiedReq.Messages = append(modifiedReq.Messages, llm.CompletionMessage{
+					Role:    llm.RoleUser,
+					Content: guidanceMessage,
+				})
+
+				// Update req for next iteration (without the bad assistant response)
+				req = modifiedReq
+				continue
+			}
+
+			// Second attempt failed - break inner loop
+			logger.Error("❌ AUTO-RETRY FAILED: Both attempts returned empty responses, escalating to state handler")
+			break
+		}
+
+		// Check if we should continue outer loop (pause_turn) or return error
+		if lastErr == nil && lastResp.StopReason == "pause_turn" {
+			// Continue outer loop to resume
+			continue
+		}
+
+		// No pause_turn, so we're done - return the error
+		emptyErr := llmerrors.NewError(
+			llmerrors.ErrorTypeEmptyResponse,
+			"received inadequate response after guidance: no meaningful content or tool usage",
 		)
+		return llm.CompletionResponse{}, emptyErr
 	}
 }
 

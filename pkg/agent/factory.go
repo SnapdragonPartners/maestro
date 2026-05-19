@@ -4,7 +4,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 
+	mrl "github.com/SnapdragonPartners/maestro-llms/llms/ratelimit"
+
+	"orchestrator/pkg/agent/internal/llmadapter"
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
 	"orchestrator/pkg/agent/internal/llmimpl/google"
 	"orchestrator/pkg/agent/internal/llmimpl/ollama"
@@ -25,6 +30,11 @@ import (
 type LLMClientFactory struct {
 	circuitBreakers map[string]circuit.Breaker
 	rateLimitMap    *ratelimit.ProviderLimiterMap
+	// mllmsLimiters holds one shared maestro-llms limiter per provider,
+	// created once here so all agents on a provider share a single token
+	// bucket (mirrors rateLimitMap). Created per-client would give every
+	// agent its own full budget — see PR #220 review.
+	mllmsLimiters   map[string]*mrl.InMemoryLimiter
 	metricsRecorder metrics.Recorder
 	config          config.Config
 }
@@ -89,11 +99,22 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		cfg.Agents.Resilience.Timeout,
 	)
 
+	// One shared maestro-llms limiter per provider, created once so every
+	// agent on a provider draws from a single token bucket (PR #220 review).
+	mllmsLimiters := make(map[string]*mrl.InMemoryLimiter, len(rateLimitConfigs))
+	for provider, rlc := range rateLimitConfigs {
+		mllmsLimiters[provider] = mrl.NewInMemoryLimiter(mrl.Config{
+			TokensPerMinute: rlc.TokensPerMinute,
+			MaxConcurrency:  rlc.MaxConcurrency,
+		})
+	}
+
 	return &LLMClientFactory{
 		config:          *cfg,
 		metricsRecorder: recorder,
 		circuitBreakers: circuitBreakers,
 		rateLimitMap:    rateLimitMap,
+		mllmsLimiters:   mllmsLimiters,
 	}, nil
 }
 
@@ -152,6 +173,17 @@ func (f *LLMClientFactory) CreateClientWithContext(agentType Type, stateProvider
 // CreateRawClient creates a bare LLM client with no middleware for the given provider and API key.
 // Used for lightweight validation (e.g., key checking) where the full middleware stack is not needed.
 func CreateRawClient(provider, apiKey, model string) (LLMClient, error) {
+	// Honor the migration flag here too so preflight/key validation exercises
+	// the SAME implementation agents will use (esp. Ollama, where the old SDK
+	// and the new hand-rolled HTTP client differ by design). See
+	// docs/MAESTRO_LLMS_MIGRATION.md.
+	if useMaestroLLMs() {
+		c, err := llmadapter.New(provider, apiKey, model)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create maestro-llms adapter: %w", err)
+		}
+		return c, nil
+	}
 	switch provider {
 	case config.ProviderAnthropic:
 		return anthropic.NewClaudeClientWithModel(apiKey, model), nil
@@ -166,6 +198,14 @@ func CreateRawClient(provider, apiKey, model string) (LLMClient, error) {
 	}
 }
 
+// useMaestroLLMs reports whether the maestro-llms migration path is enabled.
+// Temporary migration flag (docs/MAESTRO_LLMS_MIGRATION.md): gated via the
+// MAESTRO_USE_LLMS env var, default false. Removed at cut-over (phase 6).
+func useMaestroLLMs() bool {
+	v, err := strconv.ParseBool(os.Getenv("MAESTRO_USE_LLMS"))
+	return err == nil && v
+}
+
 // createClientWithMiddleware creates a client with the full middleware chain.
 func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	// Create the raw LLM client based on provider
@@ -178,6 +218,14 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	apiKey, err := config.GetAPIKey(provider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get API key for provider %s: %w", provider, err)
+	}
+
+	// Migration path (docs/MAESTRO_LLMS_MIGRATION.md phase 2): the entire
+	// client — provider, toolkit middleware chain, adapter, and SUSPEND
+	// boundary — is built by buildMaestroLLMsClient. The legacy llm.Chain
+	// below is bypassed entirely. Gated OFF by default via MAESTRO_USE_LLMS.
+	if useMaestroLLMs() {
+		return f.buildMaestroLLMsClient(modelName, provider, apiKey, agentTypeStr, stateProvider, logger)
 	}
 
 	var rawClient LLMClient

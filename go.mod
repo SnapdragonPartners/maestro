@@ -1,10 +1,9 @@
 module orchestrator
 
-go 1.26
-
-toolchain go1.26.1
+go 1.26.3
 
 require (
+	github.com/SnapdragonPartners/maestro-llms v0.4.2
 	github.com/anthropics/anthropic-sdk-go v1.37.0
 	github.com/google/uuid v1.6.0
 	github.com/ollama/ollama v0.21.0
@@ -49,7 +48,7 @@ require (
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
-	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect

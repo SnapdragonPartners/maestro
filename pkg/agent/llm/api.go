@@ -21,6 +21,22 @@ const (
 	RoleAssistant CompletionRole = "assistant"
 )
 
+// Tool-choice policy values for CompletionRequest.ToolChoice. Empty string
+// means "provider/adapter default" (Auto on the maestro-llms path — there is
+// deliberately no blanket "force tools" default; callers that need a
+// guaranteed tool call set ToolChoiceRequired explicitly). Any other
+// non-constant value is treated as a specific tool name to force.
+const (
+	// ToolChoiceAuto lets the model decide whether to call a tool.
+	ToolChoiceAuto = "auto"
+	// ToolChoiceNone forbids tool calls.
+	ToolChoiceNone = "none"
+	// ToolChoiceRequired forces the model to call one of the offered tools
+	// (the model picks which). Maps to Anthropic "any" / OpenAI "required" /
+	// Gemini ANY-mode; best-effort on Ollama.
+	ToolChoiceRequired = "required"
+)
+
 const (
 	// ArchitectMaxTokens defines the maximum tokens for architect LLM responses.
 	// Used for spec analysis, story generation, and DAG creation.
@@ -64,6 +80,15 @@ type ToolCall struct {
 	Parameters map[string]any `json:"parameters"`
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
+	// ProviderSignature is an opaque, provider-owned blob that must be
+	// round-tripped unchanged when this tool call is sent back in a later
+	// turn. Never interpreted by Maestro. It exists because some providers
+	// (Gemini 3) require it on resent functionCall parts (maestro-llms
+	// divergence G1 / ADR-0010); the maestro-llms toolkit captures/replays
+	// it across its boundary, but Maestro must carry it through its own
+	// conversation model (llm.ToolCall ↔ contextmgr.ToolCall) for the
+	// stateless round-trip to actually reach the provider.
+	ProviderSignature []byte `json:"provider_signature,omitempty"`
 }
 
 // ToolResult represents a tool execution result.

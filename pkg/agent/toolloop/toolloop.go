@@ -299,12 +299,25 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		// Build messages from context
 		messages := buildMessages(cfg.ContextManager)
 
-		// Create LLM request
+		// Create LLM request. The tool loop is unattended and every iteration
+		// is expected to produce a tool call (CheckTerminal inspects tool
+		// calls; terminal states are signaled via tools like submit_plan /
+		// done). So when tools are offered, explicitly require one
+		// (docs/MAESTRO_LLMS_MIGRATION.md §5 OC2/G2). On the legacy path the
+		// field is ignored (OpenAI/Gemini already forced internally,
+		// Anthropic stayed auto); on the maestro-llms path the adapter maps
+		// it to the toolkit's typed ToolChoice. Non-tool-loop callers leave
+		// ToolChoice unset and default to Auto — no blanket forcing.
+		toolChoice := ""
+		if len(toolDefs) > 0 {
+			toolChoice = agent.ToolChoiceRequired
+		}
 		req := agent.CompletionRequest{
 			Messages:    messages,
 			MaxTokens:   cfg.MaxTokens,
 			Temperature: cfg.Temperature,
 			Tools:       toolDefs,
+			ToolChoice:  toolChoice,
 		}
 
 		// Log request details
@@ -374,9 +387,10 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
 			for i := range resp.ToolCalls {
 				toolCalls[i] = contextmgr.ToolCall{
-					ID:         resp.ToolCalls[i].ID,
-					Name:       resp.ToolCalls[i].Name,
-					Parameters: resp.ToolCalls[i].Parameters,
+					ID:                resp.ToolCalls[i].ID,
+					Name:              resp.ToolCalls[i].Name,
+					Parameters:        resp.ToolCalls[i].Parameters,
+					ProviderSignature: resp.ToolCalls[i].ProviderSignature, // G1 round-trip
 				}
 			}
 			cfg.ContextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
@@ -659,9 +673,10 @@ func buildMessages(cm *contextmgr.ContextManager) []agent.CompletionMessage {
 			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
 			for j := range msg.ToolCalls {
 				agentToolCalls[j] = agent.ToolCall{
-					ID:         msg.ToolCalls[j].ID,
-					Name:       msg.ToolCalls[j].Name,
-					Parameters: msg.ToolCalls[j].Parameters,
+					ID:                msg.ToolCalls[j].ID,
+					Name:              msg.ToolCalls[j].Name,
+					Parameters:        msg.ToolCalls[j].Parameters,
+					ProviderSignature: msg.ToolCalls[j].ProviderSignature, // G1 round-trip
 				}
 			}
 		}
