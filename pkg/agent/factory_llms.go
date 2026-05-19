@@ -30,6 +30,7 @@ import (
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
 	"orchestrator/pkg/agent/middleware/metrics"
+	"orchestrator/pkg/agent/middleware/validation"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/logx"
 )
@@ -139,7 +140,7 @@ func mapSuspend(err error) error {
 // so a single aggregate Event still observes outer rejections (§5 M2). Note
 // the deliberate tradeoff: latency now folds in retry backoff and per-attempt
 // granularity is lost — that matches Maestro's *current* metrics semantics.
-func (f *LLMClientFactory) buildMaestroLLMsClient(modelName, provider, apiKey string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
+func (f *LLMClientFactory) buildMaestroLLMsClient(modelName, provider, apiKey, agentTypeStr string, stateProvider metrics.StateProvider, logger *logx.Logger) (LLMClient, error) {
 	base, err := llmadapter.NewChatClient(provider, apiKey, modelName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create maestro-llms client: %w", err)
@@ -181,7 +182,7 @@ func (f *LLMClientFactory) buildMaestroLLMsClient(modelName, provider, apiKey st
 
 	mws := []mmw.ChatMiddleware{
 		mmw.MetricsChat(obs),    // outermost: one aggregate Event incl. rejections (§5 M2)
-		mmw.ValidationChat(),    // structural; agent-aware empty-response is phase 3
+		mmw.ValidationChat(),    // structural; agent-aware empty-response is the app-side wrapper below
 		mmw.RetryChat(retryCfg), // §5 M1: retries iff llms.Retryable
 		mmw.CircuitChat(circuitCfg),
 		mmw.RateLimitChat(limiter, mmw.DefaultEstimator{}),
@@ -197,7 +198,30 @@ func (f *LLMClientFactory) buildMaestroLLMsClient(modelName, provider, apiKey st
 
 	chain := mmw.ChainChat(base, mws...)
 	adapter := llmadapter.Wrap(chain, provider, modelName)
-	return &suspendBoundary{inner: adapter}, nil
+
+	// §5 M3: agent-aware empty-response/pause-turn handling stays app-side
+	// (the toolkit passes empty responses through). It must wrap at the
+	// llm.LLMClient level — it mutates req.Messages with guidance and retries
+	// — so it sits OUTSIDE the adapter, INSIDE the suspend boundary (an
+	// empty-response error is not a provider-down signal).
+	validator := validation.NewEmptyResponseValidator(validationAgentType(agentTypeStr))
+	validated := validator.Wrap(adapter)
+
+	return &suspendBoundary{inner: validated}, nil
+}
+
+// validationAgentType maps the agent-type string to the validator's agent
+// type. PM responds with text like the architect (no forced tool calls);
+// unknown defaults to coder (the stricter "must use tools" policy).
+func validationAgentType(agentTypeStr string) validation.AgentType {
+	switch Type(agentTypeStr) {
+	case TypeArchitect, TypePM:
+		return validation.AgentTypeArchitect
+	case TypeCoder:
+		return validation.AgentTypeCoder
+	default:
+		return validation.AgentTypeCoder
+	}
 }
 
 // compile-time guards.

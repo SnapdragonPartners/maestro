@@ -207,7 +207,7 @@ func (f *LLMClientFactory) createClientWithMiddleware(modelName, agentTypeStr st
 	// boundary — is built by buildMaestroLLMsClient. The legacy llm.Chain
 	// below is bypassed entirely. Gated OFF by default via MAESTRO_USE_LLMS.
 	if useMaestroLLMs() {
-		return f.buildMaestroLLMsClient(modelName, provider, apiKey, stateProvider, logger)
+		return f.buildMaestroLLMsClient(modelName, provider, apiKey, agentTypeStr, stateProvider, logger)
 	}
 
 	var rawClient LLMClient

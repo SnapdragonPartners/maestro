@@ -87,6 +87,27 @@ to the concrete Maestro code site that must change.
     existing `ProviderLimits` config (tokens/min + concurrency). No daily
     budget (confirmed non-existent, §7 Q3).
 
+### Phase 3 implemented (empty-response validation rework)
+
+15. **Validator → concrete decorator** (`validation.EmptyResponseValidator
+    .Wrap`) — the agent-aware empty-response/pause-turn logic moved off
+    `llm.WrapClient` (chain.go) into a concrete `emptyResponseClient`
+    implementing `llm.LLMClient`, so it survives the phase-6 deletion of
+    `llm/chain.go`. `Middleware()` is retained (delegates to `Wrap`) so the
+    legacy path is byte-for-byte unchanged.
+16. **Wired into the flag-on chain** — `buildMaestroLLMsClient` now wraps
+    `suspendBoundary( validator.Wrap( adapter ) )`: the validator sits
+    OUTSIDE the adapter (it mutates `req.Messages` with guidance and
+    retries) but INSIDE the suspend boundary (an empty-response error is
+    not a provider-down signal). Toolkit `ValidationChat` (structural) is
+    still in the chain; the app-side validator handles the agent-aware
+    empty/pause-turn policy the toolkit deliberately omits (M3).
+17. **Sentinel deferred** — still emits `llmerrors.ErrorTypeEmptyResponse`
+    so `pkg/coder/{coding,planning}.go isEmptyResponseError` keep working
+    unchanged. Relocating that sentinel off the to-be-deleted `llmerrors`
+    package moves to phase 6 *with its consumers* (cross-cutting; out of
+    phase-3 scope).
+
 ## 1. Goal & non-goals
 
 **Goal:** delete Maestro's bespoke provider clients and resilience stack;
