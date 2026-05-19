@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 
+	mrl "github.com/SnapdragonPartners/maestro-llms/llms/ratelimit"
+
 	"orchestrator/pkg/agent/internal/llmadapter"
 	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
 	"orchestrator/pkg/agent/internal/llmimpl/google"
@@ -28,6 +30,11 @@ import (
 type LLMClientFactory struct {
 	circuitBreakers map[string]circuit.Breaker
 	rateLimitMap    *ratelimit.ProviderLimiterMap
+	// mllmsLimiters holds one shared maestro-llms limiter per provider,
+	// created once here so all agents on a provider share a single token
+	// bucket (mirrors rateLimitMap). Created per-client would give every
+	// agent its own full budget — see PR #220 review.
+	mllmsLimiters   map[string]*mrl.InMemoryLimiter
 	metricsRecorder metrics.Recorder
 	config          config.Config
 }
@@ -92,11 +99,22 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		cfg.Agents.Resilience.Timeout,
 	)
 
+	// One shared maestro-llms limiter per provider, created once so every
+	// agent on a provider draws from a single token bucket (PR #220 review).
+	mllmsLimiters := make(map[string]*mrl.InMemoryLimiter, len(rateLimitConfigs))
+	for provider, rlc := range rateLimitConfigs {
+		mllmsLimiters[provider] = mrl.NewInMemoryLimiter(mrl.Config{
+			TokensPerMinute: rlc.TokensPerMinute,
+			MaxConcurrency:  rlc.MaxConcurrency,
+		})
+	}
+
 	return &LLMClientFactory{
 		config:          *cfg,
 		metricsRecorder: recorder,
 		circuitBreakers: circuitBreakers,
 		rateLimitMap:    rateLimitMap,
+		mllmsLimiters:   mllmsLimiters,
 	}, nil
 }
 

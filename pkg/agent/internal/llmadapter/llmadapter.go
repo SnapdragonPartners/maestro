@@ -7,12 +7,12 @@
 // internal/mocks.MockLLMClient are unaffected because the adapter preserves
 // llm.LLMClient. Everything provider-specific lives behind maestro-llms.
 //
-// This file implements §4.1 (mechanical type mapping) and §4.2 (transcript
-// normalization: system extraction, tool-result message splitting,
-// "Tool results:" placeholder drop, and stop-reason normalization). Middleware
-// composition (phase 2), explicit tool-choice plumbing (phase 4), and the
-// empty-response rework (phase 3) are intentionally NOT here yet — see the
-// migration spec for phasing.
+// This file implements §4.1 (mechanical type mapping incl. explicit
+// ToolChoice — §5 OC2/G2) and §4.2 (transcript normalization: system
+// extraction, tool-result message splitting, "Tool results:" placeholder
+// drop, stop-reason normalization) plus the G1 ProviderSignature round-trip.
+// Middleware composition and the SUSPEND boundary live in factory_llms.go;
+// the agent-aware empty-response rework lives in middleware/validation.
 package llmadapter
 
 import (

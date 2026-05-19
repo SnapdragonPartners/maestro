@@ -158,21 +158,20 @@ streaming (unused today, not implemented by the toolkit).
 
 | Dimension | Maestro | maestro-llms | Verdict |
 |---|---|---|---|
-| Go version | `go 1.26` / `toolchain go1.26.1` | `go 1.26.3` | **Needs tweak** — see below |
+| Go version | `go 1.26.3` (bumped; `toolchain` line removed) | `go 1.26.3` | Aligned ✓ |
 | Anthropic SDK | `anthropic-sdk-go v1.37.0` | `v1.37.0` | Identical (now indirect) |
 | OpenAI SDK | `openai-go v1.12.0` | `v1.12.0` | Identical (now indirect) |
 | Gemini | `google.golang.org/genai` | `genai v1.54.0` | Compatible |
 | Ollama | `github.com/ollama/ollama v0.21.0` | none (hand-rolled HTTP) | **Dep removed — clears govulncheck gate** |
 | Streaming | `Stream()` defined, **unused** outside impl/middleware/tests | not implemented | Drop from adapter |
 
-**Go directive:** `maestro-llms` declares `go 1.26.3`; Maestro declares
-`go 1.26` with `toolchain go1.26.1`. Go module resolution will demand the
-higher `go` directive. **Decided:** Maestro bumps its `go`/`toolchain` to
-≥ `1.26.3` — the toolkit's directive stays. Rationale: significant
-vulnerabilities were found in earlier `1.26.x` releases, so moving Maestro
-forward is preferable to pinning the shared toolkit back. Action in phase 1
-(§6 step 1): set `go 1.26.3` (or later patch) and `toolchain` accordingly in
-Maestro's `go.mod`; verify the build/lint/test gate and CI Go version pass.
+**Go directive (DONE):** `maestro-llms` declares `go 1.26.3`; Maestro
+previously declared `go 1.26` with `toolchain go1.26.1`. Decided to move
+Maestro forward (significant vulns in earlier `1.26.x`; preferable to
+pinning the shared toolkit back). **Applied:** `go.mod` now declares
+`go 1.26.3` and the explicit `toolchain` line was dropped (redundant once
+the `go` directive matches the local toolchain; `go get` removed it). Build/
+lint/test gate green on the new directive.
 
 ## 3. Prune inventory (≈3,700 LOC removed)
 

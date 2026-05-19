@@ -24,7 +24,6 @@ import (
 
 	mllms "github.com/SnapdragonPartners/maestro-llms/llms"
 	mmw "github.com/SnapdragonPartners/maestro-llms/llms/middleware"
-	mrl "github.com/SnapdragonPartners/maestro-llms/llms/ratelimit"
 
 	"orchestrator/pkg/agent/internal/llmadapter"
 	"orchestrator/pkg/agent/llm"
@@ -162,38 +161,26 @@ func (f *LLMClientFactory) buildMaestroLLMsClient(modelName, provider, apiKey, a
 		OpenTimeout:      res.CircuitBreaker.Timeout,
 	}
 
-	var providerLimits config.ProviderLimits
-	switch provider {
-	case config.ProviderAnthropic:
-		providerLimits = res.RateLimit.Anthropic
-	case config.ProviderOpenAI:
-		providerLimits = res.RateLimit.OpenAI
-	case config.ProviderGoogle:
-		providerLimits = res.RateLimit.Google
-	case config.ProviderOllama:
-		providerLimits = res.RateLimit.Ollama
-	}
-	limiter := mrl.NewInMemoryLimiter(mrl.Config{
-		TokensPerMinute: providerLimits.TokensPerMinute,
-		MaxConcurrency:  providerLimits.MaxConcurrency,
-	})
+	// Shared per-provider limiter (built once in NewLLMClientFactory) so all
+	// agents on a provider draw from one token bucket — not one per client.
+	limiter := f.mllmsLimiters[provider]
 
 	obs := &metricsObserver{recorder: f.metricsRecorder, stateProvider: stateProvider, logger: logger}
 
+	// Order (ChainChat: first arg outermost): metrics → validation → retry →
+	// [per-attempt timeout] → circuit → [rate limit] → provider. Timeout and
+	// rate limit are conditional; built in order so no index juggling.
 	mws := []mmw.ChatMiddleware{
 		mmw.MetricsChat(obs),    // outermost: one aggregate Event incl. rejections (§5 M2)
 		mmw.ValidationChat(),    // structural; agent-aware empty-response is the app-side wrapper below
 		mmw.RetryChat(retryCfg), // §5 M1: retries iff llms.Retryable
-		mmw.CircuitChat(circuitCfg),
-		mmw.RateLimitChat(limiter, mmw.DefaultEstimator{}),
 	}
 	if t := res.Timeout; t > 0 {
-		// Per-attempt timeout sits between retry and circuit (spec order).
-		mws = []mmw.ChatMiddleware{
-			mws[0], mws[1], mws[2],
-			mmw.TimeoutChat(t),
-			mws[3], mws[4],
-		}
+		mws = append(mws, mmw.TimeoutChat(t)) // per-attempt, between retry and circuit
+	}
+	mws = append(mws, mmw.CircuitChat(circuitCfg))
+	if limiter != nil {
+		mws = append(mws, mmw.RateLimitChat(limiter, mmw.DefaultEstimator{}))
 	}
 
 	chain := mmw.ChainChat(base, mws...)
