@@ -80,6 +80,15 @@ type ToolCall struct {
 	Parameters map[string]any `json:"parameters"`
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
+	// ProviderSignature is an opaque, provider-owned blob that must be
+	// round-tripped unchanged when this tool call is sent back in a later
+	// turn. Never interpreted by Maestro. It exists because some providers
+	// (Gemini 3) require it on resent functionCall parts (maestro-llms
+	// divergence G1 / ADR-0010); the maestro-llms toolkit captures/replays
+	// it across its boundary, but Maestro must carry it through its own
+	// conversation model (llm.ToolCall ↔ contextmgr.ToolCall) for the
+	// stateless round-trip to actually reach the provider.
+	ProviderSignature []byte `json:"provider_signature,omitempty"`
 }
 
 // ToolResult represents a tool execution result.

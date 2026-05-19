@@ -152,8 +152,13 @@ func toChatRequest(in *llm.CompletionRequest) (mllms.ChatRequest, error) {
 					return mllms.ChatRequest{}, fmt.Errorf("marshaling tool-call %q params: %w", tc.Name, mErr)
 				}
 				parts = append(parts, mllms.ContentPart{
-					Type:     mllms.ContentToolCall,
-					ToolCall: &mllms.ToolCall{ID: tc.ID, Name: tc.Name, Parameters: raw},
+					Type: mllms.ContentToolCall,
+					ToolCall: &mllms.ToolCall{
+						ID:                tc.ID,
+						Name:              tc.Name,
+						Parameters:        raw,
+						ProviderSignature: tc.ProviderSignature, // G1: replay for provider (Gemini 3)
+					},
 				})
 			}
 			applyCacheBreakpoint(parts, msg.CacheControl)
@@ -284,7 +289,12 @@ func fromChatResponse(resp *mllms.ChatResponse) (llm.CompletionResponse, error) 
 				return llm.CompletionResponse{}, fmt.Errorf("unmarshaling tool-call %q params: %w", tc.Name, err)
 			}
 		}
-		calls = append(calls, llm.ToolCall{ID: tc.ID, Name: tc.Name, Parameters: params})
+		calls = append(calls, llm.ToolCall{
+			ID:                tc.ID,
+			Name:              tc.Name,
+			Parameters:        params,
+			ProviderSignature: tc.ProviderSignature, // G1: capture for round-trip
+		})
 	}
 	// maestro-llms v0.4.1 (divergence OC4) surfaces the real OpenAI finish
 	// reason: on truncation StopReason is the raw "max_output_tokens" /

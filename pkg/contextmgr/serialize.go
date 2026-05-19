@@ -25,6 +25,9 @@ type SerializedCall struct {
 	ID         string         `json:"id"`
 	Name       string         `json:"name"`
 	Parameters map[string]any `json:"parameters,omitempty"`
+	// ProviderSignature: opaque provider blob round-tripped for G1
+	// (Gemini 3 thought_signature); persisted so it survives resume.
+	ProviderSignature []byte `json:"provider_signature,omitempty"`
 }
 
 // SerializedResult represents a ToolResult in serialized form.
@@ -226,18 +229,20 @@ func serializedToMessage(sm *SerializedMessage) Message {
 // toolCallToSerialized converts a ToolCall to SerializedCall.
 func toolCallToSerialized(tc *ToolCall) SerializedCall {
 	return SerializedCall{
-		ID:         tc.ID,
-		Name:       tc.Name,
-		Parameters: tc.Parameters,
+		ID:                tc.ID,
+		Name:              tc.Name,
+		Parameters:        tc.Parameters,
+		ProviderSignature: tc.ProviderSignature,
 	}
 }
 
 // serializedToToolCall converts a SerializedCall to ToolCall.
 func serializedToToolCall(sc *SerializedCall) ToolCall {
 	return ToolCall{
-		ID:         sc.ID,
-		Name:       sc.Name,
-		Parameters: sc.Parameters,
+		ID:                sc.ID,
+		Name:              sc.Name,
+		Parameters:        sc.Parameters,
+		ProviderSignature: sc.ProviderSignature,
 	}
 }
 

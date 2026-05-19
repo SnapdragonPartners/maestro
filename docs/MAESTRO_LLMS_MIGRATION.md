@@ -126,6 +126,22 @@ to the concrete Maestro code site that must change.
     Non-tool-loop callers (architect single-turn, PM text) leave it unset →
     Auto.
 
+### Phase 5 finding + fix (G1 — Gemini thought-signature)
+
+21. **G1 fired as a hard failure, now RESOLVED.** Live test with
+    `gemini-3-pro-preview` PM produced a hard `400 INVALID_ARGUMENT`
+    ("Function call is missing a thought_signature") on tool-loop turn 2+
+    — not the quality drift the divergence row predicted. Root cause: the
+    opaque Gemini signature was dropped on the response→app→request
+    round-trip. Fixed in two halves: **maestro-llms v0.4.2 / ADR-0010**
+    added `ToolCall.ProviderSignature` (toolkit boundary); **Maestro**
+    threads it through its own conversation model — `llm.ToolCall`,
+    `contextmgr.ToolCall`, `SerializedCall` (+ both converters), adapter
+    `fromChatResponse`/`toChatRequest`, toolloop record + `buildMessages`,
+    architect builder. Round-trip unit-tested
+    (`TestProviderSignatureRoundTrip`). The Maestro half is the
+    "adapter-seam tax" now documented in §9. Toolkit bumped v0.4.1→v0.4.2.
+
 ## 1. Goal & non-goals
 
 **Goal:** delete Maestro's bespoke provider clients and resilience stack;
@@ -271,7 +287,7 @@ is the cut-over acceptance checklist.
 | **M2 / X4** | Neutral `Observer`, **innermost** in `RecommendedChat` (does not see validation/limiter/circuit-open/retry-exhaustion) | `pkg/agent/middleware/metrics/*`, `pkg/agent/factory.go:240`, `llms/middleware/recommended.go:31` | Reimplement `Recorder` as an `Observer` (cost via `config.CalculateCost` app-side; `Usage` now reliable) **and** hand-compose the chain or add an outer metrics pass so aggregate failures are still observed | Med |
 | **M1 / X3** | Retry iff `llms.Retryable` (not blocklist) | `pkg/agent/factory.go` middleware assembly | Use `middleware.RecommendedChat` or hand-composed chain; audit flows that assumed "retry almost everything" | Med |
 | **OC2 / G2** | Caller-controlled `ToolChoice`; Anthropic default was `auto`, OpenAI/Gemini forced internally | `pkg/agent/toolloop/toolloop.go:303` (no `ToolChoice` set today); old defaults `anthropic/client.go:437`, `openaiofficial/client.go:181`, `google/client.go:80` | **Thread explicit `ToolChoice`** through `toolloop.Config` + `CompletionRequest`: `Required` for unattended tool loops, `Auto` for text/finalizing turns. **No blanket adapter default** (would change Anthropic behavior) | **High** |
-| **G1** | Gemini thought-signature replay dropped (stateless clients) | n/a (toolkit) | Live-validate multi-turn Gemini tool loops; possible quality regression. If real degradation, request stateless encoding in toolkit (§9) | **High** (needs live test) |
+| **G1** | Gemini thought-signature replay dropped (stateless clients) | RESOLVED — see below | Live test surfaced a **hard `400 INVALID_ARGUMENT`** on `gemini-3-pro-preview` turn 2+ (not the predicted quality drift). Fixed via stateless `ProviderSignature` round-trip: maestro-llms **v0.4.2 / ADR-0010** added `ToolCall.ProviderSignature`; Maestro threads it through `llm.ToolCall` ↔ `contextmgr.ToolCall` (+ `SerializedCall`, adapter both directions, toolloop record/build, architect builder). Covered by `TestProviderSignatureRoundTrip`. | **RESOLVED** (v0.4.2) |
 | **OL1/OL3** | Hand-rolled Ollama; raw `done_reason`; provider-specific stop reasons broadly | adapter §4.2(c); `pkg/agent/toolloop/toolloop.go:357`; `llms/providers/openai/chatconvert.go:236` | Normalize stop reasons to legacy canonical strings in adapter; remove `ollama/ollama` dep | **Med** (was Low — broader than Ollama) |
 | **X1** | SDK retries default 0; retry is middleware's job | `pkg/agent/factory.go` | Ensure every client is wrapped in retry middleware | Low |
 | **X5** | `context.Canceled` passes through (not a `ProviderError`) | shutdown/cancel paths | Confirm code switches on `errors.Is(err, context.Canceled)` | Low |
@@ -404,6 +420,16 @@ Detailed list of the unit-covered behaviors:
 tool-choice policy; empty-response / pause-turn behavior; the `llmsuspend`
 boundary mapping; cost/story metrics; rate-limit UI stat shape; any
 Maestro-specific budget policy.
+
+**Adapter-seam tax (named consequence).** Any opaque provider field the
+toolkit round-trips through *its* `llms` model must be threaded in parallel
+through Maestro's *own* conversation model — `llm.ToolCall` ↔
+`contextmgr.ToolCall` ↔ `SerializedCall`, plus both adapter directions and
+every `buildMessages`-style converter (toolloop, architect). The toolkit
+structurally cannot reach these (they're Maestro types). G1's
+`ProviderSignature` is the first instance (v0.4.2). Future opaque
+round-trip fields incur the same parallel plumbing — expected, mechanical,
+zero-value-safe, not a toolkit gap.
 
 **Upstream fix SHIPPED (maestro-llms v0.4.1, divergence OC4) — P2 closed.**
 The OpenAI adapter now derives `StopReason` from `incomplete_details.reason`

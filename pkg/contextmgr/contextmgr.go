@@ -93,6 +93,11 @@ type ToolCall struct {
 	ID         string
 	Name       string
 	Parameters map[string]any
+	// ProviderSignature is an opaque provider-owned blob round-tripped
+	// unchanged so a resent tool call satisfies provider requirements
+	// (Gemini 3 thought_signature; maestro-llms G1/ADR-0010). Never
+	// interpreted here; persisted so it survives context resume.
+	ProviderSignature []byte `json:"provider_signature,omitempty"`
 }
 
 // ToolResult represents a structured tool execution result.

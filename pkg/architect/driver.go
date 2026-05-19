@@ -786,9 +786,10 @@ func convertContextMessages(contextMessages []contextmgr.Message) []agent.Comple
 			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
 			for j := range msg.ToolCalls {
 				agentToolCalls[j] = agent.ToolCall{
-					ID:         msg.ToolCalls[j].ID,
-					Name:       msg.ToolCalls[j].Name,
-					Parameters: msg.ToolCalls[j].Parameters,
+					ID:                msg.ToolCalls[j].ID,
+					Name:              msg.ToolCalls[j].Name,
+					Parameters:        msg.ToolCalls[j].Parameters,
+					ProviderSignature: msg.ToolCalls[j].ProviderSignature, // G1 round-trip
 				}
 			}
 		}

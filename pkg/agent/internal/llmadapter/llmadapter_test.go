@@ -147,6 +147,50 @@ func TestFromChatResponse_ToolParamsToMap(t *testing.T) {
 	}
 }
 
+// TestProviderSignatureRoundTrip verifies G1 (maestro-llms ADR-0010): the
+// opaque provider signature survives response → llm.ToolCall and is replayed
+// llm.ToolCall → request. Without this, Gemini 3 hard-400s on turn 2.
+func TestProviderSignatureRoundTrip(t *testing.T) {
+	sig := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+
+	// Response side: toolkit ToolCall.ProviderSignature → llm.ToolCall.
+	in := &mllms.ChatResponse{
+		StopReason: "tool_use",
+		ToolCalls: []mllms.ToolCall{
+			{ID: "c1", Name: "list_files", Parameters: []byte(`{}`), ProviderSignature: sig},
+		},
+	}
+	resp, err := fromChatResponse(in)
+	if err != nil {
+		t.Fatalf("fromChatResponse: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || string(resp.ToolCalls[0].ProviderSignature) != string(sig) {
+		t.Fatalf("signature not captured from response: %+v", resp.ToolCalls)
+	}
+
+	// Request side: llm.ToolCall.ProviderSignature → toolkit ToolCall, on the
+	// assistant turn that resends the tool call.
+	req, err := toChatRequest(&llm.CompletionRequest{
+		Messages: []llm.CompletionMessage{
+			{Role: llm.RoleAssistant, ToolCalls: resp.ToolCalls},
+		},
+	})
+	if err != nil {
+		t.Fatalf("toChatRequest: %v", err)
+	}
+	var got []byte
+	for _, m := range req.Messages {
+		for _, p := range m.Content {
+			if p.Type == mllms.ContentToolCall && p.ToolCall != nil {
+				got = p.ToolCall.ProviderSignature
+			}
+		}
+	}
+	if string(got) != string(sig) {
+		t.Fatalf("signature not replayed into request: got %v want %v", got, sig)
+	}
+}
+
 // TestToToolChoice verifies §5 OC2/G2: no blanket "force tools" default
 // (empty → Auto), explicit Required honored, and Required/named downgraded to
 // Auto when no tools are offered (toolkit would otherwise reject it).

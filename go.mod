@@ -3,7 +3,7 @@ module orchestrator
 go 1.26.3
 
 require (
-	github.com/SnapdragonPartners/maestro-llms v0.4.1
+	github.com/SnapdragonPartners/maestro-llms v0.4.2
 	github.com/anthropics/anthropic-sdk-go v1.37.0
 	github.com/google/uuid v1.6.0
 	github.com/ollama/ollama v0.21.0

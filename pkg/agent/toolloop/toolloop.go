@@ -387,9 +387,10 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			toolCalls := make([]contextmgr.ToolCall, len(resp.ToolCalls))
 			for i := range resp.ToolCalls {
 				toolCalls[i] = contextmgr.ToolCall{
-					ID:         resp.ToolCalls[i].ID,
-					Name:       resp.ToolCalls[i].Name,
-					Parameters: resp.ToolCalls[i].Parameters,
+					ID:                resp.ToolCalls[i].ID,
+					Name:              resp.ToolCalls[i].Name,
+					Parameters:        resp.ToolCalls[i].Parameters,
+					ProviderSignature: resp.ToolCalls[i].ProviderSignature, // G1 round-trip
 				}
 			}
 			cfg.ContextManager.AddAssistantMessageWithTools(resp.Content, toolCalls)
@@ -672,9 +673,10 @@ func buildMessages(cm *contextmgr.ContextManager) []agent.CompletionMessage {
 			agentToolCalls = make([]agent.ToolCall, len(msg.ToolCalls))
 			for j := range msg.ToolCalls {
 				agentToolCalls[j] = agent.ToolCall{
-					ID:         msg.ToolCalls[j].ID,
-					Name:       msg.ToolCalls[j].Name,
-					Parameters: msg.ToolCalls[j].Parameters,
+					ID:                msg.ToolCalls[j].ID,
+					Name:              msg.ToolCalls[j].Name,
+					Parameters:        msg.ToolCalls[j].Parameters,
+					ProviderSignature: msg.ToolCalls[j].ProviderSignature, // G1 round-trip
 				}
 			}
 		}
