@@ -10,7 +10,7 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
 
 - **Task Dispatcher** (`pkg/dispatch/`) - Routes messages between agents with rate limiting and retry logic
 - **Agent Message Protocol** (`pkg/proto/`) - Defines structured communication via `AgentMsg` with types: TASK, RESULT, ERROR, QUESTION, SHUTDOWN, ANSWER, REQUEST
-- **Rate Limiting** (`pkg/limiter/`) - Token bucket per-model rate limiting with daily budget enforcement
+- **LLM Toolkit** (`maestro-llms`, external) - All provider I/O, retry/circuit/timeout/rate-limit middleware, and error classification live in `github.com/SnapdragonPartners/maestro-llms`, bridged via the `pkg/agent/internal/llmadapter` seam (see `docs/MAESTRO_LLMS_MIGRATION.md`)
 - **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl` with daily rotation
 - **Configuration** (`pkg/config/`) - JSON config loader with environment variable overrides
 - **Agent Foundation** (`pkg/agent/`) - Core LLM abstractions, state machine interfaces, and foundational components
@@ -338,6 +338,8 @@ When making changes:
 
 **Important**: Always work on feature branches. Never attempt to push directly to `main` as it will be rejected by branch protection rules.
 
+**Resolving PR review comments**: After addressing a PR review comment (including automated reviewers like Copilot) — by fixing it, or by determining it's a non-issue — push the change and **mark that review thread resolved** (e.g. `gh api graphql` `resolveReviewThread`), with a brief reply noting how it was addressed. Don't leave addressed threads open; do not resolve a thread without actually addressing it. Re-check for new threads after each push, since reviewers re-run on new commits.
+
 ### Pull Request Guidelines
 
 When creating PRs for features with specification documents:
@@ -363,7 +365,7 @@ The codebase follows this clean architecture:
 - `pkg/coder/` - **Coder agent**: Implementation workflows, coding state machine
 
 ### Supporting Infrastructure
-- `pkg/limiter/` - Token bucket rate limiting with daily budget enforcement
+- Rate limiting / retry / circuit breaking - provided by `maestro-llms` middleware (configured in `pkg/agent/factory.go`)
 - `pkg/eventlog/` - Structured logging to `logs/events.jsonl` with daily rotation
 - `pkg/contextmgr/` - Context management for LLM conversations
 - `pkg/logx/` - Structured logging utilities
@@ -404,14 +406,11 @@ projectDir/                    # Binary location or CLI specified
 - Implemented in `pkg/workspace/verify.go` and called during startup
 
 ### LLM Abstraction
-All AI model interactions go through the unified `LLMClient` interface in `pkg/agent/`:
-- `ClaudeClient` - Anthropic Claude integration
-- `O3Client` - OpenAI O3 integration
-- `GeminiClient` - Google Gemini integration (3 Pro, 2.5 Flash, 2.0 Flash)
-  - 1M token context window for large codebases
-  - Thought signature preservation for multi-turn tool calling
-  - Function calling with mode "ANY" for required tool use
-- Easily extensible for new LLM providers
+All AI model interactions go through the unified `LLMClient` interface in `pkg/agent/`, which is adapted onto the **maestro-llms** toolkit by `pkg/agent/internal/llmadapter`:
+- Providers (Anthropic, OpenAI, Google/Gemini, Ollama), retry/circuit/timeout/rate-limit middleware, and typed error classification are all owned by `maestro-llms`
+- Maestro keeps the app-side glue: transcript normalization, explicit tool-choice policy, agent-aware empty-response/pause-turn handling, the SUSPEND boundary (`llmerrors.IsServiceUnavailable`), cost/story metrics, and the Gemini `ProviderSignature` (thought-signature) round-trip
+- Adding a provider is a maestro-llms change, not a Maestro one
+- See `docs/MAESTRO_LLMS_MIGRATION.md` for the design and the divergence checklist
 
 ## Story-Driven Development
 

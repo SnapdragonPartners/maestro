@@ -4,8 +4,6 @@ import (
 	"fmt"
 
 	"orchestrator/pkg/agent/internal/core"
-	"orchestrator/pkg/agent/internal/llmimpl/anthropic"
-	"orchestrator/pkg/agent/internal/llmimpl/openaiofficial"
 	"orchestrator/pkg/agent/internal/runtime"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/msg"
@@ -106,17 +104,6 @@ func NewBaseStateMachine(agentID string, initialState proto.State, store core.St
 	return core.NewBaseStateMachine(agentID, initialState, store, table)
 }
 
-// NewClaudeClient creates a new Claude client.
-func NewClaudeClient(apiKey string) LLMClient {
-	return anthropic.NewClaudeClient(apiKey)
-}
-
-// NewO3ClientWithModel creates a new OpenAI client with specific model.
-// Uses official OpenAI SDK with Responses API.
-func NewO3ClientWithModel(apiKey, model string) LLMClient {
-	return openaiofficial.NewOfficialClientWithModel(apiKey, model)
-}
-
 // NewConfig creates a new agent configuration.
 func NewConfig(id, agentType string, ctx Context) *Config {
 	return runtime.NewConfig(id, agentType, ctx)
@@ -198,27 +185,6 @@ type PromptLogConfig struct {
 
 // PromptLogOnFailure provides legacy test stub prompt log mode.
 const PromptLogOnFailure = "on_failure"
-
-// NewClaudeClientWithLogger provides legacy test stub Claude client with logger.
-func NewClaudeClientWithLogger(apiKey string, _ interface{}) LLMClient {
-	return NewClaudeClient(apiKey)
-}
-
-// NewClaudeClientWithModel provides legacy test stub Claude client with model.
-func NewClaudeClientWithModel(apiKey, _ string) LLMClient {
-	return NewClaudeClient(apiKey)
-}
-
-// NewClaudeClientWithModelAndLogger provides legacy test stub Claude client with model and logger.
-func NewClaudeClientWithModelAndLogger(apiKey, _ string, _ interface{}) LLMClient {
-	return NewClaudeClient(apiKey)
-}
-
-// NewO3Client provides legacy test stub OpenAI client.
-// Uses official OpenAI SDK with Responses API.
-func NewO3Client(apiKey string) LLMClient {
-	return NewO3ClientWithModel(apiKey, "o1-preview")
-}
 
 // NewCompletionRequest provides completion request creation helper.
 func NewCompletionRequest(messages []CompletionMessage) CompletionRequest {

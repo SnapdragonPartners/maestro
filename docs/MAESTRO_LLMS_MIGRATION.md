@@ -142,6 +142,38 @@ to the concrete Maestro code site that must change.
     (`TestProviderSignatureRoundTrip`). The Maestro half is the
     "adapter-seam tax" now documented in §9. Toolkit bumped v0.4.1→v0.4.2.
 
+### Phase 6 executed (cut-over + prune) — separate PR off merged main
+
+22. **Flag removed; maestro-llms is the only path.** `MAESTRO_USE_LLMS` /
+    `useMaestroLLMs()` deleted; `factory.go` rewritten adapter-only;
+    `CreateRawClient` always adapter-backed.
+23. **Deleted (~6,500 LOC incl. tests):** `pkg/agent/internal/llmimpl/*`
+    (4 providers + their tests), `pkg/agent/middleware/resilience/*`
+    (retry/circuit/timeout/ratelimit + tests), `pkg/agent/middleware/logging`,
+    dead `metrics/middleware.go` (kept `recorder.go`/`internal.go`), legacy
+    `core.go` client stubs + their pure-constructor tests in
+    `llm_client_test.go`. `github.com/ollama/ollama` dependency dropped
+    (clears the govulncheck gate). Provider-core/resilience tests (~2,844
+    LOC) were co-located with the impl and removed with it — satisfying the
+    "drop live-LLM-core tests" goal without separate surgery.
+24. **Deviations from the original §3 prune list (corrected):**
+    `pkg/agent/llm/chain.go` is **retained** — `Chain`/`WrapClient`/
+    `Middleware` are still used by `pkg/agent/middleware/chat/injection.go`
+    (chat-injection middleware, not part of the migration). `pkg/agent/
+    llmerrors` is **retained** — its `IsServiceUnavailable`/
+    `ErrorTypeEmptyResponse`/`NewError` sentinels have live consumers
+    (pm/coder/architect handlers, suspendBoundary, validator); the now-dead
+    internal retry-classification machinery is left in place (low value /
+    high churn to excise from a 265-LOC shared package).
+25. **`GetRateLimitStats`** repointed to the shared per-provider toolkit
+    limiters via a Maestro-side `RateLimitStat` (web-UI shape stays in
+    Maestro, §9); takes a `context.Context`. `Stop()` is now a no-op (the
+    in-memory limiter is goroutine-free).
+26. **Remaining integration tests** (`toolloop`, `architect spec_review`,
+    `coder todos`, containers, github, bootstrap) all exercise Maestro
+    behavior, not provider core — kept; `spec_review` repointed to the
+    adapter. CLAUDE.md architecture sections updated.
+
 ## 1. Goal & non-goals
 
 **Goal:** delete Maestro's bespoke provider clients and resilience stack;
