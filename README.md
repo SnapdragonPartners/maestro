@@ -129,6 +129,8 @@ Maestro provides out-of-box support for Anthropic, Google, and OpenAI models thr
 
 You can mix-and-match models by agent type - in fact, that's the recommended configuration since **heterogeneous models often catch errors that models from the same provider may not.**
 
+All LLM and embedding provider I/O goes through **[maestro-llms](https://github.com/SnapdragonPartners/maestro-llms)** — an app-neutral, open-source Go toolkit (one `ChatClient` contract, one error model, composable retry/circuit/timeout/rate-limit middleware) extracted from Maestro so other projects can reuse it and share maintenance. If you're building something that talks to LLM providers, you can use it directly without Maestro.
+
 ---
 
 ## Key Ideas
@@ -206,7 +208,7 @@ See the canonical state diagrams for details:
   - Aggressive lint/test defaults (“turn checks up to 11”)
 
 - **LLMs:**
-  - Supports OpenAI, Anthropic, Google Gemini, and Ollama (local models) via official SDKs
+  - Supports OpenAI, Anthropic, Google Gemini, and Ollama (local models) via the [maestro-llms](https://github.com/SnapdragonPartners/maestro-llms) toolkit
   - PM defaults: Claude Opus 4.5 (latest Anthropic flagship for nuanced requirements gathering)
   - Architect defaults: GPT-5.2 (latest OpenAI model for reliable code review)
   - Coders default: Claude Sonnet 4.5 (latest coding-oriented model)
