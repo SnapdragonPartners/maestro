@@ -2,9 +2,11 @@
 //
 // All LLM I/O goes through the maestro-llms toolkit via the llmadapter seam
 // (see docs/MAESTRO_LLMS_MIGRATION.md). The legacy in-tree provider clients
-// and resilience middleware were removed at cut-over; the chain (validation →
-// retry → timeout → circuit → rate limit → metrics) plus the SUSPEND boundary
-// is composed in factory_llms.go.
+// and resilience middleware were removed at cut-over; the chain — metrics
+// (outermost) → validation → retry → [timeout] → circuit → [rate limit] →
+// provider — plus the app-side SUSPEND boundary and empty-response validator
+// are composed in factory_llms.go (see buildMaestroLLMsClient for the exact
+// order and rationale).
 package agent
 
 import (

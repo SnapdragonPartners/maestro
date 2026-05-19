@@ -129,7 +129,7 @@ Maestro provides out-of-box support for Anthropic, Google, and OpenAI models thr
 
 You can mix-and-match models by agent type - in fact, that's the recommended configuration since **heterogeneous models often catch errors that models from the same provider may not.**
 
-All LLM and embedding provider I/O goes through **[maestro-llms](https://github.com/SnapdragonPartners/maestro-llms)** — an app-neutral, open-source Go toolkit (one `ChatClient` contract, one error model, composable retry/circuit/timeout/rate-limit middleware) extracted from Maestro so other projects can reuse it and share maintenance. If you're building something that talks to LLM providers, you can use it directly without Maestro.
+All LLM provider I/O goes through **[maestro-llms](https://github.com/SnapdragonPartners/maestro-llms)** — an app-neutral, open-source Go toolkit (one `ChatClient` contract, one error model, composable retry/circuit/timeout/rate-limit middleware; it also offers embeddings, which Maestro itself doesn't currently use) extracted from Maestro so other projects can reuse it and share maintenance. If you're building something that talks to LLM providers, you can use it directly without Maestro.
 
 ---
 
