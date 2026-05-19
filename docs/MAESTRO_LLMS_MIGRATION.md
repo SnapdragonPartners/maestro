@@ -108,6 +108,24 @@ to the concrete Maestro code site that must change.
     package moves to phase 6 *with its consumers* (cross-cutting; out of
     phase-3 scope).
 
+### Phase 4 implemented (tool-choice plumbing)
+
+18. **Canonical `ToolChoice` constants** (`llm.ToolChoice{Auto,None,
+    Required}`, re-exported via `agent`) — the previously-vestigial
+    `CompletionRequest.ToolChoice` string is now meaningful.
+19. **Adapter honors it, no blanket default** (`llmadapter.toToolChoice`) —
+    `""`→Auto (toolkit default), `required`/`any`→Required, `none`→None,
+    any other value→named-tool. A Required/named choice with **no tools**
+    is defensively downgraded to Auto (the toolkit would reject it). This
+    is the OC2/G2 resolution: no "force tools whenever tools present".
+20. **Toolloop sets `required` when it offers tools** (`toolloop.go`) — the
+    loop is unattended and every iteration expects a tool call. On the
+    legacy path the field is ignored (OpenAI/Gemini already forced,
+    Anthropic stayed auto) so behavior is unchanged; on the maestro-llms
+    path Anthropic now also requires a tool (intended explicit policy).
+    Non-tool-loop callers (architect single-turn, PM text) leave it unset →
+    Auto.
+
 ## 1. Goal & non-goals
 
 **Goal:** delete Maestro's bespoke provider clients and resilience stack;

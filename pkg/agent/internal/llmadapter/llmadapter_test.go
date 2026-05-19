@@ -8,6 +8,7 @@ import (
 
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/config"
+	"orchestrator/pkg/tools"
 )
 
 // TestToChatRequest_SystemExtraction verifies §4.2b/A3: in-band system
@@ -145,6 +146,50 @@ func TestFromChatResponse_ToolParamsToMap(t *testing.T) {
 	}
 	if len(out.ToolCalls) != 1 || out.ToolCalls[0].Parameters["path"] != "/tmp" {
 		t.Fatalf("tool params not unmarshaled to map: %+v", out.ToolCalls)
+	}
+}
+
+// TestToToolChoice verifies §5 OC2/G2: no blanket "force tools" default
+// (empty → Auto), explicit Required honored, and Required/named downgraded to
+// Auto when no tools are offered (toolkit would otherwise reject it).
+func TestToToolChoice(t *testing.T) {
+	cases := []struct {
+		choice   string
+		numTools int
+		wantType mllms.ToolChoiceType
+		wantName string
+	}{
+		{"", 3, mllms.ToolChoiceAuto, ""},
+		{llm.ToolChoiceAuto, 3, mllms.ToolChoiceAuto, ""},
+		{llm.ToolChoiceNone, 3, mllms.ToolChoiceNone, ""},
+		{llm.ToolChoiceRequired, 3, mllms.ToolChoiceRequired, ""},
+		{"any", 3, mllms.ToolChoiceRequired, ""},
+		{llm.ToolChoiceRequired, 0, mllms.ToolChoiceAuto, ""}, // downgrade: no tools
+		{"get_weather", 2, mllms.ToolChoiceTool, "get_weather"},
+		{"get_weather", 0, mllms.ToolChoiceAuto, ""}, // downgrade: no tools
+	}
+	for _, tc := range cases {
+		got := toToolChoice(tc.choice, tc.numTools)
+		if got.Type != tc.wantType || got.Name != tc.wantName {
+			t.Errorf("toToolChoice(%q,%d) = {%s,%q}, want {%s,%q}",
+				tc.choice, tc.numTools, got.Type, got.Name, tc.wantType, tc.wantName)
+		}
+	}
+}
+
+// TestToChatRequest_NoBlanketToolForcing: with tools but no explicit choice,
+// the request must NOT force tools (Anthropic's old default was auto).
+func TestToChatRequest_NoBlanketToolForcing(t *testing.T) {
+	in := &llm.CompletionRequest{
+		Messages: []llm.CompletionMessage{{Role: llm.RoleUser, Content: "hi"}},
+		Tools:    []tools.ToolDefinition{{Name: "t", InputSchema: tools.InputSchema{Type: "object"}}},
+	}
+	req, err := toChatRequest(in)
+	if err != nil {
+		t.Fatalf("toChatRequest: %v", err)
+	}
+	if req.ToolChoice.Type != mllms.ToolChoiceAuto {
+		t.Fatalf("unset ToolChoice with tools must be Auto, got %s", req.ToolChoice.Type)
 	}
 }
 

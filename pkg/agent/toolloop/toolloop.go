@@ -299,12 +299,25 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		// Build messages from context
 		messages := buildMessages(cfg.ContextManager)
 
-		// Create LLM request
+		// Create LLM request. The tool loop is unattended and every iteration
+		// is expected to produce a tool call (CheckTerminal inspects tool
+		// calls; terminal states are signaled via tools like submit_plan /
+		// done). So when tools are offered, explicitly require one
+		// (docs/MAESTRO_LLMS_MIGRATION.md §5 OC2/G2). On the legacy path the
+		// field is ignored (OpenAI/Gemini already forced internally,
+		// Anthropic stayed auto); on the maestro-llms path the adapter maps
+		// it to the toolkit's typed ToolChoice. Non-tool-loop callers leave
+		// ToolChoice unset and default to Auto — no blanket forcing.
+		toolChoice := ""
+		if len(toolDefs) > 0 {
+			toolChoice = agent.ToolChoiceRequired
+		}
 		req := agent.CompletionRequest{
 			Messages:    messages,
 			MaxTokens:   cfg.MaxTokens,
 			Temperature: cfg.Temperature,
 			Tools:       toolDefs,
+			ToolChoice:  toolChoice,
 		}
 
 		// Log request details

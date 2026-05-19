@@ -67,6 +67,13 @@ const (
 	RoleUser           = llm.RoleUser
 	RoleAssistant      = llm.RoleAssistant
 	RoleSystem         = llm.RoleSystem
+
+	// ToolChoiceRequired forces the model to call one of the offered tools.
+	ToolChoiceRequired = llm.ToolChoiceRequired
+	// ToolChoiceAuto lets the model decide whether to call a tool.
+	ToolChoiceAuto = llm.ToolChoiceAuto
+	// ToolChoiceNone forbids tool calls.
+	ToolChoiceNone = llm.ToolChoiceNone
 )
 
 // GetTyped retrieves a typed value from the state machine.

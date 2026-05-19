@@ -205,19 +205,42 @@ func toChatRequest(in *llm.CompletionRequest) (mllms.ChatRequest, error) {
 		return mllms.ChatRequest{}, err
 	}
 
-	// NOTE: ToolChoice is intentionally left at the toolkit default (auto) in
-	// phase 1. Maestro's old OpenAI/Gemini clients forced tool use; restoring
-	// that as explicit per-request choice is phase 4 (§5 OC2/G2). The flag is
-	// OFF by default so no live agent path is affected yet.
 	temp := in.Temperature
 	return mllms.ChatRequest{
 		System:      system,
 		Messages:    messages,
 		Tools:       tools,
+		ToolChoice:  toToolChoice(in.ToolChoice, len(tools)),
 		Purpose:     mllms.PurposeChat,
 		MaxTokens:   in.MaxTokens,
 		Temperature: &temp,
 	}, nil
+}
+
+// toToolChoice maps Maestro's ToolChoice string to the toolkit's typed choice
+// (§5 OC2/G2). There is NO blanket "force tools" default: an empty string
+// maps to Auto (toolkit default). Callers needing a guaranteed tool call set
+// llm.ToolChoiceRequired explicitly (the toolloop does). A Required/named
+// choice with no tools offered would be rejected up front by the toolkit, so
+// it is defensively downgraded to Auto here.
+func toToolChoice(choice string, numTools int) mllms.ToolChoice {
+	switch choice {
+	case "", llm.ToolChoiceAuto:
+		return mllms.ToolChoice{Type: mllms.ToolChoiceAuto}
+	case llm.ToolChoiceNone:
+		return mllms.ToolChoice{Type: mllms.ToolChoiceNone}
+	case llm.ToolChoiceRequired, "any":
+		if numTools == 0 {
+			return mllms.ToolChoice{Type: mllms.ToolChoiceAuto}
+		}
+		return mllms.ToolChoice{Type: mllms.ToolChoiceRequired}
+	default:
+		// Treat any other value as a specific tool name to force.
+		if numTools == 0 {
+			return mllms.ToolChoice{Type: mllms.ToolChoiceAuto}
+		}
+		return mllms.ToolChoice{Type: mllms.ToolChoiceTool, Name: choice}
+	}
 }
 
 // applyCacheBreakpoint maps a non-nil Maestro CacheControl to the toolkit's
