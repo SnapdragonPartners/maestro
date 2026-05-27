@@ -3,7 +3,7 @@ module orchestrator
 go 1.26.3
 
 require (
-	github.com/SnapdragonPartners/maestro-llms v0.4.2
+	github.com/SnapdragonPartners/maestro-llms v0.5.0
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.5
