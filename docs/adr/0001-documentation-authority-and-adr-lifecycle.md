@@ -37,10 +37,10 @@ ownership, forge workflow, or configuration/secrets behavior.
 
 ## Current Implementation
 
-There is no existing `docs/adr/` directory before this proposal. `CLAUDE.md` has
-the richest current architecture summary, while `AGENTS.md` was a separate file
-containing Codex review guidelines. The requested end state is that `AGENTS.md` is
-a symbolic link to `CLAUDE.md`, with shared guidance in one place.
+This `docs/adr/` directory is introduced by this proposal batch. `CLAUDE.md` has
+the richest current architecture summary. `AGENTS.md` was previously a separate
+file containing Codex review guidelines; it is now a symbolic link to `CLAUDE.md`
+(see `ls -l AGENTS.md`), so shared guidance lives in one place.
 
 ## Consequences
 

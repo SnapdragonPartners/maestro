@@ -73,8 +73,8 @@ The architect maintains **per-agent conversation contexts** to eliminate contrad
 - **Persistent system prompts**: Each context starts with a comprehensive system prompt containing:
   - Agent ID and story ID
   - Full story details (title, content, spec ID)
-  - Knowledge pack (relevant project knowledge)
   - Role descriptions and available tools
+- **Knowledge context**: Story-specific knowledge packs are delivered through request content/templates rather than stored on story records
 - **90% smaller request prompts**: Request-specific prompts now contain just the request content + brief instruction (story context in system prompt)
 - **Context lifecycle**: Contexts reset automatically on story transitions — detected by comparing template names (which encode story IDs) at the top of `handleRequest()`
 

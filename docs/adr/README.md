@@ -43,6 +43,9 @@ Until an ADR is accepted, use this precedence when docs conflict:
 | [0011](0011-configuration-operating-modes-and-secrets.md) | Configuration, operating modes, and secrets |
 | [0012](0012-knowledge-graph-as-repository-artifact.md) | Knowledge graph as repository artifact |
 | [0013](0013-testing-strategy-and-service-boundaries.md) | Testing strategy and service boundaries |
+| [0014](0014-failure-taxonomy-durable-asks-and-incidents.md) | Failure taxonomy, durable asks, and incidents |
+| [0015](0015-agent-chat-and-human-in-the-loop-escalation.md) | Agent chat and human-in-the-loop escalation |
+| [0016](0016-architect-per-agent-conversation-context.md) | Architect per-agent conversation context |
 
 ## ADR Format
 
