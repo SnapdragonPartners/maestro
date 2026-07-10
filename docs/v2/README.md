@@ -1,0 +1,24 @@
+# Maestro v2 Planning Notes
+
+This directory collects working notes for the Maestro v2 redesign.
+
+These documents are planning material, not implementation instructions. They are intended
+to be reviewed, challenged, and refined before being converted into accepted ADRs,
+specifications, and stories.
+
+## Documents
+
+- [Roadmap](roadmap.md) - main v2 roadmap draft.
+- [Research Synthesis](research-synthesis.md) - synthesis of the external research corpus and early Maestro v2 ideas.
+- [Provenance Matrix](provenance-matrix.md) - where major ideas came from: Maestro v1, client/lived experience, research corpus, or Codex synthesis.
+- [ADR Backlog](adr-backlog.md) - concepts that should probably become ADRs before implementation.
+- [v1 ADR Alignment](v1-adr-alignment.md) - first pass on how the proposed v1 ADRs relate to the v2 vision.
+- [Parking Lot](parking-lot.md) - useful ideas that are too granular, speculative, or post-MVP for the main roadmap.
+
+## Planning Posture
+
+Maestro v2 is expected to be a breaking change. Clean, comprehensible architecture is more important than preserving v1 compatibility.
+
+The current working thesis:
+
+> Maestro v2 is a measurable, artifact-first, local-first software factory where task-scoped agent teams create and review production-ready changes under explicit Model/Prompt/Harness control.
