@@ -28,6 +28,7 @@ Key questions:
 - Does Task always scope to one repo?
 - Does Story map roughly to one PR?
 - What owns a Task Team lifecycle?
+- Are the names final? `Task` collides with the v1 TASK message type and with generic "task" language throughout code and docs; CPA reads as "certified public accountant" outside this context. Renaming is cheap now and expensive after the schema lands.
 
 ### CPA/CTA Scope
 
@@ -91,9 +92,21 @@ Define golden story schema, runner semantics, cleanup, fixture repos, and compar
 Key questions:
 
 - How deterministic does a golden story need to be?
+- How many runs per story per configuration, and how is spread reported? (Roadmap D9.)
+- What budget caps apply to benchmark runs, and what is the overrun policy?
+- What is the runner's black-box contract: which external surfaces does it drive, and where does it store its own results before the v2 data plane exists?
 - How are scored rubrics represented?
 - How are branches cleaned?
 - Which repos become fixtures?
+
+### v1 Freeze And Port-Vs-Rewrite Inventory
+
+Record the v1 freeze (final tag, optional baseline binary/image, no backports) and the package-level port/rework/rewrite/drop inventory (roadmap D8).
+
+Key questions:
+
+- Which v1 packages port as-is, which need rework, which are rewritten, and which are dropped?
+- Does v2 development happen on `main` after the freeze tag, or on a long-lived branch?
 
 ### Postgres Data Plane
 
@@ -167,6 +180,12 @@ Potential principle:
 Define a future container/execution interface while keeping Docker as the only initial implementation.
 
 Useful for future Apple/iPhone/raw-filesystem use cases.
+
+### Tool And Action Policy Gating
+
+Define where per-action policy checks on tool calls and high-risk actions live: toolloop, dispatcher, tool execution layer, or a separate policy service.
+
+The research corpus (Day 4/Day 5) pushes structural gates (role/env/tool allowlists, filesystem scopes), semantic gates (high-risk action summaries checked against policy), and human gates. The v2 MVP has workflow gates only; per-action policy is probably post-MVP, but the seam should be chosen early so it is not retrofitted into every tool.
 
 ### External Agent Runtime Contract
 

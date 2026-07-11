@@ -10,6 +10,7 @@ Source categories:
 - **DR notes:** explicit user/client-experience feedback in the marked-up roadmap.
 - **Research corpus:** Google/McKinsey papers and community notes reviewed under `/Users/dratner/Code/temp/Research`.
 - **Codex synthesis:** recommendations or pushback introduced during roadmap synthesis.
+- **Claude review:** feedback and revisions from the 2026-07-11 Claude review pass.
 
 | Idea | Primary Sources | Notes |
 |---|---|---|
@@ -47,6 +48,14 @@ Source categories:
 | Product model | DR notes, Codex synthesis | Codex recommends real lightweight model, not knowledge-only. |
 | Container abstraction | DR notes | Parking lot/post-MVP; define interface before supporting non-Docker runtimes. |
 | Remote/cloud agent jobs | DR notes | Likely v3; avoid early dispatcher over-abstraction. |
+| Black-box benchmark runner | Claude review | Runner drives Maestro through external surfaces only, so it survives the v1-to-v2 break and can baseline the frozen v1 binary. |
+| Benchmark noise/cost policy (D9) | Claude review | Repeat-run sampling, spread reporting, and budget caps before benchmark results drive decisions. |
+| Per-phase exit criteria | Claude review, DR notes | Required by the agent-fleet build model: agents need checkable done-ness. |
+| Single-operator build model | DR notes, Claude review | v2 is built by agents under one human; sequencing optimizes for bounded review load and early dogfooding. |
+| v1 freeze-and-tag, develop on main (D7 revision) | DR notes, Claude review | v1 has no users to support; long-lived v2 branch dropped in favor of PRs to main after a freeze tag. |
+| Port-vs-rewrite inventory (D8) | Claude review, Codex synthesis | Makes the v1-adr-alignment table an explicit Phase 0 decision at package grain. |
+| Measurable success criteria | Claude review | Numbers behind the north star, baselined by the Phase 1 runner. |
+| Single-repo first golden stories | Claude review | Multi-repo/UI golden stories deferred until Product/Feature machinery exists. |
 
 ## Research Anchors
 

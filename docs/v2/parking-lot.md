@@ -43,6 +43,24 @@ Possible v2 direction:
 - Decide which maintenance duties stay internal to Maestro.
 - Move deterministic docs/knowledge updates to post-merge hooks where possible.
 
+### Tool-Level Policy Gates
+
+Workflow gates (roadmap pillar 8) decide when work advances. This is different: per-action enforcement on tool calls and high-risk operations.
+
+From the research synthesis:
+
+- Structural gates: role/env/tool allowlists, branch protections, filesystem scopes.
+- Semantic gates: high-risk action summaries checked against policy.
+- Human gates: risk-tiered approval with clear summaries.
+
+Post-MVP as implementation, but the toolloop/dispatcher contracts should leave a seam for it (see ADR backlog).
+
+### Context Ledger
+
+Record per LLM call: what context was injected, why it was selected, which scope it came from, whether it was fresh or stale, and what was deliberately excluded. Supports debugging, cost control, and trust.
+
+Natural extension of Audit artifacts once the artifact schema exists; also feeds the knowledge-pack "as little as possible" principle with real data.
+
 ### Config And Credentials In Data Plane
 
 Move user credentials and configs from JSON files to the database where appropriate.

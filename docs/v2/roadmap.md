@@ -1,6 +1,7 @@
 # Maestro v2 Roadmap Draft
 
 Date: 2026-07-10
+Revised: 2026-07-11 (Claude review pass)
 Status: rough roadmap for review
 
 This document blends:
@@ -42,6 +43,18 @@ Success looks like:
 - Every model call, tool call, prompt pack, harness decision, and artifact is auditable.
 - The system can be benchmarked against golden stories to improve token cost, wall-clock time, quality, and reliability.
 - Eventually, Maestro can build most of Maestro.
+
+### Measurable Success Criteria
+
+The north star needs numbers behind it. Candidate v2 acceptance measures:
+
+- The golden story suite runs end-to-end on demand and produces comparable reports across MPH configurations.
+- Cost to accepted change on the golden suite trends down release over release.
+- Human attention per accepted change (interventions plus wall-clock blocked on a person) trends down.
+- A defined share of Maestro's own development flows through Maestro (Phase 9 target: 80%).
+- Every Task merged in daily use carries a complete evidence package.
+
+These should be baselined as soon as the Phase 1 runner exists and reported alongside every subsequent phase.
 
 ## Core Vocabulary
 
@@ -126,7 +139,7 @@ They should ladder in complexity:
 - Multi-story Task with merge conflicts.
 - Task requiring external service/container setup.
 
-Golden story design should use at least two repos and at least one UI-bearing repo. Good fixture candidates include forked/pinned variants of `maestro-cms`, `maestro-llms`, and a UI repo. Fixture repos should use pinned base branches and clean up golden branches after each run.
+The full suite should eventually span at least two repos and at least one UI-bearing repo. The first stories, however, should be single-repo and Story-scoped: multi-repo and UI-evidence stories depend on Product/Feature machinery and browser tooling that land in later phases, and the runner needs simple stories to prove itself. Good fixture candidates include forked/pinned variants of `maestro-cms`, `maestro-llms`, and a UI repo. Fixture repos should use pinned base branches and clean up golden branches after each run.
 
 Each golden story should define:
 
@@ -160,9 +173,17 @@ Metrics should include:
 - Review cycles.
 - Self-repair cycles.
 - Human interventions.
+- Human attention time (wall-clock blocked on a person).
 - Test/eval pass rate.
 - Cost to accepted change.
 - Failure kind.
+
+#### Runner Design Constraints
+
+- **Black-box.** The runner drives its target through external surfaces only: config, CLI/API invocation, and the resulting branches, PRs, artifacts, and metrics. It never imports Maestro internals. This is what lets one runner survive the v1-to-v2 break, benchmark the frozen v1 binary as just another target, and later benchmark harnesses that do not exist yet.
+- **Self-contained persistence.** The runner owns its result store (flat JSON files or an embedded database). It must not depend on the Phase 2 data plane; otherwise Phase 1 silently acquires a Phase 2 dependency. Importing runner results into the data plane is a Phase 2+ integration.
+- **Nondeterminism is the default.** Golden story runs are stochastic. Standard comparisons use N repeat runs per story per configuration and report spread, not point values. Single runs are for smoke checks only. See D9.
+- **Budgeted.** Every benchmark configuration declares an expected token/dollar cost before it runs. The matrix (stories x models x prompt packs x harness configs x repeats) multiplies fast; see the benchmark cost risk.
 
 This is the first major v2 enabling project. It is also the most direct path to "Maestro builds Maestro."
 
@@ -653,6 +674,16 @@ Suggested timing:
 
 This is a discussion order, not a locked project plan.
 
+### Execution Model
+
+v2 will be built by multiple AI agents overseen by one human operator. That constraint shapes the plan more than any technology choice:
+
+- Each phase must decompose into agent-executable specs with crisp, checkable exit criteria. Vague outputs stall an agent fleet faster than they stall a human team.
+- The human operator's attention is the scarce resource of the build itself, not just of the product. Phases are sequenced so review load stays bounded: one architectural decision stream at a time, with mechanical work fanned out to agents.
+- Dogfooding is a leverage strategy, not just a milestone. Early phases are built with off-the-shelf agent tooling; as soon as the Phase 1-4 core can run a Task Team against the Maestro repo itself, v2 development should progressively shift onto it. Phase 9 is the end state of a ramp, not a switch.
+
+Each phase below lists exit criteria. A phase is done when its exit criteria are demonstrably met, not when its code is merged.
+
 ### Phase 0: v2 Design Groundwork
 
 Goal: decide the conceptual shape before code churn.
@@ -673,7 +704,13 @@ Outputs:
 - Breaking-change principles.
 - Documentation reset plan.
 
-Stage 0 should also archive older docs as needed and create a documentation set designed for ingestion into the v2 knowledge base. Repo docs should generally be LLM-facing; wiki/docs-site output can be human-facing.
+Phase 0 should also archive older docs as needed and create a documentation set designed for ingestion into the v2 knowledge base. Repo docs should generally be LLM-facing; wiki/docs-site output can be human-facing.
+
+Exit criteria:
+
+- The taxonomy, artifact model, branch strategy, data plane, and reviewer/partner ADRs exist and are Accepted.
+- The v2 MVP boundary (D1) and the port-vs-rewrite inventory (D8) are written down and agreed.
+- Documentation reset is done: stale docs archived, remaining repo docs safe for agent ingestion.
 
 ### Phase 1: Golden Stories And Measurement Harness
 
@@ -682,18 +719,25 @@ Goal: build the measuring instrument before rewriting the machine.
 Outputs:
 
 - Golden story schema.
-- Benchmark/golden story runner.
-- First 5-10 golden stories.
+- Benchmark/golden story runner (black-box, self-contained persistence; see Runner Design Constraints).
+- First 5-10 golden stories, single-repo and Story-scoped.
 - Minimal prompt hash/pack identification.
 - Metrics capture for LLM calls and tool calls, pushing reusable pieces to `maestro-llms` and `maestro-cms` where possible.
-- Run comparison reports.
-- Baseline v1 measurements where possible.
+- Run comparison reports with repeat-run spread.
+- Optional black-box v1 baseline on a story subset. v1 is frozen and unmaintained, so the baseline is a cheap reference point for the comparison format, not a target of investment.
 
 Why first:
 
 - Prevents unmeasured rewrite enthusiasm.
 - Gives Maestro a way to test Maestro.
 - Creates a shared language for model/prompt/harness changes.
+
+Exit criteria:
+
+- The runner executes at least 5 single-repo golden stories against a target Maestro build, black-box.
+- Repeat runs produce a comparison report showing cost, time, and pass/fail spread.
+- Two different MPH configurations can be compared on the same story set.
+- The D9 sampling and budget policy is written down and enforced by the runner.
 
 ### Phase 2: Data Plane And Artifact Core
 
@@ -710,6 +754,12 @@ Outputs:
 - Metrics tables.
 - Binary attachment strategy.
 - Migration story from nothing, not necessarily from v1.
+
+Exit criteria:
+
+- Postgres, migrations, and typed queries build and run locally via Docker with one command from a clean checkout.
+- Core schema migrations apply from empty, and artifact, agent-instance, and LLM/tool-call writes have typed queries with tests.
+- One vertical slice writes real data: golden story runner results can be imported into the data plane and queried.
 
 ### Phase 3: Minimal Work Hierarchy And Task Team Runtime
 
@@ -729,6 +779,12 @@ MVP constraint:
 
 - Multiple Task Teams and full CPA/CTA automation are not required.
 
+Exit criteria:
+
+- One Task can go from intake through Story execution to merged Story branches, driven by a single Task Team, on a fixture repo.
+- Every step emits artifacts to the data plane with correct provenance (agent instance, task, story).
+- The Task dashboard shows live state for that Task.
+
 ### Phase 4: Branch Hierarchy And Evidence Packages
 
 Goal: make source control and proof match the work hierarchy.
@@ -744,6 +800,12 @@ Outputs:
 - Evidence viewer.
 - Human Accept for Task merge.
 
+Exit criteria:
+
+- Story branches merge into a Task branch; the Task branch merges into default only after human Accept.
+- Every merged Story and Task has an evidence package viewable in the UI.
+- At least one golden story exercises a rebase/conflict case handled by the harness.
+
 ### Phase 5: Agent Pairs, Internal Reviewers, And Gates
 
 Goal: make review an invariant of Management artifact creation.
@@ -757,6 +819,12 @@ Outputs:
 - Optional gates: requirements, stories, UAT.
 - Gate UI.
 - Human escalation path.
+
+Exit criteria:
+
+- No Management artifact can reach a persisted, accepted state without a reviewer record or an explicit configured exemption.
+- A reviewer/author disagreement escalates to a human after the configured bound, demonstrated end-to-end.
+- The three optional gates can be toggled per Task by config and are visible in the UI.
 
 ### Phase 6: Knowledge, Skills, And Post-Merge Hooks
 
@@ -775,6 +843,12 @@ Outputs:
 
 AST ingestion can be deferred if needed; it may require sidecar/runtime choices that are larger than the first knowledge MVP.
 
+Exit criteria:
+
+- Knowledge items with citations can be ingested from ADRs, docs, and interfaces, and queried by a Task Team.
+- A knowledge pack is assembled for a real Task and its code-level citations are verified by a reviewer agent.
+- A post-merge hook updates docs/knowledge, demonstrated on at least the golden story fixtures.
+
 ### Phase 7: Multi-User Dashboard And Cloud Data Plane
 
 Goal: make Maestro usable by teams.
@@ -789,6 +863,11 @@ Outputs:
 - Multi-project dashboard.
 - User attribution in artifact/task views.
 
+Exit criteria:
+
+- Two users in one organization can operate distinct Tasks against a shared data plane.
+- Auth works in local account mode and at least one federated mode.
+
 ### Phase 8: Extract `maestro-agent`
 
 Goal: turn stable v2 agent runtime pieces into reusable infrastructure.
@@ -802,6 +881,11 @@ Outputs:
 - Example agents.
 - Documentation.
 
+Exit criteria:
+
+- `maestro-agent` builds standalone with public API docs and at least one example agent living outside the Maestro repo.
+- Maestro consumes the extracted package with no imports of its internals.
+
 ### Phase 9: Maestro Builds Maestro
 
 Goal: use Maestro v2 as its own primary development factory.
@@ -812,6 +896,11 @@ Targets:
 - 20% remains hands-on human agentic development.
 - Golden stories include Maestro repo tasks.
 - Prompt/harness improvements are evaluated against Maestro tasks.
+
+Exit criteria:
+
+- Measured over a trailing month, at least 80% of merged Maestro changes went through Maestro Task Teams.
+- Golden stories include Maestro-repo tasks and gate Maestro releases.
 
 ## Candidate First 90 Days
 
@@ -932,16 +1021,40 @@ Cost to accepted change, paired with review cycles and failure kind. This is con
 
 Candidate answer:
 
-Aggressive. Treat v1 as a conceptual demo.
+Aggressive. Treat v1 as a conceptual demo. v1 is frozen with no users to support, which simplifies everything.
 
 Recommended path:
 
-- Build in place on a long-lived v2 branch.
+- Tag the final v1 commit (e.g. `v1-final`) and keep a prebuilt v1 binary or image for optional black-box benchmarking.
+- Develop v2 directly on `main` through normal PRs, not on a long-lived side branch. A long-lived branch only pays for itself when the old version needs parallel maintenance; with v1 frozen, it buys nothing and costs divergence pain, and incremental PRs to `main` are also what the agent-fleet build model needs.
 - Aggressively prune.
-- Port selectively.
+- Port selectively per the D8 inventory.
 - Keep useful tests/history/context.
+- No backports, no dual maintenance. Fork only if a v1 user unexpectedly materializes.
 
-Fresh repo creates too much porting tax. Fork only if v1 release maintenance requires it.
+Fresh repo creates too much porting tax.
+
+### D8. Which v1 Subsystems Port And Which Are Rewritten?
+
+This decision dominates the Phase 3 schedule and should be made explicitly in Phase 0, not discovered mid-rewrite.
+
+Candidate first pass, aligned with [v1-adr-alignment.md](v1-adr-alignment.md):
+
+- Port largely as-is: `maestro-llms` boundary, toolloop/ProcessEffect discipline, container/workspace isolation, clone/mirror/forge workflow, FSM engine, typed dispatcher protocol.
+- Port with rework: PM/Architect/Coder state machines (re-scoped to Task Teams), failure taxonomy and durable asks, chat.
+- Rewrite: persistence (SQLite session log becomes the Postgres artifact schema), knowledge (DOT artifact becomes data-plane knowledge), WebUI (log view becomes artifact view), config/secrets handling.
+- Drop: maintenance mode as-is, spec/story intake flows superseded by Feature/Task/Story intake.
+
+The Phase 0 output should be this table at package grain over the actual v1 package list.
+
+### D9. How Are Benchmark Nondeterminism And Cost Handled?
+
+Golden story runs are stochastic and cost real money. Before Phase 1 results are used for decisions, define:
+
+- Runs per story per configuration (candidate: 3 for standard comparisons, 1 for smoke checks).
+- Which metrics are reported with spread rather than point values.
+- A per-run and per-suite budget cap with an explicit overrun policy.
+- Which comparisons justify full-matrix runs versus spot checks.
 
 ## Risks
 
@@ -966,6 +1079,14 @@ Internal adversarial reviewers must stay narrow. Their job is correctness, compl
 ### Risk: Golden Stories Are Too Synthetic
 
 Golden stories need realistic brownfield friction: existing conventions, flaky tests, migrations, merge conflicts, ambiguous requirements, and UI validation.
+
+### Risk: Benchmark Cost And Noise
+
+The benchmark matrix multiplies fast: stories x models x prompt packs x harness configs x repeat runs. Without sampling discipline and budget caps, Phase 1 either burns the token budget or results get quietly downgraded to single noisy runs that support any conclusion. D9 must be settled before the runner is used for real decisions.
+
+### Risk: One Human Operator Is The Build Bottleneck
+
+v2 is built by an agent fleet under a single human. If phases produce large, entangled review surfaces, the operator becomes the queue and the fleet idles. The mitigation is structural: small independently reviewable specs, exit criteria agents can check themselves, and early dogfooding so Maestro's own review machinery absorbs load as soon as it exists.
 
 ### Risk: Artifact Volume Overwhelms Humans
 
