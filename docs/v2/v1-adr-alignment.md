@@ -60,6 +60,8 @@ Do not try to canonize or rewrite every historical ADR note immediately. Instead
 
 ## Highest-Priority v2 ADRs
 
+Note (2026-07-11): this list predates several roadmap passes (Workbench, v1 freeze, policy gating, benchmark policy) and is superseded by the Phase 0 backlog reconciliation output defined in the roadmap.
+
 The first v2 ADRs should probably cover:
 
 1. v2 taxonomy: Product, Feature, Epic, Story, Work Group.

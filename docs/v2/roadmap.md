@@ -737,6 +737,8 @@ v2 will be built by multiple AI agents overseen by one human operator. That cons
 - The human operator's attention is the scarce resource of the build itself, not just of the product. Phases are sequenced so review load stays bounded: one architectural decision stream at a time, with mechanical work fanned out to agents.
 - Dogfooding is a leverage strategy, not just a milestone. Early phases are built with off-the-shelf agent tooling; as soon as the Phase 1-4 core can run a Work Group against the Maestro repo itself, v2 development should progressively shift onto it. Phase 9 is the end state of a ramp, not a switch.
 
+The interim process — roles (Fable authors, Codex reviews, DR accepts and resolves contention), branching, review cadence, and testing — is defined in [build-process.md](build-process.md).
+
 Each phase below lists exit criteria. A phase is done when its exit criteria are demonstrably met, not when its code is merged.
 
 ### Phase 0: v2 Design Groundwork
@@ -758,6 +760,7 @@ Outputs:
 - Multi-user scope boundaries.
 - Breaking-change principles.
 - Documentation reset plan.
+- Reconciled, dependency-ordered ADR backlog: which ADRs block Phase 0 exit versus trail into later phases (supersedes the interim priority list in [v1-adr-alignment.md](v1-adr-alignment.md)).
 - Spike: toolloop ownership — Maestro-owned vs `maestro-llms` (see D8).
 - Spike: disposable project folder — how much state can leave the filesystem for the data plane (see D8).
 
@@ -787,7 +790,7 @@ Outputs:
 - Minimal prompt hash/pack identification.
 - Metrics capture for LLM calls and tool calls, pushing reusable pieces to `maestro-llms` and `maestro-cms` where possible.
 - Run comparison reports with repeat-run spread.
-- Optional black-box v1 baseline on a story subset. v1 is frozen and unmaintained, so the baseline is a cheap reference point for the comparison format, not a target of investment.
+- Optional black-box v1 baseline on a story subset, only if the frozen `v1-freeze` build works without repair. v1 is deprecated with known defects in its benchmark path; zero tokens or hours go into fixing it. If the baseline is not free, skip it.
 
 Why first:
 
@@ -1101,14 +1104,18 @@ Agreed answer:
 
 Aggressive. Treat v1 as a conceptual demo. v1 is frozen with no users to support, which simplifies everything.
 
-Recommended path:
+Decided (2026-07-11): **v1 is deprecated as of now.** There is no coming back from v2 — it is not only meant to be more efficient, it solves problems v1 simply does not (team work, artifact provenance, measurement).
 
-- Tag the final v1 commit (e.g. `v1-final`) and keep a prebuilt v1 binary or image for optional black-box benchmarking.
+Path:
+
+- Tag the current `main` head as `v1-freeze`. Any hypothetical future v1 work forks from that tag.
+- No pre-freeze bug fixes. Known v1 defects (the watchdog requeue race, the benchmark spec-review bug) die with v1 — spending time or tokens fixing code v2 discards is waste.
+- Keep a prebuilt v1 binary or image at the tag for opportunistic black-box benchmarking, if it works as-is.
 - Develop v2 directly on `main` through normal PRs, not on a long-lived side branch. A long-lived branch only pays for itself when the old version needs parallel maintenance; with v1 frozen, it buys nothing and costs divergence pain, and incremental PRs to `main` are also what the agent-fleet build model needs.
 - Aggressively prune.
 - Port selectively per the D8 inventory.
 - Keep useful tests/history/context.
-- No backports, no dual maintenance. Fork only if a v1 user unexpectedly materializes.
+- No backports, no dual maintenance.
 
 Fresh repo creates too much porting tax.
 

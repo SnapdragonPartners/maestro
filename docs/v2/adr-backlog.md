@@ -21,7 +21,7 @@ Likely decisions:
 
 Define the v2 work hierarchy and ownership boundaries.
 
-Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes the `Workbench` (interim name "Live Mode" rejected: implies a live product). Still open: whether CPA/CTA get better names (CPA reads as "certified public accountant" outside this context).
+Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes the `Workbench` (interim name "Live Mode" rejected: implies a live product). CPA/CTA retained (decided 2026-07-11): the Chief X Agent pattern deliberately mirrors corporate CPO/CTO titles; expand the acronym on first use per document to defuse the "certified public accountant" reading.
 
 Key questions:
 
@@ -100,15 +100,17 @@ Key questions:
 - How are scored rubrics represented?
 - How are branches cleaned?
 - Which repos become fixtures?
+- Should golden story runs be exposed through build tags analogous to `integration` — e.g. `golden-minimal` for a smoke subset and `golden-all` for the full suite (see build-process.md)?
 
 ### v1 Freeze And Port-Vs-Rewrite Inventory
 
-Record the v1 freeze (final tag, optional baseline binary/image, no backports) and the package-level port/rework/rewrite/drop inventory (roadmap D8).
+Record the v1 freeze and the package-level port/rework/rewrite/drop inventory (roadmap D8).
+
+Freeze decided (2026-07-11): v1 is deprecated; tag `v1-freeze` at the pre-v2 `main` head; no pre-freeze fixes or backports; hypothetical future v1 work forks from the tag; v2 develops on `main`.
 
 Key questions:
 
 - Which v1 packages port as-is, which need rework, which are rewritten, and which are dropped?
-- Does v2 development happen on `main` after the freeze tag, or on a long-lived branch?
 
 ### Postgres Data Plane
 
