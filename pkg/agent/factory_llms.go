@@ -52,7 +52,14 @@ func (o *metricsObserver) Observe(ev mmw.Event) {
 	// X4: usage is now reliably populated by the toolkit; the old middleware
 	// could only estimate via tokenizer counting.
 	promptTokens := ev.Usage.InputTokens
-	completionTokens := ev.Usage.OutputTokens
+	// Per maestro-llms ADR-0016 (v0.7.1), OutputTokens is visible output only;
+	// billing math must read BillableOutputTokens or reasoning tokens are
+	// undercounted. Fall back for paths that only populate OutputTokens
+	// (e.g. pre-call estimates).
+	completionTokens := ev.Usage.BillableOutputTokens
+	if completionTokens == 0 {
+		completionTokens = ev.Usage.OutputTokens + ev.Usage.ReasoningTokens
+	}
 
 	var cost float64
 	if success && (promptTokens > 0 || completionTokens > 0) {

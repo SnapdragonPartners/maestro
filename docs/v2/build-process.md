@@ -32,6 +32,10 @@ An artifact is Accepted when both Codex and DR have approved it.
 - CI runs automated review agents on every PR. All of their feedback must be resolved before merge: each thread is either fixed or explicitly pushed back on with a reasoned reply, then marked resolved. Resolving CI reviewer feedback is Claude's job.
 - Final approval and the merge button are DR's.
 
+## Deferred Work Tracking
+
+All deferred work discovered during v2 development is tracked as GitHub Issues — a durable record that keeps the primary docs and repo clean and does not rely on any one agent's memory. The docs/v2 parking lot holds design ideas; Issues hold actionable work items.
+
 ## Escalation
 
 Author/reviewer contention that does not converge goes to DR — the same bounded-contention principle the product applies to agent pairs (roadmap pillar 7).
