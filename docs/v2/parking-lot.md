@@ -21,7 +21,7 @@ Direction:
 
 Review whether Maestro should maintain its own toolloop independent of `maestro-llms` or build on the simplified `maestro-llms` toolloop.
 
-This is a large refactor and should wait until v2 contracts are clearer.
+Update (2026-07-11): promoted to a Phase 0 spike; see roadmap D8. The refactor itself still waits until v2 contracts are clearer, but the ownership question gets answered up front.
 
 ### Extract More Packages
 
@@ -69,6 +69,8 @@ Potential principle:
 
 - Project folder should be disposable.
 - Only data-plane connection bootstrap remains local.
+
+Update (2026-07-11): a Phase 0 spike will scope this; see roadmap D8.
 
 ## UI Ideas
 

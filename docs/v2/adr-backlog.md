@@ -28,7 +28,8 @@ Key questions:
 - Does Task always scope to one repo?
 - Does Story map roughly to one PR?
 - What owns a Task Team lifecycle?
-- Are the names final? `Task` collides with the v1 TASK message type and with generic "task" language throughout code and docs; CPA reads as "certified public accountant" outside this context. Renaming is cheap now and expensive after the schema lands.
+- Are the names final? `Task` collides with the v1 TASK message type, with generic "task" language throughout code, docs, and agent tooling, and — most costly — with the industry prior that Tasks are *smaller* than Stories (in Jira/SAFe a Story decomposes into Tasks; Maestro inverts this). Leading rename candidate: `Epic` (Feature > Epic > Story preserves the strongest shared prior, Epic contains Stories, and eliminates the Task collisions entirely); a neutral term like `Workstream` also works. CPA reads as "certified public accountant" outside this context. Renaming is cheap now and expensive after the schema lands.
+- Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Task without Feature-level ceremony, the way industry tools allow a Story without an Epic. Live Team is adjacent but distinct: that is about interactivity, this is about skipping intake layers.
 
 ### CPA/CTA Scope
 
