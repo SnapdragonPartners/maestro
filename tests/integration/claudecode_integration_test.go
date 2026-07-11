@@ -43,7 +43,7 @@ func TestClaudeCodeInstallationIntegration(t *testing.T) {
 		User:    "0:0", // Run as root for npm global install
 	}
 
-	containerName, err := executor.StartContainer(ctx, "claude-install", opts)
+	containerName, err := executor.StartContainer(ctx, uniqueStoryID("claude-install"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestClaudeCodeBasicExecutionIntegration(t *testing.T) {
 		User:    "0:0",
 	}
 
-	containerName, err := executor.StartContainer(ctx, "claude-exec", opts)
+	containerName, err := executor.StartContainer(ctx, uniqueStoryID("claude-exec"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestClaudeCodeStreamParsingIntegration(t *testing.T) {
 		},
 	}
 
-	containerName, err := executor.StartContainer(ctx, "stream-parse", opts)
+	containerName, err := executor.StartContainer(ctx, uniqueStoryID("stream-parse"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestClaudeCodeTimeoutHandlingIntegration(t *testing.T) {
 		User:    "0:0",
 	}
 
-	containerName, err := executor.StartContainer(ctx, "timeout", opts)
+	containerName, err := executor.StartContainer(ctx, uniqueStoryID("timeout"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}

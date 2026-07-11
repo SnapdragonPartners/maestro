@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -32,7 +34,7 @@ func TestNonRootExecution(t *testing.T) {
 		Timeout: 30 * time.Second,
 	}
 
-	containerName, err := dockerExec.StartContainer(ctx, "test-nonroot", opts)
+	containerName, err := dockerExec.StartContainer(ctx, uniqueStoryID("test-nonroot"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
@@ -139,7 +141,7 @@ func TestCanWriteToWorkspace(t *testing.T) {
 		Timeout: 30 * time.Second,
 	}
 
-	containerName, err := dockerExec.StartContainer(ctx, "test-workspace-write", opts)
+	containerName, err := dockerExec.StartContainer(ctx, uniqueStoryID("test-workspace-write"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestUserFlagPassedToDockerExec(t *testing.T) {
 		Timeout: 30 * time.Second,
 	}
 
-	containerName, err := dockerExec.StartContainer(ctx, "test-user-override", startOpts)
+	containerName, err := dockerExec.StartContainer(ctx, uniqueStoryID("test-user-override"), startOpts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}

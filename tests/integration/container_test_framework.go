@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	osexec "os/exec"
 	"testing"
 	"time"
@@ -23,6 +24,16 @@ type ContainerTestFramework struct {
 	containerName string
 	logger        *logx.Logger
 	t             *testing.T
+}
+
+// uniqueStoryID appends the test process PID to a base story ID so the derived
+// container name (maestro-story-<storyID>) is unique per test binary.
+// StartContainer force-removes any same-named container before starting, and
+// StopContainer force-removes by name, so tests in different packages (or
+// overlapping suite runs) that share a story ID kill each other's containers
+// mid-test. See https://github.com/SnapdragonPartners/maestro/issues/235.
+func uniqueStoryID(base string) string {
+	return fmt.Sprintf("%s-%d", base, os.Getpid())
 }
 
 // HarnessResult represents the result from the MCP tool harness.
@@ -75,7 +86,7 @@ func (f *ContainerTestFramework) StartContainer(ctx context.Context) error {
 	}
 
 	// Start container
-	containerName, err := f.executor.StartContainer(ctx, "test-harness", opts)
+	containerName, err := f.executor.StartContainer(ctx, uniqueStoryID("test-harness"), opts)
 	if err != nil {
 		return fmt.Errorf("failed to start container: %w", err)
 	}

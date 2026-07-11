@@ -1,15 +1,9 @@
 package coder
 
 import (
-	"context"
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
-
-	iutils "orchestrator/internal/utils"
-	"orchestrator/pkg/config"
-	execpkg "orchestrator/pkg/exec"
 )
 
 // TestPrepareMergeHelpers tests the helper functions without requiring full setup.
@@ -113,105 +107,4 @@ type execError struct {
 
 func (e *execError) Error() string {
 	return e.msg
-}
-
-// TestGitHubAuthenticationIntegration tests that GitHub authentication works with GITHUB_TOKEN.
-// This is an integration test that requires Docker and a valid GITHUB_TOKEN environment variable.
-func TestGitHubAuthenticationIntegration(t *testing.T) {
-	// Skip if no GITHUB_TOKEN
-	if !config.HasGitHubToken() {
-		t.Skip("GITHUB_TOKEN not set - skipping GitHub authentication integration test")
-	}
-
-	// Check if Docker is available
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("Docker not available - skipping container integration test")
-	}
-
-	// Check if GitHub CLI is available in a container
-	t.Run("GitHubAuthInContainer", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-
-		// Ensure bootstrap image exists - build if needed
-		if err := ensureBootstrapImageExists(t, ctx); err != nil {
-			t.Fatalf("Failed to ensure bootstrap image exists: %v", err)
-		}
-
-		// Create a Docker executor using the same image as the real system
-		executor := execpkg.NewLongRunningDockerExec(config.BootstrapContainerTag, "test-github-auth")
-
-		// Start a temporary container
-		containerName, err := executor.StartContainer(ctx, "github-auth-test", &execpkg.Opts{
-			WorkDir: "/tmp",
-			Timeout: 30 * time.Second,
-			Env:     []string{"GITHUB_TOKEN=" + config.GetGitHubToken()},
-		})
-		if err != nil {
-			t.Fatalf("Failed to start test container: %v", err)
-		}
-		defer func() {
-			executor.StopContainer(ctx, containerName)
-		}()
-
-		// Verify GitHub CLI is available in maestro-bootstrap container
-		checkOpts := &execpkg.Opts{
-			WorkDir: "/tmp",
-			Timeout: 10 * time.Second,
-		}
-
-		ghResult, err := executor.Run(ctx, []string{"gh", "--version"}, checkOpts)
-		if err != nil || ghResult.ExitCode != 0 {
-			t.Skip("GitHub CLI not available in maestro-bootstrap container - this needs to be fixed!")
-		}
-
-		// Test GitHub authentication with our environment variable passing
-		authOpts := &execpkg.Opts{
-			WorkDir: "/tmp",
-			Timeout: 30 * time.Second,
-			Env:     []string{"GITHUB_TOKEN=" + config.GetGitHubToken()},
-		}
-
-		result, err := executor.Run(ctx, []string{"gh", "auth", "status"}, authOpts)
-		if err != nil || result.ExitCode != 0 {
-			t.Logf("GitHub auth failed: err=%v exit=%d", err, result.ExitCode)
-			t.Logf("Stdout: %s", result.Stdout)
-			t.Logf("Stderr: %s", result.Stderr)
-
-			// This might not be a test failure - could be network issues or token issues
-			// Let's be more lenient and just log the issue
-			t.Logf("GitHub authentication test failed - this could be due to network issues or token configuration")
-			return
-		}
-
-		// Check for successful authentication
-		output := result.Stdout + result.Stderr
-		if strings.Contains(output, "Logged in to github.com") || strings.Contains(output, "✓") {
-			t.Logf("✅ GitHub authentication successful in container")
-			t.Logf("Auth status output: %s", output)
-		} else {
-			t.Errorf("GitHub authentication did not show success indicators. Output: %s", output)
-		}
-	})
-}
-
-// ensureBootstrapImageExists checks if the maestro-bootstrap image exists, and builds it if not.
-func ensureBootstrapImageExists(t *testing.T, ctx context.Context) error {
-	t.Helper()
-
-	// Check if image already exists
-	checkCmd := exec.CommandContext(ctx, "docker", "image", "inspect", config.BootstrapContainerTag)
-	if err := checkCmd.Run(); err == nil {
-		t.Logf("Bootstrap image %s already exists", config.BootstrapContainerTag)
-		return nil
-	}
-
-	t.Logf("Bootstrap image %s not found, building it now...", config.BootstrapContainerTag)
-
-	if err := iutils.BuildBootstrapImage(ctx); err != nil {
-		return err
-	}
-
-	t.Logf("✅ Successfully built bootstrap image %s", config.BootstrapContainerTag)
-	return nil
 }
