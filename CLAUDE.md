@@ -4,21 +4,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system coordinates between an Architect Agent (o3) and Coding Agents (Claude) to process development stories and implement code changes.
+This is a local multi-agent AI app factory built in Go. The system coordinates a PM agent, an Architect agent, and Coder agents to gather requirements, generate specs and stories, implement changes, review code, and merge pull requests.
+
+## Architecture Decision Records
+
+Proposed and accepted Architecture Decision Records live in `docs/adr/`. Check those ADRs before relying on older files in `docs/`, because many historical specs remain useful context but no longer describe the current implementation exactly.
+
+Current documentation precedence:
+1. Actual code and tests.
+2. Canonical FSM docs in `pkg/pm/STATES.md`, `pkg/architect/STATES.md`, and `pkg/coder/STATES.md`.
+3. Accepted ADRs in `docs/adr/`.
+4. Current implementation summaries such as this file, `README.md`, and focused docs.
+5. Older specs, TODOs, and plans under `docs/` and `docs/specs/`.
 
 ### Key Architecture Components
 
-- **Task Dispatcher** (`pkg/dispatch/`) - Routes messages between agents with rate limiting and retry logic
-- **Agent Message Protocol** (`pkg/proto/`) - Defines structured communication via `AgentMsg` with types: TASK, RESULT, ERROR, QUESTION, SHUTDOWN, ANSWER, REQUEST
+- **Runtime Kernel** (`internal/kernel/`) - Owns shared local infrastructure: dispatcher, SQLite, persistence queue, chat, WebUI, demo service, shared LLM factory, and Docker Compose registry
+- **Supervisor** (`internal/supervisor/`) - Manages agent lifecycle, restart policy, SUSPEND recovery, and watchdog behavior
+- **Task Dispatcher** (`pkg/dispatch/`) - Routes messages and state notifications between agents using typed channels and leases
+- **Agent Message Protocol** (`pkg/proto/`) - Defines structured communication via `AgentMsg` with TASK, QUESTION/ANSWER, REQUEST/RESPONSE, ERROR, and SHUTDOWN flows
 - **LLM Toolkit** (`maestro-llms`, external) - All provider I/O, retry/circuit/timeout/rate-limit middleware, and error classification live in `github.com/SnapdragonPartners/maestro-llms`, bridged via the `pkg/agent/internal/llmadapter` seam (see `docs/MAESTRO_LLMS_MIGRATION.md`)
-- **Event Logging** (`pkg/eventlog/`) - Structured logging to `logs/events.jsonl` with daily rotation
+- **Logging** (`pkg/logx/`) - Structured logging to project-local `.maestro/logs`
 - **Configuration** (`pkg/config/`) - JSON config loader with environment variable overrides
 - **Agent Foundation** (`pkg/agent/`) - Core LLM abstractions, state machine interfaces, and foundational components
-  - **Toolloop System** (`pkg/agent/toolloop/`) - Generic LLM tool-calling loop with type-safe result extraction
-    - Uses Go generics (`Config[T any]`) for typed result extraction
-    - Separation of concerns: `CheckTerminal` (signals) vs `ExtractResult` (data)
+  - **Toolloop System** (`pkg/agent/toolloop/`) - Generic LLM tool-calling loop with one terminal tool and `ProcessEffect`-based state signals
+    - Uses `tools.ProcessEffect` for terminal signal and structured data
+    - Keeps the generic `Config[T any]` shape for compatibility while the ProcessEffect migration is completed
     - Escalation support with soft/hard limits for iteration management
-    - All agents use proper result types (no no-op extractors)
+    - Tool execution persistence, activity tracking, and per-tool circuit breaking
+- **PM State Machine** (`pkg/pm/`) - PM-specific state machine for user interviews, spec preview, spec submission, and user asks
 - **Coder State Machine** (`pkg/coder/`) - Coder-specific state machine for structured coding workflows
 - **Architect State Machine** (`pkg/architect/`) - Architect-specific state machine for spec processing and coordination
 - **Template System** (`pkg/templates/`) - Prompt templates for different workflow states
@@ -27,32 +41,19 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
 - **Container Tools** (`pkg/tools/`) - Container lifecycle management: build, test, switch, update operations
 
 ### Agent Flow
-1. **Architect Workflow**: Processes development specifications through state machine:
-   - **SPEC_PARSING**: Parse specification files into requirements using LLM or deterministic parser
-   - **STORY_GENERATION**: Generate story files from requirements
-   - **QUEUE_MANAGEMENT**: Load stories and manage dependencies
-   - **DISPATCHING**: Assign ready stories to coding agents
-   - **ANSWERING**: Handle technical questions from coding agents (QUESTION→ANSWER)
-   - **REVIEWING**: Evaluate code submissions and provide approval/feedback (REQUEST→RESULT)
-     - **Iterative Approval with Read Tools**: Architect can use MCP read tools to inspect coder workspaces (read_file, list_files, get_diff, submit_reply) before approving
-     - **Iteration Limits**: Soft limit at 8 iterations (warning), hard limit at 16 iterations (escalation)
-     - **Per-Agent Context Management**: Architect maintains separate conversation contexts for each agent it communicates with, preserving conversation continuity within story boundaries while enabling clean resets when agents move to new stories
-   - **ESCALATED**: Wait for human intervention when iteration limits exceeded or cannot answer (2-hour timeout)
+1. **PM Workflow**: Interviews the user, reads uploaded specs, drafts spec previews, submits specs to Architect, receives feedback, and remains available for tweaks, hotfixes, and user asks.
 
-2. **Coder Workflow**: Implements stories through state machine:
-   - **PLANNING**: Analyze task and create implementation plan
-   - **CODING**: Generate code using MCP tools to create files in workspace
-   - **TESTING**: Run formatting, building, and tests on generated code
-   - **AWAIT_APPROVAL**: Request review and approval from architect
-   - **DONE**: Mark task as completed
+2. **Architect Workflow**: Reviews PM/CLI specs, generates stories, dispatches ready work, answers coder questions, reviews plans/code/completion/budget requests, merges PRs, and owns incidents.
 
-3. **Message Types**:
+3. **Coder Workflow**: Sets up a workspace, plans, codes, tests, requests review, prepares a PR, waits for merge, then terminates and restarts for new work.
+
+4. **Message Types**:
    - **QUESTION/ANSWER**: Information requests ("How should I approach this?")
-   - **REQUEST/RESULT**: Approval requests ("Please review this code")
+   - **REQUEST/RESPONSE**: Approval, spec review, merge, and budget requests
    - **TASK**: Work assignments from architect to coders
    - **ERROR/SHUTDOWN**: System control messages
 
-4. **Agent Chat System**: Real-time collaboration channel
+5. **Agent Chat System**: Real-time collaboration channel
    - **chat_post**: Agents and humans can post messages to shared chat
    - **chat_read**: Agents can explicitly read messages (optional)
    - **Automatic Injection**: New messages are automatically injected into each LLM call
@@ -60,7 +61,7 @@ This is an MVP Multi-Agent AI Coding System orchestrator built in Go. The system
    - Web UI provides interactive chat interface for human participation
    - **Escalation Support**: When architect exceeds iteration limits, escalation messages are posted with `post_type: 'escalate'`, displayed prominently in WebUI with reply functionality for human guidance
 
-5. System maintains event logs and handles graceful shutdown with STATUS.md dumps
+6. System maintains structured SQLite state, project-local logs, and graceful shutdown/resume checkpoints.
 
 ## Architect Context Management
 
@@ -72,8 +73,8 @@ The architect maintains **per-agent conversation contexts** to eliminate contrad
 - **Persistent system prompts**: Each context starts with a comprehensive system prompt containing:
   - Agent ID and story ID
   - Full story details (title, content, spec ID)
-  - Knowledge pack (relevant project knowledge)
   - Role descriptions and available tools
+- **Knowledge context**: Story-specific knowledge packs are delivered through request content/templates rather than stored on story records
 - **90% smaller request prompts**: Request-specific prompts now contain just the request content + brief instruction (story context in system prompt)
 - **Context lifecycle**: Contexts reset automatically on story transitions — detected by comparing template names (which encode story IDs) at the top of `handleRequest()`
 
@@ -105,42 +106,26 @@ The toolloop system (`pkg/agent/toolloop/`) provides a generic, type-safe abstra
 
 ### Design Principles
 
-**Clean Separation of Concerns:**
-- `CheckTerminal(calls, results) string` - Determines if workflow is complete (returns signal)
-  - "Are we done?" - Only checks for terminal conditions
-  - Returns signals like "PLAN_REVIEW", "CODING", "TESTING", "DONE", etc.
-  - Does NOT extract data from tool calls
-- `ExtractResult(calls, results) (T, error)` - Extracts typed data from tool execution
-  - "What happened?" - Type-safe data extraction
-  - Returns strongly-typed result structs (e.g., `PlanningResult`, `SubmitReplyResult`)
-  - Called automatically when terminal signal is detected
-- Process function - Stores extracted data in state machine
-  - Handles side effects (logging, persistence, state updates)
+**One Goal, One Terminal Tool:**
+- Each toolloop has one configured `TerminalTool`.
+- General tools can be called repeatedly for exploration or work.
+- Terminal tools should return `tools.ProcessEffect` with:
+  - `Signal`: state transition signal such as `PLAN_REVIEW`, `TESTING`, or `REVIEW_COMPLETE`
+  - `Data`: structured payload for the state machine
+- Callers switch on `toolloop.Outcome.Kind`, then handle `OutcomeProcessEffect` by reading `Signal` and `EffectData`.
+- The remaining `Config[T any]` generic exists for compatibility while the ProcessEffect migration is completed.
 
 ### Usage Pattern
 
 ```go
-// 1. Define result type
-type PlanningResult struct {
-    Signal string
-    Plan   string
-    // ... other fields
-}
-
-// 2. Create extraction function
-func ExtractPlanningResult(calls []agent.ToolCall, results []any) (PlanningResult, error) {
-    // Extract data from tool calls/results
-}
-
-// 3. Configure toolloop with type parameter
-cfg := &toolloop.Config[PlanningResult]{
+// 1. Configure the loop with general tools and exactly one terminal tool.
+cfg := &toolloop.Config[CodingResult]{
     ContextManager: contextManager,
-    ToolProvider:   toolProvider,
+    GeneralTools:   []tools.Tool{readFileTool, listFilesTool},
+    TerminalTool:   doneTool,
     MaxIterations:  10,
-    CheckTerminal:  checkTerminalFunc,  // Only checks signals
-    ExtractResult:  ExtractPlanningResult,  // Type-safe extraction
     Escalation: &toolloop.EscalationConfig{
-        Key:       "planning_story123",
+        Key:       "coding_story123",
         SoftLimit: 8,   // Warning at 8 iterations
         HardLimit: 16,  // Stop at 16 iterations
         OnSoftLimit: func(count int) { /* log warning */ },
@@ -148,33 +133,27 @@ cfg := &toolloop.Config[PlanningResult]{
     },
 }
 
-// 4. Run toolloop and get typed result
-signal, result, err := toolloop.Run(loop, ctx, cfg)
-
-// 5. Process extracted result
-processPlanningResult(&result)  // Store in state, log, etc.
-
-// 6. Handle terminal signal
-switch signal {
-case "PLAN_REVIEW": return StatePlanReview
-// ...
+// 2. Run toolloop and handle the outcome.
+out := toolloop.Run[CodingResult](loop, ctx, cfg)
+switch out.Kind {
+case toolloop.OutcomeProcessEffect:
+    switch out.Signal {
+    case tools.SignalTesting:
+        return StateTesting
+    case tools.SignalStoryComplete:
+        return StateCodeReview
+    }
+case toolloop.OutcomeIterationLimit:
+    return StateBudgetReview
+case toolloop.OutcomeLLMError:
+    return proto.StateSuspend
 }
 ```
 
-### Result Types by Agent
+### ProcessEffect Signals
 
-**Architect** (`pkg/architect/toolloop_results.go`):
-- `SubmitReplyResult` - Question/request responses
-- `SpecReviewResult` - Spec approval decisions
-- `ReviewCompleteResult` - Code review outcomes
-
-**PM** (`pkg/pm/toolloop_results.go`):
-- `WorkingResult` - Bootstrap params, spec content, await_user flag
-
-**Coder** (`pkg/coder/toolloop_results.go`):
-- `PlanningResult` - Plan, confidence, exploration, risks, todos, knowledge pack
-- `CodingResult` - Todo completions, testing requests
-- `TodoCollectionResult` - Extracted todo list
+ProcessEffect signal constants live in `pkg/tools/mcp.go`. Use those constants
+instead of magic strings when writing tools or state-machine handlers.
 
 ### Escalation Management
 
@@ -195,7 +174,7 @@ The system uses a **three-container model** for safe development and deployment:
 
 1. **Safe Container** (`maestro-bootstrap` or similar)
    - Bootstrap and fallback environment only
-   - Contains build tools, Docker, analysis utilities  
+   - Contains build tools, Docker, analysis utilities
    - Never modified - always clean and reliable
    - Used when target container is unavailable
 
@@ -223,7 +202,7 @@ The system uses a **three-container model** for safe development and deployment:
 
 - `container_build` - Build Docker images from Dockerfile
 - `container_test` - Run validation in temporary containers (mount policy: CODING=RW, others=RO)
-- `container_switch` - Switch active execution environment 
+- `container_switch` - Switch active execution environment
 - `container_update` - Set persistent target image configuration
 - `container_list` - View available containers and registry status
 
@@ -360,22 +339,22 @@ The codebase follows this clean architecture:
 - `pkg/templates/` - **Prompt templates**: Reusable LLM prompt templates
 - `pkg/tools/` - **MCP integration**: Model Context Protocol tool implementations
 
-### Agent Implementations  
+### Agent Implementations
 - `pkg/architect/` - **Architect agent**: Spec processing, story generation, coordination state machine
 - `pkg/coder/` - **Coder agent**: Implementation workflows, coding state machine
 
 ### Supporting Infrastructure
-- Rate limiting / retry / circuit breaking - provided by `maestro-llms` middleware (configured in `pkg/agent/factory.go`)
-- `pkg/eventlog/` - Structured logging to `logs/events.jsonl` with daily rotation
+- Rate limiting / retry / circuit breaking - provided by `maestro-llms` middleware (configured in `pkg/agent/factory_llms.go`)
 - `pkg/contextmgr/` - Context management for LLM conversations
 - `pkg/logx/` - Structured logging utilities
 - `pkg/chat/` - Agent chat system for real-time collaboration and human-agent communication
 
 ### Runtime Directories
-- `config/` - Configuration files (config.json)
-- `logs/` - Runtime event logs and debugging output
-- `stories/` - Generated story files from specifications
-- `work/` - Agent workspace directories with isolated state
+- `.maestro/config.json` - Project configuration
+- `.maestro/maestro.db` - SQLite database for sessions, messages, audit data, chat, tool executions, and knowledge indexes
+- `.maestro/logs/` - Runtime logs and debugging output
+- `.mirrors/` - Local bare git mirrors
+- `pm-001/`, `architect-001/`, `coder-001/`, etc. - Agent workspace directories
 - `tests/fixtures/` - Test input files and examples
 - `docs/` - Documentation and style guides
 
@@ -387,9 +366,12 @@ The system uses a specific directory layout for configuration and workspace mana
 projectDir/                    # Binary location or CLI specified
 ├── .maestro/                 # Master configuration directory
 │   ├── config.json          # Project configuration with pinned image IDs
-│   └── database/            # Agent state and history database
+│   ├── maestro.db           # Agent state, messages, sessions, and audit data
+│   └── logs/                # Runtime logs
 ├── .mirrors/                # Repository mirrors
 │   └── project-mirror.git/  # Bare git mirror of main repository
+├── pm-001/                  # PM workspace
+├── architect-001/           # Architect workspace
 ├── coder-001/               # Agent working directory (directory-name-safe agent ID)
 ├── coder-002/               # Agent working directory (directory-name-safe agent ID)
 └── ...                      # Additional agent directories as needed
@@ -397,7 +379,7 @@ projectDir/                    # Binary location or CLI specified
 
 **Configuration Management:**
 - `projectDir/.maestro/config.json` - Master config with pinned target image ID
-- `projectDir/.maestro/database/` - Agent state, container history, runtime data
+- `projectDir/.maestro/maestro.db` - Agent state, session history, messages, chat, and audit data
 - `coder-001/`, `coder-002/`, etc. - Individual agent working directories (repo clones with `.maestro/` for committed artifacts)
 
 **Workspace Pre-creation:**
@@ -436,7 +418,7 @@ The system maintains clear separation between ephemeral and persistent data:
 - Database stores stories for audit/history, but architect state is authoritative for active work
 
 **Database (Canonical for Messages & Audit Data)**
-- Messages (QUESTION/ANSWER, REQUEST/RESULT) are **canonical in database**
+- Messages (QUESTION/ANSWER, REQUEST/RESPONSE) are **canonical in database**
 - Agents process messages and discard them (fire-and-forget to persistence queue)
 - Database is the only source of truth for message history
 - All audit data (agent_requests, agent_responses, agent_plans) persists to database
@@ -463,7 +445,7 @@ The system maintains clear separation between ephemeral and persistent data:
 
 ### Logs vs Database
 
-**Logs** (`logs/events.jsonl`, `logs/run.log`):
+**Logs** (`.maestro/logs/`):
 - Human-readable event stream for debugging
 - Never parsed for structured data
 - Used only by log viewer in web UI
@@ -513,3 +495,118 @@ See `docs/MAESTRO_CHAT_SPEC.md` for detailed chat system architecture and implem
 ## Getting Help
 
 If you get stuck, have questions, or need clarification on anything, use your get_help tool.
+
+## Codex Review Guidelines
+
+When reviewing this repository:
+
+- Prioritize correctness, robustness, and maintainability over cleverness or micro-optimizations.
+- Assume this is a single-user, locally run app with a moderate security posture: we care about glaring issues and obviously unsafe practices, but we do not need enterprise-grade hardening.
+- When in doubt, favor simple, idiomatic Go.
+- Only block PRs on P0 and P1 issues:
+  - P0: Likely bugs, data corruption, crashes, or severe security issues.
+  - P1: Clear violations of these guidelines that will noticeably harm maintainability, clarity, or robustness.
+- Treat everything else as suggestions or questions.
+
+### Go Style and Modern Features
+
+- Use modern Go constructs.
+- Flag use of `interface{}`; prefer `any` in new code.
+- Prefer generics where they simplify code or eliminate duplication, not where they add unnecessary abstraction.
+- Prefer clear, idiomatic Go over clever one-liners.
+- Encourage explicit error handling, especially where errors are silently dropped or logged without context.
+- Enforce standard Go formatting and naming where it materially improves clarity.
+- Treat non-idiomatic constructs that reduce readability as P1 if they are easy to fix.
+
+### SafeAssert vs Bare Type Assertions
+
+We use a generics-based helper called `SafeAssert` to replace unsafe, brittle, or repeatedly duplicated type assertions.
+
+Flag any bare type assertion of the form:
+
+```go
+v := x.(T)
+v, ok := x.(T)
+```
+
+Recommend replacing it with the project's `SafeAssert` pattern unless the assertion is performance-critical and there is clear evidence it cannot fail, such as a well-constrained generic type parameter or validated upstream input.
+
+When `SafeAssert` improves clarity, error messaging, or robustness, prefer it even if the bare assertion includes `, ok`. Treat unsafe or unjustified bare type assertions as P1.
+
+### Constants vs Literals
+
+- Prefer named constants for magic numbers, repeated string literals, keys, paths, environment variables, API endpoints, timeouts, limits, and well-known sizes.
+- Flag repeated literals that should be constants.
+- Obvious, single-use literals may stay inline, such as `len(x) == 0`.
+- Treat repeated or unclear literals as P1.
+
+### DRY, Reuse, and Robustness
+
+- Watch for duplicated logic or near-duplicate code blocks.
+- Prefer well-tested shared helpers over repeated custom implementations.
+- Suggest extracting helpers or consolidating logic when reuse is clear and beneficial.
+- If duplication is intentional to avoid coupling, ask the author to confirm this in the PR.
+- Treat obvious duplication that would materially benefit from reuse as P1.
+
+### Abstraction Level and Architecture
+
+- Push back on unnecessary or overly layered abstractions.
+- Flag interfaces with one implementation and thin wrapper layers that add no testability, clarity, or reuse.
+- Prefer simple, direct designs over abstractions added just in case.
+- Accept purposeful abstractions that meaningfully improve modularity or support multiple backends, such as the LLM and forge abstraction layers.
+- Treat clearly gratuitous abstraction as P1; treat borderline cases as questions.
+
+### Comments, TODOs, and Deprecation
+
+- Treat comments as part of the contract.
+- Flag outdated or misleading comments.
+- For `TODO`, `FIXME`, or deprecation notes, ask whether there is a corresponding spec, plan, or ticket.
+- Ask for a reference to that item inside the comment when appropriate.
+- Push back on TODOs that mask meaningful risks without tracking.
+- Treat critical-path TODOs without tracking as P1.
+
+### Dead Code and Cleanup
+
+- Flag orphaned or dead code, including unused functions, unreachable blocks, and fields with no references.
+- Ask for removal or clarification, such as feature-gate or build-tag usage.
+- Allow code behind legitimate build tags or experiments when documented.
+- Treat clear dead code with no justification as P1.
+
+### Security Posture
+
+Given this app is single-user and locally run, flag glaring issues:
+
+- Arbitrary command execution from untrusted input.
+- Unsanitized user-controlled paths passed to shell commands or filesystem operations.
+- Secrets committed to source.
+
+Be lenient on running as root inside local Docker and debug logging in development configurations. Prefer pragmatic mitigations over heavy security refactors. Treat only truly dangerous patterns as P0.
+
+### Testing Expectations
+
+We do not enforce a strict test coverage threshold, but flag obvious missing tests where they would materially improve confidence or prevent regressions.
+
+Recommend unit tests for:
+
+- New logic with multiple branches or edge cases.
+- Reusable helpers or parsing/validation logic.
+- Behavior that previously caused bugs.
+
+Recommend integration tests with the `integration` build tag for:
+
+- Cross-component workflows.
+- Realistic interactions with files, APIs, or external systems.
+- Cases where unit tests alone cannot provide coverage or fidelity.
+
+Avoid nitpicks when tests would provide little real value. Treat missing tests for clearly complex or risk-prone logic as P1; otherwise treat them as suggestions.
+
+### Clean Code vs Expediency
+
+- Encourage clean, readable, maintainable code.
+- Push back when short-term hacks significantly increase long-term maintenance cost.
+- Accept pragmatic shortcuts when clearly documented and tracked.
+
+### Tone and Collaboration
+
+- Use constructive, specific feedback.
+- When guidelines conflict with established Go idioms or library conventions, prefer those idioms and call out the trade-offs rather than insisting.

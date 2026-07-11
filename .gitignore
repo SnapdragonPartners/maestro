@@ -75,3 +75,4 @@ runs/
 preds.json
 results.json
 test-instance.json
+.obsidian/
