@@ -21,7 +21,7 @@ Likely decisions:
 
 Define the v2 work hierarchy and ownership boundaries.
 
-Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes `Live Mode`. Still open: whether CPA/CTA get better names (CPA reads as "certified public accountant" outside this context).
+Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes the `Workbench` (interim name "Live Mode" rejected: implies a live product). Still open: whether CPA/CTA get better names (CPA reads as "certified public accountant" outside this context).
 
 Key questions:
 
@@ -30,7 +30,7 @@ Key questions:
 - Does an Epic always scope to one repo?
 - Does Story map roughly to one PR?
 - What owns a Work Group lifecycle?
-- Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Epic without Feature-level ceremony, the way industry tools allow a Story without an Epic. Live Mode overlaps here but is distinct: that is about interactivity and review timing, this is about skipping intake layers.
+- Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Epic without Feature-level ceremony, the way industry tools allow a Story without an Epic. The Workbench overlaps here but is distinct: that is about interactivity and review timing, this is about skipping intake layers.
 
 ### CPA/CTA Scope
 
@@ -150,18 +150,20 @@ Recommended:
 - Epic branch merges to default after acceptance.
 - Rebase/conflict resolution is a harness function.
 
-### Live Mode And The Interactive Loop
+### Workbench And The Interactive Loop
 
-Define the fast/interactive second tempo (roadmap pillar 17 and D10): same Epic/Story data model, human-in-the-loop review, trailing evidence.
+Define the fast/interactive second tempo (roadmap pillar 17 and D10): same Epic/Story data model, human as accepting gate plus trailing agent drift review, trailing evidence.
+
+Entry point already decided: a Workbench button on the master dashboard, implemented as the CPA dispatching a special-case blank Feature request scoped to a target repo; sessions can also open from an existing Epic.
 
 Key questions:
 
-- Work Group composition for live sessions (full PM/Architect/Coder trio, or Coder plus on-demand Architect, with the human playing PM)?
-- Entry points: standing entry beside CPA/CTA, from an Epic, or both?
+- Work Group composition for Workbench sessions (full PM/Architect/Coder trio, or Coder plus on-demand Architect, with the human playing PM)?
+- What exactly does the trailing agent reviewer check (syntax, rules, architectural drift), and when does it run?
 - What of the session transcript becomes evidence versus Audit-only data?
 - Budgets/limits for open-ended sessions.
-- Can live merges to the Epic branch auto-accept because the human was present?
-- Promotion path when a live session outgrows its scope.
+- Can Workbench merges to the Epic branch auto-accept given human presence and a clean drift check?
+- Promotion path when a session outgrows its scope.
 
 ### UAT And Demo Mode
 

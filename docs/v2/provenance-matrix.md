@@ -20,7 +20,7 @@ Source categories:
 | CPA role | DR notes | Codex pushback: CPA should be role/interface first, not a mega-agent. |
 | CTA role | DR notes | Added as technical pair for CPA, analogous to Architect. |
 | Work Groups | DR notes, Maestro v1 | Generalizes current agent group/coder model to Epic-scoped teams. |
-| Live Mode (originally Live Team) | DR notes, Maestro v1 | Generalizes current hotfix path; recast as a harness tempo, not a separate team type. |
+| Workbench (originally hotfix/Live Team) | DR notes, Maestro v1 | Generalizes current hotfix path; recast as a harness tempo, not a separate team type. |
 | Golden stories | DR notes, Codex synthesis | Strongly reinforced by research on evaluation and benchmarks. |
 | MPH: Model/Prompt/Harness | DR notes, research corpus | Research emphasizes harness engineering; DR names the triad. |
 | Prompt packs | DR notes, research corpus | Research supports prompt/skill/harness versioning and eval. |
@@ -58,7 +58,10 @@ Source categories:
 | Single-repo first golden stories | Claude review | Multi-repo/UI golden stories deferred until Product/Feature machinery exists. |
 | Task renamed to Epic | Claude review, DR notes | Preserves the universal Epic-contains-Stories prior; removes TASK message type and agent-tooling collisions. |
 | Work Group naming | DR notes | Replaces Task Team; "Epic Team/Group" rejected as awkward. |
-| Live Mode as tempo, not parallel system (D10) | DR notes, Claude review | Hotfix name rejected as bug-associated; interactive loop reuses Epic/Story model with human-in-loop review and trailing evidence. |
+| Workbench as tempo, not parallel system (D10) | DR notes, Claude review | Hotfix name rejected as bug-associated, "Live Mode" as product-implying; interactive loop reuses Epic/Story model with trailing evidence. |
+| Workbench entry via blank Feature request | DR notes | Master dashboard button; CPA dispatches a special-case blank Feature scoped to a repo. |
+| Human accept + trailing agent drift review | DR notes | Human gates acceptance at the Workbench; agents still catch syntactic, rule, and architectural drift. |
+| Economic argument / single-agent baseline | DR notes, Claude review | Cost per accepted change, not per token; golden suite includes a vibe-coding baseline to quantify the paired-agent premium and payoff. |
 
 ## Research Anchors
 

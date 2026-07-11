@@ -41,7 +41,7 @@ The largest v2 breaks are:
 | 0007 LLM Provider Boundary Through maestro-llms | Keep | Strongly aligned. v2 should push provider metrics and reusable provider behavior to `maestro-llms` where possible. |
 | 0008 Container, Workspace, and Compose Isolation | Keep and extend | Strongly aligned. v2 changes workspace scope from agent/story to Epic/Story hierarchy and may later define a container runtime abstraction, with Docker as initial implementation. |
 | 0009 Clone, Mirror, and Forge PR Workflow | Keep and extend | Forge boundary and local mirrors align. Branch strategy changes: Story branches merge into Epic branches; Epic branches merge to default after acceptance. |
-| 0010 PM-Led Spec, Bootstrap, Hotfix, and Demo Lifecycle | Partially supersede | PM remains valuable inside Work Groups. CPA/CTA adds Feature-level intake. Hotfix generalizes to Live Mode. Demo Mode becomes UAT foundation. |
+| 0010 PM-Led Spec, Bootstrap, Hotfix, and Demo Lifecycle | Partially supersede | PM remains valuable inside Work Groups. CPA/CTA adds Feature-level intake. Hotfix generalizes to the Workbench. Demo Mode becomes UAT foundation. |
 | 0011 Configuration, Operating Modes, and Secrets | Partially supersede | System/user secret split remains useful. v2 likely moves more config and credentials to the data plane and makes project folders more disposable. |
 | 0012 Knowledge Graph as Repository Artifact | Supersede | Good v1 stepping stone. v2 moves knowledge to data plane, adds hierarchy, citations, skills, docs, interfaces/contracts, and eventually AST/code facts. |
 | 0013 Testing Strategy and Service Boundaries | Keep and extend | Still aligned. Golden stories and loop analysis add system-level benchmark/eval coverage above normal unit/integration tests. |

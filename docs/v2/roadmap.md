@@ -27,6 +27,18 @@ The v2 sequencing principle:
 
 Golden stories, metrics, artifact signatures, and run comparison need to appear early enough that later model, prompt, and harness changes can be evaluated against evidence rather than anecdote.
 
+## The Economic Argument
+
+Paired agents look expensive next to vibe coding, and Maestro v1 demos have repeatedly required explaining why spending 100k tokens building a spec is a good thing. On the happy path, a single agent driving straight at a diff is always cheaper per token.
+
+The factory's bet is that cost per token is the wrong denominator; cost per accepted change is the right one:
+
+- Errors caught at spec and plan time are far cheaper than errors caught in review, and cheaper still than errors caught in production. Measure twice, cut once.
+- Paired review suppresses hallucination, scope drift, and rule/compliance drift — the failure modes that quietly compound when many agents ship into one codebase.
+- The premium buys evidence and auditability, which is what makes human acceptance fast and defensible.
+
+This is a testable claim, not a slogan. The golden story suite should include a single-agent happy-path baseline configuration so the paired-agent premium and its payoff — rework, review cycles, failure kinds, cost to accepted change (D6) — are quantified rather than asserted. That number is also the answer to the demo question.
+
 ## Product North Star
 
 Maestro v2 helps a person or team supervise many software-producing agents without losing control, taste, evidence, or accountability.
@@ -47,7 +59,7 @@ Success looks like:
 
 Non-goals:
 
-- The 80/20 principle applies: approximately 80% of features can be built by this kind of automated development, but approximately 20% require a tighter interaction with an operator ("conductor" instead of "orchestrator"). The non-goal is fully automating that 20% — not abandoning it. Live Mode (pillar 17) is how conductor-style work stays inside Maestro's provenance and evidence rather than leaking to outside tools.
+- The 80/20 principle applies: approximately 80% of features can be built by this kind of automated development, but approximately 20% require a tighter interaction with an operator ("conductor" instead of "orchestrator"). The non-goal is fully automating that 20% — not abandoning it. The Workbench (pillar 17) is how conductor-style work stays inside Maestro's provenance and evidence rather than leaking to outside tools.
 
 ### Measurable Success Criteria
 
@@ -67,7 +79,7 @@ For v2 all human operators are treated equivalently and with interchangeable lev
 
 ## Core Vocabulary
 
-Naming note (2026-07-11): the repo-scoped work unit was originally called Task and the executing unit Task Team. Renamed to Epic and Work Group: Feature > Epic > Story preserves the universal industry prior that an Epic contains Stories, and removes collisions with the v1 TASK message type and the generic "task" language pervasive in agent tooling. The v1 hotfix path generalizes to Live Mode (see pillar 17).
+Naming note (2026-07-11): the repo-scoped work unit was originally called Task and the executing unit Task Team. Renamed to Epic and Work Group: Feature > Epic > Story preserves the universal industry prior that an Epic contains Stories, and removes collisions with the v1 TASK message type and the generic "task" language pervasive in agent tooling. The v1 hotfix path generalizes to the Workbench (see pillar 17); "Hotfix" implied bug fixes only, and the interim name "Live Mode" implied a live product.
 
 ### Product
 
@@ -122,9 +134,9 @@ A PR-sized chunk of an Epic assigned to a single Coder. It should be large enoug
 
 Story decomposition should optimize for parallel development by multiple Coders.
 
-### Live Mode
+### Workbench
 
-A Work Group execution tempo optimized for rapid, interactive iteration with a human — polish, debugging, tweaks, follow-ups — rather than backlog work. It generalizes and replaces the v1 hotfix path, whose name wrongly implied bug fixes only. Live Mode is a harness preset, not a separate system: same Epic/Story data model, same branches and evidence, different review timing. See pillar 17 and D10.
+A Work Group execution tempo optimized for rapid, interactive iteration with a human — polish, debugging, tweaks, follow-ups — rather than backlog work. It generalizes and replaces the v1 hotfix path, whose name wrongly implied bug fixes only. The Workbench is a harness preset, not a separate system: same Epic/Story data model, same branches and evidence, different review timing. Entered from a Workbench button on the master dashboard (a special-case blank Feature request scoped to a repo) or from an existing Epic. See pillar 17 and D10.
 
 ### MPH
 
@@ -174,6 +186,7 @@ The benchmark harness should compare:
 - Tool availability.
 - Context strategies.
 - Branch strategies.
+- Paired-agent versus single-agent happy-path baselines (see The Economic Argument).
 
 Golden stories measure Maestro against itself. Third-party industry benchmarks (the v1 SWE-EVO harness work is a seed) complement them for cross-system comparison and for model-science questions such as SLM viability and new-model TCO; see D6.
 
@@ -361,7 +374,7 @@ Current v1 behavior merges every Story to default. v2 should align git structure
 - Each Story gets a Story branch from the Epic branch head.
 - Story branches merge into the Epic branch.
 - The Epic branch merges into default when the Epic is accepted.
-- Architect/Work Group can dispatch conflict resolution to a Live Mode session.
+- Architect/Work Group can dispatch conflict resolution to a Workbench session.
 
 This makes:
 
@@ -689,27 +702,28 @@ Suggested timing:
 - Do not extract too early.
 - Stabilize artifacts, Work Groups, prompt packs, toolloop/policy interfaces, metrics, and agent pair contracts first.
 
-### 17. Live Mode: The Interactive Second Tempo
+### 17. The Workbench: The Interactive Second Tempo
 
-Status: proposed direction; needs a design spike and an ADR.
+Status: direction agreed at this level; deeper design deliberately deferred to a spike and an ADR.
 
 The factory loop is asynchronous and gate-driven. Real development also includes rapid, interactive iteration: polish, debugging, small follow-ups, and finishing work on things the factory just built. v1 called this hotfix, which wrongly implied bug fixes only. If this work is declared out of scope, Maestro consistently delivers 90% and the last mile leaks to outside tools — losing evidence, provenance, and knowledge capture exactly where human taste is applied most.
 
-Proposed resolution: Live Mode is a tempo, not a separate system.
+Resolution: the Workbench is a tempo, not a separate system.
 
-- **Same nouns.** Everything that changes a repo is still a Story inside an Epic, on the same branch and merge machinery, producing the same artifacts. A live session may run inside a degenerate single-Story Epic created on the spot, or attach to an existing Epic branch — for example, polishing what the factory just produced.
-- **Different review timing.** In the factory, review gates lead the merge and another agent is the reviewer. In Live Mode the human is present and is the reviewer: the generate/review invariant is satisfied in real time, and the human's accept is the review record.
-- **Trailing evidence.** The evidence package is assembled from the session automatically — diff, tests run, session summary — rather than staged through leading gates. Live Mode skips intake ceremony and leading gates; it never skips provenance.
-- **MPH framing.** Live Mode is a harness preset: a different workflow graph, gate policy, and context strategy for the same Work Group machinery. This keeps one data model, one audit story, and lets golden stories benchmark the live path too.
-- **Two-way handoff.** A live session that outgrows its scope gets promoted: the PM drafts a Feature/Epic and hands it to the factory. Factory output can spawn a live follow-up session bound to the same Epic.
+- **Same nouns.** Everything that changes a repo is still a Story inside an Epic, on the same branch and merge machinery, producing the same artifacts. A Workbench session may run inside a degenerate single-Story Epic created on the spot, or attach to an existing Epic branch — for example, polishing what the factory just produced.
+- **Different review timing.** In the factory, review gates lead the merge and another agent is the reviewer. At the Workbench the human is present and is the accepting gate — but agents stay in the loop: a lightweight trailing reviewer still checks for syntactic, rule, and architectural drift, the classes of error agents catch better than a human moving fast. The generate/review invariant is satisfied by human accept plus the trailing agent check.
+- **Trailing evidence.** The evidence package is assembled from the session automatically — diff, tests run, session summary — rather than staged through leading gates. The Workbench skips intake ceremony and leading gates; it never skips provenance.
+- **MPH framing.** The Workbench is a harness preset: a different workflow graph, gate policy, and context strategy for the same Work Group machinery. This keeps one data model, one audit story, and lets golden stories benchmark the Workbench path too.
+- **Entry point (decided).** The master dashboard — where the CPA lives — has a Workbench button that spins up a Work Group with only a target repo as its specification, implemented as the CPA dispatching a special-case blank Feature request. Sessions can also be opened from an existing Epic.
+- **Two-way handoff.** A Workbench session that outgrows its scope gets promoted: the PM drafts a Feature/Epic and hands it to the factory. Factory output can spawn a Workbench follow-up session bound to the same Epic.
 
-Open design questions:
+Open design questions (parked until the ADR):
 
-- Composition: in a live session the human largely plays PM. Is the live Work Group a full PM/Architect/Coder trio, or a Coder with an Architect reviewer on demand?
-- Entry point: does Live Mode sit beside CPA/CTA as a standing entry on the master dashboard, or is it always entered from an Epic?
+- Composition: at the Workbench the human largely plays PM. Is the Work Group a full PM/Architect/Coder trio, or a Coder with an Architect reviewer on demand?
+- What exactly does the trailing agent reviewer check, and when does it run?
 - How much of the session transcript becomes evidence versus Audit-only data?
 - Budgets and limits for open-ended interactive sessions.
-- Can live merges to the Epic branch auto-accept because the human was present throughout?
+- Can Workbench merges to the Epic branch auto-accept given human presence plus a clean trailing drift check?
 
 ## Proposed Sequencing
 
@@ -1132,9 +1146,9 @@ Agreed in principle. First action: instrument a handful of representative runs t
 
 Candidate answer:
 
-A mode. Live Mode (pillar 17) reuses the Epic/Story data model, branches, artifacts, and evidence machinery under a different harness preset: human-in-the-loop review instead of leading gates, trailing evidence instead of staged evidence. The two failure directions it avoids: a parallel PM/Architect/Coder system beside CPA/CTA would drift into a second product with weaker guarantees, and a degenerate Epic forced through full factory ceremony would be too slow to use. One data model, two tempos.
+A mode. The Workbench (pillar 17) reuses the Epic/Story data model, branches, artifacts, and evidence machinery under a different harness preset: human accept plus trailing agent drift checks instead of leading gates, trailing evidence instead of staged evidence. The two failure directions it avoids: a parallel PM/Architect/Coder system beside CPA/CTA would drift into a second product with weaker guarantees, and a degenerate Epic forced through full factory ceremony would be too slow to use. One data model, two tempos.
 
-Whether the live entry point is presented beside CPA/CTA on the master dashboard is a UI decision, not an architecture one.
+The entry point is decided: a Workbench button on the master dashboard, implemented as the CPA dispatching a special-case blank Feature request scoped to a target repo.
 
 ## Risks
 
