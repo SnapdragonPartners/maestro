@@ -89,7 +89,9 @@ Avoid cryptographic signing initially unless required.
 
 ### Golden Stories And Benchmark Runner
 
-Define golden story schema, runner semantics, cleanup, fixture repos, and comparison reports.
+Define golden story schema, runner semantics, cleanup, fixture repos, and comparison reports. Phase 0 exit-blocking: Phase 1 builds directly on this ADR.
+
+Target strategy decided (2026-07-11): the Phase 1 target is the current codebase's v1 factory path, minimally patched so a basic golden story passes; run records capture the target commit hash (see roadmap Phase 1).
 
 Key questions:
 

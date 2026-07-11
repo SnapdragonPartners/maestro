@@ -2,8 +2,8 @@
 
 Status: rough companion note
 
-The `codex/v2-roadmap` branch already includes the commits from `codex/proposed-adrs`.
-Both branches currently point at commit `b1af82a`.
+The `codex/v2-roadmap` branch includes the commits from `codex/proposed-adrs` through
+`b1af82a` and has since moved on.
 
 The proposed ADRs under `docs/adr/` are not accepted decisions and should not be treated
 as binding architecture. They are best read as historical/current-state notes about how

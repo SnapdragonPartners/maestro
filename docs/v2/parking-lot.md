@@ -125,7 +125,7 @@ Direction:
 
 - Seed a Knowledge Tool with Maestro self-knowledge.
 - Add a `knowledge_search` MCP with special-case self-knowledge support.
-- Use documentation only, not AST or ADR ingestion, to avoid token clutter.
+- The initial self-knowledge seed may be docs-only to avoid token clutter; broader knowledge ingestion (ADRs, interfaces, AST) is governed by the Phase 6 knowledge ADR, not by this note.
 
 ### Design For AI Library
 

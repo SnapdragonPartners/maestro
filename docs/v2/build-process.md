@@ -6,7 +6,7 @@ This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp
 
 ## Roles
 
-- **Author agent: Claude Code (Fable).** Drafts all artifacts — docs, ADRs, phase scopes and plans, specs, code.
+- **Author agent: Claude (Claude Code).** Drafts all artifacts — docs, ADRs, phase scopes and plans, specs, code. Roles anchor to the agent, not the underlying model.
 - **Reviewer: Codex.** Provides the review function, analogous to what Maestro will automate.
 - **Human operator: DR.** Resolves escalation and contention, provides feedback, and accepts.
 
