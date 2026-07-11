@@ -2,30 +2,32 @@
 
 Date: 2026-07-10
 
-This note summarizes the research documents under `/Users/dratner/Code/temp/Research` and captures preliminary high-level implications for Maestro v2.
+This note summarizes an external research corpus (see the bibliography below) and captures preliminary high-level implications for Maestro v2.
 
-## Documents Reviewed
+## Bibliography
 
-Google papers:
+Google/Kaggle whitepaper series on vibe coding and agentic engineering:
 
-- `Google Papers/Day_1_v3.pdf` - The new SDLC with vibe coding / agentic engineering.
-- `Google Papers/Agent Tools & Interoperability_Day_2.pdf` - MCP, A2A, A2UI, AP2, UCP, and agent interoperability.
-- `Google Papers/Agent Skills_Day_3.pdf` - Agent skills as procedural memory, progressive disclosure, evals, and skill governance.
-- `Google Papers/Vibe Coding Agent Security and Evaluation_Day_4.pdf` - Security, trust, sandboxing, policy, observability, and evaluation dimensions.
-- `Google Papers/Day_5_v3.pdf` - Spec-driven production-grade development, review culture, guardrails, policy servers, and context hygiene.
+- [The New SDLC with Vibe Coding](https://www.kaggle.com/whitepaper-the-new-SDLC-with-vibe-coding) - The new SDLC with vibe coding / agentic engineering.
+- [Agent Tools & Interoperability](https://www.kaggle.com/whitepaper-agent-tools-and-interoperability) - MCP, A2A, A2UI, AP2, UCP, and agent interoperability.
+- [Agent Skills](https://www.kaggle.com/whitepaper-agent-skills) - Agent skills as procedural memory, progressive disclosure, evals, and skill governance.
+- [Vibe Coding Agent Security and Evaluation](https://www.kaggle.com/whitepaper-vibe-coding-agent-security-and-evaluation) - Security, trust, sandboxing, policy, observability, and evaluation dimensions.
+- [Spec-Driven Production-Grade Development in the Age of Vibe Coding](https://www.kaggle.com/whitepaper-spec-driven-production-grade-development-in-the-age-of-vibe-coding) - Spec-driven production-grade development, review culture, guardrails, policy servers, and context hygiene.
 
-Community notes:
+Community notes (unpublished companion notes to the whitepaper series, reviewed from local copies):
 
-- `Google Papers/Community Notes/01_work_decomposition_agentic_workflows.md`
-- `Google Papers/Community Notes/02_intent_interfaces_decision_artifacts.md`
-- `Google Papers/Community Notes/03_finishing_validation_production_feedback.md`
-- `Google Papers/Community Notes/04_knowledge_persistence_context_memory_patterns.md`
-- `Google Papers/Community Notes/05_human_leverage_attention_org_design.md`
-- `Google Papers/Community Notes/agentic_organization_white_papers_combined.md` - Combined duplicate of the five notes above.
+- 01: Work decomposition and agentic workflows.
+- 02: Intent interfaces and decision artifacts.
+- 03: Finishing, validation, and production feedback.
+- 04: Knowledge persistence and context/memory patterns.
+- 05: Human leverage, attention, and org design.
+- A combined edition duplicating the five notes above.
 
 External enterprise lens:
 
-- `McKinsey/the-ai-revolution-in-software-development_final.pdf`
+- [The AI Revolution in Software Development](https://www.mckinsey.com/capabilities/tech-and-ai/our-insights/the-ai-revolution-in-software-development) - McKinsey.
+
+Note: some of these sources are gated against automated retrieval. Links are provided for human readers and proper credit, not for agent ingestion.
 
 ## Core Synthesis
 

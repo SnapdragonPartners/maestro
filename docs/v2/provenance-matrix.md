@@ -8,7 +8,7 @@ Source categories:
 
 - **Maestro v1:** already present or implied in current Maestro architecture.
 - **DR notes:** explicit user/client-experience feedback in the marked-up roadmap.
-- **Research corpus:** Google/McKinsey papers and community notes reviewed under `/Users/dratner/Code/temp/Research`.
+- **Research corpus:** the Google/Kaggle whitepaper series, community notes, and McKinsey piece cited in the [research synthesis bibliography](research-synthesis.md#bibliography).
 - **Codex synthesis:** recommendations or pushback introduced during roadmap synthesis.
 - **Claude review:** feedback and revisions from the 2026-07-11 Claude review pass.
 
