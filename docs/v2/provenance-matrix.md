@@ -16,11 +16,11 @@ Source categories:
 |---|---|---|
 | Agent factory framing | Maestro v1, research corpus, DR notes | Maestro already used PM/Architect/Coder and PR workflows; research adds shared "factory" vocabulary. |
 | Graph-shaped workflows over chat | Maestro v1, research corpus | Current FSMs strongly align with research emphasis on workflow graphs. |
-| Feature/Task/Story taxonomy | DR notes, Codex synthesis | Refines v1 Spec/Story model into multi-repo and task-scoped hierarchy. |
+| Feature/Epic/Story taxonomy | DR notes, Codex synthesis | Refines v1 Spec/Story model into multi-repo and epic-scoped hierarchy. |
 | CPA role | DR notes | Codex pushback: CPA should be role/interface first, not a mega-agent. |
 | CTA role | DR notes | Added as technical pair for CPA, analogous to Architect. |
-| Task Teams | DR notes, Maestro v1 | Generalizes current agent group/coder model to Task-scoped teams. |
-| Live Team | DR notes, Maestro v1 | Generalizes current hotfix path. |
+| Work Groups | DR notes, Maestro v1 | Generalizes current agent group/coder model to Epic-scoped teams. |
+| Live Mode (originally Live Team) | DR notes, Maestro v1 | Generalizes current hotfix path; recast as a harness tempo, not a separate team type. |
 | Golden stories | DR notes, Codex synthesis | Strongly reinforced by research on evaluation and benchmarks. |
 | MPH: Model/Prompt/Harness | DR notes, research corpus | Research emphasizes harness engineering; DR names the triad. |
 | Prompt packs | DR notes, research corpus | Research supports prompt/skill/harness versioning and eval. |
@@ -33,7 +33,7 @@ Source categories:
 | Postgres/sqlc/migrate data plane | DR notes | Codex agrees because artifacts/multi-user/metrics need stronger DB substrate. |
 | Organizations/users | DR notes | MVP can defer RBAC and project memberships. |
 | Docker-local Postgres default | DR notes, Codex synthesis | Fits current Docker requirement. |
-| Branch hierarchy | DR notes, Codex synthesis | Aligns Task/Story model with git. |
+| Branch hierarchy | DR notes, Codex synthesis | Aligns Epic/Story model with git. |
 | UAT from Demo Mode | DR notes, Maestro v1 | Codex caution: easier after artifacts/gates exist. |
 | Knowledge hierarchy | DR notes, research corpus | Research supports context governance; DR adds ADR/interface/doc/AST hierarchy. |
 | Interfaces/contracts as knowledge | DR notes, Codex synthesis | High leverage for Coder handoffs. |
@@ -56,6 +56,9 @@ Source categories:
 | Port-vs-rewrite inventory (D8) | Claude review, Codex synthesis | Makes the v1-adr-alignment table an explicit Phase 0 decision at package grain. |
 | Measurable success criteria | Claude review | Numbers behind the north star, baselined by the Phase 1 runner. |
 | Single-repo first golden stories | Claude review | Multi-repo/UI golden stories deferred until Product/Feature machinery exists. |
+| Task renamed to Epic | Claude review, DR notes | Preserves the universal Epic-contains-Stories prior; removes TASK message type and agent-tooling collisions. |
+| Work Group naming | DR notes | Replaces Task Team; "Epic Team/Group" rejected as awkward. |
+| Live Mode as tempo, not parallel system (D10) | DR notes, Claude review | Hotfix name rejected as bug-associated; interactive loop reuses Epic/Story model with human-in-loop review and trailing evidence. |
 
 ## Research Anchors
 

@@ -17,19 +17,20 @@ Likely decisions:
 - Repo docs are optimized for agent ingestion.
 - Wiki/docs-site output is optimized for humans.
 
-### v2 Taxonomy: Product, Feature, Task, Story, Team
+### v2 Taxonomy: Product, Feature, Epic, Story, Work Group
 
 Define the v2 work hierarchy and ownership boundaries.
+
+Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes `Live Mode`. Still open: whether CPA/CTA get better names (CPA reads as "certified public accountant" outside this context).
 
 Key questions:
 
 - Is Product a first-class data model?
 - Does Feature span repos?
-- Does Task always scope to one repo?
+- Does an Epic always scope to one repo?
 - Does Story map roughly to one PR?
-- What owns a Task Team lifecycle?
-- Are the names final? `Task` collides with the v1 TASK message type, with generic "task" language throughout code, docs, and agent tooling, and — most costly — with the industry prior that Tasks are *smaller* than Stories (in Jira/SAFe a Story decomposes into Tasks; Maestro inverts this). Leading rename candidate: `Epic` (Feature > Epic > Story preserves the strongest shared prior, Epic contains Stories, and eliminates the Task collisions entirely); a neutral term like `Workstream` also works. CPA reads as "certified public accountant" outside this context. Renaming is cheap now and expensive after the schema lands.
-- Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Task without Feature-level ceremony, the way industry tools allow a Story without an Epic. Live Team is adjacent but distinct: that is about interactivity, this is about skipping intake layers.
+- What owns a Work Group lifecycle?
+- Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Epic without Feature-level ceremony, the way industry tools allow a Story without an Epic. Live Mode overlaps here but is distinct: that is about interactivity and review timing, this is about skipping intake layers.
 
 ### CPA/CTA Scope
 
@@ -39,7 +40,7 @@ Recommended scope:
 
 - Produce and review Feature artifacts.
 - Resolve escalations relating to Feature artifacts.
-- Prompt users to inspect Tasks when Task-local escalation is needed.
+- Prompt users to inspect Epics when Epic-local escalation is needed.
 - Avoid becoming an all-knowing orchestrator prompt.
 
 ### Reviewer vs Partner/Supervisor
@@ -141,13 +142,26 @@ Key sources:
 
 ### Branch Strategy
 
-Define Task and Story branch behavior.
+Define Epic and Story branch behavior.
 
 Recommended:
 
-- Story branches merge to Task branch.
-- Task branch merges to default after acceptance.
+- Story branches merge to Epic branch.
+- Epic branch merges to default after acceptance.
 - Rebase/conflict resolution is a harness function.
+
+### Live Mode And The Interactive Loop
+
+Define the fast/interactive second tempo (roadmap pillar 17 and D10): same Epic/Story data model, human-in-the-loop review, trailing evidence.
+
+Key questions:
+
+- Work Group composition for live sessions (full PM/Architect/Coder trio, or Coder plus on-demand Architect, with the human playing PM)?
+- Entry points: standing entry beside CPA/CTA, from an Epic, or both?
+- What of the session transcript becomes evidence versus Audit-only data?
+- Budgets/limits for open-ended sessions.
+- Can live merges to the Epic branch auto-accept because the human was present?
+- Promotion path when a live session outgrows its scope.
 
 ### UAT And Demo Mode
 
@@ -155,7 +169,7 @@ Define how Demo Mode becomes or supports UAT.
 
 Key question:
 
-- Is UAT optional in MVP or required for Task merge?
+- Is UAT optional in MVP or required for Epic merge?
 
 ### Binary Attachment Storage
 

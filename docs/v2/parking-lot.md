@@ -39,7 +39,7 @@ Current maintenance mode runs automatically after a number of Stories.
 
 Possible v2 direction:
 
-- Recast maintenance as a distinct Task when relevant.
+- Recast maintenance as a distinct Epic when relevant.
 - Decide which maintenance duties stay internal to Maestro.
 - Move deterministic docs/knowledge updates to post-merge hooks where possible.
 
@@ -83,9 +83,9 @@ Shows:
 - Workflow state for each item.
 - Status: READY, PROCESSING, AWAITING USER.
 
-Clicking a Task opens Task Dashboard.
+Clicking an Epic opens Epic Dashboard.
 
-### Task Dashboard
+### Epic Dashboard
 
 Similar to v1, but artifact-first.
 
@@ -182,7 +182,7 @@ This is probably v3. At most, define dispatcher/message seams so a queue-backed 
 
 ### Read-Only Access To Other Repos
 
-Support Tasks that need read-only access to shared tools, design systems, reference repos, or interface contracts in other repositories.
+Support Epics that need read-only access to shared tools, design systems, reference repos, or interface contracts in other repositories.
 
 Needs:
 
@@ -224,10 +224,10 @@ Post-MVP.
 Potential roles:
 
 - Human PM interacts with CPA/PM agents.
-- Engineer works on Tasks entered by PM.
+- Engineer works on Epics entered by PM.
 - Admin manages org settings and credentials.
 
-### Hosted Task Teams
+### Hosted Work Groups
 
 Post-MVP or v3.
 

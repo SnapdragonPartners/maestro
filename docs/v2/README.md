@@ -21,4 +21,4 @@ Maestro v2 is expected to be a breaking change. Clean, comprehensible architectu
 
 The current working thesis:
 
-> Maestro v2 is a measurable, artifact-first agentic factory where task-scoped agent teams create and review production-grade changes under explicit Model/Prompt/Harness control.
+> Maestro v2 is a measurable, artifact-first agentic factory where epic-scoped work groups create and review production-grade changes under explicit Model/Prompt/Harness control.
