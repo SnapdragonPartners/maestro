@@ -10,6 +10,7 @@ specifications, and stories.
 
 - [Roadmap](roadmap.md) - main v2 roadmap draft.
 - [Build Process](build-process.md) - interim working agreement for how v2 gets built (author/reviewer/operator roles, branching, review cadence, testing).
+- [Phase 0 Scope And Plan](phase-0.md) - the first phase artifact under the build process: deliverables, PR sequence, exit checklist.
 - [Research Synthesis](research-synthesis.md) - synthesis of the external research corpus and early Maestro v2 ideas.
 - [Provenance Matrix](provenance-matrix.md) - where major ideas came from: Maestro v1, client/lived experience, research corpus, or Codex synthesis.
 - [ADR Backlog](adr-backlog.md) - concepts that should probably become ADRs before implementation.
