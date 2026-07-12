@@ -84,7 +84,7 @@ func TestClaudeCodeMCPToolCall(t *testing.T) {
 	t.Logf("MCP server started on port %d", port)
 
 	// Start container
-	containerName := "claude-e2e-test-container"
+	containerName := uniqueStoryID("claude-e2e-test-container")
 	executor := exec.NewLongRunningDockerExec(config.BootstrapContainerTag, "claude-e2e-test")
 
 	opts := &exec.Opts{
@@ -234,7 +234,7 @@ func TestClaudeCodeMCPToolCallWithRunner(t *testing.T) {
 	testContent := "RUNNER_E2E_MARKER_67890"
 
 	// Start container first
-	containerName := "runner-e2e-test-container"
+	containerName := uniqueStoryID("runner-e2e-test-container")
 	executor := exec.NewLongRunningDockerExec(config.BootstrapContainerTag, "runner-e2e-test")
 
 	opts := &exec.Opts{

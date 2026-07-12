@@ -75,7 +75,7 @@ func TestMCPTCPIntegration(t *testing.T) {
 	t.Logf("MCP server started on port %d", port)
 
 	// Start container using LongRunningDockerExec
-	containerName := "mcp-tcp-test-container"
+	containerName := uniqueStoryID("mcp-tcp-test-container")
 	executor := exec.NewLongRunningDockerExec(config.BootstrapContainerTag, "mcp-tcp-test")
 
 	opts := &exec.Opts{
@@ -319,7 +319,7 @@ func TestMCPTCPConcurrentAgents(t *testing.T) {
 			t.Fatalf("Failed to create workspace: %v", err)
 		}
 
-		containerName := "mcp-concurrent-" + string(rune('0'+i))
+		containerName := uniqueStoryID("mcp-concurrent-" + string(rune('0'+i)))
 
 		agentCtx := &tools.AgentContext{
 			Executor: exec.NewLocalExec(),

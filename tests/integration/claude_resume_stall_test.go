@@ -82,7 +82,7 @@ func main() {
 		ClaudeCodeMode: true, // Persist session state across calls
 	}
 
-	containerName, err := executor.StartContainer(ctx, "resume-stall", opts)
+	containerName, err := executor.StartContainer(ctx, uniqueStoryID("resume-stall"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start container: %v", err)
 	}

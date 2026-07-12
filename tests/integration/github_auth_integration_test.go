@@ -43,7 +43,7 @@ func TestGitHubAuthenticationIntegration(t *testing.T) {
 		// NOTE: No GITHUB_TOKEN - containers should not have push access
 	}
 
-	containerName, err := executor.StartContainer(ctx, "github-auth-test", opts)
+	containerName, err := executor.StartContainer(ctx, uniqueStoryID("github-auth-test"), opts)
 	if err != nil {
 		t.Fatalf("Failed to start test container: %v", err)
 	}
