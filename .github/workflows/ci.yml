@@ -43,8 +43,8 @@ jobs:
       # Dummy keys, not real secrets: some unit tests construct LLM clients,
       # which requires config.GetAPIKey to find a non-empty value, but no
       # unit test may make a live call — with dummy keys an accidental one
-      # fails loudly (401) instead of silently spending money. Integration
-      # tests (which need real keys) run in the pre-push hook, not CI.
+      # fails loudly (401) instead of silently spending money. Real secrets
+      # belong on a dedicated integration job (template below), never here.
       - name: Test
         run: make test
         env:
@@ -52,3 +52,25 @@ jobs:
           ANTHROPIC_API_KEY: dummy-ci-key
           OPENAI_API_KEY: dummy-ci-key
           GOOGLE_GENAI_API_KEY: dummy-ci-key
+
+  # Template for when e2e/integration tests move into CI (today they run only
+  # in the pre-push hook). Real API-key secrets go on this job — keeping them
+  # off the unit-test job above is deliberate, so unit tests can never make
+  # live calls. Consider a manual/scheduled trigger rather than every PR push,
+  # since these tests spend real API tokens.
+  #
+  # integration:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #     - uses: actions/setup-go@v6
+  #       with:
+  #         go-version-file: go.mod
+  #         cache: true
+  #     - run: make build-mcp-proxy  # go:embed needs the proxy binaries
+  #     - run: make test-integration
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  #         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  #         GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
