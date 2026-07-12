@@ -17,8 +17,8 @@ Source categories:
 | Agent factory framing | Maestro v1, research corpus, DR notes | Maestro already used PM/Architect/Coder and PR workflows; research adds shared "factory" vocabulary. |
 | Graph-shaped workflows over chat | Maestro v1, research corpus | Current FSMs strongly align with research emphasis on workflow graphs. |
 | Feature/Epic/Story taxonomy | DR notes, Codex synthesis | Refines v1 Spec/Story model into multi-repo and epic-scoped hierarchy. |
-| CPA role | DR notes | Codex pushback: CPA should be role/interface first, not a mega-agent. |
-| CTA role | DR notes | Added as technical pair for CPA, analogous to Architect. |
+| CPA role | DR notes | Codex pushback: CPA should be role/interface first, not a mega-agent. Superseded 2026-07-12: intake-as-triage. |
+| CTA role | DR notes | Added as technical pair for CPA, analogous to Architect. Dissolved 2026-07-12 into recipient pushback. |
 | Work Groups | DR notes, Maestro v1 | Generalizes current agent group/coder model to Epic-scoped teams. |
 | Workbench (originally hotfix/Live Team) | DR notes, Maestro v1 | Generalizes current hotfix path; recast as a harness tempo, not a separate team type. |
 | Golden stories | DR notes, Codex synthesis | Strongly reinforced by research on evaluation and benchmarks. |
@@ -64,7 +64,11 @@ Source categories:
 | Economic argument / single-agent baseline | DR notes, Claude review | Cost per accepted change, not per token; golden suite includes a vibe-coding baseline to quantify the paired-agent premium and payoff. |
 | Interim build process (Claude authors, Codex reviews, DR accepts) | DR notes | Manual implementation of the generate/review invariant; one dev branch at a time; golden suite at phase end. |
 | v1 deprecated; `v1-freeze` tag | DR notes | Hard break declared 2026-07-11; no pre-freeze fixes; known v1 defects die with v1. |
-| CPA/CTA names retained | DR notes, Claude review | Chief X Agent pattern mirrors CPO/CTO titles; expand acronym on first use. |
+| CPA/CTA names retained | DR notes, Claude review | Chief X Agent pattern mirrors CPO/CTO titles. Moot as of 2026-07-12: no standing pair to name. |
+| Intake as triage, orchestrator-owned (D2 v3) | DR notes (external designer feedback), Claude review | Form + "I don't know" button + short-lived triage agent; artifact contract fixed, executor unbound; converges on original Codex D2 shape. |
+| Provisional Work Groups | DR notes, Claude review | Feature-scoped PM runs conversational intake; becomes the executing group in the single-repo case — zero handoff. |
+| Recipient pushback as review | DR notes | The Work Group receiving an Epic challenges its framing; replaces CTA. Cross-Epic coherence left to the spike. |
+| Pre-Phase-5 intake spike | DR notes, Claude review | Planned-work bracket in the roadmap, not an issue; external design review included. |
 | Golden build tags (`golden-minimal`/`golden-all`) | DR notes | Extends the existing `integration` build-tag pattern to automate golden story runs. |
 | Artifact scope model (`scope_type`/`scope_id` + lineage) | Codex synthesis | Pre-Epic Feature artifacts, Product/org artifacts, and benchmark artifacts do not hang off an Epic. |
 | Phase 1 target strategy (minimally patched v1 path) | Codex synthesis, DR notes | Codex surfaced the missing-target problem; DR resolved it: post-freeze main is v2 raw material, patched just enough for golden-minimal. |

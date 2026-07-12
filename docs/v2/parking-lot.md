@@ -78,7 +78,7 @@ Update (2026-07-11): a Phase 0 spike will scope this; see roadmap D8.
 
 Shows:
 
-- CPA chat.
+- Intake form and chat.
 - Items in flight.
 - Workflow state for each item.
 - Status: READY, PROCESSING, AWAITING USER.
@@ -223,7 +223,7 @@ Post-MVP.
 
 Potential roles:
 
-- Human PM interacts with CPA/PM agents.
+- Human PM interacts with intake and PM agents.
 - Engineer works on Epics entered by PM.
 - Admin manages org settings and credentials.
 

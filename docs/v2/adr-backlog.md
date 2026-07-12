@@ -21,7 +21,7 @@ Likely decisions:
 
 Define the v2 work hierarchy and ownership boundaries.
 
-Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes the `Workbench` (interim name "Live Mode" rejected: implies a live product). CPA/CTA retained (decided 2026-07-11): the Chief X Agent pattern deliberately mirrors corporate CPO/CTO titles; expand the acronym on first use per document to defuse the "certified public accountant" reading.
+Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes the `Workbench` (interim name "Live Mode" rejected: implies a live product). CPA/CTA (retained 2026-07-11, superseded 2026-07-12): the standing agent pair is retired in favor of orchestrator-owned intake/triage — see roadmap D2 and the pre-Phase-5 spike. The naming question dissolves with it.
 
 Key questions:
 
@@ -32,16 +32,20 @@ Key questions:
 - What owns a Work Group lifecycle?
 - Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Epic without Feature-level ceremony, the way industry tools allow a Story without an Epic. The Workbench overlaps here but is distinct: that is about interactivity and review timing, this is about skipping intake layers.
 
-### CPA/CTA Scope
+### Intake And Triage
 
-Define CPA and CTA as Feature-level roles.
+Two ADRs, staged:
 
-Recommended scope:
+1. Phase 0: the intake artifact contract — Feature/Epic records, provenance, triage outputs (mode, repo, dependencies), and the orchestrator seam — with the executor (form logic, short-lived agent, provisional Work Group) deliberately unbound.
+2. After the pre-Phase-5 spike: the full Intake/Triage ADR settling the executor.
 
-- Produce and review Feature artifacts.
-- Resolve escalations relating to Feature artifacts.
-- Prompt users to inspect Epics when Epic-local escalation is needed.
-- Avoid becoming an all-knowing orchestrator prompt.
+Key questions (spike inputs):
+
+- Form fields and the "I don't know" escalation flow.
+- Provisional Work Group lifecycle and single-repo continuity into execution.
+- Recipient pushback protocol (Work Group challenging its Epic).
+- Cross-Epic coherence checking.
+- Graduation criteria for a standing intake agent.
 
 ### Reviewer vs Partner/Supervisor
 
@@ -158,7 +162,7 @@ Recommended:
 
 Define the fast/interactive second tempo (roadmap pillar 17 and D10): same Epic/Story data model, human as accepting gate plus trailing agent drift review, trailing evidence.
 
-Entry point already decided: a Workbench button on the master dashboard, implemented as the CPA dispatching a special-case blank Feature request scoped to a target repo; sessions can also open from an existing Epic.
+Entry point already decided: a Workbench button on the master dashboard, implemented as the orchestrator dispatching a special-case blank Feature request scoped to a target repo; sessions can also open from an existing Epic.
 
 Key questions:
 
