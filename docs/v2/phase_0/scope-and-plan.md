@@ -6,9 +6,9 @@ status = "draft"
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
 
-Status: draft. Per [build-process.md](build-process.md), the scope and the plan each require Codex and DR approval before Phase 0 work items start.
+Status: draft. Per [build-process.md](../build-process.md), the scope and the plan each require Codex and DR approval before Phase 0 work items start.
 
-Goal (from the [roadmap](roadmap.md)): decide the conceptual shape before code churn.
+Goal (from the [roadmap](../roadmap.md)): decide the conceptual shape before code churn.
 
 ## Scope
 
@@ -18,7 +18,7 @@ In scope:
 - The two Phase 0 spikes: toolloop ownership, and the disposable project folder.
 - The port-vs-rewrite inventory at package grain (roadmap D8), informed by the spikes.
 - Documentation reset: archive stale docs, adopt the front-matter convention, make remaining repo docs agent-ingestible.
-- Reconciled, dependency-ordered ADR backlog (supersedes the interim priority list in [v1-adr-alignment.md](v1-adr-alignment.md)).
+- Reconciled, dependency-ordered ADR backlog (supersedes the interim priority list in [v1-adr-alignment.md](../v1-adr-alignment.md)).
 - Breaking-change principles (D7 is agreed; recorded alongside the inventory).
 
 Out of scope:
