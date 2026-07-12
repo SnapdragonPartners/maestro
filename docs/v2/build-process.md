@@ -17,7 +17,8 @@ An artifact is Accepted when both Codex and DR have approved it.
 - Each phase begins with a scope and a plan, each reviewed and approved by both Codex and DR.
 - The working doc set stays deliberately small — there is no Maestro apparatus yet to manage a large one.
 - Each phase gets a branch (or more than one, only if the plan says so).
-- Branch naming: `v2/phase_x/XXX` (e.g. `v2/phase_0/adr-taxonomy`); bug-fix branches use `v2/fix/XXX`.
+- Branch naming: `v2/phase_x/XXX` (e.g. `v2/phase_0/adr-taxonomy`); bug-fix branches use `v2/fix/XXX`. Never reuse a prior leaf branch name as a namespace prefix (git ref collision).
+- Per-phase working artifacts live in `docs/v2/phase_x/`, mirroring the branch namespace; cross-phase docs stay at the `docs/v2/` root; Accepted decisions land in `docs/adr/`.
 - Never more than one feature/dev branch open at a time. Parallel branches are acceptable only for bug fixes. This bounds the human operator's review load, not the author's throughput.
 - Smaller PRs get a single end-of-work review. Larger PRs get review checkpoints defined in the plan.
 
