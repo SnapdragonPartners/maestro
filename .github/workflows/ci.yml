@@ -20,21 +20,27 @@ jobs:
           go-version-file: go.mod  # automatically uses the Go version from your go.mod
           cache: true
 
+      # setup-go caches Go's module/build caches but not golangci-lint's
+      # analysis cache, which otherwise runs cold every time (~1-2 min).
+      # Keyed per-commit with a prefix restore-key so each run reuses the
+      # most recent cache and saves an updated one.
+      - name: Cache golangci-lint analysis
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            golangci-lint-${{ runner.os }}-
+
       - name: Install dependencies
         run: |
           go mod download
 
-      - name: Build
+      # make build runs lint as a prerequisite, so no separate lint step.
+      - name: Build (includes lint)
         run: make build
 
-      - name: Lint
-        run: make lint
-
+      # No secrets: unit tests must not be able to make live API calls.
+      # Integration tests (which need keys) run in the pre-push hook, not CI.
       - name: Test
         run: make test
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GOOGLE_GENAI_API_KEY: ${{ secrets.GOOGLE_GENAI_API_KEY }}
-
