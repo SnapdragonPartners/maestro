@@ -34,7 +34,7 @@ An artifact is Accepted when both Codex and DR have approved it.
 
 ## Deferred Work Tracking
 
-All deferred work discovered during v2 development is tracked as GitHub Issues — a durable record that keeps the primary docs and repo clean and does not rely on any one agent's memory. The docs/v2 parking lot holds design ideas; Issues hold actionable work items.
+All deferred work discovered during v2 development is tracked as GitHub Issues — a durable record that keeps the primary docs and repo clean and does not rely on any one agent's memory. The division of labor: the roadmap holds planned work (phases and spikes), Issues hold deferred work discovered along the way, and the docs/v2 parking lot holds design ideas.
 
 ## Escalation
 
