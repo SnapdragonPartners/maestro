@@ -90,12 +90,20 @@ check-coverage:
 		echo "🎉 All key packages meet 80% coverage threshold"; \
 	fi
 
-# Install golangci-lint if not present
+# Pinned so lint results are reproducible across CI runs and dev machines;
+# @latest silently changes lint behavior (and busts CI caches) on new releases.
+GOLANGCI_LINT_VERSION := v1.64.8
+
+# Install golangci-lint if not present; warn (don't force-reinstall) on a
+# version mismatch — a PATH-shadowing install (e.g. homebrew) would win over
+# a reinstall anyway, so a loud warning beats a silent no-op loop.
 install-lint:
 	@which golangci-lint > /dev/null || { \
-		echo "Installing golangci-lint..."; \
-		go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest; \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
 	}
+	@golangci-lint version 2>/dev/null | grep -q "$(GOLANGCI_LINT_VERSION)" || \
+		echo "⚠️  golangci-lint on PATH is not $(GOLANGCI_LINT_VERSION); lint results may differ from CI"
 
 # Install goimports if not present
 install-goimports:
