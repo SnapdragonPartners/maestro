@@ -59,7 +59,7 @@ Source categories:
 | Task renamed to Epic | Claude review, DR notes | Preserves the universal Epic-contains-Stories prior; removes TASK message type and agent-tooling collisions. |
 | Work Group naming | DR notes | Replaces Task Team; "Epic Team/Group" rejected as awkward. |
 | Workbench as tempo, not parallel system (D10) | DR notes, Claude review | Hotfix name rejected as bug-associated, "Live Mode" as product-implying; interactive loop reuses Epic/Story model with trailing evidence. |
-| Workbench entry via blank Feature request | DR notes | Master dashboard button; CPA dispatches a special-case blank Feature scoped to a repo. |
+| Workbench entry via blank Feature request | DR notes | Master dashboard button; the orchestrator dispatches a special-case blank Feature scoped to a repo (originally CPA-dispatched). |
 | Human accept + trailing agent drift review | DR notes | Human gates acceptance at the Workbench; agents still catch syntactic, rule, and architectural drift. |
 | Economic argument / single-agent baseline | DR notes, Claude review | Cost per accepted change, not per token; golden suite includes a vibe-coding baseline to quantify the paired-agent premium and payoff. |
 | Interim build process (Claude authors, Codex reviews, DR accepts) | DR notes | Manual implementation of the generate/review invariant; one dev branch at a time; golden suite at phase end. |
@@ -68,7 +68,10 @@ Source categories:
 | Intake as triage, orchestrator-owned (D2 v3) | DR notes (external designer feedback), Claude review | Form + "I don't know" button + short-lived triage agent; artifact contract fixed, executor unbound; converges on original Codex D2 shape. |
 | Provisional Work Groups | DR notes, Claude review | Feature-scoped PM runs conversational intake; becomes the executing group in the single-repo case — zero handoff. |
 | Recipient pushback as review | DR notes | The Work Group receiving an Epic challenges its framing; replaces CTA. Cross-Epic coherence left to the spike. |
-| Pre-Phase-5 intake spike | DR notes, Claude review | Planned-work bracket in the roadmap, not an issue; external design review included. |
+| Pre-Phase-5 intake spike | DR notes, Claude review | Planned-work bracket in the roadmap, not an issue; external design review included (timeboxed per Codex). |
+| Symmetric review invariant | Codex synthesis, DR notes, Claude review | Codex flagged the human-authored-intake conflict; DR resolved it: reviewed by a party other than its author, recipient PM reviews human-authored Features. |
+| Orchestrator definition and no-inference rule | DR notes, Claude review | Programmatic layer, never an agent, never calls an LLM; rules/config decisions vs inference decisions as the boundary test. |
+| Phase 3 contract-only intake constraint | Codex synthesis | Phase 3 intake path must not preempt the pre-Phase-5 spike. |
 | Golden build tags (`golden-minimal`/`golden-all`) | DR notes | Extends the existing `integration` build-tag pattern to automate golden story runs. |
 | Artifact scope model (`scope_type`/`scope_id` + lineage) | Codex synthesis | Pre-Epic Feature artifacts, Product/org artifacts, and benchmark artifacts do not hang off an Epic. |
 | Phase 1 target strategy (minimally patched v1 path) | Codex synthesis, DR notes | Codex surfaced the missing-target problem; DR resolved it: post-freeze main is v2 raw material, patched just enough for golden-minimal. |

@@ -32,6 +32,16 @@ Key questions:
 - What owns a Work Group lifecycle?
 - Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Epic without Feature-level ceremony, the way industry tools allow a Story without an Epic. The Workbench overlaps here but is distinct: that is about interactivity and review timing, this is about skipping intake layers.
 
+### Orchestrator Boundary
+
+Define what the Orchestrator is in v2: the programmatic layer owning agent lifecycle, tool implementation, message routing, forge interaction, persistence, and scheduling. Never an agent; never calls an LLM directly.
+
+Key decisions:
+
+- The boundary rule: rules/config decisions belong to the Orchestrator, inference decisions belong to agents.
+- Relationship to the v1 kernel, supervisor, and dispatcher (D8 port items).
+- The seam intake and the Workbench button use to dispatch work.
+
 ### Intake And Triage
 
 Two ADRs, staged:
