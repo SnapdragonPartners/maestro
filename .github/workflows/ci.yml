@@ -40,7 +40,15 @@ jobs:
       - name: Build (includes lint)
         run: make build
 
-      # No secrets: unit tests must not be able to make live API calls.
-      # Integration tests (which need keys) run in the pre-push hook, not CI.
+      # Dummy keys, not real secrets: some unit tests construct LLM clients,
+      # which requires config.GetAPIKey to find a non-empty value, but no
+      # unit test may make a live call — with dummy keys an accidental one
+      # fails loudly (401) instead of silently spending money. Integration
+      # tests (which need real keys) run in the pre-push hook, not CI.
       - name: Test
         run: make test
+        env:
+          GITHUB_TOKEN: dummy-ci-key
+          ANTHROPIC_API_KEY: dummy-ci-key
+          OPENAI_API_KEY: dummy-ci-key
+          GOOGLE_GENAI_API_KEY: dummy-ci-key
