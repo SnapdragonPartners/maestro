@@ -23,14 +23,16 @@ jobs:
       # setup-go caches Go's module/build caches but not golangci-lint's
       # analysis cache, which otherwise runs cold every time (~1-2 min).
       # Keyed per-commit with a prefix restore-key so each run reuses the
-      # most recent cache and saves an updated one.
+      # most recent cache and saves an updated one. The Makefile (which pins
+      # the golangci-lint version) and lint config are hashed into the key so
+      # a version bump or config change starts from a fresh cache.
       - name: Cache golangci-lint analysis
         uses: actions/cache@v4
         with:
           path: ~/.cache/golangci-lint
-          key: golangci-lint-${{ runner.os }}-${{ github.sha }}
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yaml') }}-${{ github.sha }}
           restore-keys: |
-            golangci-lint-${{ runner.os }}-
+            golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yaml') }}-
 
       - name: Install dependencies
         run: |
