@@ -1040,7 +1040,7 @@ MVP does not require:
 - Full skill registry.
 - `maestro-agent` extraction.
 
-### D2. Is CPA An Agent?
+### D2. Is There A Standing Intake Agent? (Originally: Is CPA An Agent?)
 
 Revised answer (2026-07-12, after external design review; converges on the original Codex position — contract and shape, no standing agent — with stronger reasons):
 
