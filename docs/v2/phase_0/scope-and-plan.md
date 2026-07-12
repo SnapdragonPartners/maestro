@@ -8,6 +8,8 @@ status = "draft"
 
 Status: draft. Per [build-process.md](../build-process.md), the scope and the plan each require Codex and DR approval before Phase 0 work items start.
 
+Status lifecycle (applies to all phase artifacts): `draft` while under review; flipped to `live` after both approvals, as the final commit before merge and before any work items start; `archive` when the phase completes and the document becomes a historical record. Work item 1 formalizes this lifecycle as part of the front-matter convention.
+
 Goal (from the [roadmap](../roadmap.md)): decide the conceptual shape before code churn.
 
 ## Scope
@@ -59,13 +61,15 @@ Sequencing notes:
 
 ## Exit Checklist
 
-Maps one-to-one to the roadmap's Phase 0 exit criteria:
+The roadmap's Phase 0 exit criteria, plus the Phase 0 scope items that are not themselves roadmap exit criteria:
 
 - [ ] Taxonomy, artifact model (including artifact scope), branch strategy, data plane, and reviewer/partner ADRs Accepted. (Items 2–5.)
 - [ ] Phase 1-blocking ADR Accepted before any Phase 1 implementation: golden story schema / benchmark runner, including the D9 mechanism and the Phase 1 target strategy. (Item 7.)
 - [ ] The v2 MVP boundary (D1) and the port-vs-rewrite inventory (D8) written down and agreed. (Items 2 and 10; D1 is ratified inside the taxonomy ADR.)
 - [ ] Documentation reset done: stale docs archived, remaining repo docs safe for agent ingestion. (Items 1 and 11.)
 - [ ] Reconciled ADR backlog. (Item 12.)
+- [ ] Intake/triage contract ADR Accepted (item 6); both spike reports delivered (items 8–9).
+- [ ] All remaining table deliverables completed, or explicitly deferred by agreement of DR and Codex.
 
 ## Risks
 
@@ -73,8 +77,10 @@ Maps one-to-one to the roadmap's Phase 0 exit criteria:
 - **Spike scope creep.** Spikes produce a report and a recommendation, never a refactor. Throwaway code stays on the spike branch.
 - **Review bottleneck.** Serial PRs are deliberate (bounded operator load); the spikes are the pressure-relief valve when a review stalls.
 
-## Open Questions For Reviewers
+## Reviewer Questions — Resolutions
 
-1. ADR numbering: continue the single sequence (0017+) in `docs/adr/` with the v1 notes marked historical, or start a v2 series (`docs/adr/v2/0001+`)? Recommendation: continue the single sequence — one authority trail, no ambiguity about which series wins. Decided in item 1.
-2. Item 2 bundles three ADRs in one PR. Acceptable for review coherence, or split into three serial PRs?
-3. Should the doc reset (item 11) land before the ADRs so they're written into a clean tree, or after so the archive plan can account for everything the ADRs supersede? Recommendation: after, as sequenced.
+Codex has answered (2026-07-12); DR confirmation rides on this document's approval.
+
+1. ADR numbering: **continue the single sequence (0017+)** in `docs/adr/` with the v1 notes marked historical. Codex concurs: a second v2 series creates avoidable authority ambiguity. Formalized in item 1.
+2. Item 2 bundling three conceptual ADRs in one PR: **acceptable**, with the stated review checkpoint after the taxonomy ADR — the three are coupled enough that reviewing together beats serial churn.
+3. Doc reset ordering: **after the ADRs**, as sequenced — the archive plan should be informed by the accepted decisions it applies.
