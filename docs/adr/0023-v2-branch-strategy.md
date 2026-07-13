@@ -20,29 +20,31 @@ v1 merges every Story directly to the default branch, which makes the Epic-level
 - **Feature** owns no branch — it may span repositories and is coordinated through artifacts, not git.
 - **Epic** owns one branch per Epic, cut from the default branch head of its repository.
 - **Story** owns one branch, cut from its Epic branch head; Story branches merge back into the Epic branch.
-- The **Epic branch merges into default** only on acceptance (roadmap D4): human Accept by default, waivable per Epic by explicit recorded configuration for low-risk cases.
+- The **Epic branch merges into default as part of human acceptance** — the conceptual big green Accept after UAT (roadmap D4). Acceptance always belongs to the human (ADR 0020); what the human chooses is inspection depth — dig into the code, or rely on the evidence and reviews. The merge is implicit in the Accept, not a separate decision.
 
 ### Merge policy
 
-- **Story → Epic** merges are automated when the Story's evidence passes review (roadmap pillar 8) — the Architect's review record is the gate, not a human click.
-- **Epic → default** is the human acceptance gate (ADR 0020's human-reserved approval). This creates deliberate back-pressure in large Features (D4); the dashboard makes the queue visible.
+- **Story → Epic** merges execute when the Architect's review record completes after final code review (roadmap pillar 8) — the review record is the gate, not a human click.
+- **Epic → default** executes when the human's Accept is recorded after UAT (ADR 0020's human-reserved approval). This creates deliberate back-pressure in large Features (D4); the dashboard makes the queue visible.
 - Merged Story branches are deleted; Epic branches are deleted after acceptance. Golden-story fixture branches are cleaned per the benchmark ADR (item 7).
 
-### Rebase is a harness function
+### Rebase and merge are harness functions
 
 Keeping Story branches current against the Epic head, and Epic branches current against default, is scheduled harness work — not an incidental git operation left to agent whim. The split follows ADR 0019's boundary rule: a mechanically clean rebase is Orchestrator work; a conflict requiring judgment spawns an agent — dispatched as a conflict-resolution Story or a Workbench session (roadmap pillar 6). The Orchestrator never resolves a conflict by inference, because it can't.
+
+**Merging itself is exclusively a harness function.** Agents resolve conflicts and update PRs; only the harness merges, and only when the workflow rules are satisfied — Story to Epic on the Architect's completed review record, Epic to default on the recorded human Accept. Workbench presets may adjust trigger conditions, but never the rule that only the harness merges.
 
 ### Diff semantics
 
 v1's phantom-diff prevention carries forward, retargeted to the hierarchy: review diffs use merge-base semantics against the branch one level up — Story diffs against the Epic branch, Epic diffs against default — so a review never contains changes that arrived from elsewhere. Reviewers obtain diffs themselves (fresh `get_diff`-style calls); diffs are never delivered as stale payload.
 
-### Branch naming
+### Branch naming (Orchestrator-created branches only)
 
-Machine-managed branches are namespaced away from human branches:
+Scope: this ADR governs branches the Orchestrator creates at runtime. The conventions for building Maestro v2 itself are the build process's concern and are unchanged here.
 
-- `maestro/epic/<epic-id>` and `maestro/story/<epic-id>/<story-id>` for runtime branches. IDs, not titles — deterministic, collision-free, and stable under renames.
-- Human development branches keep their own namespaces (during the v2 build: `v2/phase_x/*`, `v2/fix/*` per the build process).
-- The leaf-vs-namespace rule is law: a name once used as a leaf branch is never reused as a namespace prefix, and the ID-based scheme above is constructed so the situation cannot arise (`maestro/epic/<id>` is always a leaf; `maestro/story/<epic-id>/` is always a namespace).
+- `maestro/epic/<epic-id>` and `maestro/story/<story-id>`. IDs, not titles — deterministic and stable under renames. Story IDs are globally unique, so the flat form is collision-free without encoding the Epic in the name; parentage is data-plane lineage (ADR 0018), not ref-name payload.
+- The `maestro/` prefix marks machine-managed refs, keeping them disjoint from every human branch namespace.
+- The leaf-vs-namespace rule is law: a name once used as a leaf branch is never reused as a namespace prefix. The fixed two-level scheme makes the collision structurally impossible — `maestro/epic/` and `maestro/story/` are always namespaces, IDs are always leaves.
 
 ### What carries forward
 
