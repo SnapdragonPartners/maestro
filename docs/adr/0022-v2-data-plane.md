@@ -20,7 +20,7 @@ v1's SQLite database began as a searchable log file and grew into session persis
 - The requirement is the principle: a **multi-user, network-friendly, relational database**. Postgres is the implementation. Docker-hosted local Postgres is the community default — Maestro already requires Docker, so this adds no new dependency class. Cloud-hosted Postgres serves team/cloud mode; AlloyDB is a possible later variant (notably for larger vector storage), and staying on the Postgres-compatible surface keeps the tooling valid either way. Non-Docker local Postgres may be supported later but is never the default path.
 - **`sqlc`** for typed, compile-checked queries; **`golang-migrate`** for versioned schema migrations, applied from empty. There is no migration from v1's SQLite — v1 data is frozen with `v1-freeze` (roadmap D7); the v2 story is migration from nothing.
 - Deployment note: the official cloud version of Maestro will almost certainly live in **GCP**, giving cloud-mode implementation choices a mild Google bias (AlloyDB above; GCS below). The bias applies to cloud modules only — the contracts (Postgres-compatible SQL, S3-compatible objects) stay vendor-neutral, so local mode and self-hosters are never captured by it.
-- **Object storage is a first-class data-plane component alongside the relational database.** The contract is the **S3-compatible API** — the de facto universal object surface (MinIO, SeaweedFS, Garage, GCS interop, and AWS all speak it) — fronted by the persistence interface's object module, so implementations swap by configuration. The initial Docker-local implementation is **MinIO**: a single container composed next to Postgres. Named fallback: SeaweedFS (Apache-2.0), should MinIO's community-edition stewardship worsen — the S3 contract makes that a config change, not a migration. Cloud mode plugs in GCS/S3 behind the same module. Uploads, screenshots, browser traces, and large evidence media live here, referenced from relational rows by content-addressed digest; retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
+- **Object storage is a first-class data-plane component alongside the relational database.** The contract is **Maestro's own narrow object interface** — the persistence interface's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned. Content-addressed needs are small, and owning the contract avoids overpromising provider interchangeability (GCS's S3 interoperability is partial, not a drop-in). The initial adapter is S3-compatible, implemented by **MinIO**: a single container composed next to Postgres. Named fallback: SeaweedFS (Apache-2.0), should MinIO's community-edition stewardship worsen. Cloud mode plugs a GCS or S3 adapter behind the same module. Uploads, screenshots, browser traces, and large evidence media live here, referenced from relational rows by content-addressed digest; retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
 
 ### Schema families
 
@@ -33,7 +33,7 @@ Derived mechanically from ADRs 0018 and 0021; enumerated here so Phase 2 lands t
 - Work Groups and runs.
 - Principal instances — agent, human, and system kinds (ADR 0021).
 - Artifacts: **Management and Audit in separate storage families** with opposite retention postures (ADR 0021); amendment and supersession links; review records; retention pins.
-- Tool calls — the atomic Audit **action** unit: an LLM call that produces no tool call does nothing. LLM call records exist for token/cost accounting (which is metrics) and optional trace debugging. This refines ADR 0021's Audit enumeration: all of these are Audit-family records, but the tool call is the unit of action.
+- Tool calls — the atomic Audit **action** unit: an LLM call that produces no tool call does nothing. LLM call records exist for token/cost accounting (which is metrics) and optional trace debugging. This refines ADR 0021's Audit enumeration: all of these are Audit-family records, but the tool call is the unit of action. Guardrail: any LLM output that creates artifacts, decisions, or state transitions must pass through a tool/action record — parsed free-text output can never be a side door. (This is v1's terminal-tool discipline, historical note 0006, promoted to a data-plane rule.)
 - Metrics.
 - Prompt packs (immutable, hash-addressed — roadmap pillar 10).
 - Gates.
@@ -48,6 +48,8 @@ All data-plane access flows through the Orchestrator's persistence seam (ADR 001
 
 The seam is a generalized **persistence interface** — restructured from v1's persistence layer, keeping its generality — behind which authentication, relational data, and object persistence are pluggable modules selected per deployment mode. Local mode plugs in direct modules; cloud mode plugs in its own (below). The interface is the same in every mode.
 
+Cross-store consistency is the seam's invariant: an authoritative artifact or evidence reference is never committed unless the referenced object exists by digest and its retention pin is recorded — object first, pin recorded, row last. A database row must never point at a missing or prunable blob. Orphan cleanup and retry are implementation details; the commit-order invariant is not.
+
 ### Multi-user boundaries (MVP)
 
 Per roadmap pillar 5: users belong to organizations; major records carry organization and user lineage; fine-grained roles and security groups are post-MVP non-goals; individual credentials (forge tokens, LLM keys) do most early enforcement. The schema carries the lineage now so team mode never requires a data migration — but cloud mode is more than pointing at a different database: it adds a gatekeeping **auth mini-app** that authenticates users and maps them into the data plane (roadmap pillar 15). The persistence interface is where those modules swap; the schema does not change.
@@ -58,7 +60,7 @@ Roadmap D5 is ratified by reference: source code, project docs/ADRs, and true pr
 
 ### Phase 2 scope
 
-Phase 2 implements exactly this ADR: one-command local setup from a clean checkout (Docker Postgres + migrations from empty), typed queries with tests for the artifact, principal-instance, and call families, and one real vertical slice — importing golden story runner results as `benchmark`-scoped artifacts.
+Phase 2 implements exactly this ADR: one-command local setup from a clean checkout (Docker Postgres **and MinIO** + migrations from empty), typed queries with tests for the artifact, principal-instance, and call families, the object module with its initial S3-compatible adapter, and one real vertical slice — importing golden story runner results as `benchmark`-scoped artifacts, including at least one object write with digest reference and retention pin exercising the cross-store commit-order invariant.
 
 ## Consequences
 
