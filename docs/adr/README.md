@@ -1,32 +1,33 @@
 # Architecture Decision Records
 
-This directory contains proposed Architecture Decision Records (ADRs) for Maestro.
+This directory contains Architecture Decision Records (ADRs) for Maestro, in a single
+numbered sequence with two tiers:
 
-The repository has many design specs, implementation notes, and historical plans in
-`docs/`. Those files are useful context, but they are not all equally current. These
-ADRs are intended to become the concise decision log that future implementation work
-and future agents can consult before reading older planning documents.
-
-## Status
-
-All ADRs in this initial batch are `Proposed`. They summarize the current code and
-the apparent intended design as of 2026-07-06. They should be reviewed, edited, and
-then either accepted, replaced, or deleted.
+- **0001–0016: historical v1 notes.** Proposed current-state summaries of the v1
+  implementation (as of 2026-07-06). They were never accepted as binding and never
+  will be; they remain useful context about how v1 works. v1 is deprecated as of
+  2026-07-11 (tag `v1-freeze`).
+- **0017+: v2 decisions.** These follow the lifecycle in
+  [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md): Proposed →
+  Accepted (Codex + DR approval) → Superseded/Rejected. A v2 ADR that replaces a
+  historical note marks it Superseded explicitly.
 
 ## Documentation Authority
 
-Until an ADR is accepted, use this precedence when docs conflict:
+Defined by [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md). In short:
+for current runtime behavior — code and tests, then the canonical FSM docs
+(`pkg/*/STATES.md`), then `CLAUDE.md`/`README.md`. For v2 design intent — Accepted
+ADRs (0017+), then live phase artifacts in `docs/v2/phase_x/`, then the roadmap and
+cross-phase docs in `docs/v2/`, then the historical notes below. Archived documents
+carry no authority.
 
-1. Actual code and tests.
-2. Canonical FSM docs in `pkg/pm/STATES.md`, `pkg/architect/STATES.md`, and
-   `pkg/coder/STATES.md`.
-3. Accepted ADRs in this directory.
-4. Current implementation summaries such as `CLAUDE.md`, `README.md`, and focused
-   docs like `docs/GIT.md`, `docs/TESTING_STRATEGY.md`, and
-   `docs/MAESTRO_LLMS_MIGRATION.md`.
-5. Older specs, plans, and TODO files under `docs/` and `docs/specs/`.
+## v2 ADRs
 
-## Proposed ADRs
+| ADR | Title | Status |
+| --- | --- | --- |
+| [0017](0017-v2-documentation-authority-and-lifecycle.md) | v2 documentation authority and lifecycle | Proposed |
+
+## Historical v1 Notes
 
 | ADR | Title |
 | --- | --- |
@@ -49,12 +50,15 @@ Until an ADR is accepted, use this precedence when docs conflict:
 
 ## ADR Format
 
-Each ADR should include:
+v2 ADRs (0017+) carry TOML front-matter (`title`, `edit_date`, `status`) and include:
 
 - `Status`: Proposed, Accepted, Superseded, or Rejected.
 - `Context`: Why this decision matters.
-- `Decision`: The intended design contract.
-- `Current Implementation`: Code paths that show the current state.
+- `Decision`: The design contract.
 - `Consequences`: Trade-offs and follow-up obligations.
-- `Related Documents`: Older docs that provide detail or history.
+- `Related Documents`: Sources, superseded notes, and history.
+- `Implementation Notes` (optional): code paths, when implementation exists.
+
+The historical notes (0001–0016) used a mandatory `Current Implementation` section
+instead, appropriate to their current-state purpose.
 
