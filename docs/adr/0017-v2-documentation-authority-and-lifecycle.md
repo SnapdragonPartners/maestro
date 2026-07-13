@@ -24,7 +24,7 @@ The repo currently holds three generations of documentation: ADRs 0001–0016 (p
 
 ### Front-matter
 
-All markdown documents under `docs/` that are created or substantively edited from now on carry Hugo-style TOML front-matter with three fields: `title`, `edit_date`, and `status` ∈ {`draft`, `live`, `deprecated`, `archive`}.
+All markdown documents under `docs/` that are created or substantively edited from now on carry Hugo-style TOML front-matter with `title`, `edit_date`, `status` ∈ {`draft`, `live`, `deprecated`, `archive`}, and — for documents following the file-naming convention below — `type`.
 
 - `draft` — under review; not yet authoritative.
 - `live` — actively maintained, v2-era authority. Live status is earned by review, not by being referenced.
@@ -34,6 +34,15 @@ All markdown documents under `docs/` that are created or substantively edited fr
 The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`; the historical v1 notes (0001–0016) are `deprecated`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/scope-and-plan.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
 
 ADR files are the one exception to archive-means-move: they never relocate (stable references), so for ADRs `archive`/Superseded is a status change in place.
+
+### File naming
+
+New documents under `docs/` are named `type_slug.md`: a lowercase single-word type, an underscore, then a kebab-case slug (`spike_toolloop.md`, `plan_scope.md`, `inventory_port.md`). Everything before the first underscore is the type — machine-parseable without ambiguity, sorts a flat directory into type groups, and mirrors the v2 artifact model's `artifact_type`, which these documents will eventually feed via knowledge ingestion.
+
+- Seed types: `plan`, `spike`, `inventory`, `manifest`, `requirements`, `design`, `process`, `research`, `notes`. Extend by use; prefer reuse over coinage.
+- Front-matter gains a fourth field, `type`, matching the filename prefix so name and metadata cannot drift apart.
+- Exceptions: ADRs keep the established `NNNN-slug.md` form (the sequence number is their type marker), and `README.md` remains `README.md`.
+- Existing documents are renamed to the convention during item 11 (`doc-reset`), where cross-references are rewritten anyway (e.g. `scope-and-plan.md` → `plan_scope.md`, `build-process.md` → `process_build.md`); new documents follow it immediately.
 
 ### Documentation authority
 
@@ -64,7 +73,7 @@ Executed in Phase 0 work item 11 (`doc-reset`); this ADR fixes the rules and the
 - Deprecated set (remain at their current locations, `status = "deprecated"`): the historical ADR notes 0001–0016, `docs/wiki/` (human-facing set, pending the wiki/docs-site decision), and the v1 operational docs still referenced by `CLAUDE.md` and `README.md` — currently `GIT.md`, `TESTING_STRATEGY.md`, `MAESTRO_LLMS_MIGRATION.md`, `ARCHITECT_CONTEXT.md`, `MAESTRO_CHAT_SPEC.md`, `HOTFIX_MODE_SPEC.md`, `MODES.md`, `AIRPLANE_MODE.md`, `MAINTENANCE_MODE_SPEC.md`, `OLLAMA.md`, `DOC_GRAPH.md`, plus `BENCHMARK_HOWTO.md` and `BENCHMARKS.md` as Phase 1 seeds and `WELCOME_TO_MAESTRO.md`. These are retained, unverified v1 references — not authority. Each flips to `archive` when its subject is ported, rewritten, or dropped, or its last reference is removed.
 - Everything else under `docs/` root and all of `docs/specs/` archives: these are v1 design specs, plans, and TODOs whose decisions are either implemented (the code is now the authority) or abandoned.
 - `docs/screenshots/` archives unless referenced by a kept document.
-- Item 11 produces the exact file-by-file manifest as `docs/v2/phase_0/doc-reset-manifest.md`, reviewed like any other work item. Files whose disposition is unclear default to archive — recovery from git or `docs/archive/` is cheap; stale authority is not.
+- Item 11 also executes the file-naming renames for existing live documents, and produces the exact file-by-file manifest as `docs/v2/phase_0/manifest_doc-reset.md`, reviewed like any other work item. Files whose disposition is unclear default to archive — recovery from git or `docs/archive/` is cheap; stale authority is not.
 
 ## Consequences
 
