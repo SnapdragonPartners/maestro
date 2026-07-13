@@ -1,3 +1,9 @@
++++
+title = "Architecture Decision Records"
+edit_date = "2026-07-13"
+status = "live"
++++
+
 # Architecture Decision Records
 
 This directory contains Architecture Decision Records (ADRs) for Maestro, in a single

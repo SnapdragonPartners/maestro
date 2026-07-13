@@ -1,6 +1,12 @@
++++
+title = "Maestro v2 Build Process (Interim)"
+edit_date = "2026-07-13"
+status = "live"
++++
+
 # Maestro v2 Build Process (Interim)
 
-Status: agreed working agreement, 2026-07-11
+Status: live — agreed working agreement, 2026-07-11.
 
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 
