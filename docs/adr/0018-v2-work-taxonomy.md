@@ -22,7 +22,7 @@ Names were chosen to preserve industry and LLM priors rather than fight them (ro
 **Product ⊇ Feature ⊇ Epic ⊇ Story.** Each level is a real data-plane model with provenance, not only a concept.
 
 - **Product** groups one or more repositories that together deliver a user-facing or operational system. First-class but lightweight: it exists because dashboards, multi-repo knowledge, multi-repo UAT, and golden stories need it, not because it carries workflow.
-- **Feature** is the highest-level human ask. It may span multiple repositories, contain many Epics, and may be an entire greenfield MVP. Features are decomposed into Epics by intake/triage (contract in the intake ADR; executor deliberately unbound until the pre-Phase-5 spike).
+- **Feature** is the highest-level human ask. It may span multiple repositories, contain many Epics, and may be an entire greenfield MVP. Features are decomposed into Epics by intake/triage (contract in the intake ADR; executor deliberately unbound until the pre-Phase-5 spike). Decomposition is not frozen at intake: a Feature may gain Epics after development begins — the canonical case is UAT revealing a critical missing capability that is not a bug.
 - **Epic** is a repo-scoped component of a Feature: exactly one repository, one Epic branch, one Work Group. An Epic may not be fully designed when first created. Epic-to-default merge is the human acceptance gate (roadmap D4).
 - **Story** is a PR-sized chunk of an Epic assigned to a single Coder: large enough to be useful, small enough to be testable, reviewable, and mergeable. Story branches cut from and merge into the Epic branch. Story decomposition optimizes for parallel development.
 
@@ -34,7 +34,9 @@ Names were chosen to preserve industry and LLM priors rather than fight them (ro
 
 ### The collapsible degenerate path
 
-Small work must not require Feature-level ceremony. A bug fix or tweak enters as a single-Story Epic directly. To keep the data model uniform, the degenerate path auto-creates a minimal wrapper Feature record (provenance marked `auto-created`, no intake ceremony) rather than allowing Epics without a Feature parent — every Epic has a non-null Feature lineage, and the workflow collapses instead of the schema. Bypass the ceremony, never the artifact.
+Small work must not require Feature-level ceremony. The degenerate path is ceremony-free Epic creation with two anchors: when the work belongs to an existing Feature (e.g. an Epic added mid-Feature from UAT findings), the new Epic anchors there; when it does not (a standalone bug fix or tweak entering as a single-Story Epic), the path auto-creates a minimal wrapper Feature record (provenance marked `auto-created`, no intake ceremony) rather than allowing Epics without a Feature parent. Either way, every Epic has a non-null Feature lineage, and the workflow collapses instead of the schema. Bypass the ceremony, never the artifact.
+
+The hierarchy is late-bound at every level: Features gain Epics and Epics gain Stories while in flight. A late-added Epic is reviewed like any other — recipient pushback by its Work Group applies regardless of when the Epic was minted.
 
 ### Model/Prompt/Harness
 
