@@ -1,6 +1,13 @@
++++
+title = "Maestro v2 Provenance Matrix"
+edit_date = "2026-07-13"
+status = "live"
+summary = "Tracks where each major v2 idea came from — Maestro v1, DR notes, the research corpus, Codex synthesis, or Claude review — including decisions that deliberately diverge from research orthodoxy."
++++
+
 # Maestro v2 Provenance Matrix
 
-Status: rough companion note
+Status: live — actively maintained cross-phase record.
 
 This matrix tracks where major roadmap ideas came from. It is intentionally coarse. Many ideas have multiple sources.
 
