@@ -33,6 +33,16 @@ No exemptions are needed; symmetry covers every case. The invariant applies to a
 
 The distinction is enforced in prompts and harness policy: a role configured as a Reviewer is not given the tools or instructions to propose alternatives, only to verify and block.
 
+### Reviewer heterogeneity
+
+Where practical, the reviewer runs a distinct model from the author — and for this purpose a human is also a model, echoing the non-agentic norm that the reviewer is a different person than the author. Heterogeneous model lineages catch errors that the same model, differently prompted, systematically misses; this is observed repeatedly in practice (distinct review agents over the same diffs routinely surface disjoint findings). Reviewer model routing is an M lever in MPH and a Phase 5 deliverable.
+
+Homogeneous review — author and reviewer on the same model — is a permitted degenerate case when heterogeneity is unavailable (economic constraints, airplane mode, single-provider environments), but it is a flagged degradation, not a silent default: the review record captures the author and reviewer models, so evidence and metrics can distinguish heterogeneous from homogeneous review.
+
+### Human-reserved approvals
+
+The invariant has a ceiling: some approvals belong only to the human operator, regardless of tempo or configuration — canonically, final acceptance that an Epic is complete (the Epic-to-default merge, roadmap D4). Agents review; humans accept. D4's config-based auto-merge for low-risk Epics is an explicit, recorded opt-out of that reservation, never a review outcome substituting for it.
+
 ### Bounded contention
 
 Author/reviewer disagreement escalates to a human after a bounded number of iterations — initially three, configurable per role pair. The Orchestrator enforces the bound (rules); a human resolves the contention (judgment). This is the same principle the interim build process applies to its own author/reviewer pair.

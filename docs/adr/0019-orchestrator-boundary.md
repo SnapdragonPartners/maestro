@@ -25,7 +25,7 @@ It is not an agent. It never interacts with an LLM at any point in its lifecycle
 
 ### The boundary rule
 
-**Decisions from rules and config belong to the Orchestrator; decisions requiring inference belong to an agent.** The moment an LLM gets involved in a workflow step, that step is an agent — however small or short-lived. This is a mechanical test anyone (human or agent) can apply when designing a workflow: routing, retries, scheduling, and gate checks driven by configuration are Orchestrator work; anything needing judgment, language understanding, or generation is an agent, even a single-call one. The intake form's "I don't know" button is the rule in miniature: the form is Orchestrator, pressing the button spawns an agent.
+**Decisions from rules and config belong to the Orchestrator; decisions requiring inference belong to an agent.** The moment an LLM gets involved in a workflow step, that step is an agent — however small or short-lived. This is a mechanical test anyone (human or agent) can apply when designing a workflow: routing, retries, scheduling, and gate checks driven by configuration are Orchestrator work; anything needing judgment, language understanding, or generation is an agent, even a single-call one. Applied to intake: collecting structured answers from the operator is Orchestrator work; the escalation that consults a model to answer what the operator cannot spawns a short-lived agent.
 
 The Orchestrator routes escalations and enforces bounds (e.g. contention limits, budgets) but never resolves ambiguity — resolution belongs to agents or humans.
 
