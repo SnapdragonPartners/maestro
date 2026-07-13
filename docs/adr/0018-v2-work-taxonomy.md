@@ -29,7 +29,7 @@ Names were chosen to preserve industry and LLM priors rather than fight them (ro
 ### Executors
 
 - **Work Group** is the unit of execution: the agents (PM, Architect, Coders), workspace, branch, prompt pack, harness configuration, review/evidence policy, and gates assigned to one Epic. Work Group lifecycle is owned by the Orchestrator (ADR 0019). One Work Group per Epic; multiple concurrent Work Groups are post-MVP.
-- **Workbench** is a Work Group execution *tempo*, not a separate system: rapid interactive iteration with a human present, on the same Epic/Story data model, branches, and evidence machinery, with review timing shifted (human accepts; a trailing agent reviewer checks syntactic, rule, and architectural drift). Entered from the master dashboard as a special-case blank Feature request scoped to a repo, or from an existing Epic.
+- **Workbench** is a Work Group execution *tempo*, not a separate system — where "tempo" constrains the nouns and the proof, not the loop. Invariant in both tempos: every repo change is a Story in an Epic, lands through the branch and evidence machinery with provenance, and every Management artifact is reviewed by a party other than its author (at the Workbench: the present human accepts, a trailing agent reviewer checks syntactic, rule, and architectural drift). Free to vary as harness-preset parameters (the H in MPH): the workflow graph itself, gate timing (leading versus trailing), agent lifetimes (e.g. a Coder kept live across review iterations with the human in the loop), and Story dispatch cadence (add-on Stories minted mid-Epic as the human iterates). Same nouns, same proof, different loop. Mode is chosen per Epic — at intake or by the user — and a session is entered from the master dashboard as a special-case blank Feature request scoped to a repo, or from an existing Epic.
 - Roles inside a Work Group: **PM** (requirements, user-facing refinement of the Epic; in conversational intake a provisional Work Group's PM runs the Feature-level conversation), **Architect** (technical partner and supervisor: reviews plans, code, evidence, merges), **Coder** (implements one Story at a time).
 
 ### The collapsible degenerate path
@@ -50,6 +50,7 @@ The v2 MVP is local/team-capable architecture, not full cloud multi-user. It inc
 - The git model maps one-to-one: Epic branch per Epic, Story branches into it, default branch guarded by human Accept (branching ADR).
 - Dashboards and golden stories can assume the hierarchy uniformly — no special-casing "epics without features."
 - The degenerate path obligates the intake contract ADR to define the auto-created Feature record.
+- Mid-flight changes to accepted artifacts are tempo-independent (a requirements tweak during a Workbench loop; a Coder/Architect-agreed requirement fix in factory mode) and obligate the artifacts ADR (item 3) to define amendment records — linked addenda carrying author, reviewer, and reason, never mutation — with the review invariant applying to amendments.
 - Renames are done: no document or schema may reintroduce "Task" as a work unit.
 
 ## Related Documents
