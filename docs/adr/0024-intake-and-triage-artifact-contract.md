@@ -21,7 +21,9 @@ Every intake path terminates in the same record shapes, all Management artifacts
 
 - A **Feature record** — the highest-level ask, carrying its intent content and provenance.
 - One or more **Epic records**, each carrying the three triage outputs: **mode** (`workbench` | `factory`), **repository** (with Product lineage via the repo's primary Product where inferred), and **dependencies** (on other Epics, if any).
-- A **dispatch** per Epic through the Orchestrator's seam (ADR 0019): the Epic record plus its seed artifacts — the Feature's effective view and, when available, a knowledge pack — per ADR 0021's handoff rule. Seeds must suffice to commence.
+- A **dispatch** per dependency-ready Epic through the Orchestrator's seam (ADR 0019): the Epic record plus its seed artifacts — the Feature's effective view and, when available, a knowledge pack — per ADR 0021's handoff rule. Seeds must suffice to commence.
+
+Dependency-bearing Features dispatch as a DAG, and the DAG is Orchestrator-owned: intake persists the full Epic dependency graph; the Orchestrator dispatches only dependency-ready Epics, holds blocked Epics until their upstream Epics are accepted (Epic-to-default merged, ADR 0023), and reruns the deterministic pre-checks below before releasing a held Epic. The division of labor is fixed: **the Orchestrator owns Epic dispatch across a Feature; the Architect owns Story dispatch within an Epic.**
 
 ### Entry paths
 
@@ -39,7 +41,8 @@ Any triage question the operator cannot answer is an inference problem, so it sp
 ### Review of intake artifacts
 
 - Human- or agent-authored Epic framing is reviewed by the receiving Work Group — recipient pushback, scoped to the received Epic (ADR 0020).
-- **Cross-Epic coherence** splits by the ADR 0019 rule. The deterministic half is assigned here: the Orchestrator runs data-plane pre-checks at dispatch time — in-flight Epics touching the same repository, dependency cycles among the new Epics — and surfaces findings mechanically. The judgment half — is this multi-Epic decomposition *good* — is explicitly deferred to the pre-Phase-5 spike, which decides who reviews it.
+- The **Feature record** is seed input and needs completed review before it is authoritative (ADR 0021): the receiving Work Group's recipient review includes the Feature effective view alongside the Epic framing. The Feature reaches `accepted` on the first completed recipient review; later recipients may still push back, flowing as amendments. This is the minimal assignment — no unreviewed Feature ever seeds work — and the spike may strengthen it for multi-Epic Features with a dedicated Feature-intent review.
+- **Cross-Epic coherence** splits by the ADR 0019 rule. The deterministic half is assigned here: the Orchestrator runs data-plane pre-checks at dispatch time — in-flight Epics touching the same repository, dependency cycles among the new Epics. **Findings gate dispatch**: a detected conflict or cycle blocks the affected Epic's dispatch and becomes a Management blocker artifact; the Orchestrator releases dispatch only when an authored, reviewed resolution clears it — a human decision, or an agent proposal via the escalation slot. The Orchestrator gates deterministically; resolution is judgment. The remaining judgment half — is this multi-Epic decomposition *good* — is explicitly deferred to the pre-Phase-5 spike, which decides who reviews it.
 
 ### Explicitly unbound
 
@@ -52,7 +55,8 @@ Phase 3's constraint is restated: its intake path is contract-only — a minimal
 - Intake executors are swappable by construction: form, agent, and any future design produce identical artifacts, so the spike's decision changes no schema and breaks no consumer.
 - The spike is now bounded — its open questions are enumerated here rather than discovered later.
 - The wrapper-Feature, accountable-authorship, and coherence-assignment obligations from 0018/0020/0021 are discharged; the deterministic coherence pre-checks give Phase 3 real conflict detection without any inference.
-- Dispatch-time pre-checks make the "conflict with work in flight" roadmap concern a query, not a review burden.
+- Dispatch-time pre-checks make the "conflict with work in flight" roadmap concern a query with teeth: findings block dispatch until resolved, rather than annotating Epics that proceed anyway.
+- The Epic DAG gives D4's back-pressure its mechanism: downstream Epics wait on upstream acceptance by construction, and the dashboard's queue view reads straight off the held-Epic set.
 
 ## Related Documents
 
