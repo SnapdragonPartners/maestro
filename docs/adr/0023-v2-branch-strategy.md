@@ -1,13 +1,13 @@
 +++
 title = "ADR 0023: v2 Branch Strategy"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story merges on passing evidence, human Accept for Epic-to-default; rebase as a harness function; branch naming for machine and human branches."
 +++
 
 # 0023. v2 Branch Strategy
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 

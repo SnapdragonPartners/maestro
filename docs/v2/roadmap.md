@@ -731,7 +731,7 @@ Open design questions (parked until the ADR):
 - What exactly does the trailing agent reviewer check, and when does it run?
 - How much of the session transcript becomes evidence versus Audit-only data?
 - Budgets and limits for open-ended interactive sessions.
-- Can Workbench merges to the Epic branch auto-accept given human presence plus a clean trailing drift check?
+- Within a Workbench session, can Story-to-Epic merges execute on the present human's approval plus a clean trailing drift check, without a separate Architect review record? (Epic-to-default always requires the human Accept — ADR 0020.)
 
 ## Proposed Sequencing
 
