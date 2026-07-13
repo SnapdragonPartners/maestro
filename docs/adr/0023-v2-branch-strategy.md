@@ -2,7 +2,7 @@
 title = "ADR 0023: v2 Branch Strategy"
 edit_date = "2026-07-13"
 status = "live"
-summary = "Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story merges on passing evidence, human Accept for Epic-to-default; rebase as a harness function; branch naming for machine and human branches."
+summary = "Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches."
 +++
 
 # 0023. v2 Branch Strategy
