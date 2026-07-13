@@ -19,6 +19,8 @@ Artifacts are the unit of handoff in v2: chat feeds artifacts, every significant
 
 Every agent is seeded at startup with one or more artifacts paired to its prompt template, and that seed must be sufficient to commence the task. There is no LLM-context sharing between agents — ever. Whatever an agent later does to clarify (QUESTION/ANSWER, knowledge lookups, workspace exploration) is clarification, not seeding. The seeding set is recorded as the instance's input artifact digests in the MPH signature below, so "what was this agent given to start?" is always a query, never a mystery.
 
+The handoff has a **promotion boundary**. Message traffic (QUESTION/ANSWER, REQUEST/RESPONSE) is Audit exhaust and is never delivered to reviewers or downstream consumers — only an artifact's effective view is. When an exchange changes intent, requirements, or acceptance — a Coder discovers a dependency cannot be satisfied without an out-of-scope change — the change is promoted through an **amendment request**: a REQUEST carrying the proposed amendment and its justification, whose approving RESPONSE constitutes the amendment's review (author = requester, reviewer = approver, satisfying ADR 0020 by construction). The Orchestrator then delivers the updated effective view to every subsequent consumer — deterministic delivery, no inference (ADR 0019). Unreviewed exhaust can never quietly become the real spec.
+
 ### Two artifact categories
 
 The classification test is functional, not audience-based:
@@ -51,6 +53,8 @@ The v1 notion of agent instance generalizes to the **principal instance**: one r
 - **Human** principals are user accounts: each gets an instance record whose `model` is `human-<user_id>` — two distinct humans are two distinct models (ADR 0020), so authorship, review, and the heterogeneity record are uniformly checkable with no nulls or side channels.
 - **System** principals are Orchestrator components — the persistence worker, tool runtime, scheduler, metric collector — with `model` = `system-<component>`. System principals produce Audit artifacts (tool calls, traces, metric events, checkpoints, message events) but can never satisfy the Management review invariant, as author or reviewer: per ADR 0019 they perform no inference, so there is no judgment to review or to review with.
 
+Mechanical assembly is not authorship. When the Orchestrator deterministically emits a Management artifact — the auto-created wrapper Feature at degenerate entry, an evidence package assembled from story records — `author_instance_id` is the **accountable** agent or human principal whose action or workflow step caused the emission: the human who submitted the degenerate entry; the agent whose completion emitted the evidence. The review invariant binds that accountable principal. The system principal that performed the assembly is recorded as producer in the provenance trail, and the assembly event itself is Audit data.
+
 The review invariant's data-plane expression: every accepted Management artifact carries an agent or human author, a distinct agent or human reviewer, and a completed review record. Reviewer identity alone is not review completion: a Management artifact persists as `draft` — working state with no authority — until its review record completes (decision, reviewer principal, `accepted_at`); only then does it become accepted and authoritative. The author/reviewer pair's `model` values distinguish heterogeneous from homogeneous review.
 
 ### Artifact lifecycle: invalidate, amend, supersede
@@ -67,6 +71,8 @@ Effective-view semantics are deterministic:
 - On acceptance, each amendment receives `accepted_at` and a monotonic per-original sequence number; the sequence is the total order.
 - Consumers apply accepted amendments in sequence order; where amendments conflict, the later prevails.
 - The effective view is original plus accepted amendments in sequence; auditors read the full chain, including rejected amendments and superseded lineage.
+
+The minimal `status` vocabulary is fixed here so Phase 2 does not invent it: Management artifacts move `draft` → (`invalidated` | `accepted`) → (`superseded` | `archived`). `accepted` is the only authoritative state (it corresponds to `live` in the document vocabulary, ADR 0017), and amendments never change the original's status — they change its effective view. Audit artifacts are born final and have no lifecycle; retention pinning is a property, not a status. Phase 2 may extend this vocabulary, never repurpose it.
 
 ### The MPH signature
 
