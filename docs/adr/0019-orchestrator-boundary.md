@@ -1,13 +1,13 @@
 +++
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test."
 +++
 
 # 0019. Orchestrator Boundary
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 

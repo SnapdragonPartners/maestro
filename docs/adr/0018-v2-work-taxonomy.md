@@ -1,13 +1,13 @@
 +++
 title = "ADR 0018: v2 Work Taxonomy"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Defines the v2 work hierarchy — Product, Feature, Epic, Story — and its executors (Work Group, Workbench tempo), the collapsible degenerate path for small work, and the v2 MVP boundary (D1)."
 +++
 
 # 0018. v2 Work Taxonomy
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 

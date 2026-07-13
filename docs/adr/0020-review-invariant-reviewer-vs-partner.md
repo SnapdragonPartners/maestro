@@ -1,13 +1,13 @@
 +++
 title = "ADR 0020: The Review Invariant — Reviewer vs Partner/Supervisor"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Canonical statement of the symmetric review invariant (every Management artifact reviewed by a non-author) and the two review scopes: narrow Reviewers that block, and Partner/Supervisors that judge."
 +++
 
 # 0020. The Review Invariant — Reviewer vs Partner/Supervisor
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
