@@ -1,13 +1,13 @@
 +++
 title = "ADR 0017: v2 Documentation Authority And Lifecycle"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Defines v2 doc conventions: ADR numbering and acceptance lifecycle, front-matter schema, draft/live/deprecated/archive authority, type_slug.md naming, directory indexes, and the v1 doc archive plan."
 +++
 
 # 0017. v2 Documentation Authority And Lifecycle
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
@@ -44,7 +44,7 @@ New documents under `docs/` are named `type_slug.md`: a lowercase single-word ty
 
 These documents are primarily LLM-facing, which sets the design principle: predictability and self-description before opening. A regular convention lets an agent guess paths instead of spending tool calls exploring, and a self-describing name plus front-matter means type and authority are known from a directory listing and the first five lines of the file. Status deliberately stays out of filenames — a status transition must not break links or remembered paths.
 
-- Seed types: `plan`, `spike`, `inventory`, `manifest`, `requirements`, `design`, `process`, `research`, `notes`. Extend by use; prefer reuse over coinage.
+- Seed types: `plan`, `spike`, `inventory`, `manifest`, `requirements`, `design`, `process`, `research`, `notes`. Prefer reuse; add a type only when a document class has repeated examples. `notes` is a temporary catchall — promote durable notes into a real type rather than letting `notes` become the junk drawer.
 - Front-matter gains a fourth field, `type`, matching the filename prefix so name and metadata cannot drift apart.
 - Slugs favor full explicit words over abbreviations — filename tokens are cheap and orientation is not (`inventory_port-vs-rewrite.md`, not `inventory_pvr.md`).
 - Every directory under `docs/` maintains a `README.md` index with a one-line description per document — the highest-leverage aid for LLM readers, who consult one small index instead of opening files to find the right one. Item 11 creates the missing indexes.
