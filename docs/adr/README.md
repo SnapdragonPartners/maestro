@@ -58,7 +58,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 
 ## ADR Format
 
-v2 ADRs (0017+) carry TOML front-matter (`title`, `edit_date`, `status`) and include:
+v2 ADRs (0017+) carry TOML front-matter (`title`, `edit_date`, `status`, `summary`) and include:
 
 - `Status`: Proposed, Accepted, Superseded, or Rejected.
 - `Context`: Why this decision matters.
