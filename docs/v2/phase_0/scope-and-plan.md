@@ -1,12 +1,13 @@
 +++
 title = "Maestro v2 Phase 0: Scope And Plan"
-edit_date = "2026-07-12"
-status = "draft"
+edit_date = "2026-07-13"
+status = "live"
+summary = "Approved Phase 0 scope and execution plan: 13 serial work items (ADRs, two spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
 +++
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
 
-Status: draft. Per [build-process.md](../build-process.md), the scope and the plan each require Codex and DR approval before Phase 0 work items start.
+Status: live — approved by Codex and DR, 2026-07-12, per [build-process.md](../build-process.md).
 
 Status lifecycle (applies to all phase artifacts): `draft` while under review; flipped to `live` after both approvals, as the final commit before merge and before any work items start; `archive` when the phase completes and the document becomes a historical record. Work item 1 formalizes this lifecycle as part of the front-matter convention.
 
@@ -25,7 +26,7 @@ In scope:
 
 Out of scope:
 
-- Implementation code. Spike code is throwaway and never merges.
+- Implementation code. Spike code never merges into app packages; scripts worth revisiting may be preserved under `spikes/phase_0/` (see sequencing notes).
 - Golden story and runner *implementation* (Phase 1) — but their ADR is in scope and Phase 0 exit-blocking.
 - The final intake executor design (pre-Phase-5 spike). Phase 0 fixes only the intake artifact contract and orchestrator seam.
 - Postgres DDL and migrations (Phase 2). Phase 0 decides the stack and schema families only.
@@ -36,6 +37,8 @@ The v2 product thesis and MPH definition already exist in the roadmap and README
 ## Deliverables And PR Sequence
 
 One short-lived branch per item (`v2/phase_0/XXX`), one open at a time, single end-of-work review each per the build process. Order respects dependencies; sizes are rough (S under a day of review-ready work, M a few days).
+
+Deliverable locations: ADRs land in `docs/adr/` (continuing the single 0017+ sequence); all other deliverables — spike reports, the port inventory, checklists — land in this directory (`docs/v2/phase_0/`). The backlog reconciliation edits the existing cross-phase docs at the `docs/v2/` root.
 
 | # | Branch suffix | Deliverable | Size |
 |---|---|---|---|
@@ -58,6 +61,8 @@ Sequencing notes:
 - Items 8 and 9 have no ADR dependencies and are the designated slack: if an ADR review stalls, a spike proceeds without violating the one-branch rule (the stalled branch closes or merges first).
 - Item 2 bundles three closely coupled conceptual ADRs for review coherence. If it runs large, the plan's checkpoint mechanism applies: review checkpoint after the taxonomy ADR before the other two are drafted.
 - Item 7 is deliberately last of the ADRs: it consumes the artifact model (3), data plane families (4), and branching (5).
+- Before a spike begins, all open document work is committed — risk minimization against spike churn.
+- Spike scripts worth revisiting may be preserved under `spikes/phase_0/`, which must be its own Go module (own `go.mod`) so `go build ./...`, `go test ./...`, and lint walkers exclude it. Spike code never lives under `pkg/`, `internal/`, or `cmd/`. The report remains the deliverable; preserved scripts are a courtesy to the future, not a maintained surface.
 
 ## Exit Checklist
 

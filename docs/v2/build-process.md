@@ -1,6 +1,13 @@
++++
+title = "Maestro v2 Build Process (Interim)"
+edit_date = "2026-07-13"
+status = "live"
+summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; branching, review cadence, spikes, testing, and merge rules."
++++
+
 # Maestro v2 Build Process (Interim)
 
-Status: agreed working agreement, 2026-07-11
+Status: live — agreed working agreement, 2026-07-11.
 
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 
@@ -32,6 +39,11 @@ An artifact is Accepted when both Codex and DR have approved it.
 
 - CI runs automated review agents on every PR. All of their feedback must be resolved before merge: each thread is either fixed or explicitly pushed back on with a reasoned reply, then marked resolved. Resolving CI reviewer feedback is Claude's job.
 - Final approval and the merge button are DR's.
+
+## Spikes
+
+- Before a spike begins, all open document work is committed (risk minimization).
+- Spike code never merges into app packages (`pkg/`, `internal/`, `cmd/`). Reports land in the phase directory; scripts worth revisiting may be preserved under `spikes/phase_x/`, a standalone module excluded from the main build, test, and lint walkers. Preserved scripts are unmaintained by definition.
 
 ## Deferred Work Tracking
 
