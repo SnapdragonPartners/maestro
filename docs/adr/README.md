@@ -35,6 +35,8 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | --- | --- | --- |
 | [0017](0017-v2-documentation-authority-and-lifecycle.md) | v2 documentation authority and lifecycle | Accepted |
 | [0018](0018-v2-work-taxonomy.md) | v2 work taxonomy | Proposed |
+| [0019](0019-orchestrator-boundary.md) | Orchestrator boundary | Proposed |
+| [0020](0020-review-invariant-reviewer-vs-partner.md) | The review invariant — Reviewer vs Partner/Supervisor | Proposed |
 
 ## Historical v1 Notes
 
