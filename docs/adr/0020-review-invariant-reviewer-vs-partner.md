@@ -7,7 +7,7 @@ summary = "Canonical statement of the symmetric review invariant (every Manageme
 
 # 0020. The Review Invariant — Reviewer vs Partner/Supervisor
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-13 (code review is review, not a human reservation)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-13 (code review is review, not a human reservation); amended 2026-07-13 (human Accept is unconditional — auto-merge waiver withdrawn)
 
 ## Context
 
@@ -43,7 +43,7 @@ Homogeneous review — author and reviewer on the same model — is a permitted 
 
 ### Human-reserved approvals
 
-The invariant has a ceiling: some approvals are reserved to the human operator by default and can never be satisfied by agent review alone — canonically, final acceptance that an Epic is complete (the Epic-to-default merge, roadmap D4). Agents review; humans accept. The reservation is independent of tempo. It may be waived only by an explicit, recorded configuration choice (D4's auto-merge for low-risk Epics) — which is itself a human policy act, not a review outcome standing in for the human.
+The invariant has a ceiling: some approvals are reserved to the human operator and can never be satisfied by agent review alone — canonically, final acceptance that an Epic is complete (the Epic-to-default merge, roadmap D4). Agents review; humans accept. The reservation is independent of tempo and is **unconditional** (amended 2026-07-13: the earlier low-risk auto-merge waiver is withdrawn). Acceptance is not about risk — it is outcome validation, whether the work solves the need, and no risk assessment can stand in for the one answer only the human holds. Accepting a trivial Epic costs one glance at its evidence, because acceptance is not code review; the click is cheap and the invariant is load-bearing.
 
 ### Code review is review, not a human reservation
 

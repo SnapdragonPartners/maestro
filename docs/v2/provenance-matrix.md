@@ -84,6 +84,9 @@ Source categories:
 | Tool call as the Audit action unit | DR notes | An LLM call without a tool call does nothing; LLM call records are token/cost metrics and optional traces (ADR 0022). |
 | Object storage first-class with pluggable interface | DR notes | Local and cloud use different products; the contract is fixed, implementations plug in; retention pins apply to objects. |
 | Generalized persistence interface + cloud auth mini-app | DR notes | Auth, data, and object persistence as pluggable modules per mode; cloud is not "point at another database" (ADR 0022). |
+| Unconditional human Accept; auto-merge withdrawn | DR notes | Acceptance is outcome validation (need solved), not risk management; the D4 low-risk auto-merge idea is withdrawn from 0020/D4/pillar 8 (2026-07-13). |
+| Reviewed history is immutable; Epic branches never rebase | Codex synthesis | Evidence binds commit provenance; Epics sync default via history-preserving merges; only Story branches rebase (ADR 0023). |
+| Epic conflict flow via supplementary Story | DR notes | Orchestrator detects, Architect mints a conflict-resolution Story, merge retries — the Story-level flow one level up. |
 | Golden build tags (`golden-minimal`/`golden-all`) | DR notes | Extends the existing `integration` build-tag pattern to automate golden story runs. |
 | Artifact scope model (`scope_type`/`scope_id` + lineage) | Codex synthesis | Pre-Epic Feature artifacts, Product/org artifacts, and benchmark artifacts do not hang off an Epic. |
 | Phase 1 target strategy (minimally patched v1 path) | Codex synthesis, DR notes | Codex surfaced the missing-target problem; DR resolved it: post-freeze main is v2 raw material, patched just enough for golden-minimal. |
