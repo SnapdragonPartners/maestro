@@ -1,13 +1,13 @@
 +++
 title = "ADR 0021: Artifacts And Principal Instances"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Defines the v2 artifact model: artifacts as the sole agent handoff, Management (inputs) vs Audit (exhaust) categories, the scope/lineage signature, principal instances (agent/human/system), the invalidate/amend/supersede lifecycle, evidence retention-pinning, and the MPH signature."
 +++
 
 # 0021. Artifacts And Principal Instances
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
@@ -19,7 +19,7 @@ Artifacts are the unit of handoff in v2: chat feeds artifacts, every significant
 
 Every agent is seeded at startup with one or more artifacts paired to its prompt template, and that seed must be sufficient to commence the task. There is no LLM-context sharing between agents — ever. Whatever an agent later does to clarify (QUESTION/ANSWER, knowledge lookups, workspace exploration) is clarification, not seeding. The seeding set is recorded as the instance's input artifact digests in the MPH signature below, so "what was this agent given to start?" is always a query, never a mystery.
 
-The handoff has a **promotion boundary**. Message traffic (QUESTION/ANSWER, REQUEST/RESPONSE) is Audit exhaust and is never delivered to reviewers or downstream consumers — only an artifact's effective view is. When an exchange changes intent, requirements, or acceptance — a Coder discovers a dependency cannot be satisfied without an out-of-scope change — the change is promoted through an **amendment request**: a REQUEST carrying the proposed amendment and its justification, whose approving RESPONSE constitutes the amendment's review (author = requester, reviewer = approver, satisfying ADR 0020 by construction). The Orchestrator then delivers the updated effective view to every subsequent consumer — deterministic delivery, no inference (ADR 0019). Unreviewed exhaust can never quietly become the real spec.
+The handoff has a **promotion boundary**. Message traffic (QUESTION/ANSWER, REQUEST/RESPONSE) is Audit exhaust and is never delivered as authoritative seed or context to downstream reviewers or consumers — only an artifact's effective view is. When an exchange changes intent, requirements, or acceptance — a Coder discovers a dependency cannot be satisfied without an out-of-scope change — the change is promoted through an **amendment request**: a REQUEST carrying the proposed amendment and its justification, whose approving RESPONSE constitutes the amendment's review (author = requester, reviewer = approver, satisfying ADR 0020 by construction). The Orchestrator then delivers the updated effective view to every subsequent consumer — deterministic delivery, no inference (ADR 0019). Unreviewed exhaust can never quietly become the real spec.
 
 ### Two artifact categories
 
@@ -63,7 +63,7 @@ Accepted artifacts are immutable. Three operations cover change, split by when a
 
 - **Invalidation (before acceptance only).** Fundamental flaws found in review — wrong approach, wrong design — invalidate the draft; a replacement artifact starts a fresh chain (optionally linked via `replaces_artifact_id` for traceability). Invalidated drafts are retained as history with no authority. Never amend a draft into acceptability: consumers read effective views as agent seeds, and a flawed base plus corrective amendments is context bloat delivered as input.
 - **Amendment (after acceptance, small changes).** A mid-flight tweak — a requirements adjustment during a Workbench loop, a Coder/Architect-agreed fix discovered in implementation — is an **amendment record**: a new artifact of type `amendment` whose `amends_artifact_id` links the original, carrying its own author, reviewer, and reason. The review invariant applies to amendments exactly as to originals (ADR 0020).
-- **Supersession (after acceptance, fundamental changes).** When an accepted artifact is proven fundamentally wrong (e.g. by UAT), it is not amended into a new shape — a new artifact with `supersedes_artifact_id` goes through full review, and the superseded artifact is archived. The effective view never spans a supersession. This mirrors the ADR lifecycle itself (Accepted → Superseded).
+- **Supersession (after acceptance, fundamental changes).** When an accepted artifact is proven fundamentally wrong (e.g. by UAT), it is not amended into a new shape — a new artifact with `supersedes_artifact_id` goes through full review, and the old artifact is marked `superseded`. The effective view never spans a supersession. This mirrors the ADR lifecycle itself (Accepted → Superseded).
 
 Effective-view semantics are deterministic:
 
