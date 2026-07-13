@@ -2,6 +2,7 @@ package testkit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,7 +36,15 @@ func DockerDaemonError() error {
 		defer cancel()
 		out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").Output()
 		if err != nil {
-			dockerProbeErr = fmt.Errorf("docker daemon not reachable: %w", err)
+			// Output() stores the CLI's stderr on ExitError; surface it, or the
+			// error reads as a bare "exit status 1" instead of the real cause
+			// (socket missing, DOCKER_HOST unreachable, ...).
+			detail := err.Error()
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+				detail = strings.TrimSpace(string(exitErr.Stderr))
+			}
+			dockerProbeErr = fmt.Errorf("docker daemon not reachable: %s", detail)
 			return
 		}
 		if strings.TrimSpace(string(out)) == "" {
