@@ -2,7 +2,7 @@
 title = "ADR 0021: Artifacts And Principal Instances"
 edit_date = "2026-07-13"
 status = "draft"
-summary = "Defines the v2 artifact model: Management vs Audit categories, the scope/lineage signature, principal instances (agents and humans uniformly), amendment records, and lightweight provenance signatures."
+summary = "Defines the v2 artifact model: Management vs Audit categories, the scope/lineage signature, principal instances (agent, human, and system kinds), amendment semantics, evidence retention-pinning, and lightweight provenance signatures."
 +++
 
 # 0021. Artifacts And Principal Instances
@@ -32,27 +32,39 @@ Every artifact carries:
 - `status`
 - `scope_type` (`organization`, `product`, `feature`, `epic`, `story`, `benchmark`, ...) and `scope_id` — artifacts attach to a scope, never assume an Epic
 - Denormalized lineage for querying: `product_id`, `feature_id`, `epic_id`, `story_id`, populated as far up the hierarchy as the scope implies; per ADR 0018, lineage is non-null at every level the scope covers (wrapper Features and the default Product guarantee this)
-- `author_instance_id` and `reviewer_instance_id` — principal-generic references (see below); reviewer nullable only for Audit artifacts, which are not review-bearing
+- `author_instance_id` and `reviewer_instance_id` — principal-generic references (see below). Management artifacts require agent or human principals on both sides; Audit artifacts may be authored by any principal kind (including system principals) and their reviewer is null — Audit data is not review-bearing
 - `created_at`, `payload`, `schema_version`
 
 Payloads are JSON with schema/version fields; Markdown is a rendering format, never the substrate. A one-line `summary` field serves triage and the artifact-row UI, mirroring the doc front-matter convention.
 
 ### Principal instances
 
-The v1 notion of agent instance generalizes to the **principal instance**: one record type for anything that can author or review.
+The v1 notion of agent instance generalizes to the **principal instance**: one record type for anything that can produce, author, or review. Three principal kinds:
 
-- Agent principals carry `agent_type`, `model`, `prompt_pack_id`, `prompt_hash`, `harness_config_hash`, `start_time`/`stop_time`/`stop_reason`, and scope lineage (`organization_id`; nullable `feature_id`/`epic_id`/`story_id` for scoped instances).
-- Human principals are user accounts: each gets an instance record whose `model` is `human-<user_id>` — two distinct humans are two distinct models (ADR 0020), so authorship, review, and the heterogeneity record are uniformly checkable with no nulls or side channels.
+- **Agent** principals carry `agent_type`, `model`, `prompt_pack_id`, `prompt_hash`, `harness_config_hash`, `start_time`/`stop_time`/`stop_reason`, and scope lineage (`organization_id`; nullable `feature_id`/`epic_id`/`story_id` for scoped instances).
+- **Human** principals are user accounts: each gets an instance record whose `model` is `human-<user_id>` — two distinct humans are two distinct models (ADR 0020), so authorship, review, and the heterogeneity record are uniformly checkable with no nulls or side channels.
+- **System** principals are Orchestrator components — the persistence worker, tool runtime, scheduler, metric collector — with `model` = `system-<component>`. System principals produce Audit artifacts (tool calls, traces, metric events, checkpoints, message events) but can never satisfy the Management review invariant, as author or reviewer: per ADR 0019 they perform no inference, so there is no judgment to review or to review with.
 
-The review invariant's data-plane expression: every Management artifact's `author_instance_id` ≠ `reviewer_instance_id`, and the pair's `model` values distinguish heterogeneous from homogeneous review.
+The review invariant's data-plane expression: every accepted Management artifact carries an agent or human author, a distinct agent or human reviewer, and a completed review record. Reviewer identity alone is not review completion: a Management artifact persists as `draft` — working state with no authority — until its review record completes (decision, reviewer principal, `accepted_at`); only then does it become accepted and authoritative. The author/reviewer pair's `model` values distinguish heterogeneous from homogeneous review.
 
 ### Amendments
 
-Accepted artifacts are immutable. A mid-flight change — a requirements tweak during a Workbench loop, a Coder/Architect-agreed fix in factory mode — is an **amendment record**: a new artifact of type `amendment` whose `amends_artifact_id` links the original, carrying its own author, reviewer, and reason. The review invariant applies to amendments exactly as to originals (ADR 0020). The effective content of an artifact is its original plus accepted amendments in order; consumers read the effective view, auditors read the chain.
+Accepted artifacts are immutable. A mid-flight change — a requirements tweak during a Workbench loop, a Coder/Architect-agreed fix in factory mode — is an **amendment record**: a new artifact of type `amendment` whose `amends_artifact_id` links the original, carrying its own author, reviewer, and reason. The review invariant applies to amendments exactly as to originals (ADR 0020).
+
+Effective-view semantics are deterministic:
+
+- Amendments target the original artifact only — the chain is flat; there are no amendments of amendments. Correcting an earlier amendment means a later amendment.
+- On acceptance, each amendment receives `accepted_at` and a monotonic per-original sequence number; the sequence is the total order.
+- Consumers apply accepted amendments in sequence order; where amendments conflict, the later prevails.
+- The effective view is original plus accepted amendments in sequence; auditors read the full chain, including rejected amendments.
 
 ### Lightweight provenance signatures
 
 Each artifact's provenance binds: the author principal instance, model, prompt hash, harness config hash, input artifact digests, and the output payload digest (plus the reviewer's, when reviewed). Content digests, not cryptographic signing — the roadmap defers cryptographic signatures until a concrete compliance requirement appears.
+
+### Evidence references and retention
+
+Evidence packages prove by pointer, and pointers must not rot. An evidence reference binds `artifact_id` plus the referenced payload's digest (and version, for amended artifacts: the effective-view sequence point it cites). While an evidence package is authoritative (accepted, and its Epic's acceptance stands), every Audit artifact and binary attachment it references is **retention-pinned**: Audit retention and compaction may prune only unpinned records. Digest binding means even a retention bug is detectable — a dangling or altered reference fails verification rather than silently weakening the proof.
 
 ### Where artifacts live
 
