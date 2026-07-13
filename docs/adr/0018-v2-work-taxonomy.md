@@ -60,5 +60,5 @@ The v2 MVP is local/team-capable architecture, not full cloud multi-user. It inc
 ## Related Documents
 
 - [Roadmap](../v2/roadmap.md) Core Vocabulary, naming note, D1/D4; [ADR backlog](../v2/adr-backlog.md) taxonomy questions.
-- [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md) (conventions), ADR 0019 (Orchestrator boundary, forthcoming), ADR 0020 (Reviewer vs Partner, forthcoming), intake contract ADR (item 6).
+- [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md) (conventions), [ADR 0019](0019-orchestrator-boundary.md) (Orchestrator boundary), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (review invariant), intake contract ADR (item 6, forthcoming).
 - Supersedes the role taxonomy in historical note [0003](0003-agent-roles-and-finite-state-machines.md) (FSM discipline itself is unaffected and remains v2-aligned).
