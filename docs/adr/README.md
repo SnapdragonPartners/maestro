@@ -11,8 +11,9 @@ numbered sequence with two tiers:
 
 - **0001–0016: historical v1 notes.** Proposed current-state summaries of the v1
   implementation (as of 2026-07-06). They were never accepted as binding and never
-  will be; they remain useful context about how v1 works. v1 is deprecated as of
-  2026-07-11 (tag `v1-freeze`).
+  will be; they remain useful context about how v1 works and carry `deprecated`
+  status (stamped in the Phase 0 doc reset). v1 is deprecated as of 2026-07-11
+  (tag `v1-freeze`).
 - **0017+: v2 decisions.** These follow the lifecycle in
   [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md): Proposed →
   Accepted (Codex + DR approval) → Superseded/Rejected. A v2 ADR that replaces a
@@ -22,10 +23,10 @@ numbered sequence with two tiers:
 
 Defined by [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md). In short:
 for current runtime behavior — code and tests, then the canonical FSM docs
-(`pkg/*/STATES.md`), then `CLAUDE.md`/`README.md`. For v2 design intent — Accepted
-ADRs (0017+), then live phase artifacts in `docs/v2/phase_x/`, then the roadmap and
-cross-phase docs in `docs/v2/`, then the historical notes below. Archived documents
-carry no authority.
+(`pkg/*/STATES.md`), then `CLAUDE.md`/`README.md`, then `deprecated` v1 docs as
+unverified hints. For v2 design intent — Accepted ADRs (0017+), then live phase
+artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
+`docs/v2/`, then the historical notes below. Archived documents carry no authority.
 
 ## v2 ADRs
 

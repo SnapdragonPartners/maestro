@@ -24,9 +24,16 @@ The repo currently holds three generations of documentation: ADRs 0001–0016 (p
 
 ### Front-matter
 
-All markdown documents under `docs/` that are created or substantively edited from now on carry Hugo-style TOML front-matter with three fields: `title`, `edit_date`, and `status` ∈ {`draft`, `live`, `archive`}.
+All markdown documents under `docs/` that are created or substantively edited from now on carry Hugo-style TOML front-matter with three fields: `title`, `edit_date`, and `status` ∈ {`draft`, `live`, `deprecated`, `archive`}.
 
-The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/scope-and-plan.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
+- `draft` — under review; not yet authoritative.
+- `live` — actively maintained, v2-era authority. Live status is earned by review, not by being referenced.
+- `deprecated` — describes the deprecated v1 system and has not been verified against current code. Subordinate to code, tests, and the FSM docs for runtime-behavior questions; never authoritative for v2 design. Retained in place only while something references or needs it; flips to `archive` when its subject is ported, rewritten, or dropped — the D8 inventory execution and phase completions are the natural triggers. A `deprecated` document contradicting a v2 ADR is not an inconsistency to fix; it is the transition state made explicit, exactly as the v1 code itself contradicts the v2 design until replaced.
+- `archive` — history; no authority for any question.
+
+The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`; the historical v1 notes (0001–0016) are `deprecated`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/scope-and-plan.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
+
+ADR files are the one exception to archive-means-move: they never relocate (stable references), so for ADRs `archive`/Superseded is a status change in place.
 
 ### Documentation authority
 
@@ -37,6 +44,7 @@ For current runtime behavior (the code as it runs today):
 1. Code and tests.
 2. Canonical FSM docs: `pkg/pm/STATES.md`, `pkg/architect/STATES.md`, `pkg/coder/STATES.md`.
 3. Implementation summaries: `CLAUDE.md`, `README.md`.
+4. `deprecated` v1 docs — unverified hints, useful for orientation, always outranked by the above.
 
 For v2 design intent:
 
@@ -52,7 +60,8 @@ Documents with `status = "archive"` carry no authority for any question; they ar
 Executed in Phase 0 work item 11 (`doc-reset`); this ADR fixes the rules and the keep list.
 
 - Archived documents move to `docs/archive/`, preserving filenames, and receive `status = "archive"` front-matter. Git history preserves original paths; no redirects are maintained.
-- Keep list (remain live at their current locations): `docs/adr/`, `docs/v2/`, `docs/wiki/` (human-facing set, pending the wiki/docs-site decision), and the operational docs referenced by `CLAUDE.md` and `README.md` — currently `GIT.md`, `TESTING_STRATEGY.md`, `MAESTRO_LLMS_MIGRATION.md`, `ARCHITECT_CONTEXT.md`, `MAESTRO_CHAT_SPEC.md`, `HOTFIX_MODE_SPEC.md`, `MODES.md`, `AIRPLANE_MODE.md`, `MAINTENANCE_MODE_SPEC.md`, `OLLAMA.md`, `DOC_GRAPH.md`, plus `BENCHMARK_HOWTO.md` and `BENCHMARKS.md` as Phase 1 seeds and `WELCOME_TO_MAESTRO.md`. Kept v1 docs get front-matter with `status = "live"` and remain authoritative only for current runtime behavior.
+- Live set (remain at their current locations, `status = "live"`): `docs/adr/` v2 ADRs and `docs/v2/` — the actively maintained v2-era documents. Nothing inherits `live` by being referenced; live is earned by review.
+- Deprecated set (remain at their current locations, `status = "deprecated"`): the historical ADR notes 0001–0016, `docs/wiki/` (human-facing set, pending the wiki/docs-site decision), and the v1 operational docs still referenced by `CLAUDE.md` and `README.md` — currently `GIT.md`, `TESTING_STRATEGY.md`, `MAESTRO_LLMS_MIGRATION.md`, `ARCHITECT_CONTEXT.md`, `MAESTRO_CHAT_SPEC.md`, `HOTFIX_MODE_SPEC.md`, `MODES.md`, `AIRPLANE_MODE.md`, `MAINTENANCE_MODE_SPEC.md`, `OLLAMA.md`, `DOC_GRAPH.md`, plus `BENCHMARK_HOWTO.md` and `BENCHMARKS.md` as Phase 1 seeds and `WELCOME_TO_MAESTRO.md`. These are retained, unverified v1 references — not authority. Each flips to `archive` when its subject is ported, rewritten, or dropped, or its last reference is removed.
 - Everything else under `docs/` root and all of `docs/specs/` archives: these are v1 design specs, plans, and TODOs whose decisions are either implemented (the code is now the authority) or abandoned.
 - `docs/screenshots/` archives unless referenced by a kept document.
 - Item 11 produces the exact file-by-file manifest as `docs/v2/phase_0/doc-reset-manifest.md`, reviewed like any other work item. Files whose disposition is unclear default to archive — recovery from git or `docs/archive/` is cheap; stale authority is not.
@@ -61,7 +70,8 @@ Executed in Phase 0 work item 11 (`doc-reset`); this ADR fixes the rules and the
 
 - Agents get a deterministic answer to "which document wins," at the cost of maintaining front-matter discipline going forward.
 - ADRs 0001–0016 stay useful as v1 context without ever being mistaken for v2 decisions.
-- The keep list makes `CLAUDE.md`/`README.md` references the de facto liveness test for v1 docs; both files should be updated in item 11 if their references change.
+- The `deprecated` state makes the transition legible: no v1 document has to be either trusted or destroyed, and contradictions with v2 ADRs are expected rather than alarming.
+- The retained set makes `CLAUDE.md`/`README.md` references the de facto retention test for v1 docs; both files should be updated in item 11 if their references change.
 - Roughly 110 files move in item 11 — a large but mechanical diff, reviewed via the manifest rather than file-by-file.
 
 ## Related Documents
