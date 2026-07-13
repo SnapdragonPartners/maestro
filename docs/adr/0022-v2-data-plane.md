@@ -19,6 +19,7 @@ v1's SQLite database began as a searchable log file and grew into session persis
 
 - The requirement is the principle: a **multi-user, network-friendly, relational database**. Postgres is the implementation. Docker-hosted local Postgres is the community default — Maestro already requires Docker, so this adds no new dependency class. Cloud-hosted Postgres serves team/cloud mode; AlloyDB is a possible later variant (notably for larger vector storage), and staying on the Postgres-compatible surface keeps the tooling valid either way. Non-Docker local Postgres may be supported later but is never the default path.
 - **`sqlc`** for typed, compile-checked queries; **`golang-migrate`** for versioned schema migrations, applied from empty. There is no migration from v1's SQLite — v1 data is frozen with `v1-freeze` (roadmap D7); the v2 story is migration from nothing.
+- **Object storage is a first-class data-plane component alongside the relational database.** The contract is the **S3-compatible API** — the de facto universal object surface (MinIO, SeaweedFS, Garage, GCS interop, and AWS all speak it) — fronted by the persistence interface's object module, so implementations swap by configuration. The initial Docker-local implementation is **MinIO**: a single container composed next to Postgres. Named fallback: SeaweedFS (Apache-2.0), should MinIO's community-edition stewardship worsen — the S3 contract makes that a config change, not a migration. Cloud mode plugs in GCS/S3 behind the same module. Uploads, screenshots, browser traces, and large evidence media live here, referenced from relational rows by content-addressed digest; retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
 
 ### Schema families
 
@@ -37,12 +38,8 @@ Derived mechanically from ADRs 0018 and 0021; enumerated here so Phase 2 lands t
 - Gates.
 - Knowledge items (Phase 6 fills this out; the family is reserved).
 - Skills/patterns (same).
-- Binary attachments: content-addressed digest references into object storage (below); binaries never live in relational rows.
+- Binary attachments: content-addressed digest references into object storage (see Stack); binaries never live in relational rows.
 - Audit events.
-
-### Object storage
-
-Content-addressed object storage is a **first-class data-plane component** alongside the relational database, not a footnote to attachments: uploads, screenshots, browser traces, and large evidence media live there, referenced from relational rows by digest. A storage interface fronts it — local and cloud deployments will almost certainly use different products, so the contract is fixed here and implementations plug in behind it. Retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
 
 ### Access discipline
 
