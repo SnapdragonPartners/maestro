@@ -7,7 +7,7 @@ summary = "Canonical statement of the symmetric review invariant (every Manageme
 
 # 0020. The Review Invariant — Reviewer vs Partner/Supervisor
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-13 (code review is review, not a human reservation)
 
 ## Context
 
@@ -44,6 +44,14 @@ Homogeneous review — author and reviewer on the same model — is a permitted 
 ### Human-reserved approvals
 
 The invariant has a ceiling: some approvals are reserved to the human operator by default and can never be satisfied by agent review alone — canonically, final acceptance that an Epic is complete (the Epic-to-default merge, roadmap D4). Agents review; humans accept. The reservation is independent of tempo. It may be waived only by an explicit, recorded configuration choice (D4's auto-merge for low-risk Epics) — which is itself a human policy act, not a review outcome standing in for the human.
+
+### Code review is review, not a human reservation
+
+v2 explicitly rejects the current community article of faith that humans should review all code before final acceptance. The invariant is "all code is reviewed" — not "all code is reviewed by a human." Fully agentic code review is acceptable, and for high-volume agent-written code often preferable, **provided reviewer heterogeneity is maintained**: model diversity is what replaces the human's fresh eyes, which is exactly why homogeneous review stays a flagged degradation rather than a quiet fallback. Human review of high-volume generated code is at best performative; models review at least as well as they write.
+
+What the human is indispensable for is outcome validation: *does the Feature solve the problem, and does it work as intended?* That is the only question whose answer only the human holds, because only the human holds the intent. This is precisely the human-reserved approval above — the reservation spends the operator's scarce attention on the judgment only they can make, instead of on inspections agents perform better. Humans retain the right to inspect any code at any time (drilldown is a stated purpose of the UI); what is rejected is mandatory human code review as an acceptance gate.
+
+This deliberately diverges from the research-corpus orthodoxy — while following the corpus's own premise, that human attention is the scarce resource, to its actual conclusion.
 
 ### Bounded contention
 
