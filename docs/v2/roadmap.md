@@ -448,7 +448,7 @@ Recommended default:
 
 - Story-to-Epic branch merge can be automated when Story evidence passes.
 - Epic-to-default merge should default to human Accept.
-- Config can later allow Epic auto-merge for low-risk Epics.
+- (Withdrawn 2026-07-13: the earlier idea of config-based Epic auto-merge for low-risk Epics. Acceptance is outcome validation, not risk management — see ADR 0020.)
 
 Demo Mode likely becomes the foundation for UAT. It is not conceptually hard, but it becomes much cleaner after artifacts, gates, and Epic branches exist.
 
@@ -1095,7 +1095,7 @@ The Epic plan cites requirements; it never restates them. If intent changes, the
 
 Agreed answer:
 
-Default no. Require human Accept for Epic branch to default. Allow config-based auto-merge later for low-risk Epics with clean evidence and passing gates.
+No — unconditionally (revised 2026-07-13). Human Accept is required for every Epic-to-default merge. The earlier low-risk auto-merge idea is withdrawn: acceptance is outcome validation — does the work solve the need — which has nothing to do with risk, and no risk assessment can stand in for it (ADR 0020). Accepting a trivial Epic costs one glance at evidence, because acceptance is not code review.
 
 This is the right human-level gate. Note that it creates deliberate back-pressure in large automated Features: the dependency graph cannot unblock downstream Epics until upstream Epics merge. The dashboard should make that queue visible so the operator can see when they are the bottleneck.
 
