@@ -39,8 +39,12 @@ ADR files are the one exception to archive-means-move: they never relocate (stab
 
 New documents under `docs/` are named `type_slug.md`: a lowercase single-word type, an underscore, then a kebab-case slug (`spike_toolloop.md`, `plan_scope.md`, `inventory_port.md`). Everything before the first underscore is the type — machine-parseable without ambiguity, sorts a flat directory into type groups, and mirrors the v2 artifact model's `artifact_type`, which these documents will eventually feed via knowledge ingestion.
 
+These documents are primarily LLM-facing, which sets the design principle: predictability and self-description before opening. A regular convention lets an agent guess paths instead of spending tool calls exploring, and a self-describing name plus front-matter means type and authority are known from a directory listing and the first five lines of the file. Status deliberately stays out of filenames — a status transition must not break links or remembered paths.
+
 - Seed types: `plan`, `spike`, `inventory`, `manifest`, `requirements`, `design`, `process`, `research`, `notes`. Extend by use; prefer reuse over coinage.
 - Front-matter gains a fourth field, `type`, matching the filename prefix so name and metadata cannot drift apart.
+- Slugs favor full explicit words over abbreviations — filename tokens are cheap and orientation is not (`inventory_port-vs-rewrite.md`, not `inventory_pvr.md`).
+- Every directory under `docs/` maintains a `README.md` index with a one-line description per document — the highest-leverage aid for LLM readers, who consult one small index instead of opening files to find the right one. Item 11 creates the missing indexes.
 - Exceptions: ADRs keep the established `NNNN-slug.md` form (the sequence number is their type marker), and `README.md` remains `README.md`.
 - Existing documents are renamed to the convention during item 11 (`doc-reset`), where cross-references are rewritten anyway (e.g. `scope-and-plan.md` → `plan_scope.md`, `build-process.md` → `process_build.md`); new documents follow it immediately.
 
