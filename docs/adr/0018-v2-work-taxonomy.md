@@ -7,7 +7,7 @@ summary = "Defines the v2 work hierarchy — Product, Feature, Epic, Story — a
 
 # 0018. v2 Work Taxonomy
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-13 (repo–Product membership is many-to-many with a primary Product)
 
 ## Context
 
@@ -36,7 +36,7 @@ Names were chosen to preserve industry and LLM priors rather than fight them (ro
 
 Small work must not require Feature-level ceremony. The degenerate path is ceremony-free Epic creation with two anchors: when the work belongs to an existing Feature (e.g. an Epic added mid-Feature from UAT findings), the new Epic anchors there; when it does not (a standalone bug fix or tweak entering as a single-Story Epic), the path auto-creates a minimal wrapper Feature record (provenance marked `auto-created`, no intake ceremony) rather than allowing Epics without a Feature parent.
 
-Lineage is non-null at every level, not just below Feature: a wrapper Feature gets a Product parent inferred from the target repository. To make that inference deterministic, a repository belongs to exactly one Product (MVP simplification; revisit if repo sharing between Products emerges), and repositories not yet assigned belong to a default Product — mirroring the default organization in single-user mode. The workflow collapses instead of the schema. Bypass the ceremony, never the artifact.
+Lineage is non-null at every level, not just below Feature: a wrapper Feature gets a Product parent inferred from the target repository. Product–repository membership is many-to-many — a shared API repo may serve several Products (amended 2026-07-13; the original one-repo-one-Product MVP rule anticipated this revisit) — but each repository designates exactly one **primary Product**, which is what wrapper-Feature inference uses, keeping the inference deterministic. Repositories not yet assigned belong to a default Product — mirroring the default organization in single-user mode. The workflow collapses instead of the schema. Bypass the ceremony, never the artifact.
 
 The hierarchy is late-bound at every level: Features gain Epics and Epics gain Stories while in flight. A late-added Epic is reviewed like any other — recipient pushback by its Work Group applies regardless of when the Epic was minted.
 

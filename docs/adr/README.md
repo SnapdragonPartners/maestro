@@ -38,6 +38,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | [0019](0019-orchestrator-boundary.md) | Orchestrator boundary | Accepted |
 | [0020](0020-review-invariant-reviewer-vs-partner.md) | The review invariant — Reviewer vs Partner/Supervisor | Accepted |
 | [0021](0021-artifacts-and-principal-instances.md) | Artifacts and principal instances | Accepted |
+| [0022](0022-v2-data-plane.md) | v2 data plane | Accepted |
 
 ## Historical v1 Notes
 
