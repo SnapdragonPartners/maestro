@@ -6,7 +6,6 @@ import (
 	"context"
 	"flag"
 	"os"
-	osexec "os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"orchestrator/pkg/coder"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/proto"
+	"orchestrator/pkg/testkit"
 	"orchestrator/pkg/tools"
 )
 
@@ -71,10 +71,13 @@ func (m *mockTestAgent) SwitchContainer(_ context.Context, newImage, _, _, _ str
 
 var _ tools.Agent = (*mockTestAgent)(nil)
 
-// isDockerAvailable checks if Docker is available by running docker version.
+// isDockerAvailable reports whether the Docker daemon was reachable at process
+// start, using the cached testkit probe instead of shelling out per call.
+// TestMain already fails the whole package fast when the daemon is down
+// (issue #241), so the per-test guards that call this are belt-and-suspenders;
+// they keep tests self-contained if run outside this package's TestMain.
 func isDockerAvailable() bool {
-	cmd := osexec.Command("docker", "version")
-	return cmd.Run() == nil
+	return testkit.DockerDaemonError() == nil
 }
 
 // Helper function to get API key for tests.

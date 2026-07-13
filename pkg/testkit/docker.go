@@ -36,19 +36,29 @@ func DockerDaemonError() error {
 		defer cancel()
 		out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").Output()
 		if err != nil {
-			// Output() stores the CLI's stderr on ExitError; surface it, or the
-			// error reads as a bare "exit status 1" instead of the real cause
-			// (socket missing, DOCKER_HOST unreachable, ...).
-			detail := err.Error()
-			var exitErr *exec.ExitError
-			if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-				detail = strings.TrimSpace(string(exitErr.Stderr))
+			// Each failure mode gets its own actionable advice: "start Docker
+			// Desktop" is wrong advice when the CLI binary is missing or the
+			// probe timed out.
+			switch {
+			case errors.Is(err, exec.ErrNotFound):
+				dockerProbeErr = fmt.Errorf("docker CLI not found — install Docker or ensure docker is on PATH")
+			case ctx.Err() != nil:
+				dockerProbeErr = fmt.Errorf("docker daemon probe timed out after %v — daemon may be starting or hung", dockerProbeTimeout)
+			default:
+				// Output() stores the CLI's stderr on ExitError; surface it, or
+				// the error reads as a bare "exit status 1" instead of the real
+				// cause (socket missing, DOCKER_HOST unreachable, ...).
+				detail := err.Error()
+				var exitErr *exec.ExitError
+				if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+					detail = strings.TrimSpace(string(exitErr.Stderr))
+				}
+				dockerProbeErr = fmt.Errorf("docker daemon not reachable: %s — start Docker Desktop (or your Docker daemon)", detail)
 			}
-			dockerProbeErr = fmt.Errorf("docker daemon not reachable: %s", detail)
 			return
 		}
 		if strings.TrimSpace(string(out)) == "" {
-			dockerProbeErr = fmt.Errorf("docker daemon not reachable: probe returned no server version")
+			dockerProbeErr = fmt.Errorf("docker daemon not reachable: probe returned no server version — start Docker Desktop (or your Docker daemon)")
 		}
 	})
 	return dockerProbeErr
@@ -67,5 +77,5 @@ func RequireDocker(tb testing.TB) {
 	if os.Getenv(SkipDockerTestsEnv) == "1" {
 		tb.Skipf("skipping Docker-dependent test (%s=1): %v", SkipDockerTestsEnv, err)
 	}
-	tb.Fatalf("%v — start Docker Desktop, or set %s=1 to skip Docker-dependent tests", err, SkipDockerTestsEnv)
+	tb.Fatalf("%v (set %s=1 to skip Docker-dependent tests)", err, SkipDockerTestsEnv)
 }

@@ -21,7 +21,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintf(os.Stderr, "skipping integration tests (%s=1): %v\n", testkit.SkipDockerTestsEnv, err)
 			os.Exit(0)
 		}
-		fmt.Fprintf(os.Stderr, "integration tests require Docker: %v\nstart Docker Desktop, or set %s=1 to skip Docker-dependent tests\n", err, testkit.SkipDockerTestsEnv)
+		fmt.Fprintf(os.Stderr, "integration tests require Docker: %v\n(set %s=1 to skip Docker-dependent tests)\n", err, testkit.SkipDockerTestsEnv)
 		os.Exit(1)
 	}
 	os.Exit(m.Run())
