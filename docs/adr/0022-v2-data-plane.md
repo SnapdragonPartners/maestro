@@ -1,13 +1,13 @@
 +++
 title = "ADR 0022: v2 Data Plane"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam."
 +++
 
 # 0022. v2 Data Plane
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
@@ -19,7 +19,7 @@ v1's SQLite database began as a searchable log file and grew into session persis
 
 - The requirement is the principle: a **multi-user, network-friendly, relational database**. Postgres is the implementation. Docker-hosted local Postgres is the community default — Maestro already requires Docker, so this adds no new dependency class. Cloud-hosted Postgres serves team/cloud mode; AlloyDB is a possible later variant (notably for larger vector storage), and staying on the Postgres-compatible surface keeps the tooling valid either way. Non-Docker local Postgres may be supported later but is never the default path.
 - **`sqlc`** for typed, compile-checked queries; **`golang-migrate`** for versioned schema migrations, applied from empty. There is no migration from v1's SQLite — v1 data is frozen with `v1-freeze` (roadmap D7); the v2 story is migration from nothing.
-- Deployment note: the official cloud version of Maestro will almost certainly live in **GCP**, giving cloud-mode implementation choices a mild Google bias (AlloyDB above; GCS below). The bias applies to cloud modules only — the contracts (Postgres-compatible SQL, S3-compatible objects) stay vendor-neutral, so local mode and self-hosters are never captured by it.
+- Deployment note: the official cloud version of Maestro will almost certainly live in **GCP**, giving cloud-mode implementation choices a mild Google bias (AlloyDB above; GCS below). The bias applies to cloud modules only — the contracts (Postgres-compatible SQL, Maestro's digest-addressed object interface) stay vendor-neutral, so local mode and self-hosters are never captured by it.
 - **Object storage is a first-class data-plane component alongside the relational database.** The contract is **Maestro's own narrow object interface** — the persistence interface's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned. Content-addressed needs are small, and owning the contract avoids overpromising provider interchangeability (GCS's S3 interoperability is partial, not a drop-in). The initial adapter is S3-compatible, implemented by **MinIO**: a single container composed next to Postgres. Named fallback: SeaweedFS (Apache-2.0), should MinIO's community-edition stewardship worsen. Cloud mode plugs a GCS or S3 adapter behind the same module. Uploads, screenshots, browser traces, and large evidence media live here, referenced from relational rows by content-addressed digest; retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
 
 ### Schema families
