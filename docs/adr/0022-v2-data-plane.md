@@ -17,7 +17,7 @@ v1's SQLite database began as a searchable log file and grew into session persis
 
 ### Stack
 
-- **Postgres by default.** Docker-hosted local Postgres is the community default — Maestro already requires Docker, so this adds no new dependency class. Cloud-hosted Postgres serves team/cloud mode. Non-Docker local Postgres may be supported later but is never the default path.
+- The requirement is the principle: a **multi-user, network-friendly, relational database**. Postgres is the implementation. Docker-hosted local Postgres is the community default — Maestro already requires Docker, so this adds no new dependency class. Cloud-hosted Postgres serves team/cloud mode; AlloyDB is a possible later variant (notably for larger vector storage), and staying on the Postgres-compatible surface keeps the tooling valid either way. Non-Docker local Postgres may be supported later but is never the default path.
 - **`sqlc`** for typed, compile-checked queries; **`golang-migrate`** for versioned schema migrations, applied from empty. There is no migration from v1's SQLite — v1 data is frozen with `v1-freeze` (roadmap D7); the v2 story is migration from nothing.
 
 ### Schema families
@@ -25,27 +25,34 @@ v1's SQLite database began as a searchable log file and grew into session persis
 Derived mechanically from ADRs 0018 and 0021; enumerated here so Phase 2 lands them in one coherent slice:
 
 - Organizations and users (single-user mode uses a default organization and user, mirroring the default Product).
-- Products and repositories (one repository belongs to exactly one Product; default Product for unassigned repos — ADR 0018).
+- Products and repositories. Membership is **many-to-many**: a Product contains one or more repositories, and a repository — a shared API, say — may belong to as many Products as makes sense. Each repository designates exactly one **primary Product**, which is what the degenerate path's wrapper-Feature inference uses (this amends ADR 0018's one-repo-one-Product MVP rule, which anticipated the revisit); the default Product remains the fallback for unassigned repos.
+- Repositories are logical, forge-independent entities: a repo record may carry multiple forge bindings — a local forge in airplane mode, GitHub after sync — and the binding is an attribute of the record, never its identity.
 - Features, Epics, Stories (non-null lineage at every level; wrapper Features).
 - Work Groups and runs.
 - Principal instances — agent, human, and system kinds (ADR 0021).
 - Artifacts: **Management and Audit in separate storage families** with opposite retention postures (ADR 0021); amendment and supersession links; review records; retention pins.
-- LLM calls and tool calls (Audit family).
+- Tool calls — the atomic Audit **action** unit: an LLM call that produces no tool call does nothing. LLM call records exist for token/cost accounting (which is metrics) and optional trace debugging. This refines ADR 0021's Audit enumeration: all of these are Audit-family records, but the tool call is the unit of action.
 - Metrics.
 - Prompt packs (immutable, hash-addressed — roadmap pillar 10).
 - Gates.
 - Knowledge items (Phase 6 fills this out; the family is reserved).
 - Skills/patterns (same).
-- Binary attachments: content-addressed references into data-plane/object storage; binaries never live in relational rows.
+- Binary attachments: content-addressed digest references into object storage (below); binaries never live in relational rows.
 - Audit events.
+
+### Object storage
+
+Content-addressed object storage is a **first-class data-plane component** alongside the relational database, not a footnote to attachments: uploads, screenshots, browser traces, and large evidence media live there, referenced from relational rows by digest. A storage interface fronts it — local and cloud deployments will almost certainly use different products, so the contract is fixed here and implementations plug in behind it. Retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
 
 ### Access discipline
 
-All database access flows through the Orchestrator's persistence seam (ADR 0019 — persistence is Orchestrator machinery). Agents never hold connections or issue queries: they receive artifacts as seeds and effective views, and they emit through tools that write via the seam. This preserves v1's proven isolation posture (agents produce data; the persistence layer manages storage) while replacing fire-and-forget writes with the artifact contracts of ADR 0021.
+All data-plane access flows through the Orchestrator's persistence seam (ADR 0019 — persistence is Orchestrator machinery). Agents never hold connections or issue queries: they receive artifacts as seeds and effective views, and they emit through tools that write via the seam. This preserves v1's proven isolation posture (agents produce data; the persistence layer manages storage) while replacing fire-and-forget writes with the artifact contracts of ADR 0021.
+
+The seam is a generalized **persistence interface** — restructured from v1's persistence layer, keeping its generality — behind which authentication, relational data, and object persistence are pluggable modules selected per deployment mode. Local mode plugs in direct modules; cloud mode plugs in its own (below). The interface is the same in every mode.
 
 ### Multi-user boundaries (MVP)
 
-Per roadmap pillar 5: users belong to organizations; major records carry organization and user lineage; fine-grained roles and security groups are post-MVP non-goals; individual credentials (forge tokens, LLM keys) do most early enforcement. The schema carries the lineage now so team mode is a deployment change, not a migration.
+Per roadmap pillar 5: users belong to organizations; major records carry organization and user lineage; fine-grained roles and security groups are post-MVP non-goals; individual credentials (forge tokens, LLM keys) do most early enforcement. The schema carries the lineage now so team mode never requires a data migration — but cloud mode is more than pointing at a different database: it adds a gatekeeping **auth mini-app** that authenticates users and maps them into the data plane (roadmap pillar 15). The persistence interface is where those modules swap; the schema does not change.
 
 ### Repo vs database
 

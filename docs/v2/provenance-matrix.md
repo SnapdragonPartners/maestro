@@ -73,6 +73,10 @@ Source categories:
 | Orchestrator definition and no-inference rule | DR notes, Claude review | Programmatic layer, never an agent, never calls an LLM; rules/config decisions vs inference decisions as the boundary test. |
 | Phase 3 contract-only intake constraint | Codex synthesis | Phase 3 intake path must not preempt the pre-Phase-5 spike. |
 | Fully agentic code review; humans validate outcomes | DR notes | Deliberate divergence from research-corpus orthodoxy: "all code is reviewed" ≠ "reviewed by a human"; conditioned on reviewer heterogeneity; human reservation is outcome validation (ADR 0020, amended). |
+| Repo–Product many-to-many with primary Product | DR notes, Claude review | Shared repos (e.g. an API serving two Products) forced the revisit 0018 anticipated; primary Product keeps wrapper-Feature inference deterministic. |
+| Tool call as the Audit action unit | DR notes | An LLM call without a tool call does nothing; LLM call records are token/cost metrics and optional traces (ADR 0022). |
+| Object storage first-class with pluggable interface | DR notes | Local and cloud use different products; the contract is fixed, implementations plug in; retention pins apply to objects. |
+| Generalized persistence interface + cloud auth mini-app | DR notes | Auth, data, and object persistence as pluggable modules per mode; cloud is not "point at another database" (ADR 0022). |
 | Golden build tags (`golden-minimal`/`golden-all`) | DR notes | Extends the existing `integration` build-tag pattern to automate golden story runs. |
 | Artifact scope model (`scope_type`/`scope_id` + lineage) | Codex synthesis | Pre-Epic Feature artifacts, Product/org artifacts, and benchmark artifacts do not hang off an Epic. |
 | Phase 1 target strategy (minimally patched v1 path) | Codex synthesis, DR notes | Codex surfaced the missing-target problem; DR resolved it: post-freeze main is v2 raw material, patched just enough for golden-minimal. |
