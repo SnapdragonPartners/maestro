@@ -1,6 +1,13 @@
++++
+title = "Maestro v2 ADR Backlog"
+edit_date = "2026-07-13"
+status = "live"
+summary = "Concepts that need ADRs before implementation, with key questions per candidate; reconciled and dependency-ordered in Phase 0 item 12."
++++
+
 # Maestro v2 ADR Backlog
 
-Status: rough companion note
+Status: live — actively maintained; reconciled in Phase 0 item 12.
 
 These are concepts that likely need ADRs before implementation. They are listed here to keep the main roadmap readable.
 

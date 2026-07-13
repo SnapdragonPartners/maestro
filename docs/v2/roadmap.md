@@ -1,8 +1,14 @@
-# Maestro v2 Roadmap Draft
++++
+title = "Maestro v2 Roadmap"
+edit_date = "2026-07-13"
+status = "live"
+summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
++++
 
-Date: 2026-07-10
-Revised: 2026-07-12 (intake/triage revision; earlier Claude review pass 2026-07-11)
-Status: rough roadmap for review
+# Maestro v2 Roadmap
+
+Date: 2026-07-10; revised through 2026-07-13.
+Status: live planning document — decisions are progressively ratified into ADRs (0017+), which outrank this roadmap for v2 design intent.
 
 This document blends:
 
