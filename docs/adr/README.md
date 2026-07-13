@@ -34,6 +34,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | ADR | Title | Status |
 | --- | --- | --- |
 | [0017](0017-v2-documentation-authority-and-lifecycle.md) | v2 documentation authority and lifecycle | Accepted |
+| [0018](0018-v2-work-taxonomy.md) | v2 work taxonomy | Proposed |
 
 ## Historical v1 Notes
 
