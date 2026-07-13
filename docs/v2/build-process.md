@@ -2,6 +2,7 @@
 title = "Maestro v2 Build Process (Interim)"
 edit_date = "2026-07-13"
 status = "live"
+summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; branching, review cadence, spikes, testing, and merge rules."
 +++
 
 # Maestro v2 Build Process (Interim)

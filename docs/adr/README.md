@@ -2,6 +2,7 @@
 title = "Architecture Decision Records"
 edit_date = "2026-07-13"
 status = "live"
+summary = "Index of Maestro ADRs: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016), with the documentation authority order in brief."
 +++
 
 # Architecture Decision Records

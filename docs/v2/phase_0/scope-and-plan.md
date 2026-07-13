@@ -2,6 +2,7 @@
 title = "Maestro v2 Phase 0: Scope And Plan"
 edit_date = "2026-07-12"
 status = "live"
+summary = "Approved Phase 0 scope and execution plan: 13 serial work items (ADRs, two spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
 +++
 
 # Phase 0: v2 Design Groundwork — Scope And Plan

@@ -1,7 +1,8 @@
 +++
 title = "ADR 0017: v2 Documentation Authority And Lifecycle"
-edit_date = "2026-07-12"
+edit_date = "2026-07-13"
 status = "draft"
+summary = "Defines v2 doc conventions: ADR numbering and acceptance lifecycle, front-matter schema, draft/live/deprecated/archive authority, type_slug.md naming, directory indexes, and the v1 doc archive plan."
 +++
 
 # 0017. v2 Documentation Authority And Lifecycle
@@ -24,7 +25,9 @@ The repo currently holds three generations of documentation: ADRs 0001–0016 (p
 
 ### Front-matter
 
-All markdown documents under `docs/` that are created or substantively edited from now on carry Hugo-style TOML front-matter with `title`, `edit_date`, `status` ∈ {`draft`, `live`, `deprecated`, `archive`}, and — for documents following the file-naming convention below — `type`.
+All markdown documents under `docs/` that are created or substantively edited from now on carry Hugo-style TOML front-matter with `title`, `edit_date`, `status` ∈ {`draft`, `live`, `deprecated`, `archive`}, `summary`, and — for documents following the file-naming convention below — `type`.
+
+`summary` is one tight sentence stating what the document contains and when to read it — a retrieval hook, not an abstract. It exists so an LLM can triage a file from its front-matter alone (~50 tokens) instead of reading it, and it is the single source for directory README indexes, which quote it rather than maintaining separate one-liners. It is also the document's future artifact-row line in the v2 artifact model.
 
 - `draft` — under review; not yet authoritative.
 - `live` — actively maintained, v2-era authority. Live status is earned by review, not by being referenced.
