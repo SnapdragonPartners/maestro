@@ -17,7 +17,7 @@ The intake revision (roadmap D2, 2026-07-12) cemented the Orchestrator as v2's c
 
 ### What the Orchestrator is
 
-The software layer that manages agents and the factory's foundational machinery: agent launch and destruction, Work Group lifecycle (per ADR 0018), tool implementation, message routing, forge interaction, persistence, scheduling, gate evaluation, and restart/watchdog policy. It is entirely programmatic — maximally fault tolerant, and deterministic to the extent software can be.
+The software layer that manages agents and the factory's foundational machinery: agent launch and destruction, Work Group lifecycle (per ADR 0018), tool implementation, message routing, forge interaction, persistence, scheduling, deterministic gate evaluation and enforcement (never review judgment), and restart/watchdog policy. It is entirely programmatic — maximally fault tolerant, and deterministic to the extent software can be.
 
 ### What the Orchestrator is not
 

@@ -20,8 +20,10 @@ The economic argument for the factory rests on paired review: errors caught at a
 **Every persistent Management artifact must be reviewed by at least one party other than its author, with human escalation for irreconcilable contention.** The invariant is symmetric across author kinds:
 
 - Agent-authored artifacts are reviewed by another agent or a human gate.
-- Human-authored artifacts (e.g. intake form output) are reviewed by the receiving agent — recipient review: the Work Group receiving an Epic reviews the framing it was handed, and may push back on it.
+- Human-authored artifacts (e.g. intake form output) are reviewed by the receiving agent — recipient review: the Work Group receiving an Epic reviews the framing it was handed, and may push back on it. Recipient pushback satisfies the invariant for the received Epic and its framing only; review of Feature-level decomposition and cross-Epic coherence is assigned by the intake contract ADR and the pre-Phase-5 spike, not implied here.
 - At the Workbench, the present human accepts and a trailing agent reviewer checks syntactic, rule, and architectural drift — author and reviewer still differ.
+
+The invariant is **principal-based**, not agent-based. Humans are principals like agents: every user account gets a principal instance record (its `model` is `human`), so authorship, review, and heterogeneity are expressed uniformly with no nulls or side channels. Diversity outranks authority: even the human operator does not self-review — a human may be an artifact's author or its approver, never both. While a single human operates the system, this automatically guarantees at least one agent pass on every Management artifact; multi-operator organizations may later satisfy the invariant with two distinct humans.
 
 No exemptions are needed; symmetry covers every case. The invariant applies to amendments exactly as to originals: an addendum to an accepted artifact carries its own author and reviewer (artifact amendment records are defined in the artifacts ADR).
 
@@ -41,7 +43,7 @@ Homogeneous review — author and reviewer on the same model — is a permitted 
 
 ### Human-reserved approvals
 
-The invariant has a ceiling: some approvals belong only to the human operator, regardless of tempo or configuration — canonically, final acceptance that an Epic is complete (the Epic-to-default merge, roadmap D4). Agents review; humans accept. D4's config-based auto-merge for low-risk Epics is an explicit, recorded opt-out of that reservation, never a review outcome substituting for it.
+The invariant has a ceiling: some approvals are reserved to the human operator by default and can never be satisfied by agent review alone — canonically, final acceptance that an Epic is complete (the Epic-to-default merge, roadmap D4). Agents review; humans accept. The reservation is independent of tempo. It may be waived only by an explicit, recorded configuration choice (D4's auto-merge for low-risk Epics) — which is itself a human policy act, not a review outcome standing in for the human.
 
 ### Bounded contention
 
@@ -49,7 +51,8 @@ Author/reviewer disagreement escalates to a human after a bounded number of iter
 
 ## Consequences
 
-- Phase 5's gates and artifact-review machinery implement this invariant; the artifact schema's `author_agent_instance_id`/`reviewer_agent_instance_id` fields (artifacts ADR) are its data-plane expression.
+- Phase 5's gates and artifact-review machinery implement this invariant; its data-plane expression is a pair of principal-generic author/reviewer instance references on every Management artifact, able to point at agent or human principal instances alike — exact field shapes belong to the artifacts ADR.
+- The agent-instance model (artifacts ADR) generalizes to principal instances: user accounts get instance records too, which is also what makes the heterogeneity record (author model vs reviewer model, where `human` is a model) uniformly checkable.
 - Reviewer narrowness is a hard property, not a suggestion — a Reviewer that starts contributing ideas is misconfigured, and the roadmap's "internal reviewers become scope expanders" risk has a concrete test.
 - Recipient pushback gives every dispatched Epic fresh-eyes review by the party with the most skin in the game, at no extra standing cost.
 - Liveness: bounded contention plus mandatory escalation means review can never deadlock silently — every disagreement terminates in acceptance, revision, or a human decision ("the system does not get stuck").
