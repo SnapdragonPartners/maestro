@@ -2,7 +2,7 @@
 title = "ADR 0021: Artifacts And Principal Instances"
 edit_date = "2026-07-13"
 status = "draft"
-summary = "Defines the v2 artifact model: Management vs Audit categories, the scope/lineage signature, principal instances (agent, human, and system kinds), amendment semantics, evidence retention-pinning, and lightweight provenance signatures."
+summary = "Defines the v2 artifact model: artifacts as the sole agent handoff, Management (inputs) vs Audit (exhaust) categories, the scope/lineage signature, principal instances (agent/human/system), the invalidate/amend/supersede lifecycle, evidence retention-pinning, and the MPH signature."
 +++
 
 # 0021. Artifacts And Principal Instances
@@ -15,12 +15,18 @@ Artifacts are the unit of handoff in v2: chat feeds artifacts, every significant
 
 ## Decision
 
+### Artifacts are the handoff
+
+Every agent is seeded at startup with one or more artifacts paired to its prompt template, and that seed must be sufficient to commence the task. There is no LLM-context sharing between agents — ever. Whatever an agent later does to clarify (QUESTION/ANSWER, knowledge lookups, workspace exploration) is clarification, not seeding. The seeding set is recorded as the instance's input artifact digests in the MPH signature below, so "what was this agent given to start?" is always a query, never a mystery.
+
 ### Two artifact categories
 
-- **Management artifacts** are for human review and comprehension, and carry the review invariant (ADR 0020): feature briefs, requirements, Epic plans, Story lists and plans, evidence packages, acceptance decisions, incident summaries, postmortems.
-- **Audit artifacts** are durable, queryable records for debugging, reconstruction, and bulk analysis: tool calls, LLM call summaries, traces, metric events, checkpoints, message events (QUESTION/ANSWER and REQUEST/RESPONSE traffic is Audit data), compaction inputs/outputs.
+The classification test is functional, not audience-based:
 
-Humans may inspect Audit artifacts; the UI summarizes and routes attention through Management artifacts. Model commentary and provider reasoning summaries are preserved as Audit data and never automatically reinjected into future context (roadmap risk: reasoning capture as context poison).
+- **Management artifacts** are inputs: artifacts consumed by a subsequent task, agent, or decision — feature briefs, requirements, Epic plans, Story lists and plans, knowledge packs, evidence packages, acceptance decisions, incident summaries, postmortems. Because flawed inputs propagate, Management artifacts carry the review invariant (ADR 0020). Human review and comprehension is common but not defining: a knowledge pack is a Management artifact that humans rarely read.
+- **Audit artifacts** are exhaust: durable, queryable records of what happened — tool calls, LLM call summaries, traces, metric events, checkpoints, message events (QUESTION/ANSWER and REQUEST/RESPONSE traffic is Audit data), compaction inputs/outputs. Their value is failure reconstruction and optimization fodder; they are queryable, durable log files.
+
+Humans may inspect Audit artifacts; the UI summarizes and routes human attention through Management artifacts. Model commentary and provider reasoning summaries are preserved as Audit data and never automatically reinjected into future context (roadmap risk: reasoning capture as context poison).
 
 ### The artifact signature
 
@@ -47,20 +53,24 @@ The v1 notion of agent instance generalizes to the **principal instance**: one r
 
 The review invariant's data-plane expression: every accepted Management artifact carries an agent or human author, a distinct agent or human reviewer, and a completed review record. Reviewer identity alone is not review completion: a Management artifact persists as `draft` — working state with no authority — until its review record completes (decision, reviewer principal, `accepted_at`); only then does it become accepted and authoritative. The author/reviewer pair's `model` values distinguish heterogeneous from homogeneous review.
 
-### Amendments
+### Artifact lifecycle: invalidate, amend, supersede
 
-Accepted artifacts are immutable. A mid-flight change — a requirements tweak during a Workbench loop, a Coder/Architect-agreed fix in factory mode — is an **amendment record**: a new artifact of type `amendment` whose `amends_artifact_id` links the original, carrying its own author, reviewer, and reason. The review invariant applies to amendments exactly as to originals (ADR 0020).
+Accepted artifacts are immutable. Three operations cover change, split by when and how much:
+
+- **Invalidation (before acceptance only).** Fundamental flaws found in review — wrong approach, wrong design — invalidate the draft; a replacement artifact starts a fresh chain (optionally linked via `replaces_artifact_id` for traceability). Invalidated drafts are retained as history with no authority. Never amend a draft into acceptability: consumers read effective views as agent seeds, and a flawed base plus corrective amendments is context bloat delivered as input.
+- **Amendment (after acceptance, small changes).** A mid-flight tweak — a requirements adjustment during a Workbench loop, a Coder/Architect-agreed fix discovered in implementation — is an **amendment record**: a new artifact of type `amendment` whose `amends_artifact_id` links the original, carrying its own author, reviewer, and reason. The review invariant applies to amendments exactly as to originals (ADR 0020).
+- **Supersession (after acceptance, fundamental changes).** When an accepted artifact is proven fundamentally wrong (e.g. by UAT), it is not amended into a new shape — a new artifact with `supersedes_artifact_id` goes through full review, and the superseded artifact is archived. The effective view never spans a supersession. This mirrors the ADR lifecycle itself (Accepted → Superseded).
 
 Effective-view semantics are deterministic:
 
 - Amendments target the original artifact only — the chain is flat; there are no amendments of amendments. Correcting an earlier amendment means a later amendment.
 - On acceptance, each amendment receives `accepted_at` and a monotonic per-original sequence number; the sequence is the total order.
 - Consumers apply accepted amendments in sequence order; where amendments conflict, the later prevails.
-- The effective view is original plus accepted amendments in sequence; auditors read the full chain, including rejected amendments.
+- The effective view is original plus accepted amendments in sequence; auditors read the full chain, including rejected amendments and superseded lineage.
 
-### Lightweight provenance signatures
+### The MPH signature
 
-Each artifact's provenance binds: the author principal instance, model, prompt hash, harness config hash, input artifact digests, and the output payload digest (plus the reviewer's, when reviewed). Content digests, not cryptographic signing — the roadmap defers cryptographic signatures until a concrete compliance requirement appears.
+Each artifact's provenance is its **MPH signature**, binding all three factory levers plus the data that flowed through them: the author principal instance; **M** — the model; **P** — the prompt pack and prompt hash; **H** — the Maestro version and the harness config hash (the app is the harness, so the binary's version belongs in H); the input artifact digests (the seeding set); and the output payload digest — plus the reviewer's, when reviewed. Content digests, not cryptographic signing — the roadmap defers cryptographic signatures until a concrete compliance requirement appears.
 
 ### Evidence references and retention
 
@@ -68,7 +78,9 @@ Evidence packages prove by pointer, and pointers must not rot. An evidence refer
 
 ### Where artifacts live
 
-Per roadmap D5: the database is canonical for artifacts, relationships, instances, and metrics; binary attachments are content-addressed in the data plane/object storage; repo files are project artifacts only. Exact schema families and DDL are Phase 2 work — this ADR fixes shapes and invariants, not tables.
+Per roadmap D5: the database is canonical for artifacts, relationships, instances, and metrics; binary attachments are content-addressed in the data plane/object storage; repo files are project artifacts only.
+
+Management and Audit artifacts live in **separate storage families** (Phase 2: separate tables): Audit volume dwarfs Management volume, and the two have opposite retention postures. Audit storage is truncatable by design — subject to retention pins, which are the one deliberate inbound dependency (evidence references), and whose violation the digest check detects loudly. Management storage is durable long-term. Exact schema families and DDL are Phase 2 work — this ADR fixes shapes and invariants, not tables.
 
 ## Consequences
 
