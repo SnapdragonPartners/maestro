@@ -72,6 +72,7 @@ Source categories:
 | Symmetric review invariant | Codex synthesis, DR notes, Claude review | Codex flagged the human-authored-intake conflict; DR resolved it: reviewed by a party other than its author, recipient PM reviews human-authored Features. |
 | Orchestrator definition and no-inference rule | DR notes, Claude review | Programmatic layer, never an agent, never calls an LLM; rules/config decisions vs inference decisions as the boundary test. |
 | Phase 3 contract-only intake constraint | Codex synthesis | Phase 3 intake path must not preempt the pre-Phase-5 spike. |
+| Fully agentic code review; humans validate outcomes | DR notes | Deliberate divergence from research-corpus orthodoxy: "all code is reviewed" ≠ "reviewed by a human"; conditioned on reviewer heterogeneity; human reservation is outcome validation (ADR 0020, amended). |
 | Golden build tags (`golden-minimal`/`golden-all`) | DR notes | Extends the existing `integration` build-tag pattern to automate golden story runs. |
 | Artifact scope model (`scope_type`/`scope_id` + lineage) | Codex synthesis | Pre-Epic Feature artifacts, Product/org artifacts, and benchmark artifacts do not hang off an Epic. |
 | Phase 1 target strategy (minimally patched v1 path) | Codex synthesis, DR notes | Codex surfaced the missing-target problem; DR resolved it: post-freeze main is v2 raw material, patched just enough for golden-minimal. |
