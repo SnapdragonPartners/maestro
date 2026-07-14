@@ -1,13 +1,13 @@
 +++
 title = "ADR 0019: Orchestrator Boundary"
-edit_date = "2026-07-13"
+edit_date = "2026-07-14"
 status = "live"
 summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test."
 +++
 
 # 0019. Orchestrator Boundary
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (work dispatch is Orchestrator machinery at both Epic and Story grain; dispatcher lineage corrected to rework)
 
 ## Context
 
@@ -33,9 +33,11 @@ The Orchestrator routes escalations and enforces bounds (e.g. contention limits,
 
 The Orchestrator exposes a dispatch seam consumed by intake and the Workbench entry (the blank-Feature-request contract in ADR 0018), and owns the artifact-persistence and message-routing seams the agents write through. The intake artifact contract (Phase 0 item 6) binds to these seams while leaving the intake executor open.
 
+**Work dispatch is Orchestrator machinery at every grain** (amended 2026-07-14, resolving a v1 inheritance the port inventory surfaced). Agents author the backlog: Triage and the Architect decide what Features, Epics, and Stories exist, their dependencies, and the resulting DAG — that is inference. Dispatching dependency-ready work to available executors is rules, not judgment, and belongs to the Orchestrator — at Story grain exactly as at the Epic grain ADR 0024 already assigns it. v1 locating Story dispatch in the Architect was an accident of who held the queue, not a design decision; assignment policy (round-robin, affinity) is configuration by the boundary rule. When Epics, Stories, or the DAG are amended or superseded, the Orchestrator purges the affected channels and reprocesses the backlog mechanically — no agent in the loop.
+
 ### v1 lineage
 
-The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispatcher — all "port largely as-is" in the D8 inventory. This ADR supersedes the single-user framing of historical note [0002](0002-local-single-user-runtime-kernel.md) for v2 design intent; the channel-dispatch discipline of [0004](0004-channel-dispatch-and-typed-agent-protocol.md) carries forward. The v3 trajectory (orchestration plane: supervisor and dispatcher for agents running in external environments) is sketched in roadmap pillar 15 and deliberately not designed here.
+The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispatcher — all classified **rework** in the port inventory (Phase 0 item 10, correcting D8's first-pass "port largely as-is"): the typed-channel discipline carries forward, but the package structures are re-cut — v1's Story/hotfix queues, spec exceptions, and Architect-held Story dispatch do not survive (dispatch moves here, per the amendment above). This ADR supersedes the single-user framing of historical note [0002](0002-local-single-user-runtime-kernel.md) for v2 design intent; the channel-dispatch discipline of [0004](0004-channel-dispatch-and-typed-agent-protocol.md) carries forward. The v3 trajectory (orchestration plane: supervisor and dispatcher for agents running in external environments) is sketched in roadmap pillar 15 and deliberately not designed here.
 
 ## Consequences
 

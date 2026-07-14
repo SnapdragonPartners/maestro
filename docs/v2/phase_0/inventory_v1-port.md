@@ -46,11 +46,12 @@ These govern every disposition below and any port decision made later:
 | v1 package | LOC | Disposition | Phase | Notes |
 |---|---|---|---|---|
 | `pkg/pm` | 3,710 | rework | 3 | Re-scoped to Work Groups (0018); spec intake replaced by the Feature/Epic contract (0024). |
-| `pkg/architect` | 9,370 | rework | 3 | Re-scoped to Work Groups; reviews become artifact review records (0020/0021); merge authority moves to the harness (0023). |
+| `pkg/architect` | 9,370 | rework | 3 | Re-scoped to Work Groups; reviews become artifact review records (0020/0021); merge authority moves to the harness (0023); Story dispatch moves to the Orchestrator (0019 as amended). |
 | `pkg/coder` | 10,160 | rework | 3 | Re-scoped to Work Groups; workspace and branch flows re-cut per 0023 and the project-folder spike. |
 | `pkg/coder/claude` (+ `embedded`, `mcpserver`) | 2,520 | port | 3 | The external Claude Code subprocess integration keeps working as-is; only its tool exposure re-plumbs to v2 tool records (0022). |
 | `cmd/maestro-mcp-proxy`, `cmd/maestro-mcp-server` | 260 | port | 3 | Companion binaries to the above. |
 | `pkg/effect` | 880 | rework | 3 | Approval/completion/merge/question effects become artifact and review flows (0021, 0024). |
+| `pkg/tools` | 10,380 | rework | 2–4 | The registry, execution plumbing, and reusable execution/container/file/git tools keep, rewired so every call lands as a tool record — the atomic Audit action unit (0022). v1 workflow terminal tools (spec submission, story lifecycle, maintenance) die with their flows (0024); ProcessEffect signal discipline keeps (0022). |
 
 ### Orchestrator
 
@@ -60,7 +61,7 @@ These govern every disposition below and any port decision made later:
 | `internal/supervisor` | 910 | rework | 3 | Agent lifecycle re-scoped to Work Group lifecycle. |
 | `internal/factory` | 290 | rework | 3 | Agent creation for Work Groups. |
 | `internal/orch` | 700 | rework | 3 | Startup and airplane-mode orchestration; the bootstrap pointer replaces project-directory discovery (item 9). |
-| `pkg/dispatch` | 1,320 | port | 3 | The typed dispatcher protocol (D8 as-is); leases re-scope to Work Groups. |
+| `pkg/dispatch` | 1,320 | rework | 3 | The typed-channel routing discipline (historical note 0004) ports; the structure does not — v1's Story/hotfix queues, PM interview channels, spec exceptions, and Story leases die. Work dispatch at Epic *and* Story grain becomes Orchestrator machinery: agents author the backlog and DAG, the Orchestrator dispatches dependency-ready work and purges/reprocesses on amendment (0019 as amended, 0024). |
 | `pkg/proto` | 2,040 | rework | 3 | Message types re-cut: spec/story flows die (0024); the failure taxonomy keeps with rework (D8 first pass). |
 | `internal/state` | 280 | rework | 3 | Container runtime state records move behind the persistence seam. |
 | `cmd/maestro` | 1,530 | rework | 3 | Entrypoint rewired to the v2 Orchestrator and data plane. |
@@ -80,11 +81,11 @@ These govern every disposition below and any port decision made later:
 
 | v1 package | LOC | Disposition | Phase | Notes |
 |---|---|---|---|---|
-| `pkg/mirror`, `pkg/git` | 1,040 | port | 3 | Clone/mirror workflow (D8 as-is); mirrors keyed by repo ID under Maestro cache (item 9). |
+| `pkg/mirror`, `pkg/git` | 1,040 | rework | 3 | The generic git/clone primitives port; the managers do not — `projectDir` derivation and single-repository assumptions die, replaced by repo-record injection (0022) and repo-ID cache paths (item 9). |
 | `pkg/forge` | 380 | rework | 2–3 | `forge_state.json` dies: token → secrets vault, binding → repo records (item 9, 0022). |
-| `pkg/forge/gitea` | 1,490 | port | 3 | Local forge lifecycle keeps; its data moves under the durable Maestro data root (0022 as amended). |
+| `pkg/forge/gitea` | 1,490 | rework | 3 | The Gitea API client ports; the lifecycle does not — project-named Docker volumes become durable bind mounts under Maestro data (0022 as amended), and single-repo assumptions become repo records with multiple forge bindings. |
 | `pkg/forge/github`, `pkg/github` | 1,140 | rework | 4 | gh-CLI operations port; grows the harness-exclusive merge machinery (0023: `maestro/epic/*` and default writable only by the harness). |
-| `pkg/sync` | 340 | port | 3 | Airplane-mode Gitea→GitHub sync keeps. |
+| `pkg/sync` | 340 | rework | 3 | Airplane-mode Gitea→GitHub sync keeps as a responsibility; its single-repo and `forge_state.json` coupling dies — re-cut over repo records and the secrets vault (item 9, 0022). |
 | `pkg/workspace` | 2,050 | rework | 3 | The four-way local split: active workspaces in Maestro state keyed by repo + Story/run (item 9); pre-creation re-cut for Work Groups. |
 
 ### Containers, execution, and build
@@ -115,7 +116,8 @@ These govern every disposition below and any port decision made later:
 | `pkg/webui` | 3,000 | **rewrite** | 3→7 | D8: the log view becomes the artifact view. Minimal artifact/chat view lands with the Phase 3 runtime; the multi-user dashboard is Phase 7. |
 | `pkg/chat` | 800 | rework | 3 | D8 first pass confirmed. |
 | `pkg/logx` | 650 | port | 3 | Logs remain scratch; the record is Audit artifacts (0021). |
-| `pkg/utils` | 560 | port | 3 | Except `maestro_files.go` → rework to repo-artifact management only (item 9). |
+| `pkg/utils` (excl. `maestro_files.go`) | 280 | port | 3 | Filesystem, sanitization, token counting, `SafeAssert`. |
+| `pkg/utils/maestro_files.go` | 284 | rework | 3 | Half the package by LOC, so split out: re-cut to committed repo-artifact management only (item 9); local state-hub file handling dies. |
 | `pkg/testkit`, `internal/mocks` | 1,800 | rework | 2–3 | Test infrastructure follows the interfaces it fakes. |
 | `pkg/version` | 22 | port | 2 | Feeds the MPH signature's harness component (0021). |
 
@@ -132,10 +134,12 @@ The first-pass guesses in roadmap D8 mostly held. What changed, and why:
 - `pkg/agent/toolloop`: **as-is → rework.** The toolloop spike found byte-identical engines but a real harness layer (durable audit persistence, escalation, per-tool circuit breaking) worth keeping as Maestro code over `llms/toolloop` — contingent on the upstream wishlist.
 - Bootstrap "revisit" → **rework**, resolved. The project-folder spike answered the open question: the committed repo `.maestro/` exists and survives; the local state hub retires; prompt fragments leave the repo for data-plane packs.
 - Config/secrets "rewrite ... to database where possible" → **rework with a precise target**: configuration records, secrets vault, key-file root of trust, bootstrap pointer (item 9; 0022 as amended).
+- `pkg/dispatch`: **as-is → rework**, with a doctrine consequence. The typed-channel discipline ports, but the package is structurally v1 (Story/hotfix queues, PM interview channels, spec exceptions, Story leases) — and reviewing it surfaced that v1 puts Story dispatch in the Architect, which the boundary rule says is wrong: dispatching dependency-ready work is rules, not inference. Work dispatch at both Epic and Story grain is Orchestrator machinery, with the Orchestrator purging and reprocessing queues on amendment (decided 2026-07-14; ADR 0019 amended accordingly).
+- Repository infrastructure (`pkg/mirror`/`pkg/git`, the Gitea lifecycle, `pkg/sync`): **as-is → rework** by the inventory's own definition. The git primitives and API client port; the managers are structurally tied to `projectDir`, one repository, `forge_state.json`, and project-named Docker volumes — all of which v2 doctrine kills.
 - Two drops D8 never listed, found by import-graph check: `pkg/metrics` (zero importers) and `pkg/state` (test-only importers).
-- `pkg/benchmark` postdates D8's first pass entirely; classified rewrite under ADR 0025.
+- `pkg/benchmark` postdates D8's first pass entirely; classified rewrite under ADR 0025. `pkg/tools` was absent from D8's first pass *and* from this inventory's first draft (caught in review): classified rework across Phases 2–4.
 
-Tallies at this grain: **port 18** groups (~16.5k LOC), **rework 25** groups (~52k LOC), **rewrite 4** (persistence, knowledge, webui, benchmark — ~10k LOC), **drop 5** (`pkg/state`, `pkg/metrics`, `pkg/templates/maintenance`, `pkg/specs`, `pkg/specrender` — ~1.5k LOC). The center of gravity is rework in Phase 3, which is exactly what the phase is scoped for.
+Tallies at this grain: **port 14** groups (~12k LOC), **rework 31** groups (~67k LOC), **rewrite 4** (persistence, knowledge, webui, benchmark — ~10k LOC), **drop 5** (`pkg/state`, `pkg/metrics`, `pkg/templates/maintenance`, `pkg/specs`, `pkg/specrender` — ~1.5k LOC). The center of gravity is rework in Phase 3, which is exactly what the phase is scoped for.
 
 ## Related Documents
 
