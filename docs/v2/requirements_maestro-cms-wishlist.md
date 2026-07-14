@@ -1,14 +1,14 @@
 +++
 title = "Maestro Wishlist For maestro-cms"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 type = "requirements"
 summary = "Maestro's running feature-request wishlist to the maestro-cms team, with generality arguments and a response field per item — the sibling of the maestro-llms wishlist, originating from the Phase 0 cms spike."
 +++
 
 # Maestro Wishlist For maestro-cms
 
-Status: draft — awaiting maestro-cms team responses.
+Status: live (approved by Codex and DR, 2026-07-13) — awaiting maestro-cms team responses.
 
 `maestro-cms` is a shared, open-source, general-purpose package; Maestro is a first-class consumer among several. Same rules as the [maestro-llms wishlist](requirements_maestro-llms-wishlist.md): DRY, upstream-first, non-breaking preferred, never fork; each item carries a generality argument and a **Response** field. Items originate from the Phase 0 cms spike ([spike report](phase_0/spike_cms.md)).
 

@@ -1,14 +1,14 @@
 +++
 title = "Spike Report: maestro-cms Boundary And Adoption"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 type = "spike"
 summary = "What the v2 knowledge/document/binary work consumes from maestro-cms versus builds in Maestro. Recommendation: adopt cms for the ingestion pipeline; Maestro owns retrieval, citations, and packs; the generic graph primitive is contributed to cms per its ADR 0005 and consumed back, with Maestro keeping only ontology and policy."
 +++
 
 # Spike Report: maestro-cms Boundary And Adoption
 
-Status: draft. Phase 0 item 13. Question: what should the v2 knowledge, document, and binary work (Phases 2 and 6) consume from `maestro-cms` versus build in Maestro?
+Status: live — approved by Codex and DR, 2026-07-13. Phase 0 item 13. Question: what should the v2 knowledge, document, and binary work (Phases 2 and 6) consume from `maestro-cms` versus build in Maestro?
 
 ## Method
 
