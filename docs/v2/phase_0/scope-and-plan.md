@@ -7,7 +7,7 @@ summary = "Approved Phase 0 scope and execution plan: 14 serial work items (ADRs
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
 
-Status: live — approved by Codex and DR, 2026-07-12, per [build-process.md](../build-process.md).
+Status: live — approved by Codex and DR, 2026-07-12, per [build-process.md](../build-process.md); amended 2026-07-13 (item 13, maestro-cms spike; both approvals).
 
 Status lifecycle (applies to all phase artifacts): `draft` while under review; flipped to `live` after both approvals, as the final commit before merge and before any work items start; `archive` when the phase completes and the document becomes a historical record. Work item 1 formalizes this lifecycle as part of the front-matter convention.
 

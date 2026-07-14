@@ -1,3 +1,10 @@
++++
+title = "Maestro v2 Planning Notes"
+edit_date = "2026-07-13"
+status = "live"
+summary = "Index of the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, and companion notes, with the per-phase directory convention."
++++
+
 # Maestro v2 Planning Notes
 
 This directory collects working notes for the Maestro v2 redesign.
