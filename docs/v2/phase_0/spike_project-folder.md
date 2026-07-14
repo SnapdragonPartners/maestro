@@ -3,7 +3,7 @@ title = "Spike Report: The Disposable Project Folder"
 edit_date = "2026-07-13"
 status = "draft"
 type = "spike"
-summary = "How much non-disposable state can leave the user's filesystem for the data plane? Answer: nearly all of it — the durable non-repo core is six files; v2 keeps only a minimal data-plane bootstrap pointer locally, and `.maestro/` splits into a committed repo directory and a retired local state hub."
+summary = "How much non-disposable state can leave the user's filesystem? Answer: nearly all of it. v2 retires the project directory entirely: a data-plane bootstrap pointer in the OS config dir, disposable mirrors/workspaces in the OS cache dir, and the committed repo .maestro/ as the only surviving .maestro."
 +++
 
 # Spike Report: The Disposable Project Folder
@@ -34,9 +34,14 @@ Full survey of every path v1 reads or writes: the `.maestro/` state hub, mirrors
    - Knowledge → the data plane per the cms spike; `knowledge.dot` retires with v1's design.
 2. **What remains local**: one minimal **bootstrap pointer** — where the data plane is and how to authenticate to it — plus recreatable caches (mirrors, workspaces, temp, logs-as-scratch). Lose the folder, re-point, and everything durable is still there; everything else rebuilds from the forge and the repo.
 3. **The `.maestro/` split**: as a *committed repo directory* it survives (Dockerfile, makefiles, instruction docs — project artifacts under D5); as a *local state hub* it retires down to the bootstrap pointer. This answers D8's queued question directly.
-4. **User-authored `.env`**: becomes user-managed app configuration referenced by, not owned by, Maestro — it is the project's file, not the harness's state.
-5. **D8 inventory inputs**: `pkg/config` → rework (data-plane config records + bootstrap-pointer loader); `pkg/state` file store and the legacy `.maestro` dirs → drop; `pkg/forge` state → rework into repo records + secrets module; `pkg/utils/maestro_files.go` → rework to repo-artifact management only; secrets/password machinery → rework behind the persistence interface.
-6. **No Phase 1 impact** (v1-as-patched keeps its files); Phase 2 implements the config and secrets families this confirms.
+4. **Retire the "project directory" concept entirely** (per DR, on review). It existed for a v1 assumption that no longer holds — operating on an already-materialized user checkout. v2 never does that: Maestro works only from its own mirrors and clones (ADR 0023), and a user's existing checkout is irrelevant to it. The taxonomy broke the model independently: a Product spans repositories, so no single folder can host "the project." What remains locally is split by function into OS-standard locations:
+   - **Maestro config** — `os.UserConfigDir()/maestro` (macOS `~/Library/Application Support`, XDG config on Linux): the data-plane bootstrap pointer, nothing else.
+   - **Maestro cache** — `os.UserCacheDir()/maestro`: mirrors and workspaces, keyed by repo ID, not by project. The cache location *communicates* disposability — users already know cache dirs can be deleted, which is precisely this spike's finding. (macOS Docker Desktop's default `/Users` file sharing covers it, so container bind mounts are unaffected.)
+   - A `MAESTRO_HOME` override collapses both into one directory (the classic `~/.maestro` layout) for those who want it.
+5. **The naming tangle resolves as a side effect**: with the local state hub retired and local directories named by function (config, cache), the committed repo `.maestro/` directory becomes the *only* thing named `.maestro` — repo-scoped project artifacts, exactly like `.github/`. No rename needed; the collision dies because one of the colliding parties does. Retired from the vocabulary: "project directory."
+6. **User-authored `.env`**: becomes user-managed app configuration referenced by, not owned by, Maestro — it is the project's file, not the harness's state.
+7. **D8 inventory inputs**: `pkg/config` → rework (data-plane config records + bootstrap-pointer loader); `pkg/state` file store and the legacy `.maestro` dirs → drop; `pkg/forge` state → rework into repo records + secrets module; `pkg/utils/maestro_files.go` → rework to repo-artifact management only; secrets/password machinery → rework behind the persistence interface.
+8. **No Phase 1 impact** (v1-as-patched keeps its files); Phase 2 implements the config and secrets families this confirms.
 
 No third-party package is involved, so no wishlist accompanies this spike. No spike scripts were produced (reading spike); `spikes/phase_0/` is not needed.
 
