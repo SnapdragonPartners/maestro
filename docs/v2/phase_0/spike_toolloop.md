@@ -48,6 +48,8 @@ Code survey of both implementations: Maestro's `pkg/agent/toolloop/` and `maestr
 4. **D8 inventory input**: `pkg/agent/toolloop` moves from "port largely as-is" (the D8 first-pass guess) to **"port with rework: harness layer over llms/toolloop, with upstream feature requests filed first."** The terminal-tool discipline itself is unchanged doctrine (0022); only its plumbing moves.
 5. **No Phase 1 impact.** Phase 1 patches v1 minimally; no toolloop work happens before the port.
 
+The upstream requests are formalized as a standing wishlist document the toolkit team can annotate: [requirements_maestro-llms-wishlist.md](../requirements_maestro-llms-wishlist.md).
+
 No spike scripts were produced (this was a reading spike); `spikes/phase_0/` is not needed for this item.
 
 ## Related Documents

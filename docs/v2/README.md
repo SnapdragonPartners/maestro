@@ -9,6 +9,7 @@ specifications, and stories.
 ## Documents
 
 - [Roadmap](roadmap.md) - main v2 roadmap draft.
+- [maestro-llms Wishlist](requirements_maestro-llms-wishlist.md) - Maestro's running feature-request list to the toolkit team, with response fields for their feedback.
 - [Build Process](build-process.md) - interim working agreement for how v2 gets built (author/reviewer/operator roles, branching, review cadence, testing).
 - [Phase 0 Scope And Plan](phase_0/scope-and-plan.md) - the first phase artifact under the build process: deliverables, PR sequence, exit checklist.
 
