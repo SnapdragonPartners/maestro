@@ -1,14 +1,14 @@
 +++
 title = "Maestro Wishlist For maestro-llms"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 type = "requirements"
 summary = "Maestro's running feature-request wishlist to the maestro-llms team, with generality arguments and a response field per item — so the toolkit team can say what they're comfortable adding given their other consumers."
 +++
 
 # Maestro Wishlist For maestro-llms
 
-Status: draft — awaiting maestro-llms team responses.
+Status: live (approved by Codex and DR, 2026-07-13) — awaiting maestro-llms team responses.
 
 `maestro-llms` is a shared, general-purpose package; Maestro is one first-class consumer among several. This document is Maestro's running request list, governed by the shared-package principle: we use toolkit functionality where it exists (DRY), we propose upstream anything that would serve other consumers, we prefer non-breaking additions, and we never fork. Each item carries a generality argument and a **Response** field for the toolkit team (comfortable / needs discussion / declined — with notes). Declined items get Maestro-side answers; nothing here is a demand.
 

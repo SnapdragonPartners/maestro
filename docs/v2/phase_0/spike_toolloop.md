@@ -1,14 +1,14 @@
 +++
 title = "Spike Report: Toolloop Ownership"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 type = "spike"
 summary = "Is a Maestro-owned toolloop distinct from maestro-llms still justified? Recommendation: yes as a harness layer, no as an engine — converge on llms/toolloop during the D8 port, contingent on the upstream requests in the maestro-llms wishlist."
 +++
 
 # Spike Report: Toolloop Ownership
 
-Status: draft. Phase 0 item 8. Question (from roadmap D8): is maintaining a Maestro-owned toolloop distinct from the `maestro-llms` toolloop still justified?
+Status: live — approved by Codex and DR, 2026-07-13. Phase 0 item 8. Question (from roadmap D8): is maintaining a Maestro-owned toolloop distinct from the `maestro-llms` toolloop still justified?
 
 ## Method
 
