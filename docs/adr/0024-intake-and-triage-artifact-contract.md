@@ -1,13 +1,13 @@
 +++
 title = "ADR 0024: Intake And Triage Artifact Contract"
-edit_date = "2026-07-13"
+edit_date = "2026-07-14"
 status = "live"
 summary = "Fixes what intake produces — Feature and Epic records, triage outputs, provenance, review, and the dispatch seam — while deliberately leaving the intake executor unbound until the pre-Phase-5 spike."
 +++
 
 # 0024. Intake And Triage Artifact Contract
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (Story dispatch moved from Architect to Orchestrator, aligning with ADR 0019 as amended)
 
 ## Context
 
@@ -23,7 +23,7 @@ Every intake path terminates in the same record shapes, all Management artifacts
 - One or more **Epic records**, each carrying the three triage outputs: **mode** (`workbench` | `factory`), **repository** (with Product lineage via the repo's primary Product where inferred), and **dependencies** (on other Epics, if any).
 - A **dispatch** per dependency-ready Epic through the Orchestrator's seam (ADR 0019): the Epic record plus its seed artifacts — the Feature's effective view and, when available, a knowledge pack — per ADR 0021's handoff rule. Seeds must suffice to commence.
 
-Dependency-bearing Features dispatch as a DAG, and the DAG is Orchestrator-owned: intake persists the full Epic dependency graph; the Orchestrator dispatches only dependency-ready Epics, holds blocked Epics until their upstream Epics are accepted (Epic-to-default merged, ADR 0023), and reruns the deterministic pre-checks below before releasing a held Epic. The division of labor is fixed: **the Orchestrator owns Epic dispatch across a Feature; the Architect owns Story dispatch within an Epic.**
+Dependency-bearing Features dispatch as a DAG, and the DAG is Orchestrator-owned: intake persists the full Epic dependency graph; the Orchestrator dispatches only dependency-ready Epics, holds blocked Epics until their upstream Epics are accepted (Epic-to-default merged, ADR 0023), and reruns the deterministic pre-checks below before releasing a held Epic. The division of labor is fixed (amended 2026-07-14, aligned with ADR 0019 as amended): **authoring is inference, dispatch is rules. The Architect owns the Story decomposition and its dependency graph within an Epic; the Orchestrator owns dispatch at both grains** — releasing dependency-ready Epics across a Feature and dependency-ready Stories within an Epic to available executors under configured policy, from the durable backlog as the authoritative scheduler state.
 
 ### Entry paths
 
