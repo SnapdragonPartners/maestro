@@ -1,13 +1,13 @@
 +++
 title = "ADR 0022: v2 Data Plane"
-edit_date = "2026-07-13"
+edit_date = "2026-07-14"
 status = "live"
 summary = "Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam."
 +++
 
 # 0022. v2 Data Plane
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (local durability invariant; config and secrets resolved into the plane with an external root of trust; backup contract)
 
 ## Context
 
@@ -20,6 +20,8 @@ v1's SQLite database began as a searchable log file and grew into session persis
 - The requirement is the principle: a **multi-user, network-friendly, relational database**. Postgres is the implementation. Docker-hosted local Postgres is the community default — Maestro already requires Docker, so this adds no new dependency class. Cloud-hosted Postgres serves team/cloud mode; AlloyDB is a possible later variant (notably for larger vector storage), and staying on the Postgres-compatible surface keeps the tooling valid either way. Non-Docker local Postgres may be supported later but is never the default path.
 - **`sqlc`** for typed, compile-checked queries; **`golang-migrate`** for versioned schema migrations, applied from empty. There is no migration from v1's SQLite — v1 data is frozen with `v1-freeze` (roadmap D7); the v2 story is migration from nothing.
 - Deployment note: the official cloud version of Maestro will almost certainly live in **GCP**, giving cloud-mode implementation choices a mild Google bias (AlloyDB above; GCS below). The bias applies to cloud modules only — the contracts (Postgres-compatible SQL, Maestro's digest-addressed object interface) stay vendor-neutral, so local mode and self-hosters are never captured by it.
+- **Local durability invariant** (amended 2026-07-14): every authoritative local store — the Postgres data directory, the object-store data directory, and the airplane-mode local forge's repositories/refs/PR state — is **bind-mounted to a durable host path** under a single storage root (Maestro data, an OS user-data location), never left in anonymous volumes or Docker-Desktop-internal named volumes. Restarting Docker, recreating containers, or factory-resetting Docker Desktop (which destroys VM-internal named volumes on macOS) must not be able to destroy the data plane.
+- **Backup is a defined operation, not a directory copy.** Copying a running Postgres directory is not a valid backup. The MVP baseline is a **cold backup**: stop every service writing into the root — Postgres, the object store, **and the airplane-mode local forge** — copy the storage root (capturing Postgres, objects, and local forge consistently so cross-store references survive), restart; restore is validated by the digest checks the seam already performs. Online snapshot/`pg_basebackup`-class backup is a later upgrade tracked in the ADR backlog. The backup boundary deliberately **excludes the secrets unlock key** (below): restore on a new machine requires the backup plus the key file, or re-entry of secrets.
 - **Object storage is a first-class data-plane component alongside the relational database.** The contract is **Maestro's own narrow object interface** — the persistence interface's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned. Content-addressed needs are small, and owning the contract avoids overpromising provider interchangeability (GCS's S3 interoperability is partial, not a drop-in). The initial adapter is S3-compatible, implemented by **MinIO**: a single container composed next to Postgres. Named fallback: SeaweedFS (Apache-2.0), should MinIO's community-edition stewardship worsen. Cloud mode plugs a GCS or S3 adapter behind the same module. Uploads, screenshots, browser traces, and large evidence media live here, referenced from relational rows by content-addressed digest; retention pinning (ADR 0021) applies to objects exactly as to Audit rows.
 
 ### Schema families
@@ -35,6 +37,8 @@ Derived mechanically from ADRs 0018 and 0021; enumerated here so Phase 2 lands t
 - Artifacts: **Management and Audit in separate storage families** with opposite retention postures (ADR 0021); amendment and supersession links; review records; retention pins.
 - Tool calls — the atomic Audit **action** unit: an LLM call that produces no tool call does nothing. LLM call records exist for token/cost accounting (which is metrics) and optional trace debugging. This refines ADR 0021's Audit enumeration: all of these are Audit-family records, but the tool call is the unit of action. Guardrail: any LLM output that creates artifacts, decisions, or state transitions must pass through a tool/action record — parsed free-text output can never be a side door. (This is v1's terminal-tool discipline, historical note 0006, promoted to a data-plane rule.)
 - Metrics.
+- Configuration records (org/product/repo lineage; resolved into the plane by the Phase 0 project-folder spike).
+- Secrets vault: encrypted at rest inside the plane, unlocked by an **external root of trust** that never lives in the plane — by default a Maestro-generated 0600 key file under Maestro config (created at setup, no user ceremony, unattended-safe); optional OS-keychain backend where available; optional passphrase mode accepting the unattended cost. The bootstrap pointer references the root of trust; it never contains secrets. Cloud mode replaces this with the auth mini-app plus a provider secret manager.
 - Prompt packs (immutable, hash-addressed — roadmap pillar 10).
 - Gates.
 - Knowledge items (Phase 6 fills this out; the family is reserved).
@@ -56,11 +60,11 @@ Per roadmap pillar 5: users belong to organizations; major records carry organiz
 
 ### Repo vs database
 
-Roadmap D5 is ratified by reference: source code, project docs/ADRs, and true project artifacts live in the repo; users/orgs, work hierarchy, runs, artifacts, calls, metrics, attachments, indexed knowledge, installed packs/skills, and audit events live in the data plane. Config and credential placement is deliberately deferred to the disposable-project-folder spike (Phase 0 item 9): the schema must be capable of holding them; whether it does is the spike's recommendation.
+Roadmap D5 is ratified by reference: source code, project docs/ADRs, and true project artifacts live in the repo; users/orgs, work hierarchy, runs, artifacts, calls, metrics, attachments, indexed knowledge, installed packs/skills, and audit events live in the data plane. Config and credential placement was deferred to the disposable-project-folder spike (Phase 0 item 9) and is now resolved (amended 2026-07-14): configuration records and the secrets vault live in the plane, with the root of trust outside it (see schema families).
 
 ### Phase 2 scope
 
-Phase 2 implements exactly this ADR: one-command local setup from a clean checkout (Docker Postgres **and MinIO** + migrations from empty), typed queries with tests for the artifact, principal-instance, and call families, the object module with its initial S3-compatible adapter, and one real vertical slice — importing golden story runner results as `benchmark`-scoped artifacts, including at least one object write with digest reference and retention pin exercising the cross-store commit-order invariant.
+Phase 2 implements exactly this ADR: one-command local setup from a clean checkout (Docker Postgres **and MinIO**, bind-mounted under the Maestro data root, + migrations from empty), typed queries with tests for the artifact, principal-instance, call, configuration, and secrets families (including the key-file root of trust and the cold-backup operation), the object module with its initial S3-compatible adapter, and one real vertical slice — importing golden story runner results as `benchmark`-scoped artifacts, including at least one object write with digest reference and retention pin exercising the cross-store commit-order invariant.
 
 ## Consequences
 

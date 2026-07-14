@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-07-13"
+edit_date = "2026-07-14"
 status = "live"
 summary = "Concepts that need ADRs before implementation, with key questions per candidate; reconciled and dependency-ordered in Phase 0 item 12."
 +++
@@ -210,12 +210,9 @@ Recommended:
 
 ### User Credentials And Configs
 
-Decide which configs/secrets move from JSON files to database.
+Resolved (2026-07-14) by the Phase 0 project-folder spike and the ADR 0022 amendment: configuration records and the secrets vault live in the data plane; the root of trust (key file default, keychain/passphrase optional) lives outside it under Maestro config; the project folder is retired. Remaining ADR-worthy follow-up:
 
-Potential principle:
-
-- Project folders should become disposable.
-- All durable control-plane state lives in local/cloud data plane.
+- Online backup/snapshot upgrade beyond the cold-backup baseline (restore validation, cross-store consistency).
 
 ### Container Runtime Abstraction
 
