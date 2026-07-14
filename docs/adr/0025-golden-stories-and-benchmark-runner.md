@@ -28,7 +28,7 @@ A golden story is a declarative, versioned fixture — a definition file in the 
 - Expected evidence-package shape.
 - Budget expectations (tokens, wall-clock).
 
-The suite ladders in complexity (dependency bump → cleanup → focused bug fix → API change with tests → UI change with visual evidence → feature with migration → multi-Story Epic with merge conflicts → external service setup). The first 5–10 stories are single-repo and Story-scoped, drawn from the low rungs; fixture candidates are forked, pinned variants of `maestro-llms` and `maestro-cms`, with the UI-bearing fixture deferred until Product/Feature machinery and browser evidence exist. Fixture repos use pinned base branches, and the runner cleans golden branches after every run (ADR 0023's cleanup rule).
+The suite ladders in complexity (dependency bump → cleanup → focused bug fix → API change with tests → app change with behavioral evidence → feature with migration → multi-Story Epic with merge conflicts → external service setup). The roadmap's "UI-bearing" requirement is refined here: **the point is a full, human-exercisable application rather than a bare library** — not necessarily a web UI. The first 5–10 stories are single-repo and Story-scoped, drawn from the low rungs; fixture candidates are forked, pinned variants of `maestro-llms` and `maestro-cms`, with the standalone LLM-tester CLI app from the toolkit repos as the starting app-bearing fixture (no browser tooling required), and `maestro-issues` — the automated bug fixer, a simple true-webui app in the Maestro universe — as the candidate when browser evidence arrives. Stories requiring visual/browser evidence remain deferred until that tooling exists. Fixture repos use pinned base branches, and the runner cleans golden branches after every run (ADR 0023's cleanup rule).
 
 ### Runner contract
 
@@ -50,9 +50,11 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 
 A benchmark configuration is an MPH bundle: model routing, prompt pack reference, and harness settings. Two configurations are mandatory from the start: the **paired-agent default**, and the **single-agent happy-path baseline** — the vibe-coding comparator that quantifies the paired-agent premium and its payoff (the roadmap's economic argument, made measurable). Reviewer-model heterogeneity is part of the bundle, so homogeneous-review degradation (ADR 0020) is itself benchmarkable.
 
+Configuration storage follows the same trajectory as results: **file-based in Phase 1** (no data plane exists yet), **data-plane-resident once Phase 2 lands** (durability; prompt packs are DB-canonical per roadmap pillar 10), with the runner accepting either through a source switch. Either way a configuration is identified by content hash — the MPH identity in run records derives from content, never location, so results remain comparable across the storage transition.
+
 ### Suite tiers and integration
 
-Two tiers, extending the repo's existing build-tag pattern: **`golden-minimal`** — a small, cheapest-rung smoke subset at N = 1, runnable from a make target, executed at minimum at the end of every phase (build process) — and **`golden-all`** — the full suite at standard N, for release comparisons and D6 questions. Third-party benchmarks (the v1 SWE-EVO harness work is the seed) remain complementary for cross-system comparison and model-science questions; golden stories measure Maestro against itself.
+Two tiers, extending the repo's existing build-tag pattern: **`golden-minimal`** — a small, cheapest-rung smoke subset at N = 1, runnable from a make target, executed at minimum at the end of every phase (build process) — and **`golden-all`** — the full suite at standard N, for release comparisons and D6 questions. Third-party benchmarks (the v1 SWE-EVO harness work is the seed) remain complementary for cross-system comparison and model-science questions; golden stories measure Maestro against itself. Beyond MVP, the same runner — its adapter and normalized-record contract in particular — is designed to eventually drive industry benchmarks with less deterministic outcomes, continuing the v1 benchmark support work on this harness rather than a separate one.
 
 ## Consequences
 
