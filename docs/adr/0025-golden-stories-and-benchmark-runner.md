@@ -42,7 +42,11 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 ### Sampling and budgets (the D9 mechanism)
 
 - Standard comparisons run **N = 3** per story per configuration; smoke runs are **N = 1**. Both numbers are provisional until the first instrumented runs establish real per-story costs (D9's agreed first action); the mechanism is not provisional.
-- Spread-reported metrics are reported as min/median/max across repeats, never as bare points: tokens, cost, wall-clock, LLM calls, tool calls, iterations, review cycles, self-repair cycles, human interventions and attention time, pass rate, and failure kind. Cost to accepted change is the headline (D6).
+- Aggregation semantics are defined per metric class, over the cohort of **valid attempts** (invalid runs — failed isolation or unverifiable cleanup — are excluded from every aggregation and counted separately; budget-overrun aborts are valid *failed* attempts whose costs count):
+  - **Numeric per-run metrics** — tokens, cost, wall-clock, LLM calls, tool calls, iterations, review cycles, self-repair cycles, human interventions and attention time — report as min/median/max across valid attempts, never bare points.
+  - **Pass rate** — accepted verdicts over valid attempts.
+  - **Failure kinds** — counts per kind across valid attempts.
+  - **Cost to accepted change** (the headline, D6) — total cost of all valid attempts divided by the number of accepted verdicts, so failed-attempt costs are included: that is what the factory actually spends per accepted change. Undefined when no attempt passes — reported as undefined, never as zero or infinity.
 - Budgets are declared, not discovered: every configuration declares expected per-run cost, and the suite run carries a per-run and per-suite cap. **Overrun aborts the run and records it with failure kind `budget-overrun`** — partial results are reported as partial; nothing silently truncates into a fake pass.
 - Full-matrix runs (stories × models × packs × harness configs) require explicit justification — release comparisons and D6-grade questions; spot checks are the default posture.
 
