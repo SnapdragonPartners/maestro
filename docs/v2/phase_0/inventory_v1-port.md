@@ -1,14 +1,14 @@
 +++
 title = "Inventory: v1 Port, Rework, Rewrite, Drop"
 edit_date = "2026-07-14"
-status = "draft"
+status = "live"
 type = "inventory"
 summary = "The D8 disposition table at package grain over the actual v1 package list: what ports as-is, what ports with rework, what is rewritten, and what is dropped — with breaking-change principles and the deltas from D8's first-pass guess."
 +++
 
 # Inventory: v1 Port, Rework, Rewrite, Drop
 
-Status: draft. Phase 0 item 10. Question (roadmap D8): which v1 subsystems port and which are rewritten — decided explicitly now, at package grain, so Phase 3 is scheduled rather than discovered mid-rewrite.
+Status: live (approved by Codex and DR, 2026-07-14). Phase 0 item 10. Question (roadmap D8): which v1 subsystems port and which are rewritten — decided explicitly now, at package grain, so Phase 3 is scheduled rather than discovered mid-rewrite.
 
 ## Method
 
