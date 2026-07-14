@@ -1,3 +1,10 @@
++++
+title = "Maestro v2 Planning Notes"
+edit_date = "2026-07-13"
+status = "live"
+summary = "Index of the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, and companion notes, with the per-phase directory convention."
++++
+
 # Maestro v2 Planning Notes
 
 This directory collects working notes for the Maestro v2 redesign.
@@ -9,6 +16,7 @@ specifications, and stories.
 ## Documents
 
 - [Roadmap](roadmap.md) - main v2 roadmap draft.
+- [maestro-llms Wishlist](requirements_maestro-llms-wishlist.md) - Maestro's running feature-request list to the toolkit team, with response fields for their feedback.
 - [Build Process](build-process.md) - interim working agreement for how v2 gets built (author/reviewer/operator roles, branching, review cadence, testing).
 - [Phase 0 Scope And Plan](phase_0/scope-and-plan.md) - the first phase artifact under the build process: deliverables, PR sequence, exit checklist.
 

@@ -2,12 +2,12 @@
 title = "Maestro v2 Phase 0: Scope And Plan"
 edit_date = "2026-07-13"
 status = "live"
-summary = "Approved Phase 0 scope and execution plan: 13 serial work items (ADRs, two spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
+summary = "Approved Phase 0 scope and execution plan: 14 serial work items (ADRs, three spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
 +++
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
 
-Status: live — approved by Codex and DR, 2026-07-12, per [build-process.md](../build-process.md).
+Status: live — approved by Codex and DR, 2026-07-12, per [build-process.md](../build-process.md); amended 2026-07-13 (item 13, maestro-cms spike; both approvals).
 
 Status lifecycle (applies to all phase artifacts): `draft` while under review; flipped to `live` after both approvals, as the final commit before merge and before any work items start; `archive` when the phase completes and the document becomes a historical record. Work item 1 formalizes this lifecycle as part of the front-matter convention.
 
@@ -18,7 +18,7 @@ Goal (from the [roadmap](../roadmap.md)): decide the conceptual shape before cod
 In scope:
 
 - The Phase 0 ADR set (below), each Accepted per the build process.
-- The two Phase 0 spikes: toolloop ownership, and the disposable project folder.
+- The three Phase 0 spikes: toolloop ownership, the disposable project folder, and maestro-cms boundary and adoption (added 2026-07-13).
 - The port-vs-rewrite inventory at package grain (roadmap D8), informed by the spikes.
 - Documentation reset: archive stale docs, adopt the front-matter convention, make remaining repo docs agent-ingestible.
 - Reconciled, dependency-ordered ADR backlog (supersedes the interim priority list in [v1-adr-alignment.md](../v1-adr-alignment.md)).
@@ -52,13 +52,14 @@ Deliverable locations: ADRs land in `docs/adr/` (continuing the single 0017+ seq
 | 7 | `adr-benchmark` | ADR: golden stories and benchmark runner — black-box contract, self-contained persistence, D9 sampling/budget mechanism (numeric values provisional until first instrumented runs), Phase 1 target strategy (minimally patched v1 path), `golden-minimal`/`golden-all` build tags. **Phase 1-blocking.** | M |
 | 8 | `spike-toolloop` | Spike report: is a Maestro-owned toolloop distinct from the `maestro-llms` toolloop still justified? Recommendation only; no refactor. | M |
 | 9 | `spike-project-folder` | Spike report: how much non-disposable state can leave the user's filesystem for the data plane (or the repo, where it is a true project artifact)? Includes the bootstrap-mode / `.maestro/` question. | S |
-| 10 | `port-inventory` | The D8 port/rework/rewrite/drop inventory at package grain over the actual v1 package list, using both spike results. Records breaking-change principles. | M |
+| 10 | `port-inventory` | The D8 port/rework/rewrite/drop inventory at package grain over the actual v1 package list, using the spike results (items 8, 9, and 13). Records breaking-change principles. | M |
 | 11 | `doc-reset` | Execute the archive plan from item 1; apply front-matter to live docs. | M |
 | 12 | `backlog-reconcile` | Reconciled, dependency-ordered ADR backlog; Phase 0 exit checklist review against the roadmap. | S |
+| 13 | `spike-cms` | Spike report (added 2026-07-13): maestro-cms boundary and adoption — what the knowledge/document/binary work (Phases 2 and 6) should consume from maestro-cms versus build in Maestro, with an upstream-candidacy sort under the shared-package principle (DRY + upstream-first; open-source, multiple consumers, Maestro first-class and able to request non-breaking enhancements). Informs the item 10 disposition of `pkg/knowledge`. Recommendation only; no refactor. | M |
 
 Sequencing notes:
 
-- Items 8 and 9 have no ADR dependencies and are the designated slack: if an ADR review stalls, a spike proceeds without violating the one-branch rule (the stalled branch closes or merges first).
+- Items 8, 9, and 13 have no ADR dependencies and are the designated slack: if an ADR review stalls, a spike proceeds without violating the one-branch rule (the stalled branch closes or merges first). Item 13 preferably lands before item 10, which consumes its recommendation.
 - Item 2 bundles three closely coupled conceptual ADRs for review coherence. If it runs large, the plan's checkpoint mechanism applies: review checkpoint after the taxonomy ADR before the other two are drafted.
 - Item 7 is deliberately last of the ADRs: it consumes the artifact model (3), data plane families (4), and branching (5).
 - Before a spike begins, all open document work is committed — risk minimization against spike churn.
@@ -73,7 +74,7 @@ The roadmap's Phase 0 exit criteria, plus the Phase 0 scope items that are not t
 - [ ] The v2 MVP boundary (D1) and the port-vs-rewrite inventory (D8) written down and agreed. (Items 2 and 10; D1 is ratified inside the taxonomy ADR.)
 - [ ] Documentation reset done: stale docs archived, remaining repo docs safe for agent ingestion. (Items 1 and 11.)
 - [ ] Reconciled ADR backlog. (Item 12.)
-- [ ] Intake/triage contract ADR Accepted (item 6); both spike reports delivered (items 8–9).
+- [ ] Intake/triage contract ADR Accepted (item 6); spike reports delivered (items 8, 9, and 13).
 - [ ] All remaining table deliverables completed, or explicitly deferred by agreement of DR and Codex.
 
 ## Risks
