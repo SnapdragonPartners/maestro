@@ -14,25 +14,25 @@ Status: draft — awaiting maestro-llms team responses.
 
 Items 1–5 originate from the Phase 0 toolloop spike ([spike report](phase_0/spike_toolloop.md)); more will follow (Phase 1 expects to propose reusable metrics-capture pieces).
 
-## 1. Early-termination affordance in `llms/toolloop` — required for convergence
+## 1. Turn-boundary stop in `llms/toolloop` — required for convergence
 
-- **What**: a way for a tool result to end the loop — e.g. an additive `Terminal bool` on `ToolResult`, or a stop sentinel — yielding a distinct outcome kind.
-- **Why (Maestro)**: our loop's protocol is "one goal, one terminal tool": forced tool choice with exit signaled by a terminal tool. Today the toolkit loop ends only on a no-tool final answer, max iterations, or error, so this protocol cannot be expressed over it.
-- **Generality**: any consumer building goal-directed loops (not chat) needs a tool-driven exit; a no-tool final answer is the wrong terminator whenever tool choice is forced.
-- **Breaking-ness**: additive field or sentinel; non-breaking.
+- **What**: a way to end the loop at a **turn boundary** with a typed reason: the stop latches (e.g. via a `ToolResult` flag or stop sentinel), every sibling tool call in the current turn still executes, every result is appended, and the loop then returns a distinct outcome carrying the typed reason.
+- **Why (Maestro)**: two uses of the same mechanism. First, terminal completion — our protocol is "one goal, one terminal tool" (forced tool choice, exit signaled by a terminal tool), which the current loop cannot express. Second, hard-limit escalation: Maestro executes the limit-hitting iteration and then escalates, whereas the toolkit's `MaxIterations` stops *before* executing the limit-hitting response's tool calls — a direct mapping would drop work or cost an extra provider call. A latched turn-boundary stop serves both.
+- **Generality**: any consumer building goal-directed loops needs a tool-driven exit that doesn't discard in-flight sibling results; a no-tool final answer is the wrong terminator whenever tool choice is forced.
+- **Breaking-ness**: additive in spirit, but not categorically non-breaking — a new outcome kind extends a set maestro-llms ADR-0011 declares closed (requires a superseding toolkit ADR), and a new exported struct field can break unkeyed composite literals. Framed as an additive proposal requiring compatibility and ADR review.
 - **Response**: _pending_
 
-## 2. Controlled pre-request extension point — required for convergence
+## 2. Controlled, fallible pre-request extension point — required for convergence
 
-- **What**: an optional hook invoked before each provider call, able to append messages to the outgoing request (injection/flush) and observe pre-call state.
-- **Why (Maestro)**: we flush buffered human input, inject pre-iteration guidance, and record activity heartbeats before each call. The toolkit's transcript is deliberately immutable and its hooks fire post-response only.
-- **Generality**: mid-loop context injection (fresh user input, tool-derived reminders, budget warnings) is a common agent-loop need; a *controlled* extension (append-only, or request-copy-in/request-out) preserves the toolkit's immutability guarantees for consumers that don't opt in.
+- **What**: an optional hook invoked before each provider call, able to append messages to the outgoing request (injection/flush), observe pre-call state, and **fail** — returning an error or typed abort that ends the run cleanly.
+- **Why (Maestro)**: we flush buffered human input, inject pre-iteration guidance, and record activity heartbeats before each call. The toolkit's transcript is deliberately immutable and its hooks fire post-response only. Fallibility is not optional for us: the buffered-input flush can fail during context compaction, and an infallible callback would silently lose that existing failure contract.
+- **Generality**: mid-loop context injection (fresh user input, tool-derived reminders, budget warnings) is a common agent-loop need; a *controlled* extension (append-only, or request-copy-in/request-out) preserves the toolkit's immutability guarantees for consumers that don't opt in, and a pre-request hook that can abort is the natural place for consumer-side preflight.
 - **Breaking-ness**: additive optional hook; non-breaking.
 - **Response**: _pending_
 
 ## 3. Design review: fallible hooks
 
-- **What**: not a feature request — a request to revisit the decision that observation hooks cannot return errors, e.g. additive error-returning variants alongside the existing signatures.
+- **What**: not a feature request — a request to revisit the decision that observation hooks cannot return errors, e.g. additive error-returning variants alongside the existing signatures. (Items 1–2 carry the narrow fallibility Maestro requires; this item is the broader, optional review of the post-response observation hooks.)
 - **Why (Maestro)**: nothing durable can ride an infallible hook. We route audit persistence around adapted `Execute` instead, so this does not block convergence — but the constraint shapes every consumer's architecture.
 - **Generality**: audit, quota enforcement, and policy-abort use cases all eventually want a hook that can fail the run.
 - **Breaking-ness**: signature change if done in place — hence framed as a review; additive variants would be non-breaking.
