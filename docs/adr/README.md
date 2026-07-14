@@ -41,7 +41,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | [0022](0022-v2-data-plane.md) | v2 data plane | Accepted |
 | [0023](0023-v2-branch-strategy.md) | v2 branch strategy | Accepted |
 | [0024](0024-intake-and-triage-artifact-contract.md) | Intake and triage artifact contract | Accepted |
-| [0025](0025-golden-stories-and-benchmark-runner.md) | Golden stories and the benchmark runner | Proposed |
+| [0025](0025-golden-stories-and-benchmark-runner.md) | Golden stories and the benchmark runner | Accepted |
 
 ## Historical v1 Notes
 

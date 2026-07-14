@@ -1,13 +1,13 @@
 +++
 title = "ADR 0025: Golden Stories And The Benchmark Runner"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Specifies the measuring instrument: golden story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers."
 +++
 
 # 0025. Golden Stories And The Benchmark Runner
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
