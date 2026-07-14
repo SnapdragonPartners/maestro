@@ -12,12 +12,12 @@ Status: draft — awaiting maestro-cms team responses.
 
 `maestro-cms` is a shared, open-source, general-purpose package; Maestro is a first-class consumer among several. Same rules as the [maestro-llms wishlist](requirements_maestro-llms-wishlist.md): DRY, upstream-first, non-breaking preferred, never fork; each item carries a generality argument and a **Response** field. Items originate from the Phase 0 cms spike ([spike report](phase_0/spike_cms.md)).
 
-## 1. Digest-addressed keying convention for `store.ObjectStore`
+## 1. Digest-addressed keying for `store.ObjectStore`
 
-- **What**: a documented convention (or thin optional helper) that object keys are content digests — e.g. a `DigestStore` wrapper that computes `content.SHA256HexReader` on `Put` and enforces key = digest.
-- **Why (Maestro)**: our data plane requires content-addressed binaries (retention pinning and reference verification hang off digests). Today cms keys are explicitly opaque, so content-addressing is a discipline each consumer must impose alone.
-- **Generality**: dedup, integrity verification, and cache-friendly addressing benefit any consumer; keeping it a wrapper preserves opaque keys for consumers that want them.
-- **Breaking-ness**: additive helper or documentation; non-breaking.
+- **What**: either a documented convention (keys are content digests; the consumer guarantees it) or — better — a key-returning API with explicit streaming semantics, e.g. `PutDigest(ctx, r io.Reader) (key string, err error)`. Note the streaming problem honestly: `Put` takes the key *before* consuming its reader, while `SHA256HexReader` consumes the stream, so a thin wrapper cannot hash-then-write a non-seekable reader without buffering, spooling to temp, or write-then-verify-with-rollback. The API should state which it does.
+- **Why (Maestro)**: our data plane requires content-addressed binaries (retention pinning and reference verification hang off digests). Today cms keys are explicitly opaque, so content-addressing is a discipline each consumer must impose — and implement the streaming mechanics for — alone.
+- **Generality**: dedup, integrity verification, and cache-friendly addressing benefit any consumer; an optional API preserves opaque keys for consumers that want them.
+- **Breaking-ness**: additive method or documentation; non-breaking.
 - **Response**: _pending_
 
 ## 2. Contribution offer: the first `index/*` adapter
@@ -28,12 +28,12 @@ Status: draft — awaiting maestro-cms team responses.
 - **Breaking-ness**: new optional subpackage; non-breaking. Requires the cms team to define (or bless) the `index/*` contract first.
 - **Response**: _pending_
 
-## 3. Coordination: the v2 graph primitive
+## 3. Planned contribution: the generic graph primitive
 
-- **What**: not a feature request — a coordination flag. cms's v2 notes plan a graph primitive and cite Maestro's v1 knowledge graph as a design source; Maestro is about to design its v2 graph (Phase 6). We propose designing it against cms's v2 graph notes so it is upstreamable, rather than diverging and reconciling later.
-- **Why (Maestro)**: avoids building the same graph twice on both sides of the boundary.
-- **Generality**: schema-as-data knowledge graphs are named cms v2 scope already.
-- **Breaking-ness**: n/a (design coordination).
+- **What**: cms ADR 0005 and its v2 notes assign the generic directed graph — caller-supplied schema validation, traversal, subgraph extraction — to cms, citing Maestro's v1 knowledge graph as a design source. Maestro's Phase 6 graph work will be **built as a contribution to cms** against that assignment and consumed back; Maestro keeps only its ontology, persistence composition, population, and workflow policy. We ask the cms team to confirm the intended contract (or sketch it) before Phase 6 so the contribution lands where it belongs on the first try.
+- **Why (Maestro)**: cms already claimed this ground; building a Maestro-owned graph "for later upstreaming" would create exactly the divergence the assignment exists to prevent.
+- **Generality**: by cms's own scoping, this is core package territory.
+- **Breaking-ness**: new package in cms per its own v2 plan; non-breaking.
 - **Response**: _pending_
 
 ## 4. Image/OCR extraction — later
