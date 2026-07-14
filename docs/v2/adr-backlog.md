@@ -48,6 +48,7 @@ Key decisions:
 - The boundary rule: rules/config decisions belong to the Orchestrator, inference decisions belong to agents.
 - Relationship to the v1 kernel, supervisor, and dispatcher (D8 port items).
 - The seam intake and the Workbench button use to dispatch work.
+- Open follow-up (deferred from the 2026-07-14 dispatch amendment): the policy for work already executing when its Epic/Story/DAG record is amended or superseded — cancel, suspend, or complete-then-reconcile. Phase 3 runtime design.
 
 ### Intake And Triage
 
