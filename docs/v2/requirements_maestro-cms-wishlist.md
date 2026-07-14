@@ -14,10 +14,10 @@ Status: draft — awaiting maestro-cms team responses.
 
 ## 1. Digest-addressed keying for `store.ObjectStore`
 
-- **What**: either a documented convention (keys are content digests; the consumer guarantees it) or — better — a key-returning API with explicit streaming semantics, e.g. `PutDigest(ctx, r io.Reader) (key string, err error)`. Note the streaming problem honestly: `Put` takes the key *before* consuming its reader, while `SHA256HexReader` consumes the stream, so a thin wrapper cannot hash-then-write a non-seekable reader without buffering, spooling to temp, or write-then-verify-with-rollback. The API should state which it does.
+- **What**: either a documented convention (keys are content digests; the consumer guarantees it) or — better — a key-returning API with explicit streaming semantics, e.g. `PutDigest(ctx, store ObjectStore, r io.Reader) (key string, err error)` as a **package-level helper, wrapper type, or new optional interface — never a method added to `ObjectStore` itself**, which would break every existing adapter and fake. Note the streaming problem honestly: `Put` takes the key *before* consuming its reader, while `SHA256HexReader` consumes the stream, so a thin wrapper cannot hash-then-write a non-seekable reader without buffering, spooling to temp, or write-then-verify-with-rollback. The API should state which it does.
 - **Why (Maestro)**: our data plane requires content-addressed binaries (retention pinning and reference verification hang off digests). Today cms keys are explicitly opaque, so content-addressing is a discipline each consumer must impose — and implement the streaming mechanics for — alone.
 - **Generality**: dedup, integrity verification, and cache-friendly addressing benefit any consumer; an optional API preserves opaque keys for consumers that want them.
-- **Breaking-ness**: additive method or documentation; non-breaking.
+- **Breaking-ness**: non-breaking only in the helper/wrapper/optional-interface form; widening `ObjectStore` would be interface-breaking and is not requested.
 - **Response**: _pending_
 
 ## 2. Contribution offer: the first `index/*` adapter

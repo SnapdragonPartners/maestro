@@ -3,7 +3,7 @@ title = "Spike Report: maestro-cms Boundary And Adoption"
 edit_date = "2026-07-13"
 status = "draft"
 type = "spike"
-summary = "What the v2 knowledge/document/binary work consumes from maestro-cms versus builds in Maestro. Recommendation: adopt cms for the ingestion pipeline (extract/chunk/embed/provenance/object-store interface); Maestro owns retrieval, citations, packs, and the graph — with the retrieval index as a contribution candidate."
+summary = "What the v2 knowledge/document/binary work consumes from maestro-cms versus builds in Maestro. Recommendation: adopt cms for the ingestion pipeline; Maestro owns retrieval, citations, and packs; the generic graph primitive is contributed to cms per its ADR 0005 and consumed back, with Maestro keeping only ontology and policy."
 +++
 
 # Spike Report: maestro-cms Boundary And Adoption
@@ -18,7 +18,7 @@ Code survey of `maestro-cms` (full package inventory, docs and ADRs, dependency 
 
 **The two codebases are complementary, not competing.** maestro-cms built storage-neutral ingestion primitives and *deferred by its own ADRs* exactly what `pkg/knowledge` built (retrieval indexing, the graph); `pkg/knowledge` lacks everything cms provides. There is no duplication to resolve — only a seam to draw.
 
-- **What cms provides today** (v0.4.0, pre-1.0, near 1:1 test coverage, active): `extract` (PDF/DOCX/PPTX/HTML/Markdown/text via a registry; PDF prefers an out-of-process `pdftotext` with a pure-Go fallback), `chunk` (pure, token-budgeted, heading-aware), `embed` (batching/bisect orchestration over `maestro-llms`'s `EmbeddingClient` — no provider code of its own, per its ADR 0001), `content` (single-parent provenance trees with caller-assigned IDs and SHA-256 helpers), and `store.ObjectStore` (a four-method, opaque-key byte interface; GCS adapter shipped as an isolated subpackage).
+- **What cms provides today** (v0.4.0, pre-1.0, near 1:1 test coverage, active): `extract` (PDF/DOCX/PPTX/HTML/Markdown/text via a registry; the shipped PDF preset is `pdftotext`-only; a pure-Go engine exists but only via an explicitly configured registry), `chunk` (pure, token-budgeted, heading-aware), `embed` (batching/bisect orchestration over `maestro-llms`'s `EmbeddingClient` — no provider code of its own, per its ADR 0001), `content` (single-parent provenance trees with caller-assigned IDs and SHA-256 helpers), and `store.ObjectStore` (a four-method, opaque-key byte interface; GCS adapter shipped as an isolated subpackage).
 - **What cms deliberately lacks**: indexed/vector retrieval (`index/*` named but unbuilt), any database, a graph primitive (deferred to its v2 — its own notes cite Maestro's knowledge graph as a design source), image/OCR and XLSX extraction, and any citation-formatting layer.
 - **Alignment with Accepted v2 doctrine is structurally clean.** cms owns no storage: `StoreHandle{Backend,Key}` backs naturally onto ADR 0022's digest-addressed object module (`SHA256HexReader` produces the key; `testcms.MemoryStore` is a reference adapter), `embed.Record` and provenance trees persist through the persistence seam into Postgres, and cms pins the same `maestro-llms` version Maestro does. One convention gap: cms store keys are *opaque, not digest-enforced* — content-addressing is a discipline Maestro must impose (or upstream, below).
 - **`pkg/knowledge` (v1)**: a DOT-graph repository artifact projected into SQLite FTS5, with a hardcoded ontology, raw `*sql.DB` coupling, and exactly two consumers. Worth salvaging as design seeds: the DOT parse/serialize and `Subgraph(depth)`/`Filter` traversal, and the story-scoped knowledge-pack pattern (which the roadmap's knowledge-pack flow keeps). The ontology-as-CHECK-constraints and direct DB coupling are what v2 replaces.
@@ -31,7 +31,7 @@ Same as the toolloop spike: maestro-cms is a shared, open-source package with mu
 
 ## Recommendation
 
-**Adopt maestro-cms as the ingestion pipeline; Maestro owns retrieval, citations, packs, and the graph.**
+**Adopt maestro-cms as the ingestion pipeline; Maestro owns retrieval, citations, and packs; the generic graph primitive is contributed to cms and consumed back.**
 
 1. **Consume, don't rebuild**: `extract` → `chunk` → `embed.Run` becomes the v2 ingestion pipeline (Phase 6 knowledge; early use for pillar-13 uploads as needed), with `content` provenance trees persisted as the ingestion lineage. Maestro implements `store.ObjectStore` over the ADR 0022 digest-addressed object module (Phase 2's attachment work).
 2. **Maestro-side (harness- or convention-specific)**: the retrieval/index layer in Maestro's own Postgres (FTS + pgvector-class), citation formatting and verification (knowledge packs are Management artifacts under Maestro's review conventions), knowledge-pack assembly and the promotion boundary above, and — for the graph — Maestro's *ontology, persistence composition, population, and workflow policy* only.
@@ -40,7 +40,7 @@ Same as the toolloop spike: maestro-cms is a shared, open-source package with mu
    - **Contribution offer**: Maestro's Phase 6 retrieval layer built to fit cms's deferred `index/*` shape, contributed as the first index adapter once proven.
    - **Planned contribution, per cms's own assignment**: the generic graph primitive. cms ADR 0005 and its v2 notes already assign the generic directed graph, caller-supplied schema validation, traversal, and subgraph extraction to cms — Maestro keeps only its ontology and policy. Phase 6's graph work is therefore *built as a cms contribution and consumed back*, with `pkg/knowledge`'s traversal as a design seed — not a Maestro-owned graph with upstream aspirations.
    - **Later request**: image/OCR extraction (Maestro's pillar-13 uploads include images and diagrams); XLSX per cms's own deferral.
-4. **D8 inventory input**: `pkg/knowledge` disposition confirmed as **rewrite**, now with a precise shape — ingestion is consumed from cms; retrieval/graph/packs are new Maestro code with the DOT traversal and pack pattern as salvaged design seeds; the SQLite FTS5 indexer and hardcoded ontology are dropped.
+4. **D8 inventory input**: `pkg/knowledge` disposition confirmed as **rewrite**, now with a precise shape — ingestion is consumed from cms; retrieval and packs are new Maestro code, the generic graph primitive is built as a cms contribution (consumed back, Maestro keeping ontology and policy) with the DOT traversal and pack pattern as salvaged design seeds; the SQLite FTS5 indexer and hardcoded ontology are dropped.
 5. **No Phase 1 impact.** First adoption point is Phase 2's attachment/object work; the pipeline proper is Phase 6.
 
 No spike scripts were produced (reading spike); `spikes/phase_0/` is not needed for this item.
