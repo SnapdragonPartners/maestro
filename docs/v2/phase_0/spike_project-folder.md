@@ -1,14 +1,14 @@
 +++
 title = "Spike Report: The Disposable Project Folder"
 edit_date = "2026-07-14"
-status = "draft"
+status = "live"
 type = "spike"
 summary = "How much non-disposable state can leave the user's filesystem? Answer: nearly all of it. v2 retires the project directory for a four-way OS-standard split: config (bootstrap pointer + root-of-trust key), cache (mirrors and reconstructible workspaces), state (active workspaces until pushed), data (the durable Postgres/object/local-forge root). The committed repo .maestro/ is the only surviving .maestro."
 +++
 
 # Spike Report: The Disposable Project Folder
 
-Status: draft. Phase 0 item 9. Question (from roadmap D8 and the parking lot): how much non-disposable state can move off the user's filesystem into the data plane (or the repo, where it is a true project artifact) — and does `.maestro/` need to exist at all?
+Status: live (approved by Codex and DR, 2026-07-14). Phase 0 item 9. Question (from roadmap D8 and the parking lot): how much non-disposable state can move off the user's filesystem into the data plane (or the repo, where it is a true project artifact) — and does `.maestro/` need to exist at all?
 
 ## Method
 
