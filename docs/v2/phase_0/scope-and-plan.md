@@ -2,7 +2,7 @@
 title = "Maestro v2 Phase 0: Scope And Plan"
 edit_date = "2026-07-13"
 status = "live"
-summary = "Approved Phase 0 scope and execution plan: 14 serial work items (ADRs, two spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
+summary = "Approved Phase 0 scope and execution plan: 14 serial work items (ADRs, three spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
 +++
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
@@ -18,7 +18,7 @@ Goal (from the [roadmap](../roadmap.md)): decide the conceptual shape before cod
 In scope:
 
 - The Phase 0 ADR set (below), each Accepted per the build process.
-- The two Phase 0 spikes: toolloop ownership, and the disposable project folder.
+- The three Phase 0 spikes: toolloop ownership, the disposable project folder, and maestro-cms boundary and adoption (added 2026-07-13).
 - The port-vs-rewrite inventory at package grain (roadmap D8), informed by the spikes.
 - Documentation reset: archive stale docs, adopt the front-matter convention, make remaining repo docs agent-ingestible.
 - Reconciled, dependency-ordered ADR backlog (supersedes the interim priority list in [v1-adr-alignment.md](../v1-adr-alignment.md)).
