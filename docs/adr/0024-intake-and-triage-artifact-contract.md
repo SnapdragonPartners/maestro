@@ -1,13 +1,13 @@
 +++
 title = "ADR 0024: Intake And Triage Artifact Contract"
 edit_date = "2026-07-13"
-status = "draft"
+status = "live"
 summary = "Fixes what intake produces — Feature and Epic records, triage outputs, provenance, review, and the dispatch seam — while deliberately leaving the intake executor unbound until the pre-Phase-5 spike."
 +++
 
 # 0024. Intake And Triage Artifact Contract
 
-Status: Proposed
+Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
