@@ -24,7 +24,7 @@ A golden story is a declarative, versioned fixture — a definition file in the 
 - Allowed files or expected affected areas.
 - Expected validators (build, tests, lint) and required artifacts.
 - Deterministic pass/fail checks — the primary verdict.
-- Optional scored rubrics, recorded separately and never gating pass/fail in Phase 1.
+- Optional scored rubrics, recorded separately and never gating pass/fail in Phase 1. Model-scored rubrics carry evaluator provenance — evaluator model, prompt, and rubric version — so evaluator drift is separable from target performance in later comparisons.
 - Expected evidence-package shape.
 - Budget expectations (tokens, wall-clock).
 
@@ -35,6 +35,9 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 - **Black-box.** The runner drives its target only through external surfaces — configuration, CLI/API invocation, and the resulting branches, PRs, artifacts, and metrics. It never imports Maestro internals. This is what lets one runner benchmark the v1-as-patched path today, v2 as it comes up, and harnesses that do not exist yet.
 - **Target descriptor.** Every run records what it measured: target commit hash, binary/image identity, and the MPH identity of the configuration under test (model, prompt pack and hash, harness config hash, Maestro version) — aligning run records with ADR 0021's MPH signature. The initial target is the minimally patched v1 factory path (the decided Phase 1 target strategy); "v1-as-patched" is an honest, labeled baseline, never a repaired product.
 - **Self-contained results store.** The runner owns its persistence: append-only, schema-versioned flat records (JSONL or equivalent), zero dependency on the Phase 2 data plane. The record shapes are designed for later import as `benchmark`-scoped artifacts — Phase 2's vertical slice does that import.
+- **Normalized run-record contract.** Black-box is not enough: v1-as-patched exposes logs, SQLite, and PRs; v2 exposes artifacts and data-plane records. Per-target **adapters** normalize observations into one stable, versioned run-record contract carrying: the adapter identity and version, the target's declared capabilities, raw evidence pointers into whatever the target exposes, and normalized metrics with **tri-state semantics** — a value, `unsupported` (this target cannot report it), or `not_applicable` (this story does not exercise it). Missing is never zero; comparisons across targets are honest by construction.
+- **Benchmark acceptance is the runner's terminal verdict**, defined identically for every target: deterministic checks pass, required validators, artifacts, and evidence shapes are present, and the expected branch/PR terminal state is reached. "Cost to accepted change" in benchmark context means cost to that verdict. It deliberately does not simulate human acceptance (ADR 0020's outcome validation is not benchmarkable) — which is exactly what keeps the headline metric's meaning stable across v1-as-patched, v2, and future targets.
+- **Repeat isolation.** Every repeat starts from a fresh, run-scoped checkout and branch namespace derived from the pinned commit, keyed by a unique run ID; no repeat may inherit state from another, or the spread is meaningless. Cleanup failures are recorded loudly — a run whose isolation cannot be verified is flagged invalid, never silently included in comparisons.
 
 ### Sampling and budgets (the D9 mechanism)
 
