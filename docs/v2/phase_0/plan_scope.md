@@ -1,14 +1,14 @@
 +++
 title = "Maestro v2 Phase 0: Scope And Plan"
 edit_date = "2026-07-15"
-status = "live"
+status = "archive"
 summary = "Approved Phase 0 scope and execution plan: 14 serial work items (ADRs, three spikes, port inventory, doc reset) with sizes, ordering, exit checklist, and resolved reviewer questions."
 type = "plan"
 +++
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
 
-Status: live — approved by Codex and DR, 2026-07-12, per [process_build.md](../process_build.md); amended 2026-07-13 (item 13, maestro-cms spike; both approvals); exit review recorded 2026-07-15 (item 12). This document flips to `archive` when item 12 merges and Phase 0 closes, per the lifecycle below.
+Status: archive — Phase 0 closed 2026-07-15 (all items merged, exit checklist passed; this document is the phase record). Originally approved by Codex and DR, 2026-07-12, per [process_build.md](../process_build.md); amended 2026-07-13 (item 13, maestro-cms spike; both approvals); exit review recorded 2026-07-15 (item 12). This document flips to `archive` when item 12 merges and Phase 0 closes, per the lifecycle below.
 
 Status lifecycle (applies to all phase artifacts): `draft` while under review; flipped to `live` after both approvals, as the final commit before merge and before any work items start; `archive` when the phase completes and the document becomes a historical record. Work item 1 formalizes this lifecycle as part of the front-matter convention.
 
