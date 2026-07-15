@@ -1,3 +1,10 @@
++++
+title = "ADR 0007: LLM Provider Boundary Through maestro-llms"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 LLM provider boundary through the maestro-llms toolkit."
++++
+
 # ADR 0007: LLM Provider Boundary Through maestro-llms
 
 - Status: Proposed

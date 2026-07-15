@@ -1,3 +1,10 @@
++++
+title = "Git Workflow Implementation"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 git workflow, branch protection, and hook reference."
++++
+
 # Git Workflow Implementation
 
 This document describes how git operations are implemented in the maestro orchestrator system for managing code changes across multi-agent workflows.

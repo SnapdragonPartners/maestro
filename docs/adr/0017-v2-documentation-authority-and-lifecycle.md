@@ -1,19 +1,19 @@
 +++
 title = "ADR 0017: v2 Documentation Authority And Lifecycle"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Defines v2 doc conventions: ADR numbering and acceptance lifecycle, front-matter schema, draft/live/deprecated/archive authority, type_slug.md naming, directory indexes, and the v1 doc archive plan."
 +++
 
 # 0017. v2 Documentation Authority And Lifecycle
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-15 (archive, tooling, and asset exemptions from summary and index requirements)
 
 ## Context
 
-Maestro v2 is a breaking redesign built by an agent fleet under one human operator ([build-process](../v2/build-process.md)). Agents consume repo documentation as ground truth, so documentation authority must be deterministic: which document wins when two disagree, and which documents carry no authority at all.
+Maestro v2 is a breaking redesign built by an agent fleet under one human operator ([build-process](../v2/process_build.md)). Agents consume repo documentation as ground truth, so documentation authority must be deterministic: which document wins when two disagree, and which documents carry no authority at all.
 
-The repo currently holds three generations of documentation: ADRs 0001–0016 (proposed current-state notes about v1, never accepted as binding), the v2 planning set under `docs/v2/`, and roughly 130 v1-era specs, plans, and TODO files under `docs/` and `docs/specs/` of widely varying staleness. The v1 codebase is deprecated (`v1-freeze`) but remains the running implementation until v2 replaces it, so "what does the code do" and "what is the v2 design" have different authoritative sources during the transition.
+At the time of this decision, the repo held three generations of documentation: ADRs 0001–0016 (proposed current-state notes about v1, never accepted as binding), the v2 planning set under `docs/v2/`, and roughly 130 v1-era specs, plans, and TODO files under `docs/` and `docs/specs/` of widely varying staleness. The v1 codebase is deprecated (`v1-freeze`) but remains the running implementation until v2 replaces it, so "what does the code do" and "what is the v2 design" have different authoritative sources during the transition.
 
 ## Decision
 
@@ -29,12 +29,14 @@ All markdown documents under `docs/` that are created or substantively edited fr
 
 `summary` is one tight sentence stating what the document contains and when to read it — a retrieval hook, not an abstract. It exists so an LLM can triage a file from its front-matter alone (~50 tokens) instead of reading it, and it is the single source for directory README indexes, which quote it rather than maintaining separate one-liners. It is also the document's future artifact-row line in the v2 artifact model.
 
+**Amendment (2026-07-15): archive, tooling, and asset exemptions.** `archive`-status documents are exempt from `summary` and `type`: a retrieval hook exists to get a document read, and archived documents carry no authority for any question — writing a hundred lures for files agents should not consult would be counterproductive. Their front-matter is `title`, `edit_date`, `status` only. The per-directory index requirement applies to directories of `draft`/`live`/`deprecated` documents: `docs/archive/` maintains a no-authority notice README instead of a per-file index, and hidden tooling directories (`.obsidian/`) and asset-only directories (screenshots) maintain none. Maintained indexes quote each entry's front-matter `summary` verbatim — the summary is the single source, and independently authored index descriptions drift.
+
 - `draft` — under review; not yet authoritative.
 - `live` — actively maintained, v2-era authority. Live status is earned by review, not by being referenced.
 - `deprecated` — describes the deprecated v1 system and has not been verified against current code. Subordinate to code, tests, and the FSM docs for runtime-behavior questions; never authoritative for v2 design. Retained in place only while something references or needs it; flips to `archive` when its subject is ported, rewritten, or dropped — the D8 inventory execution and phase completions are the natural triggers. A `deprecated` document contradicting a v2 ADR is not an inconsistency to fix; it is the transition state made explicit, exactly as the v1 code itself contradicts the v2 design until replaced.
 - `archive` — history; no authority for any question.
 
-The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`; the historical v1 notes (0001–0016) are `deprecated`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/scope-and-plan.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
+The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`; the historical v1 notes (0001–0016) are `deprecated`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/plan_scope.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
 
 ADR files are the one exception to archive-means-move: they never relocate (stable references), so for ADRs `archive`/Superseded is a status change in place.
 
@@ -93,4 +95,4 @@ Executed in Phase 0 work item 11 (`doc-reset`); this ADR fixes the rules and the
 ## Related Documents
 
 - [ADR 0001](0001-documentation-authority-and-adr-lifecycle.md) — the v1 authority order this ADR supersedes for v2 questions (0001 remains an accurate historical note about v1 practice).
-- [Roadmap Phase 0](../v2/roadmap.md), [Phase 0 scope and plan](../v2/phase_0/scope-and-plan.md), [build-process](../v2/build-process.md).
+- [Roadmap Phase 0](../v2/plan_roadmap.md), [Phase 0 scope and plan](../v2/phase_0/plan_scope.md), [build-process](../v2/process_build.md).

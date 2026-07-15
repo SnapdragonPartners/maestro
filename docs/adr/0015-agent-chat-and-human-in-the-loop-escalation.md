@@ -1,3 +1,10 @@
++++
+title = "ADR 0015: Agent Chat and Human-in-the-Loop Escalation"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 agent chat and human-in-the-loop escalation."
++++
+
 # ADR 0015: Agent Chat and Human-in-the-Loop Escalation
 
 - Status: Proposed

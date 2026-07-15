@@ -1,3 +1,10 @@
++++
+title = "Maestro Operating Modes"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 operating modes reference (bootstrap, factory, hotfix, maintenance, demo)."
++++
+
 # Maestro Operating Modes
 
 Maestro operates in several distinct modes depending on the project state and user intent. This document explains each mode, when it runs, and what it does.
@@ -300,7 +307,7 @@ If demo fails to start, check:
 - **No listeners**: App isn't starting a server
 - **Container crash**: Check logs for startup errors
 
-See [DEMO_MODE_SPEC.md](DEMO_MODE_SPEC.md) for detailed specification.
+See [archive/DEMO_MODE_SPEC.md](archive/DEMO_MODE_SPEC.md) for detailed specification.
 
 ---
 

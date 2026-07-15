@@ -1,3 +1,10 @@
++++
+title = "Maestro Agent Chat — Draft Spec (v0.3)"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 agent chat system architecture: injection, persistence, secret scanning, escalation."
++++
+
 # Maestro Agent Chat — Draft Spec (v0.3)
 
 ## Scope & Phasing

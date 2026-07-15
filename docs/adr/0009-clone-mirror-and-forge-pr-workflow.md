@@ -1,3 +1,10 @@
++++
+title = "ADR 0009: Clone, Mirror, and Forge PR Workflow"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 clone, mirror, and forge PR workflow."
++++
+
 # ADR 0009: Clone, Mirror, and Forge PR Workflow
 
 - Status: Proposed
@@ -59,6 +66,6 @@ or as legacy test plumbing until migration cleanup is complete.
 - `docs/AIRPLANE_MODE.md`
 - `docs/MERGE_CONFLICT_RESOLUTION_SPEC.md`
 - `docs/REPOSTATE_DESIGN.md`
-- `docs/specs/SWE_EVO_PLAN.md`
-- `docs/specs/SWE_EVO_IMPL.md`
+- `docs/archive/SWE_EVO_PLAN.md`
+- `docs/archive/SWE_EVO_IMPL.md`
 

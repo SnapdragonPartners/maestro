@@ -1,3 +1,10 @@
++++
+title = "ADR 0013: Testing Strategy and Service Boundaries"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 testing strategy and service boundaries."
++++
+
 # ADR 0013: Testing Strategy and Service Boundaries
 
 - Status: Proposed

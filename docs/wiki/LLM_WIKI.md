@@ -1,3 +1,10 @@
++++
+title = "Maestro LLM Abstraction and API Implementation"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: v1 LLM configuration and providers."
++++
+
 # Maestro LLM Abstraction and API Implementation
 
 ## Overview
@@ -2363,4 +2370,4 @@ The architecture is battle-tested, handling thousands of LLM calls daily with au
 - [Tools System](TOOLS_WIKI.md) - MCP tools and agent capabilities
 - [Git Workflow](GIT_FLOW_WIKI.md) - How agents use git operations
 - [Knowledge Graph](DOCS_WIKI.md) - Architectural knowledge system
-- [Project Architecture](../CLAUDE.md) - Overall system design
+- [Project Architecture](../../CLAUDE.md) - Overall system design

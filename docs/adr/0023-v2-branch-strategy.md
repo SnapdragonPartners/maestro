@@ -1,6 +1,6 @@
 +++
 title = "ADR 0023: v2 Branch Strategy"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches."
 +++
@@ -70,5 +70,5 @@ The clone/mirror/forge workflow of historical note [0009](0009-clone-mirror-and-
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (the hierarchy and its git mapping), [ADR 0019](0019-orchestrator-boundary.md) (mechanical-vs-judgment split), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (review gates, human-reserved Accept), [ADR 0022](0022-v2-data-plane.md) (forge-independent repos).
-- [Roadmap](../v2/roadmap.md) pillars 6 and 8, D4; [build-process](../v2/build-process.md) (human branch conventions); [ADR backlog](../v2/adr-backlog.md) Branch Strategy entry.
+- [Roadmap](../v2/plan_roadmap.md) pillars 6 and 8, D4; [build-process](../v2/process_build.md) (human branch conventions); [ADR backlog](../v2/notes_adr-backlog.md) Branch Strategy entry.
 - Historical note [0009](0009-clone-mirror-and-forge-pr-workflow.md) (kept and extended; superseded only in branch topology).

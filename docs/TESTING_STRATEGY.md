@@ -1,3 +1,10 @@
++++
+title = "Maestro Testing Strategy"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 testing strategy: shared mocks, unit vs integration boundaries, when to use real services."
++++
+
 # Maestro Testing Strategy
 
 This document describes the testing approach for the Maestro codebase, including when to use mocks vs real services and where shared test infrastructure lives.

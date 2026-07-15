@@ -1,3 +1,10 @@
++++
+title = "Welcome to Maestro"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "User-facing orientation to running v1 Maestro."
++++
+
 # Welcome to Maestro
 
 ## What the Heck is Maestro?
@@ -288,7 +295,7 @@ Because Coders run in containers with limited blast radius, you can let them wor
 | UI | tmux | WebUI + logs |
 | Data plane | Git (Beads) | SQLite + Git |
 
-For detailed comparison, see [Gas Town Comparison](./GAS_TOWN_COMPARISON.md).
+For detailed comparison, see [Gas Town Comparison](./archive/GAS_TOWN_COMPARISON.md).
 
 ---
 

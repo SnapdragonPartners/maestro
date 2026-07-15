@@ -1,3 +1,10 @@
++++
+title = "Maestro Architecture Overview"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: v1 system overview."
++++
+
 # Maestro Architecture Overview
 
 **Last Updated**: 2025-11-07

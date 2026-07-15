@@ -1,3 +1,10 @@
++++
+title = "ADR 0001: Documentation Authority and ADR Lifecycle"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 documentation authority order and ADR lifecycle as practiced; superseded for v2 questions by ADR 0017."
++++
+
 # ADR 0001: Documentation Authority and ADR Lifecycle
 
 - Status: Proposed

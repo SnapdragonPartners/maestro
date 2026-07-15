@@ -1,3 +1,10 @@
++++
+title = "ADR 0014: Failure Taxonomy, Durable Asks, and Incidents"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 failure taxonomy, durable asks, and incident handling."
++++
+
 # ADR 0014: Failure Taxonomy, Durable Asks, and Incidents
 
 - Status: Proposed

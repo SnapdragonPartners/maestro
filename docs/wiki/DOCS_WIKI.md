@@ -1,3 +1,10 @@
++++
+title = "Maestro Knowledge Graph"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: documentation map for v1."
++++
+
 # Maestro Knowledge Graph
 
 ## Overview
@@ -207,6 +214,6 @@ As your project grows, the knowledge graph grows with it—capturing the collect
 ---
 
 **Related Documentation**:
-- [Knowledge Graph Implementation Spec](DOC_GRAPH.md) - Detailed technical specification
-- [Architect Agent](ARCHITECT_READ_ACCESS_SPEC.md) - How architects use the knowledge graph
-- [Coder Workflow](../CLAUDE.md) - How coders integrate with the knowledge system
+- [Knowledge Graph Implementation Spec](../DOC_GRAPH.md) - Detailed technical specification
+- [Architect Agent](../archive/ARCHITECT_READ_ACCESS_SPEC.md) - How architects use the knowledge graph
+- [Coder Workflow](../../CLAUDE.md) - How coders integrate with the knowledge system

@@ -1,3 +1,10 @@
++++
+title = "ADR 0012: Knowledge Graph as Repository Artifact"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 knowledge graph as a repository artifact; superseded for v2 by the maestro-cms spike direction."
++++
+
 # ADR 0012: Knowledge Graph as Repository Artifact
 
 - Status: Proposed

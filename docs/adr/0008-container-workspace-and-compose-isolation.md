@@ -1,3 +1,10 @@
++++
+title = "ADR 0008: Container, Workspace, and Compose Isolation"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 container, workspace, and compose isolation model."
++++
+
 # ADR 0008: Container, Workspace, and Compose Isolation
 
 - Status: Proposed
@@ -62,5 +69,5 @@ mounted roots.
 - `docs/BUILD_SERVICE_CONTAINERIZATION_SPEC.md`
 - `docs/CODER_DOCKER_PERMS.md`
 - `docs/DOCKERFILE_PATH_SPEC.md`
-- `docs/specs/ENHANCED_PLANNING_ARCHITECTURE.md`
+- `docs/archive/ENHANCED_PLANNING_ARCHITECTURE.md`
 

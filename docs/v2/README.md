@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Planning Notes"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Index of the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, and companion notes, with the per-phase directory convention."
 +++
@@ -15,18 +15,17 @@ specifications, and stories.
 
 ## Documents
 
-- [Roadmap](roadmap.md) - main v2 roadmap draft.
-- [maestro-llms Wishlist](requirements_maestro-llms-wishlist.md) - Maestro's running feature-request list to the toolkit team, with response fields for their feedback.
-- [maestro-cms Wishlist](requirements_maestro-cms-wishlist.md) - the sibling wishlist for the content toolkit, from the Phase 0 cms spike.
-- [Build Process](build-process.md) - interim working agreement for how v2 gets built (author/reviewer/operator roles, branching, review cadence, testing).
-- [Phase 0 Scope And Plan](phase_0/scope-and-plan.md) - the first phase artifact under the build process: deliverables, PR sequence, exit checklist.
+- [Maestro v2 Roadmap](plan_roadmap.md) — The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document.
+- [Maestro v2 Build Process (Interim)](process_build.md) — Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; branching, review cadence, spikes, testing, and merge rules.
+- [Maestro Wishlist For maestro-llms](requirements_maestro-llms-wishlist.md) — Maestro's running feature-request wishlist to the maestro-llms team, with generality arguments and a response field per item — so the toolkit team can say what they're comfortable adding given their other consumers.
+- [Maestro Wishlist For maestro-cms](requirements_maestro-cms-wishlist.md) — Maestro's running feature-request wishlist to the maestro-cms team, with generality arguments and a response field per item — the sibling of the maestro-llms wishlist, originating from the Phase 0 cms spike.
+- [Maestro v2 Research Synthesis](research_synthesis.md) — Synthesis of the external research corpus that informed the v2 roadmap's pillars and decisions.
+- [Maestro v2 Provenance Matrix](notes_provenance-matrix.md) — Tracks where each major v2 idea came from — Maestro v1, DR notes, the research corpus, Codex synthesis, or Claude review — including decisions that deliberately diverge from research orthodoxy.
+- [Maestro v2 ADR Backlog](notes_adr-backlog.md) — Concepts that need ADRs before implementation, with key questions per candidate; reconciled and dependency-ordered in Phase 0 item 12.
+- [Historical ADR Alignment With Maestro v2](notes_v1-adr-alignment.md) — Mapping of v1 subsystems to the historical ADR notes 0001-0016; an input to roadmap D8 and the port inventory.
+- [Maestro v2 Parking Lot](notes_parking-lot.md) — Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up.
 
-Per-phase working artifacts (scope/plan, spike reports, inventories) live in `phase_x/` directories matching the branch namespace; cross-phase documents stay at this root. Accepted decisions land in `docs/adr/`.
-- [Research Synthesis](research-synthesis.md) - synthesis of the external research corpus and early Maestro v2 ideas.
-- [Provenance Matrix](provenance-matrix.md) - where major ideas came from: Maestro v1, client/lived experience, research corpus, or Codex synthesis.
-- [ADR Backlog](adr-backlog.md) - concepts that should probably become ADRs before implementation.
-- [v1 ADR Alignment](v1-adr-alignment.md) - first pass on how the proposed v1 ADRs relate to the v2 vision.
-- [Parking Lot](parking-lot.md) - useful ideas that are too granular, speculative, or post-MVP for the main roadmap.
+Per-phase working artifacts (scope/plan, spike reports, inventories, manifests) live in `phase_x/` directories matching the branch namespace, each with its own README index — see [phase_0/](phase_0/README.md). Cross-phase documents stay at this root. Accepted decisions land in `docs/adr/`.
 
 ## Planning Posture
 

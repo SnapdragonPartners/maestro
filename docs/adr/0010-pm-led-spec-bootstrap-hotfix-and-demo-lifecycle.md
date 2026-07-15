@@ -1,3 +1,10 @@
++++
+title = "ADR 0010: PM-Led Spec, Bootstrap, Hotfix, and Demo Lifecycle"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 PM-led spec, bootstrap, hotfix, and demo lifecycle; superseded conceptually by v2 intake (ADR 0024) and the Workbench."
++++
+
 # ADR 0010: PM-Led Spec, Bootstrap, Hotfix, and Demo Lifecycle
 
 - Status: Proposed

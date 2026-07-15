@@ -1,3 +1,10 @@
++++
+title = "Architect Multi-Context Support"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Implementation history and design decisions for the v1 architect's per-agent conversation contexts."
++++
+
 # Architect Multi-Context Support
 
 ## ✅ IMPLEMENTATION COMPLETE

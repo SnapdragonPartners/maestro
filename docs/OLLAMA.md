@@ -1,3 +1,10 @@
++++
+title = "Ollama LLM Provider"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Local Ollama provider usage notes for v1."
++++
+
 # Ollama LLM Provider
 
 This document describes the implementation plan for adding Ollama support as an LLM provider, enabling use of locally-hosted models like Phi4, Llama 3.1, Qwen3, and others.
@@ -85,7 +92,7 @@ Ollama supports tool calling via the `/api/chat` endpoint with the following for
 - Qwen 2.5 (7B and larger)
 - Mistral 7B
 
-**Important**: Phi4 does NOT work for tool calling - see [PHI4.md](PHI4.md) for details.
+**Important**: Phi4 does NOT work for tool calling - see [archive/PHI4.md](archive/PHI4.md) for details.
 
 ## Implementation Plan
 

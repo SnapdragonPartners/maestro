@@ -1,3 +1,10 @@
++++
+title = "ADR 0003: Agent Roles and Finite-State Machines"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 agent roles (PM, Architect, Coder) and their finite state machines."
++++
+
 # ADR 0003: Agent Roles and Finite-State Machines
 
 - Status: Proposed
@@ -64,5 +71,5 @@ corresponding canonical FSM doc.
 - `pkg/coder/STATES.md`
 - `pkg/agent/README.md`
 - `docs/AGENT_LIFECYCLE.md`
-- `docs/specs/PM.md`
+- `docs/archive/PM.md`
 

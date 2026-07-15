@@ -1,3 +1,10 @@
++++
+title = "Maestro Knowledge Graph Implementation Spec"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 knowledge-graph documentation tooling (knowledge.dot); design retires with v1."
++++
+
 # Maestro Knowledge Graph Implementation Spec
 
 ## Implementation Status

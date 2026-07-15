@@ -1,6 +1,6 @@
 +++
 title = "ADR 0018: v2 Work Taxonomy"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Defines the v2 work hierarchy — Product, Feature, Epic, Story — and its executors (Work Group, Workbench tempo), the collapsible degenerate path for small work, and the v2 MVP boundary (D1)."
 +++
@@ -42,7 +42,7 @@ The hierarchy is late-bound at every level: Features gain Epics and Epics gain S
 
 ### Model/Prompt/Harness
 
-MPH — the three levers of the factory (model routing; prompt packs, role instructions, skills; workflow graph, tools, gates, context loading, containers, branch strategy, evals) — is ratified as defined in the [roadmap](../v2/roadmap.md) Core Vocabulary.
+MPH — the three levers of the factory (model routing; prompt packs, role instructions, skills; workflow graph, tools, gates, context loading, containers, branch strategy, evals) — is ratified as defined in the [roadmap](../v2/plan_roadmap.md) Core Vocabulary.
 
 ### MVP boundary (D1, ratified)
 
@@ -59,6 +59,6 @@ The v2 MVP is local/team-capable architecture, not full cloud multi-user. It inc
 
 ## Related Documents
 
-- [Roadmap](../v2/roadmap.md) Core Vocabulary, naming note, D1/D4; [ADR backlog](../v2/adr-backlog.md) taxonomy questions.
+- [Roadmap](../v2/plan_roadmap.md) Core Vocabulary, naming note, D1/D4; [ADR backlog](../v2/notes_adr-backlog.md) taxonomy questions.
 - [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md) (conventions), [ADR 0019](0019-orchestrator-boundary.md) (Orchestrator boundary), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (review invariant), intake contract ADR (item 6, forthcoming).
 - Supersedes the role taxonomy in historical note [0003](0003-agent-roles-and-finite-state-machines.md) (FSM discipline itself is unaffected and remains v2-aligned).
