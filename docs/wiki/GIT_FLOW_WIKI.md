@@ -704,7 +704,7 @@ Maestro previously used git worktrees but migrated to the current clone-based ap
 - Dedicated workspace at `<projectDir>/architect-001/`
 - Enables architect to read committed artifacts like knowledge graph
 - Updated before scoping and after each merge
-- Part of knowledge graph implementation (DOC_GRAPH.md)
+- Part of knowledge graph implementation (../DOC_GRAPH.md)
 
 **Workspace Compression** (planned):
 - Compress inactive workspaces to save disk space
@@ -747,7 +747,7 @@ This architecture scales from single-agent simple tasks to complex multi-agent p
 ---
 
 **Related Documentation**:
-- [Git Workflow Implementation](GIT.md) - Detailed technical implementation
-- [Knowledge Graph Spec](DOC_GRAPH.md) - Architect workspace and knowledge graph system
-- [Project Instructions](../CLAUDE.md) - Overall project architecture
+- [Git Workflow Implementation](../GIT.md) - Detailed technical implementation
+- [Knowledge Graph Spec](../DOC_GRAPH.md) - Architect workspace and knowledge graph system
+- [Project Instructions](../../CLAUDE.md) - Overall project architecture
 - [Container Tools](../pkg/tools/) - Container management tool implementations

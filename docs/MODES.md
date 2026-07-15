@@ -307,7 +307,7 @@ If demo fails to start, check:
 - **No listeners**: App isn't starting a server
 - **Container crash**: Check logs for startup errors
 
-See [DEMO_MODE_SPEC.md](DEMO_MODE_SPEC.md) for detailed specification.
+See [archive/DEMO_MODE_SPEC.md](archive/DEMO_MODE_SPEC.md) for detailed specification.
 
 ---
 

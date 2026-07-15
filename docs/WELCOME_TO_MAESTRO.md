@@ -295,7 +295,7 @@ Because Coders run in containers with limited blast radius, you can let them wor
 | UI | tmux | WebUI + logs |
 | Data plane | Git (Beads) | SQLite + Git |
 
-For detailed comparison, see [Gas Town Comparison](./GAS_TOWN_COMPARISON.md).
+For detailed comparison, see [Gas Town Comparison](./archive/GAS_TOWN_COMPARISON.md).
 
 ---
 

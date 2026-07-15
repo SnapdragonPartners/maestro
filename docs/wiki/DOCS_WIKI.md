@@ -214,6 +214,6 @@ As your project grows, the knowledge graph grows with it—capturing the collect
 ---
 
 **Related Documentation**:
-- [Knowledge Graph Implementation Spec](DOC_GRAPH.md) - Detailed technical specification
-- [Architect Agent](ARCHITECT_READ_ACCESS_SPEC.md) - How architects use the knowledge graph
-- [Coder Workflow](../CLAUDE.md) - How coders integrate with the knowledge system
+- [Knowledge Graph Implementation Spec](../DOC_GRAPH.md) - Detailed technical specification
+- [Architect Agent](../archive/ARCHITECT_READ_ACCESS_SPEC.md) - How architects use the knowledge graph
+- [Coder Workflow](../../CLAUDE.md) - How coders integrate with the knowledge system

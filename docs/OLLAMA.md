@@ -92,7 +92,7 @@ Ollama supports tool calling via the `/api/chat` endpoint with the following for
 - Qwen 2.5 (7B and larger)
 - Mistral 7B
 
-**Important**: Phi4 does NOT work for tool calling - see [PHI4.md](PHI4.md) for details.
+**Important**: Phi4 does NOT work for tool calling - see [archive/PHI4.md](archive/PHI4.md) for details.
 
 ## Implementation Plan
 

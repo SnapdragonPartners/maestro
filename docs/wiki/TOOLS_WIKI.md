@@ -1765,5 +1765,5 @@ The tools system is the primary interface between AI agents and their execution 
 **Related Documentation**:
 - [Git Workflow](GIT_FLOW_WIKI.md) - How agents use git-related tools
 - [Knowledge Graph](DOCS_WIKI.md) - How architect uses read tools
-- [Project Architecture](../CLAUDE.md) - Overall system design
+- [Project Architecture](../../CLAUDE.md) - Overall system design
 - [Agent Implementation](../pkg/tools/) - Tool source code
