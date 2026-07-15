@@ -1,6 +1,6 @@
 +++
 title = "Architecture Decision Records"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Index of Maestro ADRs: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016), with the documentation authority order in brief."
 +++
@@ -31,38 +31,38 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 
 ## v2 ADRs
 
-| ADR | Title | Status |
-| --- | --- | --- |
-| [0017](0017-v2-documentation-authority-and-lifecycle.md) | v2 documentation authority and lifecycle | Accepted |
-| [0018](0018-v2-work-taxonomy.md) | v2 work taxonomy | Accepted |
-| [0019](0019-orchestrator-boundary.md) | Orchestrator boundary | Accepted |
-| [0020](0020-review-invariant-reviewer-vs-partner.md) | The review invariant — Reviewer vs Partner/Supervisor | Accepted |
-| [0021](0021-artifacts-and-principal-instances.md) | Artifacts and principal instances | Accepted |
-| [0022](0022-v2-data-plane.md) | v2 data plane | Accepted |
-| [0023](0023-v2-branch-strategy.md) | v2 branch strategy | Accepted |
-| [0024](0024-intake-and-triage-artifact-contract.md) | Intake and triage artifact contract | Accepted |
-| [0025](0025-golden-stories-and-benchmark-runner.md) | Golden stories and the benchmark runner | Accepted |
+| ADR | Title | Status | Summary |
+| --- | --- | --- | --- |
+| [0017](0017-v2-documentation-authority-and-lifecycle.md) | v2 Documentation Authority And Lifecycle | Accepted | Defines v2 doc conventions: ADR numbering and acceptance lifecycle, front-matter schema, draft/live/deprecated/archive authority, type_slug.md naming, directory indexes, and the v1 doc archive plan. |
+| [0018](0018-v2-work-taxonomy.md) | v2 Work Taxonomy | Accepted | Defines the v2 work hierarchy — Product, Feature, Epic, Story — and its executors (Work Group, Workbench tempo), the collapsible degenerate path for small work, and the v2 MVP boundary (D1). |
+| [0019](0019-orchestrator-boundary.md) | Orchestrator Boundary | Accepted | Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. |
+| [0020](0020-review-invariant-reviewer-vs-partner.md) | The Review Invariant — Reviewer vs Partner/Supervisor | Accepted | Canonical statement of the symmetric review invariant (every Management artifact reviewed by a non-author) and the two review scopes: narrow Reviewers that block, and Partner/Supervisors that judge. |
+| [0021](0021-artifacts-and-principal-instances.md) | Artifacts And Principal Instances | Accepted | Defines the v2 artifact model: artifacts as the sole agent handoff, Management (inputs) vs Audit (exhaust) categories, the scope/lineage signature, principal instances (agent/human/system), the invalidate/amend/supersede lifecycle, evidence retention-pinning, and the MPH signature. |
+| [0022](0022-v2-data-plane.md) | v2 Data Plane | Accepted | Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam. |
+| [0023](0023-v2-branch-strategy.md) | v2 Branch Strategy | Accepted | Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches. |
+| [0024](0024-intake-and-triage-artifact-contract.md) | Intake And Triage Artifact Contract | Accepted | Fixes what intake produces — Feature and Epic records, triage outputs, provenance, review, and the dispatch seam — while deliberately leaving the intake executor unbound until the pre-Phase-5 spike. |
+| [0025](0025-golden-stories-and-benchmark-runner.md) | Golden Stories And The Benchmark Runner | Accepted | Specifies the measuring instrument: golden story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. |
 
 ## Historical v1 Notes
 
-| ADR | Title |
-| --- | --- |
-| [0001](0001-documentation-authority-and-adr-lifecycle.md) | Documentation authority and ADR lifecycle |
-| [0002](0002-local-single-user-runtime-kernel.md) | Local single-user runtime kernel |
-| [0003](0003-agent-roles-and-finite-state-machines.md) | Agent roles and finite-state machines |
-| [0004](0004-channel-dispatch-and-typed-agent-protocol.md) | Channel dispatch and typed agent protocol |
-| [0005](0005-sqlite-session-persistence-and-resume.md) | SQLite session persistence and resume |
-| [0006](0006-toolloop-process-effect-and-terminal-tools.md) | Toolloop ProcessEffect and terminal tools |
-| [0007](0007-llm-provider-boundary-through-maestro-llms.md) | LLM provider boundary through maestro-llms |
-| [0008](0008-container-workspace-and-compose-isolation.md) | Container, workspace, and compose isolation |
-| [0009](0009-clone-mirror-and-forge-pr-workflow.md) | Clone, mirror, and forge PR workflow |
-| [0010](0010-pm-led-spec-bootstrap-hotfix-and-demo-lifecycle.md) | PM-led spec, bootstrap, hotfix, and demo lifecycle |
-| [0011](0011-configuration-operating-modes-and-secrets.md) | Configuration, operating modes, and secrets |
-| [0012](0012-knowledge-graph-as-repository-artifact.md) | Knowledge graph as repository artifact |
-| [0013](0013-testing-strategy-and-service-boundaries.md) | Testing strategy and service boundaries |
-| [0014](0014-failure-taxonomy-durable-asks-and-incidents.md) | Failure taxonomy, durable asks, and incidents |
-| [0015](0015-agent-chat-and-human-in-the-loop-escalation.md) | Agent chat and human-in-the-loop escalation |
-| [0016](0016-architect-per-agent-conversation-context.md) | Architect per-agent conversation context |
+| ADR | Title | Summary |
+| --- | --- | --- |
+| [0001](0001-documentation-authority-and-adr-lifecycle.md) | Documentation Authority and ADR Lifecycle | v1 documentation authority order and ADR lifecycle as practiced; superseded for v2 questions by ADR 0017. |
+| [0002](0002-local-single-user-runtime-kernel.md) | Local Single-User Runtime Kernel | v1 single-user runtime kernel, supervisor, and dispatcher architecture; superseded for v2 by ADR 0019. |
+| [0003](0003-agent-roles-and-finite-state-machines.md) | Agent Roles and Finite-State Machines | v1 agent roles (PM, Architect, Coder) and their finite state machines. |
+| [0004](0004-channel-dispatch-and-typed-agent-protocol.md) | Channel Dispatch and Typed Agent Protocol | v1 typed channel dispatch and agent message protocol; the discipline carries into v2 via ADR 0019. |
+| [0005](0005-sqlite-session-persistence-and-resume.md) | SQLite Session Persistence and Resume | v1 SQLite session persistence and resume; superseded for v2 intent by ADR 0022. |
+| [0006](0006-toolloop-process-effect-and-terminal-tools.md) | Toolloop ProcessEffect and Terminal Tools | v1 toolloop ProcessEffect and terminal-tool discipline; promoted to a v2 data-plane rule by ADR 0022. |
+| [0007](0007-llm-provider-boundary-through-maestro-llms.md) | LLM Provider Boundary Through maestro-llms | v1 LLM provider boundary through the maestro-llms toolkit. |
+| [0008](0008-container-workspace-and-compose-isolation.md) | Container, Workspace, and Compose Isolation | v1 container, workspace, and compose isolation model. |
+| [0009](0009-clone-mirror-and-forge-pr-workflow.md) | Clone, Mirror, and Forge PR Workflow | v1 clone, mirror, and forge PR workflow. |
+| [0010](0010-pm-led-spec-bootstrap-hotfix-and-demo-lifecycle.md) | PM-Led Spec, Bootstrap, Hotfix, and Demo Lifecycle | v1 PM-led spec, bootstrap, hotfix, and demo lifecycle; superseded conceptually by v2 intake (ADR 0024) and the Workbench. |
+| [0011](0011-configuration-operating-modes-and-secrets.md) | Configuration, Operating Modes, and Secrets | v1 configuration, operating modes, and secrets handling; superseded for v2 intent by the project-folder spike and ADR 0022 as amended. |
+| [0012](0012-knowledge-graph-as-repository-artifact.md) | Knowledge Graph as Repository Artifact | v1 knowledge graph as a repository artifact; superseded for v2 by the maestro-cms spike direction. |
+| [0013](0013-testing-strategy-and-service-boundaries.md) | Testing Strategy and Service Boundaries | v1 testing strategy and service boundaries. |
+| [0014](0014-failure-taxonomy-durable-asks-and-incidents.md) | Failure Taxonomy, Durable Asks, and Incidents | v1 failure taxonomy, durable asks, and incident handling. |
+| [0015](0015-agent-chat-and-human-in-the-loop-escalation.md) | Agent Chat and Human-in-the-Loop Escalation | v1 agent chat and human-in-the-loop escalation. |
+| [0016](0016-architect-per-agent-conversation-context.md) | Architect Per-Agent Conversation Context | v1 architect per-agent conversation context design. |
 
 ## ADR Format
 

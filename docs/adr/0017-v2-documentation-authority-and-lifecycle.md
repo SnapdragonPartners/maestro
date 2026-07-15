@@ -13,7 +13,7 @@ Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-15 (archive, tooling,
 
 Maestro v2 is a breaking redesign built by an agent fleet under one human operator ([build-process](../v2/process_build.md)). Agents consume repo documentation as ground truth, so documentation authority must be deterministic: which document wins when two disagree, and which documents carry no authority at all.
 
-The repo currently holds three generations of documentation: ADRs 0001–0016 (proposed current-state notes about v1, never accepted as binding), the v2 planning set under `docs/v2/`, and roughly 130 v1-era specs, plans, and TODO files under `docs/` and `docs/specs/` of widely varying staleness. The v1 codebase is deprecated (`v1-freeze`) but remains the running implementation until v2 replaces it, so "what does the code do" and "what is the v2 design" have different authoritative sources during the transition.
+At the time of this decision, the repo held three generations of documentation: ADRs 0001–0016 (proposed current-state notes about v1, never accepted as binding), the v2 planning set under `docs/v2/`, and roughly 130 v1-era specs, plans, and TODO files under `docs/` and `docs/specs/` of widely varying staleness. The v1 codebase is deprecated (`v1-freeze`) but remains the running implementation until v2 replaces it, so "what does the code do" and "what is the v2 design" have different authoritative sources during the transition.
 
 ## Decision
 

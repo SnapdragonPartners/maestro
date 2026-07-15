@@ -2,7 +2,7 @@
 title = "Archived Documentation"
 edit_date = "2026-07-15"
 status = "live"
-summary = "docs/archive/ holds v1-era documents with no authority for any question; preserved verbatim as history per ADR 0017's archive plan."
+summary = "docs/archive/ holds v1-era documents with no authority for any question; bodies preserved verbatim as history per ADR 0017's archive plan."
 +++
 
 # Archived Documentation
