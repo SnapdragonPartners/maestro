@@ -2,241 +2,84 @@
 title = "Maestro v2 ADR Backlog"
 edit_date = "2026-07-15"
 status = "live"
-summary = "Concepts that need ADRs before implementation, with key questions per candidate; reconciled and dependency-ordered in Phase 0 item 12."
 type = "notes"
+summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 with their Accepted ADRs, and open candidates ordered by the phase they block."
 +++
 
 # Maestro v2 ADR Backlog
 
-Status: live — actively maintained; reconciled in Phase 0 item 12.
+Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim priority list in [notes_v1-adr-alignment.md](notes_v1-adr-alignment.md). New ADR needs discovered mid-phase land here, not in the phase.
 
-These are concepts that likely need ADRs before implementation. They are listed here to keep the main roadmap readable.
+## Resolved In Phase 0
 
-## ADR Candidates
+| Candidate | Resolution |
+| --- | --- |
+| v2 Documentation Authority And Planning Reset | [ADR 0017](../adr/0017-v2-documentation-authority-and-lifecycle.md) (amended 2026-07-15); archive plan executed by the [doc-reset manifest](phase_0/manifest_doc-reset.md) |
+| v2 Taxonomy: Product, Feature, Epic, Story, Work Group | [ADR 0018](../adr/0018-v2-work-taxonomy.md) (repo-Product rule amended by 0022) |
+| Orchestrator Boundary | [ADR 0019](../adr/0019-orchestrator-boundary.md) (amended 2026-07-14: dispatch at both grains); the in-flight-work policy is carried below as an open candidate |
+| Intake And Triage — stage 1 (artifact contract) | [ADR 0024](../adr/0024-intake-and-triage-artifact-contract.md) (amended 2026-07-14); stage 2 is carried below |
+| Reviewer vs Partner/Supervisor | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) (amended: agentic review, unconditional human Accept) |
+| Management And Audit Artifacts | [ADR 0021](../adr/0021-artifacts-and-principal-instances.md) |
+| Agent Instance And Lightweight Signatures | [ADR 0021](../adr/0021-artifacts-and-principal-instances.md) (principal instances + MPH signature; no cryptographic signing, as recommended) |
+| Golden Stories And Benchmark Runner | [ADR 0025](../adr/0025-golden-stories-and-benchmark-runner.md) |
+| v1 Freeze And Port-Vs-Rewrite Inventory | Freeze: roadmap D7 and the `v1-freeze` tag. Inventory and breaking-change principles: [inventory_v1-port.md](phase_0/inventory_v1-port.md) (live) — recorded as a phase artifact, not an ADR, by agreement |
+| Postgres Data Plane | [ADR 0022](../adr/0022-v2-data-plane.md) (amended: local durability invariant, config/secrets, backup contract) |
+| Branch Strategy | [ADR 0023](../adr/0023-v2-branch-strategy.md) |
+| Binary Attachment Storage | [ADR 0022](../adr/0022-v2-data-plane.md) — object storage first-class, content-addressed digests, binaries never in relational rows |
+| User Credentials And Configs | [Project-folder spike](phase_0/spike_project-folder.md) + ADR 0022 amendment (2026-07-14): config records and secrets vault in the plane, key-file root of trust outside it |
 
-### v2 Documentation Authority And Planning Reset
+## Open Candidates, Dependency-Ordered
 
-Decide how v2 docs are organized, what is archived, what is LLM-facing, and what is human-facing.
+Ordered by the phase each blocks. An entry should be Accepted before its blocking phase starts implementation.
 
-Likely decisions:
+### 1. Artifact Schema And Templates — blocks Phase 2
 
-- `docs/v2` starts as planning material.
-- Accepted v2 architecture decisions move into ADRs.
-- Repo docs are optimized for agent ingestion.
-- Wiki/docs-site output is optimized for humans.
+Phase 2's DDL and typed queries need the canonical artifact encoding fixed first.
 
-### v2 Taxonomy: Product, Feature, Epic, Story, Work Group
+- JSON as storage/API canonical format; schema/version in every artifact.
+- Markdown as rendering format; TOML/YAML allowed for prompt-facing fragments.
+- Inputs: ADR 0021 (artifact model), ADR 0022 (schema families) — both Accepted.
 
-Define the v2 work hierarchy and ownership boundaries.
+### 2. Online Backup And Restore — trails Phase 2 (non-blocking)
 
-Naming decided (2026-07-11): the repo-scoped unit is `Epic` (originally `Task`, which collided with the v1 TASK message type, generic agent-tooling "task" language, and the industry prior that Tasks are smaller than Stories). The executing unit is a `Work Group` (originally `Task Team`). The v1 hotfix path becomes the `Workbench` (interim name "Live Mode" rejected: implies a live product). CPA/CTA (retained 2026-07-11, superseded 2026-07-12): the standing agent pair is retired in favor of orchestrator-owned intake/triage — see roadmap D2 and the pre-Phase-5 spike. The naming question dissolves with it.
+The cold-backup baseline shipped in ADR 0022 as amended; this candidate is the online upgrade: snapshot/`pg_basebackup`-class backup, restore validation, cross-store consistency across Postgres, object store, and local forge.
 
-Key questions:
+### 3. Amendment Vs Running Work — blocks Phase 3
 
-- Is Product a first-class data model?
-- Does Feature span repos?
-- Does an Epic always scope to one repo?
-- Does Story map roughly to one PR?
-- What owns a Work Group lifecycle?
-- Can the hierarchy collapse for small work? A bug fix or tweak should be enterable as a single-Story Epic without Feature-level ceremony, the way industry tools allow a Story without an Epic. The Workbench overlaps here but is distinct: that is about interactivity and review timing, this is about skipping intake layers.
+Deferred from ADR 0019's dispatch amendment (2026-07-14): the policy for work already executing when its Epic/Story/DAG record is amended or superseded — cancel, suspend, or complete-then-reconcile. The Work Group runtime cannot ship without it.
 
-### Orchestrator Boundary
+### 4. Tool And Action Policy Gating — seam decision blocks Phase 3; full ADR post-MVP
 
-Define what the Orchestrator is in v2: the programmatic layer owning agent lifecycle, tool implementation, message routing, forge interaction, persistence, and scheduling. Never an agent; never calls an LLM directly.
+The v2 MVP has workflow gates only, but the *seam* (toolloop, dispatcher, tool execution layer, or a policy service) must be chosen before Phase 3 builds tool plumbing, or per-action policy gets retrofitted into every tool. The research corpus (Day 4/Day 5) pushes structural gates (role/env/tool allowlists, filesystem scopes), semantic gates (high-risk action summaries checked against policy), and human gates.
 
-Key decisions:
+### 5. UAT And Demo Mode — blocks Phase 4
 
-- The boundary rule: rules/config decisions belong to the Orchestrator, inference decisions belong to agents.
-- Relationship to the v1 kernel, supervisor, and dispatcher (D8 port items).
-- The seam intake and the Workbench button use to dispatch work.
-- Open follow-up (deferred from the 2026-07-14 dispatch amendment): the policy for work already executing when its Epic/Story/DAG record is amended or superseded — cancel, suspend, or complete-then-reconcile. Phase 3 runtime design.
+Whether UAT is optional in MVP or required for Epic merge gates the evidence-package and Accept flow. `pkg/demo` reworks against this ADR (port inventory).
 
-### Intake And Triage
+### 6. Intake And Triage — stage 2 — blocks Phase 5
 
-Two ADRs, staged:
+Settled by the pre-Phase-5 spike: the executor (form logic, short-lived triage agent, provisional Work Group), the "I don't know" escalation flow, provisional Work Group lifecycle, recipient pushback protocol, cross-Epic coherence checking, and graduation criteria for a standing intake agent.
 
-1. Phase 0: the intake artifact contract — Feature/Epic records, provenance, triage outputs (mode, repo, dependencies), and the orchestrator seam — with the executor (form logic, short-lived agent, provisional Work Group) deliberately unbound.
-2. After the pre-Phase-5 spike: the full Intake/Triage ADR settling the executor.
+### 7. Workbench And The Interactive Loop — anchor needed (flagged)
 
-Key questions (spike inputs):
+The Workbench is a pillar-17/D10 commitment with a decided entry point, but **no phase's outputs currently ship it** — the roadmap gives it no slot. It belongs with the pre-Phase-5 bracket: its entry path is an intake surface (stage 2 above) and its review timing needs Phase 5's gate machinery. Open questions carried: Work Group composition for sessions; what the trailing drift reviewer checks and when; transcript-to-evidence boundary; session budgets; whether Story-to-Epic merges can ride the present human's approval plus a clean drift check (Epic-to-default always requires human Accept, ADR 0020); promotion path when a session outgrows its scope. **Action: anchor this when Phase 5 is scoped.**
 
-- Form fields and the "I don't know" escalation flow.
-- Provisional Work Group lifecycle and single-repo continuity into execution.
-- Recipient pushback protocol (Work Group challenging its Epic).
-- Cross-Epic coherence checking.
-- Graduation criteria for a standing intake agent.
+### 8. Prompt Packs And Skills Storage — blocks Phase 5 at the latest
 
-### Reviewer vs Partner/Supervisor
+Installed org-level packs/skills DB-canonical, immutable, hash-addressed, versioned, exportable; repo-local packs remain possible. The schema family is reserved from Phase 2 (ADR 0022); the ADR must land before prompts actually move into the plane — pillar 10 and the MPH signature's P component depend on it.
 
-Define the two review scopes.
+### 9. Knowledge Hierarchy And Knowledge Packs — blocks Phase 6
 
-Reviewer:
+Source precedence (ADRs, interfaces/contracts, docs, skills, AST/code facts), citation rules, staleness, pack generation. Inputs: the [cms spike](phase_0/spike_cms.md) (ingestion from maestro-cms, graph contributed upstream per its ADR 0005) and the [cms wishlist](requirements_maestro-cms-wishlist.md) responses.
 
-- Correctness.
-- Completeness.
-- Scope adherence.
-- Budget/nonconvergence.
+### 10. Container Runtime Abstraction — post-MVP
 
-Partner/Supervisor:
+A future container/execution interface with Docker as the only initial implementation. Useful for future Apple/iPhone/raw-filesystem cases.
 
-- Adds judgment.
-- Applies project standards.
-- Resolves ambiguity.
-- Applies domain/compliance/security skills.
+### 11. External Agent Runtime Contract — post-MVP
 
-### Management And Audit Artifacts
+Whether Maestro can run Claude Code, OpenHands, or other headless agents inside containers as first-class executors (beyond the v1-style Coder integration the port keeps).
 
-Define artifact categories, lifecycle, review requirements, and UI treatment.
+### 12. Dispatcher/Message Abstraction For Cloud Jobs — v3
 
-Key decision:
-
-- Management artifacts are human-facing.
-- Audit artifacts are durable/queryable backing records.
-
-### Artifact Schema And Templates
-
-Define canonical artifact encoding.
-
-Recommended:
-
-- JSON as storage/API canonical format.
-- Schema/version in every artifact.
-- Markdown as rendering format.
-- TOML/YAML allowed for prompt-facing fragments where useful.
-
-### Agent Instance And Lightweight Signatures
-
-Define agent instance records and artifact provenance signatures.
-
-Avoid cryptographic signing initially unless required.
-
-### Golden Stories And Benchmark Runner
-
-Define golden story schema, runner semantics, cleanup, fixture repos, and comparison reports. Phase 0 exit-blocking: Phase 1 builds directly on this ADR.
-
-Target strategy decided (2026-07-11): the Phase 1 target is the current codebase's v1 factory path, minimally patched so a basic golden story passes; run records capture the target commit hash (see roadmap Phase 1).
-
-Key questions:
-
-- How deterministic does a golden story need to be?
-- How many runs per story per configuration, and how is spread reported? (Roadmap D9.)
-- What budget caps apply to benchmark runs, and what is the overrun policy?
-- What is the runner's black-box contract: which external surfaces does it drive, and where does it store its own results before the v2 data plane exists?
-- How are scored rubrics represented?
-- How are branches cleaned?
-- Which repos become fixtures?
-- Should golden story runs be exposed through build tags analogous to `integration` — e.g. `golden-minimal` for a smoke subset and `golden-all` for the full suite (see process_build.md)?
-
-### v1 Freeze And Port-Vs-Rewrite Inventory
-
-Record the v1 freeze and the package-level port/rework/rewrite/drop inventory (roadmap D8).
-
-Freeze decided (2026-07-11): v1 is deprecated; tag `v1-freeze` at the pre-v2 `main` head; no pre-freeze fixes or backports; hypothetical future v1 work forks from the tag; v2 develops on `main`.
-
-Key questions:
-
-- Which v1 packages port as-is, which need rework, which are rewritten, and which are dropped?
-
-### Postgres Data Plane
-
-Define Postgres as v2 data plane, Docker-local default, cloud mode, `sqlc`, and migrations.
-
-Key question:
-
-- What minimal schema lands first?
-
-### Prompt Packs And Skills Storage
-
-Define whether prompt packs and skills are database-canonical, repo-canonical, or hybrid.
-
-Recommended:
-
-- Installed org-level packs/skills are DB-canonical.
-- They are immutable, hash-addressed, versioned, and exportable.
-- Repo-local packs/skills remain possible.
-
-### Knowledge Hierarchy And Knowledge Packs
-
-Define knowledge source precedence, citation rules, staleness, and pack generation.
-
-Key sources:
-
-- ADRs.
-- Interfaces/contracts.
-- Docs.
-- Skills.
-- AST/code facts.
-
-### Branch Strategy
-
-Define Epic and Story branch behavior.
-
-Recommended:
-
-- Story branches merge to Epic branch.
-- Epic branch merges to default after acceptance.
-- Rebase/conflict resolution is a harness function.
-
-### Workbench And The Interactive Loop
-
-Define the fast/interactive second tempo (roadmap pillar 17 and D10): same Epic/Story data model, human as accepting gate plus trailing agent drift review, trailing evidence.
-
-Entry point already decided: a Workbench button on the master dashboard, implemented as the orchestrator dispatching a special-case blank Feature request scoped to a target repo; sessions can also open from an existing Epic.
-
-Key questions:
-
-- Work Group composition for Workbench sessions (full PM/Architect/Coder trio, or Coder plus on-demand Architect, with the human playing PM)?
-- What exactly does the trailing agent reviewer check (syntax, rules, architectural drift), and when does it run?
-- What of the session transcript becomes evidence versus Audit-only data?
-- Budgets/limits for open-ended sessions.
-- Within a Workbench session, can Story-to-Epic merges execute on the present human's approval plus a clean trailing drift check, without a separate Architect review record? (Epic-to-default always requires the human Accept — ADR 0020.)
-- Promotion path when a session outgrows its scope.
-
-### UAT And Demo Mode
-
-Define how Demo Mode becomes or supports UAT.
-
-Key question:
-
-- Is UAT optional in MVP or required for Epic merge?
-
-### Binary Attachment Storage
-
-Define storage for uploaded images, spreadsheets, PDFs, docs, and diagrams.
-
-Recommended:
-
-- Data plane/object storage by default.
-- Content-addressed digest.
-- Repo only for true project artifacts.
-
-### User Credentials And Configs
-
-Resolved (2026-07-14) by the Phase 0 project-folder spike and the ADR 0022 amendment: configuration records and the secrets vault live in the data plane; the root of trust (key file default, keychain/passphrase optional) lives outside it under Maestro config; the project folder is retired. Remaining ADR-worthy follow-up:
-
-- Online backup/snapshot upgrade beyond the cold-backup baseline (restore validation, cross-store consistency).
-
-### Container Runtime Abstraction
-
-Define a future container/execution interface while keeping Docker as the only initial implementation.
-
-Useful for future Apple/iPhone/raw-filesystem use cases.
-
-### Tool And Action Policy Gating
-
-Define where per-action policy checks on tool calls and high-risk actions live: toolloop, dispatcher, tool execution layer, or a separate policy service.
-
-The research corpus (Day 4/Day 5) pushes structural gates (role/env/tool allowlists, filesystem scopes), semantic gates (high-risk action summaries checked against policy), and human gates. The v2 MVP has workflow gates only; per-action policy is probably post-MVP, but the seam should be chosen early so it is not retrofitted into every tool.
-
-### External Agent Runtime Contract
-
-Define whether Maestro can run Claude Code, OpenHands, or other headless agents inside containers.
-
-Probably post-MVP.
-
-### Dispatcher/Message Abstraction For Cloud Jobs
-
-Define whether agent communication should anticipate cloud job execution.
-
-Likely v3. Avoid overbuilding early.
-
+Whether agent communication should anticipate cloud job execution. ADR 0019 already records the trajectory (channels are transport, never state; RPC possible if runtimes split); avoid overbuilding before v3.

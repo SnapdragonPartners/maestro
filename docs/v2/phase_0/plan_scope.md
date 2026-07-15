@@ -8,7 +8,7 @@ type = "plan"
 
 # Phase 0: v2 Design Groundwork — Scope And Plan
 
-Status: live — approved by Codex and DR, 2026-07-12, per [process_build.md](../process_build.md); amended 2026-07-13 (item 13, maestro-cms spike; both approvals).
+Status: live — approved by Codex and DR, 2026-07-12, per [process_build.md](../process_build.md); amended 2026-07-13 (item 13, maestro-cms spike; both approvals); exit review recorded 2026-07-15 (item 12). This document flips to `archive` when item 12 merges and Phase 0 closes, per the lifecycle below.
 
 Status lifecycle (applies to all phase artifacts): `draft` while under review; flipped to `live` after both approvals, as the final commit before merge and before any work items start; `archive` when the phase completes and the document becomes a historical record. Work item 1 formalizes this lifecycle as part of the front-matter convention.
 
@@ -70,13 +70,17 @@ Sequencing notes:
 
 The roadmap's Phase 0 exit criteria, plus the Phase 0 scope items that are not themselves roadmap exit criteria:
 
-- [ ] Taxonomy, artifact model (including artifact scope), branch strategy, data plane, and reviewer/partner ADRs Accepted. (Items 2–5.)
-- [ ] Phase 1-blocking ADR Accepted before any Phase 1 implementation: golden story schema / benchmark runner, including the D9 mechanism and the Phase 1 target strategy. (Item 7.)
-- [ ] The v2 MVP boundary (D1) and the port-vs-rewrite inventory (D8) written down and agreed. (Items 2 and 10; D1 is ratified inside the taxonomy ADR.)
-- [ ] Documentation reset done: stale docs archived, remaining repo docs safe for agent ingestion. (Items 1 and 11.)
-- [ ] Reconciled ADR backlog. (Item 12.)
-- [ ] Intake/triage contract ADR Accepted (item 6); spike reports delivered (items 8, 9, and 13).
-- [ ] All remaining table deliverables completed, or explicitly deferred by agreement of DR and Codex.
+- [x] Taxonomy, artifact model (including artifact scope), branch strategy, data plane, and reviewer/partner ADRs Accepted. (ADRs 0018, 0021, 0023, 0022, 0020 — PRs #244-#247.)
+- [x] Phase 1-blocking ADR Accepted before any Phase 1 implementation: golden story schema / benchmark runner, including the D9 mechanism and the Phase 1 target strategy. (ADR 0025 — PR #249.)
+- [x] The v2 MVP boundary (D1) and the port-vs-rewrite inventory (D8) written down and agreed. (D1 ratified in ADR 0018; [inventory_v1-port.md](inventory_v1-port.md) with breaking-change principles — PR #256.)
+- [x] Documentation reset done: stale docs archived, remaining repo docs safe for agent ingestion. (ADR 0017 + [manifest_doc-reset.md](manifest_doc-reset.md) — PRs #242, #257: 114 files archived, full front-matter coverage, verbatim-summary indexes, zero broken links.)
+- [x] Reconciled ADR backlog. ([notes_adr-backlog.md](../notes_adr-backlog.md), reconciled and dependency-ordered 2026-07-15 — this item.)
+- [x] Intake/triage contract ADR Accepted (ADR 0024 — PR #248); spike reports delivered ([toolloop](spike_toolloop.md), [project folder](spike_project-folder.md), [cms](spike_cms.md) — PRs #250-#252).
+- [x] All remaining table deliverables completed, or explicitly deferred by agreement of DR and Codex. (All 14 items 0-13 merged; the two upstream wishlists await maestro-llms/maestro-cms team responses — tracked in the wishlist docs, not Phase 0 exit-blocking.)
+
+### Exit Review (2026-07-15, item 12)
+
+Every checklist line passes. Doctrine amendments made during the phase are recorded in their ADRs' status lines (0017 x2, 0018, 0019, 0020 x2, 0022 x2, 0024). One flag raised by the backlog reconcile: the Workbench (pillar 17, D10) has a decided entry point but no phase output slot — anchoring it is queued for Phase 5 scoping (see the backlog). Phase 0 closes on this item's merge; Phase 1 begins with its own scope-and-plan in `docs/v2/phase_1/`.
 
 ## Risks
 
