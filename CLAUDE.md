@@ -15,7 +15,7 @@ Current documentation precedence:
 2. Canonical FSM docs in `pkg/pm/STATES.md`, `pkg/architect/STATES.md`, and `pkg/coder/STATES.md`.
 3. Accepted ADRs in `docs/adr/`.
 4. Current implementation summaries such as this file, `README.md`, and focused docs.
-5. Older specs, TODOs, and plans under `docs/` and `docs/specs/`.
+5. Retained v1 references at `docs/` root with `deprecated` front-matter status (unverified against current code; never authoritative for v2 design). Archived v1-era documents in `docs/archive/` carry no authority for any question (ADR 0017).
 
 ### Key Architecture Components
 

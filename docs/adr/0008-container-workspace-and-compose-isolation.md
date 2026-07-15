@@ -1,3 +1,10 @@
++++
+title = "ADR 0008: Container, Workspace, and Compose Isolation"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 container, workspace, and compose isolation model."
++++
+
 # ADR 0008: Container, Workspace, and Compose Isolation
 
 - Status: Proposed

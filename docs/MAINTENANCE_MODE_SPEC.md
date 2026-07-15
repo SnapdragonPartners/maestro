@@ -1,3 +1,10 @@
++++
+title = "Maintenance Mode Specification"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 maintenance mode spec; the mode is dropped in v2 (port inventory)."
++++
+
 # Maintenance Mode Specification
 
 ## Overview

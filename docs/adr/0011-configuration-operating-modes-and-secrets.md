@@ -1,3 +1,10 @@
++++
+title = "ADR 0011: Configuration, Operating Modes, and Secrets"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 configuration, operating modes, and secrets handling; superseded for v2 intent by the project-folder spike and ADR 0022 as amended."
++++
+
 # ADR 0011: Configuration, Operating Modes, and Secrets
 
 - Status: Proposed

@@ -1,6 +1,6 @@
 +++
 title = "Spike Report: The Disposable Project Folder"
-edit_date = "2026-07-14"
+edit_date = "2026-07-15"
 status = "live"
 type = "spike"
 summary = "How much non-disposable state can leave the user's filesystem? Answer: nearly all of it. v2 retires the project directory for a four-way OS-standard split: config (bootstrap pointer + root-of-trust key), cache (mirrors and reconstructible workspaces), state (active workspaces until pushed), data (the durable Postgres/object/local-forge root). The committed repo .maestro/ is the only surviving .maestro."
@@ -49,6 +49,6 @@ No third-party package is involved, so no wishlist accompanies this spike. No sp
 
 ## Related Documents
 
-- [Phase 0 plan](scope-and-plan.md) item 9; [roadmap](../roadmap.md) D8; [parking lot](../parking-lot.md) (Config And Credentials In Data Plane — hypothesis confirmed).
+- [Phase 0 plan](plan_scope.md) item 9; [roadmap](../plan_roadmap.md) D8; [parking lot](../notes_parking-lot.md) (Config And Credentials In Data Plane — hypothesis confirmed).
 - ADRs [0022](../../adr/0022-v2-data-plane.md) (persistence interface, repo records, the config/credentials deferral this resolves), [0021](../../adr/0021-artifacts-and-principal-instances.md) (Audit artifacts as the record; logs as scratch).
 - [cms spike](spike_cms.md) (knowledge to the data plane); historical note [0011](../../adr/0011-configuration-operating-modes-and-secrets.md) (v1 config/secrets design this supersedes for v2 intent).

@@ -1,3 +1,10 @@
++++
+title = "Ollama LLM Provider"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Local Ollama provider usage notes for v1."
++++
+
 # Ollama LLM Provider
 
 This document describes the implementation plan for adding Ollama support as an LLM provider, enabling use of locally-hosted models like Phi4, Llama 3.1, Qwen3, and others.

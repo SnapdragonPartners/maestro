@@ -1,3 +1,10 @@
++++
+title = "ADR 0016: Architect Per-Agent Conversation Context"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 architect per-agent conversation context design."
++++
+
 # ADR 0016: Architect Per-Agent Conversation Context
 
 - Status: Proposed

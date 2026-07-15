@@ -1,3 +1,10 @@
++++
+title = "Maestro Knowledge Graph"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: documentation map for v1."
++++
+
 # Maestro Knowledge Graph
 
 ## Overview

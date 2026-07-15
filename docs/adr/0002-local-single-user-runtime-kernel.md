@@ -1,3 +1,10 @@
++++
+title = "ADR 0002: Local Single-User Runtime Kernel"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 single-user runtime kernel, supervisor, and dispatcher architecture; superseded for v2 by ADR 0019."
++++
+
 # ADR 0002: Local Single-User Runtime Kernel
 
 - Status: Proposed

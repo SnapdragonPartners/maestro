@@ -1,6 +1,6 @@
 +++
 title = "ADR 0021: Artifacts And Principal Instances"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Defines the v2 artifact model: artifacts as the sole agent handoff, Management (inputs) vs Audit (exhaust) categories, the scope/lineage signature, principal instances (agent/human/system), the invalidate/amend/supersede lifecycle, evidence retention-pinning, and the MPH signature."
 +++
@@ -99,5 +99,5 @@ Management and Audit artifacts live in **separate storage families** (Phase 2: s
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (hierarchy, lineage, amendment obligation), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (principal-based invariant, heterogeneity record), [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md) (type/summary conventions).
-- [Roadmap](../v2/roadmap.md) pillars 2–3 (artifact categories, signatures, agent instances), D5 (repo vs database), risk notes on artifact volume and reasoning capture.
+- [Roadmap](../v2/plan_roadmap.md) pillars 2–3 (artifact categories, signatures, agent instances), D5 (repo vs database), risk notes on artifact volume and reasoning capture.
 - Historical note [0005](0005-sqlite-session-persistence-and-resume.md) (v1 persistence; superseded for v2 design intent by this ADR and the forthcoming data-plane ADR).

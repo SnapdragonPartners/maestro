@@ -1,6 +1,6 @@
 +++
 title = "Spike Report: maestro-cms Boundary And Adoption"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 type = "spike"
 summary = "What the v2 knowledge/document/binary work consumes from maestro-cms versus builds in Maestro. Recommendation: adopt cms for the ingestion pipeline; Maestro owns retrieval, citations, and packs; the generic graph primitive is contributed to cms per its ADR 0005 and consumed back, with Maestro keeping only ontology and policy."
@@ -47,6 +47,6 @@ No spike scripts were produced (reading spike); `spikes/phase_0/` is not needed 
 
 ## Related Documents
 
-- [Phase 0 plan](scope-and-plan.md) item 13; [roadmap](../roadmap.md) pillars 11 and 13, D8; [toolloop spike](spike_toolloop.md) (the shared-package principle and playbook).
+- [Phase 0 plan](plan_scope.md) item 13; [roadmap](../plan_roadmap.md) pillars 11 and 13, D8; [toolloop spike](spike_toolloop.md) (the shared-package principle and playbook).
 - ADRs [0022](../../adr/0022-v2-data-plane.md) (digest-addressed object module, persistence seam), [0021](../../adr/0021-artifacts-and-principal-instances.md) (knowledge packs as Management artifacts).
 - Historical note [0012](../../adr/0012-knowledge-graph-as-repository-artifact.md) (the v1 design `pkg/knowledge` implements); maestro-cms docs/ADRs 0001–0010.

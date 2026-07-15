@@ -1,6 +1,6 @@
 +++
 title = "ADR 0024: Intake And Triage Artifact Contract"
-edit_date = "2026-07-14"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Fixes what intake produces — Feature and Epic records, triage outputs, provenance, review, and the dispatch seam — while deliberately leaving the intake executor unbound until the pre-Phase-5 spike."
 +++
@@ -60,5 +60,5 @@ Phase 3's constraint is restated: its intake path is contract-only — a minimal
 
 ## Related Documents
 
-- [Roadmap](../v2/roadmap.md) D2 and the pre-Phase-5 spike; [ADR backlog](../v2/adr-backlog.md) Intake And Triage entry (this is the first of its two staged ADRs).
+- [Roadmap](../v2/plan_roadmap.md) D2 and the pre-Phase-5 spike; [ADR backlog](../v2/notes_adr-backlog.md) Intake And Triage entry (this is the first of its two staged ADRs).
 - [ADR 0018](0018-v2-work-taxonomy.md) (degenerate path, wrapper Feature), [ADR 0019](0019-orchestrator-boundary.md) (seams, boundary rule), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (recipient review, coherence assignment), [ADR 0021](0021-artifacts-and-principal-instances.md) (signatures, handoff, accountable authorship), [ADR 0023](0023-v2-branch-strategy.md) (Workbench entry dispatch).

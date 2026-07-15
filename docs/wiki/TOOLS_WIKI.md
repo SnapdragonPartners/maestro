@@ -1,3 +1,10 @@
++++
+title = "Maestro MCP Tools System"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: v1 agent tools reference."
++++
+
 # Maestro MCP Tools System
 
 ## Overview

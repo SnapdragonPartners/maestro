@@ -1,3 +1,10 @@
++++
+title = "Benchmark Evaluation Tracker"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 benchmark results and notes — a Phase 1 seed."
++++
+
 # Benchmark Evaluation Tracker
 
 This document tracks external coding benchmarks we're evaluating for measuring Maestro's effectiveness as a multi-agent coding orchestrator.

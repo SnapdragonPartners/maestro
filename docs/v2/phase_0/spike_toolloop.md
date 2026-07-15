@@ -1,6 +1,6 @@
 +++
 title = "Spike Report: Toolloop Ownership"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 type = "spike"
 summary = "Is a Maestro-owned toolloop distinct from maestro-llms still justified? Recommendation: yes as a harness layer, no as an engine — converge on llms/toolloop during the D8 port, contingent on the upstream requests in the maestro-llms wishlist."
@@ -53,6 +53,6 @@ No spike scripts were produced (this was a reading spike); `spikes/phase_0/` is 
 
 ## Related Documents
 
-- [Roadmap](../roadmap.md) D8 and the Phase 0 spike bracket; [Phase 0 plan](scope-and-plan.md) item 8.
+- [Roadmap](../plan_roadmap.md) D8 and the Phase 0 spike bracket; [Phase 0 plan](plan_scope.md) item 8.
 - ADRs [0019](../../adr/0019-orchestrator-boundary.md) (watchdog/persistence as Orchestrator machinery), [0021](../../adr/0021-artifacts-and-principal-instances.md)/[0022](../../adr/0022-v2-data-plane.md) (tool call as Audit action unit; terminal-tool guardrail), [0020](../../adr/0020-review-invariant-reviewer-vs-partner.md) (bounded contention).
 - Historical note [0006](../../adr/0006-toolloop-process-effect-and-terminal-tools.md) (the v1 toolloop design this spike revisits); maestro-llms ADR-0011 (its toolloop's binding non-goals).

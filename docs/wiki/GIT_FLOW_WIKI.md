@@ -1,3 +1,10 @@
++++
+title = "File System Management and Git Workflow"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: v1 git flow explained."
++++
+
 # File System Management and Git Workflow
 
 ## Overview

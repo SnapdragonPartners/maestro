@@ -1,6 +1,6 @@
 +++
 title = "Inventory: v1 Port, Rework, Rewrite, Drop"
-edit_date = "2026-07-14"
+edit_date = "2026-07-15"
 status = "live"
 type = "inventory"
 summary = "The D8 disposition table at package grain over the actual v1 package list: what ports as-is, what ports with rework, what is rewritten, and what is dropped — with breaking-change principles and the deltas from D8's first-pass guess."
@@ -143,7 +143,7 @@ Tallies at this grain: **port 14** groups (~12k LOC), **rework 31** groups (~67k
 
 ## Related Documents
 
-- [Roadmap](../roadmap.md) D7, D8; [Phase 0 plan](scope-and-plan.md) item 10.
+- [Roadmap](../plan_roadmap.md) D7, D8; [Phase 0 plan](plan_scope.md) item 10.
 - Spike reports consumed: [toolloop](spike_toolloop.md) (item 8), [project folder](spike_project-folder.md) (item 9), [maestro-cms](spike_cms.md) (item 13).
 - ADRs [0019](../../adr/0019-orchestrator-boundary.md), [0021](../../adr/0021-artifacts-and-principal-instances.md), [0022](../../adr/0022-v2-data-plane.md), [0023](../../adr/0023-v2-branch-strategy.md), [0024](../../adr/0024-intake-and-triage-artifact-contract.md), [0025](../../adr/0025-golden-stories-and-benchmark-runner.md).
 - Wishlists: [maestro-llms](../requirements_maestro-llms-wishlist.md), [maestro-cms](../requirements_maestro-cms-wishlist.md) (breaking-change principle 2).

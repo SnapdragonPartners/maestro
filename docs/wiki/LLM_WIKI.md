@@ -1,3 +1,10 @@
++++
+title = "Maestro LLM Abstraction and API Implementation"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Human-facing wiki: v1 LLM configuration and providers."
++++
+
 # Maestro LLM Abstraction and API Implementation
 
 ## Overview

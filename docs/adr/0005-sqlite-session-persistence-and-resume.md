@@ -1,3 +1,10 @@
++++
+title = "ADR 0005: SQLite Session Persistence and Resume"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 SQLite session persistence and resume; superseded for v2 intent by ADR 0022."
++++
+
 # ADR 0005: SQLite Session Persistence and Resume
 
 - Status: Proposed

@@ -1,6 +1,6 @@
 +++
 title = "ADR 0019: Orchestrator Boundary"
-edit_date = "2026-07-14"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test."
 +++
@@ -49,5 +49,5 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (Work Group lifecycle ownership, dispatch contracts), [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md).
-- [Roadmap](../v2/roadmap.md) Core Vocabulary (Orchestrator), D2, pillar 15; [ADR backlog](../v2/adr-backlog.md) Orchestrator Boundary entry.
+- [Roadmap](../v2/plan_roadmap.md) Core Vocabulary (Orchestrator), D2, pillar 15; [ADR backlog](../v2/notes_adr-backlog.md) Orchestrator Boundary entry.
 - Historical notes [0002](0002-local-single-user-runtime-kernel.md) (superseded for v2 by this ADR) and [0004](0004-channel-dispatch-and-typed-agent-protocol.md) (discipline carried forward).

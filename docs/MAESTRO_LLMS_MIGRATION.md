@@ -1,3 +1,10 @@
++++
+title = "Maestro → `maestro-llms` Migration Spec"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "Design and divergence checklist for the maestro-llms migration; still the boundary reference for pkg/agent/internal/llmadapter."
++++
+
 # Maestro → `maestro-llms` Migration Spec
 
 **Status:** Revised after extraction-team review (round 1)

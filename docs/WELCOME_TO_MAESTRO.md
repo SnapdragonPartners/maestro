@@ -1,3 +1,10 @@
++++
+title = "Welcome to Maestro"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "User-facing orientation to running v1 Maestro."
++++
+
 # Welcome to Maestro
 
 ## What the Heck is Maestro?

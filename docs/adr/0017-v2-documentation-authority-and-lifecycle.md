@@ -1,6 +1,6 @@
 +++
 title = "ADR 0017: v2 Documentation Authority And Lifecycle"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Defines v2 doc conventions: ADR numbering and acceptance lifecycle, front-matter schema, draft/live/deprecated/archive authority, type_slug.md naming, directory indexes, and the v1 doc archive plan."
 +++
@@ -11,7 +11,7 @@ Status: Accepted (Codex + DR, 2026-07-13)
 
 ## Context
 
-Maestro v2 is a breaking redesign built by an agent fleet under one human operator ([build-process](../v2/build-process.md)). Agents consume repo documentation as ground truth, so documentation authority must be deterministic: which document wins when two disagree, and which documents carry no authority at all.
+Maestro v2 is a breaking redesign built by an agent fleet under one human operator ([build-process](../v2/process_build.md)). Agents consume repo documentation as ground truth, so documentation authority must be deterministic: which document wins when two disagree, and which documents carry no authority at all.
 
 The repo currently holds three generations of documentation: ADRs 0001–0016 (proposed current-state notes about v1, never accepted as binding), the v2 planning set under `docs/v2/`, and roughly 130 v1-era specs, plans, and TODO files under `docs/` and `docs/specs/` of widely varying staleness. The v1 codebase is deprecated (`v1-freeze`) but remains the running implementation until v2 replaces it, so "what does the code do" and "what is the v2 design" have different authoritative sources during the transition.
 
@@ -34,7 +34,7 @@ All markdown documents under `docs/` that are created or substantively edited fr
 - `deprecated` — describes the deprecated v1 system and has not been verified against current code. Subordinate to code, tests, and the FSM docs for runtime-behavior questions; never authoritative for v2 design. Retained in place only while something references or needs it; flips to `archive` when its subject is ported, rewritten, or dropped — the D8 inventory execution and phase completions are the natural triggers. A `deprecated` document contradicting a v2 ADR is not an inconsistency to fix; it is the transition state made explicit, exactly as the v1 code itself contradicts the v2 design until replaced.
 - `archive` — history; no authority for any question.
 
-The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`; the historical v1 notes (0001–0016) are `deprecated`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/scope-and-plan.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
+The doc status and the ADR status are two views of one state: Proposed ↔ `draft`, Accepted ↔ `live`, Superseded/Rejected ↔ `archive`; the historical v1 notes (0001–0016) are `deprecated`. Phase artifacts follow the lifecycle defined in the [Phase 0 plan](../v2/phase_0/plan_scope.md): `draft` under review, `live` after both approvals, `archive` when the phase closes.
 
 ADR files are the one exception to archive-means-move: they never relocate (stable references), so for ADRs `archive`/Superseded is a status change in place.
 
@@ -49,7 +49,7 @@ These documents are primarily LLM-facing, which sets the design principle: predi
 - Slugs favor full explicit words over abbreviations — filename tokens are cheap and orientation is not (`inventory_port-vs-rewrite.md`, not `inventory_pvr.md`).
 - Every directory under `docs/` maintains a `README.md` index with a one-line description per document — the highest-leverage aid for LLM readers, who consult one small index instead of opening files to find the right one. Item 11 creates the missing indexes.
 - Exceptions: ADRs keep the established `NNNN-slug.md` form (the sequence number is their type marker), and `README.md` remains `README.md`.
-- Existing documents are renamed to the convention during item 11 (`doc-reset`), where cross-references are rewritten anyway (e.g. `scope-and-plan.md` → `plan_scope.md`, `build-process.md` → `process_build.md`); new documents follow it immediately.
+- Existing documents are renamed to the convention during item 11 (`doc-reset`), where cross-references are rewritten anyway (e.g. `plan_scope.md` → `plan_scope.md`, `process_build.md` → `process_build.md`); new documents follow it immediately.
 
 ### Documentation authority
 
@@ -93,4 +93,4 @@ Executed in Phase 0 work item 11 (`doc-reset`); this ADR fixes the rules and the
 ## Related Documents
 
 - [ADR 0001](0001-documentation-authority-and-adr-lifecycle.md) — the v1 authority order this ADR supersedes for v2 questions (0001 remains an accurate historical note about v1 practice).
-- [Roadmap Phase 0](../v2/roadmap.md), [Phase 0 scope and plan](../v2/phase_0/scope-and-plan.md), [build-process](../v2/build-process.md).
+- [Roadmap Phase 0](../v2/plan_roadmap.md), [Phase 0 scope and plan](../v2/phase_0/plan_scope.md), [build-process](../v2/process_build.md).

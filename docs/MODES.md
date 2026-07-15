@@ -1,3 +1,10 @@
++++
+title = "Maestro Operating Modes"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 operating modes reference (bootstrap, factory, hotfix, maintenance, demo)."
++++
+
 # Maestro Operating Modes
 
 Maestro operates in several distinct modes depending on the project state and user intent. This document explains each mode, when it runs, and what it does.

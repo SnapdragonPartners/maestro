@@ -1,3 +1,10 @@
++++
+title = "Running SWE-EVO Benchmarks"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "How to run the v1 SWE-EVO benchmark — a Phase 1 seed for the ADR 0025 runner."
++++
+
 # Running SWE-EVO Benchmarks
 
 How to run the SWE-EVO benchmark runner against Maestro. This covers prerequisites, dataset preparation, running instances, and interpreting results.

@@ -1,6 +1,6 @@
 +++
 title = "ADR 0022: v2 Data Plane"
-edit_date = "2026-07-14"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam."
 +++
@@ -77,5 +77,5 @@ Phase 2 implements exactly this ADR: one-command local setup from a clean checko
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (hierarchy, lineage, default Product), [ADR 0021](0021-artifacts-and-principal-instances.md) (artifact model, storage families, principals), [ADR 0019](0019-orchestrator-boundary.md) (persistence seam).
-- [Roadmap](../v2/roadmap.md) pillars 4–5, D5, D7; [ADR backlog](../v2/adr-backlog.md) Postgres Data Plane entry; Phase 2 exit criteria in the [Phase 0 plan](../v2/phase_0/scope-and-plan.md).
+- [Roadmap](../v2/plan_roadmap.md) pillars 4–5, D5, D7; [ADR backlog](../v2/notes_adr-backlog.md) Postgres Data Plane entry; Phase 2 exit criteria in the [Phase 0 plan](../v2/phase_0/plan_scope.md).
 - Historical note [0005](0005-sqlite-session-persistence-and-resume.md) (superseded for v2 design intent).

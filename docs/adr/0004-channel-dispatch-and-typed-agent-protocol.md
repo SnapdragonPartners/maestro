@@ -1,3 +1,10 @@
++++
+title = "ADR 0004: Channel Dispatch and Typed Agent Protocol"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 typed channel dispatch and agent message protocol; the discipline carries into v2 via ADR 0019."
++++
+
 # ADR 0004: Channel Dispatch and Typed Agent Protocol
 
 - Status: Proposed

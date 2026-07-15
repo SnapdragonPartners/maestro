@@ -1,3 +1,10 @@
++++
+title = "Hotfix Mode Specification"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 hotfix mode design — the ancestor of the v2 Workbench tempo."
++++
+
 # Hotfix Mode Specification
 
 ## Overview

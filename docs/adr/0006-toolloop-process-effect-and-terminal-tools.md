@@ -1,3 +1,10 @@
++++
+title = "ADR 0006: Toolloop ProcessEffect and Terminal Tools"
+edit_date = "2026-07-15"
+status = "deprecated"
+summary = "v1 toolloop ProcessEffect and terminal-tool discipline; promoted to a v2 data-plane rule by ADR 0022."
++++
+
 # ADR 0006: Toolloop ProcessEffect and Terminal Tools
 
 - Status: Proposed

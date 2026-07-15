@@ -1,6 +1,6 @@
 +++
 title = "ADR 0020: The Review Invariant — Reviewer vs Partner/Supervisor"
-edit_date = "2026-07-13"
+edit_date = "2026-07-15"
 status = "live"
 summary = "Canonical statement of the symmetric review invariant (every Management artifact reviewed by a non-author) and the two review scopes: narrow Reviewers that block, and Partner/Supervisors that judge."
 +++
@@ -68,5 +68,5 @@ Author/reviewer disagreement escalates to a human after a bounded number of iter
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (Work Group roles, Workbench invariants, recipient review), [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md).
-- [Roadmap](../v2/roadmap.md) pillar 7 (agent pairs), north star, risks; [ADR backlog](../v2/adr-backlog.md) Reviewer vs Partner entry; [build-process](../v2/build-process.md) (the manual rehearsal of this invariant).
+- [Roadmap](../v2/plan_roadmap.md) pillar 7 (agent pairs), north star, risks; [ADR backlog](../v2/notes_adr-backlog.md) Reviewer vs Partner entry; [build-process](../v2/process_build.md) (the manual rehearsal of this invariant).
 - Historical note [0003](0003-agent-roles-and-finite-state-machines.md) (v1 role model; role taxonomy superseded via ADR 0018).
