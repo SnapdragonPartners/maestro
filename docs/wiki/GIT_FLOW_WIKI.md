@@ -704,7 +704,7 @@ Maestro previously used git worktrees but migrated to the current clone-based ap
 - Dedicated workspace at `<projectDir>/architect-001/`
 - Enables architect to read committed artifacts like knowledge graph
 - Updated before scoping and after each merge
-- Part of knowledge graph implementation (../DOC_GRAPH.md)
+- Part of [knowledge graph implementation](../DOC_GRAPH.md)
 
 **Workspace Compression** (planned):
 - Compress inactive workspaces to save disk space
