@@ -852,6 +852,7 @@ Goal: create the smallest real v2 factory path.
 Outputs:
 
 - Feature intake model — contract-only: a minimal manual path honoring the intake artifact contract. It must not preempt the pre-Phase-5 spike; the final intake design (form, triage agent, provisional Work Groups) is decided there.
+- Constraint: the Work Group runtime is tempo-neutral. Nothing in the lifecycle, gate wiring, or workspace model may assume leading gates only — the Workbench tempo (pillar 17, shipped in Phase 5) must remain expressible as a harness preset, not a parallel system.
 - Epic model.
 - Story model.
 - Single Work Group lifecycle.
@@ -883,6 +884,7 @@ Outputs:
 - Evidence package generation.
 - Evidence viewer.
 - Human Accept for Epic merge.
+- Constraint: the branch and evidence contracts are tempo-neutral. Evidence packages must support trailing assembly from a session (the Workbench path, shipped in Phase 5) as well as staged assembly through leading gates — neither may be foreclosed.
 
 Exit criteria:
 
@@ -910,9 +912,28 @@ Exit criteria:
 - The Intake/Triage ADR is Accepted.
 - External design review requested and incorporated, or DR accepts a timeboxed fallback — the spike must not block on availability outside the build process. (DR's designer contact has offered input at spike time; routed through DR per the build process.)
 
+### Pre-Phase-5 Spike: Workbench Design
+
+Companion to the intake spike above, deliberately separate from it (added 2026-07-15, Phase 0 item 12 review): the Workbench is a critical v2 commitment (pillar 17, D10) and gets its own spike and Accepted ADR before Phase 5 hardens gate and review machinery around it.
+
+Goal: settle the Workbench design with the Phase 3 runtime and Phase 4 branch/evidence contracts as lived constraints, so Phase 5 ships it rather than discovering it.
+
+Questions (carried from pillar 17):
+
+- Work Group composition for sessions: full PM/Architect/Coder trio, or Coder plus on-demand Architect with the human playing PM.
+- The trailing drift reviewer: what it checks (syntax, rules, architectural drift) and when it runs.
+- Transcript-to-evidence boundary: what of the session becomes evidence versus Audit-only data.
+- Budgets and limits for open-ended sessions.
+- Whether Story-to-Epic merges can execute on the present human's approval plus a clean trailing drift check, without a separate Architect review record (Epic-to-default always requires the human Accept — ADR 0020).
+- Promotion path when a session outgrows its scope.
+
+Exit criteria:
+
+- The Workbench ADR is Accepted, satisfying ADR 0020's invariant through human accept plus the trailing agent check — no review exemptions.
+
 ### Phase 5: Agent Pairs, Internal Reviewers, And Gates
 
-Goal: make review an invariant of Management artifact creation.
+Goal: make review an invariant of Management artifact creation — and ship the Workbench as the first full consumer of the alternate review/evidence timing.
 
 Outputs:
 
@@ -923,12 +944,14 @@ Outputs:
 - Optional gates: requirements, stories, UAT.
 - Gate UI.
 - Human escalation path.
+- **The Workbench tempo, end-to-end** (pillar 17, D10, per the pre-Phase-5 Workbench ADR): dashboard-button entry dispatching the blank Feature request, sessions on degenerate or existing Epics, human accept plus trailing drift review, trailing evidence assembly.
 
 Exit criteria:
 
-- No Management artifact can reach a persisted, accepted state without a reviewer record or an explicit configured exemption.
+- No Management artifact can reach a persisted, accepted state without a reviewer record. (The Workbench satisfies this through human accept plus the trailing agent check — ADR 0020 admits no configured exemptions.)
 - A reviewer/author disagreement escalates to a human after the configured bound, demonstrated end-to-end.
 - The three optional gates can be toggled per Epic by config and are visible in the UI.
+- A Workbench session runs end-to-end: entered from the dashboard button, producing Story work on a real Epic branch with trailing evidence and drift review, closed by human Accept.
 
 ### Phase 6: Knowledge, Skills, And Post-Merge Hooks
 

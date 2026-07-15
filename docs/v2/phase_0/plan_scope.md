@@ -80,7 +80,7 @@ The roadmap's Phase 0 exit criteria, plus the Phase 0 scope items that are not t
 
 ### Exit Review (2026-07-15, item 12)
 
-Every checklist line passes. Doctrine amendments made during the phase are recorded in their ADRs' status lines (0017 x2, 0018, 0019, 0020 x2, 0022 x2, 0024). One flag raised by the backlog reconcile: the Workbench (pillar 17, D10) has a decided entry point but no phase output slot — anchoring it is queued for Phase 5 scoping (see the backlog). Phase 0 closes on this item's merge; Phase 1 begins with its own scope-and-plan in `docs/v2/phase_1/`.
+Every checklist line passes. Doctrine amendments made during the phase are recorded in their ADRs' status lines (0017 x2, 0018, 0019, 0020 x2, 0022 x2, 0024). One gap found and closed by the backlog reconcile: the Workbench (pillar 17, D10) had a decided entry point but no phase output slot. It is now anchored (2026-07-15): a dedicated pre-Phase-5 spike and ADR, an explicit Phase 5 output with an end-to-end exit criterion, and tempo-neutrality constraints on Phases 3 and 4 (see the roadmap and backlog). Phase 0 closes on this item's merge; Phase 1 begins with its own scope-and-plan in `docs/v2/phase_1/`.
 
 ## Risks
 
