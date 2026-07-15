@@ -239,7 +239,7 @@ These Maestro changes would benefit multiple benchmarks:
 - **PM**: Receives spec file directly, validates, submits to architect. Never enters AWAIT_USER — auto-resolves questions using own judgment.
 - **Architect**: Auto-resolves escalations instead of waiting for human. Full iterative review preserved.
 - **Coders**: Auto-resolve any escalations. Normal coding/testing flow.
-- See `docs/specs/SWE_EVO_PLAN.md` Phase 1 for detailed design.
+- See `docs/archive/SWE_EVO_PLAN.md` Phase 1 for detailed design.
 
 ### 2. Benchmark Adapter Framework
 **Needed by**: All 5 benchmarks

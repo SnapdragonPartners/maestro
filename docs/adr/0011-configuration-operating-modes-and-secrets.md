@@ -79,5 +79,5 @@ Secrets rules:
 - `docs/PASSWORD_VERIFIER_PLAN.md`
 - `docs/AIRPLANE_MODE.md`
 - `docs/OLLAMA.md`
-- `docs/specs/CONFIG_REDO.md`
+- `docs/archive/CONFIG_REDO.md`
 

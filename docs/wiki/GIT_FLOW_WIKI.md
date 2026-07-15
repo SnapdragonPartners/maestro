@@ -750,4 +750,4 @@ This architecture scales from single-agent simple tasks to complex multi-agent p
 - [Git Workflow Implementation](../GIT.md) - Detailed technical implementation
 - [Knowledge Graph Spec](../DOC_GRAPH.md) - Architect workspace and knowledge graph system
 - [Project Instructions](../../CLAUDE.md) - Overall project architecture
-- [Container Tools](../pkg/tools/) - Container management tool implementations
+- [Container Tools](../../pkg/tools/) - Container management tool implementations

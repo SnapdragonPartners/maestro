@@ -71,5 +71,5 @@ corresponding canonical FSM doc.
 - `pkg/coder/STATES.md`
 - `pkg/agent/README.md`
 - `docs/AGENT_LIFECYCLE.md`
-- `docs/specs/PM.md`
+- `docs/archive/PM.md`
 

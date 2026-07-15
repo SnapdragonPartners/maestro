@@ -66,6 +66,6 @@ or as legacy test plumbing until migration cleanup is complete.
 - `docs/AIRPLANE_MODE.md`
 - `docs/MERGE_CONFLICT_RESOLUTION_SPEC.md`
 - `docs/REPOSTATE_DESIGN.md`
-- `docs/specs/SWE_EVO_PLAN.md`
-- `docs/specs/SWE_EVO_IMPL.md`
+- `docs/archive/SWE_EVO_PLAN.md`
+- `docs/archive/SWE_EVO_IMPL.md`
 

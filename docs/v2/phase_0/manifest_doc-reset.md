@@ -10,6 +10,8 @@ summary = "File-by-file record of the ADR 0017 archive-plan execution: every mov
 
 Status: draft. Executes the archive plan fixed in [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md): archived documents move to `docs/archive/` preserving filenames (git history preserves original paths; no redirects); the keep list stays in place with `deprecated` front-matter; live docs get naming and front-matter conformance. Files whose disposition was unclear defaulted to archive per the ADR.
 
+**Recorded choice (review round, 2026-07-15):** ADR 0017 is amended alongside this manifest with archive/tooling/asset exemptions — `archive`-status documents carry `title`/`edit_date`/`status` front-matter only (no `summary`: retrieval hooks for no-authority documents are counterproductive); `docs/archive/` maintains a no-authority notice README instead of a per-file index; hidden tooling directories (`.obsidian/`) and asset-only directories (screenshots) maintain no index. Maintained indexes quote each entry's front-matter `summary` verbatim.
+
 ## Summary of actions
 
 | Action | Count |
@@ -23,7 +25,7 @@ Status: draft. Executes the archive plan fixed in [ADR 0017](../../adr/0017-v2-d
 | Stamped `archive` front-matter on moved markdown files | 114 |
 | Live docs renamed to `type_slug.md` (references updated in 18 files) | 8 |
 | Live docs given missing front-matter or `type` field | 8 |
-| README indexes created (`docs/archive/`, `docs/v2/phase_0/`) / updated (`docs/v2/`) | 3 |
+| README indexes created (`docs/`, `docs/wiki/`, `docs/archive/`, `docs/v2/phase_0/`) / regenerated (`docs/v2/`) — entries quote front-matter summaries verbatim | 5 |
 | `CLAUDE.md` authority-order entry updated (`docs/specs/` is gone) | 1 |
 
 ## Renames (live docs, `type_slug.md` convention)
@@ -184,4 +186,3 @@ From `docs/specs/`:
 
 - [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md) (the rules and keep list this executes); [Phase 0 plan](plan_scope.md) item 11.
 - [docs/archive/README.md](../../archive/README.md) (the no-authority notice).
-

@@ -7,7 +7,7 @@ summary = "Defines v2 doc conventions: ADR numbering and acceptance lifecycle, f
 
 # 0017. v2 Documentation Authority And Lifecycle
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-15 (archive, tooling, and asset exemptions from summary and index requirements)
 
 ## Context
 
@@ -29,6 +29,8 @@ All markdown documents under `docs/` that are created or substantively edited fr
 
 `summary` is one tight sentence stating what the document contains and when to read it — a retrieval hook, not an abstract. It exists so an LLM can triage a file from its front-matter alone (~50 tokens) instead of reading it, and it is the single source for directory README indexes, which quote it rather than maintaining separate one-liners. It is also the document's future artifact-row line in the v2 artifact model.
 
+**Amendment (2026-07-15): archive, tooling, and asset exemptions.** `archive`-status documents are exempt from `summary` and `type`: a retrieval hook exists to get a document read, and archived documents carry no authority for any question — writing a hundred lures for files agents should not consult would be counterproductive. Their front-matter is `title`, `edit_date`, `status` only. The per-directory index requirement applies to directories of `draft`/`live`/`deprecated` documents: `docs/archive/` maintains a no-authority notice README instead of a per-file index, and hidden tooling directories (`.obsidian/`) and asset-only directories (screenshots) maintain none. Maintained indexes quote each entry's front-matter `summary` verbatim — the summary is the single source, and independently authored index descriptions drift.
+
 - `draft` — under review; not yet authoritative.
 - `live` — actively maintained, v2-era authority. Live status is earned by review, not by being referenced.
 - `deprecated` — describes the deprecated v1 system and has not been verified against current code. Subordinate to code, tests, and the FSM docs for runtime-behavior questions; never authoritative for v2 design. Retained in place only while something references or needs it; flips to `archive` when its subject is ported, rewritten, or dropped — the D8 inventory execution and phase completions are the natural triggers. A `deprecated` document contradicting a v2 ADR is not an inconsistency to fix; it is the transition state made explicit, exactly as the v1 code itself contradicts the v2 design until replaced.
@@ -49,7 +51,7 @@ These documents are primarily LLM-facing, which sets the design principle: predi
 - Slugs favor full explicit words over abbreviations — filename tokens are cheap and orientation is not (`inventory_port-vs-rewrite.md`, not `inventory_pvr.md`).
 - Every directory under `docs/` maintains a `README.md` index with a one-line description per document — the highest-leverage aid for LLM readers, who consult one small index instead of opening files to find the right one. Item 11 creates the missing indexes.
 - Exceptions: ADRs keep the established `NNNN-slug.md` form (the sequence number is their type marker), and `README.md` remains `README.md`.
-- Existing documents are renamed to the convention during item 11 (`doc-reset`), where cross-references are rewritten anyway (e.g. `plan_scope.md` → `plan_scope.md`, `process_build.md` → `process_build.md`); new documents follow it immediately.
+- Existing documents are renamed to the convention during item 11 (`doc-reset`), where cross-references are rewritten anyway (e.g. `scope-and-plan.md` → `plan_scope.md`, `build-process.md` → `process_build.md`); new documents follow it immediately.
 
 ### Documentation authority
 
