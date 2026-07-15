@@ -1,7 +1,7 @@
 +++
 title = "Phase 1 Artifacts"
 edit_date = "2026-07-15"
-status = "live"
+status = "draft"
 summary = "Index of Phase 1 working artifacts: the scope/plan for the golden story runner and measurement harness; later the v1 patch record, D9 policy record, and cost-instrumentation report."
 +++
 

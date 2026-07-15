@@ -22,7 +22,7 @@ In scope:
 - Golden story definition format, loader, and validation.
 - Fixture repositories: forked, pinned variants of `maestro-llms` and `maestro-cms`, plus the standalone LLM-tester CLI app as the first app-bearing fixture (ADR 0025).
 - The v1-as-patched target: the **minimal** patch set to the current `main` factory path so golden stories can pass, plus the v1 target adapter normalizing its observations (SQLite, logs, branches, PRs) into run records.
-- The single-agent happy-path baseline as a second target adapter (proposed: headless Claude Code; reviewer question 3).
+- The single-agent happy-path baseline as a second target adapter (headless Claude Code) — Phase 1 exit-blocking per reviewer question 3's resolution.
 - MPH configuration bundles, file-based, content-hash identified; minimal prompt identification for targets without prompt packs.
 - D9 instrumented cost runs; fixing N and budget-cap numbers; runner-enforced budgets with overrun-as-failure.
 - Comparison reports with per-metric-class aggregation and repeat-run spread (ADR 0025 semantics).
@@ -59,7 +59,7 @@ One short-lived branch per item (`v2/phase_1/XXX`), one open at a time, per the 
 | 1 | `runner-skeleton` | The `benchmark/` module: story schema (format, loader, validation), MPH configuration bundles with content-hash identity, the append-only schema-versioned results store (JSONL), the normalized run-record contract with tri-state metric semantics, and the target-adapter interface. Unit-tested against a fake adapter; no real execution yet. | M |
 | 2 | `fixtures` | Fixture repos stood up and pinned: forks of `maestro-llms`, `maestro-cms`, and the LLM-tester CLI app; pinned base branches; fixture conventions documented (golden-branch cleanup per ADR 0023). First 3 story definitions drafted against them (dependency bump, cleanup, focused bug fix) — not yet runnable. | S |
 | 3 | `runner-core` | The execution engine: N-repeat orchestration, repeat isolation (fresh run-scoped checkout and branch namespace per unique run ID), declared budgets with overrun-abort recorded as failure kind `budget-overrun`, cleanup with loud invalid-run flagging. Integration-tested with a stub target. | M |
-| 4 | `adapter-v1` | The v1-as-patched adapter: target invocation (config generation, CLI launch, shutdown), observation of what v1 exposes (SQLite, logs, branches, PRs), normalization into run records with declared capabilities and honest `unsupported` markings. Minimal prompt identity for v1: pack label `v1-embedded` + target commit hash standing in for a pack hash. | M |
+| 4 | `adapter-v1` | The v1-as-patched adapter: target invocation (config generation, CLI launch, shutdown), observation of what v1 exposes (SQLite, logs, branches, PRs), normalization into run records with declared capabilities and honest `unsupported` markings. Minimal prompt identity for v1: pack label `v1-embedded` + a content hash over a deterministic manifest of the embedded prompt/template inputs (`pkg/templates` and kin), so prompt identity moves only when prompt content moves; the target commit is recorded separately in the target descriptor, never conflated with the P dimension (ADRs 0021/0025: MPH identity derives from content). | M |
 | 5 | `target-v1-patch` | The minimal patch set to the `main` factory path so story 1 passes end-to-end through the runner — discovered by running it, not guessed. Known candidates from v1's dying-defect list: the architect spec-review strictness defect (terse story prompts rejected) and the watchdog requeue race (#221) if it triggers. Every patch enumerated in a patch record in this directory, each justified against the Phase 1 target strategy. | M |
 | 6 | `instrument-costs` | D9's agreed first action: instrumented runs on the first stories to establish real per-story costs; fix N (provisional 3/1) and per-run/per-suite budget caps as enforced runner values; the D9 policy record lands in this directory. | S |
 | 7 | `reporting` | Comparison reports: per-metric-class aggregation over valid attempts (min/median/max numerics, pass rate, failure-kind counts, cost to accepted change with its undefined case), spread rendering, two-configuration side-by-side. | M |
@@ -72,7 +72,7 @@ Sequencing notes:
 - Items 1→3→4→5 are a strict dependency chain: the patch set (5) is discovered by executing a real story, which needs the engine (3) and the adapter (4). Items 2 and the story-authoring half of 9 are the designated slack — declarative, doc-like work that can proceed if a code review stalls, without violating the one-branch rule.
 - Item 5 is the highest-variance item in the phase: nobody knows how many patches "minimal" is until story 1 runs. It is timeboxed by the enumerate-and-justify rule — any patch that cannot be justified in a sentence against the target strategy goes back to DR as a scope question rather than getting written.
 - Item 6 deliberately precedes the report work and the suite build-out: budget caps must be real before the matrix grows (the benchmark-cost risk).
-- Item 8 is the descope candidate if the phase runs long (reviewer question 3). Descoping it defers, not deletes: ADR 0025 makes the baseline mandatory, so it would become the first item of a Phase 1.5 or ride into Phase 2's slack.
+- Item 8 is exit-blocking (reviewer question 3, resolved). ADR 0025 makes the single-agent baseline mandatory from the start, and without it Phase 1 cannot measure the economic argument. If the phase runs long, schedule pressure reduces story count toward the 5-story exit floor or trims adapter capability (more honestly-marked `unsupported` metrics) — never the baseline.
 - Testing follows the strategy doc's pattern: runner unit tests use fake adapters; real-execution tests cost tokens and sit behind the integration/golden build tags, never in `make test`.
 
 ## Exit Checklist
@@ -81,7 +81,7 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 
 - [ ] The runner executes at least 5 single-repo golden stories against the v1-as-patched target, black-box, from a make target.
 - [ ] Repeat runs produce a comparison report showing cost, time, and pass/fail spread (never bare points).
-- [ ] Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline (or two v1-path configurations if question 3 resolves to defer).
+- [ ] Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline.
 - [ ] The D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner (declared budgets, overrun-as-failure).
 - [ ] `golden-minimal` and `golden-all` tiers exist with make targets; `golden-minimal` has run at phase end (build process rule — this phase is where the rule activates).
 - [ ] The v1-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, MPH identity).
@@ -97,14 +97,14 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 - **The single-agent adapter grows into a second product.** It exists to price the premium, not to be a good agent harness. Its scope is one honest happy path: same stories, same checks, same budgets, `unsupported` for everything it cannot report.
 - **Review bottleneck (standing risk from Phase 0).** Serial PRs bound operator load; story authoring is the pressure-relief valve when a code review stalls.
 
-## Reviewer Questions
+## Reviewer Questions — Resolutions
 
-Proposed answers; Codex and DR responses ride on this document's review.
+Codex has answered (2026-07-15); DR confirmation rides on this document's approval.
 
-1. **Runner module location.** Proposed: top-level `benchmark/` as its own Go module (structurally enforced black-box), maintained surface wired into make. Alternative: a package tree in the main module with a lint rule against internal imports — weaker enforcement, less module bookkeeping.
-2. **Story definition format.** Proposed: TOML for authored story definitions (human-authored fixtures, consistent with the front-matter convention), JSON for everything the runner emits. Alternative: JSON end-to-end for one fewer format.
-3. **Single-agent baseline in Phase 1 or deferred?** Proposed: in, as item 8, because ADR 0025 makes both configurations "mandatory from the start" and the baseline is the number the economic argument (and every demo) needs. It is also the phase's natural descope candidate: the roadmap exit criterion ("two configurations compared") is satisfiable with two v1-path configurations (e.g. different model routing) if the phase runs long. Which reading of "from the start" do reviewers hold?
-4. **Fixture hosting.** Proposed: pinned forks under the SnapdragonPartners GitHub org, driven over the normal forge path. The v1 SWE-EVO local-Gitea mechanics stay salvage seeds for the later industry-benchmark adapter; standing them up now buys airplane-mode benchmarking at the cost of a second forge path in the very first instrument. Concur?
+1. **Runner module location**: top-level `benchmark/` as its own Go module (structurally enforced black-box), maintained surface wired into make. Codex concurs.
+2. **Story definition format**: TOML for authored story definitions, JSON for everything the runner emits. Codex concurs.
+3. **Single-agent baseline**: **in Phase 1 and exit-blocking.** The draft's descope-to-defer valve is withdrawn (Codex P1): ADR 0025 makes both configurations mandatory from the start, and substituting two v1-path configurations would leave Phase 1 unable to measure the economic argument. Schedule pressure reduces story count or adapter capability instead (see sequencing notes).
+4. **Fixture hosting**: pinned forks under the SnapdragonPartners GitHub org; the v1 SWE-EVO local-Gitea mechanics stay salvage seeds for the later industry-benchmark adapter. Codex concurs.
 
 ## Related Documents
 
