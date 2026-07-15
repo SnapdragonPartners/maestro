@@ -1,14 +1,14 @@
 +++
 title = "Manifest: Doc Reset (Phase 0 Item 11)"
 edit_date = "2026-07-15"
-status = "draft"
+status = "live"
 type = "manifest"
 summary = "File-by-file record of the ADR 0017 archive-plan execution: every move to docs/archive/, every deprecated/live front-matter stamp, and every type_slug rename with its reference ripple."
 +++
 
 # Manifest: Doc Reset (Phase 0 Item 11)
 
-Status: draft. Executes the archive plan fixed in [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md): archived documents move to `docs/archive/` preserving filenames (git history preserves original paths; no redirects); the keep list stays in place with `deprecated` front-matter; live docs get naming and front-matter conformance. Files whose disposition was unclear defaulted to archive per the ADR.
+Status: live (approved by Codex and DR, 2026-07-15). Executes the archive plan fixed in [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md): archived documents move to `docs/archive/` preserving filenames (git history preserves original paths; no redirects); the keep list stays in place with `deprecated` front-matter; live docs get naming and front-matter conformance. Files whose disposition was unclear defaulted to archive per the ADR.
 
 **Recorded choice (review round, 2026-07-15):** ADR 0017 is amended alongside this manifest with archive/tooling/asset exemptions — `archive`-status documents carry `title`/`edit_date`/`status` front-matter only (no `summary`: retrieval hooks for no-authority documents are counterproductive); `docs/archive/` maintains a no-authority notice README instead of a per-file index; hidden tooling directories (`.obsidian/`) and asset-only directories (screenshots) maintain no index. Maintained indexes quote each entry's front-matter `summary` verbatim.
 
