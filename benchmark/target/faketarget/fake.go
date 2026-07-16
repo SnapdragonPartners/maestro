@@ -4,6 +4,7 @@ package faketarget
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/contenthash"
@@ -47,8 +48,12 @@ func (f *Fake) Identity() target.Identity { return f.identity }
 func (f *Fake) Capabilities() target.Capabilities { return f.capabilities }
 
 // Run implements target.Adapter, recording the call and delegating to
-// RunFunc (or Observe when unset).
+// RunFunc (or Observe when unset). Like a real adapter, it rejects an
+// incomplete spec with an error instead of panicking.
 func (f *Fake) Run(ctx context.Context, spec *target.AttemptSpec) (*target.Observation, error) {
+	if err := spec.Validate(); err != nil {
+		return nil, fmt.Errorf("faketarget run: %w", err)
+	}
 	f.mu.Lock()
 	f.runCalls = append(f.runCalls, *spec)
 	f.mu.Unlock()
@@ -59,8 +64,12 @@ func (f *Fake) Run(ctx context.Context, spec *target.AttemptSpec) (*target.Obser
 	return &obs, nil
 }
 
-// Cleanup implements target.Adapter, recording the call.
+// Cleanup implements target.Adapter, recording the call. It rejects an
+// incomplete spec with an error instead of panicking.
 func (f *Fake) Cleanup(_ context.Context, spec *target.AttemptSpec) error {
+	if err := spec.Validate(); err != nil {
+		return fmt.Errorf("faketarget cleanup: %w", err)
+	}
 	f.mu.Lock()
 	f.cleanupCalls = append(f.cleanupCalls, *spec)
 	f.mu.Unlock()
@@ -83,7 +92,11 @@ func (f *Fake) CleanupCalls() []target.AttemptSpec {
 
 // Observe builds a complete, contract-valid observation for spec: every
 // registry metric measured, one evidence pointer, terminal state reached.
+// A nil spec yields a zero observation, which fails validation normally.
 func Observe(spec *target.AttemptSpec) target.Observation {
+	if spec == nil {
+		return target.Observation{}
+	}
 	metrics := make(runrecord.Metrics, len(runrecord.Registry()))
 	for i, ms := range runrecord.Registry() {
 		metrics[ms.Key] = runrecord.Measured(float64(i))

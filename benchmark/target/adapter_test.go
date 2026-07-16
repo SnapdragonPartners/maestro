@@ -55,6 +55,23 @@ func TestAttemptSpecValidate(t *testing.T) {
 	}
 }
 
+func TestFakeRejectsInvalidSpecs(t *testing.T) {
+	fake := faketarget.New()
+	if _, err := fake.Run(context.Background(), nil); err == nil {
+		t.Fatalf("nil spec must fail, not panic")
+	}
+	if err := fake.Cleanup(context.Background(), nil); err == nil {
+		t.Fatalf("nil spec must fail cleanup, not panic")
+	}
+	if calls := fake.RunCalls(); len(calls) != 0 {
+		t.Fatalf("rejected specs must not be recorded: %+v", calls)
+	}
+	obs := faketarget.Observe(nil)
+	if err := obs.Validate(); err == nil {
+		t.Fatalf("zero observation from nil spec must fail validation")
+	}
+}
+
 func TestFakeRunProducesValidObservation(t *testing.T) {
 	fake := faketarget.New()
 	obs, err := fake.Run(context.Background(), spec(t))
