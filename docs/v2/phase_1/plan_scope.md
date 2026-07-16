@@ -21,7 +21,7 @@ In scope:
 - The runner as a new, standalone deliverable (the port inventory classifies v1 `pkg/benchmark`/`cmd/benchmark` as **rewrite, Phase 1**; the SWE-EVO Gitea-fixture mechanics are salvage seeds only, per breaking-change principle 4).
 - Golden story definition format, loader, and validation.
 - Fixture repositories: forked, pinned variants of `maestro-llms` and `maestro-cms`, plus the standalone LLM-tester CLI app as the first app-bearing fixture (ADR 0025).
-- The v1-as-patched target: the **minimal** patch set to the current `main` factory path so golden stories can pass, plus the v1 target adapter normalizing its observations (SQLite, logs, branches, PRs) into run records.
+- The v1-as-patched target: the **minimal** patch set to the current `main` factory path so golden stories can pass, plus measurement instrumentation required by ADR 0025 (amended 2026-07-16 with item 4's design review: the P-1 usage surface), plus the v1 target adapter normalizing its observations (SQLite, logs, branches, PRs) into run records.
 - The single-agent happy-path baseline as a second target adapter (headless Claude Code) — Phase 1 exit-blocking per reviewer question 3's resolution.
 - MPH configuration bundles, file-based, content-hash identified; minimal prompt identification for targets without prompt packs.
 - D9 instrumented cost runs; fixing N and budget-cap numbers; runner-enforced budgets with overrun-as-failure.
