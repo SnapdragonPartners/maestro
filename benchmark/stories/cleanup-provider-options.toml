@@ -1,0 +1,54 @@
+# Golden story: ladder rung 2 (small code cleanup).
+schema_version = 1
+id = "cleanup-provider-options"
+title = "Consolidate the duplicated per-provider option functions"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
+commit = "91514c98f944ca6a8a93a518429d4da0645a2c87"
+base_branch = "main"
+
+[prompt]
+text = """
+providers.go builds one ModelOption per provider through five
+near-identical functions (anthropicOption, openAIOption, googleOption,
+ollamaOption, vllmOption): each looks up environment credentials,
+constructs a client, lists models under the shared timeout, selects a
+model, and returns a ModelOption. Consolidate this duplication behind a
+shared helper so each provider contributes only what genuinely differs
+(its credential lookup, its client constructor, and its model-selection
+rule — Gemini orders by the version embedded in the ID, Ollama takes the
+most recently pulled model, vLLM takes the first served model).
+
+This is a refactor: observable behavior must not change, including the
+provider prefixes in log messages and the order providers appear in the
+model dropdown.
+"""
+
+[expectations]
+allowed_paths = ["providers.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "vet"
+command = "go vet ./..."
+
+[[checks]]
+name = "diff-confined-to-providers"
+type = "files_changed_within"
+
+[[checks]]
+name = "gofmt-clean"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l .)\"'"
+
+[budget]
+max_tokens = 250000
+max_wall_clock_seconds = 1800
+max_cost_usd = 5.0

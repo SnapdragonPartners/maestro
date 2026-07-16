@@ -1,0 +1,65 @@
+# Golden story: ladder rung 3 (focused bug fix).
+# The fixture is truncated at the parent of the real upstream fix
+# (maestro-llms 92eceb8), so the solution is not present anywhere in
+# history — see docs/v2/phase_1/process_fixtures.md.
+schema_version = 1
+id = "bugfix-openai-stopreason"
+title = "Surface the real OpenAI finish reason instead of the envelope status"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-llms"
+commit = "d5078df1dc3e304e9f1327e29ecfb48d1998f3dc"
+base_branch = "main"
+
+[prompt]
+text = """
+Bug report: a chat request through the OpenAI adapter that hits the
+max-output-token limit returns StopReason "incomplete". That is the
+Responses envelope status, not a finish reason — the real reason
+("max_output_tokens" or "content_filter") is only reachable by type
+asserting Raw, which is outside the toolkit's stability contract.
+Every other adapter (anthropic, google, ollama) passes the raw provider
+finish reason through StopReason.
+
+Fix the OpenAI chat adapter so consumers can detect length truncation
+and content filtering from StopReason alone: when the response status is
+incomplete and a more specific reason is present, surface that reason;
+otherwise keep the current status behavior. Tool calls present on a
+truncated response must still be surfaced. Add hermetic tests (no live
+API calls) covering the truncation reason, the incomplete-without-reason
+fallback, and tool-call preservation on a truncated response.
+"""
+
+[expectations]
+allowed_paths = ["llms/providers/openai/", "docs/"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "test"
+command = "go test ./..."
+
+[[checks]]
+name = "diff-confined-to-openai-adapter"
+type = "files_changed_within"
+
+[[checks]]
+name = "fix-reads-incomplete-details"
+type = "file_contains"
+path = "llms/providers/openai/chatconvert.go"
+contains = "IncompleteDetails"
+
+[[checks]]
+name = "openai-tests-pass"
+type = "command"
+command = "go test ./llms/providers/openai/..."
+
+[budget]
+max_tokens = 400000
+max_wall_clock_seconds = 2700
+max_cost_usd = 8.0

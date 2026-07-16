@@ -1,0 +1,50 @@
+# Golden story: ladder rung 1 (dependency bump).
+schema_version = 1
+id = "dep-bump-xnet"
+title = "Bump golang.org/x/net to the latest release and keep the build green"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-cms"
+commit = "e7a7422bad4dec726b62eec2cd6d759cd7780deb"
+base_branch = "main"
+
+[prompt]
+text = """
+Update the golang.org/x/net dependency of this module to the latest
+available release. Do not change any other direct dependency. The module
+must still build and its tests must still pass.
+"""
+
+[expectations]
+allowed_paths = ["go.mod", "go.sum"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "test"
+command = "go test ./..."
+
+[[checks]]
+name = "diff-confined-to-module-files"
+type = "files_changed_within"
+
+[[checks]]
+name = "xnet-no-longer-at-pinned-version"
+type = "command"
+command = "sh -c '! grep -q \"golang.org/x/net v0.55.0\" go.mod'"
+
+[[checks]]
+name = "xnet-still-required"
+type = "file_contains"
+path = "go.mod"
+contains = "golang.org/x/net v"
+
+[budget]
+max_tokens = 150000
+max_wall_clock_seconds = 1200
+max_cost_usd = 3.0
