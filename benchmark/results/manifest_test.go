@@ -37,6 +37,9 @@ func TestManifestRoundTrip(t *testing.T) {
 	if back.StopReason != results.StopCompleted || !reflect.DeepEqual(back.Attempts, manifest.Attempts) {
 		t.Fatalf("round trip mismatch: %+v", back)
 	}
+	if back.UpdatedAt.IsZero() {
+		t.Fatalf("every write must stamp updated_at")
+	}
 }
 
 func TestManifestRejections(t *testing.T) {

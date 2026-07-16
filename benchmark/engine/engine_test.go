@@ -180,6 +180,14 @@ func TestUsageTrackerRejectsMalformedDeltas(t *testing.T) {
 	if tokens != math.MaxInt64 {
 		t.Fatalf("token totals must saturate, got %d", tokens)
 	}
+	// Finite cost deltas summing past +Inf must saturate too, or record
+	// validation would reject the measured cost.
+	tracker.report(target.UsageDelta{CostUSD: math.MaxFloat64})
+	tracker.report(target.UsageDelta{CostUSD: math.MaxFloat64})
+	_, cost = tracker.totals()
+	if math.IsInf(cost, 0) || cost != math.MaxFloat64 {
+		t.Fatalf("cost totals must saturate finite, got %v", cost)
+	}
 }
 
 func nan() float64 { return math.NaN() }

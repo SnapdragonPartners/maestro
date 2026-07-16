@@ -49,7 +49,13 @@ func (u *usageTracker) report(delta target.UsageDelta) {
 	} else {
 		u.tokens += delta.Tokens
 	}
-	u.costUSD += delta.CostUSD
+	// Finite deltas can still sum to +Inf; saturate so the record's
+	// measured cost stays finite and validation/append cannot fail.
+	if sum := u.costUSD + delta.CostUSD; math.IsInf(sum, 1) {
+		u.costUSD = math.MaxFloat64
+	} else {
+		u.costUSD = sum
+	}
 	if !u.tripped && (u.tokens > u.maxTokens || u.costUSD > u.maxCost) {
 		u.tripped = true
 		u.cancel(errUsageOverrun)
@@ -80,12 +86,15 @@ type attempt struct {
 	adapter  target.Adapter
 	solution string
 	started  time.Time
-	// workEnded marks the end of the budgeted work (run through
-	// verification, before cleanup); the canonical wall-clock metric is
-	// engine-measured from started to workEnded.
-	workEnded time.Time
-	desc      runrecord.TargetDescriptor
-	out       outcome
+	// workStarted and workEnded bound the budgeted phase (target run
+	// through verification). The wall-clock deadline and the canonical
+	// wall_clock_seconds metric share exactly this interval — engine
+	// overhead (describe, clone) is neither budgeted nor measured, so a
+	// slow clone cannot make an accepted record exceed its own cap.
+	workStarted time.Time
+	workEnded   time.Time
+	desc        runrecord.TargetDescriptor
+	out         outcome
 }
 
 // RunAttempt executes one fully isolated attempt and appends its record to
@@ -152,6 +161,7 @@ func (a *attempt) execute(ctx context.Context) *runrecord.RunRecord {
 	if a.out.describeErr == nil {
 		a.isolate(ctx)
 	}
+	a.workStarted = time.Now()
 	if a.out.describeErr == nil && a.out.isolationErr == nil {
 		deadline := time.Duration(a.spec.Budget.MaxWallClockSeconds) * time.Second
 		actx, cancel := context.WithTimeout(ctx, deadline)
@@ -397,19 +407,34 @@ func (a *attempt) metrics() runrecord.Metrics {
 		base = make(runrecord.Metrics, len(a.obs.Metrics))
 		maps.Copy(base, a.obs.Metrics)
 	}
-	// The canonical wall-clock is engine-measured (attempt start through
-	// the end of verification): adapters cannot measure different intervals.
-	base[runrecord.MetricWallClockSeconds] = runrecord.Measured(a.workEnded.Sub(a.started).Seconds())
-	if a.obs == nil && a.tracker != nil {
-		tokens, cost := a.tracker.totals()
-		if tokens > 0 && caps.Supports(runrecord.MetricTokensTotal) {
+	// The canonical wall-clock is engine-measured over exactly the
+	// budgeted interval: adapters cannot measure different intervals, and
+	// the metric can never exceed the cap by including engine overhead.
+	base[runrecord.MetricWallClockSeconds] = runrecord.Measured(a.workEnded.Sub(a.workStarted).Seconds())
+	a.overlayStreamedUsage(base, caps)
+	return base
+}
+
+// overlayStreamedUsage reconciles the tracker totals into the record for
+// streamed targets: the values that enforced the cap must not disagree
+// with the values suite settlement reads. The larger of streamed and
+// observed wins — a final observation may be more complete than the
+// stream, and a stream is more trustworthy than a smaller claim.
+func (a *attempt) overlayStreamedUsage(base runrecord.Metrics, caps target.Capabilities) {
+	if a.tracker == nil {
+		return
+	}
+	tokens, cost := a.tracker.totals()
+	if tokens > 0 && caps.Supports(runrecord.MetricTokensTotal) {
+		if observed, ok := base[runrecord.MetricTokensTotal].Float64(); !ok || float64(tokens) > observed {
 			base[runrecord.MetricTokensTotal] = runrecord.Measured(float64(tokens))
 		}
-		if cost > 0 && caps.Supports(runrecord.MetricCostUSD) {
+	}
+	if cost > 0 && caps.Supports(runrecord.MetricCostUSD) {
+		if observed, ok := base[runrecord.MetricCostUSD].Float64(); !ok || cost > observed {
 			base[runrecord.MetricCostUSD] = runrecord.Measured(cost)
 		}
 	}
-	return base
 }
 
 func (a *attempt) failureReason() string {

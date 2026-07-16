@@ -72,6 +72,7 @@ func (s *Store) WriteManifest(m *Manifest) error {
 		return err
 	}
 	m.SchemaVersion = ManifestSchemaVersion
+	m.UpdatedAt = time.Now().UTC()
 	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal manifest %s: %w", m.SuiteRunID, err)

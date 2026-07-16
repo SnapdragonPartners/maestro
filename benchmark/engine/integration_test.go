@@ -391,13 +391,37 @@ func TestWallClockCoversVerification(t *testing.T) {
 	}
 }
 
+func TestStreamedTotalsAreCanonicalOnSuccess(t *testing.T) {
+	// The stub streams more usage than its final observation reports; the
+	// record must carry the streamed totals — the values that enforced the
+	// cap are the values suite settlement reads.
+	sb, _ := defaultBudgets()
+	stub := solutionStub()
+	stub.Usage = []target.UsageDelta{{Tokens: 5000, CostUSD: 0.5}}
+	rec := runOne(t, stub, sb)
+	if rec.Verdict != runrecord.VerdictAccepted {
+		t.Fatalf("want accepted, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+	tokens, _ := rec.Metrics[runrecord.MetricTokensTotal].Float64()
+	cost, _ := rec.Metrics[runrecord.MetricCostUSD].Float64()
+	if tokens != 5000 || cost != 0.5 {
+		t.Fatalf("streamed totals must be canonical when larger: got %v tokens, %v cost", tokens, cost)
+	}
+}
+
 func TestWallClockMetricIsEngineMeasured(t *testing.T) {
 	sb, _ := defaultBudgets()
 	rec := runOne(t, solutionStub(), sb)
-	// The stub reports 1s; the engine overrides with its own measurement.
+	// The stub reports 1s; the engine overrides with its own measurement
+	// of the budgeted interval. On an accepted run that measurement can
+	// never exceed the declared cap — the deadline and the metric share
+	// one boundary, excluding engine overhead like the clone.
 	wall, ok := rec.Metrics[runrecord.MetricWallClockSeconds].Float64()
 	if !ok || wall <= 0 || wall == 1 {
 		t.Fatalf("wall clock must be engine-measured, got %v (ok=%v)", wall, ok)
+	}
+	if wall > float64(sb.MaxWallClockSeconds) {
+		t.Fatalf("accepted run's measured wall clock %v exceeds its cap %d", wall, sb.MaxWallClockSeconds)
 	}
 }
 
