@@ -1,0 +1,48 @@
+schema_version = 1
+id = "dep-bump-001"
+title = "Bump a pinned dependency and keep the build green"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-llms"
+commit = "0123456789abcdef0123456789abcdef01234567"
+base_branch = "main"
+
+[prompt]
+text = """
+Update the pinned version of the yaml dependency to the latest v3 patch
+release and make sure the module still builds and tests cleanly.
+"""
+
+[expectations]
+allowed_paths = ["go.mod", "go.sum"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "test"
+command = "go test ./..."
+
+[[checks]]
+name = "diff-confined"
+type = "files_changed_within"
+
+[[checks]]
+name = "gomod-updated"
+type = "file_contains"
+path = "go.mod"
+contains = "gopkg.in/yaml.v3"
+
+[budget]
+max_tokens = 200000
+max_wall_clock_seconds = 1800
+max_cost_usd = 5.0
+
+[[rubrics]]
+name = "changelog-quality"
+criteria = "The PR description explains why the bump is safe."
+version = "1"

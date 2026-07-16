@@ -1,13 +1,13 @@
 +++
 title = "ADR 0025: Golden Stories And The Benchmark Runner"
-edit_date = "2026-07-15"
+edit_date = "2026-07-16"
 status = "live"
 summary = "Specifies the measuring instrument: golden story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers."
 +++
 
 # 0025. Golden Stories And The Benchmark Runner
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation.
 
 ## Context
 
@@ -35,7 +35,7 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 - **Black-box.** The runner drives its target only through external surfaces — configuration, CLI/API invocation, and the resulting branches, PRs, artifacts, and metrics. It never imports Maestro internals. This is what lets one runner benchmark the v1-as-patched path today, v2 as it comes up, and harnesses that do not exist yet.
 - **Target descriptor.** Every run records what it measured: target commit hash, binary/image identity, and the MPH identity of the configuration under test (model, prompt pack and hash, harness config hash, Maestro version) — aligning run records with ADR 0021's MPH signature. The initial target is the minimally patched v1 factory path (the decided Phase 1 target strategy); "v1-as-patched" is an honest, labeled baseline, never a repaired product.
 - **Self-contained results store.** The runner owns its persistence: append-only, schema-versioned flat records (JSONL or equivalent), zero dependency on the Phase 2 data plane. The record shapes are designed for later import as `benchmark`-scoped artifacts — Phase 2's vertical slice does that import.
-- **Normalized run-record contract.** Black-box is not enough: v1-as-patched exposes logs, SQLite, and PRs; v2 exposes artifacts and data-plane records. Per-target **adapters** normalize observations into one stable, versioned run-record contract carrying: the adapter identity and version, the target's declared capabilities, raw evidence pointers into whatever the target exposes, and normalized metrics with **tri-state semantics** — a value, `unsupported` (this target cannot report it), or `not_applicable` (this story does not exercise it). Missing is never zero; comparisons across targets are honest by construction.
+- **Normalized run-record contract.** Black-box is not enough: v1-as-patched exposes logs, SQLite, and PRs; v2 exposes artifacts and data-plane records. Per-target **adapters** normalize observations into one stable, versioned run-record contract carrying: the adapter identity and version, the target's declared capabilities, raw evidence pointers into whatever the target exposes, and normalized metrics with **four-state semantics** (as amended 2026-07-16) — a value, `unsupported` (this target cannot report it), `not_applicable` (this story does not exercise it), or `unavailable` (the target supports it but it could not be collected on this attempt — e.g. the target crashed). Missing is never zero; comparisons across targets are honest by construction.
 - **Benchmark acceptance is the runner's terminal verdict**, defined identically for every target: deterministic checks pass, required validators, artifacts, and evidence shapes are present, and the expected branch/PR terminal state is reached. "Cost to accepted change" in benchmark context means cost to that verdict. It deliberately does not simulate human acceptance (ADR 0020's outcome validation is not benchmarkable) — which is exactly what keeps the headline metric's meaning stable across v1-as-patched, v2, and future targets.
 - **Repeat isolation.** Every repeat starts from a fresh, run-scoped checkout and branch namespace derived from the pinned commit, keyed by a unique run ID; no repeat may inherit state from another, or the spread is meaningless. Cleanup failures are recorded loudly — a run whose isolation cannot be verified is flagged invalid, never silently included in comparisons.
 

@@ -1,0 +1,25 @@
+# The paired-agent default configuration (formatting variant A).
+schema_version = 1
+name = "paired-default"
+description = "Paired-agent factory path"
+
+[model]
+default = "anthropic:model-main"
+
+[model.roles]
+reviewer = "openai:model-reviewer"
+
+[prompt]
+pack = "v1-embedded"
+
+[harness]
+adapter = "v1-as-patched"
+
+[harness.settings]
+mode = "factory"
+
+[budget]
+expected_tokens_per_run = 500000
+expected_cost_usd_per_run = 3.0
+max_cost_usd_per_run = 6.0
+max_cost_usd_per_suite = 60.0
