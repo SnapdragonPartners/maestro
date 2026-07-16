@@ -1,0 +1,406 @@
+package engine
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
+	"github.com/SnapdragonPartners/maestro/benchmark/mph"
+	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
+	"github.com/SnapdragonPartners/maestro/benchmark/story"
+	"github.com/SnapdragonPartners/maestro/benchmark/target"
+)
+
+// errUsageOverrun marks a cancellation caused by streamed-usage caps.
+var errUsageOverrun = errors.New("streamed usage exceeded a declared cap") //nolint:gochecknoglobals // sentinel error
+
+// usageTracker accumulates streamed usage and cancels the attempt the
+// moment a cap is crossed (design_engine.md budget contract).
+type usageTracker struct {
+	cancel    context.CancelCauseFunc
+	mu        sync.Mutex
+	tokens    int64
+	costUSD   float64
+	maxTokens int64
+	maxCost   float64
+	tripped   bool
+}
+
+func (u *usageTracker) report(delta target.UsageDelta) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.tokens += delta.Tokens
+	u.costUSD += delta.CostUSD
+	if !u.tripped && (u.tokens > u.maxTokens || u.costUSD > u.maxCost) {
+		u.tripped = true
+		u.cancel(errUsageOverrun)
+	}
+}
+
+func (u *usageTracker) overrun() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.tripped
+}
+
+// attempt carries the state of one isolated attempt.
+type attempt struct {
+	engine   *Engine
+	spec     *target.AttemptSpec
+	story    *story.Loaded
+	bundle   *mph.Loaded
+	obs      *target.Observation
+	adapter  target.Adapter
+	solution string
+	started  time.Time
+	desc     runrecord.TargetDescriptor
+	out      outcome
+}
+
+// RunAttempt executes one fully isolated attempt and appends its record to
+// the store. The returned record is always contract-valid; the error is
+// engine-level (store append, adapter resolution), never a story failure.
+func (e *Engine) RunAttempt(ctx context.Context, st *story.Loaded, bundle *mph.Loaded, suiteRunID string, repeat int) (*runrecord.RunRecord, error) {
+	adapter, err := e.adapterFor(bundle.Bundle.Harness.Adapter)
+	if err != nil {
+		return nil, err
+	}
+	runID, err := newRunID(st.Definition.ID, bundle.Bundle.Name, repeat)
+	if err != nil {
+		return nil, err
+	}
+	a := &attempt{
+		engine:  e,
+		adapter: adapter,
+		story:   st,
+		bundle:  bundle,
+		started: time.Now(),
+		spec: &target.AttemptSpec{
+			Story:           st.Definition,
+			Bundle:          bundle.Bundle,
+			Budget:          effectiveBudget(st.Definition.Budget, bundle.Bundle.Budget),
+			RunID:           runID,
+			SuiteRunID:      suiteRunID,
+			StoryHash:       st.Hash,
+			BundleHash:      bundle.Hash,
+			WorkspaceDir:    filepath.Join(e.Workdir, runID),
+			BranchNamespace: "golden/" + runID,
+		},
+	}
+	rec := a.execute(ctx)
+	if appendErr := e.Store.Append(rec); appendErr != nil {
+		return rec, fmt.Errorf("append record: %w", appendErr)
+	}
+	e.logf("%s: %s %s%s", runID, rec.Verdict, rec.FailureKind, invalidSuffix(rec))
+	return rec, nil
+}
+
+func invalidSuffix(rec *runrecord.RunRecord) string {
+	if rec.Verdict == runrecord.VerdictInvalid {
+		return " (" + rec.InvalidReason + ")"
+	}
+	return ""
+}
+
+// effectiveBudget bounds the story budget by the bundle's per-run cost cap.
+func effectiveBudget(sb story.Budget, db mph.DeclaredBudget) story.Budget {
+	if db.MaxCostUSDPerRun < sb.MaxCostUSD {
+		sb.MaxCostUSD = db.MaxCostUSDPerRun
+	}
+	return sb
+}
+
+// execute runs the lifecycle: describe → isolate → run → bind → verify →
+// cleanup → compose and assemble. Cleanup always precedes record assembly
+// (the store is append-only) and runs on a fresh bounded context.
+func (a *attempt) execute(ctx context.Context) *runrecord.RunRecord {
+	a.describe(ctx)
+	if a.out.describeErr == nil {
+		a.isolate(ctx)
+	}
+	if a.out.describeErr == nil && a.out.isolationErr == nil {
+		a.runTarget(ctx)
+		a.bindSolution(ctx)
+		a.verify(ctx)
+		a.checkPostHocBudget()
+	}
+	a.cleanup() //nolint:contextcheck // cleanup deliberately uses a fresh bounded context, never the (possibly expired) attempt context (design_engine.md)
+	return a.assemble()
+}
+
+// describe obtains the target descriptor pre-run so error-path records
+// still say exactly what they measured.
+func (a *attempt) describe(ctx context.Context) {
+	dctx, cancel := context.WithTimeout(ctx, DefaultDescribeTimeout)
+	defer cancel()
+	desc, err := a.adapter.Describe(dctx, a.spec)
+	if err != nil {
+		a.out.describeErr = err
+		a.desc = placeholderDescriptor(a.adapter, a.spec)
+		return
+	}
+	if err := desc.Validate(); err != nil {
+		a.out.describeErr = fmt.Errorf("descriptor invalid: %w", err)
+		a.desc = placeholderDescriptor(a.adapter, a.spec)
+		return
+	}
+	a.desc = desc
+}
+
+// isolate creates the fresh workspace: clone, pin checkout, pin check.
+func (a *attempt) isolate(ctx context.Context) {
+	fixture := a.story.Definition.Fixture
+	if err := os.MkdirAll(a.engine.Workdir, 0o755); err != nil {
+		a.out.isolationErr = fmt.Errorf("workdir: %w", err)
+		return
+	}
+	if err := gitx.Clone(ctx, fixture.Repo, a.spec.WorkspaceDir); err != nil {
+		a.out.isolationErr = fmt.Errorf("clone fixture: %w", err)
+		return
+	}
+	if err := gitx.Checkout(ctx, a.spec.WorkspaceDir, fixture.Commit); err != nil {
+		a.out.isolationErr = fmt.Errorf("checkout pin: %w", err)
+		return
+	}
+	head, err := gitx.Head(ctx, a.spec.WorkspaceDir)
+	if err != nil {
+		a.out.isolationErr = fmt.Errorf("verify pin: %w", err)
+		return
+	}
+	if head != fixture.Commit {
+		a.out.isolationErr = fmt.Errorf("pin mismatch: HEAD %s, want %s", head, fixture.Commit)
+	}
+}
+
+// runTarget drives the adapter under wall-clock and streamed-usage caps.
+func (a *attempt) runTarget(ctx context.Context) {
+	rctx, cancelCause := context.WithCancelCause(ctx)
+	tracker := &usageTracker{
+		cancel:    cancelCause,
+		maxTokens: a.spec.Budget.MaxTokens,
+		maxCost:   a.spec.Budget.MaxCostUSD,
+	}
+	a.spec.ReportUsage = tracker.report
+	deadline := time.Duration(a.spec.Budget.MaxWallClockSeconds) * time.Second
+	rctx, cancelDeadline := context.WithTimeout(rctx, deadline)
+	defer cancelDeadline()
+	defer cancelCause(nil)
+
+	obs, err := a.adapter.Run(rctx, a.spec)
+	if tracker.overrun() || errors.Is(rctx.Err(), context.DeadlineExceeded) {
+		a.out.overrun = true
+		return
+	}
+	if err != nil {
+		a.out.runErr = err
+		return
+	}
+	if err := obs.Validate(a.adapter.Capabilities()); err != nil {
+		a.out.obsInvalidErr = err
+		return
+	}
+	a.obs = obs
+	a.out.terminal = obs.TerminalStateReached
+}
+
+// bindSolution resolves the observation's solution to an immutable,
+// ancestry-verified commit and checks it out for validation.
+func (a *attempt) bindSolution(ctx context.Context) {
+	if a.obs == nil {
+		return
+	}
+	commit, err := a.resolveSolutionCommit(ctx)
+	if err != nil {
+		a.out.bindErr = err
+		return
+	}
+	ok, err := gitx.IsAncestor(ctx, a.spec.WorkspaceDir, a.story.Definition.Fixture.Commit, commit)
+	if err != nil {
+		a.out.bindErr = fmt.Errorf("ancestry check: %w", err)
+		return
+	}
+	if !ok {
+		a.out.bindErr = fmt.Errorf("solution %s does not descend from the story pin", commit)
+		return
+	}
+	if err := gitx.Checkout(ctx, a.spec.WorkspaceDir, commit); err != nil {
+		a.out.bindErr = fmt.Errorf("checkout solution: %w", err)
+		return
+	}
+	a.solution = commit
+	a.out.solutionOK = true
+}
+
+func (a *attempt) resolveSolutionCommit(ctx context.Context) (string, error) {
+	branch := a.obs.SolutionBranch
+	if branch == "" {
+		commit, err := gitx.SnapshotCommit(ctx, a.spec.WorkspaceDir)
+		if err != nil {
+			return "", fmt.Errorf("snapshot in-place solution: %w", err)
+		}
+		return commit, nil
+	}
+	if !strings.HasPrefix(branch, a.spec.BranchNamespace+"/") {
+		return "", fmt.Errorf("solution branch %q is outside the run namespace %q", branch, a.spec.BranchNamespace)
+	}
+	commit, err := gitx.ResolveRemoteBranch(ctx, a.spec.WorkspaceDir, branch)
+	if err != nil {
+		return "", fmt.Errorf("resolve solution branch: %w", err)
+	}
+	return commit, nil
+}
+
+// verify runs the story's validators and checks at the bound solution and
+// computes evidence coverage.
+func (a *attempt) verify(ctx context.Context) {
+	if !a.out.solutionOK {
+		return
+	}
+	def := a.story.Definition
+	a.out.validators = runValidators(ctx, a.spec.WorkspaceDir, def.Validators)
+	a.out.checks = runChecks(ctx, a.spec.WorkspaceDir, def, def.Fixture.Commit, a.solution)
+	a.out.evidenceMissing = evidenceCoverage(def, a.obs.Evidence)
+	a.out.verified = true
+}
+
+// checkPostHocBudget compares observed usage against the caps for targets
+// whose enforcement is post-hoc (and as a backstop for everyone else).
+func (a *attempt) checkPostHocBudget() {
+	if a.obs == nil {
+		return
+	}
+	if cost, ok := a.obs.Metrics[runrecord.MetricCostUSD].Float64(); ok && cost > a.spec.Budget.MaxCostUSD {
+		a.out.postHocOver = true
+	}
+	if tokens, ok := a.obs.Metrics[runrecord.MetricTokensTotal].Float64(); ok && int64(tokens) > a.spec.Budget.MaxTokens {
+		a.out.postHocOver = true
+	}
+}
+
+// cleanup runs on every exit path under a fresh bounded context — never
+// the attempt context — and verifies nothing was left behind. It must
+// complete before the record is assembled: the store is append-only.
+func (a *attempt) cleanup() {
+	cctx, cancel := context.WithTimeout(context.Background(), a.engine.cleanupTimeout())
+	defer cancel()
+	var problems []string
+	if err := a.adapter.Cleanup(cctx, a.spec); err != nil {
+		problems = append(problems, "adapter cleanup: "+err.Error())
+	}
+	if refs, err := gitx.LsRemoteHeads(cctx, ".", a.story.Definition.Fixture.Repo, "refs/heads/"+a.spec.BranchNamespace+"/*"); err != nil {
+		problems = append(problems, "namespace verification: "+err.Error())
+	} else if len(refs) > 0 {
+		problems = append(problems, "refs left behind: "+strings.Join(refs, ", "))
+	}
+	if err := os.RemoveAll(a.spec.WorkspaceDir); err != nil {
+		problems = append(problems, "workspace removal: "+err.Error())
+	}
+	if len(problems) > 0 {
+		a.out.cleanupOK = false
+		a.out.cleanupReason = strings.Join(problems, "; ")
+		return
+	}
+	a.out.cleanupOK = true
+}
+
+// assemble composes the verdict and builds the one record this attempt
+// appends.
+func (a *attempt) assemble() *runrecord.RunRecord {
+	verdict, kind, invalidReason := a.out.compose()
+	rec := &runrecord.RunRecord{
+		SchemaVersion:  runrecord.SchemaVersion,
+		RunID:          a.spec.RunID,
+		SuiteRunID:     a.spec.SuiteRunID,
+		StoryID:        a.story.Definition.ID,
+		StoryHash:      a.spec.StoryHash,
+		ConfigName:     a.bundle.Bundle.Name,
+		ConfigHash:     a.spec.BundleHash,
+		StartedAt:      a.started,
+		FinishedAt:     time.Now(),
+		Verdict:        verdict,
+		FailureKind:    kind,
+		InvalidReason:  invalidReason,
+		SolutionCommit: a.solution,
+		Validators:     a.out.validators,
+		Checks:         a.out.checks,
+		Target:         a.desc,
+		Metrics:        a.metrics(),
+		Isolation: runrecord.Isolation{
+			WorkspaceDir:    a.spec.WorkspaceDir,
+			BranchNamespace: a.spec.BranchNamespace,
+			CleanupVerified: a.out.cleanupOK,
+		},
+		TerminalStateReached: a.out.terminal,
+	}
+	if a.obs != nil {
+		rec.Evidence = a.obs.Evidence
+	}
+	return rec
+}
+
+// metrics returns observed metrics when a valid observation exists, else a
+// synthesized complete map.
+func (a *attempt) metrics() runrecord.Metrics {
+	if a.obs != nil {
+		return a.obs.Metrics
+	}
+	return synthesizeMetrics(a.adapter.Capabilities(), a.failureReason())
+}
+
+func (a *attempt) failureReason() string {
+	switch {
+	case a.out.overrun:
+		return "attempt aborted on budget overrun"
+	case a.out.describeErr != nil:
+		return "target describe failed: " + a.out.describeErr.Error()
+	case a.out.isolationErr != nil:
+		return "isolation failed: " + a.out.isolationErr.Error()
+	case a.out.runErr != nil:
+		return "target error: " + a.out.runErr.Error()
+	case a.out.obsInvalidErr != nil:
+		return "observation invalid: " + a.out.obsInvalidErr.Error()
+	default:
+		return "metrics not collected"
+	}
+}
+
+// placeholderDescriptor is the honest fallback when Describe fails: the
+// adapter identity is known, everything else is explicitly zeroed (40/64
+// zero-hex placeholders keep the record contract-valid while being
+// unmistakably not real content).
+func placeholderDescriptor(adapter target.Adapter, spec *target.AttemptSpec) runrecord.TargetDescriptor {
+	identity := adapter.Identity()
+	model, pack, promptHash := "undescribed", "undescribed", ""
+	if spec != nil && spec.Bundle != nil {
+		model = spec.Bundle.Model.Default
+		pack = spec.Bundle.Prompt.Pack
+		promptHash = spec.Bundle.Prompt.Hash
+	}
+	if promptHash == "" {
+		promptHash = zeroIdentity()
+	}
+	return runrecord.TargetDescriptor{
+		AdapterName:       identity.Name,
+		AdapterVersion:    identity.Version,
+		CommitHash:        strings.Repeat("0", 40),
+		BinaryIdentity:    "undescribed",
+		BudgetEnforcement: runrecord.EnforcementPostHoc,
+		MPH: runrecord.MPHIdentity{
+			Model:       model,
+			PromptPack:  pack,
+			PromptHash:  promptHash,
+			HarnessHash: zeroIdentity(),
+		},
+		Capabilities: adapter.Capabilities().Metrics,
+	}
+}
+
+func zeroIdentity() string {
+	return "sha256:" + strings.Repeat("0", 64)
+}

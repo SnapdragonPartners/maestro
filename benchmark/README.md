@@ -28,20 +28,24 @@ definition.
 - `story/` — golden story definitions: TOML schema, strict loader, validation, canonical content identity.
 - `mph/` — MPH configuration bundles: TOML schema, loader, content-hash identity.
 - `runrecord/` — the normalized run-record contract: four-state metrics, registry, verdicts, failure kinds, target descriptor. `recordtest/` builds valid records for tests.
-- `results/` — append-only, schema-versioned JSONL results store.
-- `target/` — the `Adapter` interface, `AttemptSpec`, `Observation`; `faketarget/` is the scripted test adapter.
-- `internal/contenthash/` — canonical `sha256:` identity helper.
-- `stories/` — authored golden stories (land in item 2).
+- `results/` — append-only, schema-versioned JSONL results store, plus the rewritable suite manifest.
+- `target/` — the `Adapter` interface (`Describe`/`Run`/`Cleanup`), `AttemptSpec`, `Observation`; `faketarget/` is the scripted in-memory test adapter, `stubtarget/` the scripted real-git test adapter.
+- `engine/` — the execution engine: attempt lifecycle, isolation, budget enforcement, engine-executed validators/checks, verdict composition, cleanup verification, suite orchestration (design_engine.md).
+- `cmd/runner/` — the CLI (`bin/runner`): `validate`, `run`, `list`.
+- `internal/contenthash/` — canonical `sha256:` identity helper; `internal/gitx/` — git CLI wrapper.
+- `stories/` — authored golden stories.
 - `configs/` — authored MPH bundles (land with their adapters, items 4 and 8).
 
-The execution engine, CLI, and comparison reports are later Phase 1 items
-(3 and 7) and get their own packages here.
+Comparison reports with spread are item 7 and get their own package here.
 
 ## Development
 
 In this directory: `make build`, `make test`, `make test-race`,
-`make lint` (`make run` arrives with the item 3 CLI). From the repo root,
+`make lint`, `make run` (validates the authored stories and configs —
+executing a suite spends real tokens, so it stays an explicit
+`bin/runner run ...` invocation). From the repo root,
 `make benchmark-build`/`benchmark-test`/`benchmark-lint` delegate here and
 run as prerequisites of the root `build`, `test`, and `lint` targets, so
-hooks and CI cover this module automatically. Unit tests spend no tokens
-and touch no network.
+hooks and CI cover this module automatically. Tests spend no tokens and
+touch no network: engine integration tests run against local bare git
+fixtures with a scripted stub target.

@@ -57,6 +57,9 @@ func TestAttemptSpecValidate(t *testing.T) {
 
 func TestFakeRejectsInvalidSpecs(t *testing.T) {
 	fake := faketarget.New()
+	if _, err := fake.Describe(context.Background(), nil); err == nil {
+		t.Fatalf("nil spec must fail describe, not panic")
+	}
 	if _, err := fake.Run(context.Background(), nil); err == nil {
 		t.Fatalf("nil spec must fail, not panic")
 	}
@@ -67,8 +70,22 @@ func TestFakeRejectsInvalidSpecs(t *testing.T) {
 		t.Fatalf("rejected specs must not be recorded: %+v", calls)
 	}
 	obs := faketarget.Observe(nil)
-	if err := obs.Validate(); err == nil {
+	if err := obs.Validate(fake.Capabilities()); err == nil {
 		t.Fatalf("zero observation from nil spec must fail validation")
+	}
+}
+
+func TestFakeDescribeProducesValidDescriptor(t *testing.T) {
+	fake := faketarget.New()
+	desc, err := fake.Describe(context.Background(), spec(t))
+	if err != nil {
+		t.Fatalf("describe: %v", err)
+	}
+	if err := desc.Validate(); err != nil {
+		t.Fatalf("descriptor must satisfy the contract: %v", err)
+	}
+	if calls := fake.DescribeCalls(); len(calls) != 1 {
+		t.Fatalf("describe call not recorded: %+v", calls)
 	}
 }
 
@@ -78,7 +95,7 @@ func TestFakeRunProducesValidObservation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if err := obs.Validate(); err != nil {
+	if err := obs.Validate(fake.Capabilities()); err != nil {
 		t.Fatalf("default observation must satisfy the contract: %v", err)
 	}
 	if calls := fake.RunCalls(); len(calls) != 1 || calls[0].RunID != "run-0001" {
@@ -104,33 +121,31 @@ func TestFakeScriptingAndCleanup(t *testing.T) {
 	}
 }
 
-func TestObservationValidateEnforcesMetricCompleteness(t *testing.T) {
-	obs := faketarget.Observe(spec(t))
-	delete(obs.Metrics, runrecord.MetricCostUSD)
-	if err := obs.Validate(); err == nil || !strings.Contains(err.Error(), string(runrecord.MetricCostUSD)) {
-		t.Fatalf("incomplete observation must fail, got %v", err)
-	}
-}
-
-func TestObservationValidatesTargetDescriptor(t *testing.T) {
-	obs := faketarget.Observe(spec(t))
-	obs.Target.CommitHash = "not-a-commit"
-	if err := obs.Validate(); err == nil || !strings.Contains(err.Error(), "40-hex") {
-		t.Fatalf("malformed descriptor must fail at the adapter boundary, got %v", err)
-	}
-}
-
 func TestNilObservationValidate(t *testing.T) {
 	var obs *target.Observation
-	if err := obs.Validate(); err == nil {
+	if err := obs.Validate(target.Capabilities{}); err == nil {
 		t.Fatalf("nil observation must fail validation, not panic")
 	}
 }
 
-func TestObservationValidateRejectsUnknownCapabilities(t *testing.T) {
+func TestObservationValidateEnforcesMetricCompleteness(t *testing.T) {
+	fake := faketarget.New()
 	obs := faketarget.Observe(spec(t))
-	obs.Target.Capabilities = append(obs.Target.Capabilities, "made_up")
-	if err := obs.Validate(); err == nil || !strings.Contains(err.Error(), "made_up") {
+	delete(obs.Metrics, runrecord.MetricCostUSD)
+	if err := obs.Validate(fake.Capabilities()); err == nil || !strings.Contains(err.Error(), string(runrecord.MetricCostUSD)) {
+		t.Fatalf("incomplete observation must fail, got %v", err)
+	}
+}
+
+func TestObservationValidateEnforcesCapabilityCoherence(t *testing.T) {
+	obs := faketarget.Observe(spec(t))
+	// All metrics measured but only one declared capability: incoherent.
+	narrow := target.Capabilities{Metrics: []runrecord.MetricKey{runrecord.MetricTokensTotal}}
+	if err := obs.Validate(narrow); err == nil || !strings.Contains(err.Error(), "capability") {
+		t.Fatalf("capability incoherence must fail at the adapter boundary, got %v", err)
+	}
+	unknown := target.Capabilities{Metrics: []runrecord.MetricKey{"made_up"}}
+	if err := obs.Validate(unknown); err == nil || !strings.Contains(err.Error(), "made_up") {
 		t.Fatalf("unknown capability must fail at the adapter boundary, got %v", err)
 	}
 }

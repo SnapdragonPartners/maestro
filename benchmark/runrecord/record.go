@@ -89,13 +89,43 @@ type MPHIdentity struct {
 	MaestroVersion string `json:"maestro_version,omitempty"`
 }
 
-// TargetDescriptor records what a run measured (ADR 0025).
+// BudgetEnforcement declares how a target's token/cost caps are actually
+// enforced, recorded per run so comparisons are honest about the gap
+// between hard and post-hoc enforcement (design_engine.md).
+type BudgetEnforcement string
+
+// Budget enforcement modes.
+const (
+	// EnforcementStreamed means the adapter streams usage and the engine
+	// cancels the attempt the moment a cap is crossed.
+	EnforcementStreamed BudgetEnforcement = "streamed"
+	// EnforcementSelfEnforced means the target enforces the declared caps
+	// itself.
+	EnforcementSelfEnforced BudgetEnforcement = "self-enforced"
+	// EnforcementPostHoc means caps are only compared after the run.
+	EnforcementPostHoc BudgetEnforcement = "post-hoc"
+)
+
+func knownEnforcement(e BudgetEnforcement) bool {
+	switch e {
+	case EnforcementStreamed, EnforcementSelfEnforced, EnforcementPostHoc:
+		return true
+	default:
+		return false
+	}
+}
+
+// TargetDescriptor records what a run measured (ADR 0025). It is produced
+// by Adapter.Describe before execution, so error-path records carry it too.
 type TargetDescriptor struct {
 	AdapterName    string      `json:"adapter_name"`
 	AdapterVersion string      `json:"adapter_version"`
 	CommitHash     string      `json:"commit_hash"`
 	BinaryIdentity string      `json:"binary_identity"`
 	MPH            MPHIdentity `json:"mph"`
+	// BudgetEnforcement declares how token/cost caps are enforced for
+	// this target.
+	BudgetEnforcement BudgetEnforcement `json:"budget_enforcement"`
 	// Capabilities lists the metric keys this target can report; every
 	// other registry key is expected to be unsupported.
 	Capabilities []MetricKey `json:"capabilities"`
@@ -113,18 +143,21 @@ type Isolation struct {
 // RunRecord is one attempt's complete normalized result — the unit the
 // results store appends and reports aggregate over.
 type RunRecord struct {
-	StartedAt            time.Time         `json:"started_at"`
-	FinishedAt           time.Time         `json:"finished_at"`
-	Metrics              Metrics           `json:"metrics"`
-	RunID                string            `json:"run_id"`
-	SuiteRunID           string            `json:"suite_run_id"`
-	StoryID              string            `json:"story_id"`
-	StoryHash            string            `json:"story_hash"`
-	ConfigName           string            `json:"config_name"`
-	ConfigHash           string            `json:"config_hash"`
-	Verdict              Verdict           `json:"verdict"`
-	FailureKind          FailureKind       `json:"failure_kind,omitempty"`
-	InvalidReason        string            `json:"invalid_reason,omitempty"`
+	StartedAt     time.Time   `json:"started_at"`
+	FinishedAt    time.Time   `json:"finished_at"`
+	Metrics       Metrics     `json:"metrics"`
+	RunID         string      `json:"run_id"`
+	SuiteRunID    string      `json:"suite_run_id"`
+	StoryID       string      `json:"story_id"`
+	StoryHash     string      `json:"story_hash"`
+	ConfigName    string      `json:"config_name"`
+	ConfigHash    string      `json:"config_hash"`
+	Verdict       Verdict     `json:"verdict"`
+	FailureKind   FailureKind `json:"failure_kind,omitempty"`
+	InvalidReason string      `json:"invalid_reason,omitempty"`
+	// SolutionCommit is the resolved, ancestry-verified commit the engine
+	// validated (empty when the attempt never produced one).
+	SolutionCommit       string            `json:"solution_commit,omitempty"`
 	Validators           []CheckResult     `json:"validators"`
 	Checks               []CheckResult     `json:"checks"`
 	Evidence             []EvidencePointer `json:"evidence,omitempty"`
@@ -163,6 +196,13 @@ func (r *RunRecord) Validate() error {
 	}
 	if err := CapabilityCoherence(r.Target.Capabilities, r.Metrics); err != nil {
 		return err
+	}
+	return r.validateSolutionAndIsolation()
+}
+
+func (r *RunRecord) validateSolutionAndIsolation() error {
+	if r.SolutionCommit != "" && !commitPattern.MatchString(r.SolutionCommit) {
+		return fmt.Errorf("solution_commit %q must be a full 40-hex commit when present", r.SolutionCommit)
 	}
 	if r.Isolation.WorkspaceDir == "" || r.Isolation.BranchNamespace == "" {
 		return fmt.Errorf("isolation workspace_dir and branch_namespace are required")
@@ -262,6 +302,9 @@ func (r *RunRecord) validateAccepted() error {
 	if !r.TerminalStateReached {
 		return fmt.Errorf("accepted records require terminal_state_reached")
 	}
+	if !commitPattern.MatchString(r.SolutionCommit) {
+		return fmt.Errorf("accepted records require a 40-hex solution_commit, got %q", r.SolutionCommit)
+	}
 	if len(r.Validators) == 0 || len(r.Checks) == 0 {
 		return fmt.Errorf("accepted records require nonempty validator and check results")
 	}
@@ -328,6 +371,9 @@ func (d *TargetDescriptor) Validate() error {
 	}
 	if !contenthash.Valid(mph.HarnessHash) {
 		return fmt.Errorf("mph harness_hash must be a complete %q content identity, got %q", contenthash.Prefix, mph.HarnessHash)
+	}
+	if !knownEnforcement(d.BudgetEnforcement) {
+		return fmt.Errorf("budget_enforcement %q must be one of streamed, self-enforced, post-hoc", d.BudgetEnforcement)
 	}
 	// Capability keys themselves are validated by CapabilityCoherence,
 	// which every record and observation runs through.
