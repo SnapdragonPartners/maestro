@@ -2,74 +2,102 @@
 title = "Design: The v1-As-Patched Adapter (Item 4)"
 edit_date = "2026-07-16"
 status = "draft"
-summary = "Design sketch for the adapter-v1 work item: per-run Gitea forge isolation (SWE-EVO salvage), subprocess invocation and DB-poll lifecycle, poll-streamed budget enforcement, honest metric normalization from maestro.db, the templates-manifest prompt hash, and two small engine contract additions."
+summary = "Design sketch for the adapter-v1 work item: per-run Gitea forge isolation with a complete Docker lifecycle, subprocess invocation and DB-poll lifecycle, the usage-surface patch seam that earns streamed enforcement, durable evidence export with consistent WAL snapshots, the audited prompt manifest, canonical model-routing identity, and immutable binary identity."
 +++
 
 # Design: The v1-As-Patched Adapter (Item 4)
 
-Status: draft — mini-plan for Phase 1 item 4 (`adapter-v1`), the checkpoint before implementation. Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (target strategy, adapter contract), the [Phase 1 plan](plan_scope.md), [design_engine.md](design_engine.md), [process_fixtures.md](process_fixtures.md). Prior art: v1's own SWE-EVO harness (`pkg/benchmark`), used strictly as a **pattern and salvage source** — the benchmark module never imports `orchestrator` code.
+Status: draft — mini-plan for Phase 1 item 4 (`adapter-v1`), the checkpoint before implementation; revised for Codex round 1 (nine P1s). Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (target strategy, adapter contract), the [Phase 1 plan](plan_scope.md), [design_engine.md](design_engine.md), [process_fixtures.md](process_fixtures.md). Prior art: v1's own SWE-EVO harness (`pkg/benchmark`), used strictly as a **pattern and salvage source** — the benchmark module never imports `orchestrator` code.
 
 ## The Hard Problem: v1 Merges To Main
 
 v1's factory path merges story PRs into its target repo's default branch. Pointed at a GitHub fixture, a single run would advance fixture `main` — violating the fixture conventions (fixtures are never written by runs; merged history cannot be cleaned without prohibited force-pushes) and permanently accreting closed PRs on the fixture repos.
 
-**Resolution: per-run forge isolation via local Gitea** — the SWE-EVO mechanics, salvaged. The adapter maintains one runner-managed Gitea container; each attempt gets a fresh Gitea repo seeded from the fixture at the story's pinned commit; v1 is configured with `git.repo_url` = that Gitea repo and `forge.provider = gitea` (which v1 supports with cloud LLMs — airplane mode is not involved). v1 does its full PR/merge dance against the throwaway repo; the fixture is never touched by the target at all (the engine's own read-only clone remains the validation workspace). Attempt cleanup deletes the Gitea repo — nothing persists anywhere.
+**Resolution: per-run forge isolation via local Gitea** — the SWE-EVO mechanics, salvaged. The adapter maintains one runner-managed Gitea container; each attempt gets a fresh Gitea repo seeded from the fixture at the story's pinned commit; v1 is configured with `git.repo_url` = that Gitea repo and `forge.provider = gitea` (which v1 supports with cloud LLMs — airplane mode is not involved). v1 does its full PR/merge dance against the throwaway repo; the fixture is never touched by the target at all. Gitea enters as the *target's sandbox*, not a second fixture-hosting path (reviewer question 4's deferral stands).
 
-This also resolves reviewer question 4's deferral honestly: Gitea enters not as a second fixture-hosting path but as the *target's sandbox*; fixtures stay pinned GitHub repos.
+## Docker Lifecycle (complete, per Codex round 1)
+
+- **Shared Gitea container + volume**: created on demand by the adapter; **torn down by the runner** — adapters may implement `io.Closer`, and `cmd/runner` closes every closer after the suite (a `--keep-gitea` flag preserves it for iterative dev runs).
+- **Per-attempt**: the Gitea repo is deleted; the v1 project dir is removed; and as defense-in-depth after forced termination, the adapter enumerates and force-removes v1's session-scoped coder containers (matched by v1's container naming for the run's project) — **any leftover container, repo, or volume the adapter cannot remove is a cleanup failure, and the engine records the attempt `invalid`.**
 
 ## Invocation And Lifecycle
 
 Directly from the SWE-EVO recipe, reimplemented in-module:
 
-1. **Prepare**: create a per-run v1 project dir (sibling of the engine workspace, inside the run's workdir); seed the Gitea repo from the fixture pin; generate `config.json` (git repo/target branch, forge gitea, `agents.max_coders: 1`, webui/maintenance off, build/test commands from adapter settings); write the story prompt as the spec file.
-2. **Launch**: `maestro --config ... --spec-file ... --projectdir ... --nowebui` as a subprocess under the attempt context (the engine's wall-clock deadline kills it), process-group isolated, stdout/stderr teed to a log file.
-3. **Poll**: watch `.maestro/maestro.db` — discover spec/session IDs, then poll `stories` status to terminal (the SWE-EVO poller queries, reimplemented over `modernc.org/sqlite`, the module's one new dependency).
-4. **Stop**: graceful signal, bounded wait, then kill.
-5. **Import the solution**: fetch the Gitea repo's merged main into the engine workspace as `golden/<run-id>/solution` — a **local** branch the engine then binds, ancestry-checks, and validates as usual.
-6. **Cleanup**: delete the Gitea repo, remove the project dir. The engine's fixture-side namespace check passes trivially (the target never touched the fixture).
+1. **Prepare**: per-run v1 project dir (inside the run's workdir); Gitea repo seeded from the fixture pin; generated `config.json` (git repo/target branch, forge gitea, `agents.max_coders: 1`, webui/maintenance off, build/test commands from adapter settings); the story prompt as the spec file.
+2. **Launch**: `maestro --config ... --spec-file ... --projectdir ... --nowebui` as a subprocess under the attempt context, process-group isolated, output teed to a log file.
+3. **Poll**: watch `.maestro/maestro.db` — discover spec/session IDs, then poll `stories` to terminal status (SWE-EVO poller queries, reimplemented over `modernc.org/sqlite`).
+4. **Stop**: graceful signal, bounded wait, then process-group kill.
+5. **Export evidence, then import the solution** (below); fetch the Gitea repo's merged main into the engine workspace as `golden/<run-id>/solution` — a **local** branch the engine binds, ancestry-checks, and validates as usual.
+6. **Clean up** per the Docker lifecycle above.
+
+## Budget Enforcement: The Usage-Surface Patch Seam
+
+Codex round 1 killed the original claim: `stories.tokens_used`/`cost_usd` are written **only at acceptance** (`handleWorkAccepted`) — polling them is post-hoc, and an aborted attempt persists nothing, losing exactly the failed-attempt costs ADR 0025 requires.
+
+v1's metrics middleware already observes every LLM call through its `Recorder` interface, aggregating **in memory only**. That interface is the patch seam:
+
+- **Enumerated item-5 patch candidate P-1 (instrument-enabling)**: a durable `Recorder` implementation appending one line per LLM call (timestamp, agent, model, prompt/completion tokens, cost) to a usage log under the project dir. Minimal, behind an existing interface, never backported — squarely inside the Phase 1 target strategy.
+- **With P-1**: the adapter tails the usage log, streams deltas through `ReportUsage`, and declares `streamed` (per-call accrual satisfies Codex's answer to question 2); `llm_calls` becomes a real counter; aborted attempts carry their true accrued cost.
+- **Without P-1** (until item 5 lands it): the adapter declares **`post-hoc`** — the degraded mode ADR 0025 as amended permits — and reports `tokens_total`/`cost_usd` from story aggregates when acceptance was reached, `unavailable` otherwise. Nothing is claimed that is not persisted.
 
 ## Observation And Normalization
 
-From `maestro.db`, declared capabilities only — everything else honestly `unsupported`:
+Declared capabilities only — everything else honestly `unsupported`:
 
-- `tokens_total`, `cost_usd` — summed from story records (v1 persists both).
-- `llm_calls` — count of `agent_requests`; `tool_calls` — count of `tool_executions`.
-- Candidates to confirm during implementation (declared only if derivable honestly): `review_cycles`, `iterations`. `human_interventions`/`human_attention_seconds`: `not_applicable` in unattended benchmark runs.
+- `tokens_total`, `cost_usd` — usage log (P-1) or story aggregates (pre-patch, acceptance-reached only).
+- `llm_calls` — from the usage log only (P-1). **Not** `agent_requests`, which records inter-agent messages, not model invocations (Codex round 1); pre-patch this is `unsupported`.
+- `tool_calls` — count of `tool_executions` rows.
+- `review_cycles`, `iterations` — declared only if honestly derivable (investigated during implementation).
+- `human_interventions`, `human_attention_seconds` — `not_applicable` in unattended benchmark runs.
 
-**Budget enforcement: `streamed` via DB polling.** The poll loop reports usage deltas through `ReportUsage` as story cost/token records advance, so the engine cancels at the cap with poll-interval latency; wall-clock stays engine-hard. This keeps v1 out of the degraded post-hoc mode.
+**Terminal state**: story status terminal + PR merged in the Gitea repo.
 
-**Terminal state**: story status terminal + PR merged in the Gitea repo → `TerminalStateReached`.
+## Durable Evidence Export (before any teardown)
 
-**Evidence**: `maestro.db`, the v1 log tree, and the launch log — copied to a durable per-run evidence directory *before* cleanup (workspace and project dir are deleted; evidence pointers must outlive them).
+The stories require `pr`, `diff`, and `test-output` evidence; a Gitea URL dies with the repo, so evidence is **exported to `AttemptSpec.EvidenceDir`** (engine-provided, under the results store, survives cleanup):
+
+- `pr.json` — PR metadata from the Gitea API: number, title, body, merge commit, timestamps.
+- `diff.patch` — `git diff <pin>..<merge-commit>` from the seeded repo before deletion.
+- `test-output.txt` — the story's test/build tool outputs extracted from `tool_executions`.
+- `maestro.db` — a **consistent snapshot**: the DB runs in WAL mode, so a raw file copy after a kill can miss the newest frames; the adapter snapshots via SQLite online backup (`VACUUM INTO`) after process termination — the same path on forced stops (opening the DB replays the WAL).
+- `usage.jsonl` (with P-1) and the v1 log tree + launch log.
 
 ## MPH Identity
 
-- **Prompt**: pack label `v1-embedded`; hash = `sha256:` over a deterministic manifest (sorted relative paths + contents) of the target checkout's prompt/template inputs (`pkg/templates` tree), per the plan's Codex resolution — prompt identity moves only when prompt content moves.
-- **Model**: from the bundle's model routing, mapped into v1's model config.
-- **Target**: adapter settings supply the maestro binary path, the target commit hash, and the templates dir of the matching checkout; binary identity = path + `maestro -version` output.
+- **Prompt**: pack label `v1-embedded`; hash = `sha256:` over a deterministic manifest (sorted relative paths + contents) of an **explicit, audited list of prompt-bearing inputs** — `pkg/templates` **plus** the hard-coded prompt surfaces in Go files (architect request prompts, coder todo instructions, and whatever else the implementation audit finds). The manifest ships as a checked-in file list; a unit test asserts every entry matches at least one file in the target checkout, so a moved prompt file fails loudly instead of silently dropping out of P.
+- **Model**: `MPHIdentity.Model` carries the **canonical serialization of the complete routing** — `default=<model>` plus sorted `role=<model>` pairs, comma-joined — so reviewer heterogeneity is never reduced to the default model. (Representation convention, no schema change; documented on the field.)
+- **Binary identity**: `sha256:` digest of the executable bytes plus the `maestro -version` output — immutable, unlike a path. When the version output exposes a commit, the adapter verifies it against the declared target commit and fails Describe on mismatch.
 
 ## Engine Contract Additions (small, both engine-side)
 
-1. **Local solution-branch resolution**: `resolveSolutionCommit` currently only fetches from `origin`; the adapter imports the solution as a local workspace branch, so resolution tries the local ref first, then origin. Same namespace and ancestry rules.
-2. **`AttemptSpec.EvidenceDir`**: an engine-provided durable directory (under the results store, keyed by run ID) where adapters deposit evidence files; pointers into it survive cleanup. The stub target gains a scripted use of it.
+1. **Local solution-branch resolution**: `resolveSolutionCommit` tries the local workspace ref first, then origin. Same namespace and ancestry rules.
+2. **`AttemptSpec.EvidenceDir`**: engine-provided durable directory under the results store, keyed by run ID; the stub target gains a scripted use.
+
+## Dependency Note: `modernc.org/sqlite`
+
+An **adapter-scoped v1-compatibility dependency**: its import is confined to the v1 adapter package, labeled as such in the code and module README. Removal trigger: retiring the v1 adapter or replacing its observation surface. The intent lives in the doc trail, not just grep.
 
 ## The First Config Bundle
 
-`configs/paired-default.toml` lands with this item (the plan assigned it here): the paired-agent default driving `v1-as-patched`, models per current v1 defaults, budget expectations set provisionally and revisited by item 6's instrumented runs.
+`configs/paired-default.toml` lands with this item: the paired-agent default driving `v1-as-patched`, models per current v1 defaults, budget expectations provisional until item 6.
 
 ## Testing
 
-- **Unit**: config generation, prompt-manifest hashing (fixture dir), DB normalization against a canned `maestro.db` (SQLite file in testdata), poll parsing, evidence copying.
-- **Hermetic integration**: a **fake-maestro** shell script standing in for the binary — writes a plausible `maestro.db`, pushes a merged result to the Gitea repo, exits — driven through the real engine against a local fixture; plus a Gitea-lifecycle test behind a `docker`-guarded skip (skips cleanly where Docker is absent, runs in CI if available).
-- **Real end-to-end runs are item 5**, deliberately: they spend tokens, and the patch discovery loop belongs there. This item ends with the adapter passing hermetic tests and a `runner validate` of the real bundle.
+- **Unit**: config generation, prompt-manifest hashing (including the manifest-completeness test), DB normalization against a canned WAL-mode `maestro.db` in testdata, usage-log tailing, evidence export.
+- **Hermetic integration**: a **fake-maestro** script standing in for the binary — writes a plausible `maestro.db` (+ usage log), pushes a merged result to the Gitea repo, exits — driven through the real engine; plus the Gitea lifecycle (container, seed, delete, teardown).
+- **CI is required, not skipped**: Docker-dependent tests skip locally when Docker is absent, but under `BENCHMARK_REQUIRE_DOCKER=1` — set in the Linux CI job, which has Docker — they **fail** instead of skipping. A green PR has executed the Gitea lifecycle.
+- **Real end-to-end runs are item 5**: they spend tokens, and the patch discovery loop (P-1 first on the list) belongs there. This item ends with hermetic tests green and `runner validate` accepting the real bundle.
 
 ## Explicitly Deferred
 
-The minimal v1 patch set (item 5 — discovered by running, not guessed); instrumented budgets (item 6); the single-agent baseline adapter (item 8); any Gitea use for fixture *hosting* (stays deferred per reviewer question 4).
+The v1 patch set (item 5 — P-1 usage surface enumerated above; the rest discovered by running); instrumented budgets (item 6); the single-agent baseline (item 8); Gitea for fixture *hosting* (deferred per reviewer question 4).
 
-## Review Questions
+## Review Questions — Resolutions
 
-1. **Per-run Gitea forge isolation** as the resolution to v1's merge-to-main behavior (fixtures never written by targets; SWE-EVO mechanics salvaged in-module). Concur?
-2. **`streamed` enforcement via DB polling** — cancellation latency equals the poll interval (seconds). Acceptable as `streamed`, or should poll-based streaming be a declared sub-mode?
-3. The two engine contract additions (local branch resolution, `EvidenceDir`). Concur?
-4. **Docker becomes a runner dependency** for v1 targets (Gitea container; v1 itself also needs Docker for its coder containers — so this adds no new requirement in practice). Any objection to the hermetic tests skipping when Docker is absent?
+Codex round 1 (2026-07-16); nine P1s incorporated above.
+
+1. Per-run Gitea isolation: **concur**, subject to durable evidence export and the complete Docker lifecycle — both now specified.
+2. Poll-based streaming: **only from a per-call accrual source** — hence the P-1 usage-surface patch; story aggregates are post-hoc and declared so until P-1 lands.
+3. Local-ref resolution and `EvidenceDir`: **concur**.
+4. Docker: **acceptable**; local skips fine, **CI must execute** the Gitea lifecycle (fail, not skip).
