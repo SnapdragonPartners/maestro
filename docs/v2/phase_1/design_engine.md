@@ -1,13 +1,13 @@
 +++
 title = "Design: Runner Engine And CLI (Item 3)"
 edit_date = "2026-07-16"
-status = "draft"
+status = "live"
 summary = "Design sketch for the runner-core work item: attempt lifecycle (cleanup before the append-only record), pre-run target description with error-path metric synthesis, immutable solution binding, streamed budget enforcement with conservative suite admission, the suite manifest, and the CLI surface."
 +++
 
 # Design: Runner Engine And CLI (Item 3)
 
-Status: draft — mini-plan for Phase 1 item 3 (`runner-core`), the checkpoint before implementation, per the item 1 precedent; revised for Codex round 1 (five P1s). Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md), the [Phase 1 plan](plan_scope.md), [design_runner.md](design_runner.md) (the contracts this engine executes), and [process_fixtures.md](process_fixtures.md).
+Status: live — approved with item 3 (PR #263, Codex + DR, 2026-07-16; three Codex rounds incorporated, including ADR 0025's budget-enforcement amendment). Mini-plan for Phase 1 item 3 (`runner-core`), the checkpoint before implementation, per the item 1 precedent. Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md), the [Phase 1 plan](plan_scope.md), [design_runner.md](design_runner.md) (the contracts this engine executes), and [process_fixtures.md](process_fixtures.md).
 
 ## Packages
 
