@@ -1,14 +1,14 @@
 +++
 title = "Maestro v2 Phase 1: Scope And Plan"
-edit_date = "2026-07-15"
-status = "draft"
-summary = "Proposed Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 11 serial work items covering the runner module, fixtures, the v1-as-patched target, the single-agent baseline, D9 cost instrumentation, and the first 5-10 stories."
+edit_date = "2026-07-16"
+status = "live"
+summary = "Approved Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 11 serial work items covering the runner module, fixtures, the v1-as-patched target, the single-agent baseline, D9 cost instrumentation, and the first 5-10 stories."
 type = "plan"
 +++
 
 # Phase 1: Golden Stories And Measurement Harness — Scope And Plan
 
-Status: draft — under review per [process_build.md](../process_build.md). Flips to `live` after Codex and DR approval, as the final commit before merge; flips to `archive` when Phase 1 closes (lifecycle per ADR 0017 and the Phase 0 precedent).
+Status: live — approved by Codex and DR, 2026-07-15 (PR #259; the status flip landed one commit late, in a follow-up). Flips to `archive` when Phase 1 closes (lifecycle per ADR 0017 and the Phase 0 precedent).
 
 Goal (from the [roadmap](../plan_roadmap.md)): build the measuring instrument before rewriting the machine.
 
