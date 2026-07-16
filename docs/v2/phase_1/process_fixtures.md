@@ -15,9 +15,9 @@ Golden stories run against **fixture repositories**: pinned, purpose-held varian
 
 | Fixture | Source provenance | `main` head | Role |
 |---|---|---|---|
-| [`golden-fixture-llms`](https://github.com/SnapdragonPartners/golden-fixture-llms) | `maestro-llms`, history **truncated** at `d5078df1dc3e304e9f1327e29ecfb48d1998f3dc` (the parent of upstream fix `92eceb8`) | `d5078df1dc3e304e9f1327e29ecfb48d1998f3dc` | Library fixture; the bug-fix rung runs here against the pre-fix state |
+| [`golden-fixture-llms`](https://github.com/SnapdragonPartners/golden-fixture-llms) | `maestro-llms`, history **truncated** at `d5078df1dc3e304e9f1327e29ecfb48d1998f3dc` (the parent of upstream fix `92eceb8`), plus one seeded commit: `stopreason_seed_test.go` — the upstream fix's regression tests, seeded without the fix so acceptance is behavioral | `891dce215ef5c27cf575020e98f29bb876d96abc` | Library fixture; the bug-fix rung runs here against the pre-fix state |
 | [`golden-fixture-cms`](https://github.com/SnapdragonPartners/golden-fixture-cms) | `maestro-cms` at `e7a7422bad4dec726b62eec2cd6d759cd7780deb` (full history) | `e7a7422bad4dec726b62eec2cd6d759cd7780deb` | Library fixture; dependency-bump and later rungs |
-| [`golden-fixture-chat`](https://github.com/SnapdragonPartners/golden-fixture-chat) | `maestro-llms@6d9a7aa` `examples/chat`, extracted standalone: module repointed, toolkit dependency pinned to `v0.7.1`, provenance note in its README (fresh single-commit history) | `91514c98f944ca6a8a93a518429d4da0645a2c87` | The app-bearing fixture; cleanup and later app-change rungs |
+| [`golden-fixture-chat`](https://github.com/SnapdragonPartners/golden-fixture-chat) | `maestro-llms@6d9a7aa` `examples/chat`, extracted standalone: module repointed, toolkit dependency pinned to `v0.7.1`, provenance note in its README; second commit corrects the README's stale monorepo/`replace`-directive language | `e71d51bb8486137d8bf8fdf18da8913c3c021edd` | The app-bearing fixture; cleanup and later app-change rungs |
 
 ## Resolution Of ADR 0025's "LLM-tester CLI App"
 
@@ -28,16 +28,17 @@ ADR 0025 names "the standalone LLM-tester CLI app from the toolkit repos" as the
 1. **Stories pin commits, not branches.** Every story definition carries a full 40-hex commit; the runner checks out that commit into a fresh run-scoped workspace (ADR 0025 repeat isolation). The fixture's `main` is a human convenience, not an input.
 2. **Fixture `main` never advances casually.** A fixture moves only by the deliberate re-pin procedure below. Fixtures are never tracked against their upstreams automatically (Phase 1 plan risk list).
 3. **No solution leakage.** A fixture whose story is "fix this bug" must not contain the future fix anywhere reachable — history is truncated at the story's base commit (`golden-fixture-llms` is cut at the parent of the upstream fix), and **no tags are pushed** to any fixture (a tag could reference a descendant carrying the solution).
-4. **Fixtures are variants, and deltas carry provenance.** Any difference from source (the chat app's extraction: module path, version pin, README note) is recorded in the fixture's README and in the table above. Seeded warts, if a future story ever needs one, follow the same rule: recorded, never silent.
-5. **Run-branch cleanup.** Everything a run creates in a fixture lives under its run-scoped branch namespace and is deleted after every run (ADR 0023's cleanup rule via ADR 0025). A run whose cleanup cannot be verified is recorded `invalid`. Fixture default branches are never written by runs.
-6. **Fixtures are not dependencies.** No Maestro module may import fixture code; fixtures exist only to be cloned by the runner. They are public (their sources are public) and marked "not maintained" in their descriptions.
+4. **Fixtures are variants, and deltas carry provenance.** Any difference from source (the chat app's extraction: module path, version pin, README note) is recorded in the fixture's README and in the table above. Seeded content follows the same rule: recorded, never silent.
+5. **Seeded regression tests make bug-fix acceptance behavioral.** A bug-fix story's expected behavior is expressed by tests seeded into the fixture (sourced from the real upstream fix where one exists), failing at the base and passing when solved — never by agent-authored tests, which cannot independently prove the behavior, and never by string-presence checks, which are gameable. Seed files declare themselves off-limits, and the story carries a deterministic check that the seed file is byte-identical to the base commit.
+6. **Run-branch cleanup.** Everything a run creates in a fixture lives under its run-scoped branch namespace and is deleted after every run (ADR 0023's cleanup rule via ADR 0025). A run whose cleanup cannot be verified is recorded `invalid`. Fixture default branches are never written by runs.
+7. **Fixtures are not dependencies.** No Maestro module may import fixture code; fixtures exist only to be cloned by the runner. They are public (their sources are public) and marked "not maintained" in their descriptions.
 
 ## Re-Pin Procedure
 
 To move a fixture base (new rung requirements, upstream refresh):
 
 1. Choose the new commit in the source repo; for bug-fix stories, choose the parent of the target fix and verify no descendant leaks the solution.
-2. Push that history to the fixture (force-push of `main` is acceptable here — fixtures are not collaborative repos; open runs pin old commits and are unaffected as long as the old objects remain reachable, so prefer additive pushes when possible).
+2. **Re-pins are additive — force-pushes are prohibited.** Every base commit any story definition has ever referenced must remain reachable from a ref, or a fresh clone cannot fetch it and old run records become unreproducible. New bases land as descendants of `main`, or as a new immutable `base/<story-id>` branch when the base is not a descendant. If the needed history genuinely diverges from what the fixture holds (e.g. a pre-fix cut *earlier* than the existing truncation), create a **new fixture repo** rather than rewriting this one.
 3. Update the provenance table above and the affected story definitions' `fixture.commit` in the same PR — the story hash changes with it, keeping run records comparable-by-identity.
 
 ## Related Documents

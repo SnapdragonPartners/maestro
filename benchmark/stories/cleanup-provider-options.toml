@@ -1,4 +1,11 @@
 # Golden story: ladder rung 2 (small code cleanup).
+# Consolidation is verified structurally: the fixture base has 5 call
+# sites each of .ListModels(, "construct failed", and "ListModels failed"
+# (one per provider); a real consolidation collapses each to a shared
+# helper. The <= 2 thresholds tolerate one idiosyncratic path without
+# admitting the unconsolidated original. Hermetic regression tests are
+# deliberately not seeded: the refactor's entire surface is internal, so
+# tests would pin the very names the refactor is free to change.
 schema_version = 1
 id = "cleanup-provider-options"
 title = "Consolidate the duplicated per-provider option functions"
@@ -6,7 +13,7 @@ level = "story"
 
 [fixture]
 repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
-commit = "91514c98f944ca6a8a93a518429d4da0645a2c87"
+commit = "e71d51bb8486137d8bf8fdf18da8913c3c021edd"
 base_branch = "main"
 
 [prompt]
@@ -44,9 +51,26 @@ name = "diff-confined-to-providers"
 type = "files_changed_within"
 
 [[checks]]
-name = "gofmt-clean"
+name = "listmodels-call-sites-consolidated"
 type = "command"
-command = "sh -c 'test -z \"$(gofmt -l .)\"'"
+command = "sh -c 'test \"$(grep -c \"\\.ListModels(\" providers.go)\" -le 2'"
+
+[[checks]]
+name = "construct-log-consolidated"
+type = "command"
+command = "sh -c 'test \"$(grep -c \"construct failed\" providers.go)\" -le 2'"
+
+[[checks]]
+name = "listmodels-log-consolidated"
+type = "command"
+command = "sh -c 'test \"$(grep -c \"ListModels failed\" providers.go)\" -le 2'"
+
+[[checks]]
+# Scoped to the story's one allowed file: the fixture's server.go ships
+# from upstream with minor gofmt drift (realistic friction, out of scope).
+name = "gofmt-clean-providers"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l providers.go)\"'"
 
 [budget]
 max_tokens = 250000
