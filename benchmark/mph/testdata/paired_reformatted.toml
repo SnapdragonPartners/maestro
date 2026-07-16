@@ -1,0 +1,24 @@
+# Semantically identical to paired.toml: different comments, key order,
+# whitespace, and number formatting. Identity must be byte-for-byte equal.
+
+name        = "paired-default"
+schema_version = 1
+
+description = "Paired-agent factory path"
+
+[model]
+default = "anthropic:model-main"
+roles = { reviewer = "openai:model-reviewer" }
+
+[harness]
+adapter  = "v1-as-patched"
+settings = { mode = "factory" }
+
+[prompt]
+pack = "v1-embedded"
+
+[budget]
+max_cost_usd_per_suite    = 60.00
+max_cost_usd_per_run      = 6.000
+expected_cost_usd_per_run = 3.00
+expected_tokens_per_run   = 500000

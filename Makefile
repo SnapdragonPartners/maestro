@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks
+.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -19,9 +19,22 @@ install-hooks:
 
 # Build all binaries (includes MCP proxy for embedding)
 # Note: build-mcp-proxy must run before lint because go:embed requires files to exist
-build: install-hooks build-css build-mcp-proxy lint
+build: install-hooks build-css build-mcp-proxy lint benchmark-build
 	go generate ./...
 	go build -ldflags "$(LDFLAGS)" -o bin/maestro ./cmd/maestro
+
+# --- benchmark runner module (benchmark/) ---
+# A standalone Go module (ADR 0025: black-box, never imports orchestrator).
+# Root Go walkers do not descend into nested modules, so it gets explicit
+# targets, wired as prerequisites of build/test/lint.
+benchmark-build:
+	cd benchmark && go build ./...
+
+benchmark-test:
+	cd benchmark && go test -cover ./...
+
+benchmark-lint: install-lint
+	cd benchmark && go fmt ./... && golangci-lint run
 
 # Cross-compile MCP proxy for Linux containers (ARM64 and AMD64)
 build-mcp-proxy:
@@ -40,7 +53,7 @@ benchmark: lint
 	go build -o bin/benchmark ./cmd/benchmark
 
 # Run all tests with coverage
-test:
+test: benchmark-test
 	go test -cover ./...
 
 # Run integration tests only (requires API keys and external services)
@@ -130,7 +143,7 @@ fix: fix-imports fix-godot
 	@echo "All automatic fixes applied"
 
 # Run linting tools
-lint: install-lint
+lint: install-lint benchmark-lint
 	go fmt ./...
 	golangci-lint run
 

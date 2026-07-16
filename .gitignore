@@ -54,7 +54,9 @@ dist/
 *.dmg
 
 /maestro
+# Root-level compiled benchmark binary only; benchmark/ is the runner module.
 /benchmark
+!/benchmark/
 
 # Python (conversion scripts)
 __pycache__/

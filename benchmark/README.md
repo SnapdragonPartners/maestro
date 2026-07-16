@@ -1,0 +1,45 @@
++++
+title = "Benchmark Runner Module"
+edit_date = "2026-07-16"
+status = "draft"
+summary = "The golden story benchmark runner (ADR 0025): a standalone Go module that drives benchmark targets black-box and owns its results store. Never imports the orchestrator module."
++++
+
+# Benchmark Runner Module
+
+The measuring instrument of Maestro v2 (Phase 1): golden story definitions,
+MPH configuration bundles, the normalized run-record contract, the
+self-contained results store, and the per-target adapter interface.
+Specification: [ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md);
+design: [design_runner.md](../docs/v2/phase_1/design_runner.md).
+
+## Black-Box Rule
+
+This is a **standalone Go module** (`github.com/SnapdragonPartners/maestro/benchmark`).
+It must never import the `orchestrator` module: the runner drives its
+targets only through external surfaces (config, CLI/API invocation,
+branches, PRs, artifacts, metrics), which is what lets one runner benchmark
+v1-as-patched today, v2 as it comes up, and harnesses that do not exist
+yet. Adding an `orchestrator` dependency to `go.mod` is a defect by
+definition.
+
+## Layout
+
+- `story/` — golden story definitions: TOML schema, strict loader, validation, canonical content identity.
+- `mph/` — MPH configuration bundles: TOML schema, loader, content-hash identity.
+- `runrecord/` — the normalized run-record contract: four-state metrics, registry, verdicts, failure kinds, target descriptor. `recordtest/` builds valid records for tests.
+- `results/` — append-only, schema-versioned JSONL results store.
+- `target/` — the `Adapter` interface, `AttemptSpec`, `Observation`; `faketarget/` is the scripted test adapter.
+- `internal/contenthash/` — canonical `sha256:` identity helper.
+- `stories/` — authored golden stories (land in item 2).
+- `configs/` — authored MPH bundles (land with their adapters, items 4 and 8).
+
+The execution engine, CLI, and comparison reports are later Phase 1 items
+(3 and 7) and get their own packages here.
+
+## Development
+
+From the repo root: `make benchmark-build`, `make benchmark-test`,
+`make benchmark-lint` — all three also run as prerequisites of the root
+`build`, `test`, and `lint` targets, so hooks and CI cover this module
+automatically. Unit tests spend no tokens and touch no network.
