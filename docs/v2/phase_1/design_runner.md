@@ -1,14 +1,14 @@
 +++
 title = "Design: Benchmark Runner Module Contracts (Item 1)"
 edit_date = "2026-07-16"
-status = "draft"
+status = "live"
 summary = "Design sketch for the runner-skeleton work item: module layout, the run-record and four-state metric contracts, story and MPH bundle schemas, the results store, the adapter interface with its engine/adapter division of labor, and build wiring."
 type = "design"
 +++
 
 # Design: Benchmark Runner Module Contracts (Item 1)
 
-Status: draft — mini-plan for Phase 1 item 1 (`runner-skeleton`), added by agreement before implementation because this item fixes the contracts items 3–8 consume. Reviewed like a checkpoint, not a phase gate: Codex + DR pass on the shapes below, then implementation proceeds on the same branch. Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md), the [Phase 1 plan](plan_scope.md) and its ratified delegated decisions (standalone `benchmark/` module, TOML authored / JSON emitted, content-hash identity).
+Status: live — approved with the item 1 implementation (PR #261, Codex + DR, 2026-07-16; two Codex rounds incorporated). Mini-plan for Phase 1 item 1 (`runner-skeleton`), added by agreement before implementation because this item fixes the contracts items 3–8 consume. Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md), the [Phase 1 plan](plan_scope.md) and its ratified delegated decisions (standalone `benchmark/` module, TOML authored / JSON emitted, content-hash identity).
 
 ## Module
 

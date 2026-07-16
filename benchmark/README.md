@@ -1,7 +1,7 @@
 +++
 title = "Benchmark Runner Module"
 edit_date = "2026-07-16"
-status = "draft"
+status = "live"
 summary = "The golden story benchmark runner (ADR 0025): a standalone Go module that drives benchmark targets black-box and owns its results store. Never imports the orchestrator module."
 +++
 

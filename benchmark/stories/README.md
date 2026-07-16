@@ -1,7 +1,7 @@
 +++
 title = "Golden Stories"
 edit_date = "2026-07-16"
-status = "draft"
+status = "live"
 summary = "Authored golden story definitions (TOML, one file per story), validated against the story schema on load. First definitions land with Phase 1 item 2 (fixtures)."
 +++
 
