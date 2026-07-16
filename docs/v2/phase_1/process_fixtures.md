@@ -1,13 +1,13 @@
 +++
 title = "Fixture Conventions For Golden Stories"
 edit_date = "2026-07-16"
-status = "draft"
+status = "live"
 summary = "The golden story fixture repositories (pinned variants of maestro-llms, maestro-cms, and the extracted chat app), their provenance, and the conventions that keep them honest: pinned immutable bases, solution-leakage truncation, no tags, run-branch cleanup, and the re-pin procedure."
 +++
 
 # Fixture Conventions For Golden Stories
 
-Status: draft — Phase 1 item 2 (`fixtures`), under [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) and the [Phase 1 plan](plan_scope.md). Flips to `live` on item 2 approval.
+Status: live — approved with item 2 (PR #262, Codex + DR, 2026-07-16; one Codex round incorporated), under [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) and the [Phase 1 plan](plan_scope.md).
 
 Golden stories run against **fixture repositories**: pinned, purpose-held variants of real codebases under the SnapdragonPartners GitHub org (the plan's ratified reviewer question 4). Fixtures give stories realistic brownfield friction without depending on the source repos' ongoing motion.
 
