@@ -3,10 +3,11 @@
 # Pinned for reproducible lint results; keep in sync with the root Makefile.
 GOLANGCI_LINT_VERSION := v1.64.8
 
-# Compile every package (no main packages yet; the runner CLI lands with
-# Phase 1 item 3, which will add a bin/ output here).
+# Compile every package and the runner CLI.
 build:
 	go build ./...
+	@mkdir -p bin
+	go build -o bin/runner ./cmd/runner
 
 test:
 	go test -cover ./...
@@ -27,11 +28,11 @@ lint: install-lint
 	go fmt ./...
 	golangci-lint run
 
-# The runner CLI arrives with Phase 1 item 3 (runner-core); nothing to run yet.
-run:
-	@echo "No runner CLI yet — it lands with Phase 1 item 3 (runner-core)."
-	@echo "Available now: make build, make test, make test-race, make lint."
-	@exit 1
+# Validate the authored stories and configs (no execution, no cost).
+# Executing a suite spends real tokens against real targets, so it stays an
+# explicit command: bin/runner run --stories stories --configs <bundles> ...
+run: build
+	./bin/runner validate --stories stories --configs configs
 
 clean:
 	rm -rf bin/

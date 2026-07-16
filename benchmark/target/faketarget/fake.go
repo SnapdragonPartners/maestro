@@ -1,5 +1,5 @@
 // Package faketarget provides a scripted, in-memory Adapter for unit tests
-// across this module and the item 3 engine — no target, no tokens.
+// across this module and the engine — no target, no tokens.
 package faketarget
 
 import (
@@ -20,14 +20,17 @@ type Fake struct {
 	// RunFunc produces the observation for each Run call. Defaults to a
 	// fully populated accepted-shape observation via Observe.
 	RunFunc func(ctx context.Context, spec *target.AttemptSpec) (*target.Observation, error)
+	// DescribeErr is returned by Describe when set.
+	DescribeErr error
 	// CleanupErr is returned by every Cleanup call.
 	CleanupErr error
 
-	runCalls     []target.AttemptSpec
-	cleanupCalls []target.AttemptSpec
-	identity     target.Identity
-	capabilities target.Capabilities
-	mu           sync.Mutex
+	runCalls      []target.AttemptSpec
+	describeCalls []target.AttemptSpec
+	cleanupCalls  []target.AttemptSpec
+	identity      target.Identity
+	capabilities  target.Capabilities
+	mu            sync.Mutex
 }
 
 // New returns a Fake reporting every registry metric as a capability.
@@ -48,6 +51,21 @@ func (f *Fake) Identity() target.Identity { return f.identity }
 
 // Capabilities implements target.Adapter.
 func (f *Fake) Capabilities() target.Capabilities { return f.capabilities }
+
+// Describe implements target.Adapter, recording the call and returning a
+// contract-valid descriptor derived from the spec.
+func (f *Fake) Describe(_ context.Context, spec *target.AttemptSpec) (runrecord.TargetDescriptor, error) {
+	if err := spec.Validate(); err != nil {
+		return runrecord.TargetDescriptor{}, fmt.Errorf("faketarget describe: %w", err)
+	}
+	f.mu.Lock()
+	f.describeCalls = append(f.describeCalls, *spec)
+	f.mu.Unlock()
+	if f.DescribeErr != nil {
+		return runrecord.TargetDescriptor{}, f.DescribeErr
+	}
+	return Descriptor(spec), nil
+}
 
 // Run implements target.Adapter, recording the call and delegating to
 // RunFunc (or Observe when unset). Like a real adapter, it rejects an
@@ -85,6 +103,13 @@ func (f *Fake) RunCalls() []target.AttemptSpec {
 	return append([]target.AttemptSpec(nil), f.runCalls...)
 }
 
+// DescribeCalls returns a copy of the specs Describe has been called with.
+func (f *Fake) DescribeCalls() []target.AttemptSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]target.AttemptSpec(nil), f.describeCalls...)
+}
+
 // CleanupCalls returns a copy of the specs Cleanup has been called with.
 func (f *Fake) CleanupCalls() []target.AttemptSpec {
 	f.mu.Lock()
@@ -92,8 +117,38 @@ func (f *Fake) CleanupCalls() []target.AttemptSpec {
 	return append([]target.AttemptSpec(nil), f.cleanupCalls...)
 }
 
+// Descriptor builds a contract-valid target descriptor for spec.
+func Descriptor(spec *target.AttemptSpec) runrecord.TargetDescriptor {
+	promptHash := ""
+	bundleModel := "fake-model"
+	pack := "fake-pack"
+	if spec != nil && spec.Bundle != nil {
+		promptHash = spec.Bundle.Prompt.Hash
+		bundleModel = spec.Bundle.Model.Default
+		pack = spec.Bundle.Prompt.Pack
+	}
+	if promptHash == "" {
+		promptHash = contenthash.Prefix + fakeDigest("prompt")
+	}
+	return runrecord.TargetDescriptor{
+		AdapterName:       "fake",
+		AdapterVersion:    "0.0.0",
+		CommitHash:        fakeDigest("commit")[:40],
+		BinaryIdentity:    "faketarget",
+		BudgetEnforcement: runrecord.EnforcementStreamed,
+		MPH: runrecord.MPHIdentity{
+			Model:       bundleModel,
+			PromptPack:  pack,
+			PromptHash:  promptHash,
+			HarnessHash: contenthash.Prefix + fakeDigest("harness"),
+		},
+		Capabilities: capabilitiesOf(),
+	}
+}
+
 // Observe builds a complete, contract-valid observation for spec: every
-// registry metric measured, one evidence pointer, terminal state reached.
+// registry metric measured, one evidence pointer, terminal state reached,
+// in-place solution (empty SolutionBranch).
 // A nil spec yields a zero observation, which fails validation normally.
 func Observe(spec *target.AttemptSpec) target.Observation {
 	if spec == nil {
@@ -103,34 +158,10 @@ func Observe(spec *target.AttemptSpec) target.Observation {
 	for i, ms := range runrecord.Registry() {
 		metrics[ms.Key] = runrecord.Measured(float64(i))
 	}
-	promptHash := ""
-	bundleModel := "fake-model"
-	pack := "fake-pack"
-	if spec.Bundle != nil {
-		promptHash = spec.Bundle.Prompt.Hash
-		bundleModel = spec.Bundle.Model.Default
-		pack = spec.Bundle.Prompt.Pack
-	}
-	if promptHash == "" {
-		promptHash = contenthash.Prefix + fakeDigest("prompt")
-	}
 	return target.Observation{
 		Metrics: metrics,
 		Evidence: []runrecord.EvidencePointer{
 			{Kind: "log", Location: spec.WorkspaceDir + "/fake.log"},
-		},
-		Target: runrecord.TargetDescriptor{
-			AdapterName:    "fake",
-			AdapterVersion: "0.0.0",
-			CommitHash:     fakeDigest("commit")[:40],
-			BinaryIdentity: "faketarget",
-			MPH: runrecord.MPHIdentity{
-				Model:       bundleModel,
-				PromptPack:  pack,
-				PromptHash:  promptHash,
-				HarnessHash: contenthash.Prefix + fakeDigest("harness"),
-			},
-			Capabilities: capabilitiesOf(),
 		},
 		TerminalStateReached: true,
 	}

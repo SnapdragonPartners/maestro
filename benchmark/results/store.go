@@ -107,19 +107,34 @@ func (s *Store) ReadSuite(suiteRunID string) ([]runrecord.RunRecord, error) {
 	return records, nil
 }
 
-// SuiteRunIDs lists the suite runs present in the store, sorted.
+// SuiteRunIDs lists the suite runs present in the store, sorted. A suite
+// is discoverable through its records file or its manifest — an
+// interrupted suite may have only the latter.
 func (s *Store) SuiteRunIDs() ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("read results store %s: %w", s.dir, err)
 	}
+	seen := make(map[string]bool, len(entries))
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, fileExtension) {
+		if entry.IsDir() {
 			continue
 		}
-		ids = append(ids, strings.TrimSuffix(name, fileExtension))
+		var id string
+		switch {
+		case strings.HasSuffix(name, fileExtension):
+			id = strings.TrimSuffix(name, fileExtension)
+		case strings.HasSuffix(name, manifestExtension):
+			id = strings.TrimSuffix(name, manifestExtension)
+		default:
+			continue
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	return ids, nil

@@ -39,16 +39,17 @@ func AllCapabilities() []runrecord.MetricKey {
 func Accepted() *runrecord.RunRecord {
 	started := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
 	return &runrecord.RunRecord{
-		SchemaVersion: runrecord.SchemaVersion,
-		RunID:         "run-0001",
-		SuiteRunID:    "suite-0001",
-		StoryID:       "dep-bump-001",
-		StoryHash:     "sha256:" + hexDigest(),
-		ConfigName:    "paired-default",
-		ConfigHash:    "sha256:" + hexDigest(),
-		StartedAt:     started,
-		FinishedAt:    started.Add(10 * time.Minute),
-		Verdict:       runrecord.VerdictAccepted,
+		SchemaVersion:  runrecord.SchemaVersion,
+		RunID:          "run-0001",
+		SuiteRunID:     "suite-0001",
+		StoryID:        "dep-bump-001",
+		StoryHash:      "sha256:" + hexDigest(),
+		ConfigName:     "paired-default",
+		ConfigHash:     "sha256:" + hexDigest(),
+		StartedAt:      started,
+		FinishedAt:     started.Add(10 * time.Minute),
+		Verdict:        runrecord.VerdictAccepted,
+		SolutionCommit: strings.Repeat("cd", 20),
 		Validators: []runrecord.CheckResult{
 			{Name: "build", Passed: true},
 			{Name: "test", Passed: true},
@@ -61,10 +62,11 @@ func Accepted() *runrecord.RunRecord {
 		},
 		Metrics: CompleteMetrics(),
 		Target: runrecord.TargetDescriptor{
-			AdapterName:    "fake",
-			AdapterVersion: "0.0.0",
-			CommitHash:     hexDigest()[:40],
-			BinaryIdentity: "fake-binary",
+			AdapterName:       "fake",
+			AdapterVersion:    "0.0.0",
+			CommitHash:        hexDigest()[:40],
+			BinaryIdentity:    "fake-binary",
+			BudgetEnforcement: runrecord.EnforcementStreamed,
 			MPH: runrecord.MPHIdentity{
 				Model:          "provider:model-x",
 				PromptPack:     "v1-embedded",
