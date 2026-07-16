@@ -83,10 +83,14 @@ func TestAppendRejectsInvalidRecords(t *testing.T) {
 
 func TestAppendRejectsUnsafeSuiteIDs(t *testing.T) {
 	store, _ := openStore(t)
-	rec := recordtest.Accepted()
-	rec.SuiteRunID = "../escape"
-	if err := store.Append(rec); err == nil || !strings.Contains(err.Error(), "suite run id") {
-		t.Fatalf("unsafe suite id must be rejected, got %v", err)
+	// Uppercase is rejected too: case-insensitive filesystems would collide
+	// IDs differing only by case onto one file.
+	for _, id := range []string{"../escape", "Suite-0001"} {
+		rec := recordtest.Accepted()
+		rec.SuiteRunID = id
+		if err := store.Append(rec); err == nil || !strings.Contains(err.Error(), "suite run id") {
+			t.Fatalf("unsafe suite id %q must be rejected, got %v", id, err)
+		}
 	}
 }
 

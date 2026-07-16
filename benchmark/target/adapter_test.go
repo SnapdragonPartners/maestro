@@ -94,3 +94,11 @@ func TestObservationValidateEnforcesMetricCompleteness(t *testing.T) {
 		t.Fatalf("incomplete observation must fail, got %v", err)
 	}
 }
+
+func TestObservationValidateRejectsUnknownCapabilities(t *testing.T) {
+	obs := faketarget.Observe(spec(t))
+	obs.Target.Capabilities = append(obs.Target.Capabilities, "made_up")
+	if err := obs.Validate(); err == nil || !strings.Contains(err.Error(), "made_up") {
+		t.Fatalf("unknown capability must fail at the adapter boundary, got %v", err)
+	}
+}

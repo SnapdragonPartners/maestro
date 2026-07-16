@@ -168,12 +168,16 @@ func (r *RunRecord) Validate() error {
 }
 
 // CapabilityCoherence enforces that a metrics map cannot contradict its
-// target's declared capabilities: unsupported iff the capability is absent;
-// value and unavailable only when present. not_applicable is
-// story-dependent and legal either way.
+// target's declared capabilities: capabilities must be registry keys with
+// no duplicates; unsupported iff the capability is absent; value and
+// unavailable only when present. not_applicable is story-dependent and
+// legal either way.
 func CapabilityCoherence(capabilities []MetricKey, metrics Metrics) error {
 	capable := make(map[MetricKey]bool, len(capabilities))
 	for _, key := range capabilities {
+		if !inRegistry(key) {
+			return fmt.Errorf("capability %q is not a registry metric key", key)
+		}
 		if capable[key] {
 			return fmt.Errorf("capability %q declared twice", key)
 		}
@@ -317,11 +321,8 @@ func (d *TargetDescriptor) validate() error {
 	if !contenthash.Valid(mph.HarnessHash) {
 		return fmt.Errorf("mph harness_hash must be a complete %q content identity, got %q", contenthash.Prefix, mph.HarnessHash)
 	}
-	for _, key := range d.Capabilities {
-		if !inRegistry(key) {
-			return fmt.Errorf("capability %q is not a registry metric key", key)
-		}
-	}
+	// Capability keys themselves are validated by CapabilityCoherence,
+	// which every record and observation runs through.
 	return nil
 }
 

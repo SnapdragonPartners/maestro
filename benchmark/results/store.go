@@ -123,10 +123,12 @@ func (s *Store) suitePath(suiteRunID string) string {
 	return filepath.Join(s.dir, suiteRunID+fileExtension)
 }
 
-// validSuiteRunID keeps suite run IDs filename-safe.
+// validSuiteRunID keeps suite run IDs filename-safe and portable: lowercase
+// only, because case-insensitive filesystems (macOS default) would collide
+// IDs differing only by case onto one .jsonl file.
 func validSuiteRunID(id string) error {
-	if !regexp.MustCompile(`^[A-Za-z0-9_-]+$`).MatchString(id) {
-		return fmt.Errorf("suite run id %q must match [A-Za-z0-9_-]+", id)
+	if !regexp.MustCompile(`^[a-z0-9_-]+$`).MatchString(id) {
+		return fmt.Errorf("suite run id %q must match [a-z0-9_-]+", id)
 	}
 	return nil
 }
