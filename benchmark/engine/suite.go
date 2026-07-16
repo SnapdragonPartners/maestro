@@ -20,27 +20,31 @@ type SuiteParams struct {
 }
 
 // bundleAccount tracks conservative suite-budget admission for one bundle:
-// an attempt is charged its declared expected cost up front, so the suite
-// cannot overshoot by launching (design_engine.md). Observed cost above
-// the expectation tops the charge up; unavailable/unsupported cost stays
-// charged at the expectation, never zero.
+// admission reserves the attempt's *effective per-run maximum* — the most
+// an admitted attempt may legitimately spend — so the suite cannot
+// overshoot its cap by launching (Codex round 2). After the attempt,
+// settle adjusts the charge to the observed cost when known; unknown cost
+// keeps the full reservation, never zero.
 type bundleAccount struct {
 	capUSD     float64
 	chargedUSD float64
 }
 
-func (b *bundleAccount) admit(expected float64) bool {
-	if b.chargedUSD+expected > b.capUSD {
+func (b *bundleAccount) admit(reserve float64) bool {
+	if b.chargedUSD+reserve > b.capUSD {
 		return false
 	}
-	b.chargedUSD += expected
+	b.chargedUSD += reserve
 	return true
 }
 
-func (b *bundleAccount) topUp(expected, observed float64, known bool) {
-	if known && observed > expected {
-		b.chargedUSD += observed - expected
+func (b *bundleAccount) settle(reserve, observed float64, known bool) {
+	if !known {
+		return // conservative: the reservation stands
 	}
+	// Replace the reservation with reality — including observed cost
+	// above the reservation (a post-hoc target that overspent really did).
+	b.chargedUSD += observed - reserve
 }
 
 // suiteRun is the in-flight state of one suite execution.
@@ -73,6 +77,10 @@ func (e *Engine) RunSuite(ctx context.Context, p SuiteParams) (*results.Manifest
 				stop, err := run.cell(ctx, &run.manifest.Attempts[idx], st, bundle, repeat)
 				idx++
 				if err != nil {
+					// Fatal engine/persistence error: the manifest must
+					// still say what happened — best-effort finalize as
+					// interrupted before surfacing the error.
+					_, _ = run.finish(results.StopInterrupted) //nolint:errcheck // best effort; the primary error is surfaced below
 					return run.manifest, err
 				}
 				if stop {
@@ -120,11 +128,13 @@ func (s *suiteRun) cell(ctx context.Context, entry *results.ManifestAttempt, st 
 		return true, nil //nolint:nilerr // interruption is a manifest stop reason, not an engine error
 	}
 	account := s.accounts[bundle.Bundle.Name]
-	expected := bundle.Bundle.Budget.ExpectedCostUSDPerRun
-	if !account.admit(expected) {
+	// Reserve what an admitted attempt may legitimately spend: its
+	// effective per-run cost cap, not the (smaller) expectation.
+	reserve := effectiveBudget(st.Definition.Budget, bundle.Bundle.Budget).MaxCostUSD
+	if !account.admit(reserve) {
 		s.budgetHit = true
 		entry.Status = results.AttemptSkipped
-		entry.Reason = fmt.Sprintf("suite budget: charged %.2f + expected %.2f exceeds cap %.2f", account.chargedUSD, expected, account.capUSD)
+		entry.Reason = fmt.Sprintf("suite budget: charged %.2f + per-run cap %.2f exceeds cap %.2f", account.chargedUSD, reserve, account.capUSD)
 		s.engine.logf("%s/%s r%d: skipped (%s)", st.Definition.ID, bundle.Bundle.Name, repeat, entry.Reason)
 		return false, s.persist()
 	}
@@ -138,7 +148,7 @@ func (s *suiteRun) cell(ctx context.Context, entry *results.ManifestAttempt, st 
 	entry.Status = results.AttemptCompleted
 	entry.RunID = rec.RunID
 	observed, known := rec.Metrics[runrecord.MetricCostUSD].Float64()
-	account.topUp(expected, observed, known)
+	account.settle(reserve, observed, known)
 	if known {
 		s.manifest.ObservedUSD += observed
 	}

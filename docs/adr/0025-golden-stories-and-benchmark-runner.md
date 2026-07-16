@@ -7,7 +7,7 @@ summary = "Specifies the measuring instrument: golden story schema, the black-bo
 
 # 0025. Golden Stories And The Benchmark Runner
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation.
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation. Amended again 2026-07-16 (item 3 review, Codex + DR): **budget enforcement modes** — the overrun-aborts rule is satisfied natively by targets that stream usage (engine-cancelled at the cap) or self-enforce declared caps; targets that can only report usage post-hoc are permitted as *degraded enforcement*, declared as `budget_enforcement` in every run record. Wall-clock caps are engine-enforced for every mode. Cost metrics remain comparable across modes (costs are real costs), but budget-overrun *rates* are comparable only within one enforcement mode.
 
 ## Context
 
@@ -47,7 +47,7 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
   - **Pass rate** — accepted verdicts over valid attempts.
   - **Failure kinds** — counts per kind across valid attempts.
   - **Cost to accepted change** (the headline, D6) — total cost of all valid attempts divided by the number of accepted verdicts, so failed-attempt costs are included: that is what the factory actually spends per accepted change. Undefined when no attempt passes — reported as undefined, never as zero or infinity.
-- Budgets are declared, not discovered: every configuration declares expected per-run cost, and the suite run carries a per-run and per-suite cap. **Overrun aborts the run and records it with failure kind `budget-overrun`** — partial results are reported as partial; nothing silently truncates into a fake pass.
+- Budgets are declared, not discovered: every configuration declares expected per-run cost, and the suite run carries a per-run and per-suite cap. **Overrun aborts the run and records it with failure kind `budget-overrun`** — partial results are reported as partial; nothing silently truncates into a fake pass. (Amended 2026-07-16: abort-at-the-cap is native for `streamed` and `self-enforced` targets; `post-hoc` targets are degraded enforcement, declared per record — wall-clock stays hard for all modes, and overrun rates are comparable only within one mode.)
 - Full-matrix runs (stories × models × packs × harness configs) require explicit justification — release comparisons and D6-grade questions; spot checks are the default posture.
 
 ### Configurations

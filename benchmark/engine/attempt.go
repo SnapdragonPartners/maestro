@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +23,8 @@ import (
 var errUsageOverrun = errors.New("streamed usage exceeded a declared cap") //nolint:gochecknoglobals // sentinel error
 
 // usageTracker accumulates streamed usage and cancels the attempt the
-// moment a cap is crossed (design_engine.md budget contract).
+// moment a cap is crossed (design_engine.md budget contract). Totals are
+// retained for the record: failed-attempt costs count (ADR 0025).
 type usageTracker struct {
 	cancel    context.CancelCauseFunc
 	mu        sync.Mutex
@@ -33,9 +36,19 @@ type usageTracker struct {
 }
 
 func (u *usageTracker) report(delta target.UsageDelta) {
+	// Malformed deltas are rejected outright: a negative or non-finite
+	// delta could otherwise walk totals back under the cap and bypass
+	// cancellation.
+	if delta.Tokens < 0 || delta.CostUSD < 0 || math.IsNaN(delta.CostUSD) || math.IsInf(delta.CostUSD, 0) {
+		return
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.tokens += delta.Tokens
+	if delta.Tokens > math.MaxInt64-u.tokens {
+		u.tokens = math.MaxInt64 // saturate rather than wrap
+	} else {
+		u.tokens += delta.Tokens
+	}
 	u.costUSD += delta.CostUSD
 	if !u.tripped && (u.tokens > u.maxTokens || u.costUSD > u.maxCost) {
 		u.tripped = true
@@ -49,6 +62,13 @@ func (u *usageTracker) overrun() bool {
 	return u.tripped
 }
 
+// totals returns the accumulated streamed usage.
+func (u *usageTracker) totals() (int64, float64) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.tokens, u.costUSD
+}
+
 // attempt carries the state of one isolated attempt.
 type attempt struct {
 	engine   *Engine
@@ -56,11 +76,16 @@ type attempt struct {
 	story    *story.Loaded
 	bundle   *mph.Loaded
 	obs      *target.Observation
+	tracker  *usageTracker
 	adapter  target.Adapter
 	solution string
 	started  time.Time
-	desc     runrecord.TargetDescriptor
-	out      outcome
+	// workEnded marks the end of the budgeted work (run through
+	// verification, before cleanup); the canonical wall-clock metric is
+	// engine-measured from started to workEnded.
+	workEnded time.Time
+	desc      runrecord.TargetDescriptor
+	out       outcome
 }
 
 // RunAttempt executes one fully isolated attempt and appends its record to
@@ -117,19 +142,29 @@ func effectiveBudget(sb story.Budget, db mph.DeclaredBudget) story.Budget {
 }
 
 // execute runs the lifecycle: describe → isolate → run → bind → verify →
-// cleanup → compose and assemble. Cleanup always precedes record assembly
-// (the store is append-only) and runs on a fresh bounded context.
+// cleanup → compose and assemble. The wall-clock cap bounds the whole
+// budgeted phase — target run through verification — not just Adapter.Run,
+// so a hung validator cannot exceed the declared cap. Cleanup always
+// precedes record assembly (the store is append-only) and runs on a fresh
+// bounded context.
 func (a *attempt) execute(ctx context.Context) *runrecord.RunRecord {
 	a.describe(ctx)
 	if a.out.describeErr == nil {
 		a.isolate(ctx)
 	}
 	if a.out.describeErr == nil && a.out.isolationErr == nil {
-		a.runTarget(ctx)
-		a.bindSolution(ctx)
-		a.verify(ctx)
+		deadline := time.Duration(a.spec.Budget.MaxWallClockSeconds) * time.Second
+		actx, cancel := context.WithTimeout(ctx, deadline)
+		a.runTarget(actx)
+		a.bindSolution(actx)
+		a.verify(actx)
+		if errors.Is(actx.Err(), context.DeadlineExceeded) {
+			a.out.overrun = true
+		}
+		cancel()
 		a.checkPostHocBudget()
 	}
+	a.workEnded = time.Now()
 	a.cleanup() //nolint:contextcheck // cleanup deliberately uses a fresh bounded context, never the (possibly expired) attempt context (design_engine.md)
 	return a.assemble()
 }
@@ -178,22 +213,20 @@ func (a *attempt) isolate(ctx context.Context) {
 	}
 }
 
-// runTarget drives the adapter under wall-clock and streamed-usage caps.
+// runTarget drives the adapter under the attempt deadline and
+// streamed-usage caps.
 func (a *attempt) runTarget(ctx context.Context) {
 	rctx, cancelCause := context.WithCancelCause(ctx)
-	tracker := &usageTracker{
+	defer cancelCause(nil)
+	a.tracker = &usageTracker{
 		cancel:    cancelCause,
 		maxTokens: a.spec.Budget.MaxTokens,
 		maxCost:   a.spec.Budget.MaxCostUSD,
 	}
-	a.spec.ReportUsage = tracker.report
-	deadline := time.Duration(a.spec.Budget.MaxWallClockSeconds) * time.Second
-	rctx, cancelDeadline := context.WithTimeout(rctx, deadline)
-	defer cancelDeadline()
-	defer cancelCause(nil)
+	a.spec.ReportUsage = a.tracker.report
 
 	obs, err := a.adapter.Run(rctx, a.spec)
-	if tracker.overrun() || errors.Is(rctx.Err(), context.DeadlineExceeded) {
+	if a.tracker.overrun() || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		a.out.overrun = true
 		return
 	}
@@ -232,6 +265,15 @@ func (a *attempt) bindSolution(ctx context.Context) {
 	if err := gitx.Checkout(ctx, a.spec.WorkspaceDir, commit); err != nil {
 		a.out.bindErr = fmt.Errorf("checkout solution: %w", err)
 		return
+	}
+	if a.obs.SolutionBranch != "" {
+		// Branch solutions validate against exactly the resolved commit:
+		// untracked or ignored files the target left in the workspace are
+		// not part of the solution and must not influence validators.
+		if err := gitx.CleanUntracked(ctx, a.spec.WorkspaceDir); err != nil {
+			a.out.bindErr = fmt.Errorf("clean workspace for validation: %w", err)
+			return
+		}
 	}
 	a.solution = commit
 	a.out.solutionOK = true
@@ -344,13 +386,30 @@ func (a *attempt) assemble() *runrecord.RunRecord {
 	return rec
 }
 
-// metrics returns observed metrics when a valid observation exists, else a
-// synthesized complete map.
+// metrics returns the record's complete metrics map: the observation's (or
+// a synthesized one), overlaid with the engine-owned canonical wall-clock
+// and — on aborted attempts — the retained streamed usage totals, because
+// failed-attempt costs count (ADR 0025).
 func (a *attempt) metrics() runrecord.Metrics {
+	caps := a.adapter.Capabilities()
+	base := synthesizeMetrics(caps, a.failureReason())
 	if a.obs != nil {
-		return a.obs.Metrics
+		base = make(runrecord.Metrics, len(a.obs.Metrics))
+		maps.Copy(base, a.obs.Metrics)
 	}
-	return synthesizeMetrics(a.adapter.Capabilities(), a.failureReason())
+	// The canonical wall-clock is engine-measured (attempt start through
+	// the end of verification): adapters cannot measure different intervals.
+	base[runrecord.MetricWallClockSeconds] = runrecord.Measured(a.workEnded.Sub(a.started).Seconds())
+	if a.obs == nil && a.tracker != nil {
+		tokens, cost := a.tracker.totals()
+		if tokens > 0 && caps.Supports(runrecord.MetricTokensTotal) {
+			base[runrecord.MetricTokensTotal] = runrecord.Measured(float64(tokens))
+		}
+		if cost > 0 && caps.Supports(runrecord.MetricCostUSD) {
+			base[runrecord.MetricCostUSD] = runrecord.Measured(cost)
+		}
+	}
+	return base
 }
 
 func (a *attempt) failureReason() string {

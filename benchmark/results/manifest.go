@@ -11,6 +11,9 @@ import (
 // ManifestSchemaVersion is the current suite-manifest schema.
 const ManifestSchemaVersion = 1
 
+// manifestExtension is the manifest file suffix; one per suite run.
+const manifestExtension = ".manifest.json"
+
 // Attempt statuses in a manifest.
 const (
 	// AttemptPlanned means the attempt has not started yet.
@@ -105,5 +108,5 @@ func (s *Store) ReadManifest(suiteRunID string) (*Manifest, error) {
 }
 
 func (s *Store) manifestPath(suiteRunID string) string {
-	return filepath.Join(s.dir, suiteRunID+".manifest.json")
+	return filepath.Join(s.dir, suiteRunID+manifestExtension)
 }

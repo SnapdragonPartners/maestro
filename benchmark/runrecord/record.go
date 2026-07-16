@@ -240,7 +240,7 @@ func CapabilityCoherence(capabilities []MetricKey, metrics Metrics) error {
 				return fmt.Errorf("metric %q reported unsupported by a target that declares the capability", spec.Key)
 			}
 		case StatusValue, StatusUnavailable:
-			if !capable[spec.Key] {
+			if !capable[spec.Key] && !engineOwnedMetric(spec.Key) {
 				return fmt.Errorf("metric %q reported %s without a declared capability", spec.Key, metric.Status)
 			}
 		case StatusNotApplicable:
@@ -378,6 +378,13 @@ func (d *TargetDescriptor) Validate() error {
 	// Capability keys themselves are validated by CapabilityCoherence,
 	// which every record and observation runs through.
 	return nil
+}
+
+// engineOwnedMetric names registry keys the engine measures itself
+// (canonically, from its own timestamps), so a value is legal regardless
+// of the target's declared capabilities.
+func engineOwnedMetric(key MetricKey) bool {
+	return key == MetricWallClockSeconds
 }
 
 // inRegistry reports whether key is part of the metric registry.

@@ -22,6 +22,9 @@ import (
 type Stub struct {
 	// Files are written relative to the workspace before committing.
 	Files map[string]string
+	// JunkFiles are written AFTER the solution is committed and pushed —
+	// untracked debris the engine must clean before validating.
+	JunkFiles map[string]string
 	// Usage is streamed through spec.ReportUsage before doing work.
 	Usage []target.UsageDelta
 	// Evidence kinds to report (defaults to "diff" and "test-output").
@@ -108,6 +111,11 @@ func (s *Stub) Run(ctx context.Context, spec *target.AttemptSpec) (*target.Obser
 	branch, err := s.produceSolution(ctx, spec)
 	if err != nil {
 		return nil, err
+	}
+	for name, content := range s.JunkFiles {
+		if err := os.WriteFile(filepath.Join(spec.WorkspaceDir, name), []byte(content), 0o644); err != nil {
+			return nil, fmt.Errorf("stub junk write: %w", err)
+		}
 	}
 	return s.observation(spec, branch), nil
 }

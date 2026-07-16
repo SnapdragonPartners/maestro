@@ -64,12 +64,21 @@ func ResolveRemoteBranch(ctx context.Context, dir, branch string) (string, error
 	return Run(ctx, dir, "rev-parse", "FETCH_HEAD")
 }
 
-// SnapshotCommit stages the entire working tree of dir and commits it
-// (allowing empty), returning the resulting commit hash. Used to bind
-// in-place solutions immutably: uncommitted changes are otherwise
-// invisible to commit-range diffs.
+// CleanUntracked removes untracked and ignored files from dir so a
+// detached validation checkout sees exactly the solution commit and
+// nothing the target left lying around.
+func CleanUntracked(ctx context.Context, dir string) error {
+	_, err := Run(ctx, dir, "clean", "-fdx", "--quiet")
+	return err
+}
+
+// SnapshotCommit stages the entire working tree of dir — including ignored
+// files (--force) — and commits it (allowing empty), returning the
+// resulting commit hash. Used to bind in-place solutions immutably:
+// anything less than the full tree would let validators see state not
+// represented by the recorded solution commit.
 func SnapshotCommit(ctx context.Context, dir string) (string, error) {
-	if _, err := Run(ctx, dir, "add", "-A"); err != nil {
+	if _, err := Run(ctx, dir, "add", "-A", "--force"); err != nil {
 		return "", err
 	}
 	_, err := Run(ctx, dir,

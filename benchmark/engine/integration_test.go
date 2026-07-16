@@ -40,6 +40,7 @@ func makeFixture(t *testing.T) (string, string) {
 		t.Fatalf("seed branch: %v", err)
 	}
 	writeFile(t, seed+"/base.txt", "base content\n")
+	writeFile(t, seed+"/.gitignore", "ignored.txt\n")
 	if _, err := gitx.Run(ctx, seed, "add", "-A"); err != nil {
 		t.Fatalf("seed add: %v", err)
 	}
@@ -313,11 +314,14 @@ func TestRepeatIsolation(t *testing.T) {
 func TestSuiteBudgetAdmissionAndManifest(t *testing.T) {
 	repoURL, pin := makeFixture(t)
 	sb, _ := defaultBudgets()
+	// Admission reserves the effective per-run cap (0.8). The suite cap
+	// admits exactly one reservation; after it settles to the observed
+	// $0.01, the next reservation (0.01 + 0.8) still exceeds the cap.
 	db := mph.DeclaredBudget{
 		ExpectedTokensPerRun:  1000,
 		ExpectedCostUSDPerRun: 0.6,
 		MaxCostUSDPerRun:      0.8,
-		MaxCostUSDPerSuite:    1.0, // admits exactly one attempt at 0.6
+		MaxCostUSDPerSuite:    0.8,
 	}
 	eng, store := newEngine(t, solutionStub())
 	manifest, err := eng.RunSuite(context.Background(), engine.SuiteParams{
@@ -342,6 +346,140 @@ func TestSuiteBudgetAdmissionAndManifest(t *testing.T) {
 	back, err := store.ReadManifest("suite-budget")
 	if err != nil || back.StopReason != manifest.StopReason {
 		t.Fatalf("manifest must round-trip: %v %v", back, err)
+	}
+}
+
+func TestStreamedTotalsSurviveAbort(t *testing.T) {
+	sb, _ := defaultBudgets()
+	sb.MaxTokens = 500
+	stub := solutionStub()
+	stub.Usage = []target.UsageDelta{{Tokens: 400, CostUSD: 0.02}, {Tokens: 400, CostUSD: 0.02}}
+	stub.SleepFor = 5 * time.Second
+	rec := runOne(t, stub, sb)
+	if rec.FailureKind != runrecord.FailureBudgetOverrun {
+		t.Fatalf("want budget-overrun, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+	tokens, ok := rec.Metrics[runrecord.MetricTokensTotal].Float64()
+	if !ok || tokens != 800 {
+		t.Fatalf("aborted attempts must retain streamed token totals (ADR 0025), got %+v", rec.Metrics[runrecord.MetricTokensTotal])
+	}
+	cost, ok := rec.Metrics[runrecord.MetricCostUSD].Float64()
+	if !ok || cost != 0.04 {
+		t.Fatalf("aborted attempts must retain streamed cost, got %+v", rec.Metrics[runrecord.MetricCostUSD])
+	}
+}
+
+func TestWallClockCoversVerification(t *testing.T) {
+	// The story's validator hangs; the attempt-wide deadline must bound it
+	// and classify the attempt as budget-overrun.
+	repoURL, pin := makeFixture(t)
+	sb, db := defaultBudgets()
+	sb.MaxWallClockSeconds = 1
+	loaded := testStory(t, repoURL, pin, sb)
+	loaded.Definition.Validators = append(loaded.Definition.Validators, story.Validator{Name: "hung", Command: "sleep 30"})
+	eng, _ := newEngine(t, solutionStub())
+	start := time.Now()
+	rec, err := eng.RunAttempt(context.Background(), loaded, testBundle(t, db), "suite-int", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("verification must be bounded by the wall-clock cap, took %s", elapsed)
+	}
+	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureBudgetOverrun {
+		t.Fatalf("hung verification must be budget-overrun, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+}
+
+func TestWallClockMetricIsEngineMeasured(t *testing.T) {
+	sb, _ := defaultBudgets()
+	rec := runOne(t, solutionStub(), sb)
+	// The stub reports 1s; the engine overrides with its own measurement.
+	wall, ok := rec.Metrics[runrecord.MetricWallClockSeconds].Float64()
+	if !ok || wall <= 0 || wall == 1 {
+		t.Fatalf("wall clock must be engine-measured, got %v (ok=%v)", wall, ok)
+	}
+}
+
+func TestUntrackedJunkCleanedBeforeValidation(t *testing.T) {
+	repoURL, pin := makeFixture(t)
+	sb, db := defaultBudgets()
+	loaded := testStory(t, repoURL, pin, sb)
+	loaded.Definition.Validators = append(loaded.Definition.Validators,
+		story.Validator{Name: "no-junk", Command: "test ! -f junk.txt"})
+	stub := solutionStub()
+	stub.JunkFiles = map[string]string{"junk.txt": "left behind by the target\n"}
+	eng, _ := newEngine(t, stub)
+	rec, err := eng.RunAttempt(context.Background(), loaded, testBundle(t, db), "suite-int", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+	if rec.Verdict != runrecord.VerdictAccepted {
+		t.Fatalf("untracked junk must be cleaned before validation, got %s/%s (%s)", rec.Verdict, rec.FailureKind, detailOf(rec, "no-junk"))
+	}
+}
+
+func TestInPlaceSnapshotIncludesIgnoredFiles(t *testing.T) {
+	// The fixture ignores ignored.txt; an in-place solution writing it must
+	// have it force-added to the snapshot, where diff-confinement sees it.
+	sb, _ := defaultBudgets()
+	stub := solutionStub()
+	stub.InPlace = true
+	stub.Files["ignored.txt"] = "sneaky state validators could otherwise use\n"
+	rec := runOne(t, stub, sb)
+	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureChecksFailed {
+		t.Fatalf("ignored files must be part of the snapshot and trip diff confinement, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+	if detail := detailOf(rec, "diff-confined"); !strings.Contains(detail, "ignored.txt") {
+		t.Fatalf("diff confinement must name the ignored file, got %q", detail)
+	}
+}
+
+func detailOf(rec *runrecord.RunRecord, name string) string {
+	for i := range rec.Checks {
+		if rec.Checks[i].Name == name {
+			return rec.Checks[i].Detail
+		}
+	}
+	for i := range rec.Validators {
+		if rec.Validators[i].Name == name {
+			return rec.Validators[i].Detail
+		}
+	}
+	return ""
+}
+
+func TestFatalSuiteErrorFinalizesManifest(t *testing.T) {
+	repoURL, pin := makeFixture(t)
+	sb, db := defaultBudgets()
+	bundle := testBundle(t, db)
+	bundle.Bundle.Harness.Adapter = "missing" // resolves to an engine error
+	eng, store := newEngine(t, solutionStub())
+	_, err := eng.RunSuite(context.Background(), engine.SuiteParams{
+		SuiteRunID: "suite-fatal",
+		Stories:    []*story.Loaded{testStory(t, repoURL, pin, sb)},
+		Bundles:    []*mph.Loaded{bundle},
+		Repeats:    2,
+	})
+	if err == nil {
+		t.Fatalf("unknown adapter must surface an error")
+	}
+	manifest, readErr := store.ReadManifest("suite-fatal")
+	if readErr != nil {
+		t.Fatalf("fatal exits must leave a readable manifest: %v", readErr)
+	}
+	if manifest.StopReason != results.StopInterrupted {
+		t.Fatalf("fatal exits must finalize as interrupted, got %s", manifest.StopReason)
+	}
+	for _, attempt := range manifest.Attempts {
+		if attempt.Status == results.AttemptPlanned {
+			t.Fatalf("no attempt may remain planned after a fatal exit: %+v", attempt)
+		}
+	}
+	// Manifest-only suites are discoverable.
+	ids, err := store.SuiteRunIDs()
+	if err != nil || len(ids) != 1 || ids[0] != "suite-fatal" {
+		t.Fatalf("manifest-only suites must be listed, got %v (%v)", ids, err)
 	}
 }
 

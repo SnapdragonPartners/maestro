@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"math"
 	"testing"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
@@ -125,22 +126,63 @@ func TestBundleAccountAdmission(t *testing.T) {
 		}
 	}
 	if admitted != 3 {
-		t.Fatalf("cap 10 at expected 3.0 must admit exactly 3, got %d", admitted)
+		t.Fatalf("cap 10 reserving 3.0 must admit exactly 3, got %d", admitted)
 	}
-	// Observed above expectation tops up; unavailable stays at expectation.
+
+	// Settling to a smaller observed cost refunds reservation headroom.
 	account = &bundleAccount{capUSD: 10}
-	if !account.admit(3.0) {
+	if !account.admit(6.0) {
 		t.Fatalf("first admission must pass")
 	}
-	account.topUp(3.0, 5.0, true)
-	if account.chargedUSD != 5.0 {
-		t.Fatalf("observed above expectation must top up, got %v", account.chargedUSD)
+	account.settle(6.0, 1.0, true)
+	if account.chargedUSD != 1.0 {
+		t.Fatalf("settle must replace the reservation with reality, got %v", account.chargedUSD)
 	}
-	account.topUp(3.0, 0, false)
-	if account.chargedUSD != 5.0 {
-		t.Fatalf("unknown observed cost must not change the charge, got %v", account.chargedUSD)
+	// A post-hoc overspend above the reservation is charged as it happened.
+	account.settle(0, 2.5, true)
+	if account.chargedUSD != 3.5 {
+		t.Fatalf("overspend must be charged, got %v", account.chargedUSD)
+	}
+	// Unknown observed cost keeps the full reservation, never zero.
+	before := account.chargedUSD
+	account.settle(4.0, 0, false)
+	if account.chargedUSD != before {
+		t.Fatalf("unknown cost must keep the reservation, got %v", account.chargedUSD)
 	}
 }
+
+func TestUsageTrackerRejectsMalformedDeltas(t *testing.T) {
+	cancelled := false
+	tracker := &usageTracker{
+		cancel:    func(error) { cancelled = true },
+		maxTokens: 100,
+		maxCost:   1.0,
+	}
+	tracker.report(target.UsageDelta{Tokens: 90, CostUSD: 0.5})
+	// Malformed deltas must be rejected, not walk totals back under a cap.
+	tracker.report(target.UsageDelta{Tokens: -1000})
+	tracker.report(target.UsageDelta{CostUSD: -5})
+	tracker.report(target.UsageDelta{CostUSD: nan()})
+	tokens, cost := tracker.totals()
+	if tokens != 90 || cost != 0.5 {
+		t.Fatalf("malformed deltas must not change totals: %d %v", tokens, cost)
+	}
+	if cancelled {
+		t.Fatalf("no cap crossed yet")
+	}
+	tracker.report(target.UsageDelta{Tokens: 20})
+	if !tracker.overrun() || !cancelled {
+		t.Fatalf("crossing the cap must trip cancellation")
+	}
+	// Saturation instead of overflow wrap.
+	tracker.report(target.UsageDelta{Tokens: math.MaxInt64})
+	tokens, _ = tracker.totals()
+	if tokens != math.MaxInt64 {
+		t.Fatalf("token totals must saturate, got %d", tokens)
+	}
+}
+
+func nan() float64 { return math.NaN() }
 
 func TestPathAllowed(t *testing.T) {
 	allowed := []string{"go.mod", "llms/providers/openai/"}
