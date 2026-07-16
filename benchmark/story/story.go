@@ -8,6 +8,7 @@ package story
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 )
 
@@ -221,6 +222,11 @@ func (f *Fixture) validate() error {
 }
 
 func (b *Budget) validate() error {
+	// TOML admits nan and inf literals; a NaN cap slides through ordered
+	// comparisons and would defeat hard-budget enforcement.
+	if math.IsNaN(b.MaxCostUSD) || math.IsInf(b.MaxCostUSD, 0) {
+		return fmt.Errorf("max_cost_usd must be finite, got %v", b.MaxCostUSD)
+	}
 	if b.MaxTokens <= 0 || b.MaxWallClockSeconds <= 0 || b.MaxCostUSD <= 0 {
 		return fmt.Errorf("max_tokens, max_wall_clock_seconds, and max_cost_usd must all be positive: budgets are declared, not discovered")
 	}

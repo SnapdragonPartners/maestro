@@ -15,7 +15,7 @@ import (
 // MetricStatus says whether a metric carries a value and, if not, why.
 type MetricStatus string
 
-// Metric statuses: ADR 0025's tri-state plus "unavailable". Missing is
+// The four metric statuses (ADR 0025 as amended 2026-07-16). Missing is
 // never zero — and never missing: every registry key must appear in a
 // record's metrics map with one of these statuses.
 const (

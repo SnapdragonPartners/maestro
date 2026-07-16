@@ -23,6 +23,17 @@ func CompleteMetrics() runrecord.Metrics {
 	return metrics
 }
 
+// AllCapabilities returns every registry key, matching CompleteMetrics'
+// all-measured map (capability coherence: value requires the capability).
+func AllCapabilities() []runrecord.MetricKey {
+	specs := runrecord.Registry()
+	keys := make([]runrecord.MetricKey, 0, len(specs))
+	for _, spec := range specs {
+		keys = append(keys, spec.Key)
+	}
+	return keys
+}
+
 // Accepted returns a contract-valid accepted record. Tests mutate copies to
 // probe validation failures.
 func Accepted() *runrecord.RunRecord {
@@ -61,7 +72,7 @@ func Accepted() *runrecord.RunRecord {
 				HarnessHash:    "sha256:" + hexDigest(),
 				MaestroVersion: "v1-as-patched",
 			},
-			Capabilities: []runrecord.MetricKey{runrecord.MetricTokensTotal},
+			Capabilities: AllCapabilities(),
 		},
 		Isolation: runrecord.Isolation{
 			WorkspaceDir:    "/tmp/run-0001",

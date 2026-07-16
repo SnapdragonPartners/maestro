@@ -9,6 +9,7 @@ package mph
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -92,8 +93,8 @@ func (b *Bundle) Validate() error {
 	if b.Prompt.Pack == "" {
 		return fmt.Errorf("prompt.pack is required")
 	}
-	if b.Prompt.Hash != "" && !strings.HasPrefix(b.Prompt.Hash, contenthash.Prefix) {
-		return fmt.Errorf("prompt.hash must be a %q content identity when declared, got %q", contenthash.Prefix, b.Prompt.Hash)
+	if b.Prompt.Hash != "" && !contenthash.Valid(b.Prompt.Hash) {
+		return fmt.Errorf("prompt.hash must be a complete %q content identity when declared, got %q", contenthash.Prefix, b.Prompt.Hash)
 	}
 	if b.Harness.Adapter == "" {
 		return fmt.Errorf("harness.adapter is required")
@@ -102,6 +103,13 @@ func (b *Bundle) Validate() error {
 }
 
 func (d *DeclaredBudget) validate() error {
+	// TOML admits nan and inf literals, and NaN slides through ordered
+	// comparisons — a NaN cap would defeat hard-budget enforcement.
+	for _, v := range []float64{d.ExpectedCostUSDPerRun, d.MaxCostUSDPerRun, d.MaxCostUSDPerSuite} {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("budget values must be finite, got %v", v)
+		}
+	}
 	if d.ExpectedTokensPerRun <= 0 || d.ExpectedCostUSDPerRun <= 0 {
 		return fmt.Errorf("budget expectations must be positive: budgets are declared, not discovered")
 	}

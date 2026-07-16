@@ -2,7 +2,7 @@ package runrecord
 
 import (
 	"fmt"
-	"strings"
+	"regexp"
 	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/contenthash"
@@ -155,8 +155,47 @@ func (r *RunRecord) Validate() error {
 	if err := r.Metrics.Validate(); err != nil {
 		return fmt.Errorf("metrics: %w", err)
 	}
+	if err := CapabilityCoherence(r.Target.Capabilities, r.Metrics); err != nil {
+		return err
+	}
 	if r.Isolation.WorkspaceDir == "" || r.Isolation.BranchNamespace == "" {
 		return fmt.Errorf("isolation workspace_dir and branch_namespace are required")
+	}
+	if r.Verdict != VerdictInvalid && !r.Isolation.CleanupVerified {
+		return fmt.Errorf("unverified cleanup requires verdict %q: such attempts never enter aggregations", VerdictInvalid)
+	}
+	return nil
+}
+
+// CapabilityCoherence enforces that a metrics map cannot contradict its
+// target's declared capabilities: unsupported iff the capability is absent;
+// value and unavailable only when present. not_applicable is
+// story-dependent and legal either way.
+func CapabilityCoherence(capabilities []MetricKey, metrics Metrics) error {
+	capable := make(map[MetricKey]bool, len(capabilities))
+	for _, key := range capabilities {
+		if capable[key] {
+			return fmt.Errorf("capability %q declared twice", key)
+		}
+		capable[key] = true
+	}
+	for _, spec := range Registry() {
+		metric, ok := metrics[spec.Key]
+		if !ok {
+			continue // completeness is Metrics.Validate's job
+		}
+		switch metric.Status {
+		case StatusUnsupported:
+			if capable[spec.Key] {
+				return fmt.Errorf("metric %q reported unsupported by a target that declares the capability", spec.Key)
+			}
+		case StatusValue, StatusUnavailable:
+			if !capable[spec.Key] {
+				return fmt.Errorf("metric %q reported %s without a declared capability", spec.Key, metric.Status)
+			}
+		case StatusNotApplicable:
+			// Story-dependent; legal with or without the capability.
+		}
 	}
 	return nil
 }
@@ -171,10 +210,10 @@ func (r *RunRecord) validateIdentity() error {
 		return fmt.Errorf("story_id is required")
 	case r.ConfigName == "":
 		return fmt.Errorf("config_name is required")
-	case !strings.HasPrefix(r.StoryHash, contenthash.Prefix):
-		return fmt.Errorf("story_hash must be a %q content identity, got %q", contenthash.Prefix, r.StoryHash)
-	case !strings.HasPrefix(r.ConfigHash, contenthash.Prefix):
-		return fmt.Errorf("config_hash must be a %q content identity, got %q", contenthash.Prefix, r.ConfigHash)
+	case !contenthash.Valid(r.StoryHash):
+		return fmt.Errorf("story_hash must be a complete %q content identity, got %q", contenthash.Prefix, r.StoryHash)
+	case !contenthash.Valid(r.ConfigHash):
+		return fmt.Errorf("config_hash must be a complete %q content identity, got %q", contenthash.Prefix, r.ConfigHash)
 	}
 	return nil
 }
@@ -182,12 +221,7 @@ func (r *RunRecord) validateIdentity() error {
 func (r *RunRecord) validateVerdict() error {
 	switch r.Verdict {
 	case VerdictAccepted:
-		if r.FailureKind != "" || r.InvalidReason != "" {
-			return fmt.Errorf("accepted records must not carry a failure kind or invalid reason")
-		}
-		if !r.TerminalStateReached {
-			return fmt.Errorf("accepted records require terminal_state_reached")
-		}
+		return r.validateAccepted()
 	case VerdictFailed:
 		if !knownFailureKind(r.FailureKind) {
 			return fmt.Errorf("failed records require a known failure kind, got %q", r.FailureKind)
@@ -204,6 +238,32 @@ func (r *RunRecord) validateVerdict() error {
 		}
 	default:
 		return fmt.Errorf("unknown verdict %q", r.Verdict)
+	}
+	return nil
+}
+
+// validateAccepted enforces what benchmark acceptance means: every
+// validator and check ran and passed, and the terminal state was reached.
+// An accepted record with failed or absent results is a contradiction.
+func (r *RunRecord) validateAccepted() error {
+	if r.FailureKind != "" || r.InvalidReason != "" {
+		return fmt.Errorf("accepted records must not carry a failure kind or invalid reason")
+	}
+	if !r.TerminalStateReached {
+		return fmt.Errorf("accepted records require terminal_state_reached")
+	}
+	if len(r.Validators) == 0 || len(r.Checks) == 0 {
+		return fmt.Errorf("accepted records require nonempty validator and check results")
+	}
+	for i := range r.Validators {
+		if !r.Validators[i].Passed {
+			return fmt.Errorf("accepted records cannot contain failed validator %q", r.Validators[i].Name)
+		}
+	}
+	for i := range r.Checks {
+		if !r.Checks[i].Passed {
+			return fmt.Errorf("accepted records cannot contain failed check %q", r.Checks[i].Name)
+		}
 	}
 	return nil
 }
@@ -241,18 +301,21 @@ func (d *TargetDescriptor) validate() error {
 	if d.AdapterName == "" || d.AdapterVersion == "" {
 		return fmt.Errorf("adapter_name and adapter_version are required")
 	}
-	if d.CommitHash == "" {
-		return fmt.Errorf("commit_hash is required")
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(d.CommitHash) {
+		return fmt.Errorf("commit_hash %q must be a full 40-hex commit: it is a comparison key", d.CommitHash)
+	}
+	if d.BinaryIdentity == "" {
+		return fmt.Errorf("binary_identity is required: run records say exactly what they measured")
 	}
 	mph := d.MPH
 	if mph.Model == "" || mph.PromptPack == "" {
 		return fmt.Errorf("mph model and prompt_pack are required")
 	}
-	if !strings.HasPrefix(mph.PromptHash, contenthash.Prefix) {
-		return fmt.Errorf("mph prompt_hash must be a %q content identity, got %q", contenthash.Prefix, mph.PromptHash)
+	if !contenthash.Valid(mph.PromptHash) {
+		return fmt.Errorf("mph prompt_hash must be a complete %q content identity, got %q", contenthash.Prefix, mph.PromptHash)
 	}
-	if !strings.HasPrefix(mph.HarnessHash, contenthash.Prefix) {
-		return fmt.Errorf("mph harness_hash must be a %q content identity, got %q", contenthash.Prefix, mph.HarnessHash)
+	if !contenthash.Valid(mph.HarnessHash) {
+		return fmt.Errorf("mph harness_hash must be a complete %q content identity, got %q", contenthash.Prefix, mph.HarnessHash)
 	}
 	for _, key := range d.Capabilities {
 		if !inRegistry(key) {

@@ -104,6 +104,9 @@ func TestLoadFileRejections(t *testing.T) {
 		{"zero budget", func(s string) string {
 			return strings.Replace(s, "max_tokens = 200000", "max_tokens = 0", 1)
 		}, "budget"},
+		{"nan budget", func(s string) string {
+			return strings.Replace(s, "max_cost_usd = 5.0", "max_cost_usd = nan", 1)
+		}, "finite"},
 		{"files_changed_within without allowed_paths", func(s string) string {
 			return strings.Replace(s, `allowed_paths = ["go.mod", "go.sum"]`, "", 1)
 		}, "allowed_paths"},

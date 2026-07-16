@@ -2,7 +2,7 @@
 title = "Design: Benchmark Runner Module Contracts (Item 1)"
 edit_date = "2026-07-16"
 status = "draft"
-summary = "Design sketch for the runner-skeleton work item: module layout, the run-record and tri-state metric contracts, story and MPH bundle schemas, the results store, the adapter interface with its engine/adapter division of labor, and build wiring."
+summary = "Design sketch for the runner-skeleton work item: module layout, the run-record and four-state metric contracts, story and MPH bundle schemas, the results store, the adapter interface with its engine/adapter division of labor, and build wiring."
 type = "design"
 +++
 
@@ -20,7 +20,7 @@ Status: draft — mini-plan for Phase 1 item 1 (`runner-skeleton`), added by agr
 
 | Package | Responsibility |
 |---|---|
-| `runrecord` | The normalized run-record contract: tri-state metrics, metric key registry, verdicts, failure kinds, target descriptor, MPH identity, evidence pointers, isolation record. Pure types + validation; no I/O. |
+| `runrecord` | The normalized run-record contract: four-state metrics, metric key registry, verdicts, failure kinds, target descriptor, MPH identity, evidence pointers, isolation record. Pure types + validation; no I/O. |
 | `story` | Golden story definitions: TOML schema, loader, validation, content hash. |
 | `mph` | MPH configuration bundles: TOML schema, loader, validation, content-hash identity. |
 | `results` | The self-contained results store: append-only, schema-versioned JSONL. |
@@ -33,7 +33,7 @@ The engine (item 3), CLI, and reporting (item 7) get their own packages later; n
 
 ## The Run-Record Contract (`runrecord`)
 
-**Metric statuses.** `Metric{Status, Value *float64, Reason}` with status `value` | `unsupported` | `not_applicable` | `unavailable` — ADR 0025's tri-state plus one (Codex P1): `unavailable` means the target supports the metric but it could not be collected on this attempt (target crash, truncated logs), with an optional reason. This is what lets a target-error attempt still produce a *valid failed* record without lying `unsupported`. `Value` is a pointer so a measured zero survives JSON round-trips (`omitempty` can never eat it). Validation enforces status/value coherence both ways.
+**Metric statuses.** `Metric{Status, Value *float64, Reason}` with status `value` | `unsupported` | `not_applicable` | `unavailable` — four states per ADR 0025 as amended 2026-07-16 (Codex P1 here drove the amendment): `unavailable` means the target supports the metric but it could not be collected on this attempt (target crash, truncated logs), with an optional reason. This is what lets a target-error attempt still produce a *valid failed* record without lying `unsupported`. `Value` is a pointer so a measured zero survives JSON round-trips (`omitempty` can never eat it). Validation enforces status/value coherence both ways.
 
 **Completeness rule.** ADR 0025 says missing is never zero. This design makes it *missing is never missing*: a record's metrics map must contain **every** key in the registry, each explicitly one of the four statuses. An adapter that forgets a metric fails validation instead of silently narrowing comparisons. (Aggregation semantics for `unavailable` — excluded from numeric spreads, counted visibly — are item 7's concern.)
 
@@ -89,7 +89,7 @@ New make targets `benchmark-build`, `benchmark-test`, `benchmark-lint` (root Go 
 
 ## Testing (Item 1 Scope)
 
-Unit tests only, no execution, no tokens: schema load/validation happy and error paths (unknown keys, bad commit pins, budget coherence), metric tri-state round-trips including measured zero, record validation pairings, store append/read round-trip and unknown-version rejection, fake-adapter contract. Real-execution tests arrive with item 3 behind tags.
+Unit tests only, no execution, no tokens: schema load/validation happy and error paths (unknown keys, bad commit pins, budget coherence), metric status round-trips including measured zero, record validation pairings, store append/read round-trip and unknown-version rejection, fake-adapter contract. Real-execution tests arrive with item 3 behind tags.
 
 ## Explicitly Deferred
 

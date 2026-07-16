@@ -15,6 +15,34 @@ func TestAcceptedRecordValidates(t *testing.T) {
 	}
 }
 
+// onlyTokensCapableMetrics is coherent with capabilities = [tokens_total]:
+// tokens measured, everything else unsupported.
+func onlyTokensCapableMetrics() runrecord.Metrics {
+	metrics := make(runrecord.Metrics, len(runrecord.Registry()))
+	for _, spec := range runrecord.Registry() {
+		metrics[spec.Key] = runrecord.Unsupported()
+	}
+	metrics[runrecord.MetricTokensTotal] = runrecord.Measured(1)
+	return metrics
+}
+
+func TestNotApplicableIsCoherentEitherWay(t *testing.T) {
+	// With the capability declared.
+	rec := recordtest.Accepted()
+	rec.Metrics[runrecord.MetricHumanAttentionSeconds] = runrecord.NotApplicable()
+	if err := rec.Validate(); err != nil {
+		t.Fatalf("not_applicable with capability must validate: %v", err)
+	}
+	// Without the capability declared.
+	rec = recordtest.Accepted()
+	rec.Target.Capabilities = []runrecord.MetricKey{runrecord.MetricTokensTotal}
+	rec.Metrics = onlyTokensCapableMetrics()
+	rec.Metrics[runrecord.MetricHumanAttentionSeconds] = runrecord.NotApplicable()
+	if err := rec.Validate(); err != nil {
+		t.Fatalf("not_applicable without capability must validate: %v", err)
+	}
+}
+
 func TestRecordValidatePairings(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -42,6 +70,41 @@ func TestRecordValidatePairings(t *testing.T) {
 		{"finish before start", func(r *runrecord.RunRecord) {
 			r.FinishedAt = r.StartedAt.Add(-1)
 		}, "precedes"},
+		{"malformed story hash digest", func(r *runrecord.RunRecord) { r.StoryHash = "sha256:x" }, "story_hash"},
+		{"uppercase config hash digest", func(r *runrecord.RunRecord) {
+			r.ConfigHash = "sha256:" + strings.ToUpper(strings.Repeat("ab", 32))
+		}, "config_hash"},
+		{"accepted with empty validators", func(r *runrecord.RunRecord) { r.Validators = nil }, "nonempty"},
+		{"accepted with failed check", func(r *runrecord.RunRecord) {
+			r.Checks = append(r.Checks, runrecord.CheckResult{Name: "sneaky", Passed: false})
+		}, "failed check"},
+		{"accepted with unverified cleanup", func(r *runrecord.RunRecord) {
+			r.Isolation.CleanupVerified = false
+		}, "unverified cleanup"},
+		{"failed with unverified cleanup", func(r *runrecord.RunRecord) {
+			r.Verdict = runrecord.VerdictFailed
+			r.FailureKind = runrecord.FailureTargetError
+			r.TerminalStateReached = false
+			r.Isolation.CleanupVerified = false
+		}, "unverified cleanup"},
+		{"unsupported despite declared capability", func(r *runrecord.RunRecord) {
+			r.Metrics[runrecord.MetricToolCalls] = runrecord.Unsupported()
+		}, "unsupported"},
+		{"value without declared capability", func(r *runrecord.RunRecord) {
+			r.Target.Capabilities = []runrecord.MetricKey{runrecord.MetricTokensTotal}
+			r.Metrics = onlyTokensCapableMetrics()
+			r.Metrics[runrecord.MetricCostUSD] = runrecord.Measured(1)
+		}, "without a declared capability"},
+		{"unavailable without declared capability", func(r *runrecord.RunRecord) {
+			r.Target.Capabilities = []runrecord.MetricKey{runrecord.MetricTokensTotal}
+			r.Metrics = onlyTokensCapableMetrics()
+			r.Metrics[runrecord.MetricCostUSD] = runrecord.Unavailable("crashed")
+		}, "without a declared capability"},
+		{"duplicate capability", func(r *runrecord.RunRecord) {
+			r.Target.Capabilities = append(r.Target.Capabilities, runrecord.MetricTokensTotal)
+		}, "twice"},
+		{"short commit hash", func(r *runrecord.RunRecord) { r.Target.CommitHash = "abc123" }, "40-hex"},
+		{"missing binary identity", func(r *runrecord.RunRecord) { r.Target.BinaryIdentity = "" }, "binary_identity"},
 		{"missing adapter identity", func(r *runrecord.RunRecord) { r.Target.AdapterName = "" }, "adapter_name"},
 		{"missing mph model", func(r *runrecord.RunRecord) { r.Target.MPH.Model = "" }, "model"},
 		{"unprefixed prompt hash", func(r *runrecord.RunRecord) { r.Target.MPH.PromptHash = "zzz" }, "prompt_hash"},

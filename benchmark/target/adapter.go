@@ -12,6 +12,7 @@ package target
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
 	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
@@ -33,12 +34,7 @@ type Capabilities struct {
 
 // Supports reports whether key is a declared capability.
 func (c Capabilities) Supports(key runrecord.MetricKey) bool {
-	for _, k := range c.Metrics {
-		if k == key {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.Metrics, key)
 }
 
 // AttemptSpec fully describes one isolated attempt. The engine constructs
@@ -100,10 +96,13 @@ type Observation struct {
 }
 
 // Validate checks the observation satisfies the normalized contract,
-// including metric completeness.
+// including metric completeness and capability coherence.
 func (o *Observation) Validate() error {
 	if err := o.Metrics.Validate(); err != nil {
 		return fmt.Errorf("observation metrics: %w", err)
+	}
+	if err := runrecord.CapabilityCoherence(o.Target.Capabilities, o.Metrics); err != nil {
+		return fmt.Errorf("observation: %w", err)
 	}
 	for i := range o.Evidence {
 		if o.Evidence[i].Kind == "" || o.Evidence[i].Location == "" {

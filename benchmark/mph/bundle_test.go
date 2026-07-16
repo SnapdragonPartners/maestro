@@ -106,6 +106,12 @@ func TestLoadFileRejections(t *testing.T) {
 		{"zero expectations", func(s string) string {
 			return strings.Replace(s, "expected_tokens_per_run = 500000", "expected_tokens_per_run = 0", 1)
 		}, "declared"},
+		{"nan cap", func(s string) string {
+			return strings.Replace(s, "max_cost_usd_per_run = 6.0", "max_cost_usd_per_run = nan", 1)
+		}, "finite"},
+		{"infinite cap", func(s string) string {
+			return strings.Replace(s, "max_cost_usd_per_suite = 60.0", "max_cost_usd_per_suite = inf", 1)
+		}, "finite"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
