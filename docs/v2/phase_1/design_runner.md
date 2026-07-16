@@ -33,11 +33,11 @@ The engine (item 3), CLI, and reporting (item 7) get their own packages later; n
 
 ## The Run-Record Contract (`runrecord`)
 
-**Tri-state metric.** `Metric{Status, Value *float64}` with status `value` | `unsupported` | `not_applicable`; `Value` is a pointer so a measured zero survives JSON round-trips (`omitempty` can never eat it). Validation enforces status/value coherence both ways.
+**Metric statuses.** `Metric{Status, Value *float64, Reason}` with status `value` | `unsupported` | `not_applicable` | `unavailable` — ADR 0025's tri-state plus one (Codex P1): `unavailable` means the target supports the metric but it could not be collected on this attempt (target crash, truncated logs), with an optional reason. This is what lets a target-error attempt still produce a *valid failed* record without lying `unsupported`. `Value` is a pointer so a measured zero survives JSON round-trips (`omitempty` can never eat it). Validation enforces status/value coherence both ways.
 
-**Completeness rule (proposal).** ADR 0025 says missing is never zero. This design makes it *missing is never missing*: a record's metrics map must contain **every** key in the registry, each explicitly `value`, `unsupported`, or `not_applicable`. An adapter that forgets a metric fails validation instead of silently narrowing comparisons.
+**Completeness rule.** ADR 0025 says missing is never zero. This design makes it *missing is never missing*: a record's metrics map must contain **every** key in the registry, each explicitly one of the four statuses. An adapter that forgets a metric fails validation instead of silently narrowing comparisons. (Aggregation semantics for `unavailable` — excluded from numeric spreads, counted visibly — are item 7's concern.)
 
-**Metric key registry** (from the ADR's numeric per-run metrics): `tokens_total`, `cost_usd`, `wall_clock_seconds`, `llm_calls`, `tool_calls`, `iterations`, `review_cycles`, `self_repair_cycles`, `human_interventions`, `human_attention_seconds`. All values are `float64` (counts included) for one uniform aggregation path in item 7.
+**Metric key registry** (from the ADR's numeric per-run metrics): `tokens_total`, `cost_usd`, `wall_clock_seconds`, `llm_calls`, `tool_calls`, `iterations`, `review_cycles`, `self_repair_cycles`, `human_interventions`, `human_attention_seconds`. All values are `float64` for one uniform aggregation path in item 7, with validation requiring finite, nonnegative values, and integral values for the count-kind keys (everything except `cost_usd`, `wall_clock_seconds`, `human_attention_seconds`).
 
 **Verdicts and failure kinds.** `accepted` | `failed` | `invalid` (invalid = isolation/cleanup unverifiable, excluded from aggregation, per the ADR). Failed records carry exactly one failure kind: `budget-overrun`, `checks-failed`, `validator-failed`, `evidence-missing`, `branch-state`, `target-error`. Invalid records carry a reason string. Validation enforces the pairing.
 
@@ -45,13 +45,13 @@ The engine (item 3), CLI, and reporting (item 7) get their own packages later; n
 
 ## Story Schema (`story`)
 
-TOML, one file per story, `schema_version = 1`, strict keys. Sections: identity (`id` kebab-case, `title`, `level` feature|epic|story), `[fixture]` (repo URL, **full 40-hex pinned commit**, base branch), `[prompt]` (text), `[expectations]` (allowed paths, validators, required artifacts, evidence shape), `[[checks]]` (deterministic pass/fail), `[budget]`, optional `[[rubrics]]` (recorded, never gating).
+TOML, one file per story, `schema_version = 1`, strict keys. Sections: identity (`id` kebab-case, `title`, `level` feature|epic|story), `[fixture]` (repo URL, **full 40-hex pinned commit**, base branch), `[prompt]` (text), `[expectations]` (allowed paths, required artifacts, evidence shape), `[[validators]]` (name + command — **engine-executed** in the isolated workspace, Codex P1: the target-independent acceptance boundary must not rest on target self-reporting), `[[checks]]` (deterministic pass/fail), `[budget]`, optional `[[rubrics]]` (recorded, never gating).
 
 **Check types (proposal — minimal, extended only by schema-version bump):** `command` (run in workspace, exit 0 = pass), `files_changed_within` (diff confined to `expectations.allowed_paths`), `file_contains` (path + substring). Execution semantics are item 3; item 1 fixes shape and validation only.
 
 **Budget:** three explicit required caps — `max_tokens`, `max_wall_clock_seconds`, `max_cost_usd`. Declared, not discovered; integers/floats, no duration strings.
 
-**Story identity** = `sha256:` content hash of the definition file bytes, recorded in every run record so a story edit is visible across runs.
+**Story identity** = `sha256:` hash of the canonical JSON serialization of the validated definition (same canonicalization as bundles), recorded in every run record so a story edit is visible across runs.
 
 ## MPH Bundle Schema (`mph`)
 
@@ -62,7 +62,7 @@ TOML, one bundle per file in `configs/`, strict keys:
 - `[harness]` — `adapter` (which target adapter this bundle drives — adapter selection is a harness lever) plus adapter-interpreted string settings. The runner never interprets these; black-box.
 - `[budget]` — declared expectations and caps: `expected_tokens_per_run`, `expected_cost_usd_per_run`, `max_cost_usd_per_run`, `max_cost_usd_per_suite` (caps ≥ expected, enforced at load).
 
-**Bundle identity** = `sha256:` hash of file bytes — content, never location, per the plan's ratified decision.
+**Bundle identity** = `sha256:` hash of the **canonical JSON serialization of the validated semantic bundle** (sorted keys, no insignificant whitespace), not of raw TOML bytes (Codex P1): comments, formatting, and serialization order are not identity, and the same bundle re-materialized from the Phase 2 data plane reproduces the same hash — content, never location, per the plan's ratified decision. Story identity uses the same canonicalization for the same transition reason.
 
 ## Results Store (`results`)
 
@@ -79,8 +79,8 @@ type Adapter interface {
 }
 ```
 
-- `AttemptSpec`: run/suite IDs, story + story hash, bundle + bundle hash, engine-provided fresh workspace dir and run-scoped branch namespace, effective budget. The **engine** (item 3) owns isolation, budget enforcement, deterministic checks, verdict composition, and record assembly; the **adapter** owns target invocation, observation, and normalization. Adapters never write records.
-- `Observation`: target descriptor, complete tri-state metrics map, raw evidence pointers, plus adapter-reported facts the verdict needs — validator results and whether the expected branch/PR terminal state was reached.
+- `AttemptSpec`: run/suite IDs, story + story hash, bundle + bundle hash, engine-provided fresh workspace dir and run-scoped branch namespace, effective budget. The **engine** (item 3) owns isolation, budget enforcement, **validator execution**, deterministic checks, verdict composition, and record assembly; the **adapter** owns target invocation, observation, and normalization. Adapters never write records and never report validator outcomes (Codex P1).
+- `Observation`: target descriptor, complete metrics map, raw evidence pointers, and the target-specific observable facts only — whether the expected branch/PR terminal state was reached.
 - `faketarget.Fake` returns scripted observations and records calls — the unit-test seam, no tokens spent.
 
 ## Build Wiring
@@ -95,9 +95,11 @@ Unit tests only, no execution, no tokens: schema load/validation happy and error
 
 Engine semantics and repeat orchestration (item 3), v1 observation sources (item 4), report aggregation math (item 7), CLI surface (item 3), rubric evaluation (post-MVP per ADR 0025), any data-plane awareness (Phase 2).
 
-## Review Questions
+## Review Questions — Resolutions
 
-1. The metrics **completeness rule** — every registry key present in every record, validation-enforced. Agree this is the right hardening of "missing is never zero"?
-2. `Observation` carrying adapter-reported **validator results and branch/PR terminal state** as facts the engine composes into the verdict — right division, or should validators be engine-run commands only?
-3. **`float64` for all metric values** (counts included) to keep one aggregation path. Acceptable?
-4. Check-type set frozen at three (`command`, `files_changed_within`, `file_contains`) until a schema-version bump. Sufficient for the first ladder rungs?
+Codex reviewed 2026-07-16 (three P1s, all incorporated above); DR confirmation rides on item 1's review.
+
+1. Completeness rule: **agreed**, contingent on representable collection failure — resolved by the `unavailable` status (P1).
+2. Validators: **engine-executed**, not adapter-reported (P1); adapters report only target-specific observable facts.
+3. `float64` for all metrics: **accepted** with validation requiring finite, nonnegative values and integral values for count-kind keys.
+4. Three check types: **sufficient** for the first ladder rungs; extension requires a schema-version bump.
