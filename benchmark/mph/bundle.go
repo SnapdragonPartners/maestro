@@ -23,6 +23,9 @@ import (
 // SchemaVersion is the current bundle schema version.
 const SchemaVersion = 1
 
+//nolint:gochecknoglobals // Package-level compiled regex for performance.
+var kebabPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
 // Bundle is one MPH configuration.
 type Bundle struct {
 	Model         ModelRouting    `toml:"model" json:"model"`
@@ -79,7 +82,7 @@ func (b *Bundle) Validate() error {
 	if b.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema_version %d: this runner knows only version %d", b.SchemaVersion, SchemaVersion)
 	}
-	if !regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`).MatchString(b.Name) {
+	if !kebabPattern.MatchString(b.Name) {
 		return fmt.Errorf("name %q must be non-empty kebab-case", b.Name)
 	}
 	if b.Model.Default == "" {

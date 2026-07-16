@@ -4,6 +4,8 @@ package faketarget
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 
@@ -143,12 +145,9 @@ func capabilitiesOf() []runrecord.MetricKey {
 	return keys
 }
 
-// fakeDigest returns a deterministic 64-hex string seeded by s.
+// fakeDigest returns a deterministic 64-hex string seeded by s: distinct
+// seeds produce distinct digests.
 func fakeDigest(s string) string {
-	const hexDigits = "0123456789abcdef"
-	out := make([]byte, 64)
-	for i := range out {
-		out[i] = hexDigits[(i+len(s))%len(hexDigits)]
-	}
-	return string(out)
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
