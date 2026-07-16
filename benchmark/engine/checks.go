@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
 	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
@@ -14,10 +16,21 @@ import (
 )
 
 // runShell executes a validator/check command via sh -c in dir; exit 0
-// passes. Output is captured as the result detail.
+// passes. Output is captured as the result detail. The command runs in its
+// own process group and the whole group is killed on context expiry —
+// otherwise an orphaned grandchild holding the output pipe would block
+// CombinedOutput past the wall-clock cap (observed on Linux CI).
 func runShell(ctx context.Context, dir, name, command string) runrecord.CheckResult {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:wrapcheck // exec.Cmd.Cancel contract
+	}
+	cmd.WaitDelay = 5 * time.Second // backstop if the pipe is still held
 	out, err := cmd.CombinedOutput()
 	detail := truncateDetail(strings.TrimSpace(string(out)))
 	if err != nil {
