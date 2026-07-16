@@ -1,0 +1,70 @@
+# Golden story: ladder rung 3 (focused bug fix).
+# The fixture is truncated at the parent of the real upstream fix
+# (maestro-llms 92eceb8) so the solution is not in history, and carries
+# SEEDED regression tests (stopreason_seed_test.go, sourced from that
+# fix's test additions) that fail at the base and pass when solved —
+# acceptance is behavioral, independent of agent-authored tests. The
+# seed-tests-untouched check pins the seed file against the base commit.
+# See docs/v2/phase_1/process_fixtures.md.
+schema_version = 1
+id = "bugfix-openai-stopreason"
+title = "Surface the real OpenAI finish reason instead of the envelope status"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-llms"
+commit = "891dce215ef5c27cf575020e98f29bb876d96abc"
+base_branch = "main"
+
+[prompt]
+text = """
+Bug report: a chat request through the OpenAI adapter that hits the
+max-output-token limit returns StopReason "incomplete". That is the
+Responses envelope status, not a finish reason — the real reason
+("max_output_tokens" or "content_filter") is only reachable by type
+asserting Raw, which is outside the toolkit's stability contract.
+Every other adapter (anthropic, google, ollama) passes the raw provider
+finish reason through StopReason.
+
+Fix the OpenAI chat adapter so consumers can detect length truncation
+and content filtering from StopReason alone: when the response status is
+incomplete and a more specific reason is present, surface that reason;
+otherwise keep the current status behavior. Tool calls present on a
+truncated response must still be surfaced.
+
+The failing tests in llms/providers/openai/stopreason_seed_test.go
+express the expected behavior; make them pass without modifying that
+file. Add your own tests for anything you change beyond what they cover.
+"""
+
+[expectations]
+allowed_paths = ["llms/providers/openai/", "docs/"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "test"
+command = "go test ./..."
+
+[[checks]]
+name = "diff-confined-to-openai-adapter"
+type = "files_changed_within"
+
+[[checks]]
+name = "seed-tests-untouched"
+type = "command"
+command = "git diff --exit-code 891dce215ef5c27cf575020e98f29bb876d96abc -- llms/providers/openai/stopreason_seed_test.go"
+
+[[checks]]
+name = "openai-tests-pass"
+type = "command"
+command = "go test ./llms/providers/openai/..."
+
+[budget]
+max_tokens = 400000
+max_wall_clock_seconds = 2700
+max_cost_usd = 8.0

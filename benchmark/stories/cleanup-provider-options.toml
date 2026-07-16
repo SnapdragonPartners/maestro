@@ -1,0 +1,78 @@
+# Golden story: ladder rung 2 (small code cleanup).
+# Consolidation is verified structurally: the fixture base has 5 call
+# sites each of .ListModels(, "construct failed", and "ListModels failed"
+# (one per provider); a real consolidation collapses each to a shared
+# helper. The <= 2 thresholds tolerate one idiosyncratic path without
+# admitting the unconsolidated original. Hermetic regression tests are
+# deliberately not seeded: the refactor's entire surface is internal, so
+# tests would pin the very names the refactor is free to change.
+schema_version = 1
+id = "cleanup-provider-options"
+title = "Consolidate the duplicated per-provider option functions"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
+commit = "e71d51bb8486137d8bf8fdf18da8913c3c021edd"
+base_branch = "main"
+
+[prompt]
+text = """
+providers.go builds one ModelOption per provider through five
+near-identical functions (anthropicOption, openAIOption, googleOption,
+ollamaOption, vllmOption): each looks up environment credentials,
+constructs a client, lists models under the shared timeout, selects a
+model, and returns a ModelOption. Consolidate this duplication behind a
+shared helper so each provider contributes only what genuinely differs
+(its credential lookup, its client constructor, and its model-selection
+rule — Gemini orders by the version embedded in the ID, Ollama takes the
+most recently pulled model, vLLM takes the first served model).
+
+This is a refactor: observable behavior must not change, including the
+provider prefixes in log messages and the order providers appear in the
+model dropdown.
+"""
+
+[expectations]
+allowed_paths = ["providers.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "vet"
+command = "go vet ./..."
+
+[[checks]]
+name = "diff-confined-to-providers"
+type = "files_changed_within"
+
+[[checks]]
+name = "listmodels-call-sites-consolidated"
+type = "command"
+command = "sh -c 'test \"$(grep -c \"\\.ListModels(\" providers.go)\" -le 2'"
+
+[[checks]]
+name = "construct-log-consolidated"
+type = "command"
+command = "sh -c 'test \"$(grep -c \"construct failed\" providers.go)\" -le 2'"
+
+[[checks]]
+name = "listmodels-log-consolidated"
+type = "command"
+command = "sh -c 'test \"$(grep -c \"ListModels failed\" providers.go)\" -le 2'"
+
+[[checks]]
+# Scoped to the story's one allowed file: the fixture's server.go ships
+# from upstream with minor gofmt drift (realistic friction, out of scope).
+name = "gofmt-clean-providers"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l providers.go)\"'"
+
+[budget]
+max_tokens = 250000
+max_wall_clock_seconds = 1800
+max_cost_usd = 5.0
