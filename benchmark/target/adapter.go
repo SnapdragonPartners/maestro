@@ -62,6 +62,10 @@ type AttemptSpec struct {
 	BundleHash  string
 	// WorkspaceDir is the engine-provided fresh, run-scoped checkout.
 	WorkspaceDir string
+	// EvidenceDir is the engine-provided durable directory (under the
+	// results store, keyed by run ID) where adapters deposit evidence
+	// files; pointers into it survive workspace cleanup.
+	EvidenceDir string
 	// BranchNamespace is the run-scoped branch prefix; every branch the
 	// target creates must live under it (repeat isolation).
 	BranchNamespace string
@@ -90,6 +94,8 @@ func (s *AttemptSpec) Validate() error {
 		return fmt.Errorf("bundle_hash is required")
 	case s.WorkspaceDir == "":
 		return fmt.Errorf("workspace_dir is required")
+	case s.EvidenceDir == "":
+		return fmt.Errorf("evidence_dir is required")
 	case s.BranchNamespace == "":
 		return fmt.Errorf("branch_namespace is required")
 	}

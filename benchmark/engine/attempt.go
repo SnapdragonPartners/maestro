@@ -77,15 +77,16 @@ func (u *usageTracker) totals() (int64, float64) {
 
 // attempt carries the state of one isolated attempt.
 type attempt struct {
-	engine   *Engine
-	spec     *target.AttemptSpec
-	story    *story.Loaded
-	bundle   *mph.Loaded
-	obs      *target.Observation
-	tracker  *usageTracker
-	adapter  target.Adapter
-	solution string
-	started  time.Time
+	engine         *Engine
+	spec           *target.AttemptSpec
+	story          *story.Loaded
+	bundle         *mph.Loaded
+	obs            *target.Observation
+	tracker        *usageTracker
+	adapter        target.Adapter
+	engineEvidence []runrecord.EvidencePointer
+	solution       string
+	started        time.Time
 	// workStarted and workEnded bound the budgeted phase (target run
 	// through verification). The wall-clock deadline and the canonical
 	// wall_clock_seconds metric share exactly this interval — engine
@@ -109,6 +110,10 @@ func (e *Engine) RunAttempt(ctx context.Context, st *story.Loaded, bundle *mph.L
 	if err != nil {
 		return nil, err
 	}
+	evidenceDir, err := e.Store.EvidenceDir(runID)
+	if err != nil {
+		return nil, fmt.Errorf("evidence dir: %w", err)
+	}
 	a := &attempt{
 		engine:  e,
 		adapter: adapter,
@@ -124,6 +129,7 @@ func (e *Engine) RunAttempt(ctx context.Context, st *story.Loaded, bundle *mph.L
 			StoryHash:       st.Hash,
 			BundleHash:      bundle.Hash,
 			WorkspaceDir:    filepath.Join(e.Workdir, runID),
+			EvidenceDir:     evidenceDir,
 			BranchNamespace: "golden/" + runID,
 		},
 	}
@@ -301,6 +307,11 @@ func (a *attempt) resolveSolutionCommit(ctx context.Context) (string, error) {
 	if !strings.HasPrefix(branch, a.spec.BranchNamespace+"/") {
 		return "", fmt.Errorf("solution branch %q is outside the run namespace %q", branch, a.spec.BranchNamespace)
 	}
+	// Local workspace ref first (adapters that import the solution into the
+	// workspace themselves), then origin.
+	if commit, err := gitx.Run(ctx, a.spec.WorkspaceDir, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+		return commit, nil
+	}
 	commit, err := gitx.ResolveRemoteBranch(ctx, a.spec.WorkspaceDir, branch)
 	if err != nil {
 		return "", fmt.Errorf("resolve solution branch: %w", err)
@@ -308,17 +319,50 @@ func (a *attempt) resolveSolutionCommit(ctx context.Context) (string, error) {
 	return commit, nil
 }
 
-// verify runs the story's validators and checks at the bound solution and
-// computes evidence coverage.
+// verify runs the story's validators and checks at the bound solution,
+// exports the validators' full outputs as engine-contributed test-output
+// evidence (the authoritative test run produces the authoritative test
+// evidence), and computes evidence coverage.
 func (a *attempt) verify(ctx context.Context) {
 	if !a.out.solutionOK {
 		return
 	}
 	def := a.story.Definition
-	a.out.validators = runValidators(ctx, a.spec.WorkspaceDir, def.Validators)
+	var outputs []string
+	a.out.validators, outputs = runValidators(ctx, a.spec.WorkspaceDir, def.Validators)
+	a.engineEvidence = writeValidatorEvidence(a.spec.EvidenceDir, def.Validators, outputs, a.engine.logf)
 	a.out.checks = runChecks(ctx, a.spec.WorkspaceDir, def, def.Fixture.Commit, a.solution)
-	a.out.evidenceMissing = evidenceCoverage(def, a.obs.Evidence)
+	a.out.evidenceMissing = evidenceCoverage(def, append(append([]runrecord.EvidencePointer{}, a.obs.Evidence...), a.engineEvidence...))
 	a.out.verified = true
+}
+
+// writeValidatorEvidence persists each validator's full output under the
+// durable evidence dir and returns test-output evidence pointers.
+func writeValidatorEvidence(evidenceDir string, validators []story.Validator, outputs []string, logf func(string, ...any)) []runrecord.EvidencePointer {
+	pointers := make([]runrecord.EvidencePointer, 0, len(outputs))
+	for i := range outputs {
+		name := fmt.Sprintf("validator-%02d-%s.txt", i, sanitizeName(validators[i].Name))
+		path := filepath.Join(evidenceDir, name)
+		if err := os.WriteFile(path, []byte(outputs[i]+"\n"), 0o644); err != nil {
+			logf("evidence write %s: %v", path, err)
+			continue
+		}
+		pointers = append(pointers, runrecord.EvidencePointer{Kind: "test-output", Location: path})
+	}
+	return pointers
+}
+
+// sanitizeName keeps evidence filenames filename-safe.
+func sanitizeName(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			out = append(out, r)
+		} else {
+			out = append(out, '_')
+		}
+	}
+	return string(out)
 }
 
 // checkPostHocBudget compares observed usage against the caps for targets
@@ -391,9 +435,21 @@ func (a *attempt) assemble() *runrecord.RunRecord {
 		TerminalStateReached: a.out.terminal,
 	}
 	if a.obs != nil {
-		rec.Evidence = a.obs.Evidence
+		rec.Evidence = append(rec.Evidence, a.obs.Evidence...)
+	}
+	rec.Evidence = append(rec.Evidence, a.engineEvidence...)
+	// Adapters export evidence files before returning errors; when the
+	// observation was lost to the error path, the durable directory is
+	// still worth a pointer — failed attempts need their story told.
+	if a.obs == nil && dirHasEntries(a.spec.EvidenceDir) {
+		rec.Evidence = append(rec.Evidence, runrecord.EvidencePointer{Kind: "evidence-dir", Location: a.spec.EvidenceDir})
 	}
 	return rec
+}
+
+func dirHasEntries(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
 }
 
 // metrics returns the record's complete metrics map: the observation's (or

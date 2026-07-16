@@ -178,9 +178,14 @@ func (s *Stub) observation(spec *target.AttemptSpec, branch string) *target.Obse
 	if kinds == nil {
 		kinds = []string{"diff", "test-output"}
 	}
+	// Scripted use of the durable evidence dir: real files that outlive
+	// workspace cleanup, like a real adapter's exports.
 	evidence := make([]runrecord.EvidencePointer, 0, len(kinds))
 	for _, kind := range kinds {
-		evidence = append(evidence, runrecord.EvidencePointer{Kind: kind, Location: spec.WorkspaceDir + "/stub-" + kind})
+		path := filepath.Join(spec.EvidenceDir, "stub-"+kind+".txt")
+		if err := os.WriteFile(path, []byte("stub "+kind+" evidence\n"), 0o644); err == nil {
+			evidence = append(evidence, runrecord.EvidencePointer{Kind: kind, Location: path})
+		}
 	}
 	return &target.Observation{
 		Metrics:              metrics,

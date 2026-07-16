@@ -1,0 +1,349 @@
+package v1target
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
+	"github.com/SnapdragonPartners/maestro/benchmark/target"
+)
+
+// v1Run carries one attempt's state through launch, poll, evidence export,
+// and solution import.
+type v1Run struct {
+	adapter  *Adapter
+	spec     *target.AttemptSpec
+	cloneURL string
+	authURL  string
+	settings settings
+}
+
+// finalState is everything poll and post-processing learned.
+type finalState struct {
+	sessionID string
+	classification
+	toolCalls int64 // -1 = unreadable
+	prsMerged bool
+}
+
+// execute runs the v1 lifecycle. Evidence export happens before any
+// teardown; the caller's Cleanup deletes the Gitea repo afterward.
+func (r *v1Run) execute(ctx context.Context) (*target.Observation, error) {
+	projectDir := projectDirFor(r.spec)
+	if err := r.prepareProject(projectDir); err != nil {
+		return nil, err
+	}
+	launchLog := filepath.Join(r.spec.EvidenceDir, "maestro-launch.log")
+	proc, err := r.launch(ctx, projectDir, launchLog)
+	if err != nil {
+		return nil, err
+	}
+	defer proc.awaitExit()
+	dbPath := filepath.Join(projectDir, ".maestro", "maestro.db")
+	final, pollErr := r.poll(ctx, dbPath, proc)
+	r.stop(proc)
+	if pollErr != nil {
+		// Still export what exists — failed attempts need their story told;
+		// the engine synthesizes metrics for the error path.
+		r.exportEvidence(ctx, projectDir, dbPath, nil)
+		return nil, pollErr
+	}
+
+	prs, prErr := r.adapter.gitea.listPRs(ctx, r.spec.RunID)
+	final.prsMerged = prErr == nil && prsSatisfied(final.states, prs)
+	solutionBranch, importErr := r.importSolution(ctx)
+	evidence := r.exportEvidence(ctx, projectDir, dbPath, prs)
+
+	obs := &target.Observation{
+		Metrics:              r.metrics(&final),
+		Evidence:             evidence,
+		SolutionBranch:       solutionBranch,
+		TerminalStateReached: final.allDone() && final.prsMerged,
+	}
+	if importErr != nil {
+		// No importable solution: the engine will classify branch-state.
+		obs.SolutionBranch = ""
+	}
+	return obs, nil
+}
+
+// prsSatisfied: every story claiming a PR requires at least one PR, and
+// every PR in the throwaway repo must be merged (all-stories semantics).
+func prsSatisfied(states []storyState, prs []prInfo) bool {
+	withPR := 0
+	for i := range states {
+		if states[i].PRID != "" {
+			withPR++
+		}
+	}
+	if withPR > 0 && len(prs) == 0 {
+		return false
+	}
+	for i := range prs {
+		if !prs[i].Merged {
+			return false
+		}
+	}
+	return true
+}
+
+// prepareProject writes the v1 project dir: config.json, forge_state.json,
+// and the spec file.
+func (r *v1Run) prepareProject(projectDir string) error {
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return fmt.Errorf("project dir: %w", err)
+	}
+	if err := r.adapter.gitea.writeForgeState(projectDir, r.spec.RunID); err != nil {
+		return err
+	}
+	cfg, err := r.v1Config()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "golden-config.json"), cfg, 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	prompt := r.spec.Story.Prompt.Text
+	if err := os.WriteFile(filepath.Join(projectDir, "story-spec.md"), []byte(prompt), 0o644); err != nil {
+		return fmt.Errorf("write spec: %w", err)
+	}
+	return nil
+}
+
+// v1Config generates the v1 config.json (shape from v1's own benchmark
+// harness), mapping the bundle's model routing onto v1's agent models.
+func (r *v1Run) v1Config() ([]byte, error) {
+	routing := r.spec.Bundle.Model
+	roleModel := func(role string) string {
+		if m, ok := routing.Roles[role]; ok {
+			return m
+		}
+		return routing.Default
+	}
+	cfg := map[string]any{
+		"project": map[string]any{
+			"primary_platform": r.settings.Platform,
+			"pack_name":        r.settings.Platform,
+		},
+		"git": map[string]any{
+			"repo_url":      r.cloneURL,
+			"target_branch": "main",
+		},
+		"forge":       map[string]any{"provider": "gitea"},
+		"maintenance": map[string]any{"enabled": false},
+		"webui":       map[string]any{"enabled": false},
+		"agents": map[string]any{
+			"max_coders":      1,
+			"coder_model":     roleModel("coder"),
+			"architect_model": roleModel("architect"),
+			"pm_model":        roleModel("pm"),
+		},
+		"build": map[string]any{
+			"build": "true",
+			"lint":  "true",
+			"run":   "true",
+			"test":  r.settings.TestCmd,
+		},
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("marshal v1 config: %w", err)
+	}
+	return raw, nil
+}
+
+// launch starts the maestro subprocess, process-group isolated, output
+// teed to the durable launch log.
+func (r *v1Run) launch(ctx context.Context, projectDir, launchLog string) (*process, error) {
+	logFile, err := os.Create(launchLog)
+	if err != nil {
+		return nil, fmt.Errorf("launch log: %w", err)
+	}
+	bin, err := filepath.Abs(r.settings.MaestroBin)
+	if err != nil {
+		return nil, fmt.Errorf("maestro bin path: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, bin,
+		"--config", filepath.Join(projectDir, "golden-config.json"),
+		"--spec-file", filepath.Join(projectDir, "story-spec.md"),
+		"--projectdir", projectDir,
+		"--nowebui",
+	)
+	cmd.Dir = projectDir
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) //nolint:wrapcheck // exec.Cmd.Cancel contract
+	}
+	cmd.WaitDelay = 10 * time.Second
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close() //nolint:errcheck // launch failed
+		return nil, fmt.Errorf("start maestro: %w", err)
+	}
+	proc := &process{cmd: cmd, done: make(chan struct{})}
+	go func() {
+		_ = cmd.Wait()      //nolint:errcheck // exit observed via the done channel
+		_ = logFile.Close() //nolint:errcheck // best effort
+		close(proc.done)
+	}()
+	return proc, nil
+}
+
+// process tracks the maestro subprocess without racing exec.Cmd.Wait:
+// ProcessState must never be read concurrently with Wait, so liveness is
+// observed through a channel the waiter closes.
+type process struct {
+	cmd  *exec.Cmd
+	done chan struct{}
+}
+
+func (p *process) dead() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// awaitExit blocks until the waiter goroutine has fully finished (log file
+// closed), bounded defensively.
+func (p *process) awaitExit() {
+	select {
+	case <-p.done:
+	case <-time.After(30 * time.Second):
+	}
+}
+
+// pollObserver holds discovery state across poll ticks: the DB handle and
+// the spec/session IDs, each acquired once available.
+type pollObserver struct {
+	db        *v1DB
+	dbPath    string
+	specID    string
+	sessionID string
+	stage     string
+}
+
+// observe advances discovery and returns the current story states, or an
+// error while the target has not produced them yet (stage says how far it
+// got).
+func (o *pollObserver) observe(ctx context.Context) ([]storyState, error) {
+	if o.db == nil {
+		o.stage = "its database"
+		opened, err := openV1DB(o.dbPath)
+		if err != nil {
+			return nil, err
+		}
+		o.db = opened
+	}
+	if o.specID == "" {
+		o.stage = "a spec"
+		sid, sess, err := o.db.discover(ctx)
+		if err != nil {
+			return nil, err
+		}
+		o.specID, o.sessionID = sid, sess
+	}
+	o.stage = "stories"
+	states, err := o.db.stories(ctx, o.specID, o.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(states) == 0 {
+		return nil, errors.New("no stories yet")
+	}
+	return states, nil
+}
+
+func (o *pollObserver) close() {
+	if o.db != nil {
+		_ = o.db.close() //nolint:errcheck // read-only observer
+	}
+}
+
+// poll watches maestro.db until the story set is terminal, the process
+// dies, or the context expires.
+func (r *v1Run) poll(ctx context.Context, dbPath string, proc *process) (finalState, error) {
+	ticker := time.NewTicker(r.settings.PollEvery)
+	defer ticker.Stop()
+	obs := &pollObserver{dbPath: dbPath}
+	defer obs.close()
+	for {
+		select {
+		case <-ctx.Done():
+			return finalState{toolCalls: -1}, fmt.Errorf("v1 run aborted: %w", context.Cause(ctx))
+		case <-ticker.C:
+		}
+		states, err := obs.observe(ctx)
+		if err != nil {
+			if proc.dead() {
+				return finalState{toolCalls: -1}, fmt.Errorf("maestro exited before creating %s", obs.stage)
+			}
+			continue
+		}
+		final := finalState{classification: classify(states), sessionID: obs.sessionID, toolCalls: -1}
+		if final.terminal() {
+			if count, countErr := obs.db.toolCallCount(ctx, obs.sessionID); countErr == nil {
+				final.toolCalls = count
+			}
+			return final, nil
+		}
+		if proc.dead() {
+			return final, errors.New("maestro exited before stories reached a terminal state")
+		}
+	}
+}
+
+// stop terminates maestro: graceful interrupt, bounded grace, then a
+// process-group kill.
+func (r *v1Run) stop(proc *process) {
+	if proc.cmd.Process == nil || proc.dead() {
+		return
+	}
+	_ = syscall.Kill(-proc.cmd.Process.Pid, syscall.SIGINT) //nolint:errcheck // best-effort graceful stop
+	select {
+	case <-proc.done:
+		return
+	case <-time.After(stopGrace):
+	}
+	_ = syscall.Kill(-proc.cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // final kill
+}
+
+// metrics normalizes the final story aggregates: post-hoc, acceptance-
+// reached values only; everything not persisted is unavailable, everything
+// not observable is unsupported.
+func (r *v1Run) metrics(final *finalState) runrecord.Metrics {
+	metrics := make(runrecord.Metrics, len(runrecord.Registry()))
+	for _, spec := range runrecord.Registry() {
+		metrics[spec.Key] = runrecord.Unsupported()
+	}
+	metrics[runrecord.MetricHumanInterventions] = runrecord.NotApplicable()
+	metrics[runrecord.MetricHumanAttentionSeconds] = runrecord.NotApplicable()
+	if final.allDone() {
+		tokens, cost := final.aggregates()
+		metrics[runrecord.MetricTokensTotal] = runrecord.Measured(float64(tokens))
+		metrics[runrecord.MetricCostUSD] = runrecord.Measured(cost)
+	} else {
+		reason := "v1 persists usage only at story acceptance (pre-P-1)"
+		metrics[runrecord.MetricTokensTotal] = runrecord.Unavailable(reason)
+		metrics[runrecord.MetricCostUSD] = runrecord.Unavailable(reason)
+	}
+	if final.toolCalls >= 0 {
+		metrics[runrecord.MetricToolCalls] = runrecord.Measured(float64(final.toolCalls))
+	} else {
+		metrics[runrecord.MetricToolCalls] = runrecord.Unavailable("tool_executions not readable")
+	}
+	return metrics
+}

@@ -1,0 +1,34 @@
+# The paired-agent default configuration (ADR 0025: mandatory from the
+# start): v1's factory path, driven black-box by the v1-as-patched adapter.
+# Budget expectations are provisional until item 6's instrumented runs.
+schema_version = 1
+name = "paired-default"
+description = "v1-as-patched paired-agent factory default"
+
+[model]
+default = "claude-sonnet-4-6"
+
+[model.roles]
+coder = "claude-sonnet-4-6"
+architect = "claude-opus-4-1"
+pm = "claude-sonnet-4-6"
+
+[prompt]
+pack = "v1-embedded"
+
+[harness]
+adapter = "v1-as-patched"
+
+[harness.settings]
+# Paths are relative to the runner's working directory (benchmark/).
+maestro_bin = "../bin/maestro"
+source_dir = ".."
+platform = "go"
+test_cmd = "go test ./..."
+poll_interval = "5s"
+
+[budget]
+expected_tokens_per_run = 500000
+expected_cost_usd_per_run = 3.0
+max_cost_usd_per_run = 8.0
+max_cost_usd_per_suite = 80.0

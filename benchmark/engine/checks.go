@@ -21,6 +21,13 @@ import (
 // otherwise an orphaned grandchild holding the output pipe would block
 // CombinedOutput past the wall-clock cap (observed on Linux CI).
 func runShell(ctx context.Context, dir, name, command string) runrecord.CheckResult {
+	result, _ := runShellFull(ctx, dir, name, command)
+	return result
+}
+
+// runShellFull is runShell also returning the full captured output for
+// evidence export.
+func runShellFull(ctx context.Context, dir, name, command string) (runrecord.CheckResult, string) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -32,24 +39,31 @@ func runShell(ctx context.Context, dir, name, command string) runrecord.CheckRes
 	}
 	cmd.WaitDelay = 5 * time.Second // backstop if the pipe is still held
 	out, err := cmd.CombinedOutput()
-	detail := truncateDetail(strings.TrimSpace(string(out)))
+	full := strings.TrimSpace(string(out))
+	detail := truncateDetail(full)
 	if err != nil {
 		if detail != "" {
 			detail += "; "
 		}
 		detail += err.Error()
-		return runrecord.CheckResult{Name: name, Passed: false, Detail: detail}
+		full += "\n" + err.Error()
+		return runrecord.CheckResult{Name: name, Passed: false, Detail: detail}, full
 	}
-	return runrecord.CheckResult{Name: name, Passed: true, Detail: detail}
+	return runrecord.CheckResult{Name: name, Passed: true, Detail: detail}, full
 }
 
-// runValidators executes every story validator in the solution workspace.
-func runValidators(ctx context.Context, dir string, validators []story.Validator) []runrecord.CheckResult {
-	out := make([]runrecord.CheckResult, 0, len(validators))
+// runValidators executes every story validator in the solution workspace,
+// returning results plus each validator's full captured output (the record
+// keeps truncated details; evidence files keep everything).
+func runValidators(ctx context.Context, dir string, validators []story.Validator) ([]runrecord.CheckResult, []string) {
+	results := make([]runrecord.CheckResult, 0, len(validators))
+	outputs := make([]string, 0, len(validators))
 	for i := range validators {
-		out = append(out, runShell(ctx, dir, validators[i].Name, validators[i].Command))
+		result, output := runShellFull(ctx, dir, validators[i].Name, validators[i].Command)
+		results = append(results, result)
+		outputs = append(outputs, output)
 	}
-	return out
+	return results, outputs
 }
 
 // runChecks executes every deterministic story check at the solution.

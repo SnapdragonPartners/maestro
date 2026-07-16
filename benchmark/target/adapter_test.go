@@ -35,6 +35,7 @@ func spec(t *testing.T) *target.AttemptSpec {
 		StoryHash:       loadedStory.Hash,
 		BundleHash:      loadedBundle.Hash,
 		WorkspaceDir:    t.TempDir(),
+		EvidenceDir:     t.TempDir(),
 		BranchNamespace: "golden/run-0001",
 	}
 }

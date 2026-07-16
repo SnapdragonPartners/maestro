@@ -1,0 +1,10 @@
+# Prompt-bearing inputs of the v1 target, hashed into the MPH P dimension.
+# Directory entries (trailing /) include every file beneath them.
+# Guarded two ways by prompthash_test.go: every entry must exist in the
+# target checkout, and an independent scanner sweep must not find prompt
+# sources outside this manifest plus allowlist.txt.
+pkg/templates/
+pkg/architect/dev_chat.go
+pkg/architect/request.go
+pkg/coder/driver.go
+pkg/pm/driver.go

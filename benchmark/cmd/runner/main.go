@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
 	"github.com/SnapdragonPartners/maestro/benchmark/target"
 	"github.com/SnapdragonPartners/maestro/benchmark/target/faketarget"
+	"github.com/SnapdragonPartners/maestro/benchmark/target/v1target"
 )
 
 const usage = `usage: runner <command> [flags]
@@ -62,12 +64,25 @@ func run(args []string) int {
 	return 0
 }
 
-// adapters is the registry of executable targets. Item 4 adds
-// v1-as-patched; item 8 adds the single-agent baseline. The fake is wired
-// for end-to-end smoke of the runner itself (no target, no tokens).
+// adapters is the registry of executable targets. Item 8 adds the
+// single-agent baseline. The fake is wired for end-to-end smoke of the
+// runner itself (no target, no tokens).
 func adapters() map[string]target.Adapter {
 	return map[string]target.Adapter{
-		"fake": faketarget.New(),
+		"fake":          faketarget.New(),
+		"v1-as-patched": v1target.New(),
+	}
+}
+
+// closeAdapters tears down adapter-owned infrastructure (the shared Gitea
+// container and volume) after the suite.
+func closeAdapters(registry map[string]target.Adapter) {
+	for name, adapter := range registry {
+		if closer, ok := adapter.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "runner: close adapter %s: %v\n", name, err)
+			}
+		}
 	}
 }
 
@@ -178,6 +193,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	resultsDir := fs.String("results", "results", "results store directory")
 	workdir := fs.String("workdir", "", "workspace root (default: temp dir)")
 	suiteID := fs.String("suite-id", "", "suite run ID (default: generated)")
+	keepInfra := fs.Bool("keep-infra", false, "keep adapter infrastructure (Gitea) running after the suite")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
@@ -205,8 +221,12 @@ func cmdRun(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	registry := adapters()
+	if !*keepInfra {
+		defer closeAdapters(registry)
+	}
 	eng := &engine.Engine{
-		Adapters: adapters(),
+		Adapters: registry,
 		Store:    store,
 		Workdir:  wd,
 		Logf: func(format string, a ...any) {

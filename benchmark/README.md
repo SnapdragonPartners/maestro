@@ -29,7 +29,7 @@ definition.
 - `mph/` — MPH configuration bundles: TOML schema, loader, content-hash identity.
 - `runrecord/` — the normalized run-record contract: four-state metrics, registry, verdicts, failure kinds, target descriptor. `recordtest/` builds valid records for tests.
 - `results/` — append-only, schema-versioned JSONL results store, plus the rewritable suite manifest.
-- `target/` — the `Adapter` interface (`Describe`/`Run`/`Cleanup`), `AttemptSpec`, `Observation`; `faketarget/` is the scripted in-memory test adapter, `stubtarget/` the scripted real-git test adapter.
+- `target/` — the `Adapter` interface (`Describe`/`Run`/`Cleanup`), `AttemptSpec`, `Observation`; `faketarget/` is the scripted in-memory test adapter, `stubtarget/` the scripted real-git test adapter, and `v1target/` the real **v1-as-patched** adapter: per-run Gitea forge isolation, subprocess invocation with DB polling, post-hoc metric normalization (streamed after item 5's P-1 patch), durable evidence export, and audited prompt-content MPH identity (design_adapter_v1.md). Its `modernc.org/sqlite` import is an adapter-scoped v1-compatibility dependency, removed when the v1 adapter retires.
 - `engine/` — the execution engine: attempt lifecycle, isolation, budget enforcement, engine-executed validators/checks, verdict composition, cleanup verification, suite orchestration (design_engine.md).
 - `cmd/runner/` — the CLI (`bin/runner`): `validate`, `run`, `list`.
 - `internal/contenthash/` — canonical `sha256:` identity helper; `internal/gitx/` — git CLI wrapper.
