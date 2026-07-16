@@ -41,6 +41,9 @@ func Open(dir string) (*Store, error) {
 // Append validates rec and appends it to its suite's file. Files are only
 // ever appended to — never truncated or rewritten.
 func (s *Store) Append(rec *runrecord.RunRecord) error {
+	if rec == nil {
+		return fmt.Errorf("append rejected: nil run record")
+	}
 	if err := rec.Validate(); err != nil {
 		return fmt.Errorf("append rejected: %w", err)
 	}

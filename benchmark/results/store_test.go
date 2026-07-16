@@ -79,6 +79,9 @@ func TestAppendRejectsInvalidRecords(t *testing.T) {
 	if err := store.Append(rec); err == nil || !strings.Contains(err.Error(), "append rejected") {
 		t.Fatalf("invalid record must be rejected, got %v", err)
 	}
+	if err := store.Append(nil); err == nil || !strings.Contains(err.Error(), "nil") {
+		t.Fatalf("nil record must be rejected, not panic, got %v", err)
+	}
 }
 
 func TestAppendRejectsUnsafeSuiteIDs(t *testing.T) {

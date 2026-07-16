@@ -98,6 +98,9 @@ type Observation struct {
 // Validate checks the observation satisfies the normalized contract,
 // including metric completeness and capability coherence.
 func (o *Observation) Validate() error {
+	if o == nil {
+		return fmt.Errorf("nil observation")
+	}
 	if err := o.Metrics.Validate(); err != nil {
 		return fmt.Errorf("observation metrics: %w", err)
 	}

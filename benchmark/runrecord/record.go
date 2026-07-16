@@ -134,6 +134,9 @@ type RunRecord struct {
 // Validate checks the record's internal coherence: identity fields, verdict
 // pairing rules, timestamp ordering, metric completeness, and check shapes.
 func (r *RunRecord) Validate() error {
+	if r == nil {
+		return fmt.Errorf("nil run record")
+	}
 	if r.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("record schema version %d: this runner knows only version %d", r.SchemaVersion, SchemaVersion)
 	}

@@ -15,6 +15,13 @@ func TestAcceptedRecordValidates(t *testing.T) {
 	}
 }
 
+func TestNilRecordValidate(t *testing.T) {
+	var rec *runrecord.RunRecord
+	if err := rec.Validate(); err == nil {
+		t.Fatalf("nil record must fail validation, not panic")
+	}
+}
+
 // onlyTokensCapableMetrics is coherent with capabilities = [tokens_total]:
 // tokens measured, everything else unsupported.
 func onlyTokensCapableMetrics() runrecord.Metrics {

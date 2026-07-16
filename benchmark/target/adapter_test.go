@@ -95,6 +95,13 @@ func TestObservationValidateEnforcesMetricCompleteness(t *testing.T) {
 	}
 }
 
+func TestNilObservationValidate(t *testing.T) {
+	var obs *target.Observation
+	if err := obs.Validate(); err == nil {
+		t.Fatalf("nil observation must fail validation, not panic")
+	}
+}
+
 func TestObservationValidateRejectsUnknownCapabilities(t *testing.T) {
 	obs := faketarget.Observe(spec(t))
 	obs.Target.Capabilities = append(obs.Target.Capabilities, "made_up")
