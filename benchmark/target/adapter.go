@@ -104,6 +104,9 @@ func (o *Observation) Validate() error {
 	if err := o.Metrics.Validate(); err != nil {
 		return fmt.Errorf("observation metrics: %w", err)
 	}
+	if err := o.Target.Validate(); err != nil {
+		return fmt.Errorf("observation target descriptor: %w", err)
+	}
 	if err := runrecord.CapabilityCoherence(o.Target.Capabilities, o.Metrics); err != nil {
 		return fmt.Errorf("observation: %w", err)
 	}

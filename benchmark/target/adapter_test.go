@@ -95,6 +95,14 @@ func TestObservationValidateEnforcesMetricCompleteness(t *testing.T) {
 	}
 }
 
+func TestObservationValidatesTargetDescriptor(t *testing.T) {
+	obs := faketarget.Observe(spec(t))
+	obs.Target.CommitHash = "not-a-commit"
+	if err := obs.Validate(); err == nil || !strings.Contains(err.Error(), "40-hex") {
+		t.Fatalf("malformed descriptor must fail at the adapter boundary, got %v", err)
+	}
+}
+
 func TestNilObservationValidate(t *testing.T) {
 	var obs *target.Observation
 	if err := obs.Validate(); err == nil {

@@ -149,7 +149,7 @@ func (r *RunRecord) Validate() error {
 	if err := r.validateTimestamps(); err != nil {
 		return err
 	}
-	if err := r.Target.validate(); err != nil {
+	if err := r.Target.Validate(); err != nil {
 		return fmt.Errorf("target descriptor: %w", err)
 	}
 	if err := r.validateResults(); err != nil {
@@ -304,7 +304,9 @@ func (r *RunRecord) validateResults() error {
 	return nil
 }
 
-func (d *TargetDescriptor) validate() error {
+// Validate checks the descriptor is a complete, well-formed comparison key:
+// adapter identity, 40-hex commit, binary identity, and MPH content hashes.
+func (d *TargetDescriptor) Validate() error {
 	if d.AdapterName == "" || d.AdapterVersion == "" {
 		return fmt.Errorf("adapter_name and adapter_version are required")
 	}
