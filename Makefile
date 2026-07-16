@@ -25,16 +25,16 @@ build: install-hooks build-css build-mcp-proxy lint benchmark-build
 
 # --- benchmark runner module (benchmark/) ---
 # A standalone Go module (ADR 0025: black-box, never imports orchestrator).
-# Root Go walkers do not descend into nested modules, so it gets explicit
-# targets, wired as prerequisites of build/test/lint.
+# Root Go walkers do not descend into nested modules, so these delegate to
+# benchmark/Makefile and are wired as prerequisites of build/test/lint.
 benchmark-build:
-	cd benchmark && go build ./...
+	$(MAKE) -C benchmark build
 
 benchmark-test:
-	cd benchmark && go test -cover ./...
+	$(MAKE) -C benchmark test
 
-benchmark-lint: install-lint
-	cd benchmark && go fmt ./... && golangci-lint run
+benchmark-lint:
+	$(MAKE) -C benchmark lint
 
 # Cross-compile MCP proxy for Linux containers (ARM64 and AMD64)
 build-mcp-proxy:

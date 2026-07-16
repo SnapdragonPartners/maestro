@@ -39,7 +39,9 @@ The execution engine, CLI, and comparison reports are later Phase 1 items
 
 ## Development
 
-From the repo root: `make benchmark-build`, `make benchmark-test`,
-`make benchmark-lint` — all three also run as prerequisites of the root
-`build`, `test`, and `lint` targets, so hooks and CI cover this module
-automatically. Unit tests spend no tokens and touch no network.
+In this directory: `make build`, `make test`, `make test-race`,
+`make lint` (`make run` arrives with the item 3 CLI). From the repo root,
+`make benchmark-build`/`benchmark-test`/`benchmark-lint` delegate here and
+run as prerequisites of the root `build`, `test`, and `lint` targets, so
+hooks and CI cover this module automatically. Unit tests spend no tokens
+and touch no network.
