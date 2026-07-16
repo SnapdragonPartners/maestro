@@ -19,6 +19,9 @@ import (
 // Prefix identifies the hash algorithm in every emitted identity string.
 const Prefix = "sha256:"
 
+//nolint:gochecknoglobals // Package-level compiled regex for performance.
+var identityPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
 // CanonicalJSON returns the "sha256:<hex>" identity of v's canonical JSON
 // form. The value is marshaled, decoded into generic maps, and re-marshaled
 // so that object keys are sorted and the result is independent of Go struct
@@ -47,5 +50,5 @@ func CanonicalJSON(v any) (string, error) {
 // prefix followed by exactly 64 lowercase hex digits. Every identity field
 // in the run-record contract validates through this single definition.
 func Valid(id string) bool {
-	return regexp.MustCompile(`^sha256:[0-9a-f]{64}$`).MatchString(id)
+	return identityPattern.MatchString(id)
 }

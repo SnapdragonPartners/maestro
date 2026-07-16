@@ -150,8 +150,9 @@ type Metrics map[MetricKey]Metric
 // Validate enforces the completeness rule: every registry key present with
 // a coherent status, and no keys outside the registry.
 func (m Metrics) Validate() error {
-	known := make(map[MetricKey]bool, len(Registry()))
-	for _, spec := range Registry() {
+	registry := Registry()
+	known := make(map[MetricKey]bool, len(registry))
+	for _, spec := range registry {
 		known[spec.Key] = true
 		metric, ok := m[spec.Key]
 		if !ok {

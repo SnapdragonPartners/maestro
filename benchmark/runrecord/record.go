@@ -12,6 +12,9 @@ import (
 // self-describes with it; readers reject versions they do not know.
 const SchemaVersion = 1
 
+//nolint:gochecknoglobals // Package-level compiled regex for performance.
+var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
 // Verdict is the runner's terminal judgment of one attempt.
 type Verdict string
 
@@ -310,7 +313,7 @@ func (d *TargetDescriptor) Validate() error {
 	if d.AdapterName == "" || d.AdapterVersion == "" {
 		return fmt.Errorf("adapter_name and adapter_version are required")
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(d.CommitHash) {
+	if !commitPattern.MatchString(d.CommitHash) {
 		return fmt.Errorf("commit_hash %q must be a full 40-hex commit: it is a comparison key", d.CommitHash)
 	}
 	if d.BinaryIdentity == "" {

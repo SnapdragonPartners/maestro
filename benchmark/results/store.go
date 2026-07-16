@@ -25,6 +25,9 @@ const fileExtension = ".jsonl"
 // generous evidence stays far below this).
 const maxRecordBytes = 16 * 1024 * 1024
 
+//nolint:gochecknoglobals // Package-level compiled regex for performance.
+var suiteRunIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
 // Store is an append-only results directory.
 type Store struct {
 	dir string
@@ -130,7 +133,7 @@ func (s *Store) suitePath(suiteRunID string) string {
 // only, because case-insensitive filesystems (macOS default) would collide
 // IDs differing only by case onto one .jsonl file.
 func validSuiteRunID(id string) error {
-	if !regexp.MustCompile(`^[a-z0-9_-]+$`).MatchString(id) {
+	if !suiteRunIDPattern.MatchString(id) {
 		return fmt.Errorf("suite run id %q must match [a-z0-9_-]+", id)
 	}
 	return nil

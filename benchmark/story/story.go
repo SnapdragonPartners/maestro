@@ -16,6 +16,12 @@ import (
 // section shapes change only with a version bump.
 const SchemaVersion = 1
 
+//nolint:gochecknoglobals // Package-level compiled regexes for performance.
+var (
+	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	kebabPattern  = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+)
+
 // Level types a story's input prompt (ADR 0025).
 type Level string
 
@@ -212,7 +218,7 @@ func (f *Fixture) validate() error {
 	if f.Repo == "" {
 		return fmt.Errorf("repo is required")
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(f.Commit) {
+	if !commitPattern.MatchString(f.Commit) {
 		return fmt.Errorf("commit %q must be a full 40-hex pinned commit", f.Commit)
 	}
 	if f.BaseBranch == "" {
@@ -235,5 +241,5 @@ func (b *Budget) validate() error {
 
 // kebabCase reports whether s is non-empty lowercase kebab-case.
 func kebabCase(s string) bool {
-	return regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`).MatchString(s)
+	return kebabPattern.MatchString(s)
 }
