@@ -1,0 +1,24 @@
+# Reviewed NON-prompt files matched by the prompt scanner's heuristics
+# (false positives): SQL DDL/queries, git/PR plumbing, HTML/UI strings,
+# and file-management templates — none of it is sent to a model. Entries
+# here are NOT hashed into P; putting them in manifest.txt instead would
+# make prompt identity move when non-prompt code changes. Every scanner
+# candidate must appear in exactly one of the two lists; an unclassified
+# candidate fails prompthash_test.go.
+pkg/coder/budget_review.go
+pkg/coder/coder_fsm.go
+pkg/coder/setup.go
+pkg/effect/approval.go
+pkg/effect/budget_review.go
+pkg/github/pr.go
+pkg/mirror/manager.go
+pkg/persistence/failure_ops.go
+pkg/persistence/models.go
+pkg/persistence/operations.go
+pkg/persistence/schema.go
+pkg/persistence/sessions.go
+pkg/pm/await_architect.go
+pkg/proto/message.go
+pkg/proto/unified_protocol.go
+pkg/utils/maestro_files.go
+pkg/webui/server.go

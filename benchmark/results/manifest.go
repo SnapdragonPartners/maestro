@@ -111,3 +111,14 @@ func (s *Store) ReadManifest(suiteRunID string) (*Manifest, error) {
 func (s *Store) manifestPath(suiteRunID string) string {
 	return filepath.Join(s.dir, suiteRunID+manifestExtension)
 }
+
+// EvidenceDir creates (if needed) and returns the durable evidence
+// directory for one run — evidence files must outlive workspace cleanup,
+// so they live under the results store.
+func (s *Store) EvidenceDir(runID string) (string, error) {
+	dir := filepath.Join(s.dir, "evidence", runID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("evidence dir %s: %w", dir, err)
+	}
+	return dir, nil
+}

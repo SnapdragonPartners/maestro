@@ -6,19 +6,23 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/engine"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
 	"github.com/SnapdragonPartners/maestro/benchmark/results"
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
 	"github.com/SnapdragonPartners/maestro/benchmark/target"
 	"github.com/SnapdragonPartners/maestro/benchmark/target/faketarget"
+	"github.com/SnapdragonPartners/maestro/benchmark/target/v1target"
 )
 
 const usage = `usage: runner <command> [flags]
@@ -62,13 +66,32 @@ func run(args []string) int {
 	return 0
 }
 
-// adapters is the registry of executable targets. Item 4 adds
-// v1-as-patched; item 8 adds the single-agent baseline. The fake is wired
-// for end-to-end smoke of the runner itself (no target, no tokens).
+// adapters is the registry of executable targets. Item 8 adds the
+// single-agent baseline. The fake is wired for end-to-end smoke of the
+// runner itself (no target, no tokens).
 func adapters() map[string]target.Adapter {
 	return map[string]target.Adapter{
-		"fake": faketarget.New(),
+		"fake":          faketarget.New(),
+		"v1-as-patched": v1target.New(),
 	}
+}
+
+// closeAdapters tears down adapter-owned infrastructure (the shared Gitea
+// container and volume) after the suite. Failures are returned, not merely
+// printed: a runner that leaks infrastructure must not exit successfully.
+func closeAdapters(registry map[string]target.Adapter) error {
+	var errs []error
+	for name, adapter := range registry {
+		if closer, ok := safe.As[io.Closer](adapter); ok {
+			if err := closer.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close adapter %s: %w", name, err))
+			}
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("adapter teardown: %w", err)
+	}
+	return nil
 }
 
 func loadInputs(storiesPath, configsPath string) ([]*story.Loaded, []*mph.Loaded, error) {
@@ -178,6 +201,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	resultsDir := fs.String("results", "results", "results store directory")
 	workdir := fs.String("workdir", "", "workspace root (default: temp dir)")
 	suiteID := fs.String("suite-id", "", "suite run ID (default: generated)")
+	keepInfra := fs.Bool("keep-infra", false, "keep adapter infrastructure (Gitea) running after the suite")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
@@ -205,8 +229,9 @@ func cmdRun(ctx context.Context, args []string) error {
 			return err
 		}
 	}
+	registry := adapters()
 	eng := &engine.Engine{
-		Adapters: adapters(),
+		Adapters: registry,
 		Store:    store,
 		Workdir:  wd,
 		Logf: func(format string, a ...any) {
@@ -223,8 +248,15 @@ func cmdRun(ctx context.Context, args []string) error {
 		fmt.Printf("suite %s: %s (%d attempts; charged $%.2f, observed $%.2f of $%.2f cap)\n",
 			manifest.SuiteRunID, manifest.StopReason, len(manifest.Attempts), manifest.ChargedUSD, manifest.ObservedUSD, manifest.CapUSD)
 	}
+	var closeErr error
+	if !*keepInfra {
+		closeErr = closeAdapters(registry)
+	}
 	if err != nil {
-		return fmt.Errorf("run suite: %w", err)
+		err = fmt.Errorf("run suite: %w", err)
+	}
+	if joined := errors.Join(err, closeErr); joined != nil {
+		return fmt.Errorf("%w", joined)
 	}
 	return nil
 }

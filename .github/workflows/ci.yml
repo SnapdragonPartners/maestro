@@ -54,6 +54,11 @@ jobs:
           ANTHROPIC_API_KEY: dummy-ci-key
           OPENAI_API_KEY: dummy-ci-key
           GOOGLE_GENAI_API_KEY: dummy-ci-key
+          # Gitea is mandatory for every real v1 benchmark attempt, so a
+          # green PR must have executed its Docker lifecycle: on this
+          # runner the docker-guarded benchmark tests FAIL instead of
+          # skipping (design_adapter_v1.md).
+          BENCHMARK_REQUIRE_DOCKER: "1"
 
   # Template for when e2e/integration tests move into CI (today they run only
   # in the pre-push hook). Real API-key secrets go on this job — keeping them

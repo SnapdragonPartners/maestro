@@ -271,12 +271,37 @@ func TestChecksFailureOnDiffOutsideAllowedPaths(t *testing.T) {
 }
 
 func TestEvidenceMissing(t *testing.T) {
-	sb, _ := defaultBudgets()
-	stub := solutionStub()
-	stub.EvidenceKinds = []string{"diff"} // story also expects test-output
-	rec := runOne(t, stub, sb)
+	// test-output is engine-contributed now, so the uncoverable kind must
+	// be one neither the target nor the engine supplies: a required "pr"
+	// artifact from a stub that doesn't produce one.
+	repoURL, pin := makeFixture(t)
+	sb, db := defaultBudgets()
+	loaded := testStory(t, repoURL, pin, sb)
+	loaded.Definition.Expectations.RequiredArtifacts = []string{"pr"}
+	eng, _ := newEngine(t, solutionStub())
+	rec, err := eng.RunAttempt(context.Background(), loaded, testBundle(t, db), "suite-int", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
 	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureEvidenceMissing {
 		t.Fatalf("want failed/evidence-missing, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+}
+
+func TestEngineContributesValidatorEvidence(t *testing.T) {
+	sb, _ := defaultBudgets()
+	rec := runOne(t, solutionStub(), sb)
+	found := ""
+	for i := range rec.Evidence {
+		if rec.Evidence[i].Kind == "test-output" && strings.Contains(rec.Evidence[i].Location, "validator-00") {
+			found = rec.Evidence[i].Location
+		}
+	}
+	if found == "" {
+		t.Fatalf("engine must contribute validator test-output evidence: %+v", rec.Evidence)
+	}
+	if _, err := os.Stat(found); err != nil {
+		t.Fatalf("evidence file must survive cleanup: %v", err)
 	}
 }
 
