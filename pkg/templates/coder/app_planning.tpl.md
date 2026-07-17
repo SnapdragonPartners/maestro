@@ -135,7 +135,7 @@ When submitting your plan with `submit_plan`, you MUST provide:
 ### Required Parameters:
 - **`plan`**: Your complete implementation plan (JSON format above)
 - **`confidence`**: "HIGH", "MEDIUM", or "LOW" based on exploration
-- **`todos`**: Ordered list of implementation tasks (1-20 items, 3-10 recommended for typical stories)
+- **`todos`**: Ordered list of implementation tasks — whatever atomic, trackable steps the story genuinely needs; a trivial story may need only one
 
 ### Optional Parameters:
 - **`exploration_summary`**: Brief summary of files explored and findings

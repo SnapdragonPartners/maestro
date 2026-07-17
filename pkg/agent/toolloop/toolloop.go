@@ -253,6 +253,10 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 		tracker = newToolErrorTracker(cfg.ToolCircuitBreaker, tl.logger)
 	}
 
+	// SingleTurn nonconformance is nudged, not instantly fatal (P-3).
+	const maxSingleTurnNudges = 2
+	singleTurnNudges := 0
+
 	// Main iteration loop
 	for iteration := 0; iteration < cfg.MaxIterations; iteration++ {
 		currentIteration := iteration + 1 // 1-indexed for user-facing logs
@@ -598,13 +602,25 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 			}
 		}
 
-		// SingleTurn mode: terminal tool must have been called
+		// SingleTurn mode: terminal tool must have been called. P-2/P-3
+		// lineage (golden-runner instrument patch, docs/v2/phase_1/
+		// patches_v1.md P-3): a model occasionally explores with a general
+		// tool before deciding; one nonconforming response must not be a
+		// hard failure that (for architect reviews) fatally shuts down the
+		// whole factory. Nudge a bounded number of times, then fail.
 		if cfg.SingleTurn {
-			tl.logger.Error("❌ SingleTurn mode: Terminal tool was not called after first tool execution")
+			if singleTurnNudges < maxSingleTurnNudges {
+				singleTurnNudges++
+				tl.logger.Warn("⚠️  SingleTurn mode: terminal tool '%s' not called; nudging (%d/%d)", terminalToolName, singleTurnNudges, maxSingleTurnNudges)
+				cfg.ContextManager.AddMessage("user",
+					fmt.Sprintf("You must now complete this review in this response by calling the '%s' tool with your decision. Do not call any other tool.", terminalToolName))
+				continue
+			}
+			tl.logger.Error("❌ SingleTurn mode: Terminal tool was not called after %d nudges", maxSingleTurnNudges)
 			return Outcome[T]{
 				Kind:      OutcomeExtractionError,
 				Signal:    "ERROR",
-				Err:       fmt.Errorf("single-turn mode requires terminal tool to be called in first iteration"),
+				Err:       fmt.Errorf("single-turn mode requires terminal tool to be called (after %d nudges)", maxSingleTurnNudges),
 				Iteration: currentIteration,
 			}
 		}

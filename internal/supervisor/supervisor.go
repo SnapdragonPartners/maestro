@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,10 @@ import (
 	"orchestrator/pkg/proto"
 	"orchestrator/pkg/utils"
 )
+
+// coderType mirrors string(agent.TypeCoder) for use in scopes where a
+// local variable shadows the agent package.
+const coderType = "coder"
 
 // RestartAction defines what to do when an agent reaches a terminal state.
 type RestartAction int
@@ -158,6 +163,7 @@ type Supervisor struct {
 	lastActivity    map[string]time.Time   // agentID → last toolloop iteration start
 	agentStates     map[string]proto.State // agentID → current FSM state (for watchdog filtering)
 	agentGeneration map[string]uint64      // agentID → monotonic generation counter (prevents stale goroutine restarts)
+	restartInFlight map[string]bool        // agentID → restart claimed (P-6: dedups the ERROR-notification vs unexpected-exit restart race)
 	activityMu      sync.Mutex
 }
 
@@ -190,6 +196,7 @@ func NewSupervisor(k *kernel.Kernel) *Supervisor {
 		lastActivity:    make(map[string]time.Time),
 		agentStates:     make(map[string]proto.State),
 		agentGeneration: make(map[string]uint64),
+		restartInFlight: make(map[string]bool),
 	}
 
 	// Wire up the restore channel to the factory for SUSPEND state support
@@ -288,16 +295,14 @@ func (s *Supervisor) handleStateChange(ctx context.Context, notification *proto.
 		action := s.Policy.OnError[agentType]
 
 		// CRITICAL: For coder errors, requeue the story before restart
-		if agentType == string(agent.TypeCoder) {
+		if agentType == coderType {
 			s.Logger.Info("Requeuing story for failed agent %s", notification.AgentID)
-			// Get the story ID from the agent's lease
-			storyID := s.Kernel.Dispatcher.GetLease(notification.AgentID)
+			// Atomically take the lease (P-6): the unexpected-exit path may be
+			// handling this same death; only one path may requeue.
+			storyID := s.Kernel.Dispatcher.TakeLease(notification.AgentID)
 			if storyID == "" {
-				s.Logger.Error("No story lease found for failed agent %s", notification.AgentID)
+				s.Logger.Info("No story lease found for failed agent %s (none held, or already requeued by exit handler)", notification.AgentID)
 			} else {
-				// Clear the lease first
-				s.Kernel.Dispatcher.ClearLease(notification.AgentID)
-
 				// Extract structured failure info from notification metadata (if present)
 				reason := "Agent failed with error state"
 				var failureInfo *proto.FailureInfo
@@ -389,11 +394,36 @@ func (s *Supervisor) handleAgentCancel(ctx context.Context, req *proto.AgentCanc
 
 // restartAgent handles restarting an individual agent.
 // This creates a completely fresh agent instance with no state preservation.
+//
+// P-6 (golden-runner instrument patch, docs/v2/phase_1/patches_v1.md): an agent
+// death fires two independent restart paths — the ERROR state notification
+// (handleStateChange) and the Run() goroutine exit (handleUnexpectedExit) —
+// within milliseconds of each other. Without mutual exclusion both restarts
+// proceed, registering two live instances; Dispatcher.Attach is last-writer-wins
+// on the reply channel, so approval responses are delivered to the idle
+// duplicate and the story-owning instance times out. The in-flight claim makes
+// the second path a no-op.
 func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
+	if !s.claimRestart(agentID) {
+		s.Logger.Info("Restart of agent %s already in flight; skipping duplicate restart", agentID)
+		return nil
+	}
+	defer s.releaseRestart(agentID)
+
 	s.Logger.Info("Restarting agent: %s", agentID)
 
 	// Get the agent type
 	agentType := s.getAgentType(agentID)
+	if agentType == "" {
+		// P-2 (golden-runner instrument patch, docs/v2/phase_1/patches_v1.md):
+		// the unexpected-exit cleanup can race this restart and delete the
+		// AgentTypes entry first, permanently stranding the requeued story
+		// with no agent. The type is recoverable from the ID convention.
+		agentType = agentTypeFromID(agentID)
+		if agentType != "" {
+			s.Logger.Warn("Agent %s type mapping was already cleaned up; recovered type %q from ID", agentID, agentType)
+		}
+	}
 	if agentType == "" {
 		return fmt.Errorf("unknown agent type for %s", agentID)
 	}
@@ -421,6 +451,25 @@ func (s *Supervisor) restartAgent(ctx context.Context, agentID string) error {
 
 	s.Logger.Info("Agent %s successfully recreated and registered", agentID)
 	return nil
+}
+
+// claimRestart marks a restart of agentID as in flight. Returns false if a
+// restart is already in flight, in which case the caller must not restart.
+func (s *Supervisor) claimRestart(agentID string) bool {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	if s.restartInFlight[agentID] {
+		return false
+	}
+	s.restartInFlight[agentID] = true
+	return true
+}
+
+// releaseRestart clears the in-flight restart claim for agentID.
+func (s *Supervisor) releaseRestart(agentID string) {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	delete(s.restartInFlight, agentID)
 }
 
 // cleanupAgentResources performs cleanup for a terminated agent.
@@ -480,10 +529,11 @@ func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string, g
 
 	s.Logger.Warn("🔄 Agent %s (gen %d) exited without state notification (likely watchdog kill), restarting", agentID, generation)
 
-	// Requeue the story if the agent had one
-	storyID := s.Kernel.Dispatcher.GetLease(agentID)
+	// Requeue the story if the agent had one. TakeLease is atomic (P-6): if the
+	// ERROR-notification path already took the lease for this death, we get ""
+	// and skip the duplicate requeue.
+	storyID := s.Kernel.Dispatcher.TakeLease(agentID)
 	if storyID != "" {
-		s.Kernel.Dispatcher.ClearLease(agentID)
 		if err := s.Kernel.Dispatcher.UpdateStoryRequeue(storyID, agentID, "agent killed by watchdog without state notification", nil); err != nil {
 			s.Logger.Error("Failed to requeue story %s from unexpectedly exited agent %s: %v", storyID, agentID, err)
 		} else {
@@ -493,6 +543,27 @@ func (s *Supervisor) handleUnexpectedExit(ctx context.Context, agentID string, g
 
 	if err := s.restartAgent(ctx, agentID); err != nil {
 		s.Logger.Error("Failed to restart unexpectedly exited agent %s: %v", agentID, err)
+	}
+}
+
+// agentTypeFromID recovers an agent's registered type from v1's ID
+// convention ({type}-{seq}, with hotfix agents registered as coders) when
+// the tracking map has already been cleaned up. Returns "" for IDs outside
+// the convention.
+func agentTypeFromID(agentID string) string {
+	prefix, _, ok := strings.Cut(agentID, "-")
+	if !ok {
+		return ""
+	}
+	switch prefix {
+	case coderType, "hotfix":
+		return coderType
+	case "architect":
+		return string(agent.TypeArchitect)
+	case "pm":
+		return string(agent.TypePM)
+	default:
+		return ""
 	}
 }
 
@@ -531,7 +602,7 @@ func (s *Supervisor) RegisterAgent(ctx context.Context, agentID, agentType strin
 	s.Logger.Info("Registered agent %s (type: %s, gen: %d)", agentID, agentType, gen)
 
 	// Wire up activity tracker for coder agents (watchdog monitoring)
-	if agentType == "coder" {
+	if agentType == coderType {
 		type activityTrackerSetter interface {
 			SetActivityTracker(tracker toolloop.ActivityTracker)
 		}
@@ -871,7 +942,7 @@ func (s *Supervisor) checkCodingActivity() {
 	staleAgents := make(map[string]*staleAgent)
 	for agentID, lastTime := range s.lastActivity {
 		if time.Since(lastTime) > timeout {
-			if agentType, exists := s.AgentTypes[agentID]; exists && agentType == "coder" {
+			if agentType, exists := s.AgentTypes[agentID]; exists && agentType == coderType {
 				// Only kill agents in states where toolloop activity is expected.
 				// States like PLAN_REVIEW, CODE_REVIEW, QUESTION, and BUDGET_REVIEW
 				// block on ExecuteEffect() waiting for architect responses — no

@@ -428,3 +428,27 @@ func TestConvertPR(t *testing.T) {
 		t.Error("IsMerged should return true")
 	}
 }
+
+// P-7 regression: merge refs arrive as full PR URLs from the coder; they must
+// resolve to PR numbers, not be treated as branch names.
+func TestPRNumberFromURL(t *testing.T) {
+	cases := map[string]struct {
+		num int
+		ok  bool
+	}{
+		"http://127.0.0.1:49829/golden/repo/pulls/2":   {2, true},
+		"http://127.0.0.1:49829/golden/repo/pulls/17/": {17, true},
+		"https://github.com/owner/repo/pull/123":       {123, true},
+		"story-749a9daa":                               {0, false},
+		"42":                                           {0, false}, // bare numbers handled upstream
+		"http://host/repo/pulls/notanumber":            {0, false},
+		"http://host/repo/pulls/0":                     {0, false},
+		"http://host/repo/branches/2":                  {0, false},
+	}
+	for ref, want := range cases {
+		num, ok := prNumberFromURL(ref)
+		if num != want.num || ok != want.ok {
+			t.Errorf("prNumberFromURL(%q) = (%d, %v), want (%d, %v)", ref, num, ok, want.num, want.ok)
+		}
+	}
+}
