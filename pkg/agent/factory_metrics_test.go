@@ -73,13 +73,12 @@ func TestDefaultConfigUsesInternal(t *testing.T) {
 	}
 }
 
-// isInternalRecorder checks if the recorder is an internal recorder
-// by attempting a type assertion (simple way to distinguish without exposing internals).
+// isInternalRecorder reports whether the recorder is the metrics-enabled
+// kind: the internal aggregator, possibly wrapped by the P-1 usage-log
+// fan-out (which always wraps the internal recorder).
 func isInternalRecorder(recorder metrics.Recorder) bool {
-	// The internal recorder is *InternalRecorder, noop is *NoopRecorder
-	// We can distinguish by the type name
 	switch recorder.(type) {
-	case *metrics.InternalRecorder:
+	case *metrics.InternalRecorder, *metrics.UsageLogRecorder:
 		return true
 	default:
 		return false

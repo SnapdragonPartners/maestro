@@ -42,9 +42,11 @@ func NewInternalRecorder() *InternalRecorder {
 	return internalInstance
 }
 
-// ObserveRequest records metrics for a completed LLM request.
+// ObserveRequest records metrics for a completed LLM request. Agent and
+// model are unused here (the usage-log recorder consumes them); story
+// aggregates are unchanged.
 func (r *InternalRecorder) ObserveRequest(
-	storyID string,
+	storyID, _, _ string,
 	promptTokens, completionTokens int,
 	cost float64,
 	success bool,

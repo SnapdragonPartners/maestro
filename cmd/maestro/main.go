@@ -13,6 +13,7 @@ import (
 	"orchestrator/internal/kernel"
 	"orchestrator/internal/state"
 	iutils "orchestrator/internal/utils"
+	"orchestrator/pkg/agent/middleware/metrics"
 	"orchestrator/pkg/config"
 	"orchestrator/pkg/demo"
 	"orchestrator/pkg/forge"
@@ -46,6 +47,9 @@ func main() {
 		fmt.Printf("maestro %s\n", version.Version)
 		fmt.Printf("  commit: %s\n", version.Commit)
 		fmt.Printf("  built:  %s\n", version.Date)
+		// The benchmark runner's pre-run capability handshake (P-1): it
+		// validates this advertised usage-surface version before launch.
+		fmt.Printf("  usage-surface: v%d\n", metrics.UsageSurfaceVersion)
 		os.Exit(0)
 	}
 

@@ -190,13 +190,19 @@ func TestV1AdapterEndToEnd(t *testing.T) {
 		t.Fatalf("want accepted, got %s/%s (%s; reason: %s)", rec.Verdict, rec.FailureKind, rec.InvalidReason,
 			rec.Metrics[runrecord.MetricTokensTotal].Reason)
 	}
-	if rec.Target.BudgetEnforcement != runrecord.EnforcementPostHoc {
-		t.Fatalf("v1 adapter is post-hoc pre-P-1, got %s", rec.Target.BudgetEnforcement)
+	if rec.Target.BudgetEnforcement != runrecord.EnforcementStreamed {
+		t.Fatalf("v1-as-patched streams via the P-1 usage surface, got %s", rec.Target.BudgetEnforcement)
 	}
 	if tokens, ok := rec.Metrics[runrecord.MetricTokensTotal].Float64(); !ok || tokens != 12000 {
-		t.Fatalf("normalized tokens from canned db, got %+v", rec.Metrics[runrecord.MetricTokensTotal])
+		t.Fatalf("canonical tokens from the usage log, got %+v", rec.Metrics[runrecord.MetricTokensTotal])
 	}
-	assertEvidence(t, rec, "pr", "diff", "test-output", "db")
+	if calls, ok := rec.Metrics[runrecord.MetricLLMCalls].Float64(); !ok || calls != 2 {
+		t.Fatalf("llm_calls from the usage log, got %+v", rec.Metrics[runrecord.MetricLLMCalls])
+	}
+	if cost, ok := rec.Metrics[runrecord.MetricCostUSD].Float64(); !ok || cost != 0.75 {
+		t.Fatalf("canonical cost from the usage log, got %+v", rec.Metrics[runrecord.MetricCostUSD])
+	}
+	assertEvidence(t, rec, "pr", "diff", "test-output", "db", "usage")
 	// The fixture must be untouched: no refs beyond main.
 	refs, err := gitx.LsRemoteHeads(ctx, ".", repo, "refs/heads/*")
 	if err != nil || len(refs) != 1 {

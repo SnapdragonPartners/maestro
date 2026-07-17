@@ -17,10 +17,12 @@ type StateProvider interface {
 
 // Recorder defines the interface for recording LLM operation metrics.
 type Recorder interface {
-	// ObserveRequest records metrics for a completed LLM request.
-	// Only storyID, tokens, cost, and success are used by internal recorder.
+	// ObserveRequest records metrics for a completed LLM request. The
+	// internal recorder aggregates by storyID/tokens/cost/success; agentID
+	// and model feed the durable usage log (the P-1 benchmark usage
+	// surface — see docs/v2/phase_1/design_adapter_v1.md).
 	ObserveRequest(
-		storyID string,
+		storyID, agentID, model string,
 		promptTokens, completionTokens int,
 		cost float64,
 		success bool,
@@ -37,7 +39,7 @@ func Nop() Recorder {
 
 // ObserveRequest does nothing in the no-op recorder.
 func (n *NoopRecorder) ObserveRequest(
-	_ string,
+	_, _, _ string,
 	_, _ int,
 	_ float64,
 	_ bool,

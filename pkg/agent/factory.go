@@ -12,6 +12,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	mrl "github.com/SnapdragonPartners/maestro-llms/llms/ratelimit"
 
@@ -52,6 +53,16 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 	if cfg.Agents != nil && cfg.Agents.Metrics.Enabled {
 		logger.Info("📊 Using internal metrics recorder")
 		recorder = metrics.NewInternalRecorder()
+		// P-1 usage surface: fan out every LLM call to a durable usage log
+		// so external instrumentation (the golden-story benchmark runner)
+		// can stream usage; the internal aggregates are untouched.
+		usagePath := filepath.Join(config.GetProjectDir(), ".maestro", metrics.UsageLogFileName)
+		if usageRecorder, usageErr := metrics.NewUsageLogRecorder(usagePath, recorder); usageErr == nil {
+			logger.Info("📊 Usage log v%d at %s", metrics.UsageSurfaceVersion, usagePath)
+			recorder = usageRecorder
+		} else {
+			logger.Warn("Usage log unavailable (%v); continuing with in-memory metrics only", usageErr)
+		}
 	} else {
 		logger.Info("📊 Using no-op metrics recorder")
 		recorder = metrics.Nop()

@@ -1,0 +1,96 @@
+package metrics
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// fanoutSpy records forwarded observations.
+type fanoutSpy struct {
+	calls int
+	story string
+}
+
+func (f *fanoutSpy) ObserveRequest(storyID, _, _ string, _, _ int, _ float64, _ bool) {
+	f.calls++
+	f.story = storyID
+}
+
+func TestUsageLogRecorderFanOutAndFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	spy := &fanoutSpy{}
+	recorder, err := NewUsageLogRecorder(path, spy)
+	if err != nil {
+		t.Fatalf("new usage log: %v", err)
+	}
+	recorder.ObserveRequest("story-1", "coder-001", "model-x", 100, 50, 0.01, true)
+	// Failed calls are recorded too: their tokens were spent.
+	recorder.ObserveRequest("story-1", "coder-001", "model-x", 10, 0, 0, false)
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	if spy.calls != 2 || spy.story != "story-1" {
+		t.Fatalf("wrapped recorder must receive every observation: %+v", spy)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	defer file.Close() //nolint:errcheck // test read
+	scanner := bufio.NewScanner(file)
+	if !scanner.Scan() {
+		t.Fatalf("missing header line")
+	}
+	var header UsageHeader
+	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil || header.UsageSurfaceVersion != UsageSurfaceVersion {
+		t.Fatalf("header must carry the surface version: %s (%v)", scanner.Text(), err)
+	}
+	var entries []UsageEntry
+	for scanner.Scan() {
+		var entry UsageEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatalf("entry decode: %v", err)
+		}
+		entries = append(entries, entry)
+	}
+	if len(entries) != 2 || entries[0].Model != "model-x" || entries[0].PromptTokens != 100 || entries[1].Success {
+		t.Fatalf("entries wrong: %+v", entries)
+	}
+}
+
+func TestUsageLogRecorderAppendsAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	first, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	first.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	if closeErr := first.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	second, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	second.ObserveRequest("s", "a", "m", 2, 2, 0.002, true)
+	if closeErr := second.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	lines := 0
+	for _, b := range raw {
+		if b == '\n' {
+			lines++
+		}
+	}
+	if lines != 3 { // one header + two entries, no second header
+		t.Fatalf("append across reopen must not duplicate the header: %d lines\n%s", lines, raw)
+	}
+}

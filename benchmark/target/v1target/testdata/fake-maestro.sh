@@ -8,6 +8,7 @@ set -eu
 
 if [ "${1:-}" = "-version" ]; then
     echo "maestro fake-v0.0.0 (golden-runner test binary)"
+    echo "  usage-surface: v1"
     exit 0
 fi
 
@@ -75,6 +76,16 @@ open_and_merge story-2 "solution: done again"
 
 mkdir -p "$PROJECT_DIR/.maestro/logs"
 echo "fake maestro ran" > "$PROJECT_DIR/.maestro/logs/run.log"
+
+# P-1 usage surface: versioned header + one line per (fake) LLM call.
+# Totals deliberately match the canned DB story aggregates: 12000 tokens,
+# $0.75, across 2 calls.
+cat > "$PROJECT_DIR/.maestro/usage.jsonl" <<'USAGE'
+{"usage_surface_version":1}
+{"ts":"2026-07-17T00:00:01Z","story_id":"st-1","agent_id":"coder-001","model":"fake-model","prompt_tokens":5000,"completion_tokens":3000,"cost_usd":0.5,"success":true}
+{"ts":"2026-07-17T00:00:02Z","story_id":"st-2","agent_id":"coder-001","model":"fake-model","prompt_tokens":3000,"completion_tokens":1000,"cost_usd":0.25,"success":true}
+USAGE
+
 cp "$FAKE_DB" "$PROJECT_DIR/.maestro/maestro.db"
 
 # Stay alive briefly so the adapter's poller (not process death) observes

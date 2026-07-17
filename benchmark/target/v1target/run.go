@@ -20,6 +20,7 @@ import (
 type v1Run struct {
 	adapter  *Adapter
 	spec     *target.AttemptSpec
+	tail     *usageTail
 	cloneURL string
 	authURL  string
 	settings settings
@@ -46,6 +47,10 @@ func (r *v1Run) execute(ctx context.Context) (*target.Observation, error) {
 		return nil, err
 	}
 	dbPath := filepath.Join(projectDir, ".maestro", "maestro.db")
+	r.tail = &usageTail{
+		path:   filepath.Join(projectDir, ".maestro", "usage.jsonl"),
+		report: r.spec.ReportUsage,
+	}
 	final, pollErr := r.poll(ctx, dbPath, proc)
 	r.adapter.rememberSession(r.spec.RunID, final.sessionID)
 
@@ -56,6 +61,9 @@ func (r *v1Run) execute(ctx context.Context) (*target.Observation, error) {
 	// because the attempt was aborted.
 	r.stop(proc, ctx.Err() != nil)
 	proc.awaitExit()
+	if tailErr := r.tail.advance(); tailErr != nil && pollErr == nil {
+		pollErr = tailErr
+	}
 	ectx, cancel := context.WithTimeout(context.Background(), evidenceTimeout)
 	defer cancel()
 
@@ -325,6 +333,11 @@ func (r *v1Run) poll(ctx context.Context, dbPath string, proc *process) (finalSt
 			return finalState{sessionID: obs.sessionID, toolCalls: -1}, fmt.Errorf("v1 run aborted: %w", context.Cause(ctx))
 		case <-ticker.C:
 		}
+		if tailErr := r.tail.advance(); tailErr != nil {
+			// Run half of the P-1 handshake: a bad usage surface is a
+			// target-identity error, never a silent downgrade.
+			return finalState{sessionID: obs.sessionID, toolCalls: -1}, tailErr
+		}
 		states, err := obs.observe(ctx)
 		if err != nil {
 			if proc.dead() {
@@ -373,14 +386,18 @@ func (r *v1Run) metrics(final *finalState) runrecord.Metrics {
 	}
 	metrics[runrecord.MetricHumanInterventions] = runrecord.NotApplicable()
 	metrics[runrecord.MetricHumanAttentionSeconds] = runrecord.NotApplicable()
-	if final.allDone() {
-		tokens, cost := final.aggregates()
-		metrics[runrecord.MetricTokensTotal] = runrecord.Measured(float64(tokens))
-		metrics[runrecord.MetricCostUSD] = runrecord.Measured(cost)
+	// The P-1 usage log is the canonical usage source: per-call accrual,
+	// present for failed attempts too. Story aggregates remain in the DB
+	// snapshot evidence for cross-checking.
+	if r.tail != nil && r.tail.validated {
+		metrics[runrecord.MetricTokensTotal] = runrecord.Measured(float64(r.tail.tokens))
+		metrics[runrecord.MetricCostUSD] = runrecord.Measured(r.tail.costUSD)
+		metrics[runrecord.MetricLLMCalls] = runrecord.Measured(float64(r.tail.calls))
 	} else {
-		reason := "v1 persists usage only at story acceptance (pre-P-1)"
+		reason := "usage log never appeared"
 		metrics[runrecord.MetricTokensTotal] = runrecord.Unavailable(reason)
 		metrics[runrecord.MetricCostUSD] = runrecord.Unavailable(reason)
+		metrics[runrecord.MetricLLMCalls] = runrecord.Unavailable(reason)
 	}
 	if final.toolCalls >= 0 {
 		metrics[runrecord.MetricToolCalls] = runrecord.Measured(float64(final.toolCalls))

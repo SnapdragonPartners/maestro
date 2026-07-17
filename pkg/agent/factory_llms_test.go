@@ -103,7 +103,7 @@ type recordingRecorder struct {
 	calls                      int
 }
 
-func (r *recordingRecorder) ObserveRequest(storyID string, p, c int, cost float64, success bool) {
+func (r *recordingRecorder) ObserveRequest(storyID, _, _ string, p, c int, cost float64, success bool) {
 	r.storyID, r.promptTokens, r.completionTk, r.cost, r.success = storyID, p, c, cost, success
 	r.calls++
 }

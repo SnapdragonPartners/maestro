@@ -105,20 +105,23 @@ func (a *Adapter) Identity() target.Identity {
 	return target.Identity{Name: adapterName, Version: adapterVersion}
 }
 
-// Capabilities implements target.Adapter: what maestro.db can honestly
-// yield pre-P-1. llm_calls arrives with the P-1 usage surface (item 5);
-// agent_requests is inter-agent messaging, never an LLM-call counter.
+// Capabilities implements target.Adapter: tokens, cost, and llm_calls
+// come from the P-1 usage surface (per-call accrual; agent_requests is
+// inter-agent messaging, never an LLM-call counter); tool_calls from
+// tool_executions.
 func (a *Adapter) Capabilities() target.Capabilities {
 	return target.Capabilities{Metrics: []runrecord.MetricKey{
 		runrecord.MetricTokensTotal,
 		runrecord.MetricCostUSD,
+		runrecord.MetricLLMCalls,
 		runrecord.MetricToolCalls,
 	}}
 }
 
 // Describe implements target.Adapter: immutable binary identity, the
-// audited prompt-content hash, canonical model routing, declared post-hoc
-// enforcement, and the target commit from the source checkout.
+// audited prompt-content hash, canonical model routing, streamed budget
+// enforcement (the P-1 usage surface, validated pre-run via the -version
+// advertisement), and the target commit from the source checkout.
 func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runrecord.TargetDescriptor, error) {
 	if err := spec.Validate(); err != nil {
 		return runrecord.TargetDescriptor{}, fmt.Errorf("v1target describe: %w", err)
@@ -137,6 +140,10 @@ func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runre
 	}
 	if checkErr := crossCheckCommit(versionOut, commit); checkErr != nil {
 		return runrecord.TargetDescriptor{}, checkErr
+	}
+	// Pre-run half of the P-1 capability handshake.
+	if surfaceErr := verifyAdvertisedSurface(versionOut); surfaceErr != nil {
+		return runrecord.TargetDescriptor{}, surfaceErr
 	}
 	pHash, err := promptHash(s.SourceDir)
 	if err != nil {
@@ -161,7 +168,7 @@ func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runre
 		AdapterVersion:    adapterVersion,
 		CommitHash:        commit,
 		BinaryIdentity:    binaryID,
-		BudgetEnforcement: runrecord.EnforcementPostHoc,
+		BudgetEnforcement: runrecord.EnforcementStreamed,
 		MPH: runrecord.MPHIdentity{
 			Model:          model,
 			PromptPack:     "v1-embedded",
