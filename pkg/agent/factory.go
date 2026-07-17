@@ -56,13 +56,17 @@ func NewLLMClientFactory(cfg *config.Config) (*LLMClientFactory, error) {
 		// P-1 usage surface: fan out every LLM call to a durable usage log
 		// so external instrumentation (the golden-story benchmark runner)
 		// can stream usage; the internal aggregates are untouched.
+		// The binary advertises `usage-surface: v1` in -version output, so
+		// the surface is a contract, not best-effort: silently degrading
+		// would let a benchmark run spend tokens with streamed enforcement
+		// blind. Creation failure is fatal.
 		usagePath := filepath.Join(config.GetProjectDir(), ".maestro", metrics.UsageLogFileName)
-		if usageRecorder, usageErr := metrics.NewUsageLogRecorder(usagePath, recorder); usageErr == nil {
-			logger.Info("📊 Usage log v%d at %s", metrics.UsageSurfaceVersion, usagePath)
-			recorder = usageRecorder
-		} else {
-			logger.Warn("Usage log unavailable (%v); continuing with in-memory metrics only", usageErr)
+		usageRecorder, usageErr := metrics.NewUsageLogRecorder(usagePath, recorder)
+		if usageErr != nil {
+			return nil, fmt.Errorf("usage log (P-1 surface) unavailable at %s: %w", usagePath, usageErr)
 		}
+		logger.Info("📊 Usage log v%d at %s", metrics.UsageSurfaceVersion, usagePath)
+		recorder = usageRecorder
 	} else {
 		logger.Info("📊 Using no-op metrics recorder")
 		recorder = metrics.Nop()

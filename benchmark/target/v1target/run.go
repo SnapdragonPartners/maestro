@@ -83,6 +83,13 @@ func (r *v1Run) execute(ctx context.Context) (*target.Observation, error) {
 		// as an in-place solution would validate the untouched fixture.
 		return nil, fmt.Errorf("solution import failed: %w", importErr)
 	}
+	if !r.tail.validated {
+		// This adapter declares streamed enforcement; a run that finished
+		// without ever producing a validated usage-log header spent tokens
+		// with enforcement blind. Refuse success rather than report
+		// unavailable usage on an accepted run.
+		return nil, fmt.Errorf("usage surface never validated: %s missing or lacked the v%d header", r.tail.path, usageSurfaceVersion)
+	}
 
 	return &target.Observation{
 		Metrics:              r.metrics(&final),
@@ -379,9 +386,10 @@ func (r *v1Run) stop(proc *process, immediate bool) {
 	_ = syscall.Kill(-proc.cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // final kill
 }
 
-// metrics normalizes the final story aggregates: post-hoc, acceptance-
-// reached values only; everything not persisted is unavailable, everything
-// not observable is unsupported.
+// metrics assembles the final metric set from the streamed P-1 usage log
+// (canonical for tokens/cost/llm_calls, present for failed attempts too);
+// everything not observable from v1 is unsupported, and usage metrics
+// degrade to unavailable only when the log was never validated.
 func (r *v1Run) metrics(final *finalState) runrecord.Metrics {
 	metrics := make(runrecord.Metrics, len(runrecord.Registry()))
 	for _, spec := range runrecord.Registry() {

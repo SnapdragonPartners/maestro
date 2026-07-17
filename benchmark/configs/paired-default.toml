@@ -27,8 +27,10 @@ platform = "go"
 test_cmd = "go test ./..."
 poll_interval = "5s"
 # Library fixtures carry no Dockerfile; pin a Go-capable coder container
-# (discovery run 3: the bootstrap fallback has no Go toolchain).
-container_image = "golang:1.26"
+# (discovery run 3: the bootstrap fallback has no Go toolchain). Pinned by
+# digest so identical harness hashes always execute identical container
+# contents (golang:1.26 as of 2026-07-17).
+container_image = "golang@sha256:ae5a2316d12f3e78fd99177dad452e6ad4f240af2d71d57b480c3477f250fec6"
 
 # Expectations remain provisional until item 6; caps sized from the
 # discovery runs (v1's paired factory costs real money — measuring that

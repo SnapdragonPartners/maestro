@@ -1,11 +1,15 @@
-// Package v1target is the v1-as-patched benchmark adapter (Phase 1 item 4,
+// Package v1target is the v1-as-patched benchmark adapter (Phase 1 items 4-5,
 // design_adapter_v1.md): it drives the frozen-lineage v1 maestro binary
 // black-box — per-run Gitea forge isolation, subprocess invocation with DB
-// polling, honest post-hoc metric normalization from maestro.db, durable
-// evidence export, and MPH identity from audited prompt content.
+// polling, durable evidence export, and MPH identity from audited prompt
+// content.
 //
-// Budget enforcement is declared post-hoc until item 5 lands the P-1 usage
-// surface, which flips this adapter to streamed.
+// Budget enforcement is streamed (item 5, patch P-1): the adapter tails
+// v1's per-call usage log (.maestro/usage.jsonl), reports deltas to the
+// engine for live cap enforcement, and takes the log as the canonical
+// tokens/cost/llm_calls source. The surface is validated on both handshake
+// halves: Describe checks the `usage-surface: v1` advertisement in
+// -version output, and Run requires the versioned log header.
 package v1target
 
 import (

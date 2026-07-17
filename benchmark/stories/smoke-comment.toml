@@ -44,6 +44,14 @@ type = "file_contains"
 path = "doc.go"
 contains = "Golden smoke check"
 
+# Deterministic exact-change check: together with diff-confined (only
+# doc.go changed at all), this admits precisely the requested edit —
+# one added line, zero deleted, and the added line is the marker at EOF.
+[[checks]]
+name = "exact-one-line-append"
+type = "command"
+command = "test \"$(git diff e7a7422bad4dec726b62eec2cd6d759cd7780deb..HEAD --numstat -- doc.go | awk '{print $1\"-\"$2}')\" = \"1-0\" && test \"$(tail -n 1 doc.go)\" = \"// Golden smoke check.\""
+
 # Draft budgets (item 6 calibrates): sized from discovery runs 1-4 —
 # v1's ceremony plus a single minimal story.
 [budget]

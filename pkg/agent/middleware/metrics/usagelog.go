@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"orchestrator/pkg/logx"
 )
 
 // UsageSurfaceVersion identifies the durable per-LLM-call usage log format
@@ -41,9 +43,10 @@ type UsageEntry struct {
 // wrapped recorder (the InternalRecorder singleton, whose story aggregates
 // handleWorkAccepted still reads) AND to an append-only JSONL usage log.
 type UsageLogRecorder struct {
-	inner Recorder
-	file  *os.File
-	mu    sync.Mutex
+	inner    Recorder
+	file     *os.File
+	writeErr error // first append/sync failure, sticky; see Err()
+	mu       sync.Mutex
 }
 
 // NewUsageLogRecorder opens (creating if needed) the usage log at path and
@@ -74,7 +77,8 @@ func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error)
 
 // ObserveRequest implements Recorder: fan out to the wrapped recorder and
 // append one usage line. Log write failures never disturb the wrapped
-// recorder or the calling agent.
+// recorder or the calling agent, but they are surfaced: logged at ERROR on
+// first occurrence and retained (sticky) for Err().
 func (u *UsageLogRecorder) ObserveRequest(
 	storyID, agentID, model string,
 	promptTokens, completionTokens int,
@@ -82,7 +86,7 @@ func (u *UsageLogRecorder) ObserveRequest(
 	success bool,
 ) {
 	u.inner.ObserveRequest(storyID, agentID, model, promptTokens, completionTokens, cost, success)
-	_ = u.writeLine(UsageEntry{ //nolint:errcheck // best effort: usage logging must never break LLM calls
+	if err := u.writeLine(UsageEntry{
 		Timestamp:        time.Now().UTC(),
 		StoryID:          storyID,
 		AgentID:          agentID,
@@ -91,7 +95,28 @@ func (u *UsageLogRecorder) ObserveRequest(
 		CompletionTokens: completionTokens,
 		CostUSD:          cost,
 		Success:          success,
-	})
+	}); err != nil {
+		u.recordWriteErr(err)
+	}
+}
+
+// recordWriteErr retains the first write failure and logs it once. External
+// instrumentation streaming the log (the benchmark runner) sees the stall
+// and fails the run rather than silently under-counting.
+func (u *UsageLogRecorder) recordWriteErr(err error) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.writeErr == nil {
+		u.writeErr = err
+		_ = logx.Errorf("usage log write failed — streamed usage is no longer being recorded: %v", err)
+	}
+}
+
+// Err returns the first usage-log write failure, or nil.
+func (u *UsageLogRecorder) Err() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.writeErr
 }
 
 func (u *UsageLogRecorder) writeLine(v any) error {

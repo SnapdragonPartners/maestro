@@ -94,3 +94,35 @@ func TestUsageLogRecorderAppendsAcrossReopen(t *testing.T) {
 		t.Fatalf("append across reopen must not duplicate the header: %d lines\n%s", lines, raw)
 	}
 }
+
+// P-1 hardening: creation failure must be an error, not a silent degrade —
+// the factory treats it as fatal because -version advertises the surface.
+func TestUsageLogRecorderCreationFailure(t *testing.T) {
+	dir := t.TempDir() // a directory at the log path makes open fail
+	if _, err := NewUsageLogRecorder(dir, Nop()); err == nil {
+		t.Fatal("expected error when the usage log path is unwritable")
+	}
+}
+
+// P-1 hardening: append failures are sticky and surfaced via Err(), while
+// the wrapped recorder still receives every observation.
+func TestUsageLogRecorderWriteFailureSurfaced(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	inner := NewInternalRecorder()
+	rec, err := NewUsageLogRecorder(path, inner)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Force write failure by closing the underlying file out from under it.
+	if closeErr := rec.file.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	rec.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	if rec.Err() == nil {
+		t.Fatal("expected sticky write error after append to closed file")
+	}
+	rec.ObserveRequest("s", "a", "m", 2, 2, 0.002, true)
+	if rec.Err() == nil {
+		t.Fatal("write error must remain sticky")
+	}
+}

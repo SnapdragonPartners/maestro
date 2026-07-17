@@ -613,7 +613,7 @@ func Run[T any](tl *ToolLoop, ctx context.Context, cfg *Config[T]) Outcome[T] {
 				singleTurnNudges++
 				tl.logger.Warn("⚠️  SingleTurn mode: terminal tool '%s' not called; nudging (%d/%d)", terminalToolName, singleTurnNudges, maxSingleTurnNudges)
 				cfg.ContextManager.AddMessage("user",
-					fmt.Sprintf("You must now complete this review in this response by calling the '%s' tool with your decision. Do not call any other tool.", terminalToolName))
+					fmt.Sprintf("You must now complete this task in this response by calling the '%s' tool with your result. Do not call any other tool.", terminalToolName))
 				continue
 			}
 			tl.logger.Error("❌ SingleTurn mode: Terminal tool was not called after %d nudges", maxSingleTurnNudges)
