@@ -1,0 +1,60 @@
+# Golden story: rung 0 (smoke) — the most minimal end-to-end exercise of
+# the whole instrument: one trivial single-file change, prompt-scoped to
+# discourage the target from decomposing it into multiple internal
+# stories. Bring-up story for the item 5 discovery loop; the natural
+# golden-minimal tier candidate (item 9).
+schema_version = 1
+id = "smoke-comment"
+title = "Append a marker comment to doc.go"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-cms"
+commit = "e7a7422bad4dec726b62eec2cd6d759cd7780deb"
+base_branch = "main"
+
+[prompt]
+text = """
+Append exactly one line to the end of the file doc.go:
+
+// Golden smoke check.
+
+This is a deliberately trivial single-file change used to verify the
+development pipeline end to end. Treat it as ONE small story — do not
+split it into multiple stories, and do not add verification stories;
+the change needs no tests beyond compiling.
+"""
+
+[expectations]
+allowed_paths = ["doc.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[checks]]
+name = "diff-confined"
+type = "files_changed_within"
+
+[[checks]]
+name = "marker-present"
+type = "file_contains"
+path = "doc.go"
+contains = "Golden smoke check"
+
+# Deterministic exact-change check: together with diff-confined (only
+# doc.go changed at all), this admits precisely the requested edit —
+# one added line, zero deleted, and the added line is the marker at EOF.
+[[checks]]
+name = "exact-one-line-append"
+type = "command"
+command = "test \"$(git diff e7a7422bad4dec726b62eec2cd6d759cd7780deb..HEAD --numstat -- doc.go | awk '{print $1\"-\"$2}')\" = \"1-0\" && test \"$(tail -n 1 doc.go)\" = \"// Golden smoke check.\""
+
+# Draft budgets (item 6 calibrates): sized from discovery runs 1-4 —
+# v1's ceremony plus a single minimal story.
+[budget]
+max_tokens = 1500000
+max_wall_clock_seconds = 2400
+max_cost_usd = 12.0

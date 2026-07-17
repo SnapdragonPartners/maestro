@@ -8,6 +8,7 @@ set -eu
 
 if [ "${1:-}" = "-version" ]; then
     echo "maestro fake-v0.0.0 (golden-runner test binary)"
+    echo "  usage-surface: v1"
     exit 0
 fi
 
@@ -20,7 +21,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PROJECT_DIR" ] || { echo "no --projectdir" >&2; exit 1; }
 
-STATE="$PROJECT_DIR/forge_state.json"
+STATE="$PROJECT_DIR/.maestro/forge_state.json"
 field() { sed -n "s/^  \"$1\": \"\(.*\)\",\{0,1\}$/\1/p" "$STATE" | head -1; }
 URL=$(field url)
 TOKEN=$(field token)
@@ -75,6 +76,26 @@ open_and_merge story-2 "solution: done again"
 
 mkdir -p "$PROJECT_DIR/.maestro/logs"
 echo "fake maestro ran" > "$PROJECT_DIR/.maestro/logs/run.log"
+
+# P-1 usage surface: versioned header + one line per (fake) LLM call.
+# Totals deliberately match the canned DB story aggregates: 12000 tokens,
+# $0.75, across 2 calls. FAKE_NO_USAGE=1 suppresses the log entirely to
+# exercise the adapter's usage-surface-required failure path.
+if [ "${FAKE_NO_USAGE:-0}" != "1" ]; then
+cat > "$PROJECT_DIR/.maestro/usage.jsonl" <<'USAGE'
+{"usage_surface_version":1}
+{"ts":"2026-07-17T00:00:01Z","story_id":"st-1","agent_id":"coder-001","model":"fake-model","prompt_tokens":5000,"completion_tokens":3000,"cost_usd":0.5,"success":true}
+{"ts":"2026-07-17T00:00:02Z","story_id":"st-2","agent_id":"coder-001","model":"fake-model","prompt_tokens":3000,"completion_tokens":1000,"cost_usd":0.25,"success":true}
+USAGE
+fi
+
+# FAKE_USAGE_ERROR=1 simulates v1 detecting a mid-run usage-log write
+# failure: the log is present and valid (header + lines) but the sentinel
+# marks streamed usage as undercounting. The adapter must fail the run.
+if [ "${FAKE_USAGE_ERROR:-0}" = "1" ]; then
+    echo "simulated append failure: disk full" > "$PROJECT_DIR/.maestro/usage.error"
+fi
+
 cp "$FAKE_DB" "$PROJECT_DIR/.maestro/maestro.db"
 
 # Stay alive briefly so the adapter's poller (not process death) observes

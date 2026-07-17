@@ -37,7 +37,14 @@ You do not have access to exploration tools in this phase - story generation sho
 
 **PLATFORM CONSISTENCY RULE**: All requirements, examples, tools, and implementation details MUST be consistent with the identified platform. Do not mix platforms or suggest tools from different languages.
 
-Extract discrete, implementable requirements from the specification:
+Extract discrete, implementable requirements from the specification.
+
+**Right-size the decomposition**: create as many stories as genuinely make
+sense for the work — no more, no fewer. A small, self-contained change is
+ONE story; do not pad the list with separate build-verification or
+test-verification stories (every story's own acceptance criteria cover its
+verification). Prefer additional stories only when they carve out work
+that can proceed in parallel.
 
 For each requirement you identify:
 

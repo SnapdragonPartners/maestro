@@ -131,7 +131,8 @@ func e2eBundle(t *testing.T, fakeBin, sourceDir string) *mph.Loaded {
 }
 
 // prepareFakeBin stages fake-maestro with FAKE_DB wired via a wrapper.
-func prepareFakeBin(t *testing.T) string {
+// extraEnv lines are exported verbatim before exec (e.g. "FAKE_NO_USAGE=1").
+func prepareFakeBin(t *testing.T, extraEnv ...string) string {
 	t.Helper()
 	script, err := filepath.Abs("testdata/fake-maestro.sh")
 	if err != nil {
@@ -142,7 +143,11 @@ func prepareFakeBin(t *testing.T) string {
 	}
 	cannedDB := writeCannedDB(t)
 	wrapper := filepath.Join(t.TempDir(), "fake-maestro")
-	content := "#!/bin/sh\nexport FAKE_DB=\"" + cannedDB + "\"\nexec \"" + script + "\" \"$@\"\n"
+	content := "#!/bin/sh\nexport FAKE_DB=\"" + cannedDB + "\"\n"
+	for _, env := range extraEnv {
+		content += "export " + env + "\n"
+	}
+	content += "exec \"" + script + "\" \"$@\"\n"
 	if err := os.WriteFile(wrapper, []byte(content), 0o755); err != nil { //nolint:gosec // test executable
 		t.Fatalf("wrapper: %v", err)
 	}
@@ -190,17 +195,93 @@ func TestV1AdapterEndToEnd(t *testing.T) {
 		t.Fatalf("want accepted, got %s/%s (%s; reason: %s)", rec.Verdict, rec.FailureKind, rec.InvalidReason,
 			rec.Metrics[runrecord.MetricTokensTotal].Reason)
 	}
-	if rec.Target.BudgetEnforcement != runrecord.EnforcementPostHoc {
-		t.Fatalf("v1 adapter is post-hoc pre-P-1, got %s", rec.Target.BudgetEnforcement)
+	if rec.Target.BudgetEnforcement != runrecord.EnforcementStreamed {
+		t.Fatalf("v1-as-patched streams via the P-1 usage surface, got %s", rec.Target.BudgetEnforcement)
 	}
 	if tokens, ok := rec.Metrics[runrecord.MetricTokensTotal].Float64(); !ok || tokens != 12000 {
-		t.Fatalf("normalized tokens from canned db, got %+v", rec.Metrics[runrecord.MetricTokensTotal])
+		t.Fatalf("canonical tokens from the usage log, got %+v", rec.Metrics[runrecord.MetricTokensTotal])
 	}
-	assertEvidence(t, rec, "pr", "diff", "test-output", "db")
+	if calls, ok := rec.Metrics[runrecord.MetricLLMCalls].Float64(); !ok || calls != 2 {
+		t.Fatalf("llm_calls from the usage log, got %+v", rec.Metrics[runrecord.MetricLLMCalls])
+	}
+	if cost, ok := rec.Metrics[runrecord.MetricCostUSD].Float64(); !ok || cost != 0.75 {
+		t.Fatalf("canonical cost from the usage log, got %+v", rec.Metrics[runrecord.MetricCostUSD])
+	}
+	assertEvidence(t, rec, "pr", "diff", "test-output", "db", "usage")
 	// The fixture must be untouched: no refs beyond main.
 	refs, err := gitx.LsRemoteHeads(ctx, ".", repo, "refs/heads/*")
 	if err != nil || len(refs) != 1 {
 		t.Fatalf("fixture must hold only main after the run: %v (%v)", refs, err)
+	}
+}
+
+// TestV1AdapterFailsWithoutUsageLog pins the streamed-enforcement contract:
+// a run whose usage log never appears must FAIL, not succeed with
+// unavailable usage — otherwise the target spends with enforcement blind
+// while still declaring streamed.
+func TestV1AdapterFailsWithoutUsageLog(t *testing.T) {
+	requireDocker(t)
+	sourceDir := sourceRoot(t)
+	adapter := New()
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Errorf("adapter close: %v", err)
+		}
+	})
+	repo, pin := makeLocalFixture(t)
+	store, err := results.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	eng := &engine.Engine{
+		Adapters: map[string]target.Adapter{"v1-as-patched": adapter},
+		Store:    store,
+		Workdir:  t.TempDir(),
+		Logf:     t.Logf,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rec, err := eng.RunAttempt(ctx, e2eStory(t, repo, pin), e2eBundle(t, prepareFakeBin(t, "FAKE_NO_USAGE=1"), sourceDir), "suite-v1-e2e-nousage", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureTargetError {
+		t.Fatalf("run without a usage log must fail as target-error, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+}
+
+// TestV1AdapterFailsOnUsageWriteFailure pins the mid-run stall contract:
+// even with a validated header, the target's usage.error sentinel (written
+// by v1 on its first append/sync failure) must fail the run — partial
+// streamed usage must never be accepted as complete.
+func TestV1AdapterFailsOnUsageWriteFailure(t *testing.T) {
+	requireDocker(t)
+	sourceDir := sourceRoot(t)
+	adapter := New()
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Errorf("adapter close: %v", err)
+		}
+	})
+	repo, pin := makeLocalFixture(t)
+	store, err := results.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	eng := &engine.Engine{
+		Adapters: map[string]target.Adapter{"v1-as-patched": adapter},
+		Store:    store,
+		Workdir:  t.TempDir(),
+		Logf:     t.Logf,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rec, err := eng.RunAttempt(ctx, e2eStory(t, repo, pin), e2eBundle(t, prepareFakeBin(t, "FAKE_USAGE_ERROR=1"), sourceDir), "suite-v1-e2e-usageerr", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureTargetError {
+		t.Fatalf("run with a usage.error sentinel must fail as target-error, got %s/%s", rec.Verdict, rec.FailureKind)
 	}
 }
 

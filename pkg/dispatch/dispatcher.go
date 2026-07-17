@@ -201,6 +201,13 @@ func (d *Dispatcher) Attach(ag Agent) {
 	d.agents[agentID] = ag
 
 	// Create reply channel for this agent (buffer size = 1).
+	// P-6 diagnostic: registration is last-writer-wins, and Detach is never
+	// called, so replacement is normal on restart — but if the previous
+	// instance is still live (duplicate-restart race), its responses strand
+	// in the displaced channel. Log so that failure mode is traceable.
+	if _, exists := d.replyChannels[agentID]; exists {
+		d.logger.Info("Attach replacing existing reply channel for agent %s (expected on restart; fatal if the prior instance is still live)", agentID)
+	}
 	replyCh := make(chan *proto.AgentMsg, 1)
 	d.replyChannels[agentID] = replyCh
 
@@ -1197,6 +1204,22 @@ func (d *Dispatcher) GetLeasedStoryIDs() map[string]bool {
 		result[storyID] = true
 	}
 	return result
+}
+
+// TakeLease atomically returns and clears an agent's story assignment.
+// P-6: both supervisor death-handling paths (ERROR notification and unexpected
+// exit) requeue the dead agent's story; a separate GetLease+ClearLease lets both
+// observe the lease and double-requeue, burning the story's attempt budget
+// twice per death. Take-and-clear under one lock guarantees a single winner.
+func (d *Dispatcher) TakeLease(agentID string) string {
+	d.leasesMutex.Lock()
+	defer d.leasesMutex.Unlock()
+	storyID := d.leases[agentID]
+	if storyID != "" {
+		delete(d.leases, agentID)
+		d.logger.Debug("Took lease: agent %s was working on story %s", agentID, storyID)
+	}
+	return storyID
 }
 
 // ClearLease removes an agent's story assignment.

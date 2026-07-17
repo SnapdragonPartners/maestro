@@ -821,7 +821,7 @@ func init() {
 	// Register todo tools
 	Register(ToolTodosAdd, createTodosAddTool, &ToolMeta{
 		Name:        ToolTodosAdd,
-		Description: "Add todos to implementation list (initial submission or additional todos). Recommended: 3-10 items for initial list.",
+		Description: "Add todos to implementation list (initial submission or additional todos). Include whatever atomic steps the story genuinely needs to track.",
 		InputSchema: getTodosAddSchema(),
 	})
 

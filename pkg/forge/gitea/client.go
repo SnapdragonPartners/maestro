@@ -164,10 +164,18 @@ func (c *Client) ListPRsForBranch(ctx context.Context, branch string) ([]forge.P
 	return result, nil
 }
 
-// GetPR retrieves a pull request by number or branch name.
+// GetPR retrieves a pull request by number, PR URL, or branch name.
 func (c *Client) GetPR(ctx context.Context, ref string) (*forge.PullRequest, error) {
 	// Check if ref is a number
 	if prNum, err := strconv.Atoi(ref); err == nil {
+		return c.getPRByNumber(ctx, prNum)
+	}
+
+	// P-7 (golden-runner instrument patch, docs/v2/phase_1/patches_v1.md):
+	// the architect's merge path passes the coder's full PR URL as the ref.
+	// The GitHub client tolerates that; this one treated it as a branch name
+	// and failed every airplane-mode merge.
+	if prNum, ok := prNumberFromURL(ref); ok {
 		return c.getPRByNumber(ctx, prNum)
 	}
 
@@ -182,6 +190,28 @@ func (c *Client) GetPR(ctx context.Context, ref string) (*forge.PullRequest, err
 	}
 
 	return &prs[0], nil
+}
+
+// prNumberFromURL extracts N from a PR URL ending in "/pulls/N" (Gitea) or
+// "/pull/N" (GitHub-style), tolerating a trailing slash. Returns false for
+// anything that is not a URL with that shape.
+func prNumberFromURL(ref string) (int, bool) {
+	if !strings.Contains(ref, "://") {
+		return 0, false
+	}
+	parts := strings.Split(strings.TrimRight(ref, "/"), "/")
+	if len(parts) < 2 {
+		return 0, false
+	}
+	seg := parts[len(parts)-2]
+	if seg != "pulls" && seg != "pull" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // getPRByNumber retrieves a PR by its number.

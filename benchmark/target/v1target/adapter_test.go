@@ -247,9 +247,13 @@ func TestDBNormalizationAgainstCannedDB(t *testing.T) {
 }
 
 func TestMetricsNormalization(t *testing.T) {
-	run := &v1Run{spec: testSpec(t, nil)}
+	// With a validated usage tail, the log totals are canonical.
+	run := &v1Run{
+		spec: testSpec(t, nil),
+		tail: &usageTail{validated: true, calls: 3, tokens: 100, costUSD: 0.5},
+	}
 	done := finalState{
-		classification: classify([]storyState{{Status: "done", Tokens: 100, Cost: 0.5}}),
+		classification: classify([]storyState{{Status: "done", Tokens: 90, Cost: 0.4}}),
 		toolCalls:      7,
 	}
 	metrics := run.metrics(&done)
@@ -260,18 +264,22 @@ func TestMetricsNormalization(t *testing.T) {
 		t.Fatalf("metrics must be capability-coherent: %v", err)
 	}
 	if v, _ := metrics[runrecord.MetricTokensTotal].Float64(); v != 100 {
-		t.Fatalf("tokens: %v", v)
+		t.Fatalf("tokens must come from the usage log, not story aggregates: %v", v)
 	}
-	if metrics[runrecord.MetricLLMCalls].Status != runrecord.StatusUnsupported {
-		t.Fatalf("llm_calls is unsupported pre-P-1 (never agent_requests)")
+	if v, _ := metrics[runrecord.MetricLLMCalls].Float64(); v != 3 {
+		t.Fatalf("llm_calls from the usage log: %v", v)
 	}
 	if metrics[runrecord.MetricHumanInterventions].Status != runrecord.StatusNotApplicable {
 		t.Fatalf("human metrics are not applicable unattended")
 	}
 
-	aborted := finalState{classification: classify([]storyState{{Status: "coding"}}), toolCalls: -1}
-	metrics = run.metrics(&aborted)
+	// Without a validated log, usage is unavailable — never guessed.
+	run.tail = nil
+	metrics = run.metrics(&done)
 	if metrics[runrecord.MetricTokensTotal].Status != runrecord.StatusUnavailable {
-		t.Fatalf("pre-acceptance usage is unavailable pre-P-1, got %+v", metrics[runrecord.MetricTokensTotal])
+		t.Fatalf("usage without the log is unavailable, got %+v", metrics[runrecord.MetricTokensTotal])
+	}
+	if metrics[runrecord.MetricLLMCalls].Status != runrecord.StatusUnavailable {
+		t.Fatalf("llm_calls without the log is unavailable, got %+v", metrics[runrecord.MetricLLMCalls])
 	}
 }

@@ -38,6 +38,12 @@ func (r *v1Run) exportEvidence(ctx context.Context, projectDir, dbPath string, p
 			out = append(out, runrecord.EvidencePointer{Kind: "db", Location: snap})
 		}
 	}
+	if usage := filepath.Join(projectDir, ".maestro", "usage.jsonl"); fileExists(usage) {
+		dest := filepath.Join(dir, "usage.jsonl")
+		if err := copyFile(usage, dest); err == nil {
+			out = append(out, runrecord.EvidencePointer{Kind: "usage", Location: dest})
+		}
+	}
 	if logs := filepath.Join(projectDir, ".maestro", "logs"); dirExists(logs) {
 		dest := filepath.Join(dir, "logs")
 		if err := copyTree(logs, dest); err == nil {
@@ -82,6 +88,32 @@ func (r *v1Run) importSolution(ctx context.Context) (string, error) {
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// copyFile copies one regular file.
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close() //nolint:errcheck // read side
+	out, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dest, err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close() //nolint:errcheck // error path
+		return fmt.Errorf("copy %s: %w", src, err)
+	}
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", dest, err)
+	}
+	return nil
 }
 
 // copyTree copies a directory tree (regular files only).

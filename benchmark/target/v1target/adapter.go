@@ -1,11 +1,15 @@
-// Package v1target is the v1-as-patched benchmark adapter (Phase 1 item 4,
+// Package v1target is the v1-as-patched benchmark adapter (Phase 1 items 4-5,
 // design_adapter_v1.md): it drives the frozen-lineage v1 maestro binary
 // black-box — per-run Gitea forge isolation, subprocess invocation with DB
-// polling, honest post-hoc metric normalization from maestro.db, durable
-// evidence export, and MPH identity from audited prompt content.
+// polling, durable evidence export, and MPH identity from audited prompt
+// content.
 //
-// Budget enforcement is declared post-hoc until item 5 lands the P-1 usage
-// surface, which flips this adapter to streamed.
+// Budget enforcement is streamed (item 5, patch P-1): the adapter tails
+// v1's per-call usage log (.maestro/usage.jsonl), reports deltas to the
+// engine for live cap enforcement, and takes the log as the canonical
+// tokens/cost/llm_calls source. The surface is validated on both handshake
+// halves: Describe checks the `usage-surface: v1` advertisement in
+// -version output, and Run requires the versioned log header.
 package v1target
 
 import (
@@ -45,17 +49,22 @@ type settings struct {
 	SourceDir  string
 	Platform   string
 	TestCmd    string
-	PollEvery  time.Duration
+	// ContainerImage pins v1's coder container. Library fixtures have no
+	// Dockerfile, so without this v1 falls back to its bootstrap container
+	// (no Go toolchain) — discovery run 3's environment failure.
+	ContainerImage string
+	PollEvery      time.Duration
 }
 
 func parseSettings(spec *target.AttemptSpec) (settings, error) {
 	raw := spec.Bundle.Harness.Settings
 	s := settings{
-		MaestroBin: raw["maestro_bin"],
-		SourceDir:  raw["source_dir"],
-		Platform:   raw["platform"],
-		TestCmd:    raw["test_cmd"],
-		PollEvery:  defaultPoll,
+		MaestroBin:     raw["maestro_bin"],
+		SourceDir:      raw["source_dir"],
+		Platform:       raw["platform"],
+		TestCmd:        raw["test_cmd"],
+		ContainerImage: raw["container_image"],
+		PollEvery:      defaultPoll,
 	}
 	if s.MaestroBin == "" || s.SourceDir == "" {
 		return s, fmt.Errorf("harness settings maestro_bin and source_dir are required")
@@ -105,20 +114,23 @@ func (a *Adapter) Identity() target.Identity {
 	return target.Identity{Name: adapterName, Version: adapterVersion}
 }
 
-// Capabilities implements target.Adapter: what maestro.db can honestly
-// yield pre-P-1. llm_calls arrives with the P-1 usage surface (item 5);
-// agent_requests is inter-agent messaging, never an LLM-call counter.
+// Capabilities implements target.Adapter: tokens, cost, and llm_calls
+// come from the P-1 usage surface (per-call accrual; agent_requests is
+// inter-agent messaging, never an LLM-call counter); tool_calls from
+// tool_executions.
 func (a *Adapter) Capabilities() target.Capabilities {
 	return target.Capabilities{Metrics: []runrecord.MetricKey{
 		runrecord.MetricTokensTotal,
 		runrecord.MetricCostUSD,
+		runrecord.MetricLLMCalls,
 		runrecord.MetricToolCalls,
 	}}
 }
 
 // Describe implements target.Adapter: immutable binary identity, the
-// audited prompt-content hash, canonical model routing, declared post-hoc
-// enforcement, and the target commit from the source checkout.
+// audited prompt-content hash, canonical model routing, streamed budget
+// enforcement (the P-1 usage surface, validated pre-run via the -version
+// advertisement), and the target commit from the source checkout.
 func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runrecord.TargetDescriptor, error) {
 	if err := spec.Validate(); err != nil {
 		return runrecord.TargetDescriptor{}, fmt.Errorf("v1target describe: %w", err)
@@ -137,6 +149,10 @@ func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runre
 	}
 	if checkErr := crossCheckCommit(versionOut, commit); checkErr != nil {
 		return runrecord.TargetDescriptor{}, checkErr
+	}
+	// Pre-run half of the P-1 capability handshake.
+	if surfaceErr := verifyAdvertisedSurface(versionOut); surfaceErr != nil {
+		return runrecord.TargetDescriptor{}, surfaceErr
 	}
 	pHash, err := promptHash(s.SourceDir)
 	if err != nil {
@@ -161,7 +177,7 @@ func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runre
 		AdapterVersion:    adapterVersion,
 		CommitHash:        commit,
 		BinaryIdentity:    binaryID,
-		BudgetEnforcement: runrecord.EnforcementPostHoc,
+		BudgetEnforcement: runrecord.EnforcementStreamed,
 		MPH: runrecord.MPHIdentity{
 			Model:          model,
 			PromptPack:     "v1-embedded",
@@ -182,6 +198,12 @@ func binaryIdentity(ctx context.Context, bin string) (identity, versionOut strin
 	}
 	sum := sha256.Sum256(raw)
 	out, err := exec.CommandContext(ctx, bin, "-version").CombinedOutput()
+	if err != nil && ctx.Err() == nil {
+		// One retry: macOS can SIGKILL the first exec of a freshly rebuilt
+		// binary while the kernel re-validates its code signature
+		// (discovery run 10 lost a full conservative reservation to this).
+		out, err = exec.CommandContext(ctx, bin, "-version").CombinedOutput()
+	}
 	if err != nil {
 		return "", "", fmt.Errorf("maestro -version: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

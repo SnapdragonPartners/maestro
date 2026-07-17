@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"orchestrator/pkg/agent"
@@ -280,51 +281,87 @@ func TestMultipleToolCalls(t *testing.T) {
 	}
 }
 
-// TestSingleTurnMode tests that SingleTurn mode enforces immediate terminal tool usage.
-func TestSingleTurnMode(t *testing.T) {
+// TestSingleTurnNudgeThenTerminal pins the P-3 nudge behavior: one
+// nonconforming response is nudged, and a terminal call on the next
+// response completes the loop successfully.
+func TestSingleTurnNudgeThenTerminal(t *testing.T) {
 	ctx := context.Background()
 	cm := contextmgr.NewContextManager()
 	logger := logx.NewLogger("test")
 
-	llmClient := &mockLLMClient{
-		responses: []agent.CompletionResponse{
-			{
-				Content: "General tool",
-				ToolCalls: []agent.ToolCall{
-					{ID: "call1", Name: "read", Parameters: map[string]any{}},
-				},
-			},
+	generalCall := agent.CompletionResponse{
+		Content: "Exploring first",
+		ToolCalls: []agent.ToolCall{
+			{ID: "call1", Name: "read", Parameters: map[string]any{}},
 		},
 	}
-
-	generalTool := &mockGeneralTool{
-		name: "read",
+	terminalCall := agent.CompletionResponse{
+		Content: "Submitting now",
+		ToolCalls: []agent.ToolCall{
+			{ID: "call2", Name: "submit", Parameters: map[string]any{}},
+		},
 	}
-
-	terminalTool := &mockTerminalTool{
-		name: "submit",
-	}
+	llmClient := &mockLLMClient{responses: []agent.CompletionResponse{generalCall, terminalCall}}
 
 	loop := toolloop.New(llmClient, logger)
 	cfg := &toolloop.Config[string]{
 		ContextManager: cm,
-		GeneralTools:   []tools.Tool{generalTool},
-		TerminalTool:   terminalTool,
-		MaxIterations:  5,
+		GeneralTools:   []tools.Tool{&mockGeneralTool{name: "read"}},
+		TerminalTool:   &mockTerminalTool{name: "submit"},
+		MaxIterations:  10,
 		MaxTokens:      1000,
 		AgentID:        "test-agent",
-		SingleTurn:     true, // Enforce single-turn mode
+		SingleTurn:     true,
 	}
 
 	out := toolloop.Run(loop, ctx, cfg)
 
-	// Should error because SingleTurn requires terminal tool on first call
-	if out.Kind == toolloop.OutcomeProcessEffect {
-		t.Fatal("Expected error in SingleTurn mode when general tool is called, got ProcessEffect")
+	if out.Kind != toolloop.OutcomeProcessEffect {
+		t.Fatalf("Expected successful ProcessEffect outcome after one nudge, got %v (err: %v)", out.Kind, out.Err)
+	}
+	if llmClient.callCount != 2 {
+		t.Errorf("Expected 2 LLM calls (nonconforming + nudged terminal), got %d", llmClient.callCount)
+	}
+}
+
+// TestSingleTurnFailsAfterNudges pins the P-3 bound: after the initial
+// nonconforming response plus the maximum number of nudged retries, the
+// loop fails rather than nudging forever.
+func TestSingleTurnFailsAfterNudges(t *testing.T) {
+	ctx := context.Background()
+	cm := contextmgr.NewContextManager()
+	logger := logx.NewLogger("test")
+
+	generalCall := agent.CompletionResponse{
+		Content: "Still exploring",
+		ToolCalls: []agent.ToolCall{
+			{ID: "call1", Name: "read", Parameters: map[string]any{}},
+		},
+	}
+	// Initial response + 2 nudged retries, all nonconforming.
+	llmClient := &mockLLMClient{responses: []agent.CompletionResponse{generalCall, generalCall, generalCall}}
+
+	loop := toolloop.New(llmClient, logger)
+	cfg := &toolloop.Config[string]{
+		ContextManager: cm,
+		GeneralTools:   []tools.Tool{&mockGeneralTool{name: "read"}},
+		TerminalTool:   &mockTerminalTool{name: "submit"},
+		MaxIterations:  10,
+		MaxTokens:      1000,
+		AgentID:        "test-agent",
+		SingleTurn:     true,
 	}
 
-	if out.Err == nil {
-		t.Fatal("Expected error in SingleTurn mode, got nil")
+	out := toolloop.Run(loop, ctx, cfg)
+
+	if out.Kind == toolloop.OutcomeProcessEffect {
+		t.Fatal("Expected failure after exhausting nudges, got ProcessEffect")
+	}
+	if out.Err == nil || !strings.Contains(out.Err.Error(), "single-turn mode requires terminal") {
+		t.Fatalf("Expected single-turn terminal-required error, got: %v", out.Err)
+	}
+	if llmClient.callCount != 3 {
+		t.Errorf("Expected exactly 3 LLM calls (initial + 2 nudges), got %d", llmClient.callCount)
 	}
 }
 

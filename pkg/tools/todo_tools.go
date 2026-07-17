@@ -18,7 +18,7 @@ func NewTodosAddTool() *TodosAddTool {
 func (t *TodosAddTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "todos_add",
-		Description: "Add todos to implementation list (initial submission or additional todos discovered during work). Recommended: 3-10 items for initial list. IMPORTANT: The 'todos' parameter MUST be a non-empty array of strings.",
+		Description: "Add todos to implementation list (initial submission or additional todos discovered during work). Include whatever atomic steps the story genuinely needs to track — a trivial story may need only one. IMPORTANT: The 'todos' parameter MUST be a non-empty array of strings.",
 		InputSchema: InputSchema{
 			Type: "object",
 			Properties: map[string]Property{
@@ -46,7 +46,7 @@ func (t *TodosAddTool) Name() string {
 func (t *TodosAddTool) PromptDocumentation() string {
 	return `- **todos_add** - Add todos to implementation list
   - Parameters: todos (array of 1-20 strings, REQUIRED and must be non-empty)
-  - Use after plan approval for initial list (recommended 3-10 items)
+  - Use after plan approval for the initial list (whatever atomic steps the story genuinely needs)
   - Use during coding to add newly discovered work
   - Each todo should start with action verb and have clear completion criteria
   - Todos are appended to existing list

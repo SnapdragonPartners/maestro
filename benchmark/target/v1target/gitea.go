@@ -299,7 +299,14 @@ func (g *giteaManager) writeForgeState(projectDir, runID string) error {
 	if err != nil {
 		return fmt.Errorf("marshal forge state: %w", err)
 	}
-	path := filepath.Join(projectDir, "forge_state.json")
+	// v1's forge.LoadState reads {projectDir}/.maestro/forge_state.json —
+	// writing to the project root leaves PR creation failing with "forge
+	// state not found" (discovery run 8).
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
+		return fmt.Errorf("create .maestro dir: %w", err)
+	}
+	path := filepath.Join(maestroDir, "forge_state.json")
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		return fmt.Errorf("write forge state: %w", err)
 	}

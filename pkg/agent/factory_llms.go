@@ -77,7 +77,7 @@ func (o *metricsObserver) Observe(ev mmw.Event) {
 		state = string(o.stateProvider.GetCurrentState())
 	}
 
-	o.recorder.ObserveRequest(storyID, promptTokens, completionTokens, cost, success)
+	o.recorder.ObserveRequest(storyID, agentID, ev.Model, promptTokens, completionTokens, cost, success)
 
 	if o.logger == nil {
 		return
