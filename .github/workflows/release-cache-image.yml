@@ -1,0 +1,45 @@
+name: Publish golden-cache image
+
+# Maintainer/release step for the union dependency-cache image (item 5.1,
+# #268; docs/v2/phase_1/design_cost_latency.md). Manually dispatched — this
+# is the ONLY path that publishes the image and thus the only thing that can
+# move the tracked digest. PR CI never runs this; it only pulls and verifies.
+#
+# After a run, read the printed digest from the "Publish and print digest"
+# step and pin it into benchmark/configs/*.toml (container_image).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish"
+        required: false
+        default: "latest"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # push to GHCR via the built-in GITHUB_TOKEN — no PAT
+    env:
+      CACHE_IMAGE: ghcr.io/snapdragonpartners/golden-cache
+      CACHE_TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build union cache image
+        working-directory: benchmark
+        run: ./cache/build.sh
+
+      - name: Verify offline (GOPROXY=off)
+        working-directory: benchmark
+        run: ./cache/verify.sh
+
+      - name: Publish and print digest
+        working-directory: benchmark
+        run: ./cache/publish.sh

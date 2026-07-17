@@ -1,0 +1,8 @@
+# Golden Go fixtures whose module caches are baked into the union image
+# (item 5.1, #268; see docs/v2/phase_1/design_cost_latency.md). One line per
+# fixture: <name> <owner/repo> <commit>. Keep in sync with the [fixture]
+# pins in benchmark/stories/*.toml — a re-pin here means a republish (the
+# maintainer/release step), and the digest in configs/*.toml moves with it.
+cms  SnapdragonPartners/golden-fixture-cms   e7a7422bad4dec726b62eec2cd6d759cd7780deb
+llms SnapdragonPartners/golden-fixture-llms  891dce215ef5c27cf575020e98f29bb876d96abc
+chat SnapdragonPartners/golden-fixture-chat  e71d51bb8486137d8bf8fdf18da8913c3c021edd
