@@ -113,11 +113,18 @@ func TestUsageLogRecorderWriteFailureSurfaced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	// Sentinel write succeeds here (dir intact), so the process must NOT
+	// be aborted — assert onFatal is never reached.
+	fatalCalled := false
+	rec.onFatal = func(error) { fatalCalled = true }
 	// Force write failure by closing the underlying file out from under it.
 	if closeErr := rec.file.Close(); closeErr != nil {
 		t.Fatalf("close: %v", closeErr)
 	}
 	rec.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	if fatalCalled {
+		t.Fatal("onFatal must not fire while the sentinel write succeeds")
+	}
 	if rec.Err() == nil {
 		t.Fatal("expected sticky write error after append to closed file")
 	}
@@ -133,5 +140,35 @@ func TestUsageLogRecorderWriteFailureSurfaced(t *testing.T) {
 	}
 	if len(raw) == 0 {
 		t.Fatal("sentinel must carry the error text")
+	}
+}
+
+// P-1 hardening (Codex round 3): when the append fails AND the sentinel
+// write also fails (correlated filesystem failure), the failure cannot be
+// signaled on disk, so the recorder must escalate to process abort — the
+// one channel independent of the failing disk.
+func TestUsageLogRecorderCorrelatedFailureAborts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.jsonl")
+	rec, err := NewUsageLogRecorder(path, NewInternalRecorder())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var fatalErr error
+	rec.onFatal = func(e error) { fatalErr = e }
+	// Break both write paths at once: close the log file (append fails)
+	// and remove the directory (the sentinel WriteFile fails too).
+	if closeErr := rec.file.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	if rmErr := os.RemoveAll(dir); rmErr != nil {
+		t.Fatalf("rm dir: %v", rmErr)
+	}
+	rec.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	if fatalErr == nil {
+		t.Fatal("correlated append+sentinel failure must escalate to onFatal")
+	}
+	if rec.Err() == nil {
+		t.Fatal("the underlying write error must still be sticky")
 	}
 }

@@ -83,3 +83,32 @@ func TestVerifyAdvertisedSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageTailUnreadableSentinelIsFatal pins the Codex round-3 read-side
+// hardening: a sentinel that exists but cannot be read (here, a directory
+// at the sentinel path) must fail the run, not be mistaken for "no error
+// reported".
+func TestUsageTailUnreadableSentinelIsFatal(t *testing.T) {
+	dir := t.TempDir()
+	errPath := filepath.Join(dir, "usage.error")
+	// A directory at the sentinel path makes ReadFile fail with a non
+	// not-exist error.
+	if err := os.Mkdir(errPath, 0o755); err != nil {
+		t.Fatalf("mkdir sentinel: %v", err)
+	}
+	tail := &usageTail{path: filepath.Join(dir, "usage.jsonl"), errPath: errPath, validated: true}
+	err := tail.advance()
+	if err == nil || !strings.Contains(err.Error(), "sentinel unreadable") {
+		t.Fatalf("unreadable sentinel must be fatal, got: %v", err)
+	}
+}
+
+// TestUsageTailAbsentSentinelIsFine confirms the common case: no sentinel
+// present is not an error.
+func TestUsageTailAbsentSentinelIsFine(t *testing.T) {
+	dir := t.TempDir()
+	tail := &usageTail{path: filepath.Join(dir, "usage.jsonl"), errPath: filepath.Join(dir, "usage.error")}
+	if err := tail.advance(); err != nil {
+		t.Fatalf("absent sentinel must be a no-op, got: %v", err)
+	}
+}

@@ -52,8 +52,20 @@ type UsageLogRecorder struct {
 	inner    Recorder
 	writeErr error // first append/sync failure, sticky; see Err()
 	file     *os.File
+	onFatal  func(error) // escalation when the failure cannot be signaled; default aborts the process
 	path     string
 	mu       sync.Mutex
+}
+
+// fatalUsageAbort terminates the process. It is the default escalation when
+// usage accounting has failed AND the failure cannot be signaled via the
+// sentinel (a correlated filesystem failure breaks both writes). Process
+// death is the one failure channel independent of the usage log's disk, so
+// external instrumentation sees the target die rather than silently accept
+// an under-counted run. Overridable in tests.
+func fatalUsageAbort(err error) {
+	_ = logx.Errorf("FATAL: usage accounting integrity lost and could not be signaled; aborting: %v", err)
+	os.Exit(1)
 }
 
 // NewUsageLogRecorder opens (creating if needed) the usage log at path and
@@ -72,7 +84,7 @@ func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error)
 		_ = file.Close() //nolint:errcheck // error path
 		return nil, fmt.Errorf("stat usage log: %w", err)
 	}
-	recorder := &UsageLogRecorder{inner: inner, file: file, path: path}
+	recorder := &UsageLogRecorder{inner: inner, file: file, path: path, onFatal: fatalUsageAbort}
 	if info.Size() == 0 {
 		if writeErr := recorder.writeLine(UsageHeader{UsageSurfaceVersion: UsageSurfaceVersion}); writeErr != nil {
 			_ = file.Close() //nolint:errcheck // error path
@@ -119,12 +131,17 @@ func (u *UsageLogRecorder) recordWriteErr(err error) {
 	}
 	u.writeErr = err
 	_ = logx.Errorf("usage log write failed — streamed usage is no longer being recorded: %v", err)
-	// Best effort: the sentinel is a different write path (new small file)
-	// and usually survives whatever broke the log append; if it fails too,
-	// the ERROR log above is the last line of defense.
+	// The sentinel is a different write path (a new small file), so it
+	// usually survives whatever broke the log append and gives the adapter
+	// a machine-observable signal. If it ALSO fails, the failure is
+	// correlated (e.g. disk full breaks every write on this filesystem):
+	// escalate to the one channel that does not depend on that disk —
+	// terminating the process — so the run cannot be accepted with silent
+	// undercounting.
 	sentinel := filepath.Join(filepath.Dir(u.path), UsageErrorFileName)
 	if writeErr := os.WriteFile(sentinel, []byte(err.Error()+"\n"), 0o644); writeErr != nil {
-		_ = logx.Errorf("usage error sentinel write failed: %v", writeErr)
+		_ = logx.Errorf("usage error sentinel write also failed (%v); escalating to process abort", writeErr)
+		u.onFatal(fmt.Errorf("usage accounting failed and could not be signaled: append=%w; sentinel=%w", err, writeErr))
 	}
 }
 

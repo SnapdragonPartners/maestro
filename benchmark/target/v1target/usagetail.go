@@ -56,8 +56,15 @@ type usageLine struct {
 // run half of the P-1 capability handshake.
 func (u *usageTail) advance() error {
 	if u.errPath != "" {
-		if raw, sentinelErr := os.ReadFile(u.errPath); sentinelErr == nil {
+		raw, sentinelErr := os.ReadFile(u.errPath)
+		switch {
+		case sentinelErr == nil:
 			return fmt.Errorf("target reported usage log write failure (streamed usage is undercounting): %s", strings.TrimSpace(string(raw)))
+		case !os.IsNotExist(sentinelErr):
+			// Any read error other than "does not exist" (permission,
+			// I/O, it's-a-directory) is itself fatal: we cannot rule out
+			// an undercounting sentinel we simply failed to read.
+			return fmt.Errorf("usage error sentinel unreadable (%s): %w", u.errPath, sentinelErr)
 		}
 	}
 	file, err := os.Open(u.path)
