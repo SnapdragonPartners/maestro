@@ -45,17 +45,22 @@ type settings struct {
 	SourceDir  string
 	Platform   string
 	TestCmd    string
-	PollEvery  time.Duration
+	// ContainerImage pins v1's coder container. Library fixtures have no
+	// Dockerfile, so without this v1 falls back to its bootstrap container
+	// (no Go toolchain) — discovery run 3's environment failure.
+	ContainerImage string
+	PollEvery      time.Duration
 }
 
 func parseSettings(spec *target.AttemptSpec) (settings, error) {
 	raw := spec.Bundle.Harness.Settings
 	s := settings{
-		MaestroBin: raw["maestro_bin"],
-		SourceDir:  raw["source_dir"],
-		Platform:   raw["platform"],
-		TestCmd:    raw["test_cmd"],
-		PollEvery:  defaultPoll,
+		MaestroBin:     raw["maestro_bin"],
+		SourceDir:      raw["source_dir"],
+		Platform:       raw["platform"],
+		TestCmd:        raw["test_cmd"],
+		ContainerImage: raw["container_image"],
+		PollEvery:      defaultPoll,
 	}
 	if s.MaestroBin == "" || s.SourceDir == "" {
 		return s, fmt.Errorf("harness settings maestro_bin and source_dir are required")
@@ -189,6 +194,12 @@ func binaryIdentity(ctx context.Context, bin string) (identity, versionOut strin
 	}
 	sum := sha256.Sum256(raw)
 	out, err := exec.CommandContext(ctx, bin, "-version").CombinedOutput()
+	if err != nil && ctx.Err() == nil {
+		// One retry: macOS can SIGKILL the first exec of a freshly rebuilt
+		// binary while the kernel re-validates its code signature
+		// (discovery run 10 lost a full conservative reservation to this).
+		out, err = exec.CommandContext(ctx, bin, "-version").CombinedOutput()
+	}
 	if err != nil {
 		return "", "", fmt.Errorf("maestro -version: %w (%s)", err, strings.TrimSpace(string(out)))
 	}

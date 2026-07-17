@@ -26,9 +26,15 @@ source_dir = ".."
 platform = "go"
 test_cmd = "go test ./..."
 poll_interval = "5s"
+# Library fixtures carry no Dockerfile; pin a Go-capable coder container
+# (discovery run 3: the bootstrap fallback has no Go toolchain).
+container_image = "golang:1.26"
 
+# Expectations remain provisional until item 6; caps sized from the
+# discovery runs (v1's paired factory costs real money — measuring that
+# is the point).
 [budget]
-expected_tokens_per_run = 500000
-expected_cost_usd_per_run = 3.0
-max_cost_usd_per_run = 8.0
-max_cost_usd_per_suite = 80.0
+expected_tokens_per_run = 1500000
+expected_cost_usd_per_run = 10.0
+max_cost_usd_per_run = 24.0
+max_cost_usd_per_suite = 96.0

@@ -65,7 +65,12 @@ type = "file_contains"
 path = "go.mod"
 contains = "google.golang.org/api v0.274.0"
 
+# Draft budgets until item 6's instrumented runs. Discovery runs 1-2
+# (2026-07-17): v1's factory burns ~2.1k tokens/sec through legitimate
+# growing-context toolloop iterations — 600k tokens by coder-planning
+# iteration 8 (~5 min in). These caps are sized to let one full factory
+# run complete; item 6 calibrates from measured full runs.
 [budget]
-max_tokens = 150000
-max_wall_clock_seconds = 1200
-max_cost_usd = 3.0
+max_tokens = 3000000
+max_wall_clock_seconds = 2700
+max_cost_usd = 20.0

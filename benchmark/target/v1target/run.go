@@ -199,6 +199,9 @@ func (r *v1Run) v1Config() ([]byte, error) {
 			"test":  r.settings.TestCmd,
 		},
 	}
+	if r.settings.ContainerImage != "" {
+		cfg["container"] = map[string]any{"name": r.settings.ContainerImage}
+	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal v1 config: %w", err)

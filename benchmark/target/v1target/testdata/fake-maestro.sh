@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$PROJECT_DIR" ] || { echo "no --projectdir" >&2; exit 1; }
 
-STATE="$PROJECT_DIR/forge_state.json"
+STATE="$PROJECT_DIR/.maestro/forge_state.json"
 field() { sed -n "s/^  \"$1\": \"\(.*\)\",\{0,1\}$/\1/p" "$STATE" | head -1; }
 URL=$(field url)
 TOKEN=$(field token)
