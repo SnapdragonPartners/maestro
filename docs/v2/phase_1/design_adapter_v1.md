@@ -1,13 +1,13 @@
 +++
 title = "Design: The v1-As-Patched Adapter (Item 4)"
 edit_date = "2026-07-16"
-status = "draft"
+status = "live"
 summary = "Design sketch for the adapter-v1 work item: per-run Gitea forge isolation with a complete Docker lifecycle, subprocess invocation and DB-poll lifecycle, the usage-surface patch seam that earns streamed enforcement, durable evidence export with consistent WAL snapshots, the audited prompt manifest, canonical model-routing identity, and immutable binary identity."
 +++
 
 # Design: The v1-As-Patched Adapter (Item 4)
 
-Status: draft — mini-plan for Phase 1 item 4 (`adapter-v1`), the checkpoint before implementation; revised for Codex rounds 1 (nine P1s) and 2 (six tightenings: the post-hoc-then-flip P-1 sequence with a versioned-surface handshake, the item 5 scope amendment made explicit in [plan_scope.md](plan_scope.md), engine-contributed test-output evidence, the two-sided manifest guard, canonical-JSON model routing, and all-stories terminal semantics). Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (target strategy, adapter contract), the [Phase 1 plan](plan_scope.md), [design_engine.md](design_engine.md), [process_fixtures.md](process_fixtures.md). Prior art: v1's own SWE-EVO harness (`pkg/benchmark`), used strictly as a **pattern and salvage source** — the benchmark module never imports `orchestrator` code.
+Status: live — approved with item 4 (PR #264, Codex + DR, 2026-07-17; three design rounds and two code rounds incorporated). Mini-plan for Phase 1 item 4 (`adapter-v1`): the post-hoc-then-flip P-1 sequence with a versioned-surface handshake, the item 5 scope amendment made explicit in [plan_scope.md](plan_scope.md), engine-contributed test-output evidence, the two-sided manifest guard, canonical model routing, and all-stories terminal semantics. Binding sources: [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (target strategy, adapter contract), the [Phase 1 plan](plan_scope.md), [design_engine.md](design_engine.md), [process_fixtures.md](process_fixtures.md). Prior art: v1's own SWE-EVO harness (`pkg/benchmark`), used strictly as a **pattern and salvage source** — the benchmark module never imports `orchestrator` code.
 
 ## The Hard Problem: v1 Merges To Main
 
