@@ -1,10 +1,76 @@
 # Prompt-bearing inputs of the v1 target, hashed into the MPH P dimension.
 # Directory entries (trailing /) include every file beneath them.
+#
+# Classification rule: a file goes here when it contains text authored for
+# a model — role prompts, request prompts, coder instructions, and tool
+# descriptions/usage docs (tool definitions are sent to the LLM). File
+# grain is deliberate: implementation edits inside these files move P
+# conservatively; prompt changes can never miss it.
+#
 # Guarded two ways by prompthash_test.go: every entry must exist in the
-# target checkout, and an independent scanner sweep must not find prompt
-# sources outside this manifest plus allowlist.txt.
+# target checkout, and the independent scanner sweep (phrase + structural
+# heuristics) must classify every candidate into exactly one of this file
+# or allowlist.txt.
 pkg/templates/
 pkg/architect/dev_chat.go
+pkg/architect/escalated.go
 pkg/architect/request.go
+pkg/architect/request_approval.go
+pkg/architect/request_budget.go
+pkg/architect/request_code.go
+pkg/architect/request_completion.go
+pkg/architect/request_hotfix.go
+pkg/architect/request_merge.go
+pkg/architect/request_plan.go
+pkg/architect/request_question.go
+pkg/architect/request_spec.go
+pkg/bootstrap/artifacts.go
+pkg/bootstrap/docker.go
+pkg/bootstrap/stack_analysis.go
+pkg/bootstrap/workflows.go
+pkg/coder/code_review.go
 pkg/coder/driver.go
+pkg/coder/todo_collection.go
+pkg/knowledge/default.go
+pkg/knowledge/indexer.go
+pkg/knowledge/retrieval.go
 pkg/pm/driver.go
+pkg/preflight/guidance.go
+pkg/tools/blocked_tool.go
+pkg/tools/bootstrap.go
+pkg/tools/build_tools.go
+pkg/tools/chat_ask_user.go
+pkg/tools/chat_tools.go
+pkg/tools/compose_add_service.go
+pkg/tools/compose_down.go
+pkg/tools/compose_logs.go
+pkg/tools/compose_read.go
+pkg/tools/compose_remove_service.go
+pkg/tools/compose_status.go
+pkg/tools/compose_up.go
+pkg/tools/compose_validate.go
+pkg/tools/compose_write.go
+pkg/tools/config_tools.go
+pkg/tools/container_build.go
+pkg/tools/container_list.go
+pkg/tools/container_switch.go
+pkg/tools/container_test_tool.go
+pkg/tools/container_update.go
+pkg/tools/file_edit.go
+pkg/tools/get_diff.go
+pkg/tools/incident_action_tool.go
+pkg/tools/maintenance_item.go
+pkg/tools/mcp.go
+pkg/tools/planning_tools.go
+pkg/tools/read_file.go
+pkg/tools/registry.go
+pkg/tools/release_held_tool.go
+pkg/tools/review_complete.go
+pkg/tools/spec_submit.go
+pkg/tools/story_edit.go
+pkg/tools/submit_probing.go
+pkg/tools/submit_stories.go
+pkg/tools/submit_verification.go
+pkg/tools/todo_tools.go
+pkg/tools/web_fetch.go
+pkg/tools/web_search.go

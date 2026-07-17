@@ -1,6 +1,7 @@
 package v1target
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -81,16 +82,35 @@ func TestManifestEntriesExist(t *testing.T) {
 	}
 }
 
+// phrasePattern is the instruction-phrase half of the scanner heuristics.
+func phrasePattern() *regexp.Regexp {
+	return regexp.MustCompile(`"You are |` + "`" + `You are |You are an? |Your task |Your job is |Respond with |Respond ONLY|respond ONLY|You must respond|Your decision|Review the following|review_complete with|Call review_complete`)
+}
+
+// hasLongRawString is the structural half: a backtick raw string spanning
+// three or more lines is, in this codebase, either SQL or prompt/tool text
+// — deliberately over-inclusive; the allowlist absorbs the SQL.
+func hasLongRawString(raw []byte) bool {
+	parts := strings.Split(string(raw), "`")
+	for i := 1; i < len(parts); i += 2 {
+		if strings.Count(parts[i], "\n") >= 3 {
+			return true
+		}
+	}
+	return false
+}
+
 // TestPromptScannerClassification is the independent inventory guard: a
-// deliberately over-inclusive heuristic sweep for prompt-bearing sources;
-// every candidate must be classified into exactly one of the two reviewed
-// lists (manifest = hashed into P, allowlist = reviewed non-prompt).
+// deliberately over-inclusive two-heuristic sweep (instruction phrases +
+// multi-line raw strings) for prompt-bearing sources; every candidate must
+// be classified into exactly one of the two reviewed lists (manifest =
+// hashed into P, allowlist = reviewed non-prompt).
 func TestPromptScannerClassification(t *testing.T) {
 	root := sourceRoot(t)
-	pattern := regexp.MustCompile(`"You are |` + "`" + `You are |You are an? |Your task |Your job is `)
+	pattern := phrasePattern()
 	manifest, allowlist := manifestEntries(), allowlistEntries()
 
-	var unclassified []string
+	var unclassified, doubleListed []string
 	walkErr := filepath.WalkDir(filepath.Join(root, "pkg"), func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -102,14 +122,18 @@ func TestPromptScannerClassification(t *testing.T) {
 		if readErr != nil {
 			return readErr
 		}
-		if !pattern.Match(raw) {
+		if !pattern.Match(raw) && !hasLongRawString(raw) {
 			return nil
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
-			return relErr
+			return fmt.Errorf("relativize %s: %w", path, relErr)
 		}
-		if !coveredBy(rel, manifest) && !coveredBy(rel, allowlist) {
+		inManifest, inAllowlist := coveredBy(rel, manifest), coveredBy(rel, allowlist)
+		switch {
+		case inManifest && inAllowlist:
+			doubleListed = append(doubleListed, rel)
+		case !inManifest && !inAllowlist:
 			unclassified = append(unclassified, rel)
 		}
 		return nil
@@ -120,8 +144,36 @@ func TestPromptScannerClassification(t *testing.T) {
 	if len(unclassified) > 0 {
 		t.Fatalf("prompt-scanner candidates not classified into manifest.txt or allowlist.txt:\n  %s", strings.Join(unclassified, "\n  "))
 	}
+	if len(doubleListed) > 0 {
+		t.Fatalf("candidates must be in exactly one list:\n  %s", strings.Join(doubleListed, "\n  "))
+	}
 	// Templates are prompt content by definition and must be manifest-covered.
 	if !coveredBy("pkg/templates/anything.tpl.md", manifest) {
 		t.Fatalf("pkg/templates/ must be covered by the manifest")
+	}
+}
+
+// TestKnownPromptFilesAreManifested is the regression Codex round 1 asked
+// for: every currently known prompt-bearing file stays in P.
+func TestKnownPromptFilesAreManifested(t *testing.T) {
+	manifest := manifestEntries()
+	for _, file := range []string{
+		"pkg/architect/dev_chat.go",
+		"pkg/architect/request.go",
+		"pkg/architect/request_plan.go",
+		"pkg/architect/request_code.go",
+		"pkg/architect/request_completion.go",
+		"pkg/architect/request_question.go",
+		"pkg/architect/request_merge.go",
+		"pkg/architect/request_spec.go",
+		"pkg/coder/driver.go",
+		"pkg/coder/todo_collection.go",
+		"pkg/coder/code_review.go",
+		"pkg/pm/driver.go",
+		"pkg/tools/review_complete.go",
+	} {
+		if !coveredBy(file, manifest) {
+			t.Fatalf("%s is prompt-bearing and must be in manifest.txt", file)
+		}
 	}
 }

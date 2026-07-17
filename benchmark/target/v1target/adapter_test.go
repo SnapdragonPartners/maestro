@@ -66,6 +66,13 @@ func TestParseSettings(t *testing.T) {
 	if _, err := parseSettings(spec); err == nil {
 		t.Fatalf("missing maestro_bin must fail")
 	}
+	// Non-positive intervals would panic time.NewTicker.
+	for _, bad := range []string{"0s", "-1s"} {
+		spec = testSpec(t, map[string]string{"maestro_bin": "/bin/m", "source_dir": "/src", "poll_interval": bad})
+		if _, err := parseSettings(spec); err == nil {
+			t.Fatalf("poll_interval %q must be rejected", bad)
+		}
+	}
 }
 
 func TestCanonicalRoutingIsCanonicalJSON(t *testing.T) {
@@ -74,12 +81,15 @@ func TestCanonicalRoutingIsCanonicalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("routing: %v", err)
 	}
-	var decoded map[string]string
-	if decodeErr := json.Unmarshal([]byte(routing), &decoded); decodeErr != nil {
-		t.Fatalf("routing must be valid JSON: %v", decodeErr)
+	var structured struct {
+		Default string            `json:"default"`
+		Roles   map[string]string `json:"roles"`
 	}
-	if decoded["default"] != "model-x" || decoded["architect"] != "model-y" {
-		t.Fatalf("routing must carry the complete map: %s", routing)
+	if decodeErr := json.Unmarshal([]byte(routing), &structured); decodeErr != nil {
+		t.Fatalf("routing must decode structured: %v", decodeErr)
+	}
+	if structured.Default != "model-x" || structured.Roles["architect"] != "model-y" {
+		t.Fatalf("routing must carry the complete structure: %s", routing)
 	}
 	// Go's json.Marshal sorts map keys: deterministic representation.
 	again, err := canonicalRouting(spec)
@@ -138,15 +148,58 @@ func TestClassification(t *testing.T) {
 }
 
 func TestPRsSatisfied(t *testing.T) {
-	states := []storyState{{Status: "done", PRID: "1"}}
-	if prsSatisfied(states, nil) {
-		t.Fatalf("a story claiming a PR requires at least one PR")
+	one := []storyState{{Status: "done", PRID: "1"}}
+	if prsSatisfied(one, nil) {
+		t.Fatalf("a story claiming a PR requires that PR to exist")
 	}
-	if prsSatisfied(states, []prInfo{{Number: 1, Merged: false}}) {
+	if prsSatisfied(one, []prInfo{{Number: 1, Merged: false}}) {
 		t.Fatalf("unmerged PRs must not satisfy")
 	}
-	if !prsSatisfied(states, []prInfo{{Number: 1, Merged: true}}) {
-		t.Fatalf("merged PRs must satisfy")
+	if !prsSatisfied(one, []prInfo{{Number: 1, Merged: true}}) {
+		t.Fatalf("merged matching PR must satisfy")
+	}
+	// Every story PR must match a DISTINCT returned PR (the Codex round-1
+	// case: stories claim PRs 1 and 2, only PR 1 exists).
+	two := []storyState{{Status: "done", PRID: "1"}, {Status: "done", PRID: "2"}}
+	if prsSatisfied(two, []prInfo{{Number: 1, Merged: true}}) {
+		t.Fatalf("story claiming PR 2 must not be satisfied by PR 1 alone")
+	}
+	if !prsSatisfied(two, []prInfo{{Number: 1, Merged: true}, {Number: 2, Merged: true}}) {
+		t.Fatalf("both PRs merged must satisfy")
+	}
+	dupe := []storyState{{Status: "done", PRID: "1"}, {Status: "done", PRID: "1"}}
+	if prsSatisfied(dupe, []prInfo{{Number: 1, Merged: true}}) {
+		t.Fatalf("two stories must not share one PR")
+	}
+	urlish := []storyState{{Status: "done", PRID: "https://gitea.local/golden/repo/pulls/7"}}
+	if !prsSatisfied(urlish, []prInfo{{Number: 7, Merged: true}}) {
+		t.Fatalf("URL-ish pr_id must match by trailing number")
+	}
+	if prsSatisfied([]storyState{{Status: "done", PRID: "not-a-pr"}}, []prInfo{{Number: 1, Merged: true}}) {
+		t.Fatalf("unparseable pr_id must not satisfy")
+	}
+	// An unmerged extra PR in the repo taints the run.
+	if prsSatisfied(one, []prInfo{{Number: 1, Merged: true}, {Number: 2, Merged: false}}) {
+		t.Fatalf("any unmerged PR must not satisfy")
+	}
+}
+
+func TestCanonicalRoutingCollisionSafe(t *testing.T) {
+	spec := testSpec(t, nil)
+	spec.Bundle.Model.Roles = map[string]string{"default": "sneaky-model"}
+	routing, err := canonicalRouting(spec)
+	if err != nil {
+		t.Fatalf("routing: %v", err)
+	}
+	var structured struct {
+		Default string            `json:"default"`
+		Roles   map[string]string `json:"roles"`
+	}
+	if err := json.Unmarshal([]byte(routing), &structured); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if structured.Default != "model-x" || structured.Roles["default"] != "sneaky-model" {
+		t.Fatalf("a roles.default entry must not shadow the actual default: %s", routing)
 	}
 }
 

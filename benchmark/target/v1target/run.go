@@ -45,53 +45,90 @@ func (r *v1Run) execute(ctx context.Context) (*target.Observation, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer proc.awaitExit()
 	dbPath := filepath.Join(projectDir, ".maestro", "maestro.db")
 	final, pollErr := r.poll(ctx, dbPath, proc)
-	r.stop(proc)
+	r.adapter.rememberSession(r.spec.RunID, final.sessionID)
+
+	// Stop and fully reap the process BEFORE evidence collection: on a
+	// cancelled attempt context the stop is an immediate group kill (no
+	// 20s grace against an already-blown deadline), and evidence runs on
+	// a fresh bounded context so the DB snapshot cannot fail merely
+	// because the attempt was aborted.
+	r.stop(proc, ctx.Err() != nil)
+	proc.awaitExit()
+	ectx, cancel := context.WithTimeout(context.Background(), evidenceTimeout)
+	defer cancel()
+
 	if pollErr != nil {
 		// Still export what exists — failed attempts need their story told;
 		// the engine synthesizes metrics for the error path.
-		r.exportEvidence(ctx, projectDir, dbPath, nil)
+		r.exportEvidence(ectx, projectDir, dbPath, nil) //nolint:contextcheck // fresh bounded context by design: the attempt context is already cancelled
 		return nil, pollErr
 	}
 
-	prs, prErr := r.adapter.gitea.listPRs(ctx, r.spec.RunID)
+	prs, prErr := r.adapter.gitea.listPRs(ectx, r.spec.RunID) //nolint:contextcheck // fresh bounded evidence context
 	final.prsMerged = prErr == nil && prsSatisfied(final.states, prs)
-	solutionBranch, importErr := r.importSolution(ctx)
-	evidence := r.exportEvidence(ctx, projectDir, dbPath, prs)
+	solutionBranch, importErr := r.importSolution(ectx)         //nolint:contextcheck // fresh bounded evidence context
+	evidence := r.exportEvidence(ectx, projectDir, dbPath, prs) //nolint:contextcheck // fresh bounded evidence context
+	if importErr != nil {
+		// The target claimed terminal work we cannot import; treating that
+		// as an in-place solution would validate the untouched fixture.
+		return nil, fmt.Errorf("solution import failed: %w", importErr)
+	}
 
-	obs := &target.Observation{
+	return &target.Observation{
 		Metrics:              r.metrics(&final),
 		Evidence:             evidence,
 		SolutionBranch:       solutionBranch,
 		TerminalStateReached: final.allDone() && final.prsMerged,
-	}
-	if importErr != nil {
-		// No importable solution: the engine will classify branch-state.
-		obs.SolutionBranch = ""
-	}
-	return obs, nil
+	}, nil
 }
 
-// prsSatisfied: every story claiming a PR requires at least one PR, and
-// every PR in the throwaway repo must be merged (all-stories semantics).
+// prsSatisfied implements the all-stories PR semantics: every story
+// claiming a PR must match a DISTINCT returned PR number, every matched PR
+// must be merged, and no PR in the throwaway repo may be unmerged.
 func prsSatisfied(states []storyState, prs []prInfo) bool {
-	withPR := 0
-	for i := range states {
-		if states[i].PRID != "" {
-			withPR++
-		}
-	}
-	if withPR > 0 && len(prs) == 0 {
-		return false
-	}
+	byNumber := make(map[int64]prInfo, len(prs))
 	for i := range prs {
 		if !prs[i].Merged {
 			return false
 		}
+		byNumber[prs[i].Number] = prs[i]
+	}
+	used := make(map[int64]bool, len(states))
+	for i := range states {
+		id := states[i].PRID
+		if id == "" {
+			continue
+		}
+		num, ok := prNumber(id)
+		if !ok {
+			return false
+		}
+		if _, exists := byNumber[num]; !exists || used[num] {
+			return false
+		}
+		used[num] = true
 	}
 	return true
+}
+
+// prNumber extracts the trailing PR number from v1's pr_id (a bare number
+// or a URL-ish reference ending in one).
+func prNumber(id string) (int64, bool) {
+	end := len(id)
+	start := end
+	for start > 0 && id[start-1] >= '0' && id[start-1] <= '9' {
+		start--
+	}
+	if start == end {
+		return 0, false
+	}
+	var n int64
+	for _, r := range id[start:end] {
+		n = n*10 + int64(r-'0')
+	}
+	return n, true
 }
 
 // prepareProject writes the v1 project dir: config.json, forge_state.json,
@@ -283,13 +320,13 @@ func (r *v1Run) poll(ctx context.Context, dbPath string, proc *process) (finalSt
 	for {
 		select {
 		case <-ctx.Done():
-			return finalState{toolCalls: -1}, fmt.Errorf("v1 run aborted: %w", context.Cause(ctx))
+			return finalState{sessionID: obs.sessionID, toolCalls: -1}, fmt.Errorf("v1 run aborted: %w", context.Cause(ctx))
 		case <-ticker.C:
 		}
 		states, err := obs.observe(ctx)
 		if err != nil {
 			if proc.dead() {
-				return finalState{toolCalls: -1}, fmt.Errorf("maestro exited before creating %s", obs.stage)
+				return finalState{sessionID: obs.sessionID, toolCalls: -1}, fmt.Errorf("maestro exited before creating %s", obs.stage)
 			}
 			continue
 		}
@@ -306,17 +343,20 @@ func (r *v1Run) poll(ctx context.Context, dbPath string, proc *process) (finalSt
 	}
 }
 
-// stop terminates maestro: graceful interrupt, bounded grace, then a
-// process-group kill.
-func (r *v1Run) stop(proc *process) {
+// stop terminates maestro. Normal stops get a graceful interrupt and a
+// bounded grace period; when the attempt context is already cancelled the
+// kill is immediate — a blown deadline must not wait out the grace.
+func (r *v1Run) stop(proc *process, immediate bool) {
 	if proc.cmd.Process == nil || proc.dead() {
 		return
 	}
-	_ = syscall.Kill(-proc.cmd.Process.Pid, syscall.SIGINT) //nolint:errcheck // best-effort graceful stop
-	select {
-	case <-proc.done:
-		return
-	case <-time.After(stopGrace):
+	if !immediate {
+		_ = syscall.Kill(-proc.cmd.Process.Pid, syscall.SIGINT) //nolint:errcheck // best-effort graceful stop
+		select {
+		case <-proc.done:
+			return
+		case <-time.After(stopGrace):
+		}
 	}
 	_ = syscall.Kill(-proc.cmd.Process.Pid, syscall.SIGKILL) //nolint:errcheck // final kill
 }

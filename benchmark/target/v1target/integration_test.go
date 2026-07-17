@@ -255,4 +255,33 @@ func TestGiteaLifecycle(t *testing.T) {
 	if err := manager.deleteRepo(ctx, "lifecycle-test--r1"); err != nil {
 		t.Fatalf("delete repo: %v", err)
 	}
+	// Teardown is idempotent: a second call (nothing left to remove) still
+	// succeeds — retryability preserved.
+	if err := manager.teardown(ctx); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	if err := manager.teardown(ctx); err != nil {
+		t.Fatalf("teardown must be idempotent: %v", err)
+	}
+}
+
+func TestSessionContainerSweep(t *testing.T) {
+	requireDocker(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	sessionID := "sweep-test-session"
+	// Simulate a leaked v1 coder container carrying the session label.
+	if err := dockerRun(ctx, "run", "-d", "--name", "golden-sweep-test",
+		"--label", sessionLabel+"="+sessionID,
+		giteaImage, "sleep", "300"); err != nil {
+		t.Fatalf("start labeled container: %v", err)
+	}
+	t.Cleanup(func() { _ = dockerRemoveIfExists(context.Background(), "rm", "-f", "golden-sweep-test") }) //nolint:errcheck // best-effort cleanup
+	if err := sweepSessionContainers(ctx, sessionID); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// Sweeping an already-clean session succeeds (idempotent).
+	if err := sweepSessionContainers(ctx, sessionID); err != nil {
+		t.Fatalf("sweep must be idempotent: %v", err)
+	}
 }

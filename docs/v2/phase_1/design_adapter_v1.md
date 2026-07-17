@@ -17,7 +17,7 @@ v1's factory path merges story PRs into its target repo's default branch. Pointe
 
 ## Docker Lifecycle (complete, per Codex round 1)
 
-- **Shared Gitea container + volume**: created on demand by the adapter; **torn down by the runner** — adapters may implement `io.Closer`, and `cmd/runner` closes every closer after the suite (a `--keep-gitea` flag preserves it for iterative dev runs).
+- **Shared Gitea container + volume**: created on demand by the adapter; **torn down by the runner** — adapters may implement `io.Closer`, and `cmd/runner` closes every closer after the suite, surfacing teardown failures as runner errors (a `--keep-infra` flag preserves the infrastructure for iterative dev runs). The Gitea image is **pinned by digest** (a mutable tag would let two nominally identical runs execute different forge code), and the digest is bound into the harness hash.
 - **Per-attempt**: the Gitea repo is deleted; the v1 project dir is removed; and as defense-in-depth after forced termination, the adapter enumerates and force-removes v1's session-scoped coder containers (matched by v1's container naming for the run's project) — **any leftover container, repo, or volume the adapter cannot remove is a cleanup failure, and the engine records the attempt `invalid`.**
 
 ## Invocation And Lifecycle

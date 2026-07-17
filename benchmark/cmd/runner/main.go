@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/engine"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
 	"github.com/SnapdragonPartners/maestro/benchmark/results"
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
@@ -75,15 +77,21 @@ func adapters() map[string]target.Adapter {
 }
 
 // closeAdapters tears down adapter-owned infrastructure (the shared Gitea
-// container and volume) after the suite.
-func closeAdapters(registry map[string]target.Adapter) {
+// container and volume) after the suite. Failures are returned, not merely
+// printed: a runner that leaks infrastructure must not exit successfully.
+func closeAdapters(registry map[string]target.Adapter) error {
+	var errs []error
 	for name, adapter := range registry {
-		if closer, ok := adapter.(io.Closer); ok {
+		if closer, ok := safe.As[io.Closer](adapter); ok {
 			if err := closer.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "runner: close adapter %s: %v\n", name, err)
+				errs = append(errs, fmt.Errorf("close adapter %s: %w", name, err))
 			}
 		}
 	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("adapter teardown: %w", err)
+	}
+	return nil
 }
 
 func loadInputs(storiesPath, configsPath string) ([]*story.Loaded, []*mph.Loaded, error) {
@@ -222,9 +230,6 @@ func cmdRun(ctx context.Context, args []string) error {
 		}
 	}
 	registry := adapters()
-	if !*keepInfra {
-		defer closeAdapters(registry)
-	}
 	eng := &engine.Engine{
 		Adapters: registry,
 		Store:    store,
@@ -243,8 +248,15 @@ func cmdRun(ctx context.Context, args []string) error {
 		fmt.Printf("suite %s: %s (%d attempts; charged $%.2f, observed $%.2f of $%.2f cap)\n",
 			manifest.SuiteRunID, manifest.StopReason, len(manifest.Attempts), manifest.ChargedUSD, manifest.ObservedUSD, manifest.CapUSD)
 	}
+	var closeErr error
+	if !*keepInfra {
+		closeErr = closeAdapters(registry)
+	}
 	if err != nil {
-		return fmt.Errorf("run suite: %w", err)
+		err = fmt.Errorf("run suite: %w", err)
+	}
+	if joined := errors.Join(err, closeErr); joined != nil {
+		return fmt.Errorf("%w", joined)
 	}
 	return nil
 }

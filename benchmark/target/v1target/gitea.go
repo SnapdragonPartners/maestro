@@ -19,13 +19,17 @@ import (
 	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 )
 
 // Gitea constants — the SWE-EVO mechanics (v1 pkg/benchmark/gitea.go),
 // reimplemented over the docker CLI and Gitea HTTP API so this module never
 // imports orchestrator code.
 const (
-	giteaImage     = "gitea/gitea:1.25"
+	// giteaImage is pinned by DIGEST: a mutable tag would let two nominally
+	// identical benchmark runs execute different forge code with no
+	// identity change. The digest is bound into the harness hash.
+	giteaImage     = "gitea/gitea:1.25@sha256:fee0e5e55da6d2d11186bf39023a772fe63d9deffc0a83283e3d8e5d11c2716a"
 	giteaContainer = "golden-runner-gitea"
 	giteaVolume    = "golden-runner-gitea-data"
 	giteaOrg       = "golden"
@@ -299,18 +303,60 @@ func (g *giteaManager) authenticated(cloneURL string) string {
 	return strings.Replace(cloneURL, "http://", fmt.Sprintf("http://%s:%s@", giteaAdmin, g.token), 1)
 }
 
-// teardown removes the shared container and volume.
+// teardown removes the shared container and volume. It is idempotent and
+// always attempts removal (partial startups are teardown-eligible too);
+// running flips false only once removal succeeded, preserving
+// retryability.
 func (g *giteaManager) teardown(ctx context.Context) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if !g.running {
-		return nil
-	}
-	g.running = false
-	rmErr := dockerRun(ctx, "rm", "-f", giteaContainer)
-	volErr := dockerRun(ctx, "volume", "rm", giteaVolume)
+	rmErr := dockerRemoveIfExists(ctx, "rm", "-f", giteaContainer)
+	volErr := dockerRemoveIfExists(ctx, "volume", "rm", giteaVolume)
 	if err := errors.Join(rmErr, volErr); err != nil {
 		return fmt.Errorf("gitea teardown: %w", err)
+	}
+	g.running = false
+	return nil
+}
+
+// dockerRemoveIfExists treats "no such object" as success — removal of
+// something absent is the desired end state.
+func dockerRemoveIfExists(ctx context.Context, args ...string) error {
+	err := dockerRun(ctx, args...)
+	if err != nil && (strings.Contains(err.Error(), "No such") || strings.Contains(err.Error(), "no such")) {
+		return nil
+	}
+	return err
+}
+
+// sweepSessionContainers force-removes every container labeled with the v1
+// session and verifies none remain; leftovers are a cleanup failure (the
+// engine records the attempt invalid).
+func sweepSessionContainers(ctx context.Context, sessionID string) error {
+	filter := fmt.Sprintf("label=%s=%s", sessionLabel, sessionID)
+	list := func() ([]string, error) {
+		out, err := exec.CommandContext(ctx, "docker", "ps", "-aq", "--filter", filter).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("list session containers: %w (%s)", err, strings.TrimSpace(string(out)))
+		}
+		ids := strings.Fields(strings.TrimSpace(string(out)))
+		return ids, nil
+	}
+	ids, err := list()
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if rmErr := dockerRun(ctx, "rm", "-f", id); rmErr != nil {
+			return fmt.Errorf("remove session container %s: %w", id, rmErr)
+		}
+	}
+	remaining, err := list()
+	if err != nil {
+		return err
+	}
+	if len(remaining) > 0 {
+		return fmt.Errorf("session containers left behind after sweep: %s", strings.Join(remaining, ", "))
 	}
 	return nil
 }
@@ -334,7 +380,12 @@ func freePort() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("free port: %w", err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert // net.Listen("tcp") always returns *net.TCPAddr
+	addr, ok := safe.As[*net.TCPAddr](listener.Addr())
+	if !ok {
+		_ = listener.Close() //nolint:errcheck // error path
+		return 0, fmt.Errorf("free port: unexpected addr type %T", listener.Addr())
+	}
+	port := addr.Port
 	if err := listener.Close(); err != nil {
 		return 0, fmt.Errorf("free port close: %w", err)
 	}

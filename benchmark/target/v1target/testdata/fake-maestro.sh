@@ -31,36 +31,47 @@ WORK="$PROJECT_DIR/fake-work"
 AUTH_URL=$(echo "$URL" | sed "s|http://|http://golden-admin:$TOKEN@|")
 git clone --quiet "$AUTH_URL/$OWNER/$REPO.git" "$WORK"
 cd "$WORK"
-git checkout --quiet -b story-1
-echo "solution: done" > solution.txt
-git add solution.txt
-git -c user.name=fake -c user.email=fake@invalid commit --quiet -m "story-1 solution"
-git push --quiet origin story-1
-
 API="$URL/api/v1/repos/$OWNER/$REPO"
-# Gitea processes pushed refs asynchronously; retry until the branch is
-# visible to the PR API (and until the PR is mergeable).
-PR_NUMBER=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    PR_NUMBER=$(curl -s -X POST "$API/pulls" \
-        -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
-        -d '{"title":"story-1","head":"story-1","base":"main"}' | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
-    [ -n "$PR_NUMBER" ] && break
-    sleep 1
-done
-[ -n "$PR_NUMBER" ] || { echo "fake-maestro: PR create failed" >&2; exit 1; }
 
-MERGED=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -sf -X POST "$API/pulls/$PR_NUMBER/merge" \
-        -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
-        -d '{"Do":"merge"}' > /dev/null; then
-        MERGED=yes
-        break
-    fi
-    sleep 1
-done
-[ -n "$MERGED" ] || { echo "fake-maestro: PR merge failed" >&2; exit 1; }
+# open_and_merge <branch> <content-line>: push a solution branch, open a
+# PR, merge it. Gitea processes pushed refs asynchronously, so both PR
+# operations retry.
+open_and_merge() {
+    BRANCH="$1"; LINE="$2"
+    git fetch --quiet origin main
+    git checkout --quiet -B "$BRANCH" origin/main
+    echo "$LINE" >> solution.txt
+    git add solution.txt
+    git -c user.name=fake -c user.email=fake@invalid commit --quiet -m "$BRANCH solution"
+    git push --quiet origin "$BRANCH"
+
+    PR_NUMBER=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        PR_NUMBER=$(curl -s -X POST "$API/pulls" \
+            -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
+            -d "{\"title\":\"$BRANCH\",\"head\":\"$BRANCH\",\"base\":\"main\"}" | sed -n 's/.*"number":\([0-9]*\).*/\1/p' | head -1)
+        [ -n "$PR_NUMBER" ] && break
+        sleep 1
+    done
+    [ -n "$PR_NUMBER" ] || { echo "fake-maestro: PR create failed for $BRANCH" >&2; exit 1; }
+
+    MERGED=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf -X POST "$API/pulls/$PR_NUMBER/merge" \
+            -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
+            -d '{"Do":"merge"}' > /dev/null; then
+            MERGED=yes
+            break
+        fi
+        sleep 1
+    done
+    [ -n "$MERGED" ] || { echo "fake-maestro: PR merge failed for $BRANCH" >&2; exit 1; }
+}
+
+# The canned DB records two stories with PR IDs 1 and 2; every recorded
+# story PR must exist, distinctly, and be merged.
+open_and_merge story-1 "solution: done"
+open_and_merge story-2 "solution: done again"
 
 mkdir -p "$PROJECT_DIR/.maestro/logs"
 echo "fake maestro ran" > "$PROJECT_DIR/.maestro/logs/run.log"

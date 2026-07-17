@@ -23,17 +23,20 @@ import (
 
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/contenthash"
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
 	"github.com/SnapdragonPartners/maestro/benchmark/target"
 )
 
 // Adapter identity.
 const (
-	adapterName    = "v1-as-patched"
-	adapterVersion = "0.1.0"
-	solutionLeaf   = "/solution"
-	defaultPoll    = 5 * time.Second
-	stopGrace      = 20 * time.Second
+	adapterName     = "v1-as-patched"
+	adapterVersion  = "0.1.0"
+	solutionLeaf    = "/solution"
+	defaultPoll     = 5 * time.Second
+	stopGrace       = 20 * time.Second
+	evidenceTimeout = 3 * time.Minute
+	sessionLabel    = "com.maestro.session"
 )
 
 // settings are the adapter-interpreted harness settings from the bundle.
@@ -68,6 +71,9 @@ func parseSettings(spec *target.AttemptSpec) (settings, error) {
 		if err != nil {
 			return s, fmt.Errorf("poll_interval: %w", err)
 		}
+		if parsed <= 0 {
+			return s, fmt.Errorf("poll_interval must be positive, got %s", parsed)
+		}
 		s.PollEvery = parsed
 	}
 	return s, nil
@@ -76,7 +82,18 @@ func parseSettings(spec *target.AttemptSpec) (settings, error) {
 // Adapter drives the v1-as-patched target.
 type Adapter struct {
 	gitea *giteaManager
-	mu    sync.Mutex
+	// sessions maps run IDs to the v1 session IDs their attempts created,
+	// so Cleanup can sweep session-labeled containers after forced kills.
+	sessions sync.Map
+	mu       sync.Mutex
+}
+
+// rememberSession records the v1 session an attempt created (empty IDs are
+// ignored: no session means v1 never got far enough to launch containers).
+func (a *Adapter) rememberSession(runID, sessionID string) {
+	if sessionID != "" {
+		a.sessions.Store(runID, sessionID)
+	}
 }
 
 // New returns the v1-as-patched adapter.
@@ -130,7 +147,13 @@ func (a *Adapter) Describe(ctx context.Context, spec *target.AttemptSpec) (runre
 	if err != nil {
 		return runrecord.TargetDescriptor{}, err
 	}
-	harnessHash, err := contenthash.CanonicalJSON(spec.Bundle.Harness)
+	// The forge runtime is part of the harness: the Gitea image digest is
+	// bound into H so two runs on different forge code cannot share an
+	// identity.
+	harnessHash, err := contenthash.CanonicalJSON(map[string]any{
+		"settings":    spec.Bundle.Harness,
+		"forge_image": giteaImage,
+	})
 	if err != nil {
 		return runrecord.TargetDescriptor{}, fmt.Errorf("harness hash: %w", err)
 	}
@@ -194,15 +217,22 @@ func firstLine(s string) string {
 	return s
 }
 
+// routingIdentity preserves the routing STRUCTURE in canonical JSON: the
+// default and the role map stay separate, so a roles.default entry can
+// never shadow the actual default (Codex round on item 4 code).
+type routingIdentity struct {
+	Roles   map[string]string `json:"roles,omitempty"`
+	Default string            `json:"default"`
+}
+
 // canonicalRouting serializes the bundle's complete model routing as
-// canonical JSON (sorted keys, delimiter-safe) so reviewer heterogeneity is
-// never reduced to the default model.
+// canonical JSON (sorted keys, delimiter-safe, structured) so reviewer
+// heterogeneity is never reduced to the default model.
 func canonicalRouting(spec *target.AttemptSpec) (string, error) {
-	routing := map[string]string{"default": spec.Bundle.Model.Default}
-	for role, model := range spec.Bundle.Model.Roles {
-		routing[role] = model
-	}
-	raw, err := json.Marshal(routing)
+	raw, err := json.Marshal(routingIdentity{
+		Default: spec.Bundle.Model.Default,
+		Roles:   spec.Bundle.Model.Roles,
+	})
 	if err != nil {
 		return "", fmt.Errorf("canonical routing: %w", err)
 	}
@@ -238,6 +268,16 @@ func (a *Adapter) Cleanup(ctx context.Context, spec *target.AttemptSpec) error {
 		return fmt.Errorf("v1target cleanup: %w", err)
 	}
 	var problems []string
+	// Session-container sweep first: a forced subprocess kill can leave v1
+	// coder containers alive with bind mounts into the project dir we are
+	// about to delete.
+	if sessionID, ok := a.sessions.LoadAndDelete(spec.RunID); ok {
+		if id, isString := safe.As[string](sessionID); isString {
+			if err := sweepSessionContainers(ctx, id); err != nil {
+				problems = append(problems, err.Error())
+			}
+		}
+	}
 	a.mu.Lock()
 	running := a.gitea.running
 	a.mu.Unlock()
