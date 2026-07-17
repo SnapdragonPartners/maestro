@@ -38,6 +38,43 @@ definition.
 
 Comparison reports with spread are item 7 and get their own package here.
 
+## Usage
+
+Build the runner and the target binary, then validate and run:
+
+```bash
+# From the repo root: build the v1 target binary the adapter launches
+make maestro
+
+# In benchmark/: build the runner and validate all stories × configs
+make build                      # produces bin/runner
+bin/runner validate             # loads stories/ and configs/, prints hashes
+
+# Execute one story under one config (spends real tokens — see budgets
+# in the story/config TOMLs; the suite cap is enforced conservatively)
+ANTHROPIC_API_KEY=... bin/runner run \
+  --story smoke-comment \
+  --config paired-default \
+  --suite-id my-suite-001 \
+  --results results \
+  --workdir /tmp/bench-work
+
+# Repeat attempts, or run the full stories × configs matrix
+ANTHROPIC_API_KEY=... bin/runner run --repeats 3 --suite-id my-suite-002
+
+# Inspect stored results
+bin/runner list --results results
+```
+
+`run` writes one JSONL run record per attempt plus a rewritable suite
+manifest under `--results`, and durable evidence (diff, PR metadata, DB
+snapshot, usage log, launch log, validator output) under
+`results/evidence/<run-id>/`. `--keep-infra` leaves the adapter's Gitea
+container running between suites to skip its startup cost; omit it to
+tear down. The adapter requires the target binary to advertise
+`usage-surface: v1` in `-version` output (the P-1 handshake) and fails
+runs whose usage log never validates.
+
 ## Development
 
 In this directory: `make build`, `make test`, `make test-race`,

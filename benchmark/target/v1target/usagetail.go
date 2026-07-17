@@ -20,10 +20,17 @@ import (
 // Describe, pre-run) and the log header (validated at first read).
 const usageSurfaceVersion = 1
 
+// usageErrorFileName is the sentinel v1 writes next to the usage log on
+// its first append/sync failure (pkg/agent/middleware/metrics
+// UsageErrorFileName). Its presence means streamed usage is undercounting
+// — fatal for the run regardless of a validated header.
+const usageErrorFileName = "usage.error"
+
 // usageTail incrementally reads the usage log across poll ticks.
 type usageTail struct {
 	report    func(target.UsageDelta)
 	path      string
+	errPath   string
 	offset    int64
 	calls     int64
 	tokens    int64
@@ -48,6 +55,11 @@ type usageLine struct {
 // an error (v1 may not have started yet); a bad header is fatal — the
 // run half of the P-1 capability handshake.
 func (u *usageTail) advance() error {
+	if u.errPath != "" {
+		if raw, sentinelErr := os.ReadFile(u.errPath); sentinelErr == nil {
+			return fmt.Errorf("target reported usage log write failure (streamed usage is undercounting): %s", strings.TrimSpace(string(raw)))
+		}
+	}
 	file, err := os.Open(u.path)
 	if err != nil {
 		return nil //nolint:nilerr // absent log = target not started; the pre-run handshake guarantees it will appear

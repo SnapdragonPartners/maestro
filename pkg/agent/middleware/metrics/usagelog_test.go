@@ -125,4 +125,13 @@ func TestUsageLogRecorderWriteFailureSurfaced(t *testing.T) {
 	if rec.Err() == nil {
 		t.Fatal("write error must remain sticky")
 	}
+	// The failure must be machine-observable: the sentinel file appears
+	// next to the log so the benchmark adapter can fail the run.
+	raw, readErr := os.ReadFile(filepath.Join(filepath.Dir(path), UsageErrorFileName))
+	if readErr != nil {
+		t.Fatalf("expected %s sentinel next to the log: %v", UsageErrorFileName, readErr)
+	}
+	if len(raw) == 0 {
+		t.Fatal("sentinel must carry the error text")
+	}
 }

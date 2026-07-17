@@ -89,6 +89,13 @@ cat > "$PROJECT_DIR/.maestro/usage.jsonl" <<'USAGE'
 USAGE
 fi
 
+# FAKE_USAGE_ERROR=1 simulates v1 detecting a mid-run usage-log write
+# failure: the log is present and valid (header + lines) but the sentinel
+# marks streamed usage as undercounting. The adapter must fail the run.
+if [ "${FAKE_USAGE_ERROR:-0}" = "1" ]; then
+    echo "simulated append failure: disk full" > "$PROJECT_DIR/.maestro/usage.error"
+fi
+
 cp "$FAKE_DB" "$PROJECT_DIR/.maestro/maestro.db"
 
 # Stay alive briefly so the adapter's poller (not process death) observes

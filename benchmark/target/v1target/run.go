@@ -48,8 +48,9 @@ func (r *v1Run) execute(ctx context.Context) (*target.Observation, error) {
 	}
 	dbPath := filepath.Join(projectDir, ".maestro", "maestro.db")
 	r.tail = &usageTail{
-		path:   filepath.Join(projectDir, ".maestro", "usage.jsonl"),
-		report: r.spec.ReportUsage,
+		path:    filepath.Join(projectDir, ".maestro", "usage.jsonl"),
+		errPath: filepath.Join(projectDir, ".maestro", usageErrorFileName),
+		report:  r.spec.ReportUsage,
 	}
 	final, pollErr := r.poll(ctx, dbPath, proc)
 	r.adapter.rememberSession(r.spec.RunID, final.sessionID)

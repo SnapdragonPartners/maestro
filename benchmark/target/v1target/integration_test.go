@@ -250,6 +250,41 @@ func TestV1AdapterFailsWithoutUsageLog(t *testing.T) {
 	}
 }
 
+// TestV1AdapterFailsOnUsageWriteFailure pins the mid-run stall contract:
+// even with a validated header, the target's usage.error sentinel (written
+// by v1 on its first append/sync failure) must fail the run — partial
+// streamed usage must never be accepted as complete.
+func TestV1AdapterFailsOnUsageWriteFailure(t *testing.T) {
+	requireDocker(t)
+	sourceDir := sourceRoot(t)
+	adapter := New()
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Errorf("adapter close: %v", err)
+		}
+	})
+	repo, pin := makeLocalFixture(t)
+	store, err := results.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	eng := &engine.Engine{
+		Adapters: map[string]target.Adapter{"v1-as-patched": adapter},
+		Store:    store,
+		Workdir:  t.TempDir(),
+		Logf:     t.Logf,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	rec, err := eng.RunAttempt(ctx, e2eStory(t, repo, pin), e2eBundle(t, prepareFakeBin(t, "FAKE_USAGE_ERROR=1"), sourceDir), "suite-v1-e2e-usageerr", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureTargetError {
+		t.Fatalf("run with a usage.error sentinel must fail as target-error, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+}
+
 func assertEvidence(t *testing.T, rec *runrecord.RunRecord, kinds ...string) {
 	t.Helper()
 	have := map[string]string{}

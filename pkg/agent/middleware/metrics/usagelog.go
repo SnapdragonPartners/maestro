@@ -21,6 +21,12 @@ const UsageSurfaceVersion = 1
 // UsageLogFileName is the log's location under the project .maestro dir.
 const UsageLogFileName = "usage.jsonl"
 
+// UsageErrorFileName is the sentinel written next to the usage log on the
+// first append/sync failure. External instrumentation (the benchmark
+// adapter) treats its presence as fatal for the run: a stalled log means
+// streamed usage is undercounting, which must not pass silently.
+const UsageErrorFileName = "usage.error"
+
 // UsageHeader is the log's first line.
 type UsageHeader struct {
 	UsageSurfaceVersion int `json:"usage_surface_version"`
@@ -44,8 +50,9 @@ type UsageEntry struct {
 // handleWorkAccepted still reads) AND to an append-only JSONL usage log.
 type UsageLogRecorder struct {
 	inner    Recorder
-	file     *os.File
 	writeErr error // first append/sync failure, sticky; see Err()
+	file     *os.File
+	path     string
 	mu       sync.Mutex
 }
 
@@ -65,7 +72,7 @@ func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error)
 		_ = file.Close() //nolint:errcheck // error path
 		return nil, fmt.Errorf("stat usage log: %w", err)
 	}
-	recorder := &UsageLogRecorder{inner: inner, file: file}
+	recorder := &UsageLogRecorder{inner: inner, file: file, path: path}
 	if info.Size() == 0 {
 		if writeErr := recorder.writeLine(UsageHeader{UsageSurfaceVersion: UsageSurfaceVersion}); writeErr != nil {
 			_ = file.Close() //nolint:errcheck // error path
@@ -100,15 +107,24 @@ func (u *UsageLogRecorder) ObserveRequest(
 	}
 }
 
-// recordWriteErr retains the first write failure and logs it once. External
-// instrumentation streaming the log (the benchmark runner) sees the stall
-// and fails the run rather than silently under-counting.
+// recordWriteErr retains the first write failure, logs it once, and drops
+// the machine-observable sentinel (UsageErrorFileName) next to the log so
+// external instrumentation streaming the log (the benchmark adapter) fails
+// the run rather than silently under-counting.
 func (u *UsageLogRecorder) recordWriteErr(err error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.writeErr == nil {
-		u.writeErr = err
-		_ = logx.Errorf("usage log write failed — streamed usage is no longer being recorded: %v", err)
+	if u.writeErr != nil {
+		return
+	}
+	u.writeErr = err
+	_ = logx.Errorf("usage log write failed — streamed usage is no longer being recorded: %v", err)
+	// Best effort: the sentinel is a different write path (new small file)
+	// and usually survives whatever broke the log append; if it fails too,
+	// the ERROR log above is the last line of defense.
+	sentinel := filepath.Join(filepath.Dir(u.path), UsageErrorFileName)
+	if writeErr := os.WriteFile(sentinel, []byte(err.Error()+"\n"), 0o644); writeErr != nil {
+		_ = logx.Errorf("usage error sentinel write failed: %v", writeErr)
 	}
 }
 
