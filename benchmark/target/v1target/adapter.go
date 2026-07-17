@@ -85,7 +85,6 @@ type Adapter struct {
 	// sessions maps run IDs to the v1 session IDs their attempts created,
 	// so Cleanup can sweep session-labeled containers after forced kills.
 	sessions sync.Map
-	mu       sync.Mutex
 }
 
 // rememberSession records the v1 session an attempt created (empty IDs are
@@ -270,23 +269,28 @@ func (a *Adapter) Cleanup(ctx context.Context, spec *target.AttemptSpec) error {
 	var problems []string
 	// Session-container sweep first: a forced subprocess kill can leave v1
 	// coder containers alive with bind mounts into the project dir we are
-	// about to delete.
-	if sessionID, ok := a.sessions.LoadAndDelete(spec.RunID); ok {
+	// about to delete. The session key is deleted only after a successful
+	// sweep, and the project dir survives a failed sweep — both preserve
+	// retryability and avoid yanking a bind-mounted directory.
+	sweepFailed := false
+	if sessionID, ok := a.sessions.Load(spec.RunID); ok {
 		if id, isString := safe.As[string](sessionID); isString {
 			if err := sweepSessionContainers(ctx, id); err != nil {
 				problems = append(problems, err.Error())
+				sweepFailed = true
+			} else {
+				a.sessions.Delete(spec.RunID)
 			}
 		}
 	}
-	a.mu.Lock()
-	running := a.gitea.running
-	a.mu.Unlock()
-	if running {
+	if a.gitea.isRunning() {
 		if err := a.gitea.deleteRepo(ctx, spec.RunID); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
-	if err := os.RemoveAll(projectDirFor(spec)); err != nil {
+	if sweepFailed {
+		problems = append(problems, "project dir retained: leaked session containers may bind-mount it")
+	} else if err := os.RemoveAll(projectDirFor(spec)); err != nil {
 		problems = append(problems, "project dir: "+err.Error())
 	}
 	if len(problems) > 0 {

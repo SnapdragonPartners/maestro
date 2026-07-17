@@ -182,6 +182,11 @@ func TestPRsSatisfied(t *testing.T) {
 	if prsSatisfied(one, []prInfo{{Number: 1, Merged: true}, {Number: 2, Merged: false}}) {
 		t.Fatalf("any unmerged PR must not satisfy")
 	}
+	// A completed story with no PR identity cannot satisfy terminal state.
+	noPR := []storyState{{Status: "done", PRID: ""}}
+	if prsSatisfied(noPR, []prInfo{{Number: 1, Merged: true}}) {
+		t.Fatalf("stories without PR identities must not satisfy")
+	}
 }
 
 func TestCanonicalRoutingCollisionSafe(t *testing.T) {

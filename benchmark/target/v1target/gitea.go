@@ -53,6 +53,13 @@ func newGiteaManager() *giteaManager {
 	return &giteaManager{httpClient: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// isRunning reads the running flag under the manager's own mutex.
+func (g *giteaManager) isRunning() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.running
+}
+
 // ensureRunning starts a fresh Gitea container with known credentials.
 // Always recreates: stale admin state from a prior run causes token 401s.
 func (g *giteaManager) ensureRunning(ctx context.Context) error {

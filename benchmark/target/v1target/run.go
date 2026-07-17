@@ -99,7 +99,9 @@ func prsSatisfied(states []storyState, prs []prInfo) bool {
 	for i := range states {
 		id := states[i].PRID
 		if id == "" {
-			continue
+			// Every story must match a distinct merged PR; a completed
+			// story without a PR identity cannot satisfy terminal state.
+			return false
 		}
 		num, ok := prNumber(id)
 		if !ok {
