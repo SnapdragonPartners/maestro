@@ -243,6 +243,10 @@ The architect's `get_diff` tool uses **merge-base semantics** by default (`git m
 
 The coder's review request does **not** include a raw git diff — the architect must call `get_diff` directly to inspect changes. This ensures a single canonical source of truth for diffs. Architect review prompts enforce a structured protocol requiring fresh `get_diff` calls on re-review, preventing the LLM from relying on stale tool results from prior review iterations.
 
+### Multi-Architecture Artifacts (CRITICAL)
+
+Development happens on arm64 (Apple Silicon), but CI and v2 production/benchmark run on amd64. Any artifact built on one arch and executed on another — **embedded/packaged binaries and published container images** — must be built for **both** `linux/amd64` and `linux/arm64`, or it fails at run time with `exec format error` on the arch that wasn't built (invisible locally, breaks only remotely). Container images: build multi-arch manifests (`docker buildx build --platform linux/amd64,linux/arm64 --push`) and pin by the arch-independent **manifest digest**. Binaries: cross-compile per-arch and select at runtime (the MCP proxy `proxy-linux-{amd64,arm64}` pattern). **Verify on each arch, not just build.** A single-arch build of a cross-arch artifact is a defect — see [ADR 0026](docs/adr/0026-multi-architecture-artifacts.md).
+
 ## Development Commands
 
 Based on the project specification, the following commands should be available via Makefile:
