@@ -60,6 +60,26 @@ jobs:
           # skipping (design_adapter_v1.md).
           BENCHMARK_REQUIRE_DOCKER: "1"
 
+  # Read-only proof that the pinned union cache image (item 5.1, #268) has
+  # every golden Go fixture's deps baked in: pulls the digest from the config
+  # and runs `go mod download` with GOPROXY=off, which can only succeed if the
+  # cache is complete. Never pushes — publishing is the separate, manually
+  # dispatched release-cache-image workflow. Requires the golden-cache package
+  # to be public on GHCR (anonymous pull).
+  benchmark-cache-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Verify the union cache image offline (GOPROXY=off)
+        working-directory: benchmark
+        run: |
+          IMG=$(grep -hoE 'ghcr\.io/snapdragonpartners/golden-cache@sha256:[0-9a-f]+' configs/*.toml | head -1)
+          if [ -z "$IMG" ]; then echo "no pinned golden-cache digest found in configs/"; exit 1; fi
+          echo "verifying pinned image: $IMG"
+          make cache-verify ARGS="$IMG"
+
   # Template for when e2e/integration tests move into CI (today they run only
   # in the pre-push hook). Real API-key secrets go on this job — keeping them
   # off the unit-test job above is deliberate, so unit tests can never make
