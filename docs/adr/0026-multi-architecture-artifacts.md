@@ -2,7 +2,7 @@
 title = "ADR 0026: Multi-Architecture Distributable Artifacts"
 edit_date = "2026-07-18"
 status = "proposed"
-summary = "Every artifact Maestro builds on one architecture and executes on another — embedded/packaged binaries and published container images — must be built for all target architectures (at least linux/amd64 + linux/arm64), pinned by an arch-independent digest, and verified on each arch. Single-arch builds of cross-arch artifacts are a defect."
+summary = "Every artifact Maestro builds on one architecture and executes on another — embedded/packaged binaries and published container images — must be built for all target architectures (at least linux/amd64 + linux/arm64) and verified on each arch. Images ship as a multi-arch manifest pinned by its arch-independent manifest digest; binaries are cross-compiled per-arch and selected at runtime. Single-arch builds of cross-arch artifacts are a defect."
 +++
 
 # 0026. Multi-Architecture Distributable Artifacts
@@ -35,6 +35,7 @@ Every **distributable artifact consumed across architectures** — packaged or e
 - The publish/release path requires buildx + QEMU (cross-arch from an arm64 dev machine) or native multi-arch runners; this is a one-time setup per artifact, documented alongside it.
 - Pinning by manifest digest keeps identity reproducible (identical inputs → identical bytes per arch) while remaining arch-portable — the two properties are not in tension.
 - Cost: emulated cross-builds add minutes to a release, never to a PR.
+- **Known gap (tracked, [#271](https://github.com/SnapdragonPartners/maestro/issues/271)):** the MCP proxy is cross-compiled per-arch and its tests verify binary *selection* and ELF identity, but do not *execute* both binaries — short of this ADR's per-arch execution-verification bar. A broken per-arch build would pass today's tests and fail only at run time on the unexercised arch. The benchmark union cache image (item 5.1) already meets the bar via the both-arch offline proof in its release workflow; the proxy is brought up to it in #271.
 
 ## Related Documents
 

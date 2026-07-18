@@ -1,29 +1,77 @@
 #!/usr/bin/env bash
 # Deterministic acceptance test for the union cache image (item 5.1, #268).
 #
-# A wall-clock comparison cannot PROVE the cache is warm — model latency,
-# compilation, and test variance dominate it. This instead runs each fixture
-# against the image with the module proxy disabled (GOPROXY=off) and the
-# checksum DB off: `go mod download` can only succeed if every dependency is
-# already in the baked GOMODCACHE. A missing dep fails offline, loudly. This
-# is the CI gate; before/after timing is secondary evidence only.
+# Two guards, both defeating a stale image:
 #
-# Usage: verify.sh [image-ref]  (default: $CACHE_IMAGE:$CACHE_TAG)
+#  1. Coverage — every story's [fixture] repo+commit must appear in
+#     fixtures.txt. A story re-pinned without updating fixtures.txt (and
+#     republishing) is caught here, before any image check.
+#
+#  2. Offline completeness — for each fixture, mount the CURRENT pinned
+#     go.mod/go.sum (freshly staged, NOT the copies baked into the image)
+#     and run `go mod download` with the module proxy disabled (GOPROXY=off).
+#     Using only the image's baked GOMODCACHE, this can succeed only if the
+#     image already caches exactly the modules the current pins require — so
+#     a re-pinned fixture whose deps were never republished fails offline,
+#     loudly. (Running against the image's own /cache/<name>/go.mod would be
+#     a tautology: it would only prove the image caches its own old inputs.)
+#
+# Wall-clock timing is secondary evidence only. This is the CI gate.
+#
+# Usage: verify.sh [image-ref]   (default: $CACHE_IMAGE:$CACHE_TAG)
+#   To exercise a specific architecture, pass that arch's per-arch child
+#   digest (a single-platform ref) rather than a --platform flag on the
+#   multi-arch manifest digest: docker refuses `--platform` against a digest
+#   already resolved in the local store ("cannot overwrite digest"), and a
+#   child digest runs its own arch directly (foreign arch via the daemon's
+#   binfmt/QEMU). The release workflow verifies both child digests this way.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 IMAGE_REF="${1:-${CACHE_IMAGE:-ghcr.io/snapdragonpartners/golden-cache}:${CACHE_TAG:-latest}}"
 
+# --- Guard 1: every story fixture pin is represented in fixtures.txt --------
+extract() { # $1=toml $2=key -> value inside the [fixture] block
+    awk -v key="$2" '
+        /^\[fixture\]/ { inf=1; next }
+        /^\[/          { inf=0 }
+        inf && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            gsub(/.*=[[:space:]]*"|".*/, ""); print; exit
+        }' "$1"
+}
+cov_fail=0
+for toml in ../stories/*.toml; do
+    [ -e "$toml" ] || continue
+    repo=$(extract "$toml" repo)
+    commit=$(extract "$toml" commit)
+    [ -z "$repo" ] && continue
+    norm=${repo#https://github.com/}; norm=${norm%.git}
+    if ! awk -v r="$norm" -v c="$commit" \
+        '!/^#/ && $2==r && $3==c {found=1} END{exit !found}' fixtures.txt; then
+        echo "  ✗ $(basename "$toml"): fixture ${norm}@${commit} not in cache/fixtures.txt"
+        cov_fail=1
+    fi
+done
+if [ "$cov_fail" -ne 0 ]; then
+    echo "❌ story fixtures not covered by cache/fixtures.txt — update it and republish"
+    exit 1
+fi
+echo "✓ every story fixture pin is represented in fixtures.txt"
+
+# --- Guard 2: image caches the CURRENT pins, proven offline -----------------
+./stage.sh >/dev/null   # fetch the current pinned go.mod/go.sum into context/
+
 fail=0
 while read -r name repo commit _rest; do
     [ -z "${name:-}" ] && continue
     case "$name" in \#*) continue ;; esac
-    echo "verifying ${name} offline (GOPROXY=off)..."
+    echo "verifying ${name} offline against current pin..."
     if ! docker run --rm \
-        -e GOPROXY=off -e GOFLAGS=-mod=mod -e GOSUMDB=off -e GOTOOLCHAIN=local \
+        -e GOPROXY=off -e GOSUMDB=off -e GOTOOLCHAIN=local -e GOFLAGS=-mod=mod \
+        -v "${PWD}/context/${name}:/verify:ro" \
         "${IMAGE_REF}" \
-        sh -c "cd /cache/${name} && go mod download"; then
-        echo "  ✗ ${name}: dependencies NOT fully cached (offline download failed)"
+        sh -c 'cd /verify && go mod download'; then
+        echo "  ✗ ${name}: image does not cache the current pin's deps (offline download failed)"
         fail=1
     fi
 done < fixtures.txt
