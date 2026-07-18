@@ -75,6 +75,22 @@ tear down. The adapter requires the target binary to advertise
 `usage-surface: v1` in `-version` output (the P-1 handshake) and fails
 runs whose usage log never validates.
 
+## Local Models (paired-local)
+
+The `paired-local` configuration (item 5.1, [#266](https://github.com/SnapdragonPartners/maestro/issues/266)) drives v1's factory with locally-hosted **Ollama** models instead of hosted APIs, making basic end-to-end exercise of the harness ~free — cost is `unavailable` (unmodeled), while tokens/calls are still measured. Local models are weaker and slower; the trade is wall-clock time for near-zero dollar cost on simple testing tasks.
+
+Not every open model works in every seat. Tested against the `smoke-comment` story (a one-line append), the results:
+
+| Model | as **Coder** | as **Architect** |
+|---|---|---|
+| `qwen3-coder:30b` | ✅ lands the edit (methodical shell/file ops) | ✅ structured reviews work |
+| `gpt-oss:20b` | not tested | ✅ structured reviews work |
+| `mistral-small3.2:24b` | ❌ invents the `file_edit` param schema (`find`/`replacement` vs. `old_string`/`new_string`) — the edit never lands | ❌ fails to emit the terminal review tool even after the nudge → **fatal architect shutdown** |
+
+**Recommended:** coder = `qwen3-coder:30b`, architect = `gpt-oss:20b` — a clean end-to-end `accepted` run on the smoke story at **$0 / ~8.7 min** wall clock. `qwen3-coder` is also reliable in the architect seat, so `qwen3-coder` for both roles is a valid single-model fallback. **`mistral-small` is not recommended** in either seat: it is unreliable at structured tool-calling (wrong parameter schemas as coder, missing terminal-tool calls as architect). The recurring theme is **tool-calling fidelity**, not task comprehension — the plans were correct; execution failed on schema adherence.
+
+**Routing:** the provider is inferred from the model-name prefix (`pkg/config/config.go` `ProviderPatterns`). `qwen*`/`mistral*`/`llama*`/`phi*`/`deepseek*` route to Ollama automatically. `gpt-oss` needed an explicit routing entry — its `gpt` prefix otherwise routes it to the hosted OpenAI API — now fixed so `gpt-oss:*` routes to Ollama. The Ollama endpoint comes from `OLLAMA_HOST` (default `http://localhost:11434`).
+
 ## Development
 
 In this directory: `make build`, `make test`, `make test-race`,
