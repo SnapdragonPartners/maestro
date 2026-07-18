@@ -1,13 +1,13 @@
 +++
 title = "ADR 0026: Multi-Architecture Distributable Artifacts"
 edit_date = "2026-07-18"
-status = "proposed"
+status = "live"
 summary = "Every artifact Maestro builds on one architecture and executes on another — embedded/packaged binaries and published container images — must be built for all target architectures (at least linux/amd64 + linux/arm64) and verified on each arch. Images ship as a multi-arch manifest pinned by its arch-independent manifest digest; binaries are cross-compiled per-arch and selected at runtime. Single-arch builds of cross-arch artifacts are a defect."
 +++
 
 # 0026. Multi-Architecture Distributable Artifacts
 
-Status: Proposed (2026-07-18) — pending Codex + DR review.
+Status: Accepted (Codex + DR, 2026-07-18). Motivated by the benchmark union cache image (Phase 1 item 5.1) and the prior MCP proxy recurrence; the proxy's remaining per-arch execution-verification gap is tracked in [#271](https://github.com/SnapdragonPartners/maestro/issues/271).
 
 ## Context
 
