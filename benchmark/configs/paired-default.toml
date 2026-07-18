@@ -29,10 +29,12 @@ poll_interval = "5s"
 # Library fixtures carry no Dockerfile; pin a Go-capable coder container
 # (discovery run 3: the bootstrap fallback has no Go toolchain). The union
 # cache image (item 5.1, #268) is golang:1.26 with every golden Go fixture's
-# module cache baked in, so runs skip the cold `go mod download` tax. Pinned
-# by immutable digest so identical harness hashes execute identical contents;
-# republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
-container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:98c200a5a9bf9d092b4a287e14a935583864755e485b45a39ac6b9be14315656"
+# module cache baked in, so runs skip the cold `go mod download` tax. It is a
+# multi-arch manifest (linux/amd64 + linux/arm64) so arm64 dev and amd64 CI
+# both pull their matching arch; pinned by the arch-independent immutable
+# manifest digest so identical harness hashes execute identical contents.
+# Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
+container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:4ace8287f7b2b475d5f6cbe94f85a78316cefcfdb7d86de0487e932c8dc9fcab"
 
 # Expectations remain provisional until item 6; caps sized from the
 # discovery runs (v1's paired factory costs real money — measuring that

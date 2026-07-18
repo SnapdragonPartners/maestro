@@ -29,17 +29,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Multi-arch build (linux/amd64 + linux/arm64): QEMU for cross-arch,
+      # buildx for the multi-platform push. The runner is amd64; arm64 builds
+      # under emulation.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build union cache image
-        working-directory: benchmark
-        run: ./cache/build.sh
-
-      - name: Verify offline (GOPROXY=off)
-        working-directory: benchmark
-        run: ./cache/verify.sh
-
-      - name: Publish and print digest
+      # Multi-arch build+push in one step (publish.sh uses buildx --push);
+      # then verify the just-published image offline on the runner's arch.
+      - name: Build and publish multi-arch image
         working-directory: benchmark
         run: ./cache/publish.sh
+
+      # Verify the tag just published (CACHE_IMAGE:CACHE_TAG), not the config's
+      # digest — the maintainer pins the new digest from the log after this run.
+      - name: Verify published image offline (GOPROXY=off)
+        working-directory: benchmark
+        run: ./cache/verify.sh
