@@ -20,8 +20,9 @@ import (
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/contenthash"
 )
 
-// SchemaVersion is the current bundle schema version.
-const SchemaVersion = 1
+// SchemaVersion is the current bundle schema version. v2 (item 5.1) adds the
+// `local` flag and the token-budget dimension for locally-hosted models.
+const SchemaVersion = 2
 
 //nolint:gochecknoglobals // Package-level compiled regex for performance.
 var kebabPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -35,6 +36,11 @@ type Bundle struct {
 	Description   string          `toml:"description" json:"description"`
 	Budget        DeclaredBudget  `toml:"budget" json:"budget"`
 	SchemaVersion int             `toml:"schema_version" json:"schema_version"`
+	// Local selects the token budget dimension: the config's models run on a
+	// zero-dollar local provider (Ollama), so cost is unmodeled (reported
+	// `unavailable`) and the config is budgeted on tokens + wall-clock with
+	// no USD reservation. false (default) is the hosted, USD-budgeted path.
+	Local bool `toml:"local,omitempty" json:"local,omitempty"`
 }
 
 // ModelRouting is the M component: a default model plus per-role overrides.
@@ -66,6 +72,10 @@ type DeclaredBudget struct {
 	ExpectedCostUSDPerRun float64 `toml:"expected_cost_usd_per_run" json:"expected_cost_usd_per_run"`
 	MaxCostUSDPerRun      float64 `toml:"max_cost_usd_per_run" json:"max_cost_usd_per_run"`
 	MaxCostUSDPerSuite    float64 `toml:"max_cost_usd_per_suite" json:"max_cost_usd_per_suite"`
+	// Token caps (item 5.1): the budget dimension for local configs. Required
+	// and positive when the bundle is local; must be zero otherwise.
+	MaxTokensPerRun   int64 `toml:"max_tokens_per_run,omitempty" json:"max_tokens_per_run,omitempty"`
+	MaxTokensPerSuite int64 `toml:"max_tokens_per_suite,omitempty" json:"max_tokens_per_suite,omitempty"`
 }
 
 // Loaded pairs a validated bundle with its content identity and origin.
@@ -102,10 +112,16 @@ func (b *Bundle) Validate() error {
 	if b.Harness.Adapter == "" {
 		return fmt.Errorf("harness.adapter is required")
 	}
-	return b.Budget.validate()
+	return b.Budget.validate(b.Local)
 }
 
-func (d *DeclaredBudget) validate() error {
+// validate is dimension-keyed (item 5.1): a hosted config is budgeted in USD
+// and must declare positive USD caps with zero token caps; a local config is
+// budgeted in tokens and must declare positive token caps with zero USD caps
+// (a positive USD cap on a local bundle is ambiguous and rejected). Every
+// config declares expected_tokens_per_run — for local it is the token
+// dimension's estimate, for hosted it is reporting-only.
+func (d *DeclaredBudget) validate(local bool) error {
 	// TOML admits nan and inf literals, and NaN slides through ordered
 	// comparisons — a NaN cap would defeat hard-budget enforcement.
 	for _, v := range []float64{d.ExpectedCostUSDPerRun, d.MaxCostUSDPerRun, d.MaxCostUSDPerSuite} {
@@ -113,8 +129,37 @@ func (d *DeclaredBudget) validate() error {
 			return fmt.Errorf("budget values must be finite, got %v", v)
 		}
 	}
-	if d.ExpectedTokensPerRun <= 0 || d.ExpectedCostUSDPerRun <= 0 {
-		return fmt.Errorf("budget expectations must be positive: budgets are declared, not discovered")
+	if d.ExpectedTokensPerRun <= 0 {
+		return fmt.Errorf("expected_tokens_per_run must be positive: budgets are declared, not discovered")
+	}
+	if local {
+		return d.validateTokenDimension()
+	}
+	return d.validateUSDDimension()
+}
+
+func (d *DeclaredBudget) validateTokenDimension() error {
+	if d.ExpectedCostUSDPerRun != 0 || d.MaxCostUSDPerRun != 0 || d.MaxCostUSDPerSuite != 0 {
+		return fmt.Errorf("local config must not declare USD caps (cost is unmodeled); budget on tokens")
+	}
+	if d.MaxTokensPerRun <= 0 || d.MaxTokensPerSuite <= 0 {
+		return fmt.Errorf("local config must declare positive max_tokens_per_run and max_tokens_per_suite")
+	}
+	if d.MaxTokensPerRun < d.ExpectedTokensPerRun {
+		return fmt.Errorf("max_tokens_per_run %d must be at least expected_tokens_per_run %d", d.MaxTokensPerRun, d.ExpectedTokensPerRun)
+	}
+	if d.MaxTokensPerSuite < d.MaxTokensPerRun {
+		return fmt.Errorf("max_tokens_per_suite %d must be at least max_tokens_per_run %d", d.MaxTokensPerSuite, d.MaxTokensPerRun)
+	}
+	return nil
+}
+
+func (d *DeclaredBudget) validateUSDDimension() error {
+	if d.MaxTokensPerRun != 0 || d.MaxTokensPerSuite != 0 {
+		return fmt.Errorf("hosted config must not declare token caps; budget on USD (or set local = true)")
+	}
+	if d.ExpectedCostUSDPerRun <= 0 {
+		return fmt.Errorf("expected_cost_usd_per_run must be positive: budgets are declared, not discovered")
 	}
 	if d.MaxCostUSDPerRun < d.ExpectedCostUSDPerRun {
 		return fmt.Errorf("max_cost_usd_per_run %v must be at least expected_cost_usd_per_run %v", d.MaxCostUSDPerRun, d.ExpectedCostUSDPerRun)

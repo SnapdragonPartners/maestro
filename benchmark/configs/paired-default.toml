@@ -1,7 +1,7 @@
 # The paired-agent default configuration (ADR 0025: mandatory from the
 # start): v1's factory path, driven black-box by the v1-as-patched adapter.
 # Budget expectations are provisional until item 6's instrumented runs.
-schema_version = 1
+schema_version = 2
 name = "paired-default"
 description = "v1-as-patched paired-agent factory default"
 

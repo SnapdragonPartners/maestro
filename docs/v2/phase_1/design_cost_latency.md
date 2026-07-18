@@ -55,14 +55,14 @@ All current fixtures are Go modules, so a single union image covers them. A futu
 
 **The real unknown, probed first.** `maestro-llms` is validated against Ollama, but *full maestro* — the paired factory's structured reviews, tool-calling, and JSON-schema'd terminal tools — has never run end-to-end on local models. So Part B opens with a **viability probe**, not a config build: point a throwaway config at Ollama (`OLLAMA_HOST` set) and run the `smoke-comment` story. The probe answers whether qwen3-coder/mistral can actually drive the architect's single-turn reviews and the coder's tool loop before we invest in a real config. If they cannot yet, the honest outcome is a documented finding and a deferral — not a forced config.
 
-**Model mapping (starting point, adjustable from the probe):**
+**Model mapping — probe verdict (2026-07-18).** The probe ran (probes 1–4 on `smoke-comment`) and the starting-point mapping was *inverted* by the findings. `mistral-small` failed in **both** seats — wrong `file_edit` parameter schema as coder (edit never lands), and a fatal failure to emit the terminal review tool as architect. `qwen3-coder` is reliable in both seats; `gpt-oss` is a capable architect. The chosen mapping:
 
 | Role | Hosted (paired-default) | Local (paired-local, Ollama) |
 |---|---|---|
-| architect | claude-opus-4-1 | qwen3-coder:30b |
-| coder, pm | claude-sonnet-4-6 | mistral-small3.2:24b |
+| architect | claude-opus-4-1 | **gpt-oss:20b** |
+| coder, pm | claude-sonnet-4-6 | **qwen3-coder:30b** |
 
-`gpt-oss:20b` is available as an Ollama alternative if mistral underperforms on the coder role.
+Verdict: **viable.** qwen-coder + gpt-oss-architect completed `smoke-comment` end-to-end, `accepted`, at $0 and ~6–9 min wall clock. `qwen3-coder` for both roles is a valid single-model fallback. `mistral-small` is not used. The full model×seat matrix (with failures) is durable in `benchmark/README.md`. `gpt-oss` needed a routing fix (patch **P-8**: its `gpt` prefix otherwise routes to hosted OpenAI); name-based provider inference is flagged for v2 deprecation ([#272](https://github.com/SnapdragonPartners/maestro/issues/272)).
 
 **Cost marking — `unavailable`, not `not_applicable` (Codex round 1).** A local run *does* incur total attempt cost — it simply is not modeled in USD, and ADR 0025 reserves `not_applicable` for metrics a story does not exercise. So `cost_usd` is **`unavailable`** for a local config (with a reason: "local provider; USD cost unmodeled"), while `tokens_total` and `llm_calls` stay `value` through the P-1 usage surface. Passing the usage log's `$0` through as a `value` would be a lie that poisons cost-to-accepted-change (item 7); `unavailable` is the honest marking. The adapter learns a config is local from an **explicit harness flag** on the MPH bundle (`local = true`) — least magic, documents intent — not by sniffing model names.
 

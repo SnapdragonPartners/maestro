@@ -15,8 +15,9 @@ func TestManifestRoundTrip(t *testing.T) {
 	manifest := &results.Manifest{
 		SuiteRunID: "suite-0001",
 		StopReason: results.StopSuiteBudgetExhausted,
-		CapUSD:     10,
-		ChargedUSD: 9.5,
+		BudgetAccounts: []results.BudgetAccount{
+			{Config: "c", Dimension: results.DimensionUSD, Cap: 10, Charged: 9.5, Observed: 8.0},
+		},
 		Attempts: []results.ManifestAttempt{
 			{Story: "a", Config: "c", Repeat: 1, Status: results.AttemptCompleted, RunID: "r1"},
 			{Story: "a", Config: "c", Repeat: 2, Status: results.AttemptSkipped, Reason: "suite budget"},
@@ -36,6 +37,9 @@ func TestManifestRoundTrip(t *testing.T) {
 	}
 	if back.StopReason != results.StopCompleted || !reflect.DeepEqual(back.Attempts, manifest.Attempts) {
 		t.Fatalf("round trip mismatch: %+v", back)
+	}
+	if !reflect.DeepEqual(back.BudgetAccounts, manifest.BudgetAccounts) {
+		t.Fatalf("budget_accounts round trip mismatch: %+v", back.BudgetAccounts)
 	}
 	if back.UpdatedAt.IsZero() {
 		t.Fatalf("every write must stamp updated_at")

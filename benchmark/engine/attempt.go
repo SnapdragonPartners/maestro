@@ -123,7 +123,7 @@ func (e *Engine) RunAttempt(ctx context.Context, st *story.Loaded, bundle *mph.L
 		spec: &target.AttemptSpec{
 			Story:           st.Definition,
 			Bundle:          bundle.Bundle,
-			Budget:          effectiveBudget(st.Definition.Budget, bundle.Bundle.Budget),
+			Budget:          effectiveBudget(st.Definition.Budget, bundle.Bundle),
 			RunID:           runID,
 			SuiteRunID:      suiteRunID,
 			StoryHash:       st.Hash,
@@ -148,8 +148,20 @@ func invalidSuffix(rec *runrecord.RunRecord) string {
 	return ""
 }
 
-// effectiveBudget bounds the story budget by the bundle's per-run cost cap.
-func effectiveBudget(sb story.Budget, db mph.DeclaredBudget) story.Budget {
+// effectiveBudget bounds the story budget by the bundle's per-run cap in the
+// bundle's budget dimension (item 5.1). Hosted configs cap cost (USD); local
+// configs cap tokens and disable USD enforcement, since local cost is
+// unmodeled and $0 — the streamed tracker must not trip on it. Wall-clock is
+// always the story's.
+func effectiveBudget(sb story.Budget, bundle *mph.Bundle) story.Budget {
+	db := bundle.Budget
+	if bundle.Local {
+		if db.MaxTokensPerRun < sb.MaxTokens {
+			sb.MaxTokens = db.MaxTokensPerRun
+		}
+		sb.MaxCostUSD = math.Inf(1) // no USD enforcement for local
+		return sb
+	}
 	if db.MaxCostUSDPerRun < sb.MaxCostUSD {
 		sb.MaxCostUSD = db.MaxCostUSDPerRun
 	}

@@ -134,3 +134,46 @@ func TestLoadDirRejectsDuplicateNames(t *testing.T) {
 		t.Fatalf("duplicate names must fail, got %v", err)
 	}
 }
+
+// TestLocalBundleValidation pins the dimension-keyed budget validation
+// (item 5.1): a local config is budgeted in tokens and must declare positive
+// token caps with zero USD caps; a hosted config must not declare token caps.
+func TestLocalBundleValidation(t *testing.T) {
+	base := func() *mph.Bundle {
+		return &mph.Bundle{
+			SchemaVersion: mph.SchemaVersion,
+			Name:          "paired-local-test",
+			Model:         mph.ModelRouting{Default: "qwen3-coder:30b"},
+			Prompt:        mph.PromptRef{Pack: "v1-embedded"},
+			Harness:       mph.HarnessSettings{Adapter: "v1-as-patched"},
+			Local:         true,
+			Budget: mph.DeclaredBudget{
+				ExpectedTokensPerRun: 500_000,
+				MaxTokensPerRun:      2_000_000,
+				MaxTokensPerSuite:    8_000_000,
+			},
+		}
+	}
+	if err := base().Validate(); err != nil {
+		t.Fatalf("valid local bundle must pass: %v", err)
+	}
+	b := base()
+	b.Budget.MaxCostUSDPerRun = 5
+	if err := b.Validate(); err == nil || !strings.Contains(err.Error(), "USD caps") {
+		t.Fatalf("local + USD caps must be rejected, got %v", err)
+	}
+	b = base()
+	b.Budget.MaxTokensPerRun = 0
+	if err := b.Validate(); err == nil || !strings.Contains(err.Error(), "max_tokens") {
+		t.Fatalf("local without token caps must be rejected, got %v", err)
+	}
+	b = base()
+	b.Local = false
+	b.Budget = mph.DeclaredBudget{
+		ExpectedTokensPerRun: 1, ExpectedCostUSDPerRun: 1, MaxCostUSDPerRun: 2, MaxCostUSDPerSuite: 3,
+		MaxTokensPerRun: 100,
+	}
+	if err := b.Validate(); err == nil || !strings.Contains(err.Error(), "token caps") {
+		t.Fatalf("hosted + token caps must be rejected, got %v", err)
+	}
+}
