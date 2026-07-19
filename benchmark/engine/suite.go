@@ -72,6 +72,7 @@ func (e *Engine) RunSuite(ctx context.Context, p SuiteParams) (*results.Manifest
 		return nil, fmt.Errorf("suite needs at least one story and one bundle")
 	}
 	run := e.planSuite(p)
+	run.syncAccounts() // the initial manifest must already carry the accounts
 	if err := e.Store.WriteManifest(run.manifest); err != nil {
 		return run.manifest, fmt.Errorf("write manifest: %w", err)
 	}
@@ -171,9 +172,11 @@ func (s *suiteRun) cell(ctx context.Context, entry *results.ManifestAttempt, st 
 	return false, s.persist()
 }
 
-// persist rebuilds the per-config budget accounts (in stable bundle order,
-// not map order) and writes the manifest.
-func (s *suiteRun) persist() error {
+// syncAccounts refreshes the manifest's per-config budget accounts from the
+// live accounts, in stable bundle order (not map order). Called before the
+// initial write and on every persist so the on-disk manifest always carries
+// complete accounts.
+func (s *suiteRun) syncAccounts() {
 	accounts := make([]results.BudgetAccount, 0, len(s.accounts))
 	for _, bundle := range s.params.Bundles {
 		a := s.accounts[bundle.Bundle.Name]
@@ -186,6 +189,11 @@ func (s *suiteRun) persist() error {
 		})
 	}
 	s.manifest.BudgetAccounts = accounts
+}
+
+// persist refreshes the accounts and writes the manifest.
+func (s *suiteRun) persist() error {
+	s.syncAccounts()
 	if err := s.engine.Store.WriteManifest(s.manifest); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}

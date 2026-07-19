@@ -39,7 +39,8 @@ const (
 const (
 	// StopCompleted means every planned attempt ran.
 	StopCompleted = "completed"
-	// StopSuiteBudgetExhausted means the suite cost cap stopped admission.
+	// StopSuiteBudgetExhausted means the suite budget cap (USD for hosted
+	// configs, tokens for local) stopped admission.
 	StopSuiteBudgetExhausted = "suite-budget-exhausted"
 	// StopInterrupted means the suite ended before finishing for another
 	// reason (signal, fatal error).
