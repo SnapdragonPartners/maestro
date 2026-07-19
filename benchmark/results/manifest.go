@@ -8,8 +8,19 @@ import (
 	"time"
 )
 
-// ManifestSchemaVersion is the current suite-manifest schema.
-const ManifestSchemaVersion = 1
+// ManifestSchemaVersion is the current suite-manifest schema. v2 (item 5.1)
+// replaces the flat cap/charged/observed USD fields with a per-config
+// budget_accounts array, so a suite mixing hosted (USD) and local (token)
+// configs is represented directly and decoded unambiguously.
+const ManifestSchemaVersion = 2
+
+// Budget dimensions for a config's suite account.
+const (
+	// DimensionUSD is the hosted budget dimension (dollars).
+	DimensionUSD = "usd"
+	// DimensionTokens is the local budget dimension (total tokens).
+	DimensionTokens = "tokens"
+)
 
 // manifestExtension is the manifest file suffix; one per suite run.
 const manifestExtension = ".manifest.json"
@@ -28,7 +39,8 @@ const (
 const (
 	// StopCompleted means every planned attempt ran.
 	StopCompleted = "completed"
-	// StopSuiteBudgetExhausted means the suite cost cap stopped admission.
+	// StopSuiteBudgetExhausted means the suite budget cap (USD for hosted
+	// configs, tokens for local) stopped admission.
 	StopSuiteBudgetExhausted = "suite-budget-exhausted"
 	// StopInterrupted means the suite ended before finishing for another
 	// reason (signal, fatal error).
@@ -47,18 +59,28 @@ type ManifestAttempt struct {
 	Repeat int    `json:"repeat"`
 }
 
+// BudgetAccount is one config's suite-budget accounting in its own
+// dimension. A hosted config accounts in USD, a local config in tokens; a
+// mixed suite carries one entry per config, so a reader decodes each
+// unambiguously without a lossy top-level dimension.
+type BudgetAccount struct {
+	Config    string  `json:"config"`
+	Dimension string  `json:"dimension"` // DimensionUSD | DimensionTokens
+	Cap       float64 `json:"cap"`
+	Charged   float64 `json:"charged"`
+	Observed  float64 `json:"observed"`
+}
+
 // Manifest records what a suite run planned and what actually happened, so
 // a deliberately partial suite is distinguishable from a corrupt results
 // file (design_engine.md).
 type Manifest struct {
-	UpdatedAt     time.Time         `json:"updated_at"`
-	SuiteRunID    string            `json:"suite_run_id"`
-	StopReason    string            `json:"stop_reason"`
-	Attempts      []ManifestAttempt `json:"attempts"`
-	CapUSD        float64           `json:"cap_usd"`
-	ChargedUSD    float64           `json:"charged_usd"`
-	ObservedUSD   float64           `json:"observed_usd"`
-	SchemaVersion int               `json:"manifest_schema_version"`
+	UpdatedAt      time.Time         `json:"updated_at"`
+	SuiteRunID     string            `json:"suite_run_id"`
+	StopReason     string            `json:"stop_reason"`
+	Attempts       []ManifestAttempt `json:"attempts"`
+	BudgetAccounts []BudgetAccount   `json:"budget_accounts"`
+	SchemaVersion  int               `json:"manifest_schema_version"`
 }
 
 // WriteManifest persists the manifest for its suite run, atomically

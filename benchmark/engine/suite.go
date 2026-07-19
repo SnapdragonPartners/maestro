@@ -19,22 +19,26 @@ type SuiteParams struct {
 	Repeats    int
 }
 
-// bundleAccount tracks conservative suite-budget admission for one bundle:
-// admission reserves the attempt's *effective per-run maximum* — the most
-// an admitted attempt may legitimately spend — so the suite cannot
-// overshoot its cap by launching (Codex round 2). After the attempt,
-// settle adjusts the charge to the observed cost when known; unknown cost
-// keeps the full reservation, never zero.
+// bundleAccount tracks conservative suite-budget admission for one config in
+// its budget dimension — USD for hosted configs, tokens for local (item 5.1).
+// Admission reserves the attempt's *effective per-run maximum* — the most an
+// admitted attempt may legitimately spend — so the suite cannot overshoot its
+// cap by launching (Codex round 2). After the attempt, settle adjusts the
+// charge to the observed amount when known; unknown keeps the full
+// reservation, never zero.
 type bundleAccount struct {
-	capUSD     float64
-	chargedUSD float64
+	config    string
+	dimension string // results.DimensionUSD | results.DimensionTokens
+	cap       float64
+	charged   float64
+	observed  float64
 }
 
 func (b *bundleAccount) admit(reserve float64) bool {
-	if b.chargedUSD+reserve > b.capUSD {
+	if b.charged+reserve > b.cap {
 		return false
 	}
-	b.chargedUSD += reserve
+	b.charged += reserve
 	return true
 }
 
@@ -42,9 +46,10 @@ func (b *bundleAccount) settle(reserve, observed float64, known bool) {
 	if !known {
 		return // conservative: the reservation stands
 	}
-	// Replace the reservation with reality — including observed cost
-	// above the reservation (a post-hoc target that overspent really did).
-	b.chargedUSD += observed - reserve
+	// Replace the reservation with reality — including observed above the
+	// reservation (a post-hoc target that overspent really did).
+	b.charged += observed - reserve
+	b.observed += observed
 }
 
 // suiteRun is the in-flight state of one suite execution.
@@ -67,6 +72,7 @@ func (e *Engine) RunSuite(ctx context.Context, p SuiteParams) (*results.Manifest
 		return nil, fmt.Errorf("suite needs at least one story and one bundle")
 	}
 	run := e.planSuite(p)
+	run.syncAccounts() // the initial manifest must already carry the accounts
 	if err := e.Store.WriteManifest(run.manifest); err != nil {
 		return run.manifest, fmt.Errorf("write manifest: %w", err)
 	}
@@ -105,8 +111,12 @@ func (e *Engine) planSuite(p SuiteParams) *suiteRun {
 		accounts: make(map[string]*bundleAccount, len(p.Bundles)),
 	}
 	for _, bundle := range p.Bundles {
-		run.accounts[bundle.Bundle.Name] = &bundleAccount{capUSD: bundle.Bundle.Budget.MaxCostUSDPerSuite}
-		run.manifest.CapUSD += bundle.Bundle.Budget.MaxCostUSDPerSuite
+		acct := &bundleAccount{config: bundle.Bundle.Name, dimension: results.DimensionUSD, cap: bundle.Bundle.Budget.MaxCostUSDPerSuite}
+		if bundle.Bundle.Local {
+			acct.dimension = results.DimensionTokens
+			acct.cap = float64(bundle.Bundle.Budget.MaxTokensPerSuite)
+		}
+		run.accounts[bundle.Bundle.Name] = acct
 		for _, st := range p.Stories {
 			for repeat := 1; repeat <= p.Repeats; repeat++ {
 				run.manifest.Attempts = append(run.manifest.Attempts, results.ManifestAttempt{
@@ -128,13 +138,18 @@ func (s *suiteRun) cell(ctx context.Context, entry *results.ManifestAttempt, st 
 		return true, nil //nolint:nilerr // interruption is a manifest stop reason, not an engine error
 	}
 	account := s.accounts[bundle.Bundle.Name]
-	// Reserve what an admitted attempt may legitimately spend: its
-	// effective per-run cost cap, not the (smaller) expectation.
-	reserve := effectiveBudget(st.Definition.Budget, bundle.Bundle.Budget).MaxCostUSD
+	// Reserve what an admitted attempt may legitimately spend: its effective
+	// per-run maximum in this config's budget dimension (cost for hosted,
+	// tokens for local), not the (smaller) expectation.
+	eff := effectiveBudget(st.Definition.Budget, bundle.Bundle)
+	reserve := eff.MaxCostUSD
+	if bundle.Bundle.Local {
+		reserve = float64(eff.MaxTokens)
+	}
 	if !account.admit(reserve) {
 		s.budgetHit = true
 		entry.Status = results.AttemptSkipped
-		entry.Reason = fmt.Sprintf("suite budget: charged %.2f + per-run cap %.2f exceeds cap %.2f", account.chargedUSD, reserve, account.capUSD)
+		entry.Reason = fmt.Sprintf("suite budget: charged %.0f + per-run cap %.0f exceeds cap %.0f (%s)", account.charged, reserve, account.cap, account.dimension)
 		s.engine.logf("%s/%s r%d: skipped (%s)", st.Definition.ID, bundle.Bundle.Name, repeat, entry.Reason)
 		return false, s.persist()
 	}
@@ -147,21 +162,38 @@ func (s *suiteRun) cell(ctx context.Context, entry *results.ManifestAttempt, st 
 	}
 	entry.Status = results.AttemptCompleted
 	entry.RunID = rec.RunID
-	observed, known := rec.Metrics[runrecord.MetricCostUSD].Float64()
-	account.settle(reserve, observed, known)
-	if known {
-		s.manifest.ObservedUSD += observed
+	// Settle against the observed amount in the config's dimension.
+	metric := runrecord.MetricCostUSD
+	if bundle.Bundle.Local {
+		metric = runrecord.MetricTokensTotal
 	}
+	observed, known := rec.Metrics[metric].Float64()
+	account.settle(reserve, observed, known)
 	return false, s.persist()
 }
 
-// persist refreshes the manifest totals and writes it.
-func (s *suiteRun) persist() error {
-	total := 0.0
-	for _, account := range s.accounts {
-		total += account.chargedUSD
+// syncAccounts refreshes the manifest's per-config budget accounts from the
+// live accounts, in stable bundle order (not map order). Called before the
+// initial write and on every persist so the on-disk manifest always carries
+// complete accounts.
+func (s *suiteRun) syncAccounts() {
+	accounts := make([]results.BudgetAccount, 0, len(s.accounts))
+	for _, bundle := range s.params.Bundles {
+		a := s.accounts[bundle.Bundle.Name]
+		accounts = append(accounts, results.BudgetAccount{
+			Config:    a.config,
+			Dimension: a.dimension,
+			Cap:       a.cap,
+			Charged:   a.charged,
+			Observed:  a.observed,
+		})
 	}
-	s.manifest.ChargedUSD = total
+	s.manifest.BudgetAccounts = accounts
+}
+
+// persist refreshes the accounts and writes the manifest.
+func (s *suiteRun) persist() error {
+	s.syncAccounts()
 	if err := s.engine.Store.WriteManifest(s.manifest); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}

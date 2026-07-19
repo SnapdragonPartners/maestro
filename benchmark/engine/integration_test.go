@@ -120,6 +120,34 @@ func testBundle(t *testing.T, budget mph.DeclaredBudget) *mph.Loaded {
 	return &mph.Loaded{Bundle: bundle, Hash: hash, Path: "in-memory"}
 }
 
+// testLocalBundle builds a local (token-dimension) stub bundle with the
+// given per-run and per-suite token caps.
+func testLocalBundle(t *testing.T, perRun, perSuite int64) *mph.Loaded {
+	t.Helper()
+	bundle := &mph.Bundle{
+		SchemaVersion: mph.SchemaVersion,
+		Name:          "stub-local",
+		Description:   "integration test local bundle",
+		Model:         mph.ModelRouting{Default: "stub:model"},
+		Prompt:        mph.PromptRef{Pack: "stub-pack"},
+		Harness:       mph.HarnessSettings{Adapter: "stub"},
+		Local:         true,
+		Budget: mph.DeclaredBudget{
+			ExpectedTokensPerRun: 100,
+			MaxTokensPerRun:      perRun,
+			MaxTokensPerSuite:    perSuite,
+		},
+	}
+	if err := bundle.Validate(); err != nil {
+		t.Fatalf("test local bundle invalid: %v", err)
+	}
+	hash, err := contenthash.CanonicalJSON(bundle)
+	if err != nil {
+		t.Fatalf("bundle hash: %v", err)
+	}
+	return &mph.Loaded{Bundle: bundle, Hash: hash, Path: "in-memory"}
+}
+
 func defaultBudgets() (story.Budget, mph.DeclaredBudget) {
 	return story.Budget{MaxTokens: 100000, MaxWallClockSeconds: 60, MaxCostUSD: 1.0},
 		mph.DeclaredBudget{
@@ -371,6 +399,122 @@ func TestSuiteBudgetAdmissionAndManifest(t *testing.T) {
 	back, err := store.ReadManifest("suite-budget")
 	if err != nil || back.StopReason != manifest.StopReason {
 		t.Fatalf("manifest must round-trip: %v %v", back, err)
+	}
+}
+
+// TestLocalSuiteTokenAdmissionAndSettlement covers the token budget
+// dimension end-to-end (item 5.1): the suite reserves the effective per-run
+// token cap, settles to the observed tokens, and the second reservation
+// no longer fits — with per-config token accounting in the v2 manifest.
+func TestLocalSuiteTokenAdmissionAndSettlement(t *testing.T) {
+	repoURL, pin := makeFixture(t)
+	sb, _ := defaultBudgets() // story MaxTokens 100000
+	// effective per-run reserve = min(100000, 2000) = 2000; the observed
+	// tokens (stub reports 1000) settle the charge, and 1000+2000 > the 2000
+	// suite cap, so the second attempt is skipped.
+	eng, _ := newEngine(t, solutionStub())
+	manifest, err := eng.RunSuite(context.Background(), engine.SuiteParams{
+		SuiteRunID: "suite-local",
+		Stories:    []*story.Loaded{testStory(t, repoURL, pin, sb)},
+		Bundles:    []*mph.Loaded{testLocalBundle(t, 2000, 2000)},
+		Repeats:    2,
+	})
+	if err != nil {
+		t.Fatalf("run suite: %v", err)
+	}
+	if manifest.StopReason != results.StopSuiteBudgetExhausted {
+		t.Fatalf("want suite-budget-exhausted, got %s", manifest.StopReason)
+	}
+	statuses := map[string]int{}
+	for _, a := range manifest.Attempts {
+		statuses[a.Status]++
+	}
+	if statuses[results.AttemptCompleted] != 1 || statuses[results.AttemptSkipped] != 1 {
+		t.Fatalf("want 1 completed + 1 skipped, got %v", statuses)
+	}
+	if len(manifest.BudgetAccounts) != 1 {
+		t.Fatalf("want 1 budget account, got %d", len(manifest.BudgetAccounts))
+	}
+	acct := manifest.BudgetAccounts[0]
+	if acct.Dimension != results.DimensionTokens || acct.Cap != 2000 || acct.Charged != 1000 || acct.Observed != 1000 {
+		t.Fatalf("token account must settle to observed tokens: %+v", acct)
+	}
+}
+
+// TestLocalCostViolationAndReservationRetention covers two P1 invariants at
+// once: streamed USD under a local config fails the attempt (a local config
+// must not spend dollars), and the resulting unavailable token metric keeps
+// the full suite reservation (never settled down).
+func TestLocalCostViolationAndReservationRetention(t *testing.T) {
+	repoURL, pin := makeFixture(t)
+	sb, _ := defaultBudgets()
+	stub := solutionStub()
+	// Cost-only stream: trips the local-cost invariant, and with zero tokens
+	// the failed record's tokens_total is unavailable.
+	stub.Usage = []target.UsageDelta{{Tokens: 0, CostUSD: 0.5}}
+	eng, _ := newEngine(t, stub)
+	rec, err := eng.RunAttempt(context.Background(), testStory(t, repoURL, pin, sb), testLocalBundle(t, 2000, 10000), "suite-local-viol", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+	if rec.Verdict != runrecord.VerdictFailed || rec.FailureKind != runrecord.FailureTargetError {
+		t.Fatalf("streamed USD under local must fail as target-error, got %s/%s", rec.Verdict, rec.FailureKind)
+	}
+	if rec.Metrics[runrecord.MetricTokensTotal].Status != runrecord.StatusUnavailable {
+		t.Fatalf("failed local run must have unavailable tokens, got %+v", rec.Metrics[runrecord.MetricTokensTotal])
+	}
+	if rec.Metrics[runrecord.MetricCostUSD].Status == runrecord.StatusValue {
+		t.Fatalf("local cost must never be a measured value, got %+v", rec.Metrics[runrecord.MetricCostUSD])
+	}
+	// Now the suite view: the reservation is retained (unavailable ⇒ keep max).
+	manifest, err := eng.RunSuite(context.Background(), engine.SuiteParams{
+		SuiteRunID: "suite-local-retain",
+		Stories:    []*story.Loaded{testStory(t, repoURL, pin, sb)},
+		Bundles:    []*mph.Loaded{testLocalBundle(t, 2000, 10000)},
+		Repeats:    1,
+	})
+	if err != nil {
+		t.Fatalf("run suite: %v", err)
+	}
+	acct := manifest.BudgetAccounts[0]
+	if acct.Charged != 2000 || acct.Observed != 0 {
+		t.Fatalf("unavailable tokens must retain the full reservation, got %+v", acct)
+	}
+}
+
+// TestMixedHostedLocalSuiteAccounts pins that a suite mixing a hosted (USD)
+// and a local (token) config produces independent per-config budget_accounts
+// in their own dimensions.
+func TestMixedHostedLocalSuiteAccounts(t *testing.T) {
+	repoURL, pin := makeFixture(t)
+	sb, db := defaultBudgets()
+	eng, _ := newEngine(t, solutionStub())
+	manifest, err := eng.RunSuite(context.Background(), engine.SuiteParams{
+		SuiteRunID: "suite-mixed",
+		Stories:    []*story.Loaded{testStory(t, repoURL, pin, sb)},
+		Bundles:    []*mph.Loaded{testBundle(t, db), testLocalBundle(t, 5000, 20000)},
+		Repeats:    1,
+	})
+	if err != nil {
+		t.Fatalf("run suite: %v", err)
+	}
+	if len(manifest.BudgetAccounts) != 2 {
+		t.Fatalf("mixed suite must carry 2 accounts, got %d", len(manifest.BudgetAccounts))
+	}
+	byDim := map[string]results.BudgetAccount{}
+	for _, a := range manifest.BudgetAccounts {
+		byDim[a.Dimension] = a
+	}
+	usd, okU := byDim[results.DimensionUSD]
+	tok, okT := byDim[results.DimensionTokens]
+	if !okU || !okT {
+		t.Fatalf("mixed suite must have one usd and one tokens account, got %+v", manifest.BudgetAccounts)
+	}
+	if usd.Config != "stub-config" || tok.Config != "stub-local" {
+		t.Fatalf("accounts must map to their configs, got usd=%q tokens=%q", usd.Config, tok.Config)
+	}
+	if tok.Observed != 1000 || usd.Observed != 0.01 {
+		t.Fatalf("each account accrues in its own dimension: usd=%+v tokens=%+v", usd, tok)
 	}
 }
 

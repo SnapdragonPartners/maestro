@@ -1,0 +1,65 @@
+name: Publish golden-cache image
+
+# Maintainer/release step for the union dependency-cache image (item 5.1,
+# #268; docs/v2/phase_1/design_cost_latency.md). Manually dispatched — this
+# is the ONLY path that publishes the image and thus the only thing that can
+# move the tracked digest. PR CI never runs this; it only pulls and verifies.
+#
+# After a run, read the printed digest from the "Publish and print digest"
+# step and pin it into benchmark/configs/*.toml (container_image).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to publish"
+        required: false
+        default: "latest"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write  # push to GHCR via the built-in GITHUB_TOKEN — no PAT
+    env:
+      CACHE_IMAGE: ghcr.io/snapdragonpartners/golden-cache
+      CACHE_TAG: ${{ github.event.inputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Multi-arch build (linux/amd64 + linux/arm64): QEMU for cross-arch,
+      # buildx for the multi-platform push. The runner is amd64; arm64 builds
+      # under emulation.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # Multi-arch build+push in one step (publish.sh uses buildx --push);
+      # then verify the just-published image offline on the runner's arch.
+      - name: Build and publish multi-arch image
+        working-directory: benchmark
+        run: ./cache/publish.sh
+
+      # Durably exercise BOTH published architectures (ADR 0026), not the
+      # mutable tag: resolve each arch's per-arch child digest from the
+      # published manifest and run the offline proof against each. The amd64
+      # runner runs the arm64 child under QEMU. The maintainer pins the
+      # multi-arch manifest digest (printed above) into configs/*.toml.
+      - name: Verify published child digests on amd64 and arm64 (QEMU)
+        working-directory: benchmark
+        run: |
+          REF="${CACHE_IMAGE}:${CACHE_TAG}"
+          for arch in amd64 arm64; do
+            child=$(docker buildx imagetools inspect "$REF" \
+              --format "{{range .Manifest.Manifests}}{{if eq .Platform.Architecture \"$arch\"}}{{.Digest}}{{end}}{{end}}")
+            if [ -z "$child" ]; then echo "no $arch image in $REF"; exit 1; fi
+            echo "== verifying $arch child ${CACHE_IMAGE}@${child} =="
+            ./cache/verify.sh "${CACHE_IMAGE}@${child}"
+          done

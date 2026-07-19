@@ -1,7 +1,7 @@
 # The paired-agent default configuration (ADR 0025: mandatory from the
 # start): v1's factory path, driven black-box by the v1-as-patched adapter.
 # Budget expectations are provisional until item 6's instrumented runs.
-schema_version = 1
+schema_version = 2
 name = "paired-default"
 description = "v1-as-patched paired-agent factory default"
 
@@ -27,10 +27,14 @@ platform = "go"
 test_cmd = "go test ./..."
 poll_interval = "5s"
 # Library fixtures carry no Dockerfile; pin a Go-capable coder container
-# (discovery run 3: the bootstrap fallback has no Go toolchain). Pinned by
-# digest so identical harness hashes always execute identical container
-# contents (golang:1.26 as of 2026-07-17).
-container_image = "golang@sha256:ae5a2316d12f3e78fd99177dad452e6ad4f240af2d71d57b480c3477f250fec6"
+# (discovery run 3: the bootstrap fallback has no Go toolchain). The union
+# cache image (item 5.1, #268) is golang:1.26 with every golden Go fixture's
+# module cache baked in, so runs skip the cold `go mod download` tax. It is a
+# multi-arch manifest (linux/amd64 + linux/arm64) so arm64 dev and amd64 CI
+# both pull their matching arch; pinned by the arch-independent immutable
+# manifest digest so identical harness hashes execute identical contents.
+# Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
+container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:4ace8287f7b2b475d5f6cbe94f85a78316cefcfdb7d86de0487e932c8dc9fcab"
 
 # Expectations remain provisional until item 6; caps sized from the
 # discovery runs (v1's paired factory costs real money — measuring that

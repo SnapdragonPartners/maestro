@@ -245,8 +245,16 @@ func cmdRun(ctx context.Context, args []string) error {
 		Repeats:    *repeats,
 	})
 	if manifest != nil {
-		fmt.Printf("suite %s: %s (%d attempts; charged $%.2f, observed $%.2f of $%.2f cap)\n",
-			manifest.SuiteRunID, manifest.StopReason, len(manifest.Attempts), manifest.ChargedUSD, manifest.ObservedUSD, manifest.CapUSD)
+		fmt.Printf("suite %s: %s (%d attempts)\n", manifest.SuiteRunID, manifest.StopReason, len(manifest.Attempts))
+		for i := range manifest.BudgetAccounts {
+			acct := &manifest.BudgetAccounts[i]
+			unit := "$"
+			if acct.Dimension == results.DimensionTokens {
+				unit = "" // tokens
+			}
+			fmt.Printf("  %s [%s]: charged %s%.2f, observed %s%.2f of %s%.2f cap\n",
+				acct.Config, acct.Dimension, unit, acct.Charged, unit, acct.Observed, unit, acct.Cap)
+		}
 	}
 	var closeErr error
 	if !*keepInfra {

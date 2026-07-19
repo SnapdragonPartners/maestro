@@ -1,5 +1,5 @@
 # The paired-agent default configuration (formatting variant A).
-schema_version = 1
+schema_version = 2
 name = "paired-default"
 description = "Paired-agent factory path"
 

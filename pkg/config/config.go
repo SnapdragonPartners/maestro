@@ -278,6 +278,10 @@ type ProviderPattern struct {
 //nolint:gochecknoglobals // Intentional global for inference rules
 var ProviderPatterns = []ProviderPattern{
 	{"claude", ProviderAnthropic},
+	// gpt-oss is OpenAI's open-weight model, run locally via Ollama — NOT the
+	// hosted OpenAI API. It must be matched before the "gpt" → OpenAI rule
+	// below (first prefix match wins), or it is misrouted to OpenAI.
+	{"gpt-oss", ProviderOllama},
 	{"gpt", ProviderOpenAI},
 	{"o1", ProviderOpenAI},
 	{"o3", ProviderOpenAI},

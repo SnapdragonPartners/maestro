@@ -1,0 +1,48 @@
+# The paired-agent LOCAL configuration (item 5.1, #266): v1's factory path
+# driven by locally-hosted Ollama models instead of hosted APIs, so basic
+# end-to-end exercise of the harness is ~free. `local = true` selects the
+# token budget dimension — cost is unmodeled (reported `unavailable`), and
+# the run is budgeted on tokens + wall-clock with no USD reservation.
+#
+# Model choice from the item 5.1 viability probes (see benchmark/README.md):
+# qwen3-coder is the reliable coder (schema-faithful tool calls), gpt-oss a
+# capable architect; mistral-small failed in both seats. Needs a reachable
+# Ollama (OLLAMA_HOST, default http://localhost:11434) with these models
+# pulled. gpt-oss routes to Ollama via the P-8 routing fix.
+schema_version = 2
+name = "paired-local"
+description = "v1-as-patched paired-agent factory, local Ollama models"
+local = true
+
+[model]
+default = "qwen3-coder:30b"
+
+[model.roles]
+coder = "qwen3-coder:30b"
+architect = "gpt-oss:20b"
+pm = "qwen3-coder:30b"
+
+[prompt]
+pack = "v1-embedded"
+
+[harness]
+adapter = "v1-as-patched"
+
+[harness.settings]
+# Paths are relative to the runner's working directory (benchmark/).
+maestro_bin = "../bin/maestro"
+source_dir = ".."
+platform = "go"
+test_cmd = "go test ./..."
+poll_interval = "5s"
+# Same union cache image as paired-default — the coder runs Go regardless of
+# which LLM drives it (item 5.1, #268).
+container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:4ace8287f7b2b475d5f6cbe94f85a78316cefcfdb7d86de0487e932c8dc9fcab"
+
+# Token budget (item 6 calibrates from instrumented local runs). Local runs
+# spend $0 in API dollars; the suite is bounded on tokens instead. Sized from
+# the probes (a smoke run spent ~0.3-0.5M tokens).
+[budget]
+expected_tokens_per_run = 500000
+max_tokens_per_run = 2000000
+max_tokens_per_suite = 8000000

@@ -42,6 +42,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | [0023](0023-v2-branch-strategy.md) | v2 Branch Strategy | Accepted | Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches. |
 | [0024](0024-intake-and-triage-artifact-contract.md) | Intake And Triage Artifact Contract | Accepted | Fixes what intake produces — Feature and Epic records, triage outputs, provenance, review, and the dispatch seam — while deliberately leaving the intake executor unbound until the pre-Phase-5 spike. |
 | [0025](0025-golden-stories-and-benchmark-runner.md) | Golden Stories And The Benchmark Runner | Accepted | Specifies the measuring instrument: golden story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. |
+| [0026](0026-multi-architecture-artifacts.md) | Multi-Architecture Distributable Artifacts | Accepted | Cross-arch artifacts — embedded binaries and published images — must be multi-arch (amd64 + arm64) and verified per-arch: images shipped as a manifest pinned by digest, binaries cross-compiled and runtime-selected; single-arch cross-arch artifacts are a defect. Recurred in the MCP proxy and the benchmark cache image. |
 
 ## Historical v1 Notes
 

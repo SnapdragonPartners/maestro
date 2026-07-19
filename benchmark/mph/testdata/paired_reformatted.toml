@@ -2,7 +2,7 @@
 # whitespace, and number formatting. Identity must be byte-for-byte equal.
 
 name        = "paired-default"
-schema_version = 1
+schema_version = 2
 
 description = "Paired-agent factory path"
 

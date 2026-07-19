@@ -123,7 +123,7 @@ func (e *Engine) RunAttempt(ctx context.Context, st *story.Loaded, bundle *mph.L
 		spec: &target.AttemptSpec{
 			Story:           st.Definition,
 			Bundle:          bundle.Bundle,
-			Budget:          effectiveBudget(st.Definition.Budget, bundle.Bundle.Budget),
+			Budget:          effectiveBudget(st.Definition.Budget, bundle.Bundle),
 			RunID:           runID,
 			SuiteRunID:      suiteRunID,
 			StoryHash:       st.Hash,
@@ -148,8 +148,20 @@ func invalidSuffix(rec *runrecord.RunRecord) string {
 	return ""
 }
 
-// effectiveBudget bounds the story budget by the bundle's per-run cost cap.
-func effectiveBudget(sb story.Budget, db mph.DeclaredBudget) story.Budget {
+// effectiveBudget bounds the story budget by the bundle's per-run cap in the
+// bundle's budget dimension (item 5.1). Hosted configs cap cost (USD); local
+// configs cap tokens and disable USD enforcement, since local cost is
+// unmodeled and $0 — the streamed tracker must not trip on it. Wall-clock is
+// always the story's.
+func effectiveBudget(sb story.Budget, bundle *mph.Bundle) story.Budget {
+	db := bundle.Budget
+	if bundle.Local {
+		if db.MaxTokensPerRun < sb.MaxTokens {
+			sb.MaxTokens = db.MaxTokensPerRun
+		}
+		sb.MaxCostUSD = math.Inf(1) // no USD enforcement for local
+		return sb
+	}
 	if db.MaxCostUSDPerRun < sb.MaxCostUSD {
 		sb.MaxCostUSD = db.MaxCostUSDPerRun
 	}
@@ -253,6 +265,17 @@ func (a *attempt) runTarget(ctx context.Context) {
 	if err := obs.Validate(a.adapter.Capabilities()); err != nil {
 		a.out.obsInvalidErr = err
 		return
+	}
+	// Local-cost invariant (item 5.1): a local config runs zero-dollar models,
+	// so any positive streamed USD means a model was misrouted to a paid
+	// provider (or the target misreported). Fail the attempt rather than let
+	// the reconciliation silently overwrite the `unavailable` cost with a
+	// measured value that would hide the accidental hosted spend.
+	if a.bundle.Bundle.Local {
+		if _, cost := a.tracker.totals(); cost > 0 {
+			a.out.runErr = fmt.Errorf("local config incurred $%.6f streamed cost: a local (zero-dollar) config must not spend USD — check model routing/identity", cost)
+			return
+		}
 	}
 	a.obs = obs
 	a.out.terminal = obs.TerminalStateReached
@@ -486,7 +509,11 @@ func (a *attempt) overlayStreamedUsage(base runrecord.Metrics, caps target.Capab
 			base[runrecord.MetricTokensTotal] = runrecord.Measured(float64(tokens))
 		}
 	}
-	if cost > 0 && caps.Supports(runrecord.MetricCostUSD) {
+	// Never overlay cost for a local config: its cost is `unavailable` by
+	// contract, and a nonzero streamed cost has already failed the attempt
+	// (runTarget). Guarding here keeps the invariant even on paths that reach
+	// metrics() without that check.
+	if cost > 0 && !a.bundle.Bundle.Local && caps.Supports(runrecord.MetricCostUSD) {
 		if observed, ok := base[runrecord.MetricCostUSD].Float64(); !ok || cost > observed {
 			base[runrecord.MetricCostUSD] = runrecord.Measured(cost)
 		}

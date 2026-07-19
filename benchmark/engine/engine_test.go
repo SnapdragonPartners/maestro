@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
+	"github.com/SnapdragonPartners/maestro/benchmark/results"
 	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
 	"github.com/SnapdragonPartners/maestro/benchmark/target"
@@ -117,8 +118,26 @@ func TestEffectiveBudgetBoundsCost(t *testing.T) {
 	}
 }
 
+// TestEffectiveBudgetLocalBoundsTokens pins the local (token) dimension: the
+// bundle's per-run token cap bounds the story's, USD enforcement is disabled
+// (+Inf so the streamed tracker never trips on cost), and the tighter story
+// token cap survives.
+func TestEffectiveBudgetLocalBoundsTokens(t *testing.T) {
+	sb := effectiveBudget(storyBudget(1_000_000, 120, 8.0), localBundle(500_000))
+	if sb.MaxTokens != 500_000 {
+		t.Fatalf("bundle per-run token cap must bound the story cap, got %d", sb.MaxTokens)
+	}
+	if !math.IsInf(sb.MaxCostUSD, 1) {
+		t.Fatalf("local must disable USD enforcement (+Inf), got %v", sb.MaxCostUSD)
+	}
+	sb = effectiveBudget(storyBudget(200_000, 90, 8.0), localBundle(500_000))
+	if sb.MaxTokens != 200_000 {
+		t.Fatalf("tighter story token cap must survive, got %d", sb.MaxTokens)
+	}
+}
+
 func TestBundleAccountAdmission(t *testing.T) {
-	account := &bundleAccount{capUSD: 10}
+	account := &bundleAccount{cap: 10, dimension: results.DimensionUSD}
 	admitted := 0
 	for range 5 {
 		if account.admit(3.0) {
@@ -130,24 +149,24 @@ func TestBundleAccountAdmission(t *testing.T) {
 	}
 
 	// Settling to a smaller observed cost refunds reservation headroom.
-	account = &bundleAccount{capUSD: 10}
+	account = &bundleAccount{cap: 10, dimension: results.DimensionUSD}
 	if !account.admit(6.0) {
 		t.Fatalf("first admission must pass")
 	}
 	account.settle(6.0, 1.0, true)
-	if account.chargedUSD != 1.0 {
-		t.Fatalf("settle must replace the reservation with reality, got %v", account.chargedUSD)
+	if account.charged != 1.0 {
+		t.Fatalf("settle must replace the reservation with reality, got %v", account.charged)
 	}
 	// A post-hoc overspend above the reservation is charged as it happened.
 	account.settle(0, 2.5, true)
-	if account.chargedUSD != 3.5 {
-		t.Fatalf("overspend must be charged, got %v", account.chargedUSD)
+	if account.charged != 3.5 {
+		t.Fatalf("overspend must be charged, got %v", account.charged)
 	}
 	// Unknown observed cost keeps the full reservation, never zero.
-	before := account.chargedUSD
+	before := account.charged
 	account.settle(4.0, 0, false)
-	if account.chargedUSD != before {
-		t.Fatalf("unknown cost must keep the reservation, got %v", account.chargedUSD)
+	if account.charged != before {
+		t.Fatalf("unknown cost must keep the reservation, got %v", account.charged)
 	}
 }
 
@@ -218,11 +237,24 @@ func storyBudget(tokens, wallSeconds int64, cost float64) story.Budget {
 	return story.Budget{MaxTokens: tokens, MaxWallClockSeconds: wallSeconds, MaxCostUSD: cost}
 }
 
-func bundleBudget(perRunCap float64) mph.DeclaredBudget {
-	return mph.DeclaredBudget{
-		ExpectedTokensPerRun:  1,
-		ExpectedCostUSDPerRun: 0.01,
-		MaxCostUSDPerRun:      perRunCap,
-		MaxCostUSDPerSuite:    perRunCap * 10,
+func bundleBudget(perRunCap float64) *mph.Bundle {
+	return &mph.Bundle{
+		Budget: mph.DeclaredBudget{
+			ExpectedTokensPerRun:  1,
+			ExpectedCostUSDPerRun: 0.01,
+			MaxCostUSDPerRun:      perRunCap,
+			MaxCostUSDPerSuite:    perRunCap * 10,
+		},
+	}
+}
+
+func localBundle(perRunTokenCap int64) *mph.Bundle {
+	return &mph.Bundle{
+		Local: true,
+		Budget: mph.DeclaredBudget{
+			ExpectedTokensPerRun: 1,
+			MaxTokensPerRun:      perRunTokenCap,
+			MaxTokensPerSuite:    perRunTokenCap * 10,
+		},
 	}
 }

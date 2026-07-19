@@ -403,8 +403,16 @@ func (r *v1Run) metrics(final *finalState) runrecord.Metrics {
 	// snapshot evidence for cross-checking.
 	if r.tail != nil && r.tail.validated {
 		metrics[runrecord.MetricTokensTotal] = runrecord.Measured(float64(r.tail.tokens))
-		metrics[runrecord.MetricCostUSD] = runrecord.Measured(r.tail.costUSD)
 		metrics[runrecord.MetricLLMCalls] = runrecord.Measured(float64(r.tail.calls))
+		// A local config runs zero-dollar models, so USD cost is unmodeled —
+		// `unavailable` (item 5.1), not the usage log's $0 passed through as a
+		// value (which would poison cost-to-accepted-change). Tokens/calls
+		// stay measured. The run is budgeted on tokens instead.
+		if r.spec.Bundle.Local {
+			metrics[runrecord.MetricCostUSD] = runrecord.Unavailable("local provider; USD cost unmodeled")
+		} else {
+			metrics[runrecord.MetricCostUSD] = runrecord.Measured(r.tail.costUSD)
+		}
 	} else {
 		reason := "usage log never appeared"
 		metrics[runrecord.MetricTokensTotal] = runrecord.Unavailable(reason)
