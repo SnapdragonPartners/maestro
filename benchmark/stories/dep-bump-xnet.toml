@@ -8,7 +8,7 @@ level = "story"
 
 [fixture]
 repo = "https://github.com/SnapdragonPartners/golden-fixture-cms"
-commit = "e7a7422bad4dec726b62eec2cd6d759cd7780deb"
+commit = "748681e3ba581c2853b5e7fcd8ff6a0ca06d5f3b"
 base_branch = "main"
 
 [prompt]
