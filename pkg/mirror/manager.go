@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"orchestrator/pkg/config"
@@ -19,6 +20,32 @@ const (
 	// defaultBranchName is the default git branch name when not configured.
 	defaultBranchName = "main"
 )
+
+// mirrorLocks serializes EnsureMirror calls per resolved mirror path. Callers
+// construct throwaway Manager instances (see the NewManager call sites), so a
+// Manager-level mutex cannot serialize them — the lock must be keyed by the
+// shared on-disk path. Without it two concurrent callers race: one caller's
+// in-progress `git clone --mirror` presents as a corrupt mirror ("invalid HEAD /
+// No default references") to the other, which os.RemoveAll's it mid-clone and
+// crashes the first with "fetch-pack: invalid index-pack output". Reliably hit
+// large-repo fixtures whose clone is slow enough to lose the race every time.
+var (
+	mirrorLocksMu sync.Mutex                     //nolint:gochecknoglobals // process-wide registry serializing per-path mirror clones
+	mirrorLocks   = make(map[string]*sync.Mutex) //nolint:gochecknoglobals // process-wide registry serializing per-path mirror clones
+)
+
+// lockForMirrorPath returns the process-wide mutex guarding a mirror path,
+// creating it on first use. Different paths never contend.
+func lockForMirrorPath(path string) *sync.Mutex {
+	mirrorLocksMu.Lock()
+	defer mirrorLocksMu.Unlock()
+	mu, ok := mirrorLocks[path]
+	if !ok {
+		mu = &sync.Mutex{}
+		mirrorLocks[path] = mu
+	}
+	return mu
+}
 
 // Manager handles git mirror repository operations.
 type Manager struct {
@@ -283,6 +310,13 @@ func (m *Manager) EnsureMirror(ctx context.Context) (string, error) {
 	// Extract repo name from URL for mirror directory
 	repoName := extractRepoName(repoURL)
 	repoMirrorPath := filepath.Join(mirrorDir, repoName)
+
+	// Serialize concurrent callers on this mirror path: the validate → clone →
+	// initialize sequence below is not safe to interleave (see mirrorLocks). A
+	// caller that waited here finds a complete, valid mirror and skips re-cloning.
+	mu := lockForMirrorPath(repoMirrorPath)
+	mu.Lock()
+	defer mu.Unlock()
 
 	// Validate existing mirror or recover via fresh clone.
 	needsClone, err := m.validateOrRecoverMirror(ctx, repoMirrorPath, repoURL)
