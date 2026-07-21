@@ -67,4 +67,4 @@ command = "go test ./llms/providers/openai/..."
 [budget]
 max_tokens = 2500000
 max_wall_clock_seconds = 2700
-max_cost_usd = 20.0
+max_cost_usd = 24.0

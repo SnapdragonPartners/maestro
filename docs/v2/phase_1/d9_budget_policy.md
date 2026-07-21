@@ -1,13 +1,15 @@
 +++
 title = "D9 Sampling And Budget Policy"
 edit_date = "2026-07-21"
-status = "live"
-summary = "The D9 policy record required by Phase 1 item 6: real per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps fixed as runner-enforced values with overrun-as-failure. Caps are a runaway safeguard sized from observed accepted runs, not a performance target."
+status = "draft"
+summary = "The D9 policy record required by Phase 1 item 6: per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps proposed as runner-enforced values with overrun-as-failure. Caps are a provisional runaway safeguard sized from observed accepted runs, not a performance target."
 +++
 
 # D9 Sampling And Budget Policy
 
-Status: live — Phase 1 item 6 (`instrument-costs`), the policy record the [Phase 1 plan](plan_scope.md) requires ("the D9 policy record lands in this directory"), satisfying the plan's exit criterion that *the D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner*. Measurement campaign: 2026-07-21, `paired-default` (frontier) against v1-as-patched.
+Status: **draft** — Phase 1 item 6 (`instrument-costs`), under review. Per [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md) a phase artifact stays draft until its approval commit; this record flips to `live` (with [ADR 0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md) and the [Phase 1 plan](plan_scope.md) exit checkbox) only on approval. Until then the numbers below are **proposed**, though they are already enforced in the story and config TOMLs as provisional runaway safeguards.
+
+When accepted this satisfies the plan's exit criterion that *the D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner*. Measurement campaign: 2026-07-21, `paired-default` (frontier) against v1-as-patched.
 
 ## Context
 
@@ -17,19 +19,29 @@ The campaign also had to fix the target itself before it could measure anything:
 
 ## Measurements
 
-Accepted (terminal-verdict) runs on `paired-default`. These are the only admissible cost observations — a failed run measures the failure, not the story.
+Every accepted (terminal-verdict) run on `paired-default`, listed individually with the target identity it ran against. Failed runs are excluded — a failure measures the failure, not the story. **These attempts are not mutually comparable**: the target identity moved three times across the campaign (fixture re-pin, the union cache image, and the P-9/P-10 patches), so they are pooled here only as evidence of magnitude, never as a distribution.
 
-| Story | Tokens | Cost | Wall clock | LLM calls | n |
-|---|---|---|---|---|---|
-| `smoke-comment` (rung 0) | 426k | $1.97 / $0.89 | 750s | 47 | 2 |
-| `dep-bump-xnet` (rung 1) | 320k | $1.81 / $2.09 | 277s | 41 | 2 |
-| `bugfix-openai-stopreason` | 727k | $7.06 | 418s | 70 | 1 |
+| # | Suite | Story | Tokens | Cost | Wall | Calls | Target identity |
+|---|---|---|---|---|---|---|---|
+| 1 | `discovery-011` | `smoke-comment` | 426k | $1.97 | 750s | 47 | **I-A**: pre-re-pin, pre-cache-image, pre-P-9/P-10/P-11 |
+| 2 | `discovery-012` | `dep-bump-xnet` | 320k | $1.81 | 277s | 41 | **I-A** |
+| 3 | `cal-frontier-validate` | `smoke-comment` | — | $0.89 | — | — | **I-B**: post-re-pin + cache-image, pre-P-9/P-10/P-11 |
+| 4 | `cal-frontier-v2` | `dep-bump-xnet` | — | $2.09 | — | — | **I-C**: post-P-9/P-10, pre-P-11 |
+| 5 | `cal-d9-stage1` | `bugfix-openai-stopreason` | 726,873 | $7.06 | 418s | 70 | **I-C** |
 
-Mean across the three working stories: **~500k tokens, ~$3.7, ~480s per accepted run.**
+Attempts 3 and 4 report cost only: **a power failure destroyed the scratchpad results store before those records were moved to `benchmark/runs/`**, and only the headline cost survived in the branch discussion. Attempt 5 is the only run whose full record survives on disk. This gap is the direct cause of the durable-store change in this branch, and it is why the token/wall/call columns are sparser than the cost column.
 
-The spread is the headline finding: **`bugfix` costs ~3.5× `dep-bump`** in dollars despite being only ~2.3× the tokens (the architect's opus seat dominates cost, the coder's sonnet seat dominates volume). Per-story caps are therefore mandatory — a single uniform cap would either strand `bugfix` or leave `dep-bump` effectively uncapped.
+### Derivation
 
-**Sample thinness is a real limitation.** These are n=1–2, not distributions. The caps below are consequently sized for *safety margin*, not fitted to a percentile; they are enforced values, but the underlying samples remain thin and should be widened opportunistically as the suite runs.
+Stated explicitly rather than asserted, since the pool is heterogeneous:
+
+- **Cost, all accepted attempts (n=5, spans I-A/I-B/I-C):** ($1.97 + $1.81 + $0.89 + $2.09 + $7.06) / 5 = **$2.76**.
+- **Cost, current-identity attempts only (I-C, n=2):** ($2.09 + $7.06) / 2 = **$4.58**. This is the figure `expected_cost_usd_per_run` is derived from — it is the only subset that ran against the patched target, and it is the conservative of the two.
+- **Tokens, attempts with surviving token records (n=3, spans I-A/I-C):** (426k + 320k + 727k) / 3 = **491k** → `expected_tokens_per_run` 500,000. Necessarily cross-identity: only one current-identity attempt has a token record.
+
+No attempt ran against the **final** identity in this branch: P-11 landed after attempt 5, and fixing the caps below moves every `story_hash` again. The caps are therefore *provisional safeguards derived from a prior identity*, not a calibrated baseline. The first post-approval sweep establishes the comparable baseline.
+
+The spread is the headline finding and survives the identity caveat: **`bugfix` costs ~3.4× `dep-bump`** in dollars despite being only ~2.3× the tokens (the architect's opus seat dominates cost, the coder's sonnet seat dominates volume). Per-story caps are therefore mandatory — a single uniform cap would either strand `bugfix` or leave `dep-bump` effectively uncapped.
 
 ## Decisions
 
@@ -39,22 +51,26 @@ The spread is the headline finding: **`bugfix` costs ~3.5× `dep-bump`** in doll
 
 ### Per-story caps (runner-enforced, overrun-as-failure)
 
-Sized at **~3× the observed accepted maximum**, rounded. Rationale: a healthy run varies well within 3×, so the cap never fires on correct behavior; a genuine runaway (nonconvergence, decomposition multiplication) exceeds it by far more and is caught early. Caps are a **safeguard, not a target** — being under cap is not a result.
+Rule: **at least 3× the observed accepted maximum for that story, rounded up to a round figure.** Rationale: a healthy run varies well within 3×, so the cap never fires on correct behavior; a genuine runaway (nonconvergence, decomposition multiplication) exceeds it by far more and is caught early. Caps are a **safeguard, not a target** — being under cap is not a result.
 
-| Story | max_tokens | max_cost_usd | max_wall_clock_seconds |
-|---|---|---|---|
-| `smoke-comment` | 1,500,000 | 8.0 | 2400 |
-| `dep-bump-xnet` | 1,500,000 | 8.0 | 2400 |
-| `bugfix-openai-stopreason` | 2,500,000 | 20.0 | 2700 |
+Applied per story, showing the arithmetic:
+
+| Story | Observed max | 3× | max_tokens | max_cost_usd | max_wall_clock_seconds |
+|---|---|---|---|---|---|
+| `smoke-comment` | 426k / $1.97 | 1.28M / $5.91 | 1,500,000 | 8.0 | 2400 |
+| `dep-bump-xnet` | 320k / $2.09 | 0.96M / $6.27 | 1,500,000 | 8.0 | 2400 |
+| `bugfix-openai-stopreason` | 727k / $7.06 | 2.18M / $21.18 | 2,500,000 | 24.0 | 2700 |
+
+`dep-bump` takes `smoke`'s token cap rather than its own smaller 3× figure: the two are the same order of magnitude and a shared floor avoids a cap so tight that ordinary variance trips it.
 
 ### Per-run and per-suite caps (`paired-default`)
 
 | Field | Value | Derivation |
 |---|---|---|
-| `expected_tokens_per_run` | 500,000 | measured mean |
-| `expected_cost_usd_per_run` | 4.0 | measured mean (~$3.7), rounded up |
-| `max_cost_usd_per_run` | 20.0 | aligned to the highest per-story cap |
-| `max_cost_usd_per_suite` | 60.0 | bounds a full N=3 sweep (~$33 expected) with headroom for one in-flight conservative reservation |
+| `expected_tokens_per_run` | 500,000 | 491k mean of the three surviving token records, rounded |
+| `expected_cost_usd_per_run` | 5.0 | $4.58 current-identity (I-C) mean, rounded up |
+| `max_cost_usd_per_run` | 24.0 | must be ≥ the highest per-story cap, which is `bugfix` at $24 |
+| `max_cost_usd_per_suite` | 70.0 | a full N=3 sweep of three stories expects 9 × $4.58 ≈ $41; $70 leaves headroom for variance and one in-flight reservation while still stopping a systematic runaway well below the $120 sum-of-caps |
 
 Suite accounting settles down on completion (`charged` converges to `observed`), so the suite cap needs to cover realized cost plus one outstanding reservation, not the sum of every attempt's cap.
 

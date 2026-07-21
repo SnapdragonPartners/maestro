@@ -42,6 +42,6 @@ container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b
 # the underlying runs: docs/v2/phase_1/d9_budget_policy.md.
 [budget]
 expected_tokens_per_run = 500000
-expected_cost_usd_per_run = 4.0
-max_cost_usd_per_run = 20.0
-max_cost_usd_per_suite = 60.0
+expected_cost_usd_per_run = 5.0
+max_cost_usd_per_run = 24.0
+max_cost_usd_per_suite = 70.0

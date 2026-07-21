@@ -21,30 +21,59 @@ const (
 	defaultBranchName = "main"
 )
 
-// mirrorLocks serializes EnsureMirror calls per resolved mirror path. Callers
-// construct throwaway Manager instances (see the NewManager call sites), so a
+// mirrorLocks is the canonical per-path lock registry for mirror repositories.
+// Callers construct throwaway Manager instances (see the NewManager call sites)
+// and pkg/coder reaches the same directories through its own CloneManager, so a
 // Manager-level mutex cannot serialize them — the lock must be keyed by the
-// shared on-disk path. Without it two concurrent callers race: one caller's
-// in-progress `git clone --mirror` presents as a corrupt mirror ("invalid HEAD /
-// No default references") to the other, which os.RemoveAll's it mid-clone and
-// crashes the first with "fetch-pack: invalid index-pack output". Reliably hit
-// large-repo fixtures whose clone is slow enough to lose the race every time.
+// shared on-disk path.
+//
+// Without it two concurrent writers race: one caller's in-progress
+// `git clone --mirror` presents as a corrupt mirror ("invalid HEAD / No default
+// references") to the other, which os.RemoveAll's it mid-clone and crashes the
+// first with "fetch-pack: invalid index-pack output". Reliably hit large-repo
+// fixtures whose clone is slow enough to lose the race every time.
+//
+// Per ADR 0027 this lock must be held by EVERY writer and every destructive
+// recovery path touching a mirror directory — not just mirror creation. See
+// LockPath.
 var (
-	mirrorLocksMu sync.Mutex                     //nolint:gochecknoglobals // process-wide registry serializing per-path mirror clones
-	mirrorLocks   = make(map[string]*sync.Mutex) //nolint:gochecknoglobals // process-wide registry serializing per-path mirror clones
+	mirrorLocksMu sync.Mutex                     //nolint:gochecknoglobals // process-wide registry serializing per-path mirror writers
+	mirrorLocks   = make(map[string]*sync.Mutex) //nolint:gochecknoglobals // process-wide registry serializing per-path mirror writers
 )
 
-// lockForMirrorPath returns the process-wide mutex guarding a mirror path,
-// creating it on first use. Different paths never contend.
-func lockForMirrorPath(path string) *sync.Mutex {
+// lockKey canonicalizes a mirror path so callers that spell the same directory
+// differently (relative vs absolute, uncleaned separators) share one lock.
+// Falls back to the cleaned path if the working directory is unavailable.
+func lockKey(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return filepath.Clean(abs)
+	}
+	return filepath.Clean(path)
+}
+
+// LockPath acquires the process-wide lock guarding one mirror directory and
+// returns the release function; call it (normally via defer) exactly once:
+//
+//	defer mirror.LockPath(mirrorPath)()
+//
+// Every writer to a mirror — create, fetch/update, upstream switch, and any
+// destructive recovery that deletes and re-clones — must hold this lock for the
+// whole read-validate-mutate sequence, so no writer can observe or truncate
+// another's partial state (ADR 0027). Locks are per-path: distinct mirrors never
+// contend. The lock is NOT reentrant — an already-locked caller must not call a
+// method that locks again.
+func LockPath(path string) func() {
 	mirrorLocksMu.Lock()
-	defer mirrorLocksMu.Unlock()
-	mu, ok := mirrorLocks[path]
+	key := lockKey(path)
+	mu, ok := mirrorLocks[key]
 	if !ok {
 		mu = &sync.Mutex{}
-		mirrorLocks[path] = mu
+		mirrorLocks[key] = mu
 	}
-	return mu
+	mirrorLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // Manager handles git mirror repository operations.
@@ -100,6 +129,10 @@ func (m *Manager) RefreshFromForge(ctx context.Context) error {
 		return fmt.Errorf("failed to get mirror path: %w", err)
 	}
 
+	// Fetching mutates the mirror, so it must serialize against creation,
+	// upstream switches, and destructive recovery on the same path (ADR 0027).
+	defer LockPath(mirrorPath)()
+
 	if !mirrorExists(mirrorPath) {
 		return fmt.Errorf("mirror does not exist at %s", mirrorPath)
 	}
@@ -137,6 +170,10 @@ func (m *Manager) SwitchUpstream(ctx context.Context, newURL string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get mirror path: %w", err)
 	}
+
+	// Rewriting the remote and refetching mutates the mirror, so it must
+	// serialize against every other writer on this path (ADR 0027).
+	defer LockPath(mirrorPath)()
 
 	if !mirrorExists(mirrorPath) {
 		return fmt.Errorf("mirror does not exist at %s", mirrorPath)
@@ -229,6 +266,11 @@ func (m *Manager) GetMirrorPath() (string, error) {
 // validateOrRecoverMirror checks if an existing mirror is healthy and attempts to update it.
 // Returns (needsClone, error). If needsClone is true, the caller should do a fresh clone.
 // Handles corrupt/partial mirrors by removing them and signaling a fresh clone is needed.
+//
+// LOCKING: the caller MUST already hold LockPath(mirrorPath). This function
+// deletes and refetches the mirror, so running it unlocked reintroduces the
+// race LockPath exists to prevent; it does not lock itself because the lock is
+// not reentrant and its only caller (EnsureMirror) already holds it.
 func (m *Manager) validateOrRecoverMirror(ctx context.Context, mirrorPath, repoURL string) (bool, error) {
 	// Check if directory exists at all
 	dirExists := false
@@ -311,12 +353,10 @@ func (m *Manager) EnsureMirror(ctx context.Context) (string, error) {
 	repoName := extractRepoName(repoURL)
 	repoMirrorPath := filepath.Join(mirrorDir, repoName)
 
-	// Serialize concurrent callers on this mirror path: the validate → clone →
-	// initialize sequence below is not safe to interleave (see mirrorLocks). A
+	// Serialize concurrent writers on this mirror path: the validate → clone →
+	// initialize sequence below is not safe to interleave (see LockPath). A
 	// caller that waited here finds a complete, valid mirror and skips re-cloning.
-	mu := lockForMirrorPath(repoMirrorPath)
-	mu.Lock()
-	defer mu.Unlock()
+	defer LockPath(repoMirrorPath)()
 
 	// Validate existing mirror or recover via fresh clone.
 	needsClone, err := m.validateOrRecoverMirror(ctx, repoMirrorPath, repoURL)

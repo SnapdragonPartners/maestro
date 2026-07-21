@@ -84,8 +84,12 @@ bin/runner run \
   --config paired-default \
   --suite-id <purpose>-<subject>   # e.g. cal-d9-stage1-bugfix
 
-# N repeats (the D9 sampling dimension), or the full stories × configs matrix
-bin/runner run --repeats 3 --suite-id <purpose>-002
+# N repeats (the D9 sampling dimension). --repeats is SUITE-WIDE, so it must
+# be paired with --config: the D9 policy is N=3 for the primary configuration
+# and N=1 for secondary ones, which one unfiltered command cannot express.
+# Run one suite per configuration:
+bin/runner run --config paired-default --repeats 3 --suite-id <purpose>-primary
+bin/runner run --config paired-local   --repeats 1 --suite-id <purpose>-local
 
 # Inspect stored results
 bin/runner list
@@ -152,13 +156,35 @@ surfacing as `signal: killed`. Re-run once to confirm before investigating.
 
 ### 6. Comparability
 
-Two runs are comparable only when their **`story_hash`, `config_hash`, and
-harness identity match** — all three are recorded on every run record.
-The story hash covers the *entire* definition including its `[budget]`
-block, so changing a cap changes the story's identity by design; caps are
-a safeguard, but a calibration series that varies them necessarily spans
-several hashes. Fix the caps before collecting a distribution you intend
-to compare or publish.
+Two runs are comparable only when their **complete identity** matches.
+`story_hash` and `config_hash` alone are **not sufficient** — the target
+underneath can change while both stay fixed, which is exactly what the
+P-9/P-10 patches on this branch did. Every field below is recorded on each
+run record; group by all of them before comparing:
+
+| Source | Fields | Why it moves |
+|---|---|---|
+| Story | `story_hash` | prompt, fixture pin, validators, checks, **and the `[budget]` block** |
+| Configuration | `config_hash` | model routing, budgets declared by the MPH bundle |
+| Target descriptor | `adapter_name`, `adapter_version`, `commit_hash`, `binary_identity` | **a target rebuild changes behavior invisibly to the hashes above** |
+| Target descriptor | `budget_enforcement`, `capabilities` | streamed vs post-hoc enforcement changes what a budget failure *means* |
+| MPH identity | `model`, `prompt_pack`, `prompt_hash`, `maestro_version` | a prompt-template edit (e.g. P-4) changes cost without touching any story |
+
+Two qualifications that bite in practice:
+
+- **Enforcement mode qualifies every cost number.** A run under streamed
+  enforcement and one under post-hoc enforcement are not interchangeable
+  observations even at identical hashes, because one can be cancelled
+  mid-flight and the other cannot.
+- **Changing a cap changes `story_hash` by design** — the budget is part of
+  the story definition. Caps are a safeguard, so varying them during
+  calibration is legitimate, but it means a calibration series spans several
+  identities. **Fix the caps before collecting any distribution you intend to
+  compare or publish**, and record which identity each attempt ran against.
+
+This grouping rule is what item 7's comparison reporting must key on; a
+report that pools attempts across differing target descriptors is reporting
+noise as spread.
 
 ## Local Models (paired-local)
 

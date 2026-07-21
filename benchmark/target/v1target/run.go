@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,12 +20,14 @@ import (
 // v1Run carries one attempt's state through launch, poll, evidence export,
 // and solution import.
 type v1Run struct {
-	adapter  *Adapter
-	spec     *target.AttemptSpec
-	tail     *usageTail
-	cloneURL string
-	authURL  string
-	settings settings
+	adapter *Adapter
+	spec    *target.AttemptSpec
+	tail    *usageTail
+	// inspectImage overrides the local-image check; nil uses docker. Test seam.
+	inspectImage imageInspector
+	cloneURL     string
+	authURL      string
+	settings     settings
 }
 
 // finalState is everything poll and post-processing learned.
@@ -228,6 +232,49 @@ func (r *v1Run) v1Config() ([]byte, error) {
 	return raw, nil
 }
 
+// imageInspector runs `docker image inspect` for one reference. Swappable so
+// the present/missing paths are testable without a daemon.
+type imageInspector func(ctx context.Context, image string) error
+
+// dockerImageInspect reports whether an image reference resolves locally.
+func dockerImageInspect(ctx context.Context, image string) error {
+	cmd := exec.CommandContext(ctx, "docker", "image", "inspect", image)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker image inspect %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ensureImagePresent guarantees the pinned coder image resolves locally before
+// the target launches: pull, then require a successful inspect regardless of the
+// pull's outcome. A pull failure over an image that is already present is fine
+// (offline re-run); a pull failure over a missing image aborts the attempt
+// rather than starting a run that cannot produce a valid result.
+func (r *v1Run) ensureImagePresent(ctx context.Context, logFile io.Writer) error {
+	image := r.settings.ContainerImage
+
+	pull := exec.CommandContext(ctx, "docker", "pull", "--quiet", image)
+	pullOut, pullErr := pull.CombinedOutput()
+	if pullErr != nil {
+		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed: %v: %s\n", image, pullErr, pullOut)
+	}
+
+	inspect := r.inspectImage
+	if inspect == nil {
+		inspect = dockerImageInspect
+	}
+	if err := inspect(ctx, image); err != nil {
+		if pullErr != nil {
+			return fmt.Errorf("coder image %s unavailable: pull failed (%w) and image is not present locally: %w", image, pullErr, err)
+		}
+		return fmt.Errorf("coder image %s not present after a successful pull: %w", image, err)
+	}
+	if pullErr != nil {
+		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed but image is present locally; continuing\n", image)
+	}
+	return nil
+}
+
 // launch starts the maestro subprocess, process-group isolated, output
 // teed to the durable launch log.
 func (r *v1Run) launch(ctx context.Context, projectDir, launchLog string) (*process, error) {
@@ -239,14 +286,18 @@ func (r *v1Run) launch(ctx context.Context, projectDir, launchLog string) (*proc
 	if err != nil {
 		return nil, fmt.Errorf("maestro bin path: %w", err)
 	}
-	// Pre-pull the coder image so v1's bootstrap detector can validate the
-	// pinned_image_id (docker inspect) at PM-SETUP time — v1 itself only pulls
-	// it later, when starting the coder container. Best effort: a pull failure
-	// (already present, offline) must not block the run.
+	// Ensure the coder image is present locally so v1's bootstrap detector can
+	// validate the pinned_image_id (docker inspect) at PM-SETUP time — v1 itself
+	// only pulls it later, when starting the coder container.
+	//
+	// A pull failure is tolerable ONLY when the exact image is already present
+	// (offline re-runs); it is fatal otherwise. Launching without the image lets
+	// v1 treat the project as unconfigured and start bootstrap work, which spends
+	// tokens and pollutes the golden diff — a silently invalid, billable run.
 	if r.settings.ContainerImage != "" {
-		pull := exec.CommandContext(ctx, "docker", "pull", "--quiet", r.settings.ContainerImage)
-		if out, pErr := pull.CombinedOutput(); pErr != nil {
-			_, _ = fmt.Fprintf(logFile, "pre-pull %s failed (non-fatal): %v: %s\n", r.settings.ContainerImage, pErr, out)
+		if err := r.ensureImagePresent(ctx, logFile); err != nil {
+			_ = logFile.Close() //nolint:errcheck // launch aborted
+			return nil, err
 		}
 	}
 	cmd := exec.CommandContext(ctx, bin,
