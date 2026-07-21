@@ -22,4 +22,10 @@ RUN set -eu; \
     for dir in /cache/*/; do \
         echo "warming ${dir}"; \
         (cd "${dir}" && go mod download); \
-    done
+    done; \
+    # The download runs as root, so GOMODCACHE is root-owned; the v1 coder
+    # container runs as non-root (1000:1000) and Go needs read+write on the
+    # cache. chown in the SAME layer (no duplicate cache layer) so the baked
+    # cache is actually usable by the coder — otherwise Go falls back to an
+    # empty writable dir and the cache silently does nothing.
+    chown -R 1000:1000 "$(go env GOMODCACHE)"

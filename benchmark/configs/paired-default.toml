@@ -34,7 +34,7 @@ poll_interval = "5s"
 # both pull their matching arch; pinned by the arch-independent immutable
 # manifest digest so identical harness hashes execute identical contents.
 # Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
-container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:4ace8287f7b2b475d5f6cbe94f85a78316cefcfdb7d86de0487e932c8dc9fcab"
+container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b75e5ad5982c26e5e988a9d5d9ca6441d61d3741defc0516b91"
 
 # Expectations remain provisional until item 6; caps sized from the
 # discovery runs (v1's paired factory costs real money — measuring that

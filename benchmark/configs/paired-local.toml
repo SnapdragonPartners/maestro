@@ -37,7 +37,7 @@ test_cmd = "go test ./..."
 poll_interval = "5s"
 # Same union cache image as paired-default — the coder runs Go regardless of
 # which LLM drives it (item 5.1, #268).
-container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:4ace8287f7b2b475d5f6cbe94f85a78316cefcfdb7d86de0487e932c8dc9fcab"
+container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b75e5ad5982c26e5e988a9d5d9ca6441d61d3741defc0516b91"
 
 # Token budget (item 6 calibrates from instrumented local runs). Local runs
 # spend $0 in API dollars; the suite is bounded on tokens instead. Sized from

@@ -184,6 +184,10 @@ func (r *v1Run) v1Config() ([]byte, error) {
 	}
 	cfg := map[string]any{
 		"project": map[string]any{
+			// A non-empty name + platform keeps v1's bootstrap detector from
+			// flagging the project as unconfigured (item 6): an unconfigured
+			// project invites bootstrap work that pollutes the golden diff.
+			"name":             "golden-" + r.spec.Story.ID,
 			"primary_platform": r.settings.Platform,
 			"pack_name":        r.settings.Platform,
 		},
@@ -208,7 +212,14 @@ func (r *v1Run) v1Config() ([]byte, error) {
 		},
 	}
 	if r.settings.ContainerImage != "" {
-		cfg["container"] = map[string]any{"name": r.settings.ContainerImage}
+		// pinned_image_id makes v1's bootstrap detector treat the container as
+		// configured (hasValidContainer) rather than demanding a Dockerfile —
+		// but only if the image is present locally at detection time, so the
+		// adapter pre-pulls it before launch (see launch()).
+		cfg["container"] = map[string]any{
+			"name":            r.settings.ContainerImage,
+			"pinned_image_id": r.settings.ContainerImage,
+		}
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -227,6 +238,16 @@ func (r *v1Run) launch(ctx context.Context, projectDir, launchLog string) (*proc
 	bin, err := filepath.Abs(r.settings.MaestroBin)
 	if err != nil {
 		return nil, fmt.Errorf("maestro bin path: %w", err)
+	}
+	// Pre-pull the coder image so v1's bootstrap detector can validate the
+	// pinned_image_id (docker inspect) at PM-SETUP time — v1 itself only pulls
+	// it later, when starting the coder container. Best effort: a pull failure
+	// (already present, offline) must not block the run.
+	if r.settings.ContainerImage != "" {
+		pull := exec.CommandContext(ctx, "docker", "pull", "--quiet", r.settings.ContainerImage)
+		if out, pErr := pull.CombinedOutput(); pErr != nil {
+			_, _ = fmt.Fprintf(logFile, "pre-pull %s failed (non-fatal): %v: %s\n", r.settings.ContainerImage, pErr, out)
+		}
 	}
 	cmd := exec.CommandContext(ctx, bin,
 		"--config", filepath.Join(projectDir, "golden-config.json"),
