@@ -1,6 +1,7 @@
 # The paired-agent default configuration (ADR 0025: mandatory from the
 # start): v1's factory path, driven black-box by the v1-as-patched adapter.
-# Budget expectations are provisional until item 6's instrumented runs.
+# Budget expectations calibrated by item 6's instrumented runs (2026-07-21).
+# See docs/v2/phase_1/d9_budget_policy.md for the measurements and derivation.
 schema_version = 2
 name = "paired-default"
 description = "v1-as-patched paired-agent factory default"
@@ -36,11 +37,11 @@ poll_interval = "5s"
 # Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
 container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b75e5ad5982c26e5e988a9d5d9ca6441d61d3741defc0516b91"
 
-# Expectations remain provisional until item 6; caps sized from the
-# discovery runs (v1's paired factory costs real money — measuring that
-# is the point).
+# Expectations are the measured mean across the three working golden
+# stories; caps are the runaway safeguard, not a target. Derivation and
+# the underlying runs: docs/v2/phase_1/d9_budget_policy.md.
 [budget]
-expected_tokens_per_run = 1500000
-expected_cost_usd_per_run = 10.0
-max_cost_usd_per_run = 24.0
-max_cost_usd_per_suite = 96.0
+expected_tokens_per_run = 500000
+expected_cost_usd_per_run = 4.0
+max_cost_usd_per_run = 20.0
+max_cost_usd_per_suite = 60.0

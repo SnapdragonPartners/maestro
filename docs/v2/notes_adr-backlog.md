@@ -93,3 +93,11 @@ Whether Maestro can run Claude Code, OpenHands, or other headless agents inside 
 ### 14. Dispatcher/Message Abstraction For Cloud Jobs — v3
 
 Whether agent communication should anticipate cloud job execution. ADR 0019 already records the trajectory (channels are transport, never state; RPC possible if runtimes split); avoid overbuilding before v3.
+
+### 15. Story Decomposition Review — the review invariant's missing seat — Phase 5
+
+[ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) requires that **every persistent Management artifact be reviewed by at least one party other than its author**. The Story set an Architect decomposes out of a spec/Epic is such an artifact — and today nothing reviews it: the Architect authors the decomposition and queues it directly. The invariant is satisfied for plans, code, completion evidence, and merges, but not for the decomposition that determines all of them. It is the one artifact the Architect both authors and acts on unchecked.
+
+Empirically observed in Phase 1 (2026-07-21, `cal-d9-cleanup-4m`): the `cleanup-provider-options` story — one refactor consolidating five near-identical provider functions behind a shared helper — was decomposed into **5 Stories, one per provider**, each paying full plan → review → code → test → review ceremony. The split is incoherent for the task (all five converge on rewriting the same helper), and it burned 2.26M tokens / $13.11 with **0 of 5 Stories completed**. No agent was positioned to say "this is one Story, not five." v1's P-4 prompt patch carries general right-sizing guidance, but prompt guidance is not a review seat: a prompt that enumerates N items still invites an N-way split, and nothing catches it when it happens.
+
+Scope for the ADR: who reviews a decomposition (Reviewer vs Partner/Supervisor per 0020's split — a decomposition reviewer plausibly needs judgment, not just blocking), what it checks (right-sizing, coherence of the split, dependency sanity, no padded verification Stories), and how it escalates. Note the cost asymmetry that makes this worth a gate: an over-decomposition multiplies ceremony across every downstream Story, so the review pays for itself on the first catch.

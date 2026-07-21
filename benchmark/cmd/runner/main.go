@@ -198,7 +198,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	storyID := fs.String("story", "", "run only this story ID")
 	configName := fs.String("config", "", "run only this config name")
 	repeats := fs.Int("repeats", 1, "attempts per story per config (N)")
-	resultsDir := fs.String("results", "results", "results store directory")
+	resultsDir := fs.String("results", "runs", "results store directory")
 	workdir := fs.String("workdir", "", "workspace root (default: temp dir)")
 	suiteID := fs.String("suite-id", "", "suite run ID (default: generated)")
 	keepInfra := fs.Bool("keep-infra", false, "keep adapter infrastructure (Gitea) running after the suite")
@@ -271,7 +271,7 @@ func cmdRun(ctx context.Context, args []string) error {
 
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	resultsDir := fs.String("results", "results", "results store directory")
+	resultsDir := fs.String("results", "runs", "results store directory")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}

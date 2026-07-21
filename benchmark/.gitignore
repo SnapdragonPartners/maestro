@@ -1,0 +1,15 @@
+# Runtime results store (ADR 0025) — the runner's `--results` default.
+#
+# This is the DURABLE store: kept on disk across sessions so instrumented-run
+# measurements survive, but NOT committed. It holds agent transcripts, per-attempt
+# SQLite, and usage.jsonl evidence, and is fully reproducible by re-running. The
+# distilled measurements (e.g. the item-6 D9 budget policy) are what land in
+# version control instead. See benchmark/README.md ("runs/") and
+# docs/v2/phase_1/plan_scope.md (delegated-decision 4) for where to look and why.
+#
+# Deliberately a sibling of results/, which is the `results` Go *package*
+# (store.go, manifest.go, ...) — runtime output never comingles with source.
+/runs/
+
+# Built runner binary (bin/ is also covered by the repo-root .gitignore).
+/bin/

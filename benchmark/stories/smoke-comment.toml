@@ -57,4 +57,4 @@ command = "test \"$(git diff 748681e3ba581c2853b5e7fcd8ff6a0ca06d5f3b..HEAD --nu
 [budget]
 max_tokens = 1500000
 max_wall_clock_seconds = 2400
-max_cost_usd = 12.0
+max_cost_usd = 8.0
