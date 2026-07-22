@@ -7,6 +7,14 @@ set -e
 
 echo "🔨 Pre-commit checks for maestro..."
 
+# 0. Stamp edit_date on staged docs (ADR 0017). Runs first so the stamped
+# files are part of this commit. Never blocks: a stale date is a nit, a hook
+# that refuses to commit is a work stopper.
+echo "0. Stamping doc edit_date..."
+if [ -x scripts/stamp-edit-date.sh ]; then
+    ./scripts/stamp-edit-date.sh || true
+fi
+
 # 1. Ensure build passes
 echo "1. Checking build..."
 if ! make build >/dev/null 2>&1; then

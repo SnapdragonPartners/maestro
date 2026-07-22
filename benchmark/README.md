@@ -89,6 +89,16 @@ bin/runner validate             # loads stories/ + configs/, prints content hash
 validates, and hashes. Read the printed hashes — they are the run's
 identity (see *Comparability* below).
 
+> **Do not commit while a run is in flight.** The pre-commit hook runs
+> `make build`, which rebuilds `bin/maestro`; Go builds are not
+> byte-reproducible, so the rebuilt binary gets a new `binary_identity` and
+> the adapter records a different target descriptor for every attempt after
+> it. The commit hash moves too. That silently splits one run across several
+> identity groups — even when the commits are documentation-only and the code
+> is provably unchanged — and a run whose attempts do not share a descriptor
+> is not a comparable series. Learned by losing a six-attempt baseline to
+> three concurrent doc commits. Land your commits first, then run.
+
 ### 2. Credentials
 
 `MAESTRO_ANTHROPIC_API_KEY` is the preferred variable. Maestro's secret
