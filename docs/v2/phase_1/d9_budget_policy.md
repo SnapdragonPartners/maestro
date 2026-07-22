@@ -1,6 +1,6 @@
 +++
 title = "D9 Sampling And Budget Policy"
-edit_date = "2026-07-21"
+edit_date = "2026-07-22"
 status = "live"
 summary = "The D9 policy record required by Phase 1 item 6: per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps fixed as runner-enforced values with overrun-as-failure. Caps are a runaway safeguard sized from observed accepted runs, not a performance target; the samples behind them are thin and disclosed as such."
 +++
@@ -46,6 +46,9 @@ The spread is the headline finding and survives the identity caveat: **`bugfix` 
 ## Decisions
 
 ### N (sampling)
+
+> **Amended 2026-07-22** (Codex + DR, with the [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) conformance-first amendment): the N below governs **comparison** runs, which move to Phase 1B. **Phase-end conformance runs use N = 1** on `golden-all` — a tier names a story set, while N follows the run's purpose. Nothing else in this record changes.
+
 
 **N = 3 for the primary configuration (`paired-default`); N = 1 for secondary configurations.** This confirms the provisional 3/1 the plan carried. A full N=3 sweep of the three working stories is 9 attempts at the latest-measured mean of $4.58 ≈ **$41** (the same figure the suite cap below is derived from), which is affordable per-sweep; N=1 on secondary configs keeps the matrix from multiplying that. N=3 is the minimum that shows variance at all and remains the honest floor — it is a variance *smoke test*, not a statistically strong sample.
 

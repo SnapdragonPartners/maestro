@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -798,6 +798,8 @@ Exit criteria:
 
 Goal: build the measuring instrument before rewriting the machine.
 
+**Resequenced 2026-07-22** (ADR 0025 conformance-first amendment, Codex + DR). Phase 1's instrumented runs falsified the assumption underneath "measure first": measurement presupposes function, and the target does not reliably function — 7 of 11 enumerated v1 patches were run-blocking, surfaced by only four stories. The near-term deliverable is therefore **e2e conformance**: a set of tools proving Maestro completes progressively harder stories, re-proven at every phase end. **Economic baselining moves to Phase 1B, after Phase 7** — before then v2 is largely infrastructure, so a baseline would price scaffolding. Nothing is cancelled; sequence and emphasis move. Cost and token data still accrue on every conformance run, so a trend exists well before Phase 1B.
+
 Outputs:
 
 - Golden story schema.
@@ -805,8 +807,9 @@ Outputs:
 - First 5-10 golden stories, single-repo and Story-scoped.
 - Minimal prompt hash/pack identification.
 - Metrics capture for LLM calls and tool calls, pushing reusable pieces to `maestro-llms` and `maestro-cms` where possible.
-- Run comparison reports with repeat-run spread.
-- A v1-derived baseline on the golden-minimal story subset (see target strategy below).
+- ~~Run comparison reports with repeat-run spread.~~ → Phase 1B.
+- A v1-derived baseline on the `golden-minimal` story subset, with its full target descriptor. **Stays in Phase 1 and cannot move**: v1's factory path is deleted during the rewrite, so this obligation expires rather than defers. (Phase 1B's v2-derived baseline is additional to it, not a substitute.)
+- A single-agent achievability check: a scripted headless pass answering whether a candidate story is completable at all, so a red rung is never ambiguous between an incapable pipeline and an unreasonable story. A low-rung tool, retired at the decomposition rungs by construction.
 
 Target strategy (decided 2026-07-11): the runner needs a real factory to drive, and the first true v2 Work Group path does not exist until Phase 3. The Phase 1 target is therefore the current codebase — v1's factory path, minimally patched so that a basic golden story can pass. This does not reopen v1 maintenance: after `v1-freeze`, the code on `main` is v2's raw material, not a supported v1 release. Patches are the bare minimum needed to make the measuring instrument usable, are never backported to the tag, and every run record captures the target commit hash, so "v1-as-patched" is an honest, labeled baseline. Full v1 defects that do not block golden-minimal stay unfixed.
 
@@ -819,9 +822,12 @@ Why first:
 Exit criteria:
 
 - The runner executes at least 5 single-repo golden stories against a target Maestro build, black-box (the minimally patched v1 path per the target strategy).
-- Repeat runs produce a comparison report showing cost, time, and pass/fail spread.
-- Two different MPH configurations can be compared on the same story set.
-- The D9 sampling and budget policy is written down and enforced by the runner.
+- Every one of those stories clears the single-agent achievability check, and each has been run — red or green — against the current target on `paired-default`, with the run retained as an artifact.
+- The D9 sampling and budget policy is written down and enforced by the runner. ✅ (item 6)
+- The v1-derived baseline on `golden-minimal` is recorded with its target descriptor. ✅ (2026-07-22: 6/6 accepted, $9.66, N=3 on `paired-default`; recorded in the [conformance log](notes_conformance-log.md) with a stated identity caveat — three binary identities from mid-run doc commits, code provably identical.)
+- ~~Repeat runs produce a comparison report showing cost, time, and pass/fail spread.~~ → Phase 1B.
+- ~~Two different MPH configurations can be compared on the same story set.~~ → Phase 1B.
+
 
 ### Phase 2: Data Plane And Artifact Core
 
@@ -994,6 +1000,27 @@ Exit criteria:
 
 - Two users in one organization can operate distinct Epics against a shared data plane.
 - Auth works in local account mode and at least one federated mode.
+
+### Phase 1B: Benchmark Economics
+
+Goal: price the machine, once there is a machine worth pricing. Anchored **after Phase 7** — earlier baselines measure infrastructure, not the system.
+
+Outputs:
+
+- Per-metric-class comparison reporting with repeat-run spread.
+- The single-agent happy-path baseline as the economic comparator (the vibe-coding premium made measurable).
+- The cost-to-accepted-change baseline across configurations.
+
+Inputs are already accruing: conformance runs retain cost, token, and call records from Phase 1 onward, so Phase 1B analyzes a trend rather than starting cold.
+
+Exit criteria:
+
+- Repeat runs produce a comparison report showing cost, time, and pass/fail spread (never bare points), aggregated only within one complete identity group and enforcement mode.
+- Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline.
+- A target-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, MPH identity), taken against v2.
+- Cost to accepted change is reported per configuration, including its undefined case when no attempt passes.
+
+**These roadmap criteria are the authority for Phase 1B until its own phase plan exists.** The Phase 1B section of the [Phase 1 plan](phase_1/plan_scope.md) mirrors them for continuity, but that document flips to `archive` when Phase 1 closes and an archived document carries no authority ([ADR 0017](../adr/0017-v2-documentation-authority-and-lifecycle.md)) — so it cannot own this checklist. When Phase 1B opens it gets a live `plan_scope` of its own, as every phase does, and that becomes controlling in the usual way.
 
 ### Phase 8: Extract `maestro-agent`
 

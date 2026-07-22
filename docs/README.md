@@ -1,6 +1,6 @@
 +++
 title = "Maestro Documentation"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 summary = "Top-level index of docs/: the subdirectory map (ADRs, v2 planning, wiki, archive) and the retained deprecated v1 references at this root."
 +++
@@ -11,10 +11,10 @@ Documentation authority is defined by [ADR 0017](adr/0017-v2-documentation-autho
 
 ## Directories
 
-- [adr/](adr/README.md) — Architecture Decision Records: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016).
-- [v2/](v2/README.md) — the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, companion notes.
-- [wiki/](wiki/README.md) — human-facing v1 wiki pages (deprecated, pending the wiki/docs-site decision).
-- [archive/](archive/README.md) — v1-era documents preserved as history; no authority for any question.
+- [adr/](adr/README.md) — Index of Maestro ADRs: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016), with the documentation authority order in brief.
+- [v2/](v2/README.md) — Index of the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, and companion notes, with the per-phase directory convention.
+- [wiki/](wiki/README.md) — Index of the human-facing v1 wiki pages — all deprecated, retained pending the wiki/docs-site decision (ADR 0017).
+- [archive/](archive/README.md) — docs/archive/ holds v1-era documents with no authority for any question; bodies preserved verbatim as history per ADR 0017's archive plan.
 
 ## Retained v1 References (`deprecated`)
 

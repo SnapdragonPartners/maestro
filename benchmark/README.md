@@ -1,17 +1,39 @@
 +++
 title = "Benchmark Runner Module"
-edit_date = "2026-07-16"
+edit_date = "2026-07-22"
 status = "live"
-summary = "The golden story benchmark runner (ADR 0025): a standalone Go module that drives benchmark targets black-box and owns its results store. Never imports the orchestrator module."
+summary = "The golden story runner (ADR 0025): a standalone Go module that drives targets black-box and owns its results store. Never imports the orchestrator module. Its near-term function is end-to-end conformance — proving the pipeline completes progressively harder stories, repeatably — with economic baselining deferred to Phase 1B."
 +++
 
 # Benchmark Runner Module
 
-The measuring instrument of Maestro v2 (Phase 1): golden story definitions,
-MPH configuration bundles, the normalized run-record contract, the
-self-contained results store, and the per-target adapter interface.
+Golden story definitions, MPH configuration bundles, the normalized
+run-record contract, the self-contained results store, and the per-target
+adapter interface.
 Specification: [ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md);
 design: [design_runner.md](../docs/v2/phase_1/design_runner.md).
+
+**What this is for, near-term.** Primarily an **end-to-end conformance
+harness**: does the pipeline complete this story, and does it still do so
+after we change something? Phase 1's instrumented runs showed the target does
+not reliably run (7 of 11 v1 patches were run-blocking), and measurement
+presupposes function — so economic baselining, comparison reporting, and the
+single-agent cost comparator defer to **Phase 1B** (after Phase 7, per the
+2026-07-22 ADR 0025 amendment). The mechanics below are unchanged with one
+exception — the tier/N binding, which that amendment explicitly changes: a
+tier names a story set, and N follows the run's purpose (conformance N=1,
+comparison N=3 primary / N=1 secondary). Cost and token data keep accruing on
+every run, so the trend is there when Phase 1B arrives.
+
+Cadence at every phase end: `golden-minimal` at N = 1 (the harness-is-alive
+check, a few dollars), plus — from Phase 2 onward — `golden-all` at N = 1 on
+`paired-default` as the conformance proof, which is what the order-of-$50 per
+phase budget covers. N = 3 is comparison sampling and belongs to Phase 1B. Each
+run appends a row to the committed [conformance log](../docs/v2/notes_conformance-log.md):
+a proof that leaves no trace cannot distinguish a regression from a memory. `paired-local` is an
+**experiment**, not a gate: it is for cheap tight loops and small-model
+capability learning, never a pass requirement at any tier, and a story must
+clear `paired-default` before it is attempted locally.
 
 ## Black-Box Rule
 
@@ -37,7 +59,7 @@ definition.
 - `stories/` — authored golden stories.
 - `configs/` — authored MPH bundles (land with their adapters, items 4 and 8).
 
-Comparison reports with spread are item 7 and get their own package here.
+Comparison reports with spread are item 7, deferred to **Phase 1B** by the 2026-07-22 amendment; they get their own package here when built.
 
 ## Run Protocol
 
@@ -67,6 +89,16 @@ bin/runner validate             # loads stories/ + configs/, prints content hash
 validates, and hashes. Read the printed hashes — they are the run's
 identity (see *Comparability* below).
 
+> **Do not commit while a run is in flight.** The pre-commit hook runs
+> `make build`, which rebuilds `bin/maestro`; Go builds are not
+> byte-reproducible, so the rebuilt binary gets a new `binary_identity` and
+> the adapter records a different target descriptor for every attempt after
+> it. The commit hash moves too. That silently splits one run across several
+> identity groups — even when the commits are documentation-only and the code
+> is provably unchanged — and a run whose attempts do not share a descriptor
+> is not a comparable series. Learned by losing a six-attempt baseline to
+> three concurrent doc commits. Land your commits first, then run.
+
 ### 2. Credentials
 
 `MAESTRO_ANTHROPIC_API_KEY` is the preferred variable. Maestro's secret
@@ -84,10 +116,17 @@ bin/runner run \
   --config paired-default \
   --suite-id <purpose>-<subject>   # e.g. cal-d9-stage1-bugfix
 
-# N repeats (the D9 sampling dimension). --repeats is SUITE-WIDE, so it must
-# be paired with --config: the D9 policy is N=3 for the primary configuration
-# and N=1 for secondary ones, which one unfiltered command cannot express.
-# Run one suite per configuration:
+# N follows the run's PURPOSE, not the tier:
+#
+#   conformance (phase-end, "did each rung still behave")  -> N=1
+#   comparison  (D9 sampling, distribution/spread)         -> N=3 primary,
+#                                                             N=1 secondary
+#
+# Conformance — the phase-end proof, N=1 over the full story set:
+bin/runner run --config paired-default --suite-id conformance-<phase>
+#
+# Comparison — Phase 1B. --repeats is SUITE-WIDE, so it must be paired with
+# --config; one unfiltered command cannot express the 3/1 split:
 bin/runner run --config paired-default --repeats 3 --suite-id <purpose>-primary
 bin/runner run --config paired-local   --repeats 1 --suite-id <purpose>-local
 
