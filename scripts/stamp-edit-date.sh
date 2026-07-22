@@ -48,8 +48,11 @@ while IFS= read -r -d '' f; do dirty="${dirty}${f}"$'\n'; done < <(
 # Read the front-matter edit_date: only inside the opening +++ ... +++ block.
 frontmatter_date() {
     awk '
-        NR == 1 && $0 != "+++" { exit }          # no front-matter: not a doc
-        /^\+\+\+$/ { fm++; if (fm == 2) exit; next }
+        # \r? throughout: a CRLF checkout has "+++\r" as the delimiter, and a
+        # strict ^\+\+\+$ would silently skip every doc on such a worktree —
+        # the exact silent-skip this script exists to prevent.
+        NR == 1 && $0 !~ /^\+\+\+\r?$/ { exit }   # no front-matter: not a doc
+        /^\+\+\+\r?$/ { fm++; if (fm == 2) exit; next }
         fm == 1 && /^edit_date = "/ {
             match($0, /"[^"]*"/)
             print substr($0, RSTART + 1, RLENGTH - 2)
@@ -83,7 +86,7 @@ for f in "${staged[@]}"; do
     # only thing worse than a stale date is a success message hiding one.
     if ! { awk -v today="$TODAY" '
         BEGIN { fm = 0; done = 0 }
-        /^\+\+\+$/ { fm++ }
+        /^\+\+\+\r?$/ { fm++ }
         !done && fm == 1 && /^edit_date = "/ {
             sub(/"[^"]*"/, "\"" today "\"")
             done = 1
