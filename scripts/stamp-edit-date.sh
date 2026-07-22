@@ -78,7 +78,10 @@ for f in "${staged[@]}"; do
     # filesystem, which makes the mv below a cross-device failure.
     tmp="$(mktemp "${f}.stampXXXXXX")" || continue
 
-    if awk -v today="$TODAY" '
+    # Each step is checked separately so the reported outcome is always true:
+    # a rewrite, a replace and a stage can each fail independently, and the
+    # only thing worse than a stale date is a success message hiding one.
+    if ! { awk -v today="$TODAY" '
         BEGIN { fm = 0; done = 0 }
         /^\+\+\+$/ { fm++ }
         !done && fm == 1 && /^edit_date = "/ {
@@ -86,14 +89,27 @@ for f in "${staged[@]}"; do
             done = 1
         }
         { print }
-    ' "$f" > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$f"; then
-        git add -- "$f"
-        echo "   📅 $f: $current → $TODAY"
-        stamped=$((stamped + 1))
-    else
+    ' "$f" > "$tmp" && [ -s "$tmp" ]; }; then
         rm -f "$tmp"
-        echo "   ⚠️  $f: could not stamp (left unchanged)"
+        echo "   ⚠️  $f: could not rewrite (left unchanged)"
+        continue
     fi
+
+    if ! mv "$tmp" "$f"; then
+        rm -f "$tmp"
+        echo "   ⚠️  $f: could not replace file (left unchanged)"
+        continue
+    fi
+
+    if ! git add -- "$f"; then
+        # The worktree now has today's date but the index does not, so the
+        # commit would carry the old one. Say exactly that.
+        echo "   ⚠️  $f: stamped in the worktree but 'git add' failed — this commit will carry the old date; stage it by hand"
+        continue
+    fi
+
+    echo "   📅 $f: $current → $TODAY"
+    stamped=$((stamped + 1))
 done
 
 if [ "$stamped" -gt 0 ] || [ "$skipped" -gt 0 ]; then
