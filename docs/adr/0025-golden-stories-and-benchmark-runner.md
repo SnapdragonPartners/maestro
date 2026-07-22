@@ -41,7 +41,7 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 
 ### Sampling and budgets (the D9 mechanism)
 
-- Standard comparisons run **N = 3** per story on the **primary** configuration and **N = 1** on secondary ones; conformance runs and smoke runs are **N = 1**. *(Amended: these numbers were provisional pending the first instrumented runs — D9's agreed first action — and were **fixed by that campaign** in [d9_budget_policy.md](../v2/phase_1/d9_budget_policy.md), Accepted 2026-07-21. The 3/1 split and the purpose-not-tier rule for N come from the 2026-07-22 proposal.)*
+- Standard comparisons run **N = 3** per story on the **primary** configuration and **N = 1** on secondary ones; conformance runs and smoke runs are **N = 1**. *(Amended: these numbers were provisional pending the first instrumented runs — D9's agreed first action — and the **3/1 split was fixed by that campaign** in [d9_budget_policy.md](../v2/phase_1/d9_budget_policy.md), **Accepted 2026-07-21**. Only the purpose-not-tier rule for N — that a tier names a story set while N follows the run's purpose, making conformance N = 1 — comes from the 2026-07-22 proposal.)*
 - Aggregation semantics are defined per metric class, over the cohort of **valid attempts** (invalid runs — failed isolation or unverifiable cleanup — are excluded from every aggregation and counted separately; budget-overrun aborts are valid *failed* attempts whose costs count):
   - **Numeric per-run metrics** — tokens, cost, wall-clock, LLM calls, tool calls, iterations, review cycles, self-repair cycles, human interventions and attention time — report as min/median/max across valid attempts, never bare points.
   - **Pass rate** — accepted verdicts over valid attempts.

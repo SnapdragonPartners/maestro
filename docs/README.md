@@ -1,6 +1,6 @@
 +++
 title = "Maestro Documentation"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 summary = "Top-level index of docs/: the subdirectory map (ADRs, v2 planning, wiki, archive) and the retained deprecated v1 references at this root."
 +++

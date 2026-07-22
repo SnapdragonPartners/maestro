@@ -1,6 +1,6 @@
 +++
 title = "D9 Sampling And Budget Policy"
-edit_date = "2026-07-21"
+edit_date = "2026-07-22"
 status = "live"
 summary = "The D9 policy record required by Phase 1 item 6: per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps fixed as runner-enforced values with overrun-as-failure. Caps are a runaway safeguard sized from observed accepted runs, not a performance target; the samples behind them are thin and disclosed as such."
 +++
