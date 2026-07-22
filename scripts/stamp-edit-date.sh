@@ -81,6 +81,15 @@ for f in "${staged[@]}"; do
     # filesystem, which makes the mv below a cross-device failure.
     tmp="$(mktemp "${f}.stampXXXXXX")" || continue
 
+    # mktemp creates 0600, and the mv below carries that mode onto the doc —
+    # so committing would silently narrow a 0644 file to owner-only. Git does
+    # not record it (only the exec bit), which is exactly what makes it easy to
+    # miss. Copy the original's mode across first. stat is not portable: -c is
+    # GNU, -f is BSD/macOS.
+    if mode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)" && [ -n "$mode" ]; then
+        chmod "$mode" "$tmp" 2>/dev/null || true
+    fi
+
     # Each step is checked separately so the reported outcome is always true:
     # a rewrite, a replace and a stage can each fail independently, and the
     # only thing worse than a stale date is a success message hiding one.
