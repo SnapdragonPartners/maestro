@@ -1,17 +1,34 @@
 +++
 title = "Benchmark Runner Module"
-edit_date = "2026-07-16"
+edit_date = "2026-07-22"
 status = "live"
-summary = "The golden story benchmark runner (ADR 0025): a standalone Go module that drives benchmark targets black-box and owns its results store. Never imports the orchestrator module."
+summary = "The golden story runner (ADR 0025): a standalone Go module that drives targets black-box and owns its results store. Never imports the orchestrator module. Its near-term function is end-to-end conformance — proving the pipeline completes progressively harder stories, repeatably — with economic baselining deferred to Phase 1B."
 +++
 
 # Benchmark Runner Module
 
-The measuring instrument of Maestro v2 (Phase 1): golden story definitions,
-MPH configuration bundles, the normalized run-record contract, the
-self-contained results store, and the per-target adapter interface.
+Golden story definitions, MPH configuration bundles, the normalized
+run-record contract, the self-contained results store, and the per-target
+adapter interface.
 Specification: [ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md);
 design: [design_runner.md](../docs/v2/phase_1/design_runner.md).
+
+**What this is for, near-term.** Primarily an **end-to-end conformance
+harness**: does the pipeline complete this story, and does it still do so
+after we change something? Phase 1's instrumented runs showed the target does
+not reliably run (7 of 11 v1 patches were run-blocking), and measurement
+presupposes function — so economic baselining, comparison reporting, and the
+single-agent cost comparator defer to **Phase 1B** (after Phase 7, per the
+2026-07-22 ADR 0025 amendment). The mechanics below are unchanged; cost and
+token data keep accruing on every run so the trend is there when Phase 1B
+arrives.
+
+Run `golden-minimal` on `paired-default` at minimum at the end of every major
+phase (budget: order of $50/phase) and keep the result — a proof that leaves
+no trace cannot distinguish a regression from a memory. `paired-local` is an
+**experiment**, not a gate: it is for cheap tight loops and small-model
+capability learning, never a pass requirement at any tier, and a story must
+clear `paired-default` before it is attempted locally.
 
 ## Black-Box Rule
 

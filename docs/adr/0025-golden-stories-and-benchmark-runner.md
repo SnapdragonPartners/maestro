@@ -1,13 +1,13 @@
 +++
 title = "ADR 0025: Golden Stories And The Benchmark Runner"
-edit_date = "2026-07-16"
+edit_date = "2026-07-22"
 status = "live"
-summary = "Specifies the measuring instrument: golden story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers."
+summary = "Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. Amended 2026-07-22 to conformance-first sequencing — proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7."
 +++
 
 # 0025. Golden Stories And The Benchmark Runner
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation. Amended again 2026-07-16 (item 3 review, Codex + DR): **budget enforcement modes** — the overrun-aborts rule is satisfied natively by targets that stream usage (engine-cancelled at the cap) or self-enforce declared caps; targets that can only report usage post-hoc are permitted as *degraded enforcement*, declared as `budget_enforcement` in every run record. Wall-clock caps are engine-enforced for every mode. Cost metrics remain comparable across modes (costs are real costs), but budget-overrun *rates* are comparable only within one enforcement mode.
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation. Amended again 2026-07-16 (item 3 review, Codex + DR): **budget enforcement modes** — the overrun-aborts rule is satisfied natively by targets that stream usage (engine-cancelled at the cap) or self-enforce declared caps; targets that can only report usage post-hoc are permitted as *degraded enforcement*, declared as `budget_enforcement` in every run record. Wall-clock caps are engine-enforced for every mode. Cost metrics remain comparable across modes (costs are real costs), but budget-overrun *rates* are comparable only within one enforcement mode. Amended 2026-07-22 (Phase 1 item 6 retrospective, Codex + DR): **conformance-first sequencing** — the instrument's near-term primary function is proving the pipeline completes progressively harder stories, repeatably; economic baselining defers to **Phase 1B** after Phase 7. No mechanic in this ADR changes and no deliverable is cancelled; sequence and emphasis move. See *Conformance-first sequencing* below.
 
 ## Context
 
@@ -60,12 +60,34 @@ Configuration storage follows the same trajectory as results: **file-based in Ph
 
 Two tiers, extending the repo's existing build-tag pattern: **`golden-minimal`** — a small, cheapest-rung smoke subset at N = 1, runnable from a make target, executed at minimum at the end of every phase (build process) — and **`golden-all`** — the full suite at standard N, for release comparisons and D6 questions. Third-party benchmarks (the v1 SWE-EVO harness work is the seed) remain complementary for cross-system comparison and model-science questions; golden stories measure Maestro against itself. Beyond MVP, the same runner — its adapter and normalized-record contract in particular — is designed to eventually drive industry benchmarks with less deterministic outcomes, continuing the v1 benchmark support work on this harness rather than a separate one.
 
+### Conformance-first sequencing (amended 2026-07-22)
+
+This ADR was written on a buried assumption: **that measurement presupposes function.** "Build the measuring instrument first" quietly assumes the machine runs and what you want is its *economics*. Phase 1's instrumented runs falsified that assumption for the current target — **7 of the 11 enumerated v1 patches were run-blocking** (v1 could not complete a run without them), surfaced by exercising only four stories, and the one story requiring a genuine multi-site refactor never completed at all. An instrument pointed at a machine that does not reliably run produces diagnosis, not economics.
+
+The near-term primary function is therefore **conformance**: proving the pipeline completes progressively harder stories, and re-proving it as the system changes. Economics remains the eventual purpose and is deferred, not abandoned.
+
+**What does not change.** Every mechanic specified above stands unaltered: the story schema, the black-box runner contract, verdicts and failure kinds, repeat isolation, declared budgets with overrun-as-failure, MPH identity, the results store, and the suite tiers. Conformance was always latent here — the story *ladder*, the terminal-verdict definition, and the phase-end `golden-minimal` cadence are already in this ADR. This amendment re-weights what the instrument is *for* first; it adds no capability and cancels no deliverable.
+
+**Phase 1B: Benchmark Economics**, anchored **after Phase 7**. Before then the v2 work is largely infrastructure — data plane, hierarchy, branches, runtime — so a baseline taken earlier prices scaffolding rather than the system. Phase 1B carries: per-metric-class comparison reporting with spread, the **single-agent happy-path baseline** as an economic comparator, and the cost-to-accepted-change baseline. The "two configurations mandatory from the start" requirement in *Configurations* is retimed to Phase 1B accordingly; the paired-agent default remains mandatory now.
+
+**Cost data keeps accruing regardless.** Conformance runs already record `cost_usd`, `tokens_total`, and call counts on every attempt. Those records are retained from now on, so a cost trend accumulates across phase-end runs at zero additional effort — only the *analysis* defers. A structurally expensive v2 shows up in the raw numbers well before Phase 1B rather than being discovered at the end.
+
+**Cadence and budget.** `golden-minimal` at minimum at the end of every major phase (already required above), run on the frontier `paired-default` configuration, with a budget on the order of **$50 per major phase**. Each run is retained as an artifact: a proof that leaves no trace cannot distinguish a regression from a memory.
+
+**Red rungs are legitimate.** A story that a competent single agent can complete but the pipeline cannot is a **progress marker**, not a suite defect — it measures distance to capability. What a red rung must never be is ambiguous between "the pipeline cannot do this yet" and "this story is unreasonable." Hence the achievability check below.
+
+**Single-agent achievability check** — a cheap, scripted headless-agent pass over a candidate story, answering only *is this story completable at all*. It is a **low-rung triage tool with a designed expiry**: stories from the decomposition rungs upward exist precisely to test multi-story coordination a single autonomous agent cannot do, so the check is invalid there by construction and is retired rather than left to emit false "unachievable" verdicts.
+
+**`paired-local` is experimental.** It is a valuable experiment — cheap tight loops and small-model capability learning — but never a pass requirement at any tier, including v2 MVP. A story must clear `paired-default` before `paired-local` is attempted on it, and no story is required to go green locally.
+
+**Target-patch appetite is context-dependent.** The bar for patching the benchmarked target was necessarily *higher* when no story completed at all — a large patch bought the first signal in existence. Now that runs mostly complete, it tightens: patch when the fix is small (order of ten lines, within a couple of functions), otherwise record the diagnosis and park the rung as blocked. Crucially, **scope the decision by the shape that makes the patch sound, not by its first diff** — P-11 began as ~15 lines in one function and was only correct once every writer to the resource took the lock (three packages, seven sites). A fix that requires a resource-wide audit to be correct is a deliberate defer-or-commit call at the moment of discovery, not a drift.
+
 ## Consequences
 
-- Phase 1 implements exactly this ADR; its exit criteria (five stories black-box, spread-reporting comparison, two configurations compared, D9 policy enforced by the runner) already match.
+- Phase 1 implements exactly this ADR. Its exit criteria split with the 2026-07-22 amendment: **Phase 1 proper** keeps five stories black-box and the D9 policy enforced by the runner; **Phase 1B** (after Phase 7) carries spread-reporting comparison and the two-configuration comparison. The split is scheduling — both halves are still built.
 - The instrument survives the rewrite by construction: nothing in the runner changes when v1 code is deleted.
 - The benchmark-cost risk is managed structurally — declared budgets, hard caps, overrun-as-failure — rather than by restraint.
-- The single-agent baseline turns the economic argument into a number, and reviewer-heterogeneity bundling turns ADR 0020's degradation claim into a measurable one.
+- The single-agent baseline turns the economic argument into a number, and reviewer-heterogeneity bundling turns ADR 0020's degradation claim into a measurable one — both realized in Phase 1B. In Phase 1 the single agent serves a different, cheaper role: an achievability control that keeps a red rung from being ambiguous between an incapable pipeline and an unreasonable story.
 - Golden stories gate releases from Phase 9 onward; this ADR is where that gate's semantics are anchored.
 
 ## Related Documents
