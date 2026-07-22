@@ -121,6 +121,48 @@ name = "gofmt-clean-tests"
 type = "command"
 command = "sh -c 'test -z \"$(gofmt -l server_test.go)\"'"
 
+[[checks]]
+# ENGINE-OWNED BEHAVIOURAL ORACLE. The checks above prove the agent produced
+# tests; they cannot prove the CONTRACT holds — four vacuous subtests naming
+# findOption, plus `ProviderName` in a comment, satisfy every one of them. The
+# fixture conventions already say agent-authored tests cannot independently
+# prove behaviour, so the engine brings its own: this injects a test the agent
+# never sees, exercises all four specified behaviours, and removes itself.
+# Verified to reject exactly that vacuous implementation and to accept a
+# correct one.
+name = "oracle-lookup-semantics"
+type = "command"
+command = '''
+cat > zz_engine_oracle_test.go <<'ORACLE'
+package main
+
+import "testing"
+
+func TestEngineOracleFindOption(t *testing.T) {
+	opts := []ModelOption{
+		{ID: "anthropic/m1", ProviderName: "anthropic", Model: "m1"},
+		{ID: "vllm/a", ProviderName: "vllm", Model: "a"},
+		{ID: "vllm/b", ProviderName: "vllm", Model: "b"},
+	}
+	if got, ok := findOption(opts, "vllm/a"); !ok || got.ID != "vllm/a" {
+		t.Fatalf("exact ID must win: got %+v ok=%v", got, ok)
+	}
+	if got, ok := findOption(opts, "anthropic"); !ok || got.ID != "anthropic/m1" {
+		t.Fatalf("unique provider name must resolve: got %+v ok=%v", got, ok)
+	}
+	if got, ok := findOption(opts, "vllm"); ok {
+		t.Fatalf("ambiguous provider name must not resolve: got %+v", got)
+	}
+	if _, ok := findOption(opts, "nope"); ok {
+		t.Fatal("unknown id must not resolve")
+	}
+}
+ORACLE
+go test -run TestEngineOracleFindOption . >/dev/null 2>&1; rc=$?
+rm -f zz_engine_oracle_test.go
+exit $rc
+'''
+
 [budget]
 # Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
 # nearest completed story, with headroom for authoring a test file.

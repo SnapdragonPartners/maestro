@@ -102,6 +102,22 @@ name = "gofmt-clean-main"
 type = "command"
 command = "sh -c 'test -z \"$(gofmt -l main.go)\"'"
 
+[[checks]]
+# CLOSES THE OBVIOUS FORGERY: the request context must be built from an
+# IDENTIFIER, not a literal. Without this, `newServer(..., d time.Duration)`
+# that ignores d while hardcoding a different literal passes every other check
+# — verified: all six passed such an implementation before this was added.
+#
+# LIMIT, STATED HONESTLY: this is dataflow-shaped, not a behavioural oracle
+# like the ones in api-option-lookup and app-healthz-endpoint. Exercising this
+# timeout for real needs a live provider on the /api/chat path, which the
+# fixture cannot supply hermetically. A determined forgery could still shadow
+# the parameter. It raises the floor rather than closing the door, and the
+# stronger stories carry real oracles instead.
+name = "timeout-value-not-hardcoded"
+type = "command"
+command = "sh -c 'grep -qE \"context[.]WithTimeout\\(r[.]Context\\(\\), *[A-Za-z_]\" server.go'"
+
 [budget]
 # Provisional: no accepted run exists for this story. Sized from bugfix
 # (727k/$7.06), the nearest completed story, with headroom for the extra file.

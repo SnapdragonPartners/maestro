@@ -109,6 +109,53 @@ name = "gofmt-clean-tests"
 type = "command"
 command = "sh -c 'test -z \"$(gofmt -l health_test.go)\"'"
 
+[[checks]]
+# ENGINE-OWNED BEHAVIOURAL ORACLE. The checks above prove a test exists that
+# mentions httptest, newServer and status — a broken route with a test merely
+# naming those strings satisfies all of them. This injects a test the agent
+# never sees, drives a real request through the application's own router, and
+# asserts the response contract. Removes itself afterwards.
+name = "oracle-healthz-responds"
+type = "command"
+command = '''
+cat > zz_engine_oracle_test.go <<'ORACLE'
+package main
+
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestEngineOracleHealthz(t *testing.T) {
+	srv := httptest.NewServer(newServer(nil, log.New(io.Discard, "", 0)))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Fatalf(`body["status"] = %v, want "ok"`, body["status"])
+	}
+}
+ORACLE
+go test -run TestEngineOracleHealthz . >/dev/null 2>&1; rc=$?
+rm -f zz_engine_oracle_test.go
+exit $rc
+'''
+
 [budget]
 # Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
 # nearest completed story, with headroom for authoring a test that stands up

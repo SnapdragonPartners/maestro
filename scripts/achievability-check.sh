@@ -152,10 +152,25 @@ else
     echo "  changed: $(printf '%s' "$changed" | tr '\n' ' ')"
 fi
 
+# Mirrors engine/checks.go pathAllowed: an entry matches a path exactly, OR a
+# directory entry matches anything beneath it. Exact-match-only silently
+# rejected every story using directory scopes — bugfix-openai-stopreason
+# allows "llms/providers/openai/" and "docs/", so every changed file under
+# them would have been reported outside its own allowed paths.
+path_allowed() {
+    _p="$1"
+    for _a in $ALLOWED; do
+        [ "$_p" = "$_a" ] && return 0
+        _prefix="${_a%/}/"
+        case "$_p" in "$_prefix"*) return 0 ;; esac
+    done
+    return 1
+}
+
 if [ -n "$ALLOWED" ]; then
     for c in $changed; do
         ok=0
-        for a in $ALLOWED; do [ "$c" = "$a" ] && ok=1; done
+        path_allowed "$c" && ok=1
         if [ $ok -ne 1 ]; then
             echo "  ✗ $c outside allowed_paths ($ALLOWED)"
             case "$c" in

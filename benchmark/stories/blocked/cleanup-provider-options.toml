@@ -39,12 +39,12 @@
 # template or tool description. The architect diagnosed the wandering correctly
 # and repeatedly, so the review seat worked.
 #
-# Probable root cause (DR): 136 of 136 tool-calling coder responses carried
-# "response length: 0 chars" — no narrative reasoning survives in the coder's
-# context at all, so it re-plans from scratch every turn. That explains the
-# wandering, the repeat reads, and why no strategy accumulated. It also rules
-# out a `go doc` prompt hint as the fix: you cannot hint every tool call.
-# Not a v1 patch. See patches_v1.md.
+# Leading hypothesis (DR), NOT confirmed: 136 of 136 tool-calling coder
+# responses carried "response length: 0 chars", so no narrative reasoning
+# enters the context. Note what this does not show — structured tool calls and
+# their results ARE retained, so the coder can see what it did, just not what
+# it concluded. The symptoms fit, but consistency is not proof; truncation or
+# plain weak planning would look similar. Not a v1 patch. See patches_v1.md.
 #
 # Stays blocked per the rule: it failed on paired-default.
 #
