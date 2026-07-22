@@ -156,11 +156,21 @@ surfacing as `signal: killed`. Re-run once to confirm before investigating.
 
 ### 6. Comparability
 
-Two runs are comparable only when their **complete identity** matches.
-`story_hash` and `config_hash` alone are **not sufficient** — the target
-underneath can change while both stay fixed, which is exactly what the
-P-9/P-10 patches on this branch did. Every field below is recorded on each
-run record; group by all of them before comparing:
+**Aggregation and comparison are different operations with different rules.**
+Conflating them is the easiest way to publish noise:
+
+- **Aggregate** (mean, spread, overrun rate) **only within one complete
+  identity group**, including enforcement mode. A distribution pooled across
+  identities is not a distribution of anything.
+- **Compare** those labeled aggregates **side by side, across groups.** That is
+  the entire point of the benchmark — v1-as-patched vs v2 vs a single-agent
+  baseline are *deliberately* different identities. Comparing them is correct;
+  pooling their attempts into one distribution is not.
+
+The identity group is the full field set below — `story_hash` and `config_hash`
+alone are **not sufficient**, since the target underneath can change while both
+stay fixed, which is exactly what the P-9/P-10 patches on this branch did. Every
+field is recorded on each run record; group by all of them before aggregating:
 
 | Source | Fields | Why it moves |
 |---|---|---|
@@ -173,23 +183,29 @@ run record; group by all of them before comparing:
 
 Two qualifications that bite in practice:
 
-- **Enforcement mode qualifies some metrics, not all** ([ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md),
-  amended 2026-07-16). **Real cost and token values remain comparable across
-  enforcement modes** — a dollar spent is a dollar spent. What is *not*
-  comparable across modes is **budget-overrun rates and the censoring they
-  induce**: a `streamed` target is cancelled at the cap, so its expensive runs
-  are truncated, while a `post-hoc` target runs past the cap and reports the
-  full figure. Pool costs across modes freely; never pool overrun rates, and
-  remember that a streamed run's cost distribution is right-censored at its cap.
+- **Enforcement mode qualifies metrics selectively** ([ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md),
+  amended 2026-07-16), which is a statement about *comparison*, not aggregation:
+
+  | Metric | Across enforcement modes |
+  |---|---|
+  | Raw cost / token **values** | **Comparable** — a dollar spent is a dollar spent |
+  | Budget-overrun **rates** | **Not comparable** — mode-scoped by definition |
+  | Cost **distributions** | **Not comparable** — a `streamed` target is cancelled at the cap, so its expensive runs are right-censored; a `post-hoc` target runs past the cap and reports the full figure |
+
+  So: report a streamed group's cost alongside a post-hoc group's, but never
+  merge their attempts into one distribution, and never put their overrun rates
+  in the same column. A streamed group's spread must carry its censoring.
 - **Changing a cap changes `story_hash` by design** — the budget is part of
   the story definition. Caps are a safeguard, so varying them during
   calibration is legitimate, but it means a calibration series spans several
   identities. **Fix the caps before collecting any distribution you intend to
   compare or publish**, and record which identity each attempt ran against.
 
-This grouping rule is what item 7's comparison reporting must key on; a
-report that pools attempts across differing target descriptors is reporting
-noise as spread.
+Item 7's comparison reporting keys on exactly this: **aggregate within a group,
+label the group with its identity and enforcement mode, then place those
+aggregates side by side.** A report that pools attempts across differing target
+descriptors is reporting noise as spread; a report that refuses to place
+different targets side by side has no comparison to make.
 
 ## Local Models (paired-local)
 
