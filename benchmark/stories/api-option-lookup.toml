@@ -87,11 +87,16 @@ type = "command"
 command = "sh -c 'grep -q \"findOption\" server_test.go'"
 
 [[checks]]
-# Four behaviours were specified, so require at least four cases. Counts
-# top-level Test funcs and t.Run subtests, so either style satisfies it.
+# Four behaviours were specified, so require at least four cases ACTUALLY RUN.
+# Counts executed results from `go test -v` rather than source syntax: an
+# earlier version counted `func Test` and `t.Run(` occurrences, which scores a
+# table-driven test at 2 no matter how many cases the table holds — penalising
+# the most idiomatic Go pattern. The pipeline hit exactly that, writing nine
+# well-named cases and failing the check. Counting what ran is
+# implementation-agnostic: separate funcs, subtests and tables all satisfy it.
 name = "tests-cover-four-cases"
 type = "command"
-command = "sh -c 'test \"$(grep -cE \"func Test|t\\.Run\\(\" server_test.go)\" -ge 4'"
+command = "sh -c 'test \"$(go test -v ./... 2>&1 | grep -cE \"^[[:space:]]*--- PASS\")\" -ge 4'"
 
 [[checks]]
 # The signature is unchanged, as the prompt requires: callers still get
