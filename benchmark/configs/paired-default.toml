@@ -34,7 +34,9 @@ poll_interval = "5s"
 # multi-arch manifest (linux/amd64 + linux/arm64) so arm64 dev and amd64 CI
 # both pull their matching arch; pinned by the arch-independent immutable
 # manifest digest so identical harness hashes execute identical contents.
-# Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
+# Republish + re-pin this digest when a fixture re-pin changes its module
+# inputs (go.mod/go.sum); a re-pin that leaves them identical keeps this digest.
+# make cache-verify is the gate (benchmark/cache/, make cache-publish).
 container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b75e5ad5982c26e5e988a9d5d9ca6441d61d3741defc0516b91"
 
 # expected_cost_usd_per_run is the mean of the two accepted attempts on the

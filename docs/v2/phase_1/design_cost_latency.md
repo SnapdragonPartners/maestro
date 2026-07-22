@@ -1,6 +1,6 @@
 +++
 title = "Design: Cost And Latency Reduction (Item 5.1)"
-edit_date = "2026-07-18"
+edit_date = "2026-07-22"
 status = "live"
 summary = "Mini-plan for the cost-latency work item: a registry-published, digest-pinned union cache image that kills the cold-cache tax (#268, deterministically verified with GOPROXY=off), then an Ollama-only paired-local configuration that makes basic end-to-end exercise of the harness near-free (#266) — gated on a viability probe, with local cost marked unavailable and local runs budgeted on tokens and wall-clock with zero USD reservation."
 +++
@@ -38,7 +38,7 @@ COPY tester.go.mod tester.go.sum ./tester/
 RUN cd cms && go mod download && cd ../llms && go mod download && cd ../tester && go mod download
 ```
 
-The `go.mod`/`go.sum` inputs come from the fixtures at their pinned commits, so the image is a pure function of the fixture pins and is rebuilt-and-republished whenever any fixture re-pins (owned by the fixture-conventions procedure, [process_fixtures.md](process_fixtures.md)). It is **published to the SnapdragonPartners registry (ghcr.io) and referenced by immutable digest** as the config's `container_image`, so CI and every machine pull byte-identical contents and the digest binds into the harness hash H — same discipline as the base and Gitea pins. One image serves all stories; the cache lives *in the pinned image*, so hermeticity holds — no shared mutable module-cache volume across runs (explicitly rejected as reintroduced cross-run state).
+The `go.mod`/`go.sum` inputs come from the fixtures at their pinned commits, so the image is a pure function of the fixtures' **module inputs** and is rebuilt-and-republished whenever a re-pin CHANGES those inputs (amended 2026-07-22: the original wording said "whenever any fixture re-pins", a conservative proxy — a re-pin that leaves `go.mod`/`go.sum` byte-identical, such as deleting a stray build artifact, produces an identical image, and `cache-verify` is the gate that decides rather than the pin string) (owned by the fixture-conventions procedure, [process_fixtures.md](process_fixtures.md)). It is **published to the SnapdragonPartners registry (ghcr.io) and referenced by immutable digest** as the config's `container_image`, so CI and every machine pull byte-identical contents and the digest binds into the harness hash H — same discipline as the base and Gitea pins. One image serves all stories; the cache lives *in the pinned image*, so hermeticity holds — no shared mutable module-cache volume across runs (explicitly rejected as reintroduced cross-run state).
 
 All current fixtures are Go modules, so a single union image covers them. A future non-Go fixture is handled by extending the union image per-language or by that fixture carrying its own cache-warming Dockerfile — noted, not built.
 

@@ -70,11 +70,12 @@ golden-tiers-check: build
 
 # Spends real tokens. Kept explicit for that reason — no target runs a suite
 # as a side effect of building or testing.
+# ONE invocation, so the tier is one suite: separate runs sharing a suite ID
+# would each rewrite the manifest and restart budget accounting from zero.
 golden-minimal: golden-tiers-check
-	@for s in $(GOLDEN_MINIMAL); do \
-		./bin/runner run --config $(GOLDEN_CONFIG) --story $$s \
-			--suite-id golden-minimal-$(GOLDEN_SUITE) || exit 1; \
-	done
+	./bin/runner run --config $(GOLDEN_CONFIG) \
+		--story "$(shell echo $(GOLDEN_MINIMAL) | tr ' ' ',')" \
+		--suite-id golden-minimal-$(GOLDEN_SUITE)
 
 golden-all: build
 	./bin/runner run --config $(GOLDEN_CONFIG) --suite-id golden-all-$(GOLDEN_SUITE)

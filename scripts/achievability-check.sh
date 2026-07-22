@@ -119,25 +119,33 @@ fail=0
 # that class of failure. It was: a build artifact committed into the chat
 # fixture made diff-confinement unsatisfiable for three stories, and this
 # check passed all three beforehand because it looked too early.
-while IFS=$'\t' read -r kind name cmd; do
-    [ -n "$cmd" ] || continue
+# Commands are base64-encoded across this boundary: engine-owned oracles are
+# MULTI-LINE shell (heredoc-injected Go tests), and a line-oriented read would
+# truncate them at the first line — creating the oracle file, never running it,
+# never cleaning up, and reporting a pass. The real engine hands the whole
+# string to `sh -c`, so anything less here is not the same contract.
+while IFS=$'\t' read -r kind name b64; do
+    [ -n "$b64" ] || continue
+    cmd="$(printf '%s' "$b64" | base64 -d)"
     if sh -c "$cmd" >/dev/null 2>&1; then
         echo "  ✓ $kind $name"
     else
-        echo "  ✗ $kind $name  ($cmd)"; fail=1
+        echo "  ✗ $kind $name"; fail=1
     fi
 done < <(python3 - "$STORY_ABS" <<'PY'
-import tomllib, sys
+import tomllib, sys, base64
+def emit(kind, name, cmd):
+    print(kind + "\t" + name + "\t" + base64.b64encode(cmd.encode()).decode())
 d = tomllib.load(open(sys.argv[1], 'rb'))
 for v in d.get('validators', []):
-    print(f"validator\t{v.get('name','?')}\t{v.get('command','')}")
+    emit('validator', v.get('name', '?'), v.get('command', ''))
 for c in d.get('checks', []):
     t = c.get('type')
     if t == 'command':
-        print(f"check\t{c.get('name','?')}\t{c.get('command','')}")
+        emit('check', c.get('name', '?'), c.get('command', ''))
     elif t == 'file_contains':
-        p, needle = c.get('path',''), c.get('contains','')
-        print(f"check\t{c.get('name','?')}\tgrep -qF -- {needle!r} {p!r}")
+        emit('check', c.get('name', '?'),
+             "grep -qF -- %r %r" % (c.get('contains', ''), c.get('path', '')))
     # files_changed_within is enforced by the diff comparison below.
 PY
 )

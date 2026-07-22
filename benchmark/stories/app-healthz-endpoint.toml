@@ -104,7 +104,7 @@ command = "sh -c 'grep -q \"status\" health_test.go'"
 # Scoped to the new file: the fixture's server.go ships from upstream with
 # gofmt drift (struct-tag alignment in chatRequest), so asserting gofmt over
 # it is unsatisfiable regardless of what the agent does. Same precedent as
-# cleanup-provider-options, flag-chat-timeout and api-option-lookup.
+# cleanup-provider-options, flag-instance-name and api-option-lookup.
 name = "gofmt-clean-tests"
 type = "command"
 command = "sh -c 'test -z \"$(gofmt -l health_test.go)\"'"
@@ -154,6 +154,27 @@ ORACLE
 go test -run TestEngineOracleHealthz . >/dev/null 2>&1; rc=$?
 rm -f zz_engine_oracle_test.go
 exit $rc
+'''
+
+[[checks]]
+# MUTATION CHECK — proves the authored test is meaningful. The oracle above
+# verifies the endpoint; it cannot tell a real behavioural test from one that
+# merely mentions httptest, newServer and status. Break the route (serve 500
+# with an empty body), run the AGENT'S test, and require it to FAIL. server.go
+# is restored either way.
+name = "authored-tests-detect-broken-behaviour"
+type = "command"
+command = '''
+cp server.go .zz_server_orig.go
+python3 - <<'MUT'
+s = open('server.go').read()
+s = s.replace('mux.HandleFunc("/", servePage)',
+              'mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) })\n\tmux.HandleFunc("/", servePage)', 1)
+open('server.go', 'w').write(s)
+MUT
+go test . >/dev/null 2>&1; survived=$?
+cp .zz_server_orig.go server.go; rm -f .zz_server_orig.go
+test $survived -ne 0
 '''
 
 [budget]

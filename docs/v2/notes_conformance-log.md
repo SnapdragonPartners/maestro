@@ -83,7 +83,7 @@ Target identity is uniform across all three (commit `5ef8443232de`, binary `e742
 
 | Story | Verdict | Tokens | Cost | Wall | Failed checks |
 |---|---|---|---|---|---|
-| `flag-chat-timeout` | failed / checks-failed | 622,891 | $3.90 | 353s | diff-confined-to-source |
+| `flag-chat-timeout` (story since **replaced**) | failed / checks-failed | 622,891 | $3.90 | 353s | diff-confined-to-source |
 | `api-option-lookup` | failed / branch-state | 563,892 | $4.13 | 529s | diff-confined-to-source, tests-cover-four-cases |
 | `app-healthz-endpoint` | failed / checks-failed | 691,376 | $3.64 | 611s | diff-confined-to-source |
 
@@ -94,6 +94,8 @@ Total $11.67. **Zero validator failures across all three** — every `build`, `v
 - `diff-confined-to-source` failed on all three for one shared cause — `golden-fixture-chat`, a compiled binary committed into the fixture by mistake in the item-2 extraction. `go build` regenerated it, so the diff always carried a path no agent touched, making the check **unsatisfiable** for any chat-fixture story that builds. Fixed additively in the fixture (`60e79fd`) and all four chat stories re-pinned.
 - `tests-cover-four-cases` failed because the check counted `func Test` and `t.Run(` occurrences, which scores *any* table-driven test at 2. The pipeline had written a table with **nine** named cases covering all four required behaviours plus edge cases the story never asked for. The check now counts results reported by `go test -v` instead.
 
-So on the three genuinely new pipeline paths this batch existed to probe — coordinated multi-file change, authoring tests from scratch, and behaviour proven through the real router over HTTP — **the pipeline succeeded on all three**, and every red traced to the story author. Not re-run after the fixes: re-pinning had already churned the hashes, and paying frontier prices to re-confirm known authoring bugs is poor use of budget.
+**What this does and does not show.** All three official verdicts are **failures**, the fixture pin is superseded, and the engine-owned behavioural oracles added later were **never run against these solutions** — the acceptance contracts in force at the time were structural greps since shown to accept implementations that ignore the requirement entirely. So these are **promising validator-passing candidates, not proof that the pipeline succeeded** on the three new paths. What can be said: every `build`, `vet` and `test` passed, and the recorded failures trace to author defects rather than to anything the target did.
+
+`flag-chat-timeout` has since been **replaced** by `flag-instance-name`: its behaviour could not be verified hermetically, so every check it had was structural and an implementation that ignored the flag passed all of them. Establishing the stronger claim needs a re-run on current pins against the current contracts, which is item 10's phase-end `golden-all`. Not re-run at the time: re-pinning had already churned the hashes, and paying frontier prices to re-confirm known authoring bugs was poor use of budget.
 
 *The first phase-end `golden-all` conformance run appends below.*

@@ -1,0 +1,131 @@
+# Golden story: BREADTH at roughly rung-3 difficulty (not a new rung).
+#
+# What this tests that nothing else does: a COORDINATED CHANGE ACROSS SOURCE
+# FILES. Every other story is confined to one file plus its test, and
+# dep-bump's two are generated (go.mod/go.sum), so the suite has never
+# exercised a plan that must sequence edits across files. The seam is
+# deliberate: threading a value declared in main.go to its use in server.go
+# forces newServer's signature to change, so the two files cannot be edited
+# independently and a half-done change does not compile.
+#
+# REPLACES flag-chat-timeout (2026-07-22). That story asked for the per-request
+# CHAT timeout to be configurable, which cannot be verified hermetically:
+# exercising it needs a live provider on /api/chat, so every available check
+# was structural and an implementation that accepted the parameter and ignored
+# it passed all of them. A golden story that knowingly admits false acceptance
+# is not a conformance test. The premise moved to a value whose effect IS
+# observable through the real router, keeping the coordination property while
+# gaining a true behavioural oracle.
+#
+# Self-contained (net/http, flag) — no external dependency API, so a red here
+# is new information rather than a re-run of the recorded dependency-API
+# defect (patches_v1.md).
+schema_version = 1
+id = "flag-instance-name"
+title = "Add an instance-name flag surfaced on every response"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
+commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
+base_branch = "main"
+
+[prompt]
+text = """
+When several instances of the demo run behind one address, there is no way
+to tell which one served a response.
+
+Add a command-line flag named `instance-name`, following the pattern
+main.go already uses for its listen address, defaulting to "chat-demo".
+Every HTTP response the application serves must carry its value in an
+`X-Instance-Name` header — every route, not just one.
+
+The flag's value must reach the server, so an operator who passes
+`-instance-name=blue` sees `X-Instance-Name: blue` on responses.
+"""
+
+[expectations]
+allowed_paths = ["main.go", "server.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "vet"
+command = "go vet ./..."
+
+[[checks]]
+name = "diff-confined-to-source"
+type = "files_changed_within"
+
+[[checks]]
+name = "instance-name-flag-declared"
+type = "command"
+command = "sh -c 'grep -q \"instance-name\" main.go'"
+
+[[checks]]
+# The value is threaded rather than re-derived in server.go — this is what
+# forces both files to change together, which is the point of the story.
+name = "value-threaded-through-newserver"
+type = "command"
+command = "sh -c 'grep -qE \"func newServer\\(.*string\" server.go'"
+
+[[checks]]
+# ENGINE-OWNED BEHAVIOURAL ORACLE. Constructs the real router with a value
+# that is NOT the default and asserts the header carries it, on two different
+# routes. A hardcoded header, an ignored parameter, or a header applied to
+# only one route all fail. This is what flag-chat-timeout could not have.
+name = "oracle-instance-name-observed"
+type = "command"
+command = '''
+cat > zz_engine_oracle_test.go <<'ORACLE'
+package main
+
+import (
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestEngineOracleInstanceName(t *testing.T) {
+	const want = "oracle-instance-42"
+	srv := httptest.NewServer(newServer(nil, log.New(io.Discard, "", 0), want))
+	defer srv.Close()
+
+	for _, path := range []string{"/", "/api/providers"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		got := resp.Header.Get("X-Instance-Name")
+		resp.Body.Close()
+		if got != want {
+			t.Fatalf("GET %s: X-Instance-Name = %q, want %q", path, got, want)
+		}
+	}
+}
+ORACLE
+go test -run TestEngineOracleInstanceName . >/dev/null 2>&1; rc=$?
+rm -f zz_engine_oracle_test.go
+exit $rc
+'''
+
+[[checks]]
+# Scoped to main.go: the fixture's server.go ships from upstream with gofmt
+# drift (struct-tag alignment in chatRequest), so asserting gofmt over it is
+# unsatisfiable regardless of what the agent does.
+name = "gofmt-clean-main"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l main.go)\"'"
+
+[budget]
+# Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
+# nearest completed story. Recalibrate on first acceptance per the D9 rule.
+max_tokens = 2500000
+max_wall_clock_seconds = 2700
+max_cost_usd = 24.0

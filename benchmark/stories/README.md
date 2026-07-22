@@ -21,9 +21,10 @@ non-recursively, so `blocked/` is excluded by construction):
 - `bugfix-openai-stopreason` — rung 3, focused bug fix on
   `golden-fixture-llms`, pinned at the parent of the real upstream fix
   (solution not in history), proven by SEEDED tests.
-- `flag-chat-timeout` — breadth at roughly rung 3: a coordinated change
+- `flag-instance-name` — breadth at roughly rung 3: a coordinated change
   across two source files, where a signature ripple means they cannot be
-  edited independently.
+  edited independently. Replaced `flag-chat-timeout`, whose behaviour could
+  not be verified hermetically.
 - `api-option-lookup` — rung 4, an API contract change the agent must prove
   with tests it AUTHORS itself.
 - `app-healthz-endpoint` — rung 5, an app change proven behaviourally: a real

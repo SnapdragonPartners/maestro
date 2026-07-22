@@ -163,6 +163,35 @@ rm -f zz_engine_oracle_test.go
 exit $rc
 '''
 
+[[checks]]
+# MUTATION CHECK — proves the AUTHORED TESTS are meaningful, which the oracle
+# above cannot: the oracle verifies the implementation, so a correct
+# findOption paired with four empty named subtests satisfies it and every
+# structural check. Since authoring tests is the whole point of this rung,
+# that gap accepts a non-deliverable.
+#
+# Break findOption to always report not-found, run the AGENT'S tests, and
+# require them to FAIL. Tests that still pass against a broken implementation
+# assert nothing. server.go is restored either way, including on failure.
+# Verified both directions: vacuous subtests pass the mutant (rejected here),
+# a single real assertion fails it (accepted).
+name = "authored-tests-detect-broken-behaviour"
+type = "command"
+command = '''
+cp server.go .zz_server_orig.go
+python3 - <<'MUT'
+import re
+s = open('server.go').read()
+s = re.sub(r'func findOption\(options \[\]ModelOption, id string\) \(ModelOption, bool\) \{.*?\n\}',
+           'func findOption(options []ModelOption, id string) (ModelOption, bool) {\n\treturn ModelOption{}, false\n}',
+           s, count=1, flags=re.S)
+open('server.go', 'w').write(s)
+MUT
+go test . >/dev/null 2>&1; survived=$?
+cp .zz_server_orig.go server.go; rm -f .zz_server_orig.go
+test $survived -ne 0
+'''
+
 [budget]
 # Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
 # nearest completed story, with headroom for authoring a test file.

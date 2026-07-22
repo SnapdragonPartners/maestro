@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -144,17 +146,37 @@ func loadBundles(path string) ([]*mph.Loaded, error) {
 	return []*mph.Loaded{one}, nil
 }
 
-func filterStories(stories []*story.Loaded, id string) []*story.Loaded {
-	if id == "" {
-		return stories
+// filterStories selects by story ID. Accepts a comma-separated list so a
+// tier runs as ONE suite: separate invocations would share a suite ID while
+// each rewrote the manifest and restarted budget accounting from zero, so the
+// tier would neither be one accounting unit nor produce one manifest.
+// Unknown IDs are reported rather than silently yielding a short suite.
+func filterStories(stories []*story.Loaded, ids string) ([]*story.Loaded, error) {
+	if ids == "" {
+		return stories, nil
+	}
+	want := make(map[string]bool)
+	for _, id := range strings.Split(ids, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			want[id] = true
+		}
 	}
 	var out []*story.Loaded
 	for _, s := range stories {
-		if s.Definition.ID == id {
+		if want[s.Definition.ID] {
 			out = append(out, s)
+			delete(want, s.Definition.ID)
 		}
 	}
-	return out
+	if len(want) > 0 {
+		missing := make([]string, 0, len(want))
+		for id := range want {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("no such story: %s", strings.Join(missing, ", "))
+	}
+	return out, nil
 }
 
 func filterBundles(bundles []*mph.Loaded, name string) []*mph.Loaded {
@@ -195,7 +217,7 @@ func cmdRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	storiesPath := fs.String("stories", "stories", "story definition file or directory")
 	configsPath := fs.String("configs", "configs", "MPH bundle file or directory")
-	storyID := fs.String("story", "", "run only this story ID")
+	storyID := fs.String("story", "", "run only these story IDs (comma-separated)")
 	configName := fs.String("config", "", "run only this config name")
 	repeats := fs.Int("repeats", 1, "attempts per story per config (N)")
 	resultsDir := fs.String("results", "runs", "results store directory")
@@ -209,7 +231,10 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	stories = filterStories(stories, *storyID)
+	stories, err = filterStories(stories, *storyID)
+	if err != nil {
+		return err
+	}
 	bundles = filterBundles(bundles, *configName)
 	store, err := results.Open(*resultsDir)
 	if err != nil {

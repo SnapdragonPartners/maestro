@@ -87,10 +87,10 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 
 ### Phase 1 (binding now)
 
-- [x] The runner executes at least 5 single-repo golden stories against the v1-as-patched target, black-box, from a make target. — 6 active stories (`smoke-comment`, `dep-bump-xnet`, `bugfix-openai-stopreason`, `flag-chat-timeout`, `api-option-lookup`, `app-healthz-endpoint`); `make golden-all` in `benchmark/`. `cleanup-provider-options` is authored but parked in `stories/blocked/` and excluded.
+- [ ] The runner executes at least 5 single-repo golden stories against the v1-as-patched target, black-box, from a make target. — The 6 definitions and the `make golden-all` target exist (`smoke-comment`, `dep-bump-xnet`, `bugfix-openai-stopreason`, `flag-instance-name`, `api-option-lookup`, `app-healthz-endpoint`; `cleanup-provider-options` parked in `stories/blocked/`). **Deliberately unchecked: existence is not execution.** The criterion says the runner *executes* them from that target, and no `golden-all` run has happened yet — that is item 10's phase-end run.
 - [ ] Every one of those stories is **proven achievable**, and each has been run — red or green — against the current target on `paired-default`, with the result captured in the committed conformance record. A red rung that clears achievability is a progress marker, not a suite defect.
 
-  **Achievability may be established two ways, and a recorded accepted run is the stronger of them.** The single-agent check is a *control for stories that have never passed*; a story the pipeline has already accepted is proven achievable by that acceptance, which is better evidence than any control. Status: `smoke-comment` and `dep-bump-xnet` proven by accepted runs (3/3 each, [conformance log](../notes_conformance-log.md)); `bugfix-openai-stopreason` proven by an accepted run; `flag-chat-timeout`, `api-option-lookup`, `app-healthz-endpoint` and `cleanup-provider-options` proven by the single-agent check.
+  **Achievability may be established two ways, and a recorded accepted run is the stronger of them.** The single-agent check is a *control for stories that have never passed*; a story the pipeline has already accepted is proven achievable by that acceptance, which is better evidence than any control. Status: `smoke-comment` and `dep-bump-xnet` proven by accepted runs (3/3 each, [conformance log](../notes_conformance-log.md)); `bugfix-openai-stopreason` proven by an accepted run; `flag-instance-name`, `api-option-lookup`, `app-healthz-endpoint` and `cleanup-provider-options` proven by the single-agent check.
 
   **The control is not a universal oracle, and must not be read as one.** Run against `smoke-comment` it returns *not-proven-achievable*: the agent puts the marker comment at the top of `doc.go`, which is idiomatic for a doc file, while the story requires it appended at the end. The story is demonstrably achievable — the pipeline accepts it 3/3 — so the control is simply a different, sometimes weaker, executor. That is exactly why the verdict is named `not-proven-achievable` and never `unachievable`.
 
@@ -112,7 +112,7 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 - [ ] Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline.
 - [ ] A **v2**-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, binary identity, MPH identity).
 
-  This is *additional to*, not a substitute for, the v1 baseline owed by Phase 1 — see that criterion above, which stays binding and unsatisfied.
+  This is *additional to*, not a substitute for, the v1 baseline owed by Phase 1 — which was taken on 2026-07-22 and is recorded above (6/6 accepted, $9.66, with its identity caveat). Phase 1B's baseline does not replace it.
 
 ## Risks
 
