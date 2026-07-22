@@ -15,9 +15,27 @@
 #      per-provider split means rewriting the same helper five times. That is
 #      a true property of the work, the kind a tech lead would say aloud, not
 #      a hint about the harness.
-# If it now completes, the defect was ours (authoring). If it still splits,
-# the defect is structural — nothing reviews an architect's decomposition
-# (ADR backlog #15) — and no prompt wording will fix it.
+# RESULT (2026-07-22, suite cleanup-repaired-v1, paired-default):
+#   * Achievability: PROVEN. A single headless agent completes this under the
+#     identical contract — one file, both validators, all four checks green.
+#     The story is sound; a red here measures the pipeline, not the task.
+#   * Decomposition: FIXED. "Loaded 1 stories from spec" — one story, not five.
+#     The enumeration hypothesis was correct.
+#   * Still blocked, by a DIFFERENT defect: failed/budget-overrun, 3.09M tokens
+#     in 633s ($14.68), ~4.9k tok/sec against ~2.1k in healthy runs.
+#
+# The new blocker is a missing affordance, not a loop. The refactor needs an
+# external dependency's API (llms.ChatClient, the ListModels signature). The
+# coder issued 111 shell calls of which 101 were DISTINCT — wandering, not
+# cycling — including 31 hand-greps into the Go module cache, and guessed at
+# two different GOMODCACHE paths. It used `go doc` ZERO times: the one command
+# that answers the question authoritatively in a single call. The architect
+# diagnosed it correctly and repeatedly ("you are stuck in an exploration
+# loop", "examine the actual error message"), so the review seat worked; the
+# coder simply had no efficient way to inspect a dependency and did not reach
+# for the idiomatic tool. Tracked in patches_v1.md remaining candidates.
+#
+# Stays blocked per the rule: it failed on paired-default.
 #
 # Consolidation is verified structurally: the fixture base has 5 call
 # sites each of .ListModels(, "construct failed", and "ListModels failed"

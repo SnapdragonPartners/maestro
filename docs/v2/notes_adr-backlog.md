@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 type = "notes"
 summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 with their Accepted ADRs, and open candidates ordered by the phase they block."
@@ -99,5 +99,7 @@ Whether agent communication should anticipate cloud job execution. ADR 0019 alre
 [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) requires that **every persistent Management artifact be reviewed by at least one party other than its author**. The Story set an Architect decomposes out of a spec/Epic is such an artifact — and today nothing reviews it: the Architect authors the decomposition and queues it directly. The invariant is satisfied for plans, code, completion evidence, and merges, but not for the decomposition that determines all of them. It is the one artifact the Architect both authors and acts on unchecked.
 
 Empirically observed in Phase 1 (2026-07-21, `cal-d9-cleanup-4m`): the `cleanup-provider-options` story — one refactor consolidating five near-identical provider functions behind a shared helper — was decomposed into **5 Stories, one per provider**, each paying full plan → review → code → test → review ceremony. The split is incoherent for the task (all five converge on rewriting the same helper), and it burned 2.26M tokens / $13.11 with **0 of 5 Stories completed**. No agent was positioned to say "this is one Story, not five." v1's P-4 prompt patch carries general right-sizing guidance, but prompt guidance is not a review seat: a prompt that enumerates N items still invites an N-way split, and nothing catches it when it happens.
+
+**Severity update (2026-07-22).** The `cleanup-provider-options` prompt was rewritten to stop enumerating its five call sites and to state the task's cohesion outright; the architect then produced **one** Story rather than five. So over-decomposition is **avoidable by well-formed authoring** — it is a latent risk, not a standing blocker, which is a weaker claim than this entry originally made. The case for the review seat is unchanged but now rests on cost asymmetry rather than necessity: we only discovered the wording by burning ~$22 on two runs that never completed, and nothing in the system would have caught it. A reviewer would have; a prompt convention only works until someone writes an enumerating prompt again.
 
 Scope for the ADR: who reviews a decomposition (Reviewer vs Partner/Supervisor per 0020's split — a decomposition reviewer plausibly needs judgment, not just blocking), what it checks (right-sizing, coherence of the split, dependency sanity, no padded verification Stories), and how it escalates. Note the cost asymmetry that makes this worth a gate: an over-decomposition multiplies ceremony across every downstream Story, so the review pays for itself on the first catch.
