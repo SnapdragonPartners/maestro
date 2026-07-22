@@ -656,18 +656,16 @@ func (c *Coder) refreshMirrorOnHost(ctx context.Context) error {
 
 	mirrorMgr := mirror.NewManager(projectDir)
 	if err := mirrorMgr.RefreshFromForge(ctx); err != nil {
-		c.logger.Warn("Mirror refresh failed, attempting reclone: %v", err)
-		mirrorPath, pathErr := mirrorMgr.GetMirrorPath()
-		if pathErr != nil {
-			return fmt.Errorf("mirror recovery failed (cannot get path): %w", pathErr)
+		c.logger.Warn("Mirror refresh failed, attempting recovery: %v", err)
+		// Recover via EnsureMirror rather than deleting the mirror here. Its
+		// validate → remove → clone recovery runs entirely under the per-path
+		// lock; deleting from out here would be an unlocked destructive write
+		// racing whatever else holds the mirror, which is precisely what
+		// ADR 0027 forbids (and what P-11 fixed inside the package).
+		if _, recoverErr := mirrorMgr.EnsureMirror(ctx); recoverErr != nil {
+			return fmt.Errorf("mirror recovery failed: %w", recoverErr)
 		}
-		if removeErr := os.RemoveAll(mirrorPath); removeErr != nil {
-			return fmt.Errorf("mirror recovery failed (cannot remove): %w", removeErr)
-		}
-		if _, recloneErr := mirrorMgr.EnsureMirror(ctx); recloneErr != nil {
-			return fmt.Errorf("mirror recovery failed (reclone): %w", recloneErr)
-		}
-		c.logger.Info("Mirror recovered via reclone")
+		c.logger.Info("Mirror recovered")
 	}
 	return nil
 }

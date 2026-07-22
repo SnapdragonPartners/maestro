@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"orchestrator/pkg/logx"
+	"orchestrator/pkg/mirror"
 )
 
 // Setup constants.
@@ -371,6 +372,11 @@ func (m *SetupManager) createRepository(ctx context.Context, baseURL, token, rep
 
 // pushMirror pushes content from a git mirror to the Gitea repository.
 func (m *SetupManager) pushMirror(ctx context.Context, mirrorPath, cloneURL, token string) error {
+	// Rewrites the mirror's `gitea` remote and pushes from it, so it is a mirror
+	// writer and must serialize against creation, refresh, and destructive
+	// recovery on the same path (ADR 0027).
+	defer mirror.LockPath(mirrorPath)()
+
 	// We need to push all refs from the mirror to Gitea.
 	// Format the URL with token for authentication.
 	// Example: http://token:TOKEN@localhost:3000/maestro/project.git

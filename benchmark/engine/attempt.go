@@ -412,7 +412,14 @@ func (a *attempt) cleanup() {
 	if err := a.adapter.Cleanup(cctx, a.spec); err != nil {
 		problems = append(problems, "adapter cleanup: "+err.Error())
 	}
-	if refs, err := gitx.LsRemoteHeads(cctx, ".", a.story.Definition.Fixture.Repo, "refs/heads/"+a.spec.BranchNamespace+"/*"); err != nil {
+	// The namespace check makes a network call to the fixture host; give it a
+	// fresh budget rather than the remainder of cctx. Adapter cleanup (Docker
+	// container teardown) can eat most of the shared window on some hosts,
+	// which would SIGKILL this ls-remote and turn a clean run into a spurious
+	// "cleanup unverifiable" invalid.
+	nctx, ncancel := context.WithTimeout(context.Background(), a.engine.cleanupTimeout())
+	defer ncancel()
+	if refs, err := gitx.LsRemoteHeads(nctx, ".", a.story.Definition.Fixture.Repo, "refs/heads/"+a.spec.BranchNamespace+"/*"); err != nil {
 		problems = append(problems, "namespace verification: "+err.Error())
 	} else if len(refs) > 0 {
 		problems = append(problems, "refs left behind: "+strings.Join(refs, ", "))

@@ -28,7 +28,8 @@ definition.
 - `story/` — golden story definitions: TOML schema, strict loader, validation, canonical content identity.
 - `mph/` — MPH configuration bundles: TOML schema, loader, content-hash identity.
 - `runrecord/` — the normalized run-record contract: four-state metrics, registry, verdicts, failure kinds, target descriptor. `recordtest/` builds valid records for tests.
-- `results/` — append-only, schema-versioned JSONL results store, plus the rewritable suite manifest.
+- `results/` — the results-store **package**: append-only, schema-versioned JSONL records, plus the rewritable suite manifest.
+- `runs/` — the results-store **data**, and the runner's `--results` default: `<suite-id>.jsonl`, `<suite-id>.manifest.json`, and per-run evidence under `runs/evidence/<run-id>/` (logs, `usage.jsonl`, SQLite). **Durable-on-disk but git-ignored** (`benchmark/.gitignore`): kept across sessions so instrumented-run measurements survive, but never committed — it holds transcripts/DBs and is reproducible by re-running. Distilled outputs (e.g. the item-6 D9 budget policy) land in version control instead. **Look here first for run evidence.** Kept a sibling of `results/` so runtime output never comingles with package source.
 - `target/` — the `Adapter` interface (`Describe`/`Run`/`Cleanup`), `AttemptSpec`, `Observation`; `faketarget/` is the scripted in-memory test adapter, `stubtarget/` the scripted real-git test adapter, and `v1target/` the real **v1-as-patched** adapter: per-run Gitea forge isolation, subprocess invocation with DB polling, post-hoc metric normalization (streamed after item 5's P-1 patch), durable evidence export, and audited prompt-content MPH identity (design_adapter_v1.md). Its `modernc.org/sqlite` import is an adapter-scoped v1-compatibility dependency, removed when the v1 adapter retires.
 - `engine/` — the execution engine: attempt lifecycle, isolation, budget enforcement, engine-executed validators/checks, verdict composition, cleanup verification, suite orchestration (design_engine.md).
 - `cmd/runner/` — the CLI (`bin/runner`): `validate`, `run`, `list`.
@@ -38,42 +39,173 @@ definition.
 
 Comparison reports with spread are item 7 and get their own package here.
 
-## Usage
+## Run Protocol
 
-Build the runner and the target binary, then validate and run:
+**Follow these steps in order, every time.** A benchmark run spends real
+money and its value depends entirely on methodology being identical
+between runs — an out-of-order or skipped step produces a number that
+looks valid and is not comparable to anything.
+
+### 1. Preflight (never skip)
 
 ```bash
-# From the repo root: build the v1 target binary the adapter launches
-make maestro
+# From the repo root — REBUILD THE TARGET BINARY AFTER *ANY* CHANGE TO v1.
+# The adapter launches bin/maestro as a subprocess; a stale binary silently
+# benchmarks old code. This has already cost a full run (discovery-006).
+make maestro                    # or: go build -o bin/maestro ./cmd/maestro
 
-# In benchmark/: build the runner and validate all stories × configs
+# Verify the P-1 capability handshake — the adapter refuses a target
+# that does not advertise this, and fails runs whose usage log never validates.
+./bin/maestro -version | grep 'usage-surface: v1'
+
+# In benchmark/: build the runner, then confirm identity BEFORE spending.
 make build                      # produces bin/runner
-bin/runner validate             # loads stories/ and configs/, prints hashes
+bin/runner validate             # loads stories/ + configs/, prints content hashes
+```
 
-# Execute one story under one config (spends real tokens — see budgets
-# in the story/config TOMLs; the suite cap is enforced conservatively)
-ANTHROPIC_API_KEY=... bin/runner run \
+`validate` is the cheap gate: it proves every story and config parses,
+validates, and hashes. Read the printed hashes — they are the run's
+identity (see *Comparability* below).
+
+### 2. Credentials
+
+`MAESTRO_ANTHROPIC_API_KEY` is the preferred variable. Maestro's secret
+lookup precedence is `MAESTRO_<NAME>` → user secrets → system secrets →
+`<NAME>`, so a bare `ANTHROPIC_API_KEY` also works but is overridden by the
+prefixed form if both are set. The runner passes its environment through
+to the target subprocess. `paired-local` needs no key (see *Local Models*).
+
+### 3. Execute
+
+```bash
+# One story under one config. Results default to runs/ — no --results needed.
+bin/runner run \
   --story smoke-comment \
   --config paired-default \
-  --suite-id my-suite-001 \
-  --results results \
-  --workdir /tmp/bench-work
+  --suite-id <purpose>-<subject>   # e.g. cal-d9-stage1-bugfix
 
-# Repeat attempts, or run the full stories × configs matrix
-ANTHROPIC_API_KEY=... bin/runner run --repeats 3 --suite-id my-suite-002
+# N repeats (the D9 sampling dimension). --repeats is SUITE-WIDE, so it must
+# be paired with --config: the D9 policy is N=3 for the primary configuration
+# and N=1 for secondary ones, which one unfiltered command cannot express.
+# Run one suite per configuration:
+bin/runner run --config paired-default --repeats 3 --suite-id <purpose>-primary
+bin/runner run --config paired-local   --repeats 1 --suite-id <purpose>-local
 
 # Inspect stored results
-bin/runner list --results results
+bin/runner list
 ```
+
+Conventions that keep the store readable: **one suite-id per purpose**,
+named `<purpose>-<subject>` so the results directory self-documents; and
+let `--results` default to `runs/` so evidence always lands in the durable
+store. `--workdir` is scratch and may point anywhere (it is discarded);
+`--keep-infra` leaves the adapter's Gitea container up between suites to
+skip startup cost.
 
 `run` writes one JSONL run record per attempt plus a rewritable suite
 manifest under `--results`, and durable evidence (diff, PR metadata, DB
 snapshot, usage log, launch log, validator output) under
-`results/evidence/<run-id>/`. `--keep-infra` leaves the adapter's Gitea
-container running between suites to skip its startup cost; omit it to
-tear down. The adapter requires the target binary to advertise
-`usage-surface: v1` in `-version` output (the P-1 handshake) and fails
-runs whose usage log never validates.
+`runs/evidence/<run-id>/`.
+
+### 4. Read the results
+
+Metrics use **four-state semantics** — a value, `unsupported`,
+`not_applicable`, or `unavailable`. Missing is never zero, so always read
+`status`, not just `value`:
+
+```bash
+python3 -c "
+import json,glob
+for f in sorted(glob.glob('runs/*.jsonl')):
+    for l in open(f):
+        r=json.loads(l); m=r['metrics']
+        g=lambda k: m.get(k,{}).get('value', m.get(k,{}).get('status'))
+        print(r['story_id'], r['verdict'], r.get('failure_kind') or '',
+              g('tokens_total'), g('cost_usd'), g('wall_clock_seconds'), g('llm_calls'))"
+```
+
+Keys: `tokens_total`, `cost_usd`, `wall_clock_seconds`, `llm_calls`,
+`tool_calls`. A cancelled run (e.g. budget overrun) legitimately reports
+`unavailable` for metrics it could not collect.
+
+### 5. Police the run (a verdict alone is not enough)
+
+`accepted` is necessary but not sufficient evidence of a *healthy* run,
+and a failure is not automatically a story defect. Before trusting a
+number, check the target log in `runs/evidence/<run-id>/logs/maestro.log`:
+
+```bash
+ML=runs/evidence/<run-id>/logs/maestro.log
+grep -oE "state: [A-Z_]+" "$ML" | uniq -c        # progression, not a loop
+grep -niE "state machine failed|FATAL SHUTDOWN|requeue|abandoned" "$ML"
+```
+
+Interpret failures by kind before spending again:
+
+- **`budget-overrun`** — the run hit a declared cap. Distinguish *healthy
+  but heavy* (orderly `PLANNING → CODING → TESTING` progression, substantive
+  review feedback) from *pathological* (a repeating state cycle, repeated
+  requeues, abandonment). Only the former justifies raising a cap.
+- **`target-error`** — the target died. Check for an architect fatal
+  shutdown or an infrastructure race before blaming the story.
+- **`branch-state` / invalid** — harness or cleanup problem, not a target result.
+
+Known environment flake: on macOS the **first exec of a freshly built
+binary can be SIGKILLed** while the code signature is re-validated,
+surfacing as `signal: killed`. Re-run once to confirm before investigating.
+
+### 6. Comparability
+
+**Aggregation and comparison are different operations with different rules.**
+Conflating them is the easiest way to publish noise:
+
+- **Aggregate** (mean, spread, overrun rate) **only within one complete
+  identity group**, including enforcement mode. A distribution pooled across
+  identities is not a distribution of anything.
+- **Compare** those labeled aggregates **side by side, across groups.** That is
+  the entire point of the benchmark — v1-as-patched vs v2 vs a single-agent
+  baseline are *deliberately* different identities. Comparing them is correct;
+  pooling their attempts into one distribution is not.
+
+The identity group is the full field set below — `story_hash` and `config_hash`
+alone are **not sufficient**, since the target underneath can change while both
+stay fixed, which is exactly what the P-9/P-10 patches on this branch did. Every
+field is recorded on each run record; group by all of them before aggregating:
+
+| Source | Fields | Why it moves |
+|---|---|---|
+| Story | `story_hash` | prompt, fixture pin, validators, checks, **and the `[budget]` block** |
+| Configuration | `config_hash` | model routing, budgets declared by the MPH bundle |
+| MPH identity | `harness_hash` | **adapter-derived harness content — e.g. the Gitea image the adapter runs — which `config_hash` does not cover** |
+| MPH identity | `model`, `prompt_pack`, `prompt_hash`, `maestro_version` | a prompt-template edit (e.g. P-4) changes cost without touching any story |
+| Target descriptor | `adapter_name`, `adapter_version`, `commit_hash`, `binary_identity` | **a target rebuild changes behavior invisibly to every hash above** |
+| Target descriptor | `budget_enforcement`, `capabilities` | qualifies which *metrics* compare — see below |
+
+Two qualifications that bite in practice:
+
+- **Enforcement mode qualifies metrics selectively** ([ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md),
+  amended 2026-07-16), which is a statement about *comparison*, not aggregation:
+
+  | Metric | Across enforcement modes |
+  |---|---|
+  | Raw cost / token **values** | **Comparable** — a dollar spent is a dollar spent |
+  | Budget-overrun **rates** | **Not comparable** — mode-scoped by definition |
+  | Cost **distributions** | **Not comparable** — a `streamed` target is cancelled at the cap, so its expensive runs are right-censored; a `post-hoc` target runs past the cap and reports the full figure |
+
+  So: report a streamed group's cost alongside a post-hoc group's, but never
+  merge their attempts into one distribution, and never put their overrun rates
+  in the same column. A streamed group's spread must carry its censoring.
+- **Changing a cap changes `story_hash` by design** — the budget is part of
+  the story definition. Caps are a safeguard, so varying them during
+  calibration is legitimate, but it means a calibration series spans several
+  identities. **Fix the caps before collecting any distribution you intend to
+  compare or publish**, and record which identity each attempt ran against.
+
+Item 7's comparison reporting keys on exactly this: **aggregate within a group,
+label the group with its identity and enforcement mode, then place those
+aggregates side by side.** A report that pools attempts across differing target
+descriptors is reporting noise as spread; a report that refuses to place
+different targets side by side has no comparison to make.
 
 ## Local Models (paired-local)
 

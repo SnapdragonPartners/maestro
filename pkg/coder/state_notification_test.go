@@ -101,8 +101,16 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	var receivedNotifications []*proto.StateChangeNotification
 	var mu sync.Mutex
 
-	// Start notification collector
+	// Start notification collector.
+	//
+	// Stopped via a dedicated `stop` channel rather than by closing
+	// notificationCh: BaseStateMachine.TransitionTo sends the notification from
+	// its own goroutine, so closing the channel out from under it is a
+	// close-during-send data race (production survives it only via a recover(),
+	// which does not make it race-free). Signalling the collector instead leaves
+	// the notification channel open for any in-flight sender.
 	done := make(chan struct{})
+	stop := make(chan struct{})
 	go func() {
 		defer close(done)
 		for {
@@ -115,6 +123,8 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 				receivedNotifications = append(receivedNotifications, notification)
 				t.Logf("Received notification: %s %s -> %s", notification.AgentID, notification.FromState, notification.ToState)
 				mu.Unlock()
+			case <-stop:
+				return
 			case <-time.After(2 * time.Second):
 				return // Timeout
 			}
@@ -149,8 +159,9 @@ func TestCoderStateNotificationWithBaseStateMachine(t *testing.T) {
 	// Wait a bit for notification processing
 	time.Sleep(100 * time.Millisecond)
 
-	// Close notification channel and wait for collector to finish
-	close(notificationCh)
+	// Stop the collector and wait for it to finish. Deliberately does NOT close
+	// notificationCh — see the collector comment above.
+	close(stop)
 	<-done
 
 	// Verify we received the notification

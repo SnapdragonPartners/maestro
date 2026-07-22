@@ -13,7 +13,7 @@ level = "story"
 
 [fixture]
 repo = "https://github.com/SnapdragonPartners/golden-fixture-llms"
-commit = "891dce215ef5c27cf575020e98f29bb876d96abc"
+commit = "7729fffe3f2a15b97de6ba8dd73273fd562fad0d"
 base_branch = "main"
 
 [prompt]
@@ -57,7 +57,7 @@ type = "files_changed_within"
 [[checks]]
 name = "seed-tests-untouched"
 type = "command"
-command = "git diff --exit-code 891dce215ef5c27cf575020e98f29bb876d96abc -- llms/providers/openai/stopreason_seed_test.go"
+command = "git diff --exit-code 7729fffe3f2a15b97de6ba8dd73273fd562fad0d -- llms/providers/openai/stopreason_seed_test.go"
 
 [[checks]]
 name = "openai-tests-pass"
@@ -65,6 +65,6 @@ type = "command"
 command = "go test ./llms/providers/openai/..."
 
 [budget]
-max_tokens = 400000
+max_tokens = 2500000
 max_wall_clock_seconds = 2700
-max_cost_usd = 8.0
+max_cost_usd = 24.0

@@ -10,7 +10,7 @@ level = "story"
 
 [fixture]
 repo = "https://github.com/SnapdragonPartners/golden-fixture-cms"
-commit = "e7a7422bad4dec726b62eec2cd6d759cd7780deb"
+commit = "748681e3ba581c2853b5e7fcd8ff6a0ca06d5f3b"
 base_branch = "main"
 
 [prompt]
@@ -50,11 +50,11 @@ contains = "Golden smoke check"
 [[checks]]
 name = "exact-one-line-append"
 type = "command"
-command = "test \"$(git diff e7a7422bad4dec726b62eec2cd6d759cd7780deb..HEAD --numstat -- doc.go | awk '{print $1\"-\"$2}')\" = \"1-0\" && test \"$(tail -n 1 doc.go)\" = \"// Golden smoke check.\""
+command = "test \"$(git diff 748681e3ba581c2853b5e7fcd8ff6a0ca06d5f3b..HEAD --numstat -- doc.go | awk '{print $1\"-\"$2}')\" = \"1-0\" && test \"$(tail -n 1 doc.go)\" = \"// Golden smoke check.\""
 
 # Draft budgets (item 6 calibrates): sized from discovery runs 1-4 —
 # v1's ceremony plus a single minimal story.
 [budget]
 max_tokens = 1500000
 max_wall_clock_seconds = 2400
-max_cost_usd = 12.0
+max_cost_usd = 8.0

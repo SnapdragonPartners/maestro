@@ -13,7 +13,7 @@ level = "story"
 
 [fixture]
 repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
-commit = "e71d51bb8486137d8bf8fdf18da8913c3c021edd"
+commit = "6ed67444e955afb07dda2f6ddec572f96b194c43"
 base_branch = "main"
 
 [prompt]
@@ -73,6 +73,6 @@ type = "command"
 command = "sh -c 'test -z \"$(gofmt -l providers.go)\"'"
 
 [budget]
-max_tokens = 250000
-max_wall_clock_seconds = 1800
-max_cost_usd = 5.0
+max_tokens = 4000000
+max_wall_clock_seconds = 3600
+max_cost_usd = 20.0

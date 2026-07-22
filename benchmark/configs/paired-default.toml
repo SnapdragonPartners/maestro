@@ -1,6 +1,7 @@
 # The paired-agent default configuration (ADR 0025: mandatory from the
 # start): v1's factory path, driven black-box by the v1-as-patched adapter.
-# Budget expectations are provisional until item 6's instrumented runs.
+# Budget expectations calibrated by item 6's instrumented runs (2026-07-21).
+# See docs/v2/phase_1/d9_budget_policy.md for the measurements and derivation.
 schema_version = 2
 name = "paired-default"
 description = "v1-as-patched paired-agent factory default"
@@ -34,13 +35,15 @@ poll_interval = "5s"
 # both pull their matching arch; pinned by the arch-independent immutable
 # manifest digest so identical harness hashes execute identical contents.
 # Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
-container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:4ace8287f7b2b475d5f6cbe94f85a78316cefcfdb7d86de0487e932c8dc9fcab"
+container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b75e5ad5982c26e5e988a9d5d9ca6441d61d3741defc0516b91"
 
-# Expectations remain provisional until item 6; caps sized from the
-# discovery runs (v1's paired factory costs real money — measuring that
-# is the point).
+# expected_cost_usd_per_run is the mean of the two accepted attempts on the
+# latest-measured target identity ($4.58, rounded up); expected_tokens_per_run
+# is the mean of the three attempts with surviving token records (491k) and so
+# spans identities. Caps are the runaway safeguard, not a target. Full
+# derivation and the per-attempt identities: docs/v2/phase_1/d9_budget_policy.md.
 [budget]
-expected_tokens_per_run = 1500000
-expected_cost_usd_per_run = 10.0
+expected_tokens_per_run = 500000
+expected_cost_usd_per_run = 5.0
 max_cost_usd_per_run = 24.0
-max_cost_usd_per_suite = 96.0
+max_cost_usd_per_suite = 70.0

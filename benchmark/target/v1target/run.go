@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,12 +20,15 @@ import (
 // v1Run carries one attempt's state through launch, poll, evidence export,
 // and solution import.
 type v1Run struct {
-	adapter  *Adapter
-	spec     *target.AttemptSpec
-	tail     *usageTail
-	cloneURL string
-	authURL  string
-	settings settings
+	adapter *Adapter
+	spec    *target.AttemptSpec
+	tail    *usageTail
+	// inspectImage/pullImage override the docker calls; nil uses docker. Test seams.
+	inspectImage imageInspector
+	pullImage    imagePuller
+	cloneURL     string
+	authURL      string
+	settings     settings
 }
 
 // finalState is everything poll and post-processing learned.
@@ -184,6 +189,10 @@ func (r *v1Run) v1Config() ([]byte, error) {
 	}
 	cfg := map[string]any{
 		"project": map[string]any{
+			// A non-empty name + platform keeps v1's bootstrap detector from
+			// flagging the project as unconfigured (item 6): an unconfigured
+			// project invites bootstrap work that pollutes the golden diff.
+			"name":             "golden-" + r.spec.Story.ID,
 			"primary_platform": r.settings.Platform,
 			"pack_name":        r.settings.Platform,
 		},
@@ -208,13 +217,88 @@ func (r *v1Run) v1Config() ([]byte, error) {
 		},
 	}
 	if r.settings.ContainerImage != "" {
-		cfg["container"] = map[string]any{"name": r.settings.ContainerImage}
+		// pinned_image_id makes v1's bootstrap detector treat the container as
+		// configured (hasValidContainer) rather than demanding a Dockerfile —
+		// but only if the image is present locally at detection time, so the
+		// adapter pre-pulls it before launch (see launch()).
+		cfg["container"] = map[string]any{
+			"name":            r.settings.ContainerImage,
+			"pinned_image_id": r.settings.ContainerImage,
+		}
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal v1 config: %w", err)
 	}
 	return raw, nil
+}
+
+// imageInspector reports whether an image reference resolves locally.
+// imagePuller fetches one reference. Both are swappable so every branch of
+// ensureImagePresent is testable without a daemon, a registry, or a network.
+type (
+	imageInspector func(ctx context.Context, image string) error
+	imagePuller    func(ctx context.Context, image string) error
+)
+
+// dockerImageInspect reports whether an image reference resolves locally.
+func dockerImageInspect(ctx context.Context, image string) error {
+	cmd := exec.CommandContext(ctx, "docker", "image", "inspect", image)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker image inspect %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// dockerImagePull fetches an image reference.
+func dockerImagePull(ctx context.Context, image string) error {
+	cmd := exec.CommandContext(ctx, "docker", "pull", "--quiet", image)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker pull %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ensureImagePresent guarantees the pinned coder image resolves locally before
+// the target launches.
+//
+// Inspect first and skip the pull when the image is already present: the images
+// are digest-pinned, so a local hit is already the exact bytes and a network
+// round trip buys nothing (and makes offline re-runs fail slower). Pull only on
+// a miss, then require a second successful inspect. A pull failure over an image
+// that is present is fine; a missing image aborts the attempt rather than
+// starting a run that cannot produce a valid result — launching without it lets
+// v1 treat the project as unconfigured, start bootstrap work, spend tokens, and
+// pollute the golden diff.
+func (r *v1Run) ensureImagePresent(ctx context.Context, logFile io.Writer) error {
+	image := r.settings.ContainerImage
+
+	inspect := r.inspectImage
+	if inspect == nil {
+		inspect = dockerImageInspect
+	}
+	pull := r.pullImage
+	if pull == nil {
+		pull = dockerImagePull
+	}
+
+	if err := inspect(ctx, image); err == nil {
+		return nil // already present; digest-pinned, so nothing to fetch
+	}
+
+	if pullErr := pull(ctx, image); pullErr != nil {
+		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed: %s\n", image, pullErr)
+		if err := inspect(ctx, image); err != nil {
+			return fmt.Errorf("coder image %s unavailable: pull failed (%w) and image is not present locally: %w", image, pullErr, err)
+		}
+		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed but image is present locally; continuing\n", image)
+		return nil
+	}
+
+	if err := inspect(ctx, image); err != nil {
+		return fmt.Errorf("coder image %s not present after a successful pull: %w", image, err)
+	}
+	return nil
 }
 
 // launch starts the maestro subprocess, process-group isolated, output
@@ -227,6 +311,20 @@ func (r *v1Run) launch(ctx context.Context, projectDir, launchLog string) (*proc
 	bin, err := filepath.Abs(r.settings.MaestroBin)
 	if err != nil {
 		return nil, fmt.Errorf("maestro bin path: %w", err)
+	}
+	// Ensure the coder image is present locally so v1's bootstrap detector can
+	// validate the pinned_image_id (docker inspect) at PM-SETUP time — v1 itself
+	// only pulls it later, when starting the coder container.
+	//
+	// A pull failure is tolerable ONLY when the exact image is already present
+	// (offline re-runs); it is fatal otherwise. Launching without the image lets
+	// v1 treat the project as unconfigured and start bootstrap work, which spends
+	// tokens and pollutes the golden diff — a silently invalid, billable run.
+	if r.settings.ContainerImage != "" {
+		if err := r.ensureImagePresent(ctx, logFile); err != nil {
+			_ = logFile.Close() //nolint:errcheck // launch aborted
+			return nil, err
+		}
 	}
 	cmd := exec.CommandContext(ctx, bin,
 		"--config", filepath.Join(projectDir, "golden-config.json"),

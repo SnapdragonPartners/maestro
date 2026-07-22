@@ -43,11 +43,13 @@ Out of scope:
 
 ## Decisions Delegated To Phase 1 By ADR 0025
 
-Proposed here, ratified by this plan's approval:
+Proposed here, ratified by this plan's approval — except where a numbered entry
+records a later amendment, which carries its own approval:
 
 1. **Runner location**: a new top-level directory `benchmark/` that is its own Go module. Black-box is then structurally enforced — the module cannot import Maestro internals without declaring a dependency on the main module, which review would catch immediately. Unlike `spikes/`, it is a maintained surface: wired into `make build`/`make test`/lint via explicit targets. v1's `pkg/benchmark` and `cmd/benchmark` are left untouched until their consumers die (inventory).
 2. **Story definition directory and format**: `benchmark/stories/`, one TOML file per story (authoring-friendly, consistent with the repo's front-matter convention), validated against a versioned schema on load. JSON remains the substrate for everything the runner *emits* (run records, results store) per ADR 0021.
 3. **Configuration directory**: `benchmark/configs/`, one MPH bundle per file, identified by content hash (ADR 0025's storage-transition rule).
+4. **Results store on-disk location** *(item-6 amendment, ratified 2026-07-21 with the [D9 budget policy](d9_budget_policy.md) by Codex + DR — not by this plan's original approval)*: `benchmark/runs/` (the runner's `--results` default) — ADR 0025's self-contained store, kept **durable on disk across sessions but git-ignored** (`benchmark/.gitignore`). It holds agent transcripts, per-attempt SQLite, and `usage.jsonl` evidence, and is fully reproducible by re-running, so it is preserved-not-committed; the distilled measurements (e.g. the item-6 D9 budget policy) are what land in version control. Deliberately a **sibling** of the `results/` Go package rather than a subdirectory of it, so runtime output never comingles with package source. This is where instrumented-run evidence lives — look here first.
 
 ## Deliverables And PR Sequence
 
@@ -84,7 +86,7 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 - [ ] The runner executes at least 5 single-repo golden stories against the v1-as-patched target, black-box, from a make target.
 - [ ] Repeat runs produce a comparison report showing cost, time, and pass/fail spread (never bare points).
 - [ ] Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline.
-- [ ] The D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner (declared budgets, overrun-as-failure).
+- [x] The D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner (declared budgets, overrun-as-failure). — [d9_budget_policy.md](d9_budget_policy.md), Accepted (Codex + DR, 2026-07-21): N fixed at 3/1, per-story and per-suite caps enforced in the story/config TOMLs. Caveats recorded there and accepted with it: attempts span three target identities, no attempt ran against the final one, and `cleanup-provider-options` is parked (over-decomposition) rather than calibrated.
 - [ ] `golden-minimal` and `golden-all` tiers exist with make targets; `golden-minimal` has run at phase end (build process rule — this phase is where the rule activates).
 - [ ] The v1-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, MPH identity).
 - [ ] The v1 patch record exists: every patch enumerated and justified against the target strategy; nothing backported to `v1-freeze`.

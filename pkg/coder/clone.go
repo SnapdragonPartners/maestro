@@ -231,6 +231,14 @@ func (c *CloneManager) CleanupAgentResources(ctx context.Context, agentID, conta
 func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 	mirrorPath := c.BuildMirrorPath()
 
+	// Serialize against every other in-process writer to this mirror —
+	// mirror.Manager's EnsureMirror/RefreshFromForge/SwitchUpstream reach the
+	// same directories through different objects, so the lock must be the shared
+	// per-path one, not a lock private to this type (ADR 0027). Covers BOTH
+	// branches below: the initial bare clone was previously unlocked entirely,
+	// and the corruption recovery below deletes and re-clones.
+	defer mirror.LockPath(mirrorPath)()
+
 	// Check if mirror already exists.
 	if _, err := os.Stat(mirrorPath); os.IsNotExist(err) {
 		// Create mirror directory.
@@ -245,16 +253,29 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 		}
 	} else {
 		// Update existing mirror - fetch all branches and tags with pruning.
-		// Use file locking to prevent concurrent git remote update operations.
+		//
+		// In-process writers are serialized by the mirror.LockPath above. This
+		// flock adds a narrow cross-process guard over THIS update only: it is
+		// not a general cross-process mirror lock, because the initial bare clone
+		// below and every mirror.Manager writer (EnsureMirror, RefreshFromForge,
+		// SwitchUpstream, CommitMaestroMd) do not take it. Cross-process
+		// concurrency is out of scope for the single-process local model
+		// (ADR 0027); do not rely on this flock for it.
+		//
 		// Lock file lives in the parent directory so it survives mirror deletion
-		// during corruption recovery (deleting mirrorPath would destroy an in-dir lock).
+		// during corruption recovery (deleting mirrorPath would destroy an in-dir
+		// lock).
 		lockPath := filepath.Join(filepath.Dir(mirrorPath), ".mirror-update.lock")
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return "", logx.Wrap(err, fmt.Sprintf("failed to create lock file %s", lockPath))
 		}
 		defer func() { _ = lockFile.Close() }()
-		defer func() { _ = os.Remove(lockPath) }() // Clean up lock file
+		// NOTE: the lock file is deliberately NOT removed. Unlinking it while
+		// another process holds the lock lets that process keep a lock on an
+		// orphaned inode while a third creates a fresh file at the same path and
+		// locks that — two simultaneous "exclusive" holders. The empty file is
+		// harmless and must outlive every holder.
 
 		// Acquire exclusive lock (blocks until available).
 		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX)

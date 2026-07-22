@@ -144,7 +144,7 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 		ContextManager:     cm,
 		GeneralTools:       generalTools,
 		TerminalTool:       terminalTool,
-		MaxIterations:      20, // Allow exploration of project files
+		MaxIterations:      40, // Allow exploration of project files; terse specs need more read_file passes to understand the codebase before review_complete
 		MaxTokens:          agent.ArchitectMaxTokens,
 		Temperature:        config.GetTemperature(config.TempRoleArchitect),
 		AgentID:            d.GetAgentID(),
@@ -285,8 +285,18 @@ func (d *Driver) handleSpecReview(ctx context.Context, requestMsg *proto.AgentMs
 			return nil, fmt.Errorf("story generation failed: %w", storiesOut.Err)
 		}
 
-		if storiesOut.Signal != tools.SignalStoriesSubmitted {
-			return nil, fmt.Errorf("expected STORIES_SUBMITTED signal, got: %s", storiesOut.Signal)
+		// Accept MAINTENANCE_SUBMITTED as equivalent to STORIES_SUBMITTED here.
+		// During initial spec-driven story generation the LLM sometimes flags
+		// housekeeping-flavored work (e.g. a dependency bump) as maintenance, but
+		// this path is not the periodic maintenance cycle: loadStoriesFromSubmitResultData
+		// ignores the maintenance flag and loads the requirements into the normal
+		// queue either way. Treating the signal mismatch as fatal needlessly kills
+		// the architect on well-formed stories.
+		if storiesOut.Signal != tools.SignalStoriesSubmitted && storiesOut.Signal != tools.SignalMaintenanceSubmitted {
+			return nil, fmt.Errorf("expected STORIES_SUBMITTED or MAINTENANCE_SUBMITTED signal, got: %s", storiesOut.Signal)
+		}
+		if storiesOut.Signal == tools.SignalMaintenanceSubmitted {
+			d.logger.Info("ℹ️ submit_stories flagged maintenance during spec-driven generation; loading as normal stories")
 		}
 
 		// Extract stories data from ProcessEffect.Data
