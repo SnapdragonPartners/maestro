@@ -41,7 +41,7 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 
 ### Sampling and budgets (the D9 mechanism)
 
-- Standard comparisons run **N = 3** per story per configuration; smoke runs are **N = 1**. Both numbers are provisional until the first instrumented runs establish real per-story costs (D9's agreed first action); the mechanism is not provisional.
+- Standard comparisons run **N = 3** per story on the **primary** configuration and **N = 1** on secondary ones; conformance runs and smoke runs are **N = 1**. *(Amended: these numbers were provisional pending the first instrumented runs — D9's agreed first action — and were **fixed by that campaign** in [d9_budget_policy.md](../v2/phase_1/d9_budget_policy.md), Accepted 2026-07-21. The 3/1 split and the purpose-not-tier rule for N come from the 2026-07-22 proposal.)*
 - Aggregation semantics are defined per metric class, over the cohort of **valid attempts** (invalid runs — failed isolation or unverifiable cleanup — are excluded from every aggregation and counted separately; budget-overrun aborts are valid *failed* attempts whose costs count):
   - **Numeric per-run metrics** — tokens, cost, wall-clock, LLM calls, tool calls, iterations, review cycles, self-repair cycles, human interventions and attention time — report as min/median/max across valid attempts, never bare points.
   - **Pass rate** — accepted verdicts over valid attempts.
@@ -78,7 +78,7 @@ The near-term primary function is therefore **conformance**: proving the pipelin
 |---|---|---|---|---|
 | End of **every** phase (unchanged, *Suite tiers* above) | `golden-minimal` | 1 | `paired-default` | the harness-is-alive smoke check |
 | End of every phase, **from Phase 2 onward** | `golden-all` | 1 | `paired-default` | the conformance proof — every rung exercised once |
-| Phase 1B only | `golden-all` | 3 | both configurations | D9 comparison sampling |
+| Phase 1B only | `golden-all` | 3 primary / 1 secondary | both configurations | D9 comparison sampling |
 
 **This is a policy amendment, not a clarification, and is proposed as such.** As accepted, the *Suite tiers* text binds `golden-all` to "standard N" and the [D9 policy](../v2/phase_1/d9_budget_policy.md) sets standard N = 3 for `paired-default`; running `golden-all` at N = 1 therefore changes both, and acceptance of this amendment is required to do so.
 

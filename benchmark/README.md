@@ -19,9 +19,11 @@ after we change something? Phase 1's instrumented runs showed the target does
 not reliably run (7 of 11 v1 patches were run-blocking), and measurement
 presupposes function — so economic baselining, comparison reporting, and the
 single-agent cost comparator defer to **Phase 1B** (after Phase 7, per the
-2026-07-22 ADR 0025 amendment). The mechanics below are unchanged; cost and
-token data keep accruing on every run so the trend is there when Phase 1B
-arrives.
+2026-07-22 ADR 0025 amendment). The mechanics below are unchanged with one
+exception — the tier/N binding, which that amendment explicitly changes: a
+tier names a story set, and N follows the run's purpose (conformance N=1,
+comparison N=3 primary / N=1 secondary). Cost and token data keep accruing on
+every run, so the trend is there when Phase 1B arrives.
 
 Cadence at every phase end: `golden-minimal` at N = 1 (the harness-is-alive
 check, a few dollars), plus — from Phase 2 onward — `golden-all` at N = 1 on

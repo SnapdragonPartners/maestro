@@ -2,7 +2,7 @@
 title = "Maestro v2 Phase 1: Scope And Plan"
 edit_date = "2026-07-22"
 status = "live"
-summary = "Approved Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 12 serial work items covering the runner module, fixtures, the v1-as-patched target, cost/latency reduction, the single-agent baseline, D9 cost instrumentation, and the first 5-10 stories."
+summary = "Approved Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 12 serial work items covering the runner module, fixtures, the v1-as-patched target, cost/latency reduction, D9 cost instrumentation, and the first 5-10 stories. Resequenced 2026-07-22 (proposed) to conformance-first: the single-agent economic baseline and comparison reporting retime to Phase 1B, and the exit criteria split accordingly."
 type = "plan"
 +++
 
@@ -12,7 +12,7 @@ Status: live — approved by Codex and DR, 2026-07-15 (PR #259; the status flip 
 
 Goal (from the [roadmap](../plan_roadmap.md)): build the measuring instrument before rewriting the machine. **Resequenced 2026-07-22** ([ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) conformance-first amendment): the near-term deliverable is end-to-end conformance — proving the pipeline completes progressively harder stories, repeatably — because measurement presupposes a functioning target and Phase 1's runs showed it is not. Economic baselining moves to Phase 1B, after Phase 7. This document stays controlling for the Phase 1 half; see the split exit criteria below.
 
-Phase 1 implements exactly [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) — the golden story schema, the black-box runner with self-contained persistence, per-target adapters and the normalized run-record contract, the D9 sampling/budget mechanism, and the two mandatory MPH configurations. Where this plan and that ADR diverge, the ADR wins; this plan only sequences the work and fixes the decisions the ADR explicitly delegated to Phase 1 (definition directory, module location, format choices).
+Phase 1 implements exactly [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) — the golden story schema, the black-box runner with self-contained persistence, per-target adapters and the normalized run-record contract, the D9 sampling/budget mechanism, and the paired-agent default configuration. *(Amended 2026-07-22, proposed: the second mandatory configuration — the single-agent baseline — is retimed to Phase 1B along with the economic comparison it exists to serve; Phase 1 keeps only its achievability check. ADR 0025's "mandatory from the start" is retimed in step.)* Where this plan and that ADR diverge, the ADR wins; this plan only sequences the work and fixes the decisions the ADR explicitly delegated to Phase 1 (definition directory, module location, format choices).
 
 ## Scope
 
