@@ -14,9 +14,12 @@ echo "0. Stamping doc edit_date..."
 # Resolve the repo root explicitly: git normally runs hooks from the worktree
 # top level, but that is not guaranteed for every invocation path, and a
 # silently-skipped stamp is the failure this hook exists to prevent.
+# Invoked via `bash` rather than executed directly: if the executable bit is
+# lost (some filesystems, odd umask, Windows checkouts) an -x test would skip
+# stamping silently, which is the precise failure this step exists to prevent.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/scripts/stamp-edit-date.sh" ]; then
-    "$REPO_ROOT/scripts/stamp-edit-date.sh" || true
+if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/stamp-edit-date.sh" ]; then
+    bash "$REPO_ROOT/scripts/stamp-edit-date.sh" || true
 fi
 
 # 1. Ensure build passes
