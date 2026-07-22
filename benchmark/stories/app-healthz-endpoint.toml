@@ -15,7 +15,7 @@
 # no fault of the target. So this story realises rung 5's INTENT inside the
 # contract that exists: the behaviour is exercised for real, and the evidence
 # kind remains test-output. A genuinely new evidence kind is engine work and is
-# deliberately not in scope here.
+# deliberately not in scope here — tracked as issue #279.
 #
 # Self-contained: net/http + net/http/httptest, no external dependency API.
 # The cleanup run showed the coder wandering when it needs a dependency's API
