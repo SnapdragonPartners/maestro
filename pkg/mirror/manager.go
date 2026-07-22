@@ -63,17 +63,24 @@ func lockKey(path string) string {
 // contend. The lock is NOT reentrant — an already-locked caller must not call a
 // method that locks again.
 func LockPath(path string) func() {
+	mu := mutexForPath(path)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// mutexForPath returns the registry mutex guarding a path, creating it on first
+// use. Separated from LockPath so tests can assert lock identity and state
+// (TryLock) directly rather than inferring mutual exclusion from timing.
+func mutexForPath(path string) *sync.Mutex {
 	mirrorLocksMu.Lock()
+	defer mirrorLocksMu.Unlock()
 	key := lockKey(path)
 	mu, ok := mirrorLocks[key]
 	if !ok {
 		mu = &sync.Mutex{}
 		mirrorLocks[key] = mu
 	}
-	mirrorLocksMu.Unlock()
-
-	mu.Lock()
-	return mu.Unlock
+	return mu
 }
 
 // Manager handles git mirror repository operations.
@@ -757,6 +764,12 @@ func (m *Manager) CommitMaestroMd(ctx context.Context, content, commitMsg string
 	if err != nil {
 		return fmt.Errorf("failed to get mirror path: %w", err)
 	}
+
+	// This both READS the mirror (clones from it) and WRITES it (`git remote
+	// update` at the end), so it must serialize against creation, refresh, and
+	// destructive recovery on the same path (ADR 0027) — a concurrent recovery
+	// could delete the mirror out from under the clone below.
+	defer LockPath(mirrorPath)()
 
 	if !mirrorExists(mirrorPath) {
 		return fmt.Errorf("mirror does not exist")

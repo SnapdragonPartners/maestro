@@ -253,11 +253,18 @@ func (c *CloneManager) ensureMirrorClone(ctx context.Context) (string, error) {
 		}
 	} else {
 		// Update existing mirror - fetch all branches and tags with pruning.
-		// The flock guards CROSS-PROCESS concurrency (a second maestro against the
-		// same project dir); in-process writers are already serialized by the
-		// mirror.LockPath above. Lock file lives in the parent directory so it
-		// survives mirror deletion during corruption recovery (deleting mirrorPath
-		// would destroy an in-dir lock).
+		//
+		// In-process writers are serialized by the mirror.LockPath above. This
+		// flock adds a narrow cross-process guard over THIS update only: it is
+		// not a general cross-process mirror lock, because the initial bare clone
+		// below and every mirror.Manager writer (EnsureMirror, RefreshFromForge,
+		// SwitchUpstream, CommitMaestroMd) do not take it. Cross-process
+		// concurrency is out of scope for the single-process local model
+		// (ADR 0027); do not rely on this flock for it.
+		//
+		// Lock file lives in the parent directory so it survives mirror deletion
+		// during corruption recovery (deleting mirrorPath would destroy an in-dir
+		// lock).
 		lockPath := filepath.Join(filepath.Dir(mirrorPath), ".mirror-update.lock")
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {

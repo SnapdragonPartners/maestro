@@ -37,9 +37,11 @@ poll_interval = "5s"
 # Republish + re-pin when a fixture re-pins (benchmark/cache/, make cache-publish).
 container_image = "ghcr.io/snapdragonpartners/golden-cache@sha256:dfc3f0d040229b75e5ad5982c26e5e988a9d5d9ca6441d61d3741defc0516b91"
 
-# Expectations are the measured mean across the three working golden
-# stories; caps are the runaway safeguard, not a target. Derivation and
-# the underlying runs: docs/v2/phase_1/d9_budget_policy.md.
+# expected_cost_usd_per_run is the mean of the two accepted attempts on the
+# latest-measured target identity ($4.58, rounded up); expected_tokens_per_run
+# is the mean of the three attempts with surviving token records (491k) and so
+# spans identities. Caps are the runaway safeguard, not a target. Full
+# derivation and the per-attempt identities: docs/v2/phase_1/d9_budget_policy.md.
 [budget]
 expected_tokens_per_run = 500000
 expected_cost_usd_per_run = 5.0

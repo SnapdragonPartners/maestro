@@ -166,16 +166,21 @@ run record; group by all of them before comparing:
 |---|---|---|
 | Story | `story_hash` | prompt, fixture pin, validators, checks, **and the `[budget]` block** |
 | Configuration | `config_hash` | model routing, budgets declared by the MPH bundle |
-| Target descriptor | `adapter_name`, `adapter_version`, `commit_hash`, `binary_identity` | **a target rebuild changes behavior invisibly to the hashes above** |
-| Target descriptor | `budget_enforcement`, `capabilities` | streamed vs post-hoc enforcement changes what a budget failure *means* |
+| MPH identity | `harness_hash` | **adapter-derived harness content — e.g. the Gitea image the adapter runs — which `config_hash` does not cover** |
 | MPH identity | `model`, `prompt_pack`, `prompt_hash`, `maestro_version` | a prompt-template edit (e.g. P-4) changes cost without touching any story |
+| Target descriptor | `adapter_name`, `adapter_version`, `commit_hash`, `binary_identity` | **a target rebuild changes behavior invisibly to every hash above** |
+| Target descriptor | `budget_enforcement`, `capabilities` | qualifies which *metrics* compare — see below |
 
 Two qualifications that bite in practice:
 
-- **Enforcement mode qualifies every cost number.** A run under streamed
-  enforcement and one under post-hoc enforcement are not interchangeable
-  observations even at identical hashes, because one can be cancelled
-  mid-flight and the other cannot.
+- **Enforcement mode qualifies some metrics, not all** ([ADR 0025](../docs/adr/0025-golden-stories-and-benchmark-runner.md),
+  amended 2026-07-16). **Real cost and token values remain comparable across
+  enforcement modes** — a dollar spent is a dollar spent. What is *not*
+  comparable across modes is **budget-overrun rates and the censoring they
+  induce**: a `streamed` target is cancelled at the cap, so its expensive runs
+  are truncated, while a `post-hoc` target runs past the cap and reports the
+  full figure. Pool costs across modes freely; never pool overrun rates, and
+  remember that a streamed run's cost distribution is right-censored at its cap.
 - **Changing a cap changes `story_hash` by design** — the budget is part of
   the story definition. Caps are a safeguard, so varying them during
   calibration is legitimate, but it means a calibration series spans several

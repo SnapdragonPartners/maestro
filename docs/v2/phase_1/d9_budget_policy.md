@@ -36,8 +36,8 @@ Attempts 3 and 4 report cost only: **a power failure destroyed the scratchpad re
 Stated explicitly rather than asserted, since the pool is heterogeneous:
 
 - **Cost, all accepted attempts (n=5, spans I-A/I-B/I-C):** ($1.97 + $1.81 + $0.89 + $2.09 + $7.06) / 5 = **$2.76**.
-- **Cost, current-identity attempts only (I-C, n=2):** ($2.09 + $7.06) / 2 = **$4.58**. This is the figure `expected_cost_usd_per_run` is derived from — it is the only subset that ran against the patched target, and it is the conservative of the two.
-- **Tokens, attempts with surviving token records (n=3, spans I-A/I-C):** (426k + 320k + 727k) / 3 = **491k** → `expected_tokens_per_run` 500,000. Necessarily cross-identity: only one current-identity attempt has a token record.
+- **Cost, latest-measured-identity attempts only (I-C, n=2):** ($2.09 + $7.06) / 2 = **$4.58**. This is the figure `expected_cost_usd_per_run` is derived from — it is the only subset that ran against the patched target, and it is the conservative of the two. Called *latest-measured* rather than *current* deliberately: I-C is the newest identity any attempt actually ran on, but it is not the identity in the tree today (see below).
+- **Tokens, attempts with surviving token records (n=3, spans I-A/I-C):** (426k + 320k + 727k) / 3 = **491k** → `expected_tokens_per_run` 500,000. Necessarily cross-identity: only one I-C attempt has a surviving token record.
 
 No attempt ran against the **final** identity in this branch: P-11 landed after attempt 5, and fixing the caps below moves every `story_hash` again. The caps are therefore *provisional safeguards derived from a prior identity*, not a calibrated baseline. The first post-approval sweep establishes the comparable baseline.
 
@@ -47,7 +47,7 @@ The spread is the headline finding and survives the identity caveat: **`bugfix` 
 
 ### N (sampling)
 
-**N = 3 for the primary configuration (`paired-default`); N = 1 for secondary configurations.** This confirms the provisional 3/1 the plan carried. A full N=3 sweep of the three working stories costs ~9 × $3.7 ≈ **$33**, which is affordable per-sweep; N=1 on secondary configs keeps the matrix from multiplying that. N=3 is the minimum that shows variance at all and remains the honest floor — it is a variance *smoke test*, not a statistically strong sample.
+**N = 3 for the primary configuration (`paired-default`); N = 1 for secondary configurations.** This confirms the provisional 3/1 the plan carried. A full N=3 sweep of the three working stories is 9 attempts at the latest-measured mean of $4.58 ≈ **$41** (the same figure the suite cap below is derived from), which is affordable per-sweep; N=1 on secondary configs keeps the matrix from multiplying that. N=3 is the minimum that shows variance at all and remains the honest floor — it is a variance *smoke test*, not a statistically strong sample.
 
 ### Per-story caps (runner-enforced, overrun-as-failure)
 
@@ -68,7 +68,7 @@ Applied per story, showing the arithmetic:
 | Field | Value | Derivation |
 |---|---|---|
 | `expected_tokens_per_run` | 500,000 | 491k mean of the three surviving token records, rounded |
-| `expected_cost_usd_per_run` | 5.0 | $4.58 current-identity (I-C) mean, rounded up |
+| `expected_cost_usd_per_run` | 5.0 | $4.58 latest-measured-identity (I-C) mean, rounded up |
 | `max_cost_usd_per_run` | 24.0 | must be ≥ the highest per-story cap, which is `bugfix` at $24 |
 | `max_cost_usd_per_suite` | 70.0 | a full N=3 sweep of three stories expects 9 × $4.58 ≈ $41; $70 leaves headroom for variance and one in-flight reservation while still stopping a systematic runaway well below the $120 sum-of-caps |
 
@@ -82,7 +82,8 @@ Admissibility rules for this record:
 
 - **Only `accepted` runs are cost observations.** A `budget-overrun` measures the cap; a `target-error` measures a defect.
 - **A verdict is not sufficient.** A run is admissible only after the health check (orderly state progression, no requeue/abandonment, no architect fatal shutdown) — an `accepted` run that thrashed is not a clean sample.
-- **Comparability requires matching `story_hash` + `config_hash` + harness identity.** The story hash covers the `[budget]` block, so fixing the caps in this record moves every story's hash. **Observations above predate that change and are not hash-comparable to future runs** — they are the basis for the caps, not a baseline to compare against. The first post-policy sweep establishes the comparable baseline.
+- **Comparability is defined normatively by the Run Protocol's [Comparability section](../../../benchmark/README.md), not restated here.** In summary: matching `story_hash` and `config_hash` is **not sufficient** — the full rule additionally requires the MPH identity (`harness_hash`, `prompt_hash`, `model`, `prompt_pack`, `maestro_version`) and the target descriptor (`adapter_name`, `adapter_version`, `commit_hash`, `binary_identity`), because a target rebuild or a prompt edit changes behavior invisibly to the story and config hashes — exactly what P-9/P-10 did mid-campaign. Enforcement mode qualifies metrics selectively per [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (amended 2026-07-16): **real cost and token values stay comparable across modes**, while budget-overrun *rates* and the right-censoring a streamed cap induces are comparable only within one mode.
+- **Consequently, nothing above is a baseline.** The attempts span three target identities, and fixing the caps in this record moves every `story_hash` again. These observations are the *basis for* the caps, not a series to compare against. The first post-approval sweep establishes the comparable baseline.
 
 ## Known Gaps
 

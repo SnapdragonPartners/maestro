@@ -23,8 +23,9 @@ type v1Run struct {
 	adapter *Adapter
 	spec    *target.AttemptSpec
 	tail    *usageTail
-	// inspectImage overrides the local-image check; nil uses docker. Test seam.
+	// inspectImage/pullImage override the docker calls; nil uses docker. Test seams.
 	inspectImage imageInspector
+	pullImage    imagePuller
 	cloneURL     string
 	authURL      string
 	settings     settings
@@ -232,9 +233,13 @@ func (r *v1Run) v1Config() ([]byte, error) {
 	return raw, nil
 }
 
-// imageInspector runs `docker image inspect` for one reference. Swappable so
-// the present/missing paths are testable without a daemon.
-type imageInspector func(ctx context.Context, image string) error
+// imageInspector reports whether an image reference resolves locally.
+// imagePuller fetches one reference. Both are swappable so every branch of
+// ensureImagePresent is testable without a daemon, a registry, or a network.
+type (
+	imageInspector func(ctx context.Context, image string) error
+	imagePuller    func(ctx context.Context, image string) error
+)
 
 // dockerImageInspect reports whether an image reference resolves locally.
 func dockerImageInspect(ctx context.Context, image string) error {
@@ -245,32 +250,53 @@ func dockerImageInspect(ctx context.Context, image string) error {
 	return nil
 }
 
+// dockerImagePull fetches an image reference.
+func dockerImagePull(ctx context.Context, image string) error {
+	cmd := exec.CommandContext(ctx, "docker", "pull", "--quiet", image)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker pull %s: %w: %s", image, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // ensureImagePresent guarantees the pinned coder image resolves locally before
-// the target launches: pull, then require a successful inspect regardless of the
-// pull's outcome. A pull failure over an image that is already present is fine
-// (offline re-run); a pull failure over a missing image aborts the attempt
-// rather than starting a run that cannot produce a valid result.
+// the target launches.
+//
+// Inspect first and skip the pull when the image is already present: the images
+// are digest-pinned, so a local hit is already the exact bytes and a network
+// round trip buys nothing (and makes offline re-runs fail slower). Pull only on
+// a miss, then require a second successful inspect. A pull failure over an image
+// that is present is fine; a missing image aborts the attempt rather than
+// starting a run that cannot produce a valid result — launching without it lets
+// v1 treat the project as unconfigured, start bootstrap work, spend tokens, and
+// pollute the golden diff.
 func (r *v1Run) ensureImagePresent(ctx context.Context, logFile io.Writer) error {
 	image := r.settings.ContainerImage
-
-	pull := exec.CommandContext(ctx, "docker", "pull", "--quiet", image)
-	pullOut, pullErr := pull.CombinedOutput()
-	if pullErr != nil {
-		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed: %v: %s\n", image, pullErr, pullOut)
-	}
 
 	inspect := r.inspectImage
 	if inspect == nil {
 		inspect = dockerImageInspect
 	}
-	if err := inspect(ctx, image); err != nil {
-		if pullErr != nil {
+	pull := r.pullImage
+	if pull == nil {
+		pull = dockerImagePull
+	}
+
+	if err := inspect(ctx, image); err == nil {
+		return nil // already present; digest-pinned, so nothing to fetch
+	}
+
+	if pullErr := pull(ctx, image); pullErr != nil {
+		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed: %s\n", image, pullErr)
+		if err := inspect(ctx, image); err != nil {
 			return fmt.Errorf("coder image %s unavailable: pull failed (%w) and image is not present locally: %w", image, pullErr, err)
 		}
-		return fmt.Errorf("coder image %s not present after a successful pull: %w", image, err)
-	}
-	if pullErr != nil {
 		_, _ = fmt.Fprintf(logFile, "pre-pull %s failed but image is present locally; continuing\n", image)
+		return nil
+	}
+
+	if err := inspect(ctx, image); err != nil {
+		return fmt.Errorf("coder image %s not present after a successful pull: %w", image, err)
 	}
 	return nil
 }
