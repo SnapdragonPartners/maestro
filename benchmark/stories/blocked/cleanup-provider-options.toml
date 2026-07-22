@@ -37,8 +37,14 @@
 # had the shell tool, the command works in its environment, and it simply never
 # reached for the idiomatic one — and `go doc` appears nowhere in any coder
 # template or tool description. The architect diagnosed the wandering correctly
-# and repeatedly, so the review seat worked. Candidate fix is therefore a cheap
-# prompt line (the P-4/P-5 shape), not v2 tooling. See patches_v1.md.
+# and repeatedly, so the review seat worked.
+#
+# Probable root cause (DR): 136 of 136 tool-calling coder responses carried
+# "response length: 0 chars" — no narrative reasoning survives in the coder's
+# context at all, so it re-plans from scratch every turn. That explains the
+# wandering, the repeat reads, and why no strategy accumulated. It also rules
+# out a `go doc` prompt hint as the fix: you cannot hint every tool call.
+# Not a v1 patch. See patches_v1.md.
 #
 # Stays blocked per the rule: it failed on paired-default.
 #
