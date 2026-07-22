@@ -11,8 +11,12 @@ echo "🔨 Pre-commit checks for maestro..."
 # files are part of this commit. Never blocks: a stale date is a nit, a hook
 # that refuses to commit is a work stopper.
 echo "0. Stamping doc edit_date..."
-if [ -x scripts/stamp-edit-date.sh ]; then
-    ./scripts/stamp-edit-date.sh || true
+# Resolve the repo root explicitly: git normally runs hooks from the worktree
+# top level, but that is not guaranteed for every invocation path, and a
+# silently-skipped stamp is the failure this hook exists to prevent.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$REPO_ROOT" ] && [ -x "$REPO_ROOT/scripts/stamp-edit-date.sh" ]; then
+    "$REPO_ROOT/scripts/stamp-edit-date.sh" || true
 fi
 
 # 1. Ensure build passes

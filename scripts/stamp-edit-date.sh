@@ -9,10 +9,11 @@
 #
 # Rules:
 #   - Only staged files (added/copied/modified/renamed) ending in .md.
-#   - Only files whose front-matter already has an `edit_date` key. Files
-#     without front-matter are not docs under the convention and are skipped;
-#     this never *adds* the key, so it cannot invent front-matter.
-#   - Only the first `edit_date` in the file (the front-matter one).
+#   - Only files that OPEN with a TOML front-matter block and carry an
+#     `edit_date` key inside it. Edits are confined to that block, so an
+#     `edit_date = "..."` appearing in body text or a fenced example (ADR 0017
+#     documents the schema, for instance) is never rewritten. It never *adds*
+#     the key, so it cannot invent front-matter.
 #   - Idempotent: already-current files are left alone.
 #   - A file with BOTH staged and unstaged changes is skipped with a warning.
 #     Re-adding it would sweep the unstaged hunks into the commit, which is a
@@ -23,6 +24,11 @@
 # Run standalone to preview what a commit would stamp:  scripts/stamp-edit-date.sh
 
 set -uo pipefail
+
+# git reports staged paths relative to the repo root, so read them from there —
+# otherwise a run from a subdirectory silently fails every file read.
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$root" || exit 0
 
 TODAY="$(date +%Y-%m-%d)"
 
@@ -39,14 +45,26 @@ while IFS= read -r -d '' f; do dirty="${dirty}${f}"$'\n'; done < <(
     git diff --name-only -z -- '*.md' 2>/dev/null
 )
 
+# Read the front-matter edit_date: only inside the opening +++ ... +++ block.
+frontmatter_date() {
+    awk '
+        NR == 1 && $0 != "+++" { exit }          # no front-matter: not a doc
+        /^\+\+\+$/ { fm++; if (fm == 2) exit; next }
+        fm == 1 && /^edit_date = "/ {
+            match($0, /"[^"]*"/)
+            print substr($0, RSTART + 1, RLENGTH - 2)
+            exit
+        }
+    ' "$1"
+}
+
 stamped=0
 skipped=0
 
 for f in "${staged[@]}"; do
     [ -f "$f" ] || continue
 
-    # Must already carry an edit_date in its front-matter (first 40 lines).
-    current="$(head -40 "$f" | grep -m1 '^edit_date = "' | sed 's/^edit_date = "//; s/".*$//')" || true
+    current="$(frontmatter_date "$f")"
     [ -n "$current" ] || continue
     [ "$current" = "$TODAY" ] && continue
 
@@ -56,13 +74,19 @@ for f in "${staged[@]}"; do
         continue
     fi
 
-    tmp="$(mktemp)" || continue
+    # Temp file alongside the target: mktemp's default dir may be a different
+    # filesystem, which makes the mv below a cross-device failure.
+    tmp="$(mktemp "${f}.stampXXXXXX")" || continue
+
     if awk -v today="$TODAY" '
-        BEGIN { done = 0 }
-        !done && /^edit_date = "/ { sub(/"[^"]*"/, "\"" today "\""); done = 1 }
+        BEGIN { fm = 0; done = 0 }
+        /^\+\+\+$/ { fm++ }
+        !done && fm == 1 && /^edit_date = "/ {
+            sub(/"[^"]*"/, "\"" today "\"")
+            done = 1
+        }
         { print }
-    ' "$f" > "$tmp" && [ -s "$tmp" ]; then
-        mv "$tmp" "$f"
+    ' "$f" > "$tmp" && [ -s "$tmp" ] && mv "$tmp" "$f"; then
         git add -- "$f"
         echo "   📅 $f: $current → $TODAY"
         stamped=$((stamped + 1))
