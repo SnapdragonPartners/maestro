@@ -1,0 +1,125 @@
+# Golden story: ladder rung 4 (API change with tests).
+#
+# What this tests that nothing else does: the agent must AUTHOR TESTS.
+# bugfix-openai-stopreason uses SEEDED tests — pre-existing and failing at the
+# pin — so it measures making a known test pass. Deciding what to assert is a
+# different capability, and the chat fixture has no test files at all, so the
+# agent writes the first one from scratch: package declaration, imports, table,
+# and the choice of which cases matter.
+#
+# The behaviour change is a real API contract change (lookup semantics gain a
+# fallback and an ambiguity rule), not a refactor, which is what makes rung 4
+# distinct from rung 2's consolidation.
+#
+# Deliberately self-contained: findOption is a pure function over the local
+# ModelOption type, no external dependency API involved. The cleanup run showed
+# the coder wandering when it needs a dependency's API (patches_v1.md), and
+# that defect is already recorded — a red here should mean something new.
+#
+# The test file is named in the prompt because allowed_paths matches exact
+# paths or directory prefixes, never globs (engine/checks.go pathAllowed), so
+# an agent-chosen filename would fail diff confinement through no fault of its
+# own. Naming it is also ordinary spec behaviour.
+schema_version = 1
+id = "api-option-lookup"
+title = "Add provider-name fallback to model lookup, with tests"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
+commit = "6ed67444e955afb07dda2f6ddec572f96b194c43"
+base_branch = "main"
+
+[prompt]
+text = """
+findOption in server.go looks a model up by exact ID, so a caller must
+know the full "provider/model" string. Make it more forgiving.
+
+New contract, in precedence order:
+  1. An exact ID match still wins, always.
+  2. Otherwise, if exactly one option has that provider name, return it.
+  3. If the provider name matches more than one option, that is ambiguous
+     — report not-found rather than guessing.
+  4. Otherwise report not-found.
+
+Keep the existing signature: callers still get the option and a boolean.
+
+Add tests in a new file server_test.go covering all four cases above.
+Choose the cases and construct the fixtures yourself; the tests are part
+of the deliverable, not an afterthought.
+"""
+
+[expectations]
+allowed_paths = ["server.go", "server_test.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "vet"
+command = "go vet ./..."
+
+[[validators]]
+# The agent's own tests must actually pass. At the pin this is vacuously
+# green (no test files), so it only becomes meaningful once tests exist —
+# which the checks below require independently.
+name = "test"
+command = "go test ./..."
+
+[[checks]]
+name = "diff-confined-to-source"
+type = "files_changed_within"
+
+[[checks]]
+# The agent authored a test file at all — the core of this rung.
+name = "tests-authored"
+type = "command"
+command = "sh -c 'test -f server_test.go'"
+
+[[checks]]
+# ...and they exercise the function under change, rather than being an
+# unrelated smoke test that happens to compile.
+name = "tests-target-findoption"
+type = "command"
+command = "sh -c 'grep -q \"findOption\" server_test.go'"
+
+[[checks]]
+# Four behaviours were specified, so require at least four cases. Counts
+# top-level Test funcs and t.Run subtests, so either style satisfies it.
+name = "tests-cover-four-cases"
+type = "command"
+command = "sh -c 'test \"$(grep -cE \"func Test|t\\.Run\\(\" server_test.go)\" -ge 4'"
+
+[[checks]]
+# The signature is unchanged, as the prompt requires: callers still get
+# (ModelOption, bool). Guards against solving it by changing the contract.
+name = "signature-preserved"
+type = "command"
+command = "sh -c 'grep -qE \"func findOption\\(.*\\) \\(ModelOption, bool\\)\" server.go'"
+
+[[checks]]
+# The fallback is implemented on the provider name, as specified, rather
+# than by loosening the ID comparison into a substring match.
+name = "fallback-uses-provider-name"
+type = "command"
+command = "sh -c 'grep -A 25 \"func findOption\" server.go | grep -q \"ProviderName\"'"
+
+[[checks]]
+# Scoped to the new file: the fixture's server.go ships from upstream with
+# gofmt drift (struct-tag alignment in chatRequest), so asserting gofmt over
+# it is unsatisfiable regardless of what the agent does. Same precedent as
+# cleanup-provider-options and flag-chat-timeout.
+name = "gofmt-clean-tests"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l server_test.go)\"'"
+
+[budget]
+# Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
+# nearest completed story, with headroom for authoring a test file.
+# Recalibrate on first acceptance per the D9 rule.
+max_tokens = 2500000
+max_wall_clock_seconds = 2700
+max_cost_usd = 24.0
