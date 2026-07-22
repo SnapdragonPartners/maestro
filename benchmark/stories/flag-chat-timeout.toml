@@ -25,7 +25,7 @@ level = "story"
 
 [fixture]
 repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
-commit = "6ed67444e955afb07dda2f6ddec572f96b194c43"
+commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
 base_branch = "main"
 
 [prompt]

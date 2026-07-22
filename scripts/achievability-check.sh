@@ -91,23 +91,16 @@ agent_rc=$?
 cd "$WORK/repo" || exit 1
 fail=0
 
-changed="$(git diff --name-only "$BASE" -- . ; git ls-files --others --exclude-standard)"
-changed="$(printf '%s\n' "$changed" | sed '/^$/d' | sort -u)"
-if [ -z "$changed" ]; then
-    echo "  ✗ no files changed"; fail=1
-else
-    echo "  changed: $(printf '%s' "$changed" | tr '\n' ' ')"
-fi
-
-if [ -n "$ALLOWED" ]; then
-    for c in $changed; do
-        ok=0
-        for a in $ALLOWED; do [ "$c" = "$a" ] && ok=1; done
-        [ $ok -eq 1 ] || { echo "  ✗ $c outside allowed_paths ($ALLOWED)"; fail=1; }
-    done
-fi
-
 # Validators and checks, run exactly as declared.
+#
+# ORDER MATTERS: validators run BEFORE the diff is computed, because a
+# validator can itself change the tree — `go build` with no -o drops an
+# executable named after the directory. The real engine diffs a COMMITTED
+# solution branch, so any artifact the coder built and committed shows up in
+# its diff; computing the diff first here made this script blind to exactly
+# that class of failure. It was: a build artifact committed into the chat
+# fixture made diff-confinement unsatisfiable for three stories, and this
+# check passed all three beforehand because it looked too early.
 while IFS=$'\t' read -r kind name cmd; do
     [ -n "$cmd" ] || continue
     if sh -c "$cmd" >/dev/null 2>&1; then
@@ -127,9 +120,34 @@ for c in d.get('checks', []):
     elif t == 'file_contains':
         p, needle = c.get('path',''), c.get('contains','')
         print(f"check\t{c.get('name','?')}\tgrep -qF -- {needle!r} {p!r}")
-    # files_changed_within is enforced above against allowed_paths.
+    # files_changed_within is enforced by the diff comparison below.
 PY
 )
+
+# Diff computed AFTER validators, so build artifacts they produce are visible
+# (see the ORDER MATTERS note above).
+changed="$(git diff --name-only "$BASE" -- . ; git ls-files --others --exclude-standard)"
+changed="$(printf '%s\n' "$changed" | sed '/^$/d' | sort -u)"
+if [ -z "$changed" ]; then
+    echo "  ✗ no files changed"; fail=1
+else
+    echo "  changed: $(printf '%s' "$changed" | tr '\n' ' ')"
+fi
+
+if [ -n "$ALLOWED" ]; then
+    for c in $changed; do
+        ok=0
+        for a in $ALLOWED; do [ "$c" = "$a" ] && ok=1; done
+        if [ $ok -ne 1 ]; then
+            echo "  ✗ $c outside allowed_paths ($ALLOWED)"
+            case "$c" in
+                *.go|*.md|*.toml|*.json|*.yaml|*.yml) ;;
+                *) echo "      hint: looks like a build artifact — is it committed to the fixture, or missing from .gitignore?" ;;
+            esac
+            fail=1
+        fi
+    done
+fi
 
 echo
 if [ $fail -eq 0 ]; then
