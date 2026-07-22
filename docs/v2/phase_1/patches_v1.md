@@ -1,6 +1,6 @@
 +++
 title = "Patch Record: v1-As-Patched"
-edit_date = "2026-07-17"
+edit_date = "2026-07-22"
 status = "live"
 summary = "The enumerate-and-justify record of every patch to the main-branch v1 factory path made for the Phase 1 benchmark target: what changed, why the target strategy permits it, and what runs discovered it."
 +++

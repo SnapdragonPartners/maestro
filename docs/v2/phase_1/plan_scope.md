@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Phase 1: Scope And Plan"
-edit_date = "2026-07-17"
+edit_date = "2026-07-22"
 status = "live"
 summary = "Approved Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 12 serial work items covering the runner module, fixtures, the v1-as-patched target, cost/latency reduction, the single-agent baseline, D9 cost instrumentation, and the first 5-10 stories."
 type = "plan"
@@ -8,7 +8,7 @@ type = "plan"
 
 # Phase 1: Golden Stories And Measurement Harness — Scope And Plan
 
-Status: live — approved by Codex and DR, 2026-07-15 (PR #259; the status flip landed one commit late, in a follow-up). Flips to `archive` when Phase 1 closes (lifecycle per ADR 0017 and the Phase 0 precedent).
+Status: live — approved by Codex and DR, 2026-07-15 (PR #259; the status flip landed one commit late, in a follow-up). Flips to `archive` when Phase 1 closes (lifecycle per ADR 0017 and the Phase 0 precedent). **Carries amendments PROPOSED 2026-07-22 and pending Codex + DR acceptance** (conformance-first resequencing; see the split exit criteria, the retimed deliverables 7/8/10, and the revisited reviewer question 3). Those markers flip in the approval commit; the rest of this document is in force.
 
 Goal (from the [roadmap](../plan_roadmap.md)): build the measuring instrument before rewriting the machine. **Resequenced 2026-07-22** ([ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) conformance-first amendment): the near-term deliverable is end-to-end conformance — proving the pipeline completes progressively harder stories, repeatably — because measurement presupposes a functioning target and Phase 1's runs showed it is not. Economic baselining moves to Phase 1B, after Phase 7. This document stays controlling for the Phase 1 half; see the split exit criteria below.
 
@@ -22,13 +22,13 @@ In scope:
 - Golden story definition format, loader, and validation.
 - Fixture repositories: forked, pinned variants of `maestro-llms` and `maestro-cms`, plus the standalone LLM-tester CLI app as the first app-bearing fixture (ADR 0025).
 - The v1-as-patched target: the **minimal** patch set to the current `main` factory path so golden stories can pass, plus measurement instrumentation required by ADR 0025 (amended 2026-07-16 with item 4's design review: the P-1 usage surface), plus the v1 target adapter normalizing its observations (SQLite, logs, branches, PRs) into run records.
-- The single-agent happy-path baseline as a second target adapter (headless Claude Code) — Phase 1 exit-blocking per reviewer question 3's resolution.
+- The single-agent happy path: in Phase 1, only the **achievability check** (a scripted headless pass; see the deliverables table, item 8). The full second target adapter and its economic comparison move to **Phase 1B** under the 2026-07-22 proposed amendment — this supersedes reviewer question 3's original "exit-blocking" resolution, revisited below with the evidence that prompted it.
 - MPH configuration bundles, file-based, content-hash identified; minimal prompt identification for targets without prompt packs.
 - D9 instrumented cost runs; fixing N and budget-cap numbers; runner-enforced budgets with overrun-as-failure.
-- Comparison reports with per-metric-class aggregation and repeat-run spread (ADR 0025 semantics).
+- ~~Comparison reports with per-metric-class aggregation and repeat-run spread (ADR 0025 semantics).~~ → **Phase 1B.**
 - First 5–10 golden stories, single-repo, Story-scoped, from the ladder's low rungs.
 - `golden-minimal` / `golden-all` suite tiers and make targets (build process).
-- The v1-derived baseline on `golden-minimal`, reported at phase exit.
+- A v1-derived cost baseline. **Partially satisfied already**: [d9_budget_policy.md](d9_budget_policy.md) records measured accepted-run costs for three stories against v1-as-patched with full target-identity disclosure. That is the v1 baseline this phase produces — thin, honest, and the last one worth taking (see the Phase 1B note on the baseline's target).
 - Upstream wishlist entries for reusable metrics pieces discovered along the way (`maestro-llms`, `maestro-cms`), per breaking-change principle 2.
 
 Out of scope:
@@ -76,7 +76,7 @@ Sequencing notes:
 - Item 5 is the highest-variance item in the phase: nobody knows how many patches "minimal" is until story 1 runs. It is timeboxed by the enumerate-and-justify rule — any patch that cannot be justified in a sentence against the target strategy goes back to DR as a scope question rather than getting written. (Amended 2026-07-16: item 5 also carries the pre-enumerated instrumentation patch P-1 — measurement-enabling, not run-blocking — per item 4's design review; the enumerate-and-justify rule applies to it identically.)
 - Item 5.1 is inserted before item 6 deliberately: items 6–10 exercise the harness heavily (instrumented cost runs, the growing story suite, the baseline adapter across every story), so cost- and latency-reduction work pays for itself most when done first. It is discovered work — the cold-cache tax and the real per-run dollar cost only became visible once item 5's discovery loop ran live. It is a mini-step, not a full item; if either half grows it gets its own mini-plan. (Added 2026-07-17, DR-directed.)
 - Item 6 deliberately precedes the report work and the suite build-out: budget caps must be real before the matrix grows (the benchmark-cost risk).
-- Item 8 is exit-blocking (reviewer question 3, resolved). ADR 0025 makes the single-agent baseline mandatory from the start, and without it Phase 1 cannot measure the economic argument. If the phase runs long, schedule pressure reduces story count toward the 5-story exit floor or trims adapter capability (more honestly-marked `unsupported` metrics) — never the baseline.
+- ~~Item 8 is exit-blocking (reviewer question 3, resolved).~~ **Superseded 2026-07-22:** item 8's economic half moves to Phase 1B; only the achievability check remains here. Original reasoning retained for the record: ADR 0025 makes the single-agent baseline mandatory from the start, and without it Phase 1 cannot measure the economic argument. If the phase runs long, schedule pressure reduces story count toward the 5-story exit floor or trims adapter capability (more honestly-marked `unsupported` metrics) — never the baseline.
 - Testing follows the strategy doc's pattern: runner unit tests use fake adapters; real-execution tests cost tokens and sit behind the integration/golden build tags, never in `make test`.
 
 ## Exit Checklist
@@ -88,9 +88,12 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 ### Phase 1 (binding now)
 
 - [ ] The runner executes at least 5 single-repo golden stories against the v1-as-patched target, black-box, from a make target.
-- [ ] Every one of those stories clears the **single-agent achievability check**, and each has been run — red or green — against the current target on `paired-default`, with the run retained as an artifact in `benchmark/runs/`. A red rung that clears achievability is a progress marker, not a suite defect.
+- [ ] Every one of those stories clears the **single-agent achievability check**, and each has been run — red or green — against the current target on `paired-default`, with the result captured in the committed conformance record. A red rung that clears achievability is a progress marker, not a suite defect.
+
+  The achievability check runs a headless single agent against **the identical story contract** — same fixture repo and pinned commit, same prompt text, same `allowed_paths`, same validators and checks, and the same isolation contract (fresh run-scoped clone from the pin, no inherited state). Anything less would prove a different task achievable than the one the pipeline is asked to do. Its verdicts are **`proven-achievable`** and **`not-proven-achievable`** — never "unachievable": a single agent failing bounds our knowledge, not the story, since the agent may simply be the weaker executor. Only `proven-achievable` licenses reading a red rung as pipeline distance-to-capability.
 - [x] The D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner (declared budgets, overrun-as-failure). — [d9_budget_policy.md](d9_budget_policy.md), Accepted (Codex + DR, 2026-07-21): N fixed at 3/1, per-story and per-suite caps enforced in the story/config TOMLs. Caveats recorded there and accepted with it: attempts span three target identities, no attempt ran against the final one, and `cleanup-provider-options` is parked (over-decomposition) rather than calibrated.
 - [ ] `golden-minimal` and `golden-all` tiers exist with make targets; `golden-minimal` has run at phase end (build process rule — this phase is where the rule activates).
+- [ ] A **committed conformance record** exists and is appended at each phase end: date, target descriptor, per-story verdict, and cost/token/call totals. The raw store in `benchmark/runs/` is git-ignored and reproducible-by-rerun, so it cannot carry a longitudinal claim on its own — earlier run evidence was lost exactly that way to a power failure. Interim by design: once the Phase 2 data plane lands, performance records become first-class artifacts there ([ADR 0022](../../adr/0022-v2-data-plane.md)) and this file retires.
 - [ ] The v1 patch record exists: every patch enumerated and justified against the target strategy; nothing backported to `v1-freeze`.
 - [ ] Reusable metrics pieces are filed as upstream wishlist entries or explicitly found not to exist.
 
@@ -98,7 +101,9 @@ The roadmap's Phase 1 exit criteria, plus this plan's scope items that are not t
 
 - [ ] Repeat runs produce a comparison report showing cost, time, and pass/fail spread (never bare points).
 - [ ] Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline.
-- [ ] The target-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, MPH identity). Taken against v2, not v1-as-patched: a v1 baseline prices a codebase scheduled for deletion.
+- [ ] The target-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, MPH identity), taken against **v2**.
+
+  **This is a scope change, not a retiming, and is flagged for explicit ratification.** The original criterion promised a *v1-derived* baseline. That obligation is discharged, thinly but honestly, by [d9_budget_policy.md](d9_budget_policy.md) — measured accepted-run costs for three stories against v1-as-patched, with full identity disclosure — and Phase 1 takes no further v1 baseline. Extending it to `golden-minimal` after Phase 7 is impossible in any useful sense: v1 is deprecated at `v1-freeze` and its factory path is deleted during the rewrite, so a "v1 baseline" taken then would either not exist or measure resurrected scaffolding. Accepting this amendment ratifies substituting a v2-derived baseline; rejecting it means taking the full v1 `golden-minimal` baseline now, before v1 goes.
 
 ## Risks
 
@@ -115,7 +120,11 @@ Codex has answered (2026-07-15); DR confirmation rides on this document's approv
 
 1. **Runner module location**: top-level `benchmark/` as its own Go module (structurally enforced black-box), maintained surface wired into make. Codex concurs.
 2. **Story definition format**: TOML for authored story definitions, JSON for everything the runner emits. Codex concurs.
-3. **Single-agent baseline**: **in Phase 1 and exit-blocking.** The draft's descope-to-defer valve is withdrawn (Codex P1): ADR 0025 makes both configurations mandatory from the start, and substituting two v1-path configurations would leave Phase 1 unable to measure the economic argument. Schedule pressure reduces story count or adapter capability instead (see sequencing notes).
+3. **Single-agent baseline**: originally resolved **in Phase 1 and exit-blocking** — the draft's descope-to-defer valve was withdrawn on a Codex P1, on the reasoning that ADR 0025 makes both configurations mandatory from the start and that substituting two v1-path configurations would leave Phase 1 unable to measure the economic argument. **That reasoning was correct on its premise and the premise did not hold.**
+
+   **Revisited 2026-07-22** (proposed, pending Codex + DR acceptance): the economic argument cannot be measured in Phase 1 for a reason unavailable at the time of the original resolution — the target does not reliably run. Seven of eleven enumerated v1 patches were run-blocking, surfaced by exercising four stories. Pricing a paired-agent premium against a factory that needs seven patches to complete four stories measures v1's brokenness, not the architecture's economics, and the comparator we actually want is v2-paired versus single-agent. The economic half therefore moves to **Phase 1B** (after Phase 7), where there is a system worth pricing.
+
+   This is a deliberate reversal of a prior review decision, recorded as such rather than quietly dropped. It is **not** a reinstatement of the descope valve: the deliverable is retimed to a named phase with its own exit criteria, not made contingent on schedule pressure. Phase 1 retains the cheap half — the achievability check — because that half serves conformance rather than economics.
 4. **Fixture hosting**: pinned forks under the SnapdragonPartners GitHub org; the v1 SWE-EVO local-Gitea mechanics stay salvage seeds for the later industry-benchmark adapter. Codex concurs.
 
 ## Related Documents

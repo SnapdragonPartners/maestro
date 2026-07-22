@@ -22,6 +22,7 @@ specifications, and stories.
 - [Maestro v2 Research Synthesis](research_synthesis.md) — Synthesis of the external research corpus that informed the v2 roadmap's pillars and decisions.
 - [Maestro v2 Provenance Matrix](notes_provenance-matrix.md) — Tracks where each major v2 idea came from — Maestro v1, DR notes, the research corpus, Codex synthesis, or Claude review — including decisions that deliberately diverge from research orthodoxy.
 - [Maestro v2 ADR Backlog](notes_adr-backlog.md) — Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 with their Accepted ADRs, and open candidates ordered by the phase they block.
+- [Conformance Run Log](notes_conformance-log.md) — the committed, distilled record of every phase-end golden-story conformance run: target identity, per-story verdict, cost/token totals. Durable counterpart to the git-ignored raw results store; interim until the Phase 2 data plane.
 - [Historical ADR Alignment With Maestro v2](notes_v1-adr-alignment.md) — Mapping of v1 subsystems to the historical ADR notes 0001-0016; an input to roadmap D8 and the port inventory.
 - [Maestro v2 Parking Lot](notes_parking-lot.md) — Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up.
 

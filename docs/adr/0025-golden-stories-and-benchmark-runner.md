@@ -2,12 +2,12 @@
 title = "ADR 0025: Golden Stories And The Benchmark Runner"
 edit_date = "2026-07-22"
 status = "live"
-summary = "Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. Amended 2026-07-22 to conformance-first sequencing — proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7."
+summary = "Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. A conformance-first sequencing amendment is PROPOSED 2026-07-22 (pending acceptance): proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7."
 +++
 
 # 0025. Golden Stories And The Benchmark Runner
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation. Amended again 2026-07-16 (item 3 review, Codex + DR): **budget enforcement modes** — the overrun-aborts rule is satisfied natively by targets that stream usage (engine-cancelled at the cap) or self-enforce declared caps; targets that can only report usage post-hoc are permitted as *degraded enforcement*, declared as `budget_enforcement` in every run record. Wall-clock caps are engine-enforced for every mode. Cost metrics remain comparable across modes (costs are real costs), but budget-overrun *rates* are comparable only within one enforcement mode. Amended 2026-07-22 (Phase 1 item 6 retrospective, Codex + DR): **conformance-first sequencing** — the instrument's near-term primary function is proving the pipeline completes progressively harder stories, repeatably; economic baselining defers to **Phase 1B** after Phase 7. No mechanic in this ADR changes and no deliverable is cancelled; sequence and emphasis move. See *Conformance-first sequencing* below.
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-16 (Phase 1 item 1 review, Codex + DR): metric semantics extended from tri-state to **four-state** — `unavailable` (the target supports the metric but it could not be collected on this attempt) added alongside value/unsupported/not_applicable, so a crashed target still produces a valid *failed* record instead of lying `unsupported` or failing validation. Amended again 2026-07-16 (item 3 review, Codex + DR): **budget enforcement modes** — the overrun-aborts rule is satisfied natively by targets that stream usage (engine-cancelled at the cap) or self-enforce declared caps; targets that can only report usage post-hoc are permitted as *degraded enforcement*, declared as `budget_enforcement` in every run record. Wall-clock caps are engine-enforced for every mode. Cost metrics remain comparable across modes (costs are real costs), but budget-overrun *rates* are comparable only within one enforcement mode. **Amendment PROPOSED 2026-07-22** (Phase 1 item 6 retrospective; DR-directed, pending Codex + DR acceptance — this line flips to `Amended … (Codex + DR)` in the approval commit): **conformance-first sequencing** — the instrument's near-term primary function is proving the pipeline completes progressively harder stories, repeatably; economic baselining defers to **Phase 1B** after Phase 7. No mechanic in this ADR changes and no deliverable is cancelled; sequence and emphasis move. See *Conformance-first sequencing* below.
 
 ## Context
 
@@ -52,7 +52,7 @@ The suite ladders in complexity (dependency bump → cleanup → focused bug fix
 
 ### Configurations
 
-A benchmark configuration is an MPH bundle: model routing, prompt pack reference, and harness settings. Two configurations are mandatory from the start: the **paired-agent default**, and the **single-agent happy-path baseline** — the vibe-coding comparator that quantifies the paired-agent premium and its payoff (the roadmap's economic argument, made measurable). Reviewer-model heterogeneity is part of the bundle, so homogeneous-review degradation (ADR 0020) is itself benchmarkable.
+A benchmark configuration is an MPH bundle: model routing, prompt pack reference, and harness settings. Two configurations are required: the **paired-agent default**, and the **single-agent happy-path baseline** — the vibe-coding comparator that quantifies the paired-agent premium and its payoff (the roadmap's economic argument, made measurable). *(Retimed by the 2026-07-22 proposed amendment: the paired-agent default is required from the start; the single-agent baseline as an economic comparator is required at Phase 1B. Phase 1 uses only its cheap half — the achievability check below. "Mandatory from the start" as originally written is superseded for the baseline.)* Reviewer-model heterogeneity is part of the bundle, so homogeneous-review degradation (ADR 0020) is itself benchmarkable.
 
 Configuration storage follows the same trajectory as results: **file-based in Phase 1** (no data plane exists yet), **data-plane-resident once Phase 2 lands** (durability; prompt packs are DB-canonical per roadmap pillar 10), with the runner accepting either through a source switch. Either way a configuration is identified by content hash — the MPH identity in run records derives from content, never location, so results remain comparable across the storage transition.
 
@@ -60,7 +60,7 @@ Configuration storage follows the same trajectory as results: **file-based in Ph
 
 Two tiers, extending the repo's existing build-tag pattern: **`golden-minimal`** — a small, cheapest-rung smoke subset at N = 1, runnable from a make target, executed at minimum at the end of every phase (build process) — and **`golden-all`** — the full suite at standard N, for release comparisons and D6 questions. Third-party benchmarks (the v1 SWE-EVO harness work is the seed) remain complementary for cross-system comparison and model-science questions; golden stories measure Maestro against itself. Beyond MVP, the same runner — its adapter and normalized-record contract in particular — is designed to eventually drive industry benchmarks with less deterministic outcomes, continuing the v1 benchmark support work on this harness rather than a separate one.
 
-### Conformance-first sequencing (amended 2026-07-22)
+### Conformance-first sequencing (PROPOSED 2026-07-22, pending acceptance)
 
 This ADR was written on a buried assumption: **that measurement presupposes function.** "Build the measuring instrument first" quietly assumes the machine runs and what you want is its *economics*. Phase 1's instrumented runs falsified that assumption for the current target — **7 of the 11 enumerated v1 patches were run-blocking** (v1 could not complete a run without them), surfaced by exercising only four stories, and the one story requiring a genuine multi-site refactor never completed at all. An instrument pointed at a machine that does not reliably run produces diagnosis, not economics.
 
@@ -72,7 +72,19 @@ The near-term primary function is therefore **conformance**: proving the pipelin
 
 **Cost data keeps accruing regardless.** Conformance runs already record `cost_usd`, `tokens_total`, and call counts on every attempt. Those records are retained from now on, so a cost trend accumulates across phase-end runs at zero additional effort — only the *analysis* defers. A structurally expensive v2 shows up in the raw numbers well before Phase 1B rather than being discovered at the end.
 
-**Cadence and budget.** `golden-minimal` at minimum at the end of every major phase (already required above), run on the frontier `paired-default` configuration, with a budget on the order of **$50 per major phase**. Each run is retained as an artifact: a proof that leaves no trace cannot distinguish a regression from a memory.
+**Cadence, repeats, and budget** — stated exactly, because "phase end" and N were previously ambiguous:
+
+| When | Tier | N | Configuration | Purpose |
+|---|---|---|---|---|
+| End of **every** phase (unchanged, *Suite tiers* above) | `golden-minimal` | 1 | `paired-default` | the harness-is-alive smoke check |
+| End of every phase, **from Phase 2 onward** | `golden-all` | 1 | `paired-default` | the conformance proof — every rung exercised once |
+| Phase 1B only | `golden-all` | 3 | both configurations | D9 comparison sampling |
+
+**N = 1 is correct for conformance and does not conflict with the accepted D9 policy.** N = 3 exists to characterize a *distribution* for comparison; conformance asks a different question — did each rung still behave — for which one pass per story is the honest unit. The D9 policy's N = 3 for `paired-default` therefore applies to comparison runs (Phase 1B), not to phase-end conformance. The ~**$50 per phase** budget covers the `golden-all` N = 1 conformance run; `golden-minimal` is a few dollars.
+
+Each conformance run is retained as a **committed distilled record** (see below): a proof that leaves no trace cannot distinguish a regression from a memory.
+
+**Durable retention.** The raw results store (`benchmark/runs/`) is git-ignored and reproducible-by-rerun, so it cannot by itself carry a longitudinal claim — exactly how earlier run evidence was lost to a power failure. Each phase-end conformance run therefore appends a **distilled, committed record**: date, target descriptor, per-story verdict, and cost/token/call totals. This is explicitly interim: once the Phase 2 data plane lands, performance records become first-class artifacts there (ADR 0022), and the committed file retires rather than becoming permanent scaffolding.
 
 **Red rungs are legitimate.** A story that a competent single agent can complete but the pipeline cannot is a **progress marker**, not a suite defect — it measures distance to capability. What a red rung must never be is ambiguous between "the pipeline cannot do this yet" and "this story is unreasonable." Hence the achievability check below.
 

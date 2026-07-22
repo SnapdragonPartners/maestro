@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -1004,7 +1004,22 @@ Exit criteria:
 
 Goal: price the machine, once there is a machine worth pricing. Anchored **after Phase 7** — earlier baselines measure infrastructure, not the system.
 
-Outputs: per-metric-class comparison reporting with repeat-run spread; the single-agent happy-path baseline as the economic comparator (the vibe-coding premium made measurable); the cost-to-accepted-change baseline across configurations. Inputs are already accruing: conformance runs retain cost, token, and call records from Phase 1 onward, so Phase 1B analyzes a trend rather than starting cold.
+Outputs:
+
+- Per-metric-class comparison reporting with repeat-run spread.
+- The single-agent happy-path baseline as the economic comparator (the vibe-coding premium made measurable).
+- The cost-to-accepted-change baseline across configurations.
+
+Inputs are already accruing: conformance runs retain cost, token, and call records from Phase 1 onward, so Phase 1B analyzes a trend rather than starting cold.
+
+Exit criteria:
+
+- Repeat runs produce a comparison report showing cost, time, and pass/fail spread (never bare points), aggregated only within one complete identity group and enforcement mode.
+- Two different MPH configurations are compared on the same story set — the paired-agent default and the single-agent baseline.
+- A target-derived baseline on `golden-minimal` is recorded with its target descriptor (commit hash, MPH identity), taken against v2.
+- Cost to accepted change is reported per configuration, including its undefined case when no attempt passes.
+
+The authoritative checklist is the Phase 1B section of the [Phase 1 plan](phase_1/plan_scope.md), which these criteria mirror.
 
 ### Phase 8: Extract `maestro-agent`
 

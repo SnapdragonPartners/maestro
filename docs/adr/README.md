@@ -1,6 +1,6 @@
 +++
 title = "Architecture Decision Records"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 summary = "Index of Maestro ADRs: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016), with the documentation authority order in brief."
 +++
@@ -41,7 +41,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | [0022](0022-v2-data-plane.md) | v2 Data Plane | Accepted | Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam. |
 | [0023](0023-v2-branch-strategy.md) | v2 Branch Strategy | Accepted | Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches. |
 | [0024](0024-intake-and-triage-artifact-contract.md) | Intake And Triage Artifact Contract | Accepted | Fixes what intake produces — Feature and Epic records, triage outputs, provenance, review, and the dispatch seam — while deliberately leaving the intake executor unbound until the pre-Phase-5 spike. |
-| [0025](0025-golden-stories-and-benchmark-runner.md) | Golden Stories And The Benchmark Runner | Accepted | Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. Amended 2026-07-22 to conformance-first sequencing — proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7. |
+| [0025](0025-golden-stories-and-benchmark-runner.md) | Golden Stories And The Benchmark Runner | Accepted | Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. Conformance-first sequencing amendment **proposed** 2026-07-22 (pending acceptance) — proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7. |
 | [0026](0026-multi-architecture-artifacts.md) | Multi-Architecture Distributable Artifacts | Accepted | Cross-arch artifacts — embedded binaries and published images — must be multi-arch (amd64 + arm64) and verified per-arch: images shipped as a manifest pinned by digest, binaries cross-compiled and runtime-selected; single-arch cross-arch artifacts are a defect. Recurred in the MCP proxy and the benchmark cache image. |
 | [0027](0027-concurrency-safety-for-shared-local-infrastructure.md) | Concurrency Safety For Shared Local Infrastructure | Accepted | Operations mutating state reachable from more than one agent lifecycle (git mirrors, workspace dirs, dispatcher leases, supervisor restarts) must be serialized by the shared resource's identity or made idempotent; destructive recovery must never delete an in-progress writer's work. Recurred in the supervisor double-restart (P-6), agent-type recovery (P-2), and mirror clone race (P-11). |
 
