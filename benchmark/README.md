@@ -59,7 +59,7 @@ definition.
 - `stories/` — authored golden stories.
 - `configs/` — authored MPH bundles (land with their adapters, items 4 and 8).
 
-Comparison reports with spread are item 7, deferred to **Phase 1B** by the 2026-07-22 proposed amendment; they get their own package here when built.
+Comparison reports with spread are item 7, deferred to **Phase 1B** by the 2026-07-22 amendment; they get their own package here when built.
 
 ## Run Protocol
 

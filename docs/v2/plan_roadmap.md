@@ -798,7 +798,7 @@ Exit criteria:
 
 Goal: build the measuring instrument before rewriting the machine.
 
-**Resequencing PROPOSED 2026-07-22** (ADR 0025 conformance-first amendment; DR-directed, pending Codex + DR acceptance — this note and the Phase 1B section below flip on approval). Phase 1's instrumented runs falsified the assumption underneath "measure first": measurement presupposes function, and the target does not reliably function — 7 of 11 enumerated v1 patches were run-blocking, surfaced by only four stories. The near-term deliverable is therefore **e2e conformance**: a set of tools proving Maestro completes progressively harder stories, re-proven at every phase end. **Economic baselining moves to Phase 1B, after Phase 7** — before then v2 is largely infrastructure, so a baseline would price scaffolding. Nothing is cancelled; sequence and emphasis move. Cost and token data still accrue on every conformance run, so a trend exists well before Phase 1B.
+**Resequenced 2026-07-22** (ADR 0025 conformance-first amendment, Codex + DR). Phase 1's instrumented runs falsified the assumption underneath "measure first": measurement presupposes function, and the target does not reliably function — 7 of 11 enumerated v1 patches were run-blocking, surfaced by only four stories. The near-term deliverable is therefore **e2e conformance**: a set of tools proving Maestro completes progressively harder stories, re-proven at every phase end. **Economic baselining moves to Phase 1B, after Phase 7** — before then v2 is largely infrastructure, so a baseline would price scaffolding. Nothing is cancelled; sequence and emphasis move. Cost and token data still accrue on every conformance run, so a trend exists well before Phase 1B.
 
 Outputs:
 

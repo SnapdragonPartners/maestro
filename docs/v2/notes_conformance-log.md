@@ -1,14 +1,14 @@
 +++
 title = "Conformance Run Log"
 edit_date = "2026-07-22"
-status = "draft"
+status = "live"
 type = "notes"
 summary = "The committed, distilled record of every phase-end golden-story conformance run: date, target identity, per-story verdict, and cost/token totals. The durable counterpart to the git-ignored raw results store — interim until the Phase 2 data plane makes performance records first-class artifacts."
 +++
 
 # Conformance Run Log
 
-Status: **draft** — introduced by the conformance-first amendment to [ADR 0025](../adr/0025-golden-stories-and-benchmark-runner.md), which is itself PROPOSED and pending Codex + DR acceptance. Flips to `live` in that approval commit.
+Status: live — introduced by the conformance-first amendment to [ADR 0025](../adr/0025-golden-stories-and-benchmark-runner.md), Accepted (Codex + DR, 2026-07-22).
 
 ## Why this file exists
 
