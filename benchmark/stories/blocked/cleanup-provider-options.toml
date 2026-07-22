@@ -24,16 +24,21 @@
 #   * Still blocked, by a DIFFERENT defect: failed/budget-overrun, 3.09M tokens
 #     in 633s ($14.68), ~4.9k tok/sec against ~2.1k in healthy runs.
 #
-# The new blocker is a missing affordance, not a loop. The refactor needs an
+# The new blocker is a STRATEGY gap, not a tooling gap. The refactor needs an
 # external dependency's API (llms.ChatClient, the ListModels signature). The
 # coder issued 111 shell calls of which 101 were DISTINCT — wandering, not
-# cycling — including 31 hand-greps into the Go module cache, and guessed at
-# two different GOMODCACHE paths. It used `go doc` ZERO times: the one command
-# that answers the question authoritatively in a single call. The architect
-# diagnosed it correctly and repeatedly ("you are stuck in an exploration
-# loop", "examine the actual error message"), so the review seat worked; the
-# coder simply had no efficient way to inspect a dependency and did not reach
-# for the idiomatic tool. Tracked in patches_v1.md remaining candidates.
+# cycling — including 31 hand-greps into the Go module cache across two guessed
+# GOMODCACHE paths, while cat-ing go.mod three times (so it HAD the version).
+# It used `go doc` ZERO times.
+#
+# `go doc` was available and works: verified in this exact image as uid 1000,
+#   go doc github.com/SnapdragonPartners/maestro-llms/llms.ChatClient
+# returns the full interface plus design commentary in one call. So the coder
+# had the shell tool, the command works in its environment, and it simply never
+# reached for the idiomatic one — and `go doc` appears nowhere in any coder
+# template or tool description. The architect diagnosed the wandering correctly
+# and repeatedly, so the review seat worked. Candidate fix is therefore a cheap
+# prompt line (the P-4/P-5 shape), not v2 tooling. See patches_v1.md.
 #
 # Stays blocked per the rule: it failed on paired-default.
 #
