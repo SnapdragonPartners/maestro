@@ -21,6 +21,13 @@
 #                           story. The agent may simply be the weaker executor.
 #                           Never read as "unachievable".
 #
+# NOT A UNIVERSAL ORACLE. Demonstrated: against smoke-comment this returns
+# not-proven-achievable because the agent puts the marker at the TOP of doc.go
+# (idiomatic for a doc file) while the story requires it appended at the END —
+# yet the pipeline accepts that story 3/3. A RECORDED ACCEPTED RUN IS STRONGER
+# EVIDENCE THAN THIS CHECK. Use it for stories that have never passed; do not
+# use it to overrule an acceptance.
+#
 # EXPIRY BY DESIGN: valid only for low rungs. Stories from the decomposition
 # rungs upward exist precisely to test multi-Story coordination that a single
 # autonomous agent cannot do, so this check is invalid there by construction
@@ -87,6 +94,17 @@ echo "  running headless agent (no cost accounting — this is a control, not a 
 agent_rc=$?
 [ $agent_rc -eq 0 ] || echo "  ⚠️  agent exited $agent_rc (continuing — the verdict is the story's checks, not the agent's exit code)"
 
+# Commit the agent's work, as the pipeline's coder would. Checks are free to
+# compare against git history — smoke-comment asserts
+# `git diff <pin>..HEAD --numstat` — and against an uncommitted tree HEAD is
+# still the pin, so such a check sees an empty diff and fails through no fault
+# of the agent. Leaving the work uncommitted silently mis-verdicts every
+# git-comparing story while grep-based ones pass, which is worse than failing
+# outright.
+git -C "$WORK/repo" add -A >/dev/null 2>&1
+git -C "$WORK/repo" -c user.name="achievability" -c user.email="achievability@local" \
+    commit -q -m "achievability check: agent solution" >/dev/null 2>&1 || true
+
 # ---- evaluate against the story's own contract ----
 cd "$WORK/repo" || exit 1
 fail=0
@@ -126,7 +144,7 @@ PY
 
 # Diff computed AFTER validators, so build artifacts they produce are visible
 # (see the ORDER MATTERS note above).
-changed="$(git diff --name-only "$BASE" -- . ; git ls-files --others --exclude-standard)"
+changed="$(git diff --name-only "$BASE" HEAD -- . ; git diff --name-only -- . ; git ls-files --others --exclude-standard)"
 changed="$(printf '%s\n' "$changed" | sed '/^$/d' | sort -u)"
 if [ -z "$changed" ]; then
     echo "  ✗ no files changed"; fail=1

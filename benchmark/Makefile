@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint install-lint run clean cache-build cache-verify cache-publish
+.PHONY: build test test-race lint install-lint run clean golden-minimal golden-all golden-tiers-check cache-build cache-verify cache-publish
 
 # Pinned for reproducible lint results; keep in sync with the root Makefile.
 GOLANGCI_LINT_VERSION := v1.64.8
@@ -36,6 +36,48 @@ run: build
 
 clean:
 	rm -rf bin/ cache/context/
+
+# --- Suite tiers (ADR 0025) -------------------------------------------------
+#
+# golden-minimal: the cheapest rungs, N=1 — the "is the harness alive" check,
+#   required at the end of every phase.
+# golden-all:     every active story, N=1 — the conformance proof, run at each
+#   phase end from Phase 2 onward (~$50 budget).
+#
+# N=1 for both: a tier names a STORY SET, while N follows the run's PURPOSE.
+# Conformance asks whether each rung still behaves, for which one pass per
+# story is the honest unit; N=3 is comparison sampling and belongs to Phase 1B.
+#
+# WHY MEMBERSHIP LIVES HERE AND NOT ON THE STORY. A `tier` field would be
+# self-documenting and validated, which is the better design in the abstract —
+# but the story content hash covers the whole definition, so adding a field to
+# smoke-comment and dep-bump-xnet would move their hashes and break
+# comparability with the v1 baseline just recorded against them
+# (notes_conformance-log.md). Tier membership is a suite-composition concern,
+# not a property of the story, so it is expressed here where changing it costs
+# nothing. golden-tiers-check guards the drift this trades for.
+GOLDEN_MINIMAL := smoke-comment dep-bump-xnet
+GOLDEN_CONFIG  ?= paired-default
+GOLDEN_SUITE   ?= $(shell date +%Y%m%d-%H%M%S)
+
+# Fail loudly if a tier names a story that no longer exists — the one real
+# risk of keeping membership out of the story files.
+golden-tiers-check: build
+	@for s in $(GOLDEN_MINIMAL); do \
+		test -f stories/$$s.toml || { echo "❌ golden-minimal names a missing story: $$s"; exit 1; }; \
+	done
+	@echo "✅ tier membership resolves: $(GOLDEN_MINIMAL)"
+
+# Spends real tokens. Kept explicit for that reason — no target runs a suite
+# as a side effect of building or testing.
+golden-minimal: golden-tiers-check
+	@for s in $(GOLDEN_MINIMAL); do \
+		./bin/runner run --config $(GOLDEN_CONFIG) --story $$s \
+			--suite-id golden-minimal-$(GOLDEN_SUITE) || exit 1; \
+	done
+
+golden-all: build
+	./bin/runner run --config $(GOLDEN_CONFIG) --suite-id golden-all-$(GOLDEN_SUITE)
 
 # --- Union dependency-cache image (item 5.1, #268) ---
 # Bakes every golden Go fixture's module cache into one image so v1 coder

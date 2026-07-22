@@ -75,4 +75,25 @@ The six attempts span **three `binary_identity` values and three commit hashes**
 
 The Run Protocol now carries a preflight warning so this cannot recur: do not commit while a run is in flight.
 
+### 2026-07-22 — item 9 story batch (pre-fix pin; **superseded**)
+
+Not a phase-end conformance run: the first execution of item 9's three new stories, kept because the reds are informative and the run is what surfaced a fixture defect. **All three ran against fixture pin `6ed67444e955`, which has since been superseded by `60e79fd075c8`** — so these rows are not comparable to anything taken after, and are recorded as history rather than as trend points.
+
+Target identity is uniform across all three (commit `5ef8443232de`, binary `e7427da43e0c`, config `paired-default`), so they are comparable *to each other*.
+
+| Story | Verdict | Tokens | Cost | Wall | Failed checks |
+|---|---|---|---|---|---|
+| `flag-chat-timeout` | failed / checks-failed | 622,891 | $3.90 | 353s | diff-confined-to-source |
+| `api-option-lookup` | failed / branch-state | 563,892 | $4.13 | 529s | diff-confined-to-source, tests-cover-four-cases |
+| `app-healthz-endpoint` | failed / checks-failed | 691,376 | $3.64 | 611s | diff-confined-to-source |
+
+Total $11.67. **Zero validator failures across all three** — every `build`, `vet` and `test` passed.
+
+**Read the reds carefully: they are authoring defects, not capability limits.**
+
+- `diff-confined-to-source` failed on all three for one shared cause — `golden-fixture-chat`, a compiled binary committed into the fixture by mistake in the item-2 extraction. `go build` regenerated it, so the diff always carried a path no agent touched, making the check **unsatisfiable** for any chat-fixture story that builds. Fixed additively in the fixture (`60e79fd`) and all four chat stories re-pinned.
+- `tests-cover-four-cases` failed because the check counted `func Test` and `t.Run(` occurrences, which scores *any* table-driven test at 2. The pipeline had written a table with **nine** named cases covering all four required behaviours plus edge cases the story never asked for. The check now counts results reported by `go test -v` instead.
+
+So on the three genuinely new pipeline paths this batch existed to probe — coordinated multi-file change, authoring tests from scratch, and behaviour proven through the real router over HTTP — **the pipeline succeeded on all three**, and every red traced to the story author. Not re-run after the fixes: re-pinning had already churned the hashes, and paying frontier prices to re-confirm known authoring bugs is poor use of budget.
+
 *The first phase-end `golden-all` conformance run appends below.*

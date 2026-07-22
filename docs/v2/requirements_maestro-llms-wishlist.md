@@ -1,6 +1,6 @@
 +++
 title = "Maestro Wishlist For maestro-llms"
-edit_date = "2026-07-13"
+edit_date = "2026-07-22"
 status = "live"
 type = "requirements"
 summary = "Maestro's running feature-request wishlist to the maestro-llms team, with generality arguments and a response field per item — so the toolkit team can say what they're comfortable adding given their other consumers."
@@ -12,7 +12,7 @@ Status: live (approved by Codex and DR, 2026-07-13) — awaiting maestro-llms te
 
 `maestro-llms` is a shared, general-purpose package; Maestro is one first-class consumer among several. This document is Maestro's running request list, governed by the shared-package principle: we use toolkit functionality where it exists (DRY), we propose upstream anything that would serve other consumers, we prefer non-breaking additions, and we never fork. Each item carries a generality argument and a **Response** field for the toolkit team (comfortable / needs discussion / declined — with notes). Declined items get Maestro-side answers; nothing here is a demand.
 
-Items 1–5 originate from the Phase 0 toolloop spike ([spike report](phase_0/spike_toolloop.md)); more will follow (Phase 1 expects to propose reusable metrics-capture pieces).
+Items 1–5 originate from the Phase 0 toolloop spike ([spike report](phase_0/spike_toolloop.md)); item 6 originates from Phase 1's instrumented benchmark runs (more may follow; Phase 1 expected to propose reusable metrics-capture pieces).
 
 ## 1. Turn-boundary stop in `llms/toolloop` — required for convergence
 
@@ -52,6 +52,14 @@ Items 1–5 originate from the Phase 0 toolloop spike ([spike report](phase_0/sp
 - **Why (Maestro)**: it is our entire loop discipline; item 1 alone lets us build it consumer-side, so this is a consolidation proposal, not a blocker.
 - **Generality**: the pattern is agent-generic — but we note it touches maestro-llms ADR-0011's stated non-goals, so this is explicitly the toolkit owner's call to revisit or decline.
 - **Breaking-ness**: opt-in mode; non-breaking.
+- **Response**: _pending_
+
+## 6. Model pricing and cost on `Usage` — reusable metrics piece (Phase 1)
+
+- **What**: let the toolkit own model pricing and report **cost alongside tokens** on `Usage`, rather than each consumer maintaining a price table and multiplying it out. Ideally cost accounts for the split the toolkit already models — including `ReasoningTokens`, which several providers meter separately from visible output.
+- **Why (Maestro)**: Maestro currently keeps its own `KnownModels` registry with `InputCPM`/`OutputCPM` and computes cost in `config.CalculateCost`. That duplicates knowledge the toolkit already has — it resolves the provider, knows the model, and returns the usage split — and the duplicate drifts: our table has to be updated by hand every time a model or price lands upstream. Two concrete defects it produced in Phase 1: (a) unknown models silently price at **$0**, so a benchmark run can under-report cost with no signal, which is exactly the failure mode a budget-enforcing harness cannot tolerate; (b) our cost math ignores `ReasoningTokens` entirely, so reasoning-heavy models would be under-priced by construction the moment we enable extended thinking.
+- **Generality**: any consumer doing budgeting, quota enforcement, or cost reporting needs this, and each one otherwise reimplements the same table with the same drift and the same silent-zero hazard. Pricing is provider knowledge, which is what the toolkit exists to own.
+- **Breaking-ness**: additive if cost is a new optional field on `Usage` (nil/zero where pricing is unknown), with an explicit "unpriced" signal rather than a silent zero — the silent zero is the part worth designing away. A pricing table is data that ages, so it needs a stated update policy; if the toolkit would rather not own that cadence, an interface for injecting a price source would still remove the duplication.
 - **Response**: _pending_
 
 ## Non-requests
