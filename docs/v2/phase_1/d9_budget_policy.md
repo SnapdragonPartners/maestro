@@ -1,15 +1,15 @@
 +++
 title = "D9 Sampling And Budget Policy"
 edit_date = "2026-07-21"
-status = "draft"
-summary = "The D9 policy record required by Phase 1 item 6: per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps proposed as runner-enforced values with overrun-as-failure. Caps are a provisional runaway safeguard sized from observed accepted runs, not a performance target."
+status = "live"
+summary = "The D9 policy record required by Phase 1 item 6: per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps fixed as runner-enforced values with overrun-as-failure. Caps are a runaway safeguard sized from observed accepted runs, not a performance target; the samples behind them are thin and disclosed as such."
 +++
 
 # D9 Sampling And Budget Policy
 
-Status: **draft** — Phase 1 item 6 (`instrument-costs`), under review. Per [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md) a phase artifact stays draft until its approval commit; this record flips to `live` (with [ADR 0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md) and the [Phase 1 plan](plan_scope.md) exit checkbox) only on approval. Until then the numbers below are **proposed**, though they are already enforced in the story and config TOMLs as provisional runaway safeguards.
+Status: **Accepted** (Codex + DR, 2026-07-21) — Phase 1 item 6 (`instrument-costs`). Flipped from draft to live in the approval commit per [ADR 0017](../../adr/0017-v2-documentation-authority-and-lifecycle.md), together with [ADR 0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md) and the [Phase 1 plan](plan_scope.md) exit checkbox. The numbers below are **fixed and enforced** in the story and config TOMLs; they remain honestly caveated — thin samples, spanning target identities — as recorded in Known Gaps.
 
-When accepted this satisfies the plan's exit criterion that *the D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner*. Measurement campaign: 2026-07-21, `paired-default` (frontier) against v1-as-patched.
+This satisfies the plan's exit criterion that *the D9 sampling and budget policy is written down with numbers fixed from instrumented runs, and enforced by the runner*. Measurement campaign: 2026-07-21, `paired-default` (frontier) against v1-as-patched.
 
 ## Context
 
