@@ -1,4 +1,24 @@
 # Golden story: ladder rung 2 (small code cleanup).
+#
+# REPAIRED 2026-07-22 after the original was parked for over-decomposition:
+# the architect split it into 5 Stories, one per provider, and 0 of 5 ever
+# completed across two attempts (2.01M tok/$9.37, then 2.26M/$13.11).
+# Hypothesis under test: the ENUMERATION invited the split. The original
+# prompt listed all five function names and then three more per-provider
+# special cases, which reads as five work items rather than one refactor.
+# Two things changed, and only two — the fixture pin, checks, validators and
+# allowed paths are untouched, so a pass/fail is attributable to the prompt:
+#   1. The five function names and the three per-provider selection rules are
+#      no longer enumerated. They are discoverable in the code; naming them
+#      in the prompt bought nothing and cost cohesion.
+#   2. The task's cohesion is stated outright — one shared helper, so a
+#      per-provider split means rewriting the same helper five times. That is
+#      a true property of the work, the kind a tech lead would say aloud, not
+#      a hint about the harness.
+# If it now completes, the defect was ours (authoring). If it still splits,
+# the defect is structural — nothing reviews an architect's decomposition
+# (ADR backlog #15) — and no prompt wording will fix it.
+#
 # Consolidation is verified structurally: the fixture base has 5 call
 # sites each of .ListModels(, "construct failed", and "ListModels failed"
 # (one per provider); a real consolidation collapses each to a shared
@@ -18,19 +38,20 @@ base_branch = "main"
 
 [prompt]
 text = """
-providers.go builds one ModelOption per provider through five
-near-identical functions (anthropicOption, openAIOption, googleOption,
-ollamaOption, vllmOption): each looks up environment credentials,
-constructs a client, lists models under the shared timeout, selects a
-model, and returns a ModelOption. Consolidate this duplication behind a
-shared helper so each provider contributes only what genuinely differs
-(its credential lookup, its client constructor, and its model-selection
-rule — Gemini orders by the version embedded in the ID, Ollama takes the
-most recently pulled model, vLLM takes the first served model).
+providers.go builds a ModelOption for each supported provider, and the
+per-provider functions are near-identical: every one looks up environment
+credentials, constructs a client, lists models under the shared timeout,
+selects a model, and returns a ModelOption.
 
-This is a refactor: observable behavior must not change, including the
-provider prefixes in log messages and the order providers appear in the
-model dropdown.
+Consolidate that duplicated flow behind a single shared helper, leaving
+each provider to contribute only what genuinely differs — its credential
+lookup, its client constructor, and its model-selection rule.
+
+This is one refactor, not a series of per-provider changes: the helper is
+shared, so doing it provider by provider means rewriting the same helper
+each time. Observable behavior must not change, including the provider
+prefixes in log messages and the order providers appear in the model
+dropdown.
 """
 
 [expectations]
@@ -73,6 +94,10 @@ type = "command"
 command = "sh -c 'test -z \"$(gofmt -l providers.go)\"'"
 
 [budget]
-max_tokens = 4000000
-max_wall_clock_seconds = 3600
-max_cost_usd = 20.0
+# Provisional: no accepted run exists for this story, so the D9 rule
+# (>=3x observed accepted max) has nothing to key on. Sized from bugfix —
+# the nearest completed story — and capped at the config's per-run ceiling.
+# Recalibrate on first acceptance.
+max_tokens = 3000000
+max_wall_clock_seconds = 2700
+max_cost_usd = 24.0
