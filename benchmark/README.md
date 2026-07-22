@@ -104,10 +104,17 @@ bin/runner run \
   --config paired-default \
   --suite-id <purpose>-<subject>   # e.g. cal-d9-stage1-bugfix
 
-# N repeats (the D9 sampling dimension). --repeats is SUITE-WIDE, so it must
-# be paired with --config: the D9 policy is N=3 for the primary configuration
-# and N=1 for secondary ones, which one unfiltered command cannot express.
-# Run one suite per configuration:
+# N follows the run's PURPOSE, not the tier:
+#
+#   conformance (phase-end, "did each rung still behave")  -> N=1
+#   comparison  (D9 sampling, distribution/spread)         -> N=3 primary,
+#                                                             N=1 secondary
+#
+# Conformance — the phase-end proof, N=1 over the full story set:
+bin/runner run --config paired-default --suite-id conformance-<phase>
+#
+# Comparison — Phase 1B. --repeats is SUITE-WIDE, so it must be paired with
+# --config; one unfiltered command cannot express the 3/1 split:
 bin/runner run --config paired-default --repeats 3 --suite-id <purpose>-primary
 bin/runner run --config paired-local   --repeats 1 --suite-id <purpose>-local
 

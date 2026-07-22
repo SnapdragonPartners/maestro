@@ -798,7 +798,7 @@ Exit criteria:
 
 Goal: build the measuring instrument before rewriting the machine.
 
-**Resequencing PROPOSED 2026-07-22** (ADR 0025 conformance-first amendment; DR-directed, pending Codex + DR acceptance — this note and the Phase 1B section below flip on approval). Phase 1's instrumented runs falsified the assumption underneath "measure first": measurement presupposes function, and the target does not reliably function — 7 of 11 enumerated v1 patches were run-blocking, surfaced by only four stories. The near-term deliverable is therefore **e2e conformance**: a set of tools proving Maestro completes progressively harder stories, re-proven at every major phase end. **Economic baselining moves to Phase 1B, after Phase 7** — before then v2 is largely infrastructure, so a baseline would price scaffolding. Nothing is cancelled; sequence and emphasis move. Cost and token data still accrue on every conformance run, so a trend exists well before Phase 1B.
+**Resequencing PROPOSED 2026-07-22** (ADR 0025 conformance-first amendment; DR-directed, pending Codex + DR acceptance — this note and the Phase 1B section below flip on approval). Phase 1's instrumented runs falsified the assumption underneath "measure first": measurement presupposes function, and the target does not reliably function — 7 of 11 enumerated v1 patches were run-blocking, surfaced by only four stories. The near-term deliverable is therefore **e2e conformance**: a set of tools proving Maestro completes progressively harder stories, re-proven at every phase end. **Economic baselining moves to Phase 1B, after Phase 7** — before then v2 is largely infrastructure, so a baseline would price scaffolding. Nothing is cancelled; sequence and emphasis move. Cost and token data still accrue on every conformance run, so a trend exists well before Phase 1B.
 
 Outputs:
 
@@ -808,7 +808,7 @@ Outputs:
 - Minimal prompt hash/pack identification.
 - Metrics capture for LLM calls and tool calls, pushing reusable pieces to `maestro-llms` and `maestro-cms` where possible.
 - ~~Run comparison reports with repeat-run spread.~~ → Phase 1B.
-- ~~A v1-derived baseline on the golden-minimal story subset.~~ → Phase 1B (the target strategy below still governs).
+- A v1-derived baseline on the `golden-minimal` story subset, with its full target descriptor. **Stays in Phase 1 and cannot move**: v1's factory path is deleted during the rewrite, so this obligation expires rather than defers. (Phase 1B's v2-derived baseline is additional to it, not a substitute.)
 - A single-agent achievability check: a scripted headless pass answering whether a candidate story is completable at all, so a red rung is never ambiguous between an incapable pipeline and an unreasonable story. A low-rung tool, retired at the decomposition rungs by construction.
 
 Target strategy (decided 2026-07-11): the runner needs a real factory to drive, and the first true v2 Work Group path does not exist until Phase 3. The Phase 1 target is therefore the current codebase — v1's factory path, minimally patched so that a basic golden story can pass. This does not reopen v1 maintenance: after `v1-freeze`, the code on `main` is v2's raw material, not a supported v1 release. Patches are the bare minimum needed to make the measuring instrument usable, are never backported to the tag, and every run record captures the target commit hash, so "v1-as-patched" is an honest, labeled baseline. Full v1 defects that do not block golden-minimal stay unfixed.
@@ -824,6 +824,7 @@ Exit criteria:
 - The runner executes at least 5 single-repo golden stories against a target Maestro build, black-box (the minimally patched v1 path per the target strategy).
 - Every one of those stories clears the single-agent achievability check, and each has been run — red or green — against the current target on `paired-default`, with the run retained as an artifact.
 - The D9 sampling and budget policy is written down and enforced by the runner. ✅ (item 6)
+- The v1-derived baseline on `golden-minimal` is recorded with its full target descriptor (commit hash, binary identity, MPH identity). Binding in Phase 1 — it expires with v1 rather than deferring.
 - ~~Repeat runs produce a comparison report showing cost, time, and pass/fail spread.~~ → Phase 1B.
 - ~~Two different MPH configurations can be compared on the same story set.~~ → Phase 1B.
 
