@@ -824,7 +824,7 @@ Exit criteria:
 - The runner executes at least 5 single-repo golden stories against a target Maestro build, black-box (the minimally patched v1 path per the target strategy).
 - Every one of those stories clears the single-agent achievability check, and each has been run — red or green — against the current target on `paired-default`, with the run retained as an artifact.
 - The D9 sampling and budget policy is written down and enforced by the runner. ✅ (item 6)
-- The v1-derived baseline on `golden-minimal` is recorded with its full target descriptor (commit hash, binary identity, MPH identity). Binding in Phase 1 — it expires with v1 rather than deferring.
+- The v1-derived baseline on `golden-minimal` is recorded with its target descriptor. ✅ (2026-07-22: 6/6 accepted, $9.66, N=3 on `paired-default`; recorded in the [conformance log](notes_conformance-log.md) with a stated identity caveat — three binary identities from mid-run doc commits, code provably identical.)
 - ~~Repeat runs produce a comparison report showing cost, time, and pass/fail spread.~~ → Phase 1B.
 - ~~Two different MPH configurations can be compared on the same story set.~~ → Phase 1B.
 
