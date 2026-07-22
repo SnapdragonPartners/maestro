@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Planning Notes"
-edit_date = "2026-07-15"
+edit_date = "2026-07-22"
 status = "live"
 summary = "Index of the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, and companion notes, with the per-phase directory convention."
 +++

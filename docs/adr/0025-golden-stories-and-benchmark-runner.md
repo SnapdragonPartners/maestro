@@ -58,7 +58,7 @@ Configuration storage follows the same trajectory as results: **file-based in Ph
 
 ### Suite tiers and integration
 
-Two tiers, extending the repo's existing build-tag pattern: **`golden-minimal`** — a small, cheapest-rung smoke subset at N = 1, runnable from a make target, executed at minimum at the end of every phase (build process) — and **`golden-all`** — the full suite at standard N, for release comparisons and D6 questions. Third-party benchmarks (the v1 SWE-EVO harness work is the seed) remain complementary for cross-system comparison and model-science questions; golden stories measure Maestro against itself. Beyond MVP, the same runner — its adapter and normalized-record contract in particular — is designed to eventually drive industry benchmarks with less deterministic outcomes, continuing the v1 benchmark support work on this harness rather than a separate one.
+Two tiers, extending the repo's existing build-tag pattern: **`golden-minimal`** — a small, cheapest-rung smoke subset at N = 1, runnable from a make target, executed at minimum at the end of every phase (build process) — and **`golden-all`** — the full suite, for release comparisons and D6 questions. *(Amended by the 2026-07-22 proposal: a tier names a **story set**, not a repeat count. N is set by the run's purpose — see the cadence table below — so `golden-all` is N = 1 for conformance and N = 3 for comparison. The original "at standard N" wording conflated the two.)* Third-party benchmarks (the v1 SWE-EVO harness work is the seed) remain complementary for cross-system comparison and model-science questions; golden stories measure Maestro against itself. Beyond MVP, the same runner — its adapter and normalized-record contract in particular — is designed to eventually drive industry benchmarks with less deterministic outcomes, continuing the v1 benchmark support work on this harness rather than a separate one.
 
 ### Conformance-first sequencing (PROPOSED 2026-07-22, pending acceptance)
 
@@ -80,7 +80,9 @@ The near-term primary function is therefore **conformance**: proving the pipelin
 | End of every phase, **from Phase 2 onward** | `golden-all` | 1 | `paired-default` | the conformance proof — every rung exercised once |
 | Phase 1B only | `golden-all` | 3 | both configurations | D9 comparison sampling |
 
-**N = 1 is correct for conformance and does not conflict with the accepted D9 policy.** N = 3 exists to characterize a *distribution* for comparison; conformance asks a different question — did each rung still behave — for which one pass per story is the honest unit. The D9 policy's N = 3 for `paired-default` therefore applies to comparison runs (Phase 1B), not to phase-end conformance. The ~**$50 per phase** budget covers the `golden-all` N = 1 conformance run; `golden-minimal` is a few dollars.
+**This is a policy amendment, not a clarification, and is proposed as such.** As accepted, the *Suite tiers* text binds `golden-all` to "standard N" and the [D9 policy](../v2/phase_1/d9_budget_policy.md) sets standard N = 3 for `paired-default`; running `golden-all` at N = 1 therefore changes both, and acceptance of this amendment is required to do so.
+
+The substance: **a tier names a story set; N is a property of the run's purpose.** N = 3 exists to characterize a *distribution* for comparison. Conformance asks a different question — did each rung still behave — for which one pass per story is the honest unit, and three passes buy precision nobody reads. Under this amendment D9's N = 3 governs comparison runs (Phase 1B) and N = 1 governs phase-end conformance; the D9 record is amended in step. The ~**$50 per phase** budget covers the `golden-all` N = 1 conformance run — `golden-minimal` is a few dollars and is not what the $50 is for.
 
 Each conformance run is retained as a **committed distilled record** (see below): a proof that leaves no trace cannot distinguish a regression from a memory.
 

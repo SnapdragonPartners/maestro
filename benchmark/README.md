@@ -23,9 +23,12 @@ single-agent cost comparator defer to **Phase 1B** (after Phase 7, per the
 token data keep accruing on every run so the trend is there when Phase 1B
 arrives.
 
-Run `golden-minimal` on `paired-default` at minimum at the end of every major
-phase (budget: order of $50/phase) and keep the result — a proof that leaves
-no trace cannot distinguish a regression from a memory. `paired-local` is an
+Cadence at every phase end: `golden-minimal` at N = 1 (the harness-is-alive
+check, a few dollars), plus — from Phase 2 onward — `golden-all` at N = 1 on
+`paired-default` as the conformance proof, which is what the order-of-$50 per
+phase budget covers. N = 3 is comparison sampling and belongs to Phase 1B. Each
+run appends a row to the committed [conformance log](../docs/v2/notes_conformance-log.md):
+a proof that leaves no trace cannot distinguish a regression from a memory. `paired-local` is an
 **experiment**, not a gate: it is for cheap tight loops and small-model
 capability learning, never a pass requirement at any tier, and a story must
 clear `paired-default` before it is attempted locally.

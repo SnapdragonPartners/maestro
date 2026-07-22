@@ -1,14 +1,14 @@
 +++
 title = "Conformance Run Log"
 edit_date = "2026-07-22"
-status = "live"
+status = "draft"
 type = "notes"
 summary = "The committed, distilled record of every phase-end golden-story conformance run: date, target identity, per-story verdict, and cost/token totals. The durable counterpart to the git-ignored raw results store — interim until the Phase 2 data plane makes performance records first-class artifacts."
 +++
 
 # Conformance Run Log
 
-Status: live — the durable half of the conformance evidence contract ([ADR 0025](../adr/0025-golden-stories-and-benchmark-runner.md), conformance-first amendment).
+Status: **draft** — introduced by the conformance-first amendment to [ADR 0025](../adr/0025-golden-stories-and-benchmark-runner.md), which is itself PROPOSED and pending Codex + DR acceptance. Flips to `live` in that approval commit.
 
 ## Why this file exists
 
@@ -26,9 +26,13 @@ Procedure for producing a run is the Run Protocol; this file records only its di
 
 ## Runs
 
-### 2026-07-21 — Phase 1 item 6 measurement campaign (pre-conformance-cadence)
+### 2026-07-21 — Phase 1 item 6 measurement campaign (pre-cadence; **NOT a baseline**)
 
-Not a phase-end conformance run — the campaign that established the D9 caps, recorded here because it is the v1-as-patched cost baseline this phase produces and it would otherwise exist only in the item-6 record. Full derivation and identity caveats: [d9_budget_policy.md](phase_1/d9_budget_policy.md).
+Not a phase-end conformance run and **not the v1 baseline** Phase 1 owes. Recorded because it is the only measured v1-as-patched cost data and would otherwise live solely in the item-6 record.
+
+**These rows do not meet this log's own identity bar.** They carry *descriptive* identity ("post-P-9/P-10") rather than the required commit hash, binary identity, and MPH identity, and those descriptors cannot now be reconstructed — the raw records for two attempts were destroyed by the power failure described above. The attempts also span three target identities, none of them the settled one, and several lack token/wall/call values. They are evidence of magnitude only. Full derivation and caveats: [d9_budget_policy.md](phase_1/d9_budget_policy.md).
+
+**Every row from here on must carry the full target descriptor**; a row that cannot is not admissible as a trend point.
 
 | Story | Verdict | Tokens | Cost | Wall | Target identity |
 |---|---|---|---|---|---|
@@ -41,4 +45,4 @@ Not a phase-end conformance run — the campaign that established the D9 caps, r
 
 Configuration `paired-default` (frontier) throughout. **These attempts span three target identities and none used the final one** — they are the basis for the D9 caps, not a comparable series. Campaign cost ~$41.
 
-*The first true phase-end conformance run (`golden-all`, N=1, `paired-default`) appends below.*
+*No admissible run yet. The v1 `golden-minimal` baseline owed by Phase 1 — a real run on the settled identity, with full descriptor — appends here when taken; the first phase-end `golden-all` conformance run follows it.*

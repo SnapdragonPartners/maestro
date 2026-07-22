@@ -47,6 +47,9 @@ The spread is the headline finding and survives the identity caveat: **`bugfix` 
 
 ### N (sampling)
 
+> **Amendment PROPOSED 2026-07-22** (pending Codex + DR acceptance, with the [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) conformance-first amendment): the N below governs **comparison** runs, which move to Phase 1B. **Phase-end conformance runs use N = 1** on `golden-all` — a tier names a story set, while N follows the run's purpose. Nothing else in this record changes.
+
+
 **N = 3 for the primary configuration (`paired-default`); N = 1 for secondary configurations.** This confirms the provisional 3/1 the plan carried. A full N=3 sweep of the three working stories is 9 attempts at the latest-measured mean of $4.58 ≈ **$41** (the same figure the suite cap below is derived from), which is affordable per-sweep; N=1 on secondary configs keeps the matrix from multiplying that. N=3 is the minimum that shows variance at all and remains the honest floor — it is a variance *smoke test*, not a statistically strong sample.
 
 ### Per-story caps (runner-enforced, overrun-as-failure)
