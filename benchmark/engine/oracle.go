@@ -7,11 +7,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
 	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
 )
+
+// scratchCleanupTimeout bounds engine-owned scratch teardown. It uses a fresh
+// context (cleanup must run after the attempt's ctx is cancelled/timed out —
+// exactly when a leak would otherwise occur) but must not itself hang the
+// attempt if the git removal wedges.
+const scratchCleanupTimeout = 30 * time.Second
 
 // runOracle executes one oracle check: it materialises the check's retained
 // asset bytes, runs the declared argv under the shared deadline/process-group
@@ -37,11 +44,16 @@ func runOracle(ctx context.Context, solutionDir string, check *story.Check, asse
 }
 
 // runInSolutionOracle materialises the assets into the bound solution and runs
-// argv there.
-func runInSolutionOracle(ctx context.Context, solutionDir string, check *story.Check, assets map[string][]byte) runrecord.CheckResult {
+// argv there. A cleanup failure fails the check closed (a leaked asset would
+// contaminate subsequent checks), folded into whatever result the run produced.
+func runInSolutionOracle(ctx context.Context, solutionDir string, check *story.Check, assets map[string][]byte) (result runrecord.CheckResult) {
 	destDir, created, err := ensureMaterialiseDir(solutionDir, check.PackageDir)
 	var materialised []string
-	defer func() { cleanupMaterialised(materialised, created) }()
+	defer func() {
+		if cerr := cleanupMaterialised(materialised, created); cerr != nil {
+			result = foldCleanupError(result, check.Name, cerr)
+		}
+	}()
 	if err != nil {
 		return oracleFail(check.Name, err)
 	}
@@ -49,7 +61,7 @@ func runInSolutionOracle(ctx context.Context, solutionDir string, check *story.C
 	if err != nil {
 		return oracleFail(check.Name, err)
 	}
-	result, _ := runProcess(ctx, solutionDir, nil, check.Name, check.Argv...)
+	result, _ = runProcess(ctx, solutionDir, nil, check.Name, check.Argv...)
 	return result
 }
 
@@ -57,12 +69,20 @@ func runInSolutionOracle(ctx context.Context, solutionDir string, check *story.C
 // engine-owned tool dir, the solution commit is checked out into an
 // engine-owned scratch worktree, and $ORACLE_SCRATCH hands that clean checkout
 // to the helper.
-func runScratchOracle(ctx context.Context, solutionDir string, check *story.Check, assets map[string][]byte, solution string) runrecord.CheckResult {
+func runScratchOracle(ctx context.Context, solutionDir string, check *story.Check, assets map[string][]byte, solution string) (result runrecord.CheckResult) {
 	toolDir, err := os.MkdirTemp("", "oracle-tool-")
 	if err != nil {
 		return oracleFail(check.Name, fmt.Errorf("create oracle tool dir: %w", err))
 	}
-	defer func() { _ = os.RemoveAll(toolDir) }()
+	// Every teardown below folds its failure into result so a leaked worktree
+	// registration or tree cannot coexist with a passing oracle. Defer order is
+	// LIFO: unregister the worktree first, then remove the scratch tree, then
+	// the tool dir.
+	defer func() {
+		if rerr := os.RemoveAll(toolDir); rerr != nil {
+			result = foldCleanupError(result, check.Name, fmt.Errorf("remove tool dir: %w", rerr))
+		}
+	}()
 	if _, err = materialiseAssets(toolDir, check.Assets, assets); err != nil {
 		return oracleFail(check.Name, err)
 	}
@@ -71,24 +91,37 @@ func runScratchOracle(ctx context.Context, solutionDir string, check *story.Chec
 	if err != nil {
 		return oracleFail(check.Name, fmt.Errorf("create oracle scratch dir: %w", err))
 	}
-	// The engine owns removal of BOTH the worktree registration (in the solution
-	// repo) and the on-disk tree, on every exit path including a timeout kill —
-	// so use a fresh context, never the possibly-cancelled ctx. Defer order
-	// (LIFO): unregister the worktree first, then remove the parent tree.
-	defer func() { _ = os.RemoveAll(scratchParent) }()
+	defer func() {
+		if rerr := os.RemoveAll(scratchParent); rerr != nil {
+			result = foldCleanupError(result, check.Name, fmt.Errorf("remove scratch tree: %w", rerr))
+		}
+	}()
 	scratchRoot := filepath.Join(scratchParent, "wt")
 	if _, err = gitx.Run(ctx, solutionDir, "worktree", "add", "--detach", scratchRoot, solution); err != nil {
 		return oracleFail(check.Name, fmt.Errorf("create scratch worktree at solution commit: %w", err))
 	}
-	// A fresh context on purpose: cleanup must run even after ctx is cancelled
-	// or timed out, which is exactly when a leak would occur.
-	defer func() { //nolint:contextcheck // cleanup must survive ctx expiry
-		_, _ = gitx.Run(context.Background(), solutionDir, "worktree", "remove", "--force", scratchRoot)
+	defer func() { //nolint:contextcheck // removeWorktree derives its own fresh bounded context, by design
+		if rerr := removeWorktree(solutionDir, scratchRoot); rerr != nil {
+			result = foldCleanupError(result, check.Name, rerr)
+		}
 	}()
 
 	env := []string{"ORACLE_SCRATCH=" + scratchRoot}
-	result, _ := runProcess(ctx, toolDir, env, check.Name, check.Argv...)
+	result, _ = runProcess(ctx, toolDir, env, check.Name, check.Argv...)
 	return result
+}
+
+// removeWorktree unregisters the scratch worktree from the solution repo under
+// a fresh, bounded context — cleanup must survive the attempt's ctx being
+// cancelled or timed out (the leak window), but must not itself hang the
+// attempt if git wedges. Its failure is surfaced, never swallowed.
+func removeWorktree(solutionDir, scratchRoot string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), scratchCleanupTimeout)
+	defer cancel()
+	if _, err := gitx.Run(ctx, solutionDir, "worktree", "remove", "--force", scratchRoot); err != nil { //nolint:contextcheck // cleanup runs on a fresh bounded context, by design
+		return fmt.Errorf("remove scratch worktree registration: %w", err)
+	}
+	return nil
 }
 
 // ensureMaterialiseDir resolves <root>/<packageDir>, rejecting any symlink
@@ -158,16 +191,36 @@ func materialiseAssets(destDir string, names []string, assets map[string][]byte)
 }
 
 // cleanupMaterialised removes materialised files then the dirs it created,
-// deepest first (each is empty once its files are gone). Best-effort: a leaked
-// artifact is observable by the achievability script, but cleanup failure must
-// not mask the check's own result.
-func cleanupMaterialised(files, createdDirs []string) {
+// deepest first (each is empty once its files are gone). Every removal is
+// attempted; a still-present-target (ErrNotExist) is not an error. Any real
+// failure is returned so the caller can fail the check closed — a leaked
+// asset or directory would contaminate subsequent checks against the worktree.
+func cleanupMaterialised(files, createdDirs []string) error {
+	var errs []error
 	for _, f := range files {
-		_ = os.Remove(f)
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
 	}
 	for i := len(createdDirs) - 1; i >= 0; i-- {
-		_ = os.Remove(createdDirs[i])
+		if err := os.Remove(createdDirs[i]); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...) //nolint:wrapcheck // aggregate of already-contextual os.Remove errors
+}
+
+// foldCleanupError makes a cleanup failure fail the check closed: the result is
+// forced to not-passed and the cleanup detail is appended to whatever the run
+// already recorded (so the original failure reason — a non-zero argv, say — is
+// never lost).
+func foldCleanupError(result runrecord.CheckResult, name string, cerr error) runrecord.CheckResult {
+	detail := result.Detail
+	if detail != "" {
+		detail += "; "
+	}
+	detail += "cleanup failed: " + cerr.Error()
+	return runrecord.CheckResult{Name: name, Passed: false, Detail: truncateDetail(detail)}
 }
 
 // oracleFail wraps an engine-side oracle error (materialise/scratch failure) as

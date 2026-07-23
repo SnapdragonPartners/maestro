@@ -133,6 +133,56 @@ func TestOraclePackageDirSymlinkRejected(t *testing.T) {
 	}
 }
 
+// TestOracleCleanupFailureFailsClosed: a passing argv that leaves a stray file
+// inside a created package_dir makes os.Remove of that dir fail. The check must
+// then be reported as FAILED (fail-closed), not passed — a leak cannot coexist
+// with success — and the detail must name the cleanup failure.
+func TestOracleCleanupFailureFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	// argv succeeds but drops a stray file into the created package_dir, so the
+	// deepest-first os.Remove of "sub/pkg" fails (non-empty).
+	check, assets := oracleCheck([]string{"sh", "-c", "cat sub/pkg/zz_oracle_probe.txt && : > sub/pkg/leak.txt"}, "sub/pkg", "")
+	res := runOracle(context.Background(), dir, check, assets, "")
+	if res.Passed {
+		t.Fatal("a cleanup failure must fail the check closed, not report success")
+	}
+	if !strings.Contains(res.Detail, "cleanup failed") {
+		t.Errorf("detail should name the cleanup failure: %q", res.Detail)
+	}
+}
+
+// TestOracleScratchCleanupAfterTimeout: even when the helper is killed on ctx
+// expiry, the engine's bounded, fresh-context scratch teardown still runs and
+// unregisters the worktree.
+func TestOracleScratchCleanupAfterTimeout(t *testing.T) {
+	dir, head := gitInit(t, map[string]string{"solution.txt": "done"})
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	check, assets := oracleCheck([]string{"sleep", "30"}, "", story.OracleScratchSolutionCommit)
+	res := runOracle(ctx, dir, check, assets, head)
+	if res.Passed {
+		t.Fatal("a killed scratch oracle must not pass")
+	}
+	out, err := exec.Command("git", "-C", dir, "worktree", "list").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(strings.TrimSpace(string(out)), "\n"); lines != 0 {
+		t.Fatalf("scratch worktree leaked after timeout:\n%s", out)
+	}
+}
+
+// TestRemoveWorktreeFailsClosed: the scratch teardown surfaces a git removal
+// failure (here, an unregistered path) rather than swallowing it, so the caller
+// can fail the check closed.
+func TestRemoveWorktreeFailsClosed(t *testing.T) {
+	dir, _ := gitInit(t, map[string]string{"x.txt": "hi"})
+	err := removeWorktree(dir, filepath.Join(dir, "not-a-registered-worktree"))
+	if err == nil {
+		t.Fatal("removing an unregistered worktree must return an error, not fail open")
+	}
+}
+
 // TestOracleScratchMode proves the load-bearing scratch properties in one run:
 // $ORACLE_SCRATCH is a clean checkout of the solution commit (carries the
 // solution file), the oracle asset is NOT in the scratch (it lives only in the
