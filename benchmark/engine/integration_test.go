@@ -69,7 +69,7 @@ func writeFile(t *testing.T, path, content string) {
 func testStory(t *testing.T, repoURL, pin string, budget story.Budget) *story.Loaded {
 	t.Helper()
 	def := &story.Definition{
-		SchemaVersion: story.SchemaVersion,
+		SchemaVersion: story.SchemaV1,
 		ID:            "stub-story",
 		Title:         "Stub story",
 		Level:         story.LevelStory,

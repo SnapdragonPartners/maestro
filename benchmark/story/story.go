@@ -26,8 +26,10 @@ const (
 	SchemaV2         = 2
 	MaxSchemaVersion = SchemaV2
 
-	// SchemaVersion is retained for callers wanting "the current version".
-	SchemaVersion = SchemaV1
+	// SchemaVersion is the CURRENT version a newly authored story should use.
+	// It tracks MaxSchemaVersion; callers that specifically want the legacy
+	// schema must name SchemaV1 explicitly.
+	SchemaVersion = MaxSchemaVersion
 
 	// OracleAssetPrefix is the reserved basename namespace for oracle assets.
 	// Requiring it up front makes the source→destination mapping trivial
@@ -235,6 +237,14 @@ func (c *Check) validate() error {
 	if c.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	// Fields belong to exactly one check type. An oracle-only field on a
+	// non-oracle check (or vice versa) is rejected regardless of schema
+	// version, so v1's strict contract cannot be widened by stray v2 fields
+	// that would otherwise be silently ignored or folded into the hash.
+	if c.Type != CheckOracle && c.hasOracleFields() {
+		return fmt.Errorf("%s checks may not carry oracle fields (assets/argv/package_dir/scratch)", c.Type)
+	}
+
 	switch c.Type {
 	case CheckCommand:
 		if c.Command == "" {
@@ -254,6 +264,11 @@ func (c *Check) validate() error {
 	return nil
 }
 
+// hasOracleFields reports whether any oracle-only field is set.
+func (c *Check) hasOracleFields() bool {
+	return len(c.Assets) > 0 || len(c.Argv) > 0 || c.PackageDir != "" || c.Scratch != ""
+}
+
 // validateOracle enforces the oracle check's shape and the load-time half of
 // its path safety. The materialise-time half (symlink components in the
 // agent-controlled solution) lives in the engine. See design_oracles.md.
@@ -264,8 +279,8 @@ func (c *Check) validateOracle() error {
 	if len(c.Argv) == 0 {
 		return fmt.Errorf("oracle checks require a non-empty argv")
 	}
-	if c.Command != "" {
-		return fmt.Errorf("oracle checks use argv, not command")
+	if c.Command != "" || c.Path != "" || c.Contains != "" {
+		return fmt.Errorf("oracle checks use argv/assets only, not command/path/contains")
 	}
 	if c.Scratch != "" && c.Scratch != OracleScratchSolutionCommit {
 		return fmt.Errorf("oracle scratch %q must be %q or empty", c.Scratch, OracleScratchSolutionCommit)

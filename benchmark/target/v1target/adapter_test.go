@@ -20,7 +20,7 @@ var _ target.Adapter = (*Adapter)(nil)
 func testSpec(t *testing.T, settingsMap map[string]string) *target.AttemptSpec {
 	t.Helper()
 	def := &story.Definition{
-		SchemaVersion: story.SchemaVersion,
+		SchemaVersion: story.SchemaV1,
 		ID:            "v1-test",
 		Title:         "t",
 		Level:         story.LevelStory,

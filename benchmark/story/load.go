@@ -96,10 +96,15 @@ func loadOracleAssets(storyPath string, def *Definition) (map[string][]byte, []a
 	if len(names) == 0 {
 		return nil, nil, nil
 	}
-	oracleDir := filepath.Join(filepath.Dir(storyPath), oracleDirName, def.ID)
-	if err := lstatRegularDir(oracleDir); err != nil {
+	storyDir := filepath.Dir(storyPath)
+	// Check EVERY component from the story dir down — not just the final
+	// oracles/<id> — so a symlinked `oracles` or `<id>` directory cannot
+	// redirect a hashed asset. The story dir itself is caller-provided and out
+	// of scope; everything we resolve below it is ours to constrain.
+	if err := lstatComponentsAreDirs(storyDir, oracleDirName, def.ID); err != nil {
 		return nil, nil, fmt.Errorf("oracle dir: %w", err)
 	}
+	oracleDir := filepath.Join(storyDir, oracleDirName, def.ID)
 
 	assets := make(map[string][]byte, len(names))
 	for _, name := range names {
@@ -160,18 +165,22 @@ func wrapHash(err error) error {
 	return fmt.Errorf("canonical hash: %w", err)
 }
 
-// lstatRegularDir requires path to be a directory reached without traversing a
-// symlink in its final component.
-func lstatRegularDir(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("lstat %s: %w", path, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%s is a symlink", path)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", path)
+// lstatComponentsAreDirs lstat-checks base/c1, base/c1/c2, … requiring each to
+// be a real (non-symlink) directory. base is assumed already trusted.
+func lstatComponentsAreDirs(base string, components ...string) error {
+	p := base
+	for _, c := range components {
+		p = filepath.Join(p, c)
+		info, err := os.Lstat(p)
+		if err != nil {
+			return fmt.Errorf("lstat %s: %w", p, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink", p)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s is not a directory", p)
+		}
 	}
 	return nil
 }
