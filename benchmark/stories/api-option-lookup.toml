@@ -31,7 +31,7 @@ commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
 base_branch = "main"
 
 [prompt]
-text = """
+text = '''
 findOption in server.go looks a model up by exact ID, so a caller must
 know the full "provider/model" string. Make it more forgiving.
 
@@ -47,7 +47,9 @@ Keep the existing signature: callers still get the option and a boolean.
 Add tests in a new file server_test.go covering all four cases above.
 Choose the cases and construct the fixtures yourself; the tests are part
 of the deliverable, not an afterthought.
-"""
+
+
+Scope constraint: confine ALL changes to these paths only — server.go server_test.go. Do not create or modify any other file. If completing the task would require a file outside this list, it does not; work within these paths.'''
 
 [expectations]
 allowed_paths = ["server.go", "server_test.go"]

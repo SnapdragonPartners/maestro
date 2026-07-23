@@ -31,7 +31,7 @@ commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
 base_branch = "main"
 
 [prompt]
-text = """
+text = '''
 When several instances of the demo run behind one address, there is no way
 to tell which one served a response.
 
@@ -42,7 +42,9 @@ Every HTTP response the application serves must carry its value in an
 
 The flag's value must reach the server, so an operator who passes
 `-instance-name=blue` sees `X-Instance-Name: blue` on responses.
-"""
+
+
+Scope constraint: confine ALL changes to these paths only — main.go server.go. Do not create or modify any other file. If completing the task would require a file outside this list, it does not; work within these paths.'''
 
 [expectations]
 allowed_paths = ["main.go", "server.go"]

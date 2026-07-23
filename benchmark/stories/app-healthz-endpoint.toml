@@ -32,7 +32,7 @@ commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
 base_branch = "main"
 
 [prompt]
-text = """
+text = '''
 The chat demo has no way for an operator or a load balancer to ask
 whether it is up. Add one.
 
@@ -46,7 +46,9 @@ that stands up the real router with httptest, issues an actual HTTP
 request to /healthz, and asserts on the status code and the decoded body.
 Route it through the same constructor the application uses, so the test
 would catch a handler that exists but was never wired up.
-"""
+
+
+Scope constraint: confine ALL changes to these paths only — server.go health_test.go. Do not create or modify any other file. If completing the task would require a file outside this list, it does not; work within these paths.'''
 
 [expectations]
 allowed_paths = ["server.go", "health_test.go"]

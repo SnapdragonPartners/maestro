@@ -1,6 +1,6 @@
 +++
 title = "Conformance Run Log"
-edit_date = "2026-07-22"
+edit_date = "2026-07-23"
 status = "live"
 type = "notes"
 summary = "The committed, distilled record of every phase-end golden-story conformance run: date, target identity, per-story verdict, and cost/token totals. The durable counterpart to the git-ignored raw results store — interim until the Phase 2 data plane makes performance records first-class artifacts."
@@ -97,5 +97,30 @@ Total $11.67. **Zero validator failures across all three** — every `build`, `v
 **What this does and does not show.** All three official verdicts are **failures**, the fixture pin is superseded, and the engine-owned behavioural oracles added later were **never run against these solutions** — the acceptance contracts in force at the time were structural greps since shown to accept implementations that ignore the requirement entirely. So these are **promising validator-passing candidates, not proof that the pipeline succeeded** on the three new paths. What can be said: every `build`, `vet` and `test` passed, and the recorded failures trace to author defects rather than to anything the target did.
 
 `flag-chat-timeout` has since been **replaced** by `flag-instance-name`: its behaviour could not be verified hermetically, so every check it had was structural and an implementation that ignored the flag passed all of them. Establishing the stronger claim needs a re-run on current pins against the current contracts, which is item 10's phase-end `golden-all`. Not re-run at the time: re-pinning had already churned the hashes, and paying frontier prices to re-confirm known authoring bugs was poor use of budget.
+
+### 2026-07-23 — Item 9-oracle achievability control (**NOT a performance run**)
+
+This records the achievability control that closed item 9-oracle (engine-owned
+behavioural oracles), per the durability rule above — accepted evidence must be
+committed, not left in transient output. It is deliberately **non-performance**:
+a single headless agent per story with **no cost accounting** (a control, not a
+measurement, so no tokens/cost/wall-clock row). It establishes that the three
+rung-3/4/5 contracts are achievable **and that the engine-owned oracles function
+against real agent solutions** — not a baseline. The performance baseline remains
+item 10's phase-end `golden-all`.
+
+- **Executor:** `claude` CLI 2.1.218 headless (`-p`, `--permission-mode acceptEdits`), fresh clone detached at the pin, solution committed, then evaluated by `bin/runner verify` — the engine's single production `Verify` seam (`scripts/achievability-check.sh`). No facsimile of check execution.
+- **Fixture pin:** `golden-fixture-chat` @ `60e79fd075c8`.
+- **Prompt fidelity:** the agent receives `prompt.text` **verbatim** — the same bytes `target/v1target/run.go` writes to `story-spec.md`. The scope constraint each story needs lives inside `prompt.text` (so the control and the measured pipeline read identical bytes); the control does not augment the prompt. The hashes below are the committed prompts, byte-identical to what these runs received.
+
+| Story | Story hash | Verdict | Behavioural oracle(s) — all PASS |
+|---|---|---|---|
+| `flag-instance-name` | `sha256:2730eace3d79` | proven-achievable | `oracle-instance-name-observed` (real binary + fake Ollama, header on 3 handlers) |
+| `api-option-lookup` | `sha256:b33ec4422e48` | proven-achievable | `oracle-lookup-semantics` (in-solution) + `authored-tests-cover-each-behaviour` (scratch mutation, agent's own tests kill all 4 reference mutants) |
+| `app-healthz-endpoint` | `sha256:6b23d0a8105b` | proven-achievable | `oracle-healthz-responds` (httptest through `newServer`) + `authored-tests-detect-broken-behaviour` (scratch mutation, agent's own test detects both broken clauses) |
+
+Every validator and check passed for all three (`build`, `vet`, `test`, diff-confinement, the structural greps, gofmt, and the oracles above). The scratch-mode mutation oracles passing against the agents' **own authored tests** is the load-bearing result: the full engine oracle path — in-solution materialisation, scratch worktree checkout of the immutable solution commit, mutation, compile-gate, cleanup — works end-to-end on real agent output.
+
+**What this does and does not show.** It shows the contracts are achievable and the oracles are sound and functional against genuine solutions. It is **not** a pipeline verdict or a performance baseline: the executor is a single headless agent, not the PM→architect→coder pipeline, and nothing here is cost-accounted. `not-proven-achievable` from this control would bound our knowledge, never the story (a documented limitation). The official verdicts come from item 10's `golden-all`.
 
 *The first phase-end `golden-all` conformance run appends below.*
