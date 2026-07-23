@@ -29,7 +29,7 @@ type VerifyResult struct {
 func Verify(ctx context.Context, boundDir string, loaded *story.Loaded, pin, solution string) VerifyResult {
 	def := loaded.Definition
 	validators, outputs := runValidators(ctx, boundDir, def.Validators)
-	checks := runChecks(ctx, boundDir, def, pin, solution)
+	checks := runChecks(ctx, boundDir, loaded, pin, solution)
 	return VerifyResult{
 		Validators:       validators,
 		ValidatorOutputs: outputs,

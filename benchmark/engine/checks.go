@@ -28,8 +28,22 @@ func runShell(ctx context.Context, dir, name, command string) runrecord.CheckRes
 // runShellFull is runShell also returning the full captured output for
 // evidence export.
 func runShellFull(ctx context.Context, dir, name, command string) (runrecord.CheckResult, string) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	return runProcess(ctx, dir, nil, name, "sh", "-c", command)
+}
+
+// runProcess executes argv in dir (with the given extra environment appended
+// to the parent's, or the parent's alone when env is nil) and reports pass on
+// exit 0. Like runShellFull it runs in its own process group and kills the
+// whole group on context expiry, so an orphaned grandchild holding the output
+// pipe cannot block CombinedOutput past the wall-clock cap. Oracle checks use
+// this directly (no shell) so nothing re-introduces the truncation/quoting
+// hazards the oracle change exists to remove.
+func runProcess(ctx context.Context, dir string, env []string, name string, argv ...string) (runrecord.CheckResult, string) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is story-authored, hashed into identity
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -66,8 +80,11 @@ func runValidators(ctx context.Context, dir string, validators []story.Validator
 	return results, outputs
 }
 
-// runChecks executes every deterministic story check at the solution.
-func runChecks(ctx context.Context, dir string, def *story.Definition, pin, solution string) []runrecord.CheckResult {
+// runChecks executes every deterministic story check at the solution. loaded
+// carries the retained oracle-asset bytes an oracle check materialises; solution
+// is the immutable commit a scratch-mode oracle checks out.
+func runChecks(ctx context.Context, dir string, loaded *story.Loaded, pin, solution string) []runrecord.CheckResult {
+	def := loaded.Definition
 	out := make([]runrecord.CheckResult, 0, len(def.Checks))
 	for i := range def.Checks {
 		check := &def.Checks[i]
@@ -79,6 +96,8 @@ func runChecks(ctx context.Context, dir string, def *story.Definition, pin, solu
 			result = checkFilesChangedWithin(ctx, dir, check.Name, def.Expectations.AllowedPaths, pin, solution)
 		case story.CheckFileContains:
 			result = checkFileContains(dir, check)
+		case story.CheckOracle:
+			result = runOracle(ctx, dir, check, loaded.OracleAssets, solution)
 		default:
 			// Unknown types cannot load past story validation; belt and
 			// suspenders for hand-built definitions.
