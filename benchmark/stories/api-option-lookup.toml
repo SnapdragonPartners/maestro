@@ -164,32 +164,41 @@ exit $rc
 '''
 
 [[checks]]
-# MUTATION CHECK — proves the AUTHORED TESTS are meaningful, which the oracle
-# above cannot: the oracle verifies the implementation, so a correct
-# findOption paired with four empty named subtests satisfies it and every
-# structural check. Since authoring tests is the whole point of this rung,
-# that gap accepts a non-deliverable.
+# MUTATION CHECK — proves the AUTHORED TESTS exercise EACH required behaviour,
+# not just one. The engine oracle above verifies the IMPLEMENTATION; a single
+# always-not-found mutant is caught by any one real assertion, so an exact-match
+# test plus three empty subtests would pass it. This runs the agent's tests
+# against FOUR reference findOption implementations — each correct except one
+# clause of the precedence contract — and requires the tests to FAIL against
+# every one. Miss the ambiguity case and its mutant survives; the story is
+# rejected, naming the uncovered behaviour.
 #
-# Break findOption to always report not-found, run the AGENT'S tests, and
-# require them to FAIL. Tests that still pass against a broken implementation
-# assert nothing. server.go is restored either way, including on failure.
-# Verified both directions: vacuous subtests pass the mutant (rejected here),
-# a single real assertion fails it (accepted).
-name = "authored-tests-detect-broken-behaviour"
+# Whole-function replacement (base64-embedded to keep raw Go out of the TOML),
+# so the check depends on BEHAVIOUR, not on how the agent named variables or
+# shaped findOption. server.go is restored byte-exact even on failure, and no
+# scratch file is left behind. Verified: an exact-only test is rejected naming
+# the three untested clauses; a full four-case test is accepted.
+name = "authored-tests-cover-each-behaviour"
 type = "command"
 command = '''
-cp server.go .zz_server_orig.go
-python3 - <<'MUT'
-import re
-s = open('server.go').read()
-s = re.sub(r'func findOption\(options \[\]ModelOption, id string\) \(ModelOption, bool\) \{.*?\n\}',
-           'func findOption(options []ModelOption, id string) (ModelOption, bool) {\n\treturn ModelOption{}, false\n}',
-           s, count=1, flags=re.S)
-open('server.go', 'w').write(s)
-MUT
-go test . >/dev/null 2>&1; survived=$?
-cp .zz_server_orig.go server.go; rm -f .zz_server_orig.go
-test $survived -ne 0
+set -e
+cp server.go .zz_orig.go
+perl -0pe 's/\nfunc findOption\(options \[\]ModelOption, id string\) \(ModelOption, bool\) \{.*?\n\}\n/\n/s' .zz_orig.go > .zz_base.go
+rc=0
+cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJdmFyIGYgTW9kZWxPcHRpb24KCW4gOj0gMAoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5Qcm92aWRlck5hbWUgPT0gaWQgewoJCQlmID0geAoJCQluKysKCQl9Cgl9CglpZiBuID09IDEgewoJCXJldHVybiBmLCB0cnVlCgl9CglyZXR1cm4gTW9kZWxPcHRpb257fSwgZmFsc2UKfQo= | base64 -d > zz_mutant.go
+if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: exact-id-wins" >&2; rc=1; fi; else echo "mutant exact-id-wins broke build (check bug)" >&2; rc=2; fi
+rm -f zz_mutant.go
+cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5JRCA9PSBpZCB7CgkJCXJldHVybiB4LCB0cnVlCgkJfQoJfQoJcmV0dXJuIE1vZGVsT3B0aW9ue30sIGZhbHNlCn0K | base64 -d > zz_mutant.go
+if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: provider-fallback" >&2; rc=1; fi; else echo "mutant provider-fallback broke build (check bug)" >&2; rc=2; fi
+rm -f zz_mutant.go
+cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5JRCA9PSBpZCB7CgkJCXJldHVybiB4LCB0cnVlCgkJfQoJfQoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5Qcm92aWRlck5hbWUgPT0gaWQgewoJCQlyZXR1cm4geCwgdHJ1ZQoJCX0KCX0KCXJldHVybiBNb2RlbE9wdGlvbnt9LCBmYWxzZQp9Cg== | base64 -d > zz_mutant.go
+if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: ambiguity-not-found" >&2; rc=1; fi; else echo "mutant ambiguity-not-found broke build (check bug)" >&2; rc=2; fi
+rm -f zz_mutant.go
+cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5JRCA9PSBpZCB7CgkJCXJldHVybiB4LCB0cnVlCgkJfQoJfQoJdmFyIGYgTW9kZWxPcHRpb24KCW4gOj0gMAoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5Qcm92aWRlck5hbWUgPT0gaWQgewoJCQlmID0geAoJCQluKysKCQl9Cgl9CglpZiBuID09IDEgewoJCXJldHVybiBmLCB0cnVlCgl9CglpZiBsZW4obykgPiAwIHsKCQlyZXR1cm4gb1swXSwgdHJ1ZQoJfQoJcmV0dXJuIE1vZGVsT3B0aW9ue30sIGZhbHNlCn0K | base64 -d > zz_mutant.go
+if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: unknown-not-found" >&2; rc=1; fi; else echo "mutant unknown-not-found broke build (check bug)" >&2; rc=2; fi
+rm -f zz_mutant.go
+cp .zz_orig.go server.go; rm -f .zz_orig.go .zz_base.go
+exit $rc
 '''
 
 [budget]

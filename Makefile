@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint script-test
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -53,8 +53,14 @@ benchmark: lint
 	go build -o bin/benchmark ./cmd/benchmark
 
 # Run all tests with coverage
-test: benchmark-test
+test: benchmark-test script-test
 	go test -cover ./...
+
+# Shell tooling that has bitten us before gets regression coverage too — the
+# achievability-check transport silently mis-executed multi-line commands.
+.PHONY: script-test script-test
+script-test:
+	@bash scripts/achievability-check.test.sh
 
 # Run integration tests only (requires API keys and external services)
 test-integration:

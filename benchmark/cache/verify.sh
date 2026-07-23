@@ -6,7 +6,9 @@
 #  1. Coverage — every story's [fixture] repo+commit must appear in
 #     fixtures.txt. A story re-pinned without updating fixtures.txt is caught
 #     here, before any image check. (Whether that re-pin also needs a REPUBLISH
-#     depends on its module inputs — see below; this script is the gate.)
+#     depends on whether the image still COVERS it — this script is the gate.
+#     It proves coverage, NOT that module inputs are unchanged: a shrinking
+#     dependency set verifies against the old image, correctly.)
 #
 #  2. Offline completeness — for each fixture, mount the CURRENT pinned
 #     go.mod/go.sum (freshly staged, NOT the copies baked into the image)

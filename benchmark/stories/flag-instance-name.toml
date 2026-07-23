@@ -74,46 +74,22 @@ type = "command"
 command = "sh -c 'grep -qE \"func newServer\\(.*string\" server.go'"
 
 [[checks]]
-# ENGINE-OWNED BEHAVIOURAL ORACLE. Constructs the real router with a value
-# that is NOT the default and asserts the header carries it, on two different
-# routes. A hardcoded header, an ignored parameter, or a header applied to
-# only one route all fail. This is what flag-chat-timeout could not have.
+# ENGINE-OWNED BEHAVIOURAL ORACLE — the REAL BINARY, driven over HTTP.
+# Builds the application, runs it with a NON-DEFAULT `-instance-name`, and
+# asserts the value appears in X-Instance-Name on two different routes. This
+# exercises the whole path the story requires: flag parse in main → propagation
+# to the server → header on every response. A newServer-direct oracle could not
+# see main→server wiring, so `main` declaring the flag but passing a hardcoded
+# value would slip through; this rejects exactly that, and a header applied to
+# only one route. Verified against both forgeries and a correct implementation.
+#
+# base64-embedded to keep the shell out of the TOML parser. Dependency-free:
+# binds an ephemeral 127.0.0.1 port, runs with an empty env so no provider is
+# needed, asserts with a tiny stdlib Go probe rather than curl, and kills the
+# process on exit.
 name = "oracle-instance-name-observed"
 type = "command"
-command = '''
-cat > zz_engine_oracle_test.go <<'ORACLE'
-package main
-
-import (
-	"io"
-	"log"
-	"net/http"
-	"net/http/httptest"
-	"testing"
-)
-
-func TestEngineOracleInstanceName(t *testing.T) {
-	const want = "oracle-instance-42"
-	srv := httptest.NewServer(newServer(nil, log.New(io.Discard, "", 0), want))
-	defer srv.Close()
-
-	for _, path := range []string{"/", "/api/providers"} {
-		resp, err := http.Get(srv.URL + path)
-		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
-		}
-		got := resp.Header.Get("X-Instance-Name")
-		resp.Body.Close()
-		if got != want {
-			t.Fatalf("GET %s: X-Instance-Name = %q, want %q", path, got, want)
-		}
-	}
-}
-ORACLE
-go test -run TestEngineOracleInstanceName . >/dev/null 2>&1; rc=$?
-rm -f zz_engine_oracle_test.go
-exit $rc
-'''
+command = "printf %s c2V0IC1lCnBvcnQ9JCgoIDg3MDAgKyAoJCQgJSAyMDApICkpCnRtcD0iJChta3RlbXAgLWQpIgpnbyBidWlsZCAtbyAiJHRtcC9jaGF0IiAuCiMgTm9uLWRlZmF1bHQgZmxhZzsgZW1wdHkgZW52IHNvIG5vIHByb3ZpZGVyIGlzIG5lZWRlZC4KZW52IC1pIFBBVEg9IiRQQVRIIiAiJHRtcC9jaGF0IiAtYWRkcj0iMTI3LjAuMC4xOiRwb3J0IiAtaW5zdGFuY2UtbmFtZT1vcmFjbGUteHl6ID4vZGV2L251bGwgMj4mMSAmCnBpZD0kIQp0cmFwICdraWxsICRwaWQgMj4vZGV2L251bGwnIEVYSVQKIyBEZXBlbmRlbmN5LWZyZWUgcHJvYmU6IGEgdGlueSBHbyBwcm9ncmFtIGluIGl0cyBvd24gbW9kdWxlLCBzbyBpdCBuZWl0aGVyCiMgaW1wb3J0cyB0aGUgZml4dHVyZSBub3IgbmVlZHMgY3VybC4gV2FpdHMgZm9yIGxpc3RlbiwgdGhlbiBhc3NlcnRzIHRoZSBoZWFkZXIKIyBvbiB0d28gcm91dGVzIHdpdGggYSBub24tZGVmYXVsdCB2YWx1ZS4KbWtkaXIgIiR0bXAvcHJvYmUiCmNhdCA+ICIkdG1wL3Byb2JlL2dvLm1vZCIgPDwnR09NT0QnCm1vZHVsZSBwcm9iZQpnbyAxLjIxCkdPTU9ECmNhdCA+ICIkdG1wL3Byb2JlL21haW4uZ28iIDw8J1BST0JFJwpwYWNrYWdlIG1haW4KCmltcG9ydCAoCgkiZm10IgoJIm5ldC9odHRwIgoJIm9zIgoJInRpbWUiCikKCmZ1bmMgbWFpbigpIHsKCWJhc2UgOj0gImh0dHA6Ly8xMjcuMC4wLjE6IiArIG9zLkFyZ3NbMV0KCWRlYWRsaW5lIDo9IHRpbWUuTm93KCkuQWRkKDUgKiB0aW1lLlNlY29uZCkKCWZvciB7CgkJaWYgXywgZXJyIDo9IGh0dHAuR2V0KGJhc2UgKyAiLyIpOyBlcnIgPT0gbmlsIHsKCQkJYnJlYWsKCQl9CgkJaWYgdGltZS5Ob3coKS5BZnRlcihkZWFkbGluZSkgewoJCQlmbXQuRnByaW50bG4ob3MuU3RkZXJyLCAic2VydmVyIG5ldmVyIGNhbWUgdXAiKQoJCQlvcy5FeGl0KDEpCgkJfQoJCXRpbWUuU2xlZXAoNTAgKiB0aW1lLk1pbGxpc2Vjb25kKQoJfQoJZm9yIF8sIHAgOj0gcmFuZ2UgW11zdHJpbmd7Ii8iLCAiL2FwaS9wcm92aWRlcnMifSB7CgkJcmVzcCwgZXJyIDo9IGh0dHAuR2V0KGJhc2UgKyBwKQoJCWlmIGVyciAhPSBuaWwgewoJCQlmbXQuRnByaW50Zihvcy5TdGRlcnIsICJHRVQgJXM6ICV2XG4iLCBwLCBlcnIpCgkJCW9zLkV4aXQoMSkKCQl9CgkJZ290IDo9IHJlc3AuSGVhZGVyLkdldCgiWC1JbnN0YW5jZS1OYW1lIikKCQlyZXNwLkJvZHkuQ2xvc2UoKQoJCWlmIGdvdCAhPSAib3JhY2xlLXh5eiIgewoJCQlmbXQuRnByaW50Zihvcy5TdGRlcnIsICJHRVQgJXM6IFgtSW5zdGFuY2UtTmFtZT0lcSB3YW50ICVxXG4iLCBwLCBnb3QsICJvcmFjbGUteHl6IikKCQkJb3MuRXhpdCgxKQoJCX0KCX0KfQpQUk9CRQooIGNkICIkdG1wL3Byb2JlIiAmJiBnbyBydW4gLiAiJHBvcnQiICkK | base64 -d | sh"
 
 [[checks]]
 # Scoped to main.go: the fixture's server.go ships from upstream with gofmt

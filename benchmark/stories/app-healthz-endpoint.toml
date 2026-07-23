@@ -159,19 +159,32 @@ exit $rc
 [[checks]]
 # MUTATION CHECK — proves the authored test is meaningful. The oracle above
 # verifies the endpoint; it cannot tell a real behavioural test from one that
-# merely mentions httptest, newServer and status. Break the route (serve 500
-# with an empty body), run the AGENT'S test, and require it to FAIL. server.go
-# is restored either way.
+# merely mentions httptest, newServer and status.
+#
+# The mutant WRAPS the constructed handler rather than registering a second
+# /healthz route. A duplicate registration makes net/http panic during
+# construction, so a test that merely builds the router — asserting nothing —
+# would "detect" that mutant and pass this check for the wrong reason.
+# Wrapping keeps construction succeeding and breaks only the response, so
+# detection requires actually issuing a request and asserting on it.
 name = "authored-tests-detect-broken-behaviour"
 type = "command"
 command = '''
 cp server.go .zz_server_orig.go
-python3 - <<'MUT'
-s = open('server.go').read()
-s = s.replace('mux.HandleFunc("/", servePage)',
-              'mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) })\n\tmux.HandleFunc("/", servePage)', 1)
-open('server.go', 'w').write(s)
-MUT
+sed 's/func newServer(/func zzOrigNewServer(/' .zz_server_orig.go > server.go
+cat >> server.go <<'GOEOF'
+
+func newServer(options []ModelOption, logger *log.Logger) http.Handler {
+	inner := zzOrigNewServer(options, logger)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+}
+GOEOF
 go test . >/dev/null 2>&1; survived=$?
 cp .zz_server_orig.go server.go; rm -f .zz_server_orig.go
 test $survived -ne 0

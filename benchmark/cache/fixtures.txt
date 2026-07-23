@@ -1,13 +1,14 @@
 # Golden Go fixtures whose module caches are baked into the union image
 # (item 5.1, #268; see docs/v2/phase_1/design_cost_latency.md). One line per
 # fixture: <name> <owner/repo> <commit>. Keep in sync with the [fixture]
-# pins in benchmark/stories/*.toml. A re-pin that CHANGES a fixture's module
-# inputs (go.mod/go.sum) means a republish (the maintainer/release step) and
-# the digest in configs/*.toml moves with it. A re-pin that leaves them
-# byte-identical does not: the image is a pure function of those inputs, so it
-# is unchanged. `make cache-verify` is the gate that decides — it fails offline
-# if the image does not cover the current pins. Never skip it on the argument
-# that a change 'looks harmless'.
+# pins in benchmark/stories/*.toml. REPUBLISH WHEN THE IMAGE NO LONGER COVERS
+# the current pins, as `make cache-verify` determines — coverage is the trigger,
+# not the pin string, so a re-pin the image still covers keeps the existing
+# digest in configs/*.toml. (Amended 2026-07-22, PROPOSED pending acceptance;
+# see design_cost_latency.md.) The check proves COVERAGE, not input equality:
+# a shrinking dependency set still verifies, which is correct — the image is a
+# sufficient superset. Never skip the check on the argument that a change
+# 'looks harmless'.
 cms  SnapdragonPartners/golden-fixture-cms   748681e3ba581c2853b5e7fcd8ff6a0ca06d5f3b
 llms SnapdragonPartners/golden-fixture-llms  7729fffe3f2a15b97de6ba8dd73273fd562fad0d
 chat SnapdragonPartners/golden-fixture-chat  60e79fd075c8f3f13d7c8650012a2fc74f77de4a
