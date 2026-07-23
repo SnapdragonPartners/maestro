@@ -1,6 +1,10 @@
 package story
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,12 +15,23 @@ import (
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/contenthash"
 )
 
+// oracleDirName is the directory, alongside the story files, holding each
+// story's oracle assets: stories/oracles/<story-id>/.
+const oracleDirName = "oracles"
+
 // Loaded pairs a validated definition with its content identity and origin.
 type Loaded struct {
 	Definition *Definition
-	Path       string
+	// OracleAssets holds the bytes of every referenced oracle asset, keyed by
+	// basename, read ONCE at load. Both hashing and (later) materialisation
+	// use this retained set and never re-read the file — the bytes hashed are
+	// exactly the bytes materialised.
+	OracleAssets map[string][]byte
+	Path         string
 	// Hash is the "sha256:" identity of the canonical serialization of the
-	// validated definition — formatting and comments are not identity.
+	// validated definition — formatting and comments are not identity. For a
+	// v2 story with oracle assets it additionally folds in the assets' sorted
+	// {path, sha256(content)} digests, so editing an oracle moves the hash.
 	Hash string
 }
 
@@ -42,11 +57,136 @@ func LoadFile(path string) (*Loaded, error) {
 	if validateErr := def.Validate(); validateErr != nil {
 		return nil, fmt.Errorf("story %s: %w", path, validateErr)
 	}
-	hash, hashErr := contenthash.CanonicalJSON(&def)
+
+	// Read oracle assets once, here, and retain the bytes. Everything
+	// downstream — hashing now, materialisation later — uses this set.
+	assets, digests, assetErr := loadOracleAssets(path, &def)
+	if assetErr != nil {
+		return nil, fmt.Errorf("story %s: %w", path, assetErr)
+	}
+
+	hash, hashErr := hashWithOracle(&def, digests)
 	if hashErr != nil {
 		return nil, fmt.Errorf("story %s: %w", path, hashErr)
 	}
-	return &Loaded{Definition: &def, Path: path, Hash: hash}, nil
+	return &Loaded{Definition: &def, Path: path, Hash: hash, OracleAssets: assets}, nil
+}
+
+// assetDigest is one oracle asset's identity contribution: its basename and
+// the content hash of its retained bytes.
+type assetDigest struct {
+	Path   string `json:"path"`
+	Sha256 string `json:"sha256"`
+}
+
+// loadOracleAssets reads every oracle asset referenced by the definition from
+// stories/oracles/<id>/, retaining the bytes and computing content digests.
+// It performs the load-time half of path safety: every path component must be
+// a regular directory/file, never a symlink (the agent never controls these,
+// but a fixture repo or a stray symlink must not redirect a hashed asset).
+// Returns nil maps when the story has no oracle checks — the common v1 case,
+// which leaves the hash path untouched.
+func loadOracleAssets(storyPath string, def *Definition) (map[string][]byte, []assetDigest, error) {
+	var names []string
+	for i := range def.Checks {
+		if def.Checks[i].Type == CheckOracle {
+			names = append(names, def.Checks[i].Assets...)
+		}
+	}
+	if len(names) == 0 {
+		return nil, nil, nil
+	}
+	oracleDir := filepath.Join(filepath.Dir(storyPath), oracleDirName, def.ID)
+	if err := lstatRegularDir(oracleDir); err != nil {
+		return nil, nil, fmt.Errorf("oracle dir: %w", err)
+	}
+
+	assets := make(map[string][]byte, len(names))
+	for _, name := range names {
+		if _, dup := assets[name]; dup {
+			continue // same asset referenced by two checks; read once
+		}
+		full := filepath.Join(oracleDir, name)
+		if err := lstatRegularFile(full); err != nil {
+			return nil, nil, fmt.Errorf("oracle asset %q: %w", name, err)
+		}
+		content, err := os.ReadFile(full)
+		if err != nil {
+			return nil, nil, fmt.Errorf("oracle asset %q: %w", name, err)
+		}
+		assets[name] = content
+	}
+
+	digests := make([]assetDigest, 0, len(assets))
+	for name, content := range assets {
+		sum := sha256.Sum256(content)
+		digests = append(digests, assetDigest{Path: name, Sha256: hex.EncodeToString(sum[:])})
+	}
+	sort.Slice(digests, func(i, j int) bool { return digests[i].Path < digests[j].Path })
+	return assets, digests, nil
+}
+
+// hashWithOracle computes the story identity. With no oracle digests it is the
+// exact v1 path (contenthash.CanonicalJSON(def)), so every existing story's
+// hash is byte-identical. With digests it folds a sorted {path, sha256} list
+// under "_oracle_assets" into the canonicalised definition map — decoded with
+// UseNumber so the budget int64 precision the canonical hasher preserves is
+// not lost on this extra pass.
+func hashWithOracle(def *Definition, digests []assetDigest) (string, error) {
+	if len(digests) == 0 {
+		h, err := contenthash.CanonicalJSON(def)
+		return h, wrapHash(err)
+	}
+	raw, err := json.Marshal(def)
+	if err != nil {
+		return "", fmt.Errorf("marshal for oracle hash: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var m map[string]any
+	if decErr := dec.Decode(&m); decErr != nil {
+		return "", fmt.Errorf("decode for oracle hash: %w", decErr)
+	}
+	m["_oracle_assets"] = digests
+	h, hErr := contenthash.CanonicalJSON(m)
+	return h, wrapHash(hErr)
+}
+
+// wrapHash annotates a canonical-hash error at the story-load boundary.
+func wrapHash(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("canonical hash: %w", err)
+}
+
+// lstatRegularDir requires path to be a directory reached without traversing a
+// symlink in its final component.
+func lstatRegularDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
+}
+
+// lstatRegularFile requires path to be a regular file, not a symlink or other
+// special file.
+func lstatRegularFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("lstat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	return nil
 }
 
 // LoadDir loads every .toml story definition in dir (non-recursive),

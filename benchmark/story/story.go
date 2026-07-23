@@ -9,12 +9,36 @@ package story
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"regexp"
+	"strings"
 )
 
-// SchemaVersion is the current story definition schema. Check types and
-// section shapes change only with a version bump.
-const SchemaVersion = 1
+// Story schema versions. Check types and section shapes change only with a
+// version bump; older versions keep loading unchanged so their content hashes
+// — and any baseline recorded against them — never move.
+//
+//	v1: the original schema.
+//	v2: adds the `oracle` check type (engine-materialised, hashed adjacent
+//	    assets). See docs/v2/phase_1/design_oracles.md.
+const (
+	SchemaV1         = 1
+	SchemaV2         = 2
+	MaxSchemaVersion = SchemaV2
+
+	// SchemaVersion is retained for callers wanting "the current version".
+	SchemaVersion = SchemaV1
+
+	// OracleAssetPrefix is the reserved basename namespace for oracle assets.
+	// Requiring it up front makes the source→destination mapping trivial
+	// (basename preserved verbatim) and guarantees a materialised asset can
+	// never shadow an ordinary solution file.
+	OracleAssetPrefix = "zz_oracle_"
+
+	// OracleScratchSolutionCommit is the only recognised `scratch` mode: a
+	// clean checkout of the immutable solution commit for mutation helpers.
+	OracleScratchSolutionCommit = "solution-commit"
+)
 
 //nolint:gochecknoglobals // Package-level compiled regexes for performance.
 var (
@@ -49,6 +73,10 @@ const (
 	CheckFilesChangedWithin CheckType = "files_changed_within"
 	// CheckFileContains passes when the file at Path contains Contains.
 	CheckFileContains CheckType = "file_contains"
+	// CheckOracle materialises hashed adjacent Go assets into the bound
+	// solution (or a scratch checkout) and runs Argv; exit 0 passes. Schema
+	// v2 only. See docs/v2/phase_1/design_oracles.md.
+	CheckOracle CheckType = "oracle"
 )
 
 // Definition is one golden story.
@@ -98,14 +126,21 @@ type Validator struct {
 }
 
 // Check is one deterministic pass/fail check, engine-executed.
+//
+// Field order is chosen for struct alignment and has no bearing on identity:
+// the content hash sorts object keys, so declaration order never affects a
+// story's hash. Oracle fields (schema v2) all carry omitempty, so a v1 check's
+// JSON — and therefore its hash — is byte-identical to before they existed.
 type Check struct {
-	Name string    `toml:"name" json:"name"`
-	Type CheckType `toml:"type" json:"type"`
-	// Command is required for type "command".
-	Command string `toml:"command,omitempty" json:"command,omitempty"`
-	// Path and Contains are required for type "file_contains".
-	Path     string `toml:"path,omitempty" json:"path,omitempty"`
-	Contains string `toml:"contains,omitempty" json:"contains,omitempty"`
+	Name       string    `toml:"name" json:"name"`
+	Type       CheckType `toml:"type" json:"type"`
+	Command    string    `toml:"command,omitempty" json:"command,omitempty"`
+	Path       string    `toml:"path,omitempty" json:"path,omitempty"`
+	Contains   string    `toml:"contains,omitempty" json:"contains,omitempty"`
+	PackageDir string    `toml:"package_dir,omitempty" json:"package_dir,omitempty"`
+	Scratch    string    `toml:"scratch,omitempty" json:"scratch,omitempty"`
+	Assets     []string  `toml:"assets,omitempty" json:"assets,omitempty"`
+	Argv       []string  `toml:"argv,omitempty" json:"argv,omitempty"`
 }
 
 // Budget declares the story's hard caps. Declared, not discovered.
@@ -125,8 +160,8 @@ type Rubric struct {
 
 // Validate checks the definition against the schema rules.
 func (d *Definition) Validate() error {
-	if d.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("schema_version %d: this runner knows only version %d", d.SchemaVersion, SchemaVersion)
+	if d.SchemaVersion < SchemaV1 || d.SchemaVersion > MaxSchemaVersion {
+		return fmt.Errorf("schema_version %d: this runner knows versions %d–%d", d.SchemaVersion, SchemaV1, MaxSchemaVersion)
 	}
 	if !kebabCase(d.ID) {
 		return fmt.Errorf("id %q must be non-empty kebab-case", d.ID)
@@ -189,6 +224,9 @@ func (d *Definition) validateChecks() error {
 		if check.Type == CheckFilesChangedWithin && len(d.Expectations.AllowedPaths) == 0 {
 			return fmt.Errorf("check %d (%s): files_changed_within requires expectations.allowed_paths", i, check.Name)
 		}
+		if check.Type == CheckOracle && d.SchemaVersion < SchemaV2 {
+			return fmt.Errorf("check %d (%s): oracle checks require schema_version >= %d", i, check.Name, SchemaV2)
+		}
 	}
 	return nil
 }
@@ -208,8 +246,73 @@ func (c *Check) validate() error {
 		if c.Path == "" || c.Contains == "" {
 			return fmt.Errorf("file_contains checks require path and contains")
 		}
+	case CheckOracle:
+		return c.validateOracle()
 	default:
 		return fmt.Errorf("unknown check type %q", c.Type)
+	}
+	return nil
+}
+
+// validateOracle enforces the oracle check's shape and the load-time half of
+// its path safety. The materialise-time half (symlink components in the
+// agent-controlled solution) lives in the engine. See design_oracles.md.
+func (c *Check) validateOracle() error {
+	if len(c.Assets) == 0 {
+		return fmt.Errorf("oracle checks require at least one asset")
+	}
+	if len(c.Argv) == 0 {
+		return fmt.Errorf("oracle checks require a non-empty argv")
+	}
+	if c.Command != "" {
+		return fmt.Errorf("oracle checks use argv, not command")
+	}
+	if c.Scratch != "" && c.Scratch != OracleScratchSolutionCommit {
+		return fmt.Errorf("oracle scratch %q must be %q or empty", c.Scratch, OracleScratchSolutionCommit)
+	}
+	if err := safeRelPath(c.PackageDir, true); err != nil {
+		return fmt.Errorf("package_dir: %w", err)
+	}
+	seen := make(map[string]bool, len(c.Assets))
+	for _, a := range c.Assets {
+		base := filepath.Base(a)
+		// Assets are single-component basenames: no directory part, so the
+		// source→destination mapping is verbatim and there is no flattening.
+		if a != base {
+			return fmt.Errorf("oracle asset %q must be a bare basename, not a path", a)
+		}
+		if err := safeRelPath(a, false); err != nil {
+			return fmt.Errorf("oracle asset %q: %w", a, err)
+		}
+		if !strings.HasPrefix(base, OracleAssetPrefix) {
+			return fmt.Errorf("oracle asset %q must be in the %q namespace", a, OracleAssetPrefix)
+		}
+		// Duplicate destinations: two assets landing on the same basename.
+		if seen[base] {
+			return fmt.Errorf("oracle asset %q duplicates a destination", a)
+		}
+		seen[base] = true
+	}
+	return nil
+}
+
+// safeRelPath rejects absolute paths and any component that escapes upward.
+// allowEmpty permits "" (used by package_dir to mean the repo root). It is a
+// pure lexical check; symlink and existence checks happen where the bytes are
+// read (load, for assets) or materialised (engine, for the solution tree).
+func safeRelPath(p string, allowEmpty bool) error {
+	if p == "" {
+		if allowEmpty {
+			return nil
+		}
+		return fmt.Errorf("path is empty")
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("path %q must be relative", p)
+	}
+	clean := filepath.Clean(p)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q escapes its directory", p)
 	}
 	return nil
 }
