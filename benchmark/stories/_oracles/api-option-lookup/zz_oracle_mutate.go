@@ -100,6 +100,11 @@ var mutants = []mutant{
 	if n == 1 {
 		return f, true
 	}
+	if n > 1 {
+		// Ambiguity preserved (correct), so an ambiguity test cannot kill this
+		// mutant — it violates ONLY the unknown-not-found clause below.
+		return ModelOption{}, false
+	}
 	if len(o) > 0 {
 		return o[0], true
 	}
@@ -130,13 +135,18 @@ func main() {
 		if err := os.WriteFile(serverPath, mutated, 0o644); err != nil {
 			checkBug("write mutant %s: %v", m.label, err)
 		}
-		// Compile-before-detection: a mutant that does not build is a broken
-		// check, not evidence of coverage.
-		if out, err := run(scratch, "go", "build", "./..."); err != nil {
-			checkBug("mutant %s did not compile:\n%s", m.label, out)
+		// Compile-before-detection, INCLUDING the authored tests: `go build`
+		// skips _test.go, so a mutant that breaks the test's compilation would
+		// otherwise be credited as detection when the following `go test` fails
+		// to build. `go test -run '^$'` compiles every package and its tests but
+		// runs nothing, so a failure here is a genuine compile fault (check bug).
+		if out, err := run(scratch, "go", "test", "-run", "^$", "-count=1", "./..."); err != nil {
+			checkBug("mutant %s did not compile (incl. authored tests):\n%s", m.label, out)
 		}
 		// The agent's tests: PASS against the mutant means the mutant survived,
-		// so that clause is untested. FAIL means the tests detected it.
+		// so that clause is untested. FAIL means the tests detected it. Because
+		// compilation is already proven above, this failure is an assertion
+		// failure, never a build error.
 		if _, err := run(scratch, "go", "test", "-count=1", "./..."); err == nil {
 			uncovered = append(uncovered, m.label)
 		}
@@ -159,16 +169,18 @@ func stripFindOption(path string, src []byte) ([]byte, error) {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
 	for _, decl := range file.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok || fd.Recv != nil || fd.Name.Name != "findOption" {
-			continue
+		switch fd := decl.(type) {
+		case *ast.FuncDecl:
+			if fd.Recv != nil || fd.Name.Name != "findOption" {
+				continue
+			}
+			start := fset.Position(fd.Pos()).Offset
+			end := fset.Position(fd.End()).Offset
+			out := make([]byte, 0, len(src)-(end-start))
+			out = append(out, src[:start]...)
+			out = append(out, src[end:]...)
+			return out, nil
 		}
-		start := fset.Position(fd.Pos()).Offset
-		end := fset.Position(fd.End()).Offset
-		out := make([]byte, 0, len(src)-(end-start))
-		out = append(out, src[:start]...)
-		out = append(out, src[end:]...)
-		return out, nil
 	}
 	return nil, fmt.Errorf("no top-level findOption function found")
 }

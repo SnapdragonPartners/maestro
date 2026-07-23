@@ -37,22 +37,44 @@ import (
 	"path/filepath"
 )
 
-// wrapper is appended after newServer is renamed to zzOrigNewServer. It breaks
-// only the /healthz response, leaving construction (and every other route)
-// intact.
-const wrapper = `
+// mutant is a wrapping of newServer that breaks /healthz along exactly ONE
+// clause of the response contract, leaving construction and every other route
+// intact. Two clauses are specified — status 200 and body {"status":"ok"} — so
+// one mutant per clause is required: a single mutant that broke BOTH would be
+// detected by a test asserting only one, falsely certifying a half-test.
+type mutant struct {
+	label string
+	// body is the handler body for the /healthz branch, breaking one clause.
+	body string
+}
+
+var mutants = []mutant{
+	// Wrong status, VALID body — killed only by a status assertion.
+	{"status-code", `w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(` + "`" + `{"status":"ok"}` + "`" + `))`},
+	// Status 200, WRONG body — killed only by a body assertion.
+	{"status-body", `w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(` + "`" + `{"status":"broken"}` + "`" + `))`},
+}
+
+// wrapperFor builds the replacement newServer for a mutant: it delegates every
+// route to the original (renamed) constructor except /healthz, whose response
+// it breaks along one clause.
+func wrapperFor(m mutant) string {
+	return `
 
 func newServer(options []ModelOption, logger *log.Logger) http.Handler {
 	inner := zzOrigNewServer(options, logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
-			w.WriteHeader(http.StatusInternalServerError)
+			` + m.body + `
 			return
 		}
 		inner.ServeHTTP(w, r)
 	})
 }
 `
+}
 
 func main() {
 	scratch := os.Getenv("ORACLE_SCRATCH")
@@ -71,17 +93,31 @@ func main() {
 	// Whatever happens, leave the scratch's server.go as the agent wrote it.
 	defer func() { _ = os.WriteFile(serverPath, orig, 0o644) }()
 
-	if err := os.WriteFile(serverPath, append(renamed, []byte(wrapper)...), 0o644); err != nil {
-		checkBug("write mutant: %v", err)
+	var uncovered []string
+	for _, m := range mutants {
+		mutated := append(append([]byte{}, renamed...), []byte(wrapperFor(m))...)
+		if err := os.WriteFile(serverPath, mutated, 0o644); err != nil {
+			checkBug("write mutant %s: %v", m.label, err)
+		}
+		// Compile-before-detection, INCLUDING the authored test: `go build`
+		// skips _test.go, so a mutant that broke the test's compilation would
+		// otherwise be credited as detection when the following `go test` fails
+		// to build. `go test -run '^$'` compiles every package and its tests but
+		// runs nothing, so a failure here is a genuine compile fault.
+		if out, err := run(scratch, "go", "test", "-run", "^$", "-count=1", "./..."); err != nil {
+			checkBug("mutant %s did not compile (incl. authored test):\n%s", m.label, out)
+		}
+		// The agent's test: PASS against the mutant means it did not notice
+		// /healthz was broken along this clause, so it is not fully behavioural.
+		if _, err := run(scratch, "go", "test", "-count=1", "./..."); err == nil {
+			uncovered = append(uncovered, m.label)
+		}
 	}
-	// Compile-before-detection: a mutant that does not build is a broken check.
-	if out, err := run(scratch, "go", "build", "./..."); err != nil {
-		checkBug("mutant did not compile:\n%s", out)
-	}
-	// The agent's test: PASS against the mutant means it did not notice /healthz
-	// was broken, so it is not a real behavioural test.
-	if _, err := run(scratch, "go", "test", "-count=1", "./..."); err == nil {
-		fmt.Fprintln(os.Stderr, "authored test did not detect a broken /healthz response — it is not behavioural")
+
+	if len(uncovered) > 0 {
+		for _, u := range uncovered {
+			fmt.Fprintf(os.Stderr, "authored test does not detect a broken /healthz %s — it is not fully behavioural\n", u)
+		}
 		os.Exit(1)
 	}
 }
@@ -100,16 +136,18 @@ func renameNewServer(path string, src []byte) ([]byte, error) {
 		to   = "zzOrigNewServer" // must match the wrapper's call site
 	)
 	for _, decl := range file.Decls {
-		fd, ok := decl.(*ast.FuncDecl)
-		if !ok || fd.Recv != nil || fd.Name.Name != from {
-			continue
+		switch fd := decl.(type) {
+		case *ast.FuncDecl:
+			if fd.Recv != nil || fd.Name.Name != from {
+				continue
+			}
+			off := fset.Position(fd.Name.Pos()).Offset
+			out := make([]byte, 0, len(src)+len(to)-len(from))
+			out = append(out, src[:off]...)
+			out = append(out, []byte(to)...)
+			out = append(out, src[off+len(from):]...)
+			return out, nil
 		}
-		off := fset.Position(fd.Name.Pos()).Offset
-		out := make([]byte, 0, len(src)+len(to)-len(from))
-		out = append(out, src[:off]...)
-		out = append(out, []byte(to)...)
-		out = append(out, src[off+len(from):]...)
-		return out, nil
 	}
 	return nil, fmt.Errorf("no top-level newServer function found")
 }

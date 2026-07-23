@@ -30,7 +30,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -64,15 +63,15 @@ func TestOracleInstanceName(t *testing.T) {
 		t.Fatalf("build solution binary: %v\n%s", err, out)
 	}
 
-	// Reserve a loopback port and hand it to the binary. The brief close/reopen
-	// window is an acceptable TOCTOU for a local oracle.
+	// Reserve a loopback address and hand it to the binary. The brief
+	// close/reopen window is an acceptable TOCTOU for a local oracle. Using the
+	// listener's own address string avoids a *net.TCPAddr assertion.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
+	addr := l.Addr().String()
 	_ = l.Close()
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
 	// Clean env: only OLLAMA_HOST (the fake) plus the essentials a process
 	// needs. No ambient provider keys leak in, so detection is deterministic.
