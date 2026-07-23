@@ -13,6 +13,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/contenthash"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 )
 
 // oracleDirName is the directory, alongside the story files, holding each
@@ -99,11 +100,14 @@ func enforceCheckFieldOwnership(rawTOML string, def *Definition) error {
 	if _, err := toml.Decode(rawTOML, &tree); err != nil {
 		return fmt.Errorf("re-decode for field ownership: %w", err)
 	}
-	rawChecks, _ := tree["checks"].([]map[string]any)
+	rawChecks, ok := safe.As[[]map[string]any](tree["checks"])
+	if !ok || len(rawChecks) != len(def.Checks) {
+		// The lenient decode disagreeing with the strict one — different shape,
+		// or a different count — would let ownership gating silently no-op.
+		// Fail closed rather than skip enforcement.
+		return fmt.Errorf("field-ownership decode mismatch: %d raw checks vs %d parsed", len(rawChecks), len(def.Checks))
+	}
 	for i := range def.Checks {
-		if i >= len(rawChecks) {
-			break
-		}
 		present := rawChecks[i]
 		forbidden := oracleOnlyKeys
 		kind := "oracle-only"
