@@ -1,6 +1,6 @@
 +++
 title = "Golden Stories"
-edit_date = "2026-07-22"
+edit_date = "2026-07-23"
 status = "live"
 summary = "Authored golden story definitions (TOML, one file per story), validated against the story schema in CI. Six active rungs — smoke, dependency bump, focused bug fix, multi-file breadth, API change with tests, and an app change proven against the running server — plus parked stories under blocked/."
 +++
@@ -38,9 +38,17 @@ Parked, in `blocked/`:
 
 **Acceptance contracts carry engine-owned oracles where behaviour can be
 exercised hermetically.** Agent-authored tests are a deliverable, never proof:
-`api-option-lookup` and `app-healthz-endpoint` each inject a test the agent
-never sees, assert the contract, and remove it. Structural greps alone were
-shown to accept implementations that ignore the requirement entirely.
+`flag-instance-name`, `api-option-lookup` and `app-healthz-endpoint` each carry
+an `oracle` check (schema v2) — a hashed Go asset under `_oracles/<story-id>/`
+that the engine materialises into the bound solution and runs, then cleans up.
+Structural greps alone were shown to accept implementations that ignore the
+requirement entirely. The two rung-4/5 stories additionally carry a scratch-mode
+oracle: the engine checks the immutable solution commit into a private worktree
+and runs a mutation helper against the agent's OWN tests, so a vacuous test is
+rejected. Oracle assets are readable, reviewable Go (see `_oracles/`), not the
+base64-shell they replaced; the leading underscore keeps them out of the
+benchmark module's build (they compile only once materialised into the
+solution). See [design_oracles.md](../../docs/v2/phase_1/design_oracles.md).
 
 Definitions are drafts until the runner executes them (items 3–5 make
 them runnable; item 6 fixes budgets from instrumented costs). The suite grew to six active rungs in item 9 (`stories-suite`), which also assigns the

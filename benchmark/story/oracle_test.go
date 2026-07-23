@@ -77,7 +77,7 @@ func writeOracleStory(t *testing.T, toml string, assets map[string]string) strin
 		t.Fatal(err)
 	}
 	if len(assets) > 0 {
-		dir := filepath.Join(root, "oracles", oracleFixtureID)
+		dir := filepath.Join(root, "_oracles", oracleFixtureID)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -270,7 +270,7 @@ func TestOracleSymlinkAssetRejected(t *testing.T) {
 	if err := os.WriteFile(storyPath, []byte(v2Base+oracleCheck), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "oracles", "oracle-fixture")
+	dir := filepath.Join(root, "_oracles", "oracle-fixture")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestOracleNonRegularAssetRejected(t *testing.T) {
 	if err := os.WriteFile(storyPath, []byte(v2Base+oracleCheck), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "oracles", oracleFixtureID)
+	dir := filepath.Join(root, "_oracles", oracleFixtureID)
 	// The "asset" is a directory, not a file.
 	if err := os.MkdirAll(filepath.Join(dir, "zz_oracle_x_test.go"), 0o755); err != nil {
 		t.Fatal(err)
@@ -325,7 +325,7 @@ func TestOracleParentSymlinkRejected(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(realDir, "zz_oracle_x_test.go"), []byte("package main\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(realParent, filepath.Join(root, "oracles")); err != nil {
+	if err := os.Symlink(realParent, filepath.Join(root, "_oracles")); err != nil {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
 	if _, err := story.LoadFile(storyPath); err == nil {

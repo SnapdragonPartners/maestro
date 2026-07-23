@@ -17,8 +17,16 @@ import (
 )
 
 // oracleDirName is the directory, alongside the story files, holding each
-// story's oracle assets: stories/oracles/<story-id>/.
-const oracleDirName = "oracles"
+// story's oracle assets: stories/_oracles/<story-id>/. The leading underscore
+// is load-bearing: the Go tool ignores any directory whose name begins with
+// `_`, so these fixture-package `.go` assets (which reference the SOLUTION's
+// symbols and would not compile in the benchmark module) never reach
+// `go build ./...`, `go vet`, `go test`, or the linter. They are read only as
+// bytes here and materialised into the bound solution, where they compile and
+// run normally. The underscore is on the directory, never the asset basenames
+// (which stay in the `zz_oracle_` namespace) — asset digests are basename-keyed
+// (loadOracleAssets), so the directory name is not part of any story hash.
+const oracleDirName = "_oracles"
 
 // Loaded pairs a validated definition with its content identity and origin.
 type Loaded struct {
@@ -132,7 +140,7 @@ type assetDigest struct {
 }
 
 // loadOracleAssets reads every oracle asset referenced by the definition from
-// stories/oracles/<id>/, retaining the bytes and computing content digests.
+// stories/_oracles/<id>/, retaining the bytes and computing content digests.
 // It performs the load-time half of path safety: every path component must be
 // a regular directory/file, never a symlink (the agent never controls these,
 // but a fixture repo or a stray symlink must not redirect a hashed asset).
@@ -150,7 +158,7 @@ func loadOracleAssets(storyPath string, def *Definition) (map[string][]byte, []a
 	}
 	storyDir := filepath.Dir(storyPath)
 	// Check EVERY component from the story dir down — not just the final
-	// oracles/<id> — so a symlinked `oracles` or `<id>` directory cannot
+	// _oracles/<id> — so a symlinked `_oracles` or `<id>` directory cannot
 	// redirect a hashed asset. The story dir itself is caller-provided and out
 	// of scope; everything we resolve below it is ours to constrain.
 	if err := lstatComponentsAreDirs(storyDir, oracleDirName, def.ID); err != nil {

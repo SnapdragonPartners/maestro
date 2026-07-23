@@ -20,7 +20,7 @@
 # paths or directory prefixes, never globs (engine/checks.go pathAllowed), so
 # an agent-chosen filename would fail diff confinement through no fault of its
 # own. Naming it is also ordinary spec behaviour.
-schema_version = 1
+schema_version = 2
 id = "api-option-lookup"
 title = "Add provider-name fallback to model lookup, with tests"
 level = "story"
@@ -124,82 +124,43 @@ command = "sh -c 'test -z \"$(gofmt -l server_test.go)\"'"
 [[checks]]
 # ENGINE-OWNED BEHAVIOURAL ORACLE. The checks above prove the agent produced
 # tests; they cannot prove the CONTRACT holds — four vacuous subtests naming
-# findOption, plus `ProviderName` in a comment, satisfy every one of them. The
-# fixture conventions already say agent-authored tests cannot independently
-# prove behaviour, so the engine brings its own: this injects a test the agent
-# never sees, exercises all four specified behaviours, and removes itself.
-# Verified to reject exactly that vacuous implementation and to accept a
-# correct one.
-name = "oracle-lookup-semantics"
-type = "command"
-command = '''
-cat > zz_engine_oracle_test.go <<'ORACLE'
-package main
-
-import "testing"
-
-func TestEngineOracleFindOption(t *testing.T) {
-	opts := []ModelOption{
-		{ID: "anthropic/m1", ProviderName: "anthropic", Model: "m1"},
-		{ID: "vllm/a", ProviderName: "vllm", Model: "a"},
-		{ID: "vllm/b", ProviderName: "vllm", Model: "b"},
-	}
-	if got, ok := findOption(opts, "vllm/a"); !ok || got.ID != "vllm/a" {
-		t.Fatalf("exact ID must win: got %+v ok=%v", got, ok)
-	}
-	if got, ok := findOption(opts, "anthropic"); !ok || got.ID != "anthropic/m1" {
-		t.Fatalf("unique provider name must resolve: got %+v ok=%v", got, ok)
-	}
-	if got, ok := findOption(opts, "vllm"); ok {
-		t.Fatalf("ambiguous provider name must not resolve: got %+v", got)
-	}
-	if _, ok := findOption(opts, "nope"); ok {
-		t.Fatal("unknown id must not resolve")
-	}
-}
-ORACLE
-go test -run TestEngineOracleFindOption . >/dev/null 2>&1; rc=$?
-rm -f zz_engine_oracle_test.go
-exit $rc
-'''
+# findOption, plus `ProviderName` in a comment, satisfy every one of them. So
+# the engine brings its own: a test the agent never sees, materialised into the
+# solution, exercising all four specified behaviours directly against the
+# agent's findOption. `-count=1` defeats Go's test cache, blind to nothing here
+# but kept for consistency with the story's other go-test oracles. Verified to
+# reject a vacuous implementation and accept a correct one.
+# See stories/_oracles/api-option-lookup/zz_oracle_lookup_test.go.
+name        = "oracle-lookup-semantics"
+type        = "oracle"
+assets      = ["zz_oracle_lookup_test.go"]
+package_dir = ""
+argv        = ["go", "test", "-count=1", "-run", "TestOracleFindOption", "."]
 
 [[checks]]
-# MUTATION CHECK — proves the AUTHORED TESTS exercise EACH required behaviour,
-# not just one. The engine oracle above verifies the IMPLEMENTATION; a single
-# always-not-found mutant is caught by any one real assertion, so an exact-match
-# test plus three empty subtests would pass it. This runs the agent's tests
-# against FOUR reference findOption implementations — each correct except one
-# clause of the precedence contract — and requires the tests to FAIL against
-# every one. Miss the ambiguity case and its mutant survives; the story is
-# rejected, naming the uncovered behaviour.
+# MUTATION CHECK (scratch mode) — proves the AUTHORED TESTS exercise EACH
+# required behaviour, not just one. The oracle above verifies the
+# IMPLEMENTATION; a single always-not-found mutant is caught by any one real
+# assertion, so an exact-match test plus three empty subtests would pass it.
+# This runs the agent's tests against FOUR reference findOption implementations
+# — each correct except one clause of the precedence contract — and requires the
+# tests to FAIL against every one. Miss the ambiguity case and its mutant
+# survives; the story is rejected, naming the uncovered behaviour.
 #
-# Whole-function replacement (base64-embedded to keep raw Go out of the TOML),
-# so the check depends on BEHAVIOUR, not on how the agent named variables or
-# shaped findOption. server.go is restored byte-exact even on failure, and no
-# scratch file is left behind. Verified: an exact-only test is rejected naming
-# the three untested clauses; a full four-case test is accepted.
-name = "authored-tests-cover-each-behaviour"
-type = "command"
-command = '''
-set -e
-cp server.go .zz_orig.go
-perl -0pe 's/\nfunc findOption\(options \[\]ModelOption, id string\) \(ModelOption, bool\) \{.*?\n\}\n/\n/s' .zz_orig.go > .zz_base.go
-rc=0
-cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJdmFyIGYgTW9kZWxPcHRpb24KCW4gOj0gMAoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5Qcm92aWRlck5hbWUgPT0gaWQgewoJCQlmID0geAoJCQluKysKCQl9Cgl9CglpZiBuID09IDEgewoJCXJldHVybiBmLCB0cnVlCgl9CglyZXR1cm4gTW9kZWxPcHRpb257fSwgZmFsc2UKfQo= | base64 -d > zz_mutant.go
-if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: exact-id-wins" >&2; rc=1; fi; else echo "mutant exact-id-wins broke build (check bug)" >&2; rc=2; fi
-rm -f zz_mutant.go
-cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5JRCA9PSBpZCB7CgkJCXJldHVybiB4LCB0cnVlCgkJfQoJfQoJcmV0dXJuIE1vZGVsT3B0aW9ue30sIGZhbHNlCn0K | base64 -d > zz_mutant.go
-if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: provider-fallback" >&2; rc=1; fi; else echo "mutant provider-fallback broke build (check bug)" >&2; rc=2; fi
-rm -f zz_mutant.go
-cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5JRCA9PSBpZCB7CgkJCXJldHVybiB4LCB0cnVlCgkJfQoJfQoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5Qcm92aWRlck5hbWUgPT0gaWQgewoJCQlyZXR1cm4geCwgdHJ1ZQoJCX0KCX0KCXJldHVybiBNb2RlbE9wdGlvbnt9LCBmYWxzZQp9Cg== | base64 -d > zz_mutant.go
-if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: ambiguity-not-found" >&2; rc=1; fi; else echo "mutant ambiguity-not-found broke build (check bug)" >&2; rc=2; fi
-rm -f zz_mutant.go
-cp .zz_base.go server.go; printf %s cGFja2FnZSBtYWluCgpmdW5jIGZpbmRPcHRpb24obyBbXU1vZGVsT3B0aW9uLCBpZCBzdHJpbmcpIChNb2RlbE9wdGlvbiwgYm9vbCkgewoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5JRCA9PSBpZCB7CgkJCXJldHVybiB4LCB0cnVlCgkJfQoJfQoJdmFyIGYgTW9kZWxPcHRpb24KCW4gOj0gMAoJZm9yIF8sIHggOj0gcmFuZ2UgbyB7CgkJaWYgeC5Qcm92aWRlck5hbWUgPT0gaWQgewoJCQlmID0geAoJCQluKysKCQl9Cgl9CglpZiBuID09IDEgewoJCXJldHVybiBmLCB0cnVlCgl9CglpZiBsZW4obykgPiAwIHsKCQlyZXR1cm4gb1swXSwgdHJ1ZQoJfQoJcmV0dXJuIE1vZGVsT3B0aW9ue30sIGZhbHNlCn0K | base64 -d > zz_mutant.go
-if go build ./... >/dev/null 2>&1; then if go test . >/dev/null 2>&1; then echo "uncovered: unknown-not-found" >&2; rc=1; fi; else echo "mutant unknown-not-found broke build (check bug)" >&2; rc=2; fi
-rm -f zz_mutant.go
-cp .zz_orig.go server.go; rm -f .zz_orig.go .zz_base.go
-exit $rc
-'''
+# The engine checks out the immutable solution commit into $ORACLE_SCRATCH (the
+# agent's server.go + server_test.go, no oracle), and the helper mutates only
+# there. It locates findOption via go/parser — so the check depends on
+# BEHAVIOUR, not on how the agent named variables — and requires each mutant to
+# COMPILE before a test failure counts as detection (a non-compiling mutant is a
+# check bug, never scored as coverage). The engine owns scratch cleanup on every
+# exit path. Verified: an exact-only test is rejected naming the three untested
+# clauses; a full four-case test is accepted.
+# See stories/_oracles/api-option-lookup/zz_oracle_mutate.go.
+name    = "authored-tests-cover-each-behaviour"
+type    = "oracle"
+assets  = ["zz_oracle_mutate.go"]
+scratch = "solution-commit"
+argv    = ["go", "run", "zz_oracle_mutate.go"]
 
 [budget]
 # Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the

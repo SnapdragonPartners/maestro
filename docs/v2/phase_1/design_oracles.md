@@ -1,6 +1,6 @@
 +++
 title = "Design: Engine-Owned Behavioural Oracles (Item 9-oracle)"
-edit_date = "2026-07-22"
+edit_date = "2026-07-23"
 status = "draft"
 type = "design"
 summary = "Mini-plan for first-class oracle assets in the golden runner: a story schema v2 `oracle` check that ships adjacent, hashed Go files the engine materialises against the bound solution and executes under the existing deadline/cleanup machinery. Replaces the base64-shell oracles embedded in the three new rung-4/5 stories. Bounded 2-4 day item, no reusable mutation framework, design amendment only (no new ADR)."
@@ -32,7 +32,7 @@ schema_version = 2
 [[checks]]
 name    = "oracle-lookup-semantics"
 type    = "oracle"
-# Source assets, relative to the story's own oracle dir (stories/oracles/<id>/).
+# Source assets, relative to the story's own oracle dir (stories/_oracles/<id>/).
 # Source BASENAMES must already be in the reserved zz_oracle_ namespace, so the
 # destination is the source name verbatim — no rename, no mapping to predict.
 assets      = ["zz_oracle_lookup_test.go"]
@@ -48,7 +48,7 @@ argv        = ["go", "test", "-run", "TestOracle", "."]
 
 Field semantics:
 
-- **`assets`** — source files under `stories/oracles/<story-id>/`, whose **basenames must already be in the reserved `zz_oracle_` namespace** (`zz_oracle_lookup_test.go`, not `oracle_test.go`). Enforced at load. This makes the source→destination mapping trivial and unambiguous: **basename preserved verbatim** into `package_dir`. No flattening ambiguity (paths are basename-only at the destination), no rename the author must predict, and the reserved prefix guarantees the destination cannot shadow an ordinary solution file.
+- **`assets`** — source files under `stories/_oracles/<story-id>/`, whose **basenames must already be in the reserved `zz_oracle_` namespace** (`zz_oracle_lookup_test.go`, not `oracle_test.go`). Enforced at load. This makes the source→destination mapping trivial and unambiguous: **basename preserved verbatim** into `package_dir`. No flattening ambiguity (paths are basename-only at the destination), no rename the author must predict, and the reserved prefix guarantees the destination cannot shadow an ordinary solution file. The **directory** is `_oracles`, not `oracles` (corrected during step 5): these assets are fixture-package `.go` files that reference the *solution's* symbols and would not compile in the benchmark module, and the Go tool ignores any directory whose name begins with `_`, so the underscore keeps them out of `go build ./...`/`vet`/`test`/lint. The loader reads them only as bytes; they compile only once materialised into the solution. The underscore is on the directory alone — asset basenames stay in `zz_oracle_`, and digests are basename-keyed, so the directory name is not part of any story hash.
 - **`package_dir`** — destination directory within the bound solution; all of a check's assets share it; `""` is the repo root. Subject to the **same path validation as assets**: rejected if absolute or traversing at load, and its components are symlink-checked in the *solution* at materialise time (the solution is agent-controlled, so this is a runtime check, not just a load-time one).
 - **`argv`** — a **distinct array field**, deliberately not an array overload of v1's string `command` (which would force custom union decoding on the shared struct). v1 `command` checks keep their string; `oracle` checks use `argv`. Run with `cwd` = the bound solution checkout, under the existing deadline/process-group machinery.
 - **One asset class.** Every named asset is materialised into the solution; there is no separate "private helper" class. A file a story wants kept out of the compiled package is simply not referenced. (Scratch-mode oracles, below, are the one exception: their assets land in a tool dir, never the solution or the scratch.)
@@ -146,7 +146,7 @@ The achievability script drops its own check loop, checks out the fixture, lets 
 2. `story/load.go`: schema v2, oracle-asset load into `Loaded`, hash envelope, path-safety validation. Unit tests for v1/v2 coexistence, **verbatim-pinned v1 hashes**, hash-includes-oracle, and every rejection (symlink-in-any-component, traversal, absolute, duplicate-normalised, non-regular, reserved-name).
 3. Shared verifier: the exported `Verify` seam and `runner verify` subcommand, with `cmd/runner` tests.
 4. `engine/checks.go`: the `oracle` check type — exclusive-create materialise → argv run under the deadline machinery → unconditional cleanup. **Tested against the actual production materialiser/executor, not a facsimile** — success, failure, timeout-cleanup, leak-freedom, and the exclusive-create-refuses-to-overwrite guard.
-5. Convert `flag-instance-name`, `api-option-lookup`, `app-healthz-endpoint` to readable Go oracles under `stories/oracles/<id>/`; **delete all base64/shell oracle machinery**; point the achievability script at `runner verify`.
+5. Convert `flag-instance-name`, `api-option-lookup`, `app-healthz-endpoint` to readable Go oracles under `stories/_oracles/<id>/`; **delete all base64/shell oracle machinery**; point the achievability script at `runner verify`.
 6. Verify all three achievability-green with the real oracles; both directions of each mutation helper proven; each mutant shown to compile.
 7. **Then** item 10's phase-end `golden-all`, so official verdicts are recorded against sound contracts.
 
