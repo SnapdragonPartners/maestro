@@ -1,14 +1,14 @@
 +++
 title = "Design: Engine-Owned Behavioural Oracles (Item 9-oracle)"
 edit_date = "2026-07-23"
-status = "draft"
+status = "live"
 type = "design"
 summary = "Mini-plan for first-class oracle assets in the golden runner: a story schema v2 `oracle` check that ships adjacent, hashed Go files the engine materialises against the bound solution and executes under the existing deadline/cleanup machinery. Replaces the base64-shell oracles embedded in the three new rung-4/5 stories. Bounded 2-4 day item, no reusable mutation framework, design amendment only (no new ADR)."
 +++
 
 # Design: Engine-Owned Behavioural Oracles
 
-Status: **draft** — mini-plan authorised by Codex + DR (2026-07-22) as a bounded prerequisite to Phase 1 item 10. It flips to `live` only **after the implementation is approved**, as the final pre-merge commit — not on first code, not on plan sign-off. This is a design amendment under [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s existing rule that new check types arrive via a schema bump; **no new ADR is needed**. If the implementation estimate exceeds ~4 focused days it falls back to option 3 (a documented structural floor), per the authorisation.
+Status: **live** — implemented and approved (Codex + DR, 2026-07-23). Mini-plan authorised 2026-07-22 as a bounded prerequisite to Phase 1 item 10; all six steps landed and the three rung-3/4/5 stories are proven achievable against the engine-owned oracles (recorded in [notes_conformance-log.md](../notes_conformance-log.md), 2026-07-23 achievability control). This is a design amendment under [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s existing rule that new check types arrive via a schema bump; **no new ADR is needed**. The document below is the accepted record of what shipped; where the delivered contract diverged from the original sketch (the oracle directory is `_oracles`, not `oracles`; every go-test oracle runs with `-count=1`; flag-instance-name's oracle stands up a fake Ollama endpoint for hermeticism), those corrections are noted inline.
 
 ## Why
 
