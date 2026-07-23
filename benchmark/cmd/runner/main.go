@@ -246,11 +246,12 @@ func cmdVerify(ctx context.Context, args []string) error {
 	}
 	// The solution is the workspace HEAD; the pin is the story's fixture
 	// commit. files_changed_within diffs one against the other.
-	solution, err := gitx.Head(ctx, *workspace)
+	pin := loaded.Definition.Fixture.Commit
+	solution, err := requireBoundWorkspace(ctx, *workspace, pin)
 	if err != nil {
-		return fmt.Errorf("resolve solution HEAD in %s: %w", *workspace, err)
+		return err
 	}
-	res := engine.Verify(ctx, *workspace, loaded, loaded.Definition.Fixture.Commit, solution)
+	res := engine.Verify(ctx, *workspace, loaded, pin, solution)
 
 	for i := range res.Validators {
 		printItem("validator", res.Validators[i])
@@ -263,6 +264,38 @@ func cmdVerify(ctx context.Context, args []string) error {
 	}
 	fmt.Println("verified: all validators and checks passed")
 	return nil
+}
+
+// requireBoundWorkspace proves the workspace is a valid bound solution before
+// verifying it — matching the engine's immutable bound checkout, which the
+// achievability caller must reproduce rather than have runner verify vouch for
+// any HEAD. It requires the fixture pin to exist, to be an ancestor of HEAD
+// (the solution is built ON the pin), and the worktree to be clean of tracked,
+// untracked, AND ignored state (the engine's checkout is a clean detached
+// commit after `git clean -fdx`). Returns the resolved solution commit (HEAD).
+func requireBoundWorkspace(ctx context.Context, dir, pin string) (string, error) {
+	if _, err := gitx.Run(ctx, dir, "rev-parse", "--verify", "--quiet", pin+"^{commit}"); err != nil {
+		return "", fmt.Errorf("fixture pin %s not present in workspace %s: %w", pin, dir, err)
+	}
+	head, err := gitx.Head(ctx, dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve solution HEAD in %s: %w", dir, err)
+	}
+	ok, err := gitx.IsAncestor(ctx, dir, pin, head)
+	if err != nil {
+		return "", fmt.Errorf("check pin ancestry: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("fixture pin %s is not an ancestor of workspace HEAD %s — the solution is not built on the pin", pin, head)
+	}
+	status, err := gitx.Run(ctx, dir, "status", "--porcelain", "--ignored")
+	if err != nil {
+		return "", fmt.Errorf("check worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return "", fmt.Errorf("workspace %s is not clean (commit or remove tracked/untracked/ignored files before verifying):\n%s", dir, status)
+	}
+	return head, nil
 }
 
 // printItem renders one validator/check result: pass/fail, kind, name, and

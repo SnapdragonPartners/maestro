@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
@@ -72,6 +73,50 @@ func TestVerifyAllPass(t *testing.T) {
 	// exactly what a truncated CheckResult would drop.
 	if got := res.ValidatorOutputs[0]; !contains(got, "hello-from-validator") {
 		t.Errorf("validator output %q lost its content", got)
+	}
+}
+
+// TestVerifyPreservesFullValidatorOutput proves ValidatorOutputs carries the
+// UNtruncated output, distinct from the truncated CheckResult.Detail — the
+// exact property the test-output evidence contract depends on. The validator
+// emits more than detailLimit with a tail sentinel: the sentinel must survive
+// in the full output and in the evidence file, and must be absent from Detail.
+func TestVerifyPreservesFullValidatorOutput(t *testing.T) {
+	const sentinel = "_TAIL_SENTINEL_"
+	dir, head := gitInit(t, map[string]string{"x.txt": "hi"})
+	// (detailLimit + 100) 'A's, then the sentinel on its own line — so the
+	// sentinel sits well beyond the truncation point.
+	cmd := "head -c " + strconv.Itoa(detailLimit+100) + " /dev/zero | tr '\\0' 'A'; echo " + sentinel
+	loaded := verifyStory(
+		[]story.Validator{{Name: "big", Command: cmd}},
+		nil,
+	)
+	res := Verify(context.Background(), dir, loaded, head, head)
+
+	if len(res.ValidatorOutputs) != 1 {
+		t.Fatalf("ValidatorOutputs len = %d, want 1", len(res.ValidatorOutputs))
+	}
+	full := res.ValidatorOutputs[0]
+	if !contains(full, sentinel) {
+		t.Fatal("full validator output lost the tail sentinel — it was truncated")
+	}
+	if detail := res.Validators[0].Detail; contains(detail, sentinel) {
+		t.Fatalf("Detail retained the tail sentinel; it should be truncated at detailLimit (len=%d)", len(detail))
+	}
+
+	// The evidence file (the attempt->writeValidatorEvidence path) must persist
+	// the FULL output, not the truncated detail.
+	evDir := t.TempDir()
+	pointers := writeValidatorEvidence(evDir, loaded.Definition.Validators, res.ValidatorOutputs, func(string, ...any) {})
+	if len(pointers) != 1 {
+		t.Fatalf("evidence pointers = %d, want 1", len(pointers))
+	}
+	body, err := os.ReadFile(pointers[0].Location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(string(body), sentinel) {
+		t.Fatal("evidence file lost the tail sentinel — writeValidatorEvidence did not persist the full output")
 	}
 }
 
