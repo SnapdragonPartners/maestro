@@ -57,6 +57,14 @@ func LoadFile(path string) (*Loaded, error) {
 	if validateErr := def.Validate(); validateErr != nil {
 		return nil, fmt.Errorf("story %s: %w", path, validateErr)
 	}
+	// Value-based validation (above) cannot tell an absent key from one present
+	// with a zero value: a v1 command check carrying `argv = []` decodes to a
+	// nil slice and slips past hasOracleFields. Enforce field ownership on the
+	// keys actually PRESENT in the source, so a forbidden key is rejected even
+	// when explicitly empty and v1's strict contract cannot be widened.
+	if presenceErr := enforceCheckFieldOwnership(string(raw), &def); presenceErr != nil {
+		return nil, fmt.Errorf("story %s: %w", path, presenceErr)
+	}
 
 	// Read oracle assets once, here, and retain the bytes. Everything
 	// downstream — hashing now, materialisation later — uses this set.
@@ -70,6 +78,46 @@ func LoadFile(path string) (*Loaded, error) {
 		return nil, fmt.Errorf("story %s: %w", path, hashErr)
 	}
 	return &Loaded{Definition: &def, Path: path, Hash: hash, OracleAssets: assets}, nil
+}
+
+// oracleOnlyKeys are valid only on an oracle check; nonOracleKeys are invalid
+// on one. Presence of either on the wrong check widens the strict schema.
+//
+//nolint:gochecknoglobals // fixed key sets, read-only.
+var (
+	oracleOnlyKeys = []string{"assets", "argv", "package_dir", "scratch"}
+	nonOracleKeys  = []string{"command", "path", "contains"}
+)
+
+// enforceCheckFieldOwnership rejects a check that declares a key belonging to a
+// different check type, judging by PRESENCE in the source rather than value —
+// a second lenient decode exposes which keys were written, which the strict
+// struct decode cannot. Correlates raw checks with def.Checks by index; TOML
+// preserves array-of-table order, so index i is the same check in both.
+func enforceCheckFieldOwnership(rawTOML string, def *Definition) error {
+	var tree map[string]any
+	if _, err := toml.Decode(rawTOML, &tree); err != nil {
+		return fmt.Errorf("re-decode for field ownership: %w", err)
+	}
+	rawChecks, _ := tree["checks"].([]map[string]any)
+	for i := range def.Checks {
+		if i >= len(rawChecks) {
+			break
+		}
+		present := rawChecks[i]
+		forbidden := oracleOnlyKeys
+		kind := "oracle-only"
+		if def.Checks[i].Type == CheckOracle {
+			forbidden = nonOracleKeys
+			kind = "not valid on an oracle"
+		}
+		for _, k := range forbidden {
+			if _, has := present[k]; has {
+				return fmt.Errorf("check %d (%s): %q is %s key, remove it (present even if empty)", i, def.Checks[i].Name, k, kind)
+			}
+		}
+	}
+	return nil
 }
 
 // assetDigest is one oracle asset's identity contribution: its basename and

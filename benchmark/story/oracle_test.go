@@ -222,6 +222,26 @@ func TestOracleRejections(t *testing.T) {
 			check:   "\n[[checks]]\nname=\"c\"\ntype=\"command\"\ncommand=\"true\"\nargv=[\"go\",\"test\"]\n",
 			wantErr: "may not carry oracle fields",
 		},
+		{
+			// Presence, not value: an EMPTY oracle key on a v1 command check
+			// must still be rejected — it slips past value-based gating.
+			name:    "empty argv key present on a v1 command check",
+			check:   "\n[[checks]]\nname=\"c\"\ntype=\"command\"\ncommand=\"true\"\nargv=[]\n",
+			wantErr: "argv",
+		},
+		{
+			name:    "empty package_dir key present on a v1 command check",
+			check:   "\n[[checks]]\nname=\"c\"\ntype=\"command\"\ncommand=\"true\"\npackage_dir=\"\"\n",
+			wantErr: "package_dir",
+		},
+		{
+			// The other direction: an EMPTY command key present on an oracle
+			// check must be rejected.
+			name:    "empty command key present on an oracle check",
+			check:   "\n[[checks]]\nname=\"o\"\ntype=\"oracle\"\nassets=[\"zz_oracle_x_test.go\"]\nargv=[\"go\",\"test\"]\ncommand=\"\"\n",
+			assets:  map[string]string{"zz_oracle_x_test.go": "package main\n"},
+			wantErr: "command",
+		},
 	}
 
 	for _, tt := range tests {
