@@ -63,11 +63,13 @@ import tomllib, sys, shlex
 d = tomllib.load(open(sys.argv[1], 'rb'))
 fx = d.get('fixture') or {}
 pr = d.get('prompt') or {}
+ex = d.get('expectations') or {}
 fields = {
     'STORY_ID': str(d.get('id', '')),
     'REPO': str(fx.get('repo', '')),
     'COMMIT': str(fx.get('commit', '')),
     'PROMPT': str(pr.get('text', '')),
+    'ALLOWED': ' '.join(ex.get('allowed_paths') or []),
 }
 for key, val in fields.items():
     print(key + '=' + shlex.quote(val))
@@ -96,8 +98,25 @@ echo "  workspace $WORK"
 git clone -q "$REPO" "$WORK/repo" 2>/dev/null || { echo "❌ clone failed"; exit 1; }
 git -C "$WORK/repo" checkout -q "$COMMIT" 2>/dev/null || { echo "❌ pin checkout failed"; exit 1; }
 
+# Communicate the allowed paths to the agent, exactly as the pipeline hands its
+# coder a bounded scope. Without this the control is strictly HARSHER than the
+# pipeline: `runner verify` ENFORCES diff-confinement, but the bare prompt never
+# TELLS the agent its scope, so a diligent agent adds an out-of-scope file (e.g.
+# an unrequested test) and fails a constraint it was never given. This is
+# per-story correct and needs no test-specific language: a story that wants a
+# test lists that test file in allowed_paths (api-option-lookup ships
+# server_test.go, app-healthz ships health_test.go), so the same constraint
+# invites the test where the story asks for one and forbids stray files where it
+# does not.
+PROMPT_WITH_SCOPE="$PROMPT"
+if [ -n "$ALLOWED" ]; then
+    PROMPT_WITH_SCOPE="$PROMPT
+
+Scope constraint: confine ALL changes to these paths only — $ALLOWED. Do not create or modify any other file. If completing the task would require a file outside this list, it does not; work within these paths."
+fi
+
 echo "  running headless agent (no cost accounting — this is a control, not a measurement)"
-( cd "$WORK/repo" && claude -p "$PROMPT" --permission-mode acceptEdits ) \
+( cd "$WORK/repo" && claude -p "$PROMPT_WITH_SCOPE" --permission-mode acceptEdits ) \
     > "$WORK/agent.log" 2>&1
 agent_rc=$?
 [ $agent_rc -eq 0 ] || echo "  ⚠️  agent exited $agent_rc (continuing — the verdict is the story's checks, not the agent's exit code)"
