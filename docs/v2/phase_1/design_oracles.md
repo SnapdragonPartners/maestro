@@ -33,23 +33,26 @@ schema_version = 2
 name    = "oracle-lookup-semantics"
 type    = "oracle"
 # Source assets, relative to the story's own oracle dir (stories/oracles/<id>/).
-# Every asset is materialised into <package_dir> in the bound solution before
-# the command runs, and removed after.
-assets      = ["oracle_test.go"]
-# Where assets land in the solution tree. Package files (e.g. _test.go) go
-# beside the code they compile against; "" means the repo root.
+# Source BASENAMES must already be in the reserved zz_oracle_ namespace, so the
+# destination is the source name verbatim — no rename, no mapping to predict.
+assets      = ["zz_oracle_lookup_test.go"]
+# Destination directory within the bound solution; each asset lands at
+# <package_dir>/<basename>. "" is the repo root. Test files go beside the code
+# they compile against.
 package_dir = ""
-# argv (not a shell string) run with cwd = the bound solution checkout.
-command     = ["go", "test", "-run", "TestOracle", "."]
+# argv (a distinct array field, NOT v1's string-valued `command`), run with
+# cwd = the bound solution checkout. No shell, so nothing re-introduces the
+# truncation/quoting hazards this change exists to remove.
+argv        = ["go", "test", "-run", "TestOracle", "."]
 ```
 
 Field semantics:
 
-- **`assets`** — one or more source files, each a relative path under `stories/oracles/<story-id>/`. These are the bytes hashed and materialised.
-- **`package_dir`** — the destination directory within the bound solution. All of a check's assets share one destination; `""` is the repo root.
-- **`command`** — an **argv array**, not a shell string. Run with `cwd` set to the bound solution checkout, under the existing deadline/process-group machinery. Argv, so there is no shell to re-introduce the truncation/quoting hazards this whole change exists to remove.
-- **All assets are injected into the solution** — there is no "private helper" asset class. A helper a story wants kept out of the compiled package is simply not referenced by any oracle; assets named in a check are, by definition, materialised. Keeping one asset class removes a decision point and a failure mode.
-- **Collision behaviour: exclusive create, never overwrite.** Materialisation uses `O_CREATE|O_EXCL`. If a destination path already exists in the solution — an agent wrote a file of that name — the check **fails loudly** rather than clobbering a solution file. Destination basenames are therefore drawn from a reserved namespace (a fixed prefix, e.g. `zz_oracle_*`) that story authoring must not collide with, checked at load.
+- **`assets`** — source files under `stories/oracles/<story-id>/`, whose **basenames must already be in the reserved `zz_oracle_` namespace** (`zz_oracle_lookup_test.go`, not `oracle_test.go`). Enforced at load. This makes the source→destination mapping trivial and unambiguous: **basename preserved verbatim** into `package_dir`. No flattening ambiguity (paths are basename-only at the destination), no rename the author must predict, and the reserved prefix guarantees the destination cannot shadow an ordinary solution file.
+- **`package_dir`** — destination directory within the bound solution; all of a check's assets share it; `""` is the repo root. Subject to the **same path validation as assets**: rejected if absolute or traversing at load, and its components are symlink-checked in the *solution* at materialise time (the solution is agent-controlled, so this is a runtime check, not just a load-time one).
+- **`argv`** — a **distinct array field**, deliberately not an array overload of v1's string `command` (which would force custom union decoding on the shared struct). v1 `command` checks keep their string; `oracle` checks use `argv`. Run with `cwd` = the bound solution checkout, under the existing deadline/process-group machinery.
+- **One asset class.** Every named asset is materialised into the solution; there is no separate "private helper" class. A file a story wants kept out of the compiled package is simply not referenced. (Scratch-mode oracles, below, are the one exception: their assets land in a tool dir, never the solution or the scratch.)
+- **Collision: exclusive create, never overwrite.** Materialisation is `O_CREATE|O_EXCL` at `<package_dir>/<basename>`. Because destination basenames are always in the `zz_oracle_` namespace, a collision means either two assets of the same basename (rejected at load as a duplicate destination) or an agent-authored file already using a reserved name — either way the check **fails loudly**, never clobbers.
 
 ### Identity and path invariants
 
@@ -61,7 +64,8 @@ Field semantics:
   - **Absolute or traversing paths** (`/…`, `..`) that escape the oracle directory.
   - **Duplicate normalised paths** within one check — two assets that normalise to the same destination.
   - **Non-regular files** — only regular files are assets.
-  - **Reserved-namespace collisions** — a destination basename outside the oracle prefix, or one that would land on an existing solution path at materialise time (the exclusive-create guard is the second line of defence).
+  - **Reserved-namespace violations** — a source basename NOT in the `zz_oracle_` namespace (rejected at load); at materialise time, an existing solution path at the destination is the exclusive-create guard's second line of defence.
+  - **`package_dir` traversal/symlink** — `package_dir` is load-checked for absolute/`..`, and its components in the bound solution are symlink-checked at materialise time.
 
 ### Materialisation and execution (`engine/checks.go`)
 
@@ -69,20 +73,63 @@ Field semantics:
 - **Per-check materialisation with guaranteed cleanup** on success, failure, *and* timeout. Correction to the earlier framing: engine diff-confinement compares two commits, so an untracked oracle file does **not** affect it (Codex correction) — but the achievability script and any subsequent check run against the worktree can still observe a leak, so strict cleanup remains mandatory. Materialise immediately before the oracle runs; remove immediately after, unconditionally.
 - The oracle sees the solution as built; it is invisible to the *target*, because the target (the v1 factory) has already produced its solution branch before any check runs. Oracles exist only in the engine's post-hoc verification checkout.
 
-### Mutation helpers (story-specific, no framework)
+### Mutation helpers — scratch mode (explicit in the check contract)
 
-- Where a story verifies test-authoring quality (rung 4: are the agent's tests real, or vacuous?), it may ship a story-specific Go helper that swaps in reference implementations and requires the authored tests to fail against each.
-- **Scratch is created from the immutable solution commit, not from a filesystem copy taken after oracle materialisation** (Codex constraint). This is the load-bearing detail: if the scratch were a copy of the materialised tree, it would contain the engine's oracle, and the *oracle* — not the agent's authored tests — could detect the mutant, defeating the point. Scratch is a fresh checkout of the solution commit, which carries the agent's tests but no oracle, so only the authored tests judge the mutant.
-- **The engine owns the scratch root and removes it on every exit path, including timeout.** A killed helper must not leak worktrees; the scratch root is registered for cleanup with the same guarantee as the materialised assets, not left to the helper's own `defer`.
-- **A mutant must compile before a test failure counts as detection.** `go build` before `go test`; a non-compiling mutant is a broken check, reported as such, never scored as detection. It is the exact bug the shell medium kept reintroducing, trivial to get right in readable Go.
+Rung-4 stories verify test-authoring quality (are the agent's tests real, or vacuous?) by running the agent's tests against reference implementations that each violate one clause. That needs a clean copy of the solution the helper can mutate — and the executor must be *told* a check needs one, so scratch is an explicit field on the `oracle` check, not an implicit helper behaviour.
+
+```toml
+[[checks]]
+name        = "authored-tests-cover-each-behaviour"
+type        = "oracle"
+assets      = ["zz_oracle_mutate.go", "zz_oracle_refs.go"]
+scratch     = "solution-commit"   # opt in; default "" = in-solution oracle
+# cwd = the tool dir holding the assets; the helper reads $ORACLE_SCRATCH.
+argv        = ["go", "run", "zz_oracle_mutate.go", "zz_oracle_refs.go"]
+```
+
+Contract when `scratch = "solution-commit"`:
+
+- **The engine creates the scratch from the immutable solution commit** — `git worktree`/checkout of that commit into an engine-owned temp root — *not* a filesystem copy of the materialised tree. This is the load-bearing detail: a copy of the materialised tree would contain the engine's oracle assets, so the *oracle*, not the agent's authored tests, could detect the mutant. A clean checkout of the solution commit carries the agent's tests and no oracle, so only the authored tests judge it.
+- **Engine oracle assets are never materialised into the scratch.** For a scratch-mode check the assets land in a separate **tool directory** (also engine-owned, ephemeral), and the argv runs with `cwd` = that tool dir. The scratch holds only the agent's solution.
+- **The scratch path is passed to the command via `ORACLE_SCRATCH`** in its environment; the helper mutates files under `$ORACLE_SCRATCH` and runs the agent's tests there.
+- **The engine owns and removes both the scratch root and the tool dir on every exit path, including timeout.** A killed helper cannot leak worktrees — cleanup is the engine's, registered with the same guarantee as materialised assets, not the helper's own `defer`.
+- **A mutant must compile before a test failure counts as detection.** The helper runs `go build` in the scratch before `go test`; a non-compiling mutant is a broken check, reported as such, never scored as detection. This is the exact bug the shell medium kept reintroducing, trivial to get right in readable Go.
 
 ### Shared verification entrypoint (`engine/`, `cmd/runner/`)
 
-Both the engine's own attempt flow and the achievability script must run checks through **one** production path — otherwise the achievability script re-implements check execution and we are back to a facsimile, which is what step 4 exists to prevent.
+Both the engine's own attempt flow and the achievability script must run checks through **one** production path — otherwise the achievability script re-implements check execution and we are back to a facsimile, which is what step 5 exists to prevent.
 
-- Expose an **exported verifier** the engine already uses internally (today's `runChecks` and validator execution, promoted to an exported `Verify(ctx, boundDir, def) (Verdict-ish)` seam, or equivalent), and a **`runner verify <story> --workspace <dir>`** subcommand that calls it against an already-prepared solution directory.
-- The achievability script drops its own check loop and shells out to `runner verify`. It then exercises the exact materialiser, argv executor, cleanup, and oracle semantics the engine uses — no second copy to drift.
-- `cmd/runner` and its tests are **in scope for this item** (the current runner has selection-contract tests but none for `verify`).
+**Exported seam** — concrete signature, no hedging:
+
+```go
+// VerifyResult is the per-item outcome of running a story's validators and
+// checks against a prepared solution. Reuses the existing result type.
+type VerifyResult struct {
+    Validators []runrecord.CheckResult
+    Checks     []runrecord.CheckResult
+    OK         bool // true iff every validator and check passed
+}
+
+// Verify runs a story's validators then its checks against the bound solution
+// at boundDir. It needs the Loaded object (for the retained oracle bytes) and
+// both commits (files_changed_within diffs pin..solution). This is the single
+// implementation the engine's attempt flow also calls.
+func Verify(ctx context.Context, boundDir string, loaded *story.Loaded, pin, solution string) VerifyResult
+```
+
+The engine's attempt flow calls `Verify` where it today runs validators and checks inline; there is exactly one executor.
+
+**`runner verify` subcommand** — concrete semantics:
+
+- Usage: `runner verify --story <file.toml> --workspace <dir>`.
+- Loads the one story. Derives `solution = git -C <dir> rev-parse HEAD` and validates it resolves; `pin = loaded.Definition.Fixture.Commit`.
+- Calls `Verify(ctx, <dir>, loaded, pin, solution)`.
+- Prints each validator and check result (name, pass/fail, detail).
+- Exits **0** iff `VerifyResult.OK`, non-zero otherwise.
+
+The achievability script drops its own check loop, checks out the fixture, lets the agent produce a solution, commits it, and calls `runner verify`. It then exercises the exact materialiser, argv executor, scratch handling, cleanup, and oracle semantics the engine uses — no second copy to drift.
+
+`cmd/runner` and its tests are **in scope for this item** (the current runner has selection-contract tests but none for `verify`).
 
 ## Work
 
