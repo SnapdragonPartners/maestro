@@ -106,8 +106,17 @@ Both the engine's own attempt flow and the achievability script must run checks 
 // checks against a prepared solution. Reuses the existing result type.
 type VerifyResult struct {
     Validators []runrecord.CheckResult
-    Checks     []runrecord.CheckResult
-    OK         bool // true iff every validator and check passed
+    // ValidatorOutputs holds each validator's FULL captured output, aligned
+    // index-for-index with Validators. This preserves the existing evidence
+    // contract: the engine writes these to EvidenceDir as `test-output`
+    // evidence pointers (writeValidatorEvidence today), which evidenceCoverage
+    // then requires for any story declaring evidence_shape = ["test-output"].
+    // Verify must therefore surface the full outputs, not just the truncated
+    // CheckResult.Detail — dropping them would make evidence coverage fail on
+    // migration. `runner verify` ignores this field.
+    ValidatorOutputs []string
+    Checks           []runrecord.CheckResult
+    OK               bool // true iff every validator and check passed
 }
 
 // Verify runs a story's validators then its checks against the bound solution
@@ -117,7 +126,7 @@ type VerifyResult struct {
 func Verify(ctx context.Context, boundDir string, loaded *story.Loaded, pin, solution string) VerifyResult
 ```
 
-The engine's attempt flow calls `Verify` where it today runs validators and checks inline; there is exactly one executor.
+The engine's attempt flow calls `Verify` where it today runs validators and checks inline, then feeds `result.Validators`/`result.ValidatorOutputs` to `writeValidatorEvidence` exactly as now — so run records and evidence coverage are unchanged. There is exactly one executor.
 
 **`runner verify` subcommand** — concrete semantics:
 
@@ -145,4 +154,4 @@ The achievability script drops its own check loop, checks out the fixture, lets 
 
 **Changes** (stated plainly, since one is a contract change): the **story schema** gains version 2 and the `oracle` check type — an additive schema evolution, but a schema change nonetheless, so the claim is not "no contracts change." Story identity gains the oracle hash envelope for v2 stories only.
 
-**Unchanged:** run records, the manifest, adapters, budget accounting, verdict composition, and the entire v1 schema and every v1 story's hash. The change is confined to how a v2 story declares an acceptance check and how the engine executes that one new type, plus the exported verifier seam. That containment — not an absence of contract change — is what keeps this a bounded item rather than a framework project.
+**Unchanged:** run records, the manifest, adapters, budget accounting, verdict composition, **the evidence contract** (validators' full outputs are still persisted as `test-output` evidence — the verifier seam carries `ValidatorOutputs` precisely so migrating the attempt flow to it changes nothing observable), and the entire v1 schema and every v1 story's hash. The change is confined to how a v2 story declares an acceptance check and how the engine executes that one new type, plus the exported verifier seam. That containment — not an absence of contract change — is what keeps this a bounded item rather than a framework project.
