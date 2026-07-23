@@ -1,14 +1,14 @@
 +++
 title = "Maestro v2 Phase 1: Scope And Plan"
 edit_date = "2026-07-23"
-status = "live"
-summary = "Approved Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 12 serial work items covering the runner module, fixtures, the v1-as-patched target, cost/latency reduction, D9 cost instrumentation, and the first 5-10 stories. Resequenced 2026-07-22 (Codex + DR) to conformance-first: the single-agent economic baseline and comparison reporting retime to Phase 1B, and the exit criteria split accordingly."
+status = "archive"
+summary = "Approved Phase 1 scope and execution plan: build the golden story runner per ADR 0025 — 12 serial work items covering the runner module, fixtures, the v1-as-patched target, cost/latency reduction, D9 cost instrumentation, and the first 5-10 stories. Resequenced 2026-07-22 (Codex + DR) to conformance-first: the single-agent economic baseline and comparison reporting retime to Phase 1B, and the exit criteria split accordingly. ARCHIVED 2026-07-23 at Phase 1 (conformance half) close — all eight binding exit criteria green; economic half (Phase 1B) deferred to after Phase 7."
 type = "plan"
 +++
 
 # Phase 1: Golden Stories And Measurement Harness — Scope And Plan
 
-Status: live — approved by Codex and DR, 2026-07-15 (PR #259; the status flip landed one commit late, in a follow-up). Flips to `archive` when Phase 1 closes (lifecycle per ADR 0017 and the Phase 0 precedent). **Amended 2026-07-22 (Codex + DR)**: conformance-first resequencing — see the split exit criteria, the retimed deliverables 7/8/10, and the revisited reviewer question 3.
+Status: **archive** — Phase 1 (the conformance half) closed 2026-07-23, all eight binding exit criteria green, capped by the phase-end `golden-all` run (5/6 accepted, the one red a harness false-negative tracked as [maestro#280](https://github.com/SnapdragonPartners/maestro/issues/280); [conformance log](../notes_conformance-log.md)). Approved by Codex and DR: originally 2026-07-15 (PR #259), amended 2026-07-22 (conformance-first resequencing), closed 2026-07-23. Per ADR 0017 an archived document carries no authority — the **Phase 1B** criteria mirrored below are not owned here; their authority is the [roadmap's Phase 1B exit criteria](../plan_roadmap.md) until Phase 1B has its own live plan.
 
 Goal (from the [roadmap](../plan_roadmap.md)): build the measuring instrument before rewriting the machine. **Resequenced 2026-07-22** ([ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md) conformance-first amendment, Codex + DR): the near-term deliverable is end-to-end conformance — proving the pipeline completes progressively harder stories, repeatably — because measurement presupposes a functioning target and Phase 1's runs showed it is not. Economic baselining moves to Phase 1B, after Phase 7. This document stays controlling for the Phase 1 half; see the split exit criteria below.
 
