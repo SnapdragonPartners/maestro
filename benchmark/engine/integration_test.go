@@ -333,6 +333,70 @@ func TestEngineContributesValidatorEvidence(t *testing.T) {
 	}
 }
 
+// TestAttemptPersistsFullValidatorOutput exercises the REAL migrated path —
+// RunAttempt → verify → engine.Verify → writeValidatorEvidence — rather than
+// calling the pieces by hand. A validator emits far more than any truncation
+// limit with a tail sentinel; the persisted validator evidence must retain
+// that sentinel, which it would not if attempt.verify dropped or misrouted
+// ValidatorOutputs (e.g. wrote the truncated Detail instead of the full
+// output).
+func TestAttemptPersistsFullValidatorOutput(t *testing.T) {
+	const sentinel = "_ATTEMPT_TAIL_SENTINEL_"
+	repoURL, pin := makeFixture(t)
+	sb, db := defaultBudgets()
+
+	def := &story.Definition{
+		SchemaVersion: story.SchemaV1,
+		ID:            "big-validator-story",
+		Title:         "Big validator output",
+		Level:         story.LevelStory,
+		Fixture:       story.Fixture{Repo: repoURL, Commit: pin, BaseBranch: "main"},
+		Prompt:        story.Prompt{Text: "write solution.txt containing done"},
+		Expectations: story.Expectations{
+			AllowedPaths:  []string{"solution.txt"},
+			EvidenceShape: []string{"diff", "test-output"},
+		},
+		Validators: []story.Validator{
+			// ~5000 'A's (well beyond any detail-truncation limit) then the
+			// sentinel on its own line, exiting 0 so the attempt proceeds.
+			{Name: "big", Command: "head -c 5000 /dev/zero | tr '\\0' 'A'; echo " + sentinel},
+		},
+		Checks: []story.Check{{Name: "always", Type: story.CheckCommand, Command: "true"}},
+		Budget: sb,
+	}
+	if err := def.Validate(); err != nil {
+		t.Fatalf("story invalid: %v", err)
+	}
+	hash, err := contenthash.CanonicalJSON(def)
+	if err != nil {
+		t.Fatalf("story hash: %v", err)
+	}
+	loaded := &story.Loaded{Definition: def, Hash: hash, Path: "in-memory"}
+
+	eng, _ := newEngine(t, solutionStub())
+	rec, err := eng.RunAttempt(context.Background(), loaded, testBundle(t, db), "suite-int", 1)
+	if err != nil {
+		t.Fatalf("run attempt: %v", err)
+	}
+
+	var evPath string
+	for i := range rec.Evidence {
+		if rec.Evidence[i].Kind == "test-output" && strings.Contains(rec.Evidence[i].Location, "validator-00") {
+			evPath = rec.Evidence[i].Location
+		}
+	}
+	if evPath == "" {
+		t.Fatalf("no validator test-output evidence produced: %+v", rec.Evidence)
+	}
+	body, readErr := os.ReadFile(evPath)
+	if readErr != nil {
+		t.Fatalf("read evidence: %v", readErr)
+	}
+	if !strings.Contains(string(body), sentinel) {
+		t.Fatal("persisted validator evidence lost the tail sentinel — attempt→verify dropped the full output")
+	}
+}
+
 func TestRepeatIsolation(t *testing.T) {
 	repoURL, pin := makeFixture(t)
 	sb, db := defaultBudgets()

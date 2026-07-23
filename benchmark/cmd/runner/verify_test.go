@@ -178,6 +178,30 @@ func TestCmdVerifyRejectsUnboundWorkspace(t *testing.T) {
 			t.Fatalf("expected an untracked-file error, got %v", err)
 		}
 	})
+
+	// Ignored state is what the engine's `git clean -fdx` specifically removes;
+	// an ignored file left in the workspace can help a validator pass outside
+	// the bound commit, so it must be rejected too. Plain `git status
+	// --porcelain` would NOT show it (it is ignored) — only `--ignored` does.
+	t.Run("ignored file present", func(t *testing.T) {
+		ws, pin := boundWorkspace(t)
+		if err := os.WriteFile(filepath.Join(ws, ".gitignore"), []byte("*.log\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, ws, "add", "-A")
+		git(t, ws, "commit", "-q", "-m", "gitignore") // committed, so the worktree is otherwise clean
+		if err := os.WriteFile(filepath.Join(ws, "stray.log"), []byte("ignored"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		storyPath := writeVerifyStory(t, pin, passCheck)
+		err := cmdVerify(context.Background(), []string{"--story", storyPath, "--workspace", ws})
+		if err == nil || errors.Is(err, errVerificationFailed) {
+			t.Fatalf("expected an ignored-file error, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "clean") {
+			t.Errorf("error should mention cleanliness: %v", err)
+		}
+	})
 }
 
 func TestCmdVerifyRequiresFlags(t *testing.T) {
