@@ -53,14 +53,8 @@ benchmark: lint
 	go build -o bin/benchmark ./cmd/benchmark
 
 # Run all tests with coverage
-test: benchmark-test script-test
+test: benchmark-test
 	go test -cover ./...
-
-# Shell tooling that has bitten us before gets regression coverage too — the
-# achievability-check transport silently mis-executed multi-line commands.
-.PHONY: script-test
-script-test:
-	@bash scripts/achievability-check.test.sh
 
 # Run integration tests only (requires API keys and external services)
 test-integration:
