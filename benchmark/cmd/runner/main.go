@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/engine"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
 	"github.com/SnapdragonPartners/maestro/benchmark/results"
+	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
 	"github.com/SnapdragonPartners/maestro/benchmark/target"
 	"github.com/SnapdragonPartners/maestro/benchmark/target/faketarget"
@@ -33,6 +35,8 @@ commands:
   validate   load stories and configs, print what would run (no execution)
   run        execute the suite matrix and record results
   list       enumerate suite runs in a results store
+  verify     run one story's validators and checks against a prepared
+             workspace, using the SAME executor the engine uses
 
 run 'runner <command> -h' for that command's flags.`
 
@@ -57,6 +61,8 @@ func run(args []string) int {
 		err = cmdRun(ctx, args[1:])
 	case "list":
 		err = cmdList(args[1:])
+	case "verify":
+		err = cmdVerify(ctx, args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -211,6 +217,66 @@ func cmdValidate(args []string) error {
 	}
 	fmt.Printf("%d stories × %d configs validated\n", len(stories), len(bundles))
 	return nil
+}
+
+// errVerificationFailed is the sentinel that makes `runner verify` exit
+// non-zero when a story's validators or checks fail (as opposed to a genuine
+// operational error). Its message is deliberately terse — the per-item results
+// are already printed to stdout above it.
+var errVerificationFailed = errors.New("verification failed")
+
+// cmdVerify runs ONE story's validators and checks against an
+// already-prepared solution workspace, using the same engine.Verify executor
+// the attempt flow uses — so the achievability script and the engine cannot
+// drift. It does not prepare the workspace; the caller checks out the fixture,
+// lets the agent produce a solution, and commits it. Exits 0 iff all pass.
+func cmdVerify(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	storyPath := fs.String("story", "", "story definition file")
+	workspace := fs.String("workspace", "", "prepared solution workspace (a git checkout with the solution committed)")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
+	if *storyPath == "" || *workspace == "" {
+		return fmt.Errorf("verify requires --story and --workspace")
+	}
+	loaded, err := story.LoadFile(*storyPath)
+	if err != nil {
+		return fmt.Errorf("load story: %w", err)
+	}
+	// The solution is the workspace HEAD; the pin is the story's fixture
+	// commit. files_changed_within diffs one against the other.
+	solution, err := gitx.Head(ctx, *workspace)
+	if err != nil {
+		return fmt.Errorf("resolve solution HEAD in %s: %w", *workspace, err)
+	}
+	res := engine.Verify(ctx, *workspace, loaded, loaded.Definition.Fixture.Commit, solution)
+
+	for i := range res.Validators {
+		printItem("validator", res.Validators[i])
+	}
+	for i := range res.Checks {
+		printItem("check", res.Checks[i])
+	}
+	if !res.OK {
+		return errVerificationFailed
+	}
+	fmt.Println("verified: all validators and checks passed")
+	return nil
+}
+
+// printItem renders one validator/check result: pass/fail, kind, name, and
+// (on failure) the truncated detail.
+func printItem(kind string, r runrecord.CheckResult) {
+	mark := "PASS"
+	if !r.Passed {
+		mark = "FAIL"
+	}
+	if r.Detail != "" {
+		fmt.Printf("  %s %-9s %s  (%s)\n", mark, kind, r.Name, r.Detail)
+		return
+	}
+	fmt.Printf("  %s %-9s %s\n", mark, kind, r.Name)
 }
 
 func cmdRun(ctx context.Context, args []string) error {
