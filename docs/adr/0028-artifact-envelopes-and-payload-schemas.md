@@ -2,7 +2,7 @@
 title = "ADR 0028: Artifact Envelopes And Payload Schemas"
 edit_date = "2026-07-24"
 status = "draft"
-summary = "The encoding layer under ADR 0021's artifact model: a fixed relational envelope plus a typed JSON payload; a code-resident payload type registry validated at the persistence seam on write; additive-within-version schema evolution where the reader is the only compatibility layer, because accepted artifacts are immutable; amendments encoded as RFC 7386 merge patches applied in sequence order to materialize the effective view on read; and review records bound to the exact payload digest they reviewed."
+summary = "The encoding layer under ADR 0021's artifact model: a fixed relational envelope plus a typed JSON payload, digested with RFC 8785 JCS under a numeric-range constraint that keeps large integers and exact decimals in strings; a code-resident payload type registry validated at the persistence seam on write; additive-within-version schema evolution where the reader is the only compatibility layer, because accepted artifacts are immutable; amendments encoded as RFC 7386 merge patches whose resulting effective payload is validated on write and again at acceptance, materialized on read and never stored; and review records bound to a digest of the whole reviewable projection, not the payload alone."
 +++
 
 # 0028. Artifact Envelopes And Payload Schemas
@@ -27,7 +27,11 @@ The envelope is exactly ADR 0021's signature, as real columns: `artifact_id`, `a
 
 `payload` is JSON (Postgres `jsonb`). JSON is the storage and API canonical format for every artifact of every type. Markdown is a **rendering** format produced from a payload for human display, never the substrate and never parsed back. TOML and YAML are permitted only for prompt-facing fragments authored by humans (story definitions, prompt pack fragments); they are converted to JSON at the seam and stored as JSON, so nothing downstream ever branches on source format.
 
-**Digests are computed over RFC 8785 canonical JSON** (JCS: lexicographic key ordering, no insignificant whitespace, defined number serialization), then SHA-256, lowercase 64-hex. Every digest ADR 0021 requires — the MPH input-artifact seeding set, the output payload digest, evidence-reference payload digests — uses this one function. Canonicalization is not optional polish: ADR 0021's evidence references detect tampering and retention bugs by digest comparison, and a digest that moves when a serializer reorders keys detects nothing. Phase 1's runner already hashes this way, including integer-precision handling; Phase 2 uses the same discipline rather than a second one.
+**Digests are computed over RFC 8785 (JCS) canonical JSON**, then SHA-256, rendered lowercase 64-hex. Every digest ADR 0021 requires — the MPH input-artifact seeding set, the output payload digest, evidence-reference payload digests — uses this one function, from a real JCS implementation, not a hand-rolled approximation. Canonicalization is not optional polish: ADR 0021's evidence references detect tampering and retention bugs by digest comparison, and a digest that moves when a serializer reorders keys detects nothing.
+
+RFC 8785 carries a numeric constraint that this ADR adopts explicitly rather than discovering later. JCS serializes numbers per ECMAScript `Number::toString` — IEEE 754 doubles — so integers beyond 2^53 and exact decimals do not survive canonicalization. **Payload schemas therefore may not carry JSON numbers outside the exactly-representable range**: large integers (nanosecond timestamps are already ~1.8×10^18, two orders of magnitude past 2^53), identifiers, and exact monetary decimals are encoded as **strings**. This is a registry-enforced validation rule (§2), which converts a silent precision-loss trap into a write-time error.
+
+**Phase 1's runner uses a different function, and the two must never be conflated.** `benchmark/internal/contenthash.CanonicalJSON` marshals, re-decodes with `UseNumber`, and re-marshals through Go's `encoding/json`: keys land in Go's byte-wise order rather than JCS's UTF-16 code-unit order, HTML escaping is on, and numbers are preserved as literal text — which is precisely the arbitrary-precision behavior JCS does not have. It is not an RFC 8785 implementation and is not becoming one: its outputs are pinned by `TestV1HashesArePinned`, and changing them would move the story content hashes the Phase 1 baseline was recorded against. The runner keeps its scheme; the data plane uses JCS; they are separate hash domains. Runner-produced identities entering the plane through the Phase 2 import are stored as **opaque identifier strings** — data to be preserved and compared for equality, never re-derived or verified with the plane's digest function.
 
 ### 2. Payload type registry and validation
 
@@ -36,6 +40,10 @@ The envelope is exactly ADR 0021's signature, as real columns: `artifact_id`, `a
 Code-resident is the deliberate choice. ADR 0021 requires `artifact_type` to be a *governed* vocabulary — "prefer reuse; add a type only for a repeated class" — and governance means a reviewed pull request, not a runtime insert. A data-resident registry would let an agent mint an artifact type through a tool call, which is precisely the unreviewed side door ADR 0022's guardrail closes for state transitions.
 
 **Validation happens at the persistence seam, on write, before the row commits** — the single choke point ADR 0022's access discipline already establishes. Not in the agent, not in the tool, not asynchronously: an invalid payload must never reach storage, because immutability means it can never be cleaned up afterward. Validation failure is an error returned to the caller, and the write does not happen.
+
+Validation is two checks, both mandatory. First, the payload conforms to its registered schema for its `schema_version`. Second, **the canonicalization constraint from §1**: no JSON number outside the IEEE-754 exactly-representable integer range, so nothing in a stored payload can lose precision under JCS. The second check is universal — it belongs to the encoding, not to any one schema — and it fails loudly at write time rather than silently at digest time.
+
+For amendments, the unit validated is the resulting effective payload, not the patch (§4).
 
 Audit artifacts are validated identically. Their volume argues for cheap validation, not for skipped validation — an unparseable tool-call record is worthless exactly when it matters, during failure reconstruction.
 
@@ -62,15 +70,33 @@ An amendment's payload is an **RFC 7386 JSON Merge Patch** against the original 
 
 Merge Patch is chosen over RFC 6902 JSON Patch deliberately. JSON Patch is more expressive — it can address array elements — but its operations can *fail to apply* against a changed target and are order-sensitive in ways that make a stored patch a latent runtime error. Merge Patch always applies, deterministically, with no failure mode. The cost is that amending one element of a list means resubmitting the list; for the artifacts this model carries (requirements, story lists, plans) restating the list is the honest and reviewable thing to do anyway.
 
+**Always applying is not the same as always producing a valid payload, and the difference is load-bearing.** A merge patch can delete a required field or replace a value with one of the wrong type, and the result would be an *accepted, authoritative* effective view that violates its own schema — the one thing §2's write-time validation exists to prevent, arriving through a side door. Therefore:
+
+- The unit validated for an amendment is **the resulting effective payload**, not the patch document. The patch alone is not a valid instance of anything and must never be schema-checked in isolation.
+- That validation runs against the **original artifact's `artifact_type` and `schema_version`** — an amendment cannot change either. A change that needs a different type or version is a supersession, not an amendment.
+- Validation runs **twice: on write, and again at acceptance**, and both must pass. Re-validation at acceptance is not belt-and-braces — sequence numbers are assigned at acceptance, so an amendment drafted against one effective view can be accepted onto a different one if another amendment is accepted in between. The base it was written against is not necessarily the base it applies to.
+- An amendment that fails either check cannot be accepted. Per ADR 0021, a draft with a fundamental flaw is invalidated rather than repaired.
+
+One residual limitation is recorded rather than solved: when an intervening amendment shifts the base, the reviewer's *judgment* was formed against a view that no longer exists, even though the result still validates. ADR 0021 resolves amendment conflicts by sequence order ("the later prevails") and does not require re-review, so this ADR does not impose one — schema validity is enforced mechanically, semantic staleness under concurrent amendment is not. If it proves real in practice, the fix belongs in 0021's conflict rule, not here.
+
 Supersession needs no encoding beyond ADR 0021's link: a superseding artifact is a complete, independently reviewed payload, and per 0021 the effective view never spans a supersession.
 
 ### 5. Review linkage
 
-A review record binds to **the artifact and the exact payload digest it reviewed** — `artifact_id` plus `payload_digest`, not `artifact_id` alone.
+A review record binds to **the artifact's `review_digest`** — a canonical digest over the whole *reviewable projection*, not over `payload` alone.
 
-This is what makes "reviewer identity alone is not review completion" (ADR 0021) mechanically true rather than aspirational. A review that named only an artifact would silently carry over to content the reviewer never saw. With the digest bound, review of changed content is detectably absent, and any attempt to accept an artifact whose current payload digest does not match a completed review record fails.
+Binding to the payload alone is too narrow, because review-relevant facts live in the envelope. An artifact's `artifact_type`, `artifact_category`, `scope_type`/`scope_id`, lineage, `author_instance_id`, `summary`, and `schema_version` all change what a reviewer is agreeing to; a payload-only binding would let any of them move after review without detection. Re-scoping an accepted artifact to a different Epic, or reassigning its author, is exactly the kind of change the invariant should catch.
 
-Review records carry: the artifact reference and payload digest, the reviewer principal instance, a decision from the fixed vocabulary `accepted` | `rejected` | `changes_requested`, a free-text rationale, and `decided_at`. An artifact reaches envelope status `accepted` only when a review record with decision `accepted` exists for its current payload digest, authored by a principal distinct from the author and of kind agent or human (ADR 0021 — system principals can neither author nor review Management artifacts).
+The reviewable projection is therefore **every envelope field except those the review process itself writes**, plus the payload:
+
+- **Included**: `artifact_id`, `artifact_type`, `artifact_category`, `scope_type`, `scope_id`, the lineage columns, `author_instance_id`, `summary`, `schema_version`, `payload` (for an amendment, its merge-patch document).
+- **Excluded**: `status`, `reviewer_instance_id`, and the review record's own timestamps. These are outputs of review, not inputs to it. Including them would be circular — accepting an artifact moves `status` from `draft` to `accepted`, which would change the digest and instantly invalidate the review that caused the change.
+
+`review_digest` is computed with the same JCS function as every other digest (§1). An artifact reaches status `accepted` only when a review record with decision `accepted` exists **for its current `review_digest`**, authored by a principal distinct from the author and of kind agent or human (ADR 0021 — system principals can neither author nor review Management artifacts). Any mismatch fails the transition rather than warning.
+
+This is what makes "reviewer identity alone is not review completion" (ADR 0021) mechanically true rather than aspirational: review of changed content is detectably absent by construction, across the whole reviewable surface rather than just its largest field.
+
+Review records carry: the artifact reference and its `review_digest`, the reviewer principal instance, a decision from the fixed vocabulary `accepted` | `rejected` | `changes_requested`, a free-text rationale, and `decided_at`.
 
 Amendments are artifacts, so they carry their own review records under the same rule, satisfying ADR 0020's invariant for each link in the chain independently. Audit artifacts have no review records and no reviewer; that is a property of the category, not a nullable field anyone should read meaning into.
 
@@ -78,7 +104,9 @@ Amendments are artifacts, so they carry their own review records under the same 
 
 - Phase 2's DDL is now fully determined: the envelope is a column list, `payload` is `jsonb`, and the review record's shape is fixed. Item 3 writes tables, not designs.
 - **The reader-is-the-compatibility-layer rule is the sharpest constraint this ADR imposes.** Every consumer of an artifact type inherits a growing obligation as versions accumulate, which is intended pressure toward additive evolution and small payloads. It also means version proliferation is a design smell with a measurable cost, visible in registry entries.
-- Digest-bound review closes the "reviewed a different draft" hole by construction, but it also means an editorial fix to an accepted artifact's payload is impossible — it is an amendment, with its own review. This is ADR 0021's immutability working as designed, and it will feel heavy for typo-scale changes.
+- Digest-bound review closes the "reviewed a different draft" hole by construction, but it also means an editorial fix to an accepted artifact is impossible — it is an amendment, with its own review. Binding to the whole reviewable projection widens this: a `summary` typo or a scope correction is as unfixable-in-place as a payload change. This is ADR 0021's immutability working as designed, and it will feel heavy at typo scale.
+- Because amendments are validated as *effective payloads* twice — on write and again at acceptance — an amendment's acceptance can fail for reasons that did not exist when it was written, if another amendment lands first. That is a real operational case Phase 2's queries must surface clearly, not a rare edge.
+- The JCS numeric constraint pushes large integers and exact decimals into strings at the payload-schema level. Payload designers inherit that as a rule, and the registry enforces it, so the trap surfaces at write time in development rather than as silent precision loss in stored history.
 - Merge Patch's array-replacement semantics mean list-shaped payloads are amended by restating the list. Payload designers should prefer keyed objects over positional arrays where per-item amendment is expected.
 - The registry gives the `artifact_type` vocabulary a single enforceable home, so ADR 0021's governance requirement becomes a code-review checkpoint rather than a convention.
 - TOML/YAML remain valid authoring formats at the edges without becoming storage formats, so ADR 0025's TOML story definitions and the prompt-pack fragments are unaffected.
