@@ -474,7 +474,7 @@ summary = "One sentence, used verbatim in the parent README index."
 +++
 ```
 
-Update `edit_date` on every edit. When an artifact lands in a phase directory, add its one-line entry to that directory's `README.md`. Per-phase working artifacts live in `docs/v2/phase_x/` mirroring the branch namespace; cross-phase docs stay at `docs/v2/`; Accepted decisions land in `docs/adr/`.
+`edit_date` is stamped automatically at commit time by the pre-commit hook (`scripts/stamp-edit-date.sh`, per ADR 0017) — don't hand-maintain it, and expect it to change under you when you commit. The stamp is best-effort and never blocks a commit, so it's a backstop rather than a guarantee. When an artifact lands in a phase directory, add its one-line entry to that directory's `README.md`. Per-phase working artifacts live in `docs/v2/phase_x/` mirroring the branch namespace; cross-phase docs stay at `docs/v2/`; Accepted decisions land in `docs/adr/`.
 
 ## Data Architecture & Persistence
 
