@@ -1,6 +1,6 @@
 +++
 title = "Phase 1 Artifacts"
-edit_date = "2026-07-22"
+edit_date = "2026-07-23"
 status = "live"
 summary = "Index of Phase 1 working artifacts: the scope/plan for the golden story runner and measurement harness; later the v1 patch record, D9 policy record, and cost-instrumentation report."
 +++
@@ -17,5 +17,6 @@ Working artifacts of Phase 1 (golden stories and measurement harness), produced 
 - [Patch Record: v1-As-Patched (Item 5)](patches_v1.md) — The enumerate-and-justify record of every patch to the main-branch v1 factory path made for the Phase 1 benchmark target: what changed, why the target strategy permits it, and what runs discovered it.
 - [Design: Cost And Latency Reduction (Item 5.1)](design_cost_latency.md) — Mini-plan for the cost-latency work item: a registry-published, digest-pinned union cache image that kills the cold-cache tax (#268, deterministically verified with GOPROXY=off), then an Ollama-only paired-local configuration that makes basic end-to-end exercise of the harness near-free (#266) — gated on a viability probe, with local cost marked unavailable and local runs budgeted on tokens and wall-clock with zero USD reservation.
 - [D9 Sampling And Budget Policy (Item 6)](d9_budget_policy.md) — The D9 policy record required by Phase 1 item 6: per-story costs measured on instrumented runs, N fixed at 3 for the primary configuration, and per-story and per-suite budget caps fixed as runner-enforced values with overrun-as-failure. Caps are a runaway safeguard sized from observed accepted runs, not a performance target; the samples behind them are thin and disclosed as such.
+- [Design: Engine-Owned Behavioural Oracles (Item 9-oracle)](design_oracles.md) — **Live (delivered 2026-07-23).** First-class oracle assets in the golden runner: a story schema v2 `oracle` check that ships adjacent, hashed Go files the engine materialises against the bound solution and executes under the existing deadline/cleanup machinery, plus a scratch-mode variant that mutates a checkout of the immutable solution commit to grade the agent's own tests. Replaced the base64-shell oracles in the three new rung-3/4/5 stories; all three proven achievable against the oracles. No reusable mutation framework, design amendment only (no new ADR).
 
 Expected to land here as the phase executes: the cost-instrumentation report (item 6) and the phase exit baseline report (item 10).

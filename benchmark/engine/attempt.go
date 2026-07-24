@@ -351,10 +351,10 @@ func (a *attempt) verify(ctx context.Context) {
 		return
 	}
 	def := a.story.Definition
-	var outputs []string
-	a.out.validators, outputs = runValidators(ctx, a.spec.WorkspaceDir, def.Validators)
-	a.engineEvidence = writeValidatorEvidence(a.spec.EvidenceDir, def.Validators, outputs, a.engine.logf)
-	a.out.checks = runChecks(ctx, a.spec.WorkspaceDir, def, def.Fixture.Commit, a.solution)
+	res := Verify(ctx, a.spec.WorkspaceDir, a.story, def.Fixture.Commit, a.solution)
+	a.out.validators = res.Validators
+	a.engineEvidence = writeValidatorEvidence(a.spec.EvidenceDir, def.Validators, res.ValidatorOutputs, a.engine.logf)
+	a.out.checks = res.Checks
 	a.out.evidenceMissing = evidenceCoverage(def, append(append([]runrecord.EvidencePointer{}, a.obs.Evidence...), a.engineEvidence...))
 	a.out.verified = true
 }

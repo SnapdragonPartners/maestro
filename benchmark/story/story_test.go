@@ -86,7 +86,7 @@ func TestLoadFileRejections(t *testing.T) {
 	}{
 		{"unknown key", func(s string) string { return s + "\nsurprise = true\n" }, "unknown keys"},
 		{"future schema version", func(s string) string {
-			return strings.Replace(s, "schema_version = 1", "schema_version = 2", 1)
+			return strings.Replace(s, "schema_version = 1", "schema_version = 3", 1)
 		}, "schema_version"},
 		{"uppercase id", func(s string) string {
 			return strings.Replace(s, `id = "dep-bump-001"`, `id = "Dep-Bump"`, 1)

@@ -1,6 +1,6 @@
 +++
 title = "Union Dependency-Cache Image"
-edit_date = "2026-07-17"
+edit_date = "2026-07-22"
 status = "live"
 summary = "The golden-cache union image (item 5.1, #268): one image baking every Go fixture's module cache so v1 coder runs skip the cold-download tax, with a GOPROXY=off deterministic acceptance proof and a maintainer-only publish path."
 +++
@@ -22,7 +22,7 @@ A single image bakes **every golden Go fixture's module cache** into an immutabl
 
 ## Lifecycle
 
-- **Maintainer/release publishes.** The [`Publish golden-cache image`](../../.github/workflows/release-cache-image.yml) workflow (manually dispatched, `packages: write` via the built-in `GITHUB_TOKEN`) builds, verifies, and pushes to `ghcr.io/snapdragonpartners/golden-cache`, then prints the immutable digest. Pin that digest into `../configs/*.toml` (`container_image`). This is the **only** path that moves the tracked digest — run it when a fixture re-pins.
-- **PR CI is read-only.** CI pulls the committed digest and runs `cache-verify`; it never pushes and never rewrites the digest. A maintainer who re-pinned a fixture but forgot to republish is caught loudly by the offline check.
+- **Maintainer/release publishes.** The [`Publish golden-cache image`](../../.github/workflows/release-cache-image.yml) workflow (manually dispatched, `packages: write` via the built-in `GITHUB_TOKEN`) builds, verifies, and pushes to `ghcr.io/snapdragonpartners/golden-cache`, then prints the immutable digest. Pin that digest into `../configs/*.toml` (`container_image`). This is the **only** path that moves the tracked digest — run it when a re-pin leaves the image without coverage of the current pins (`cache-verify` decides; a re-pin the image still covers needs no republish).
+- **PR CI is read-only.** CI pulls the committed digest and runs `cache-verify`; it never pushes and never rewrites the digest. A re-pin that leaves the image without coverage of the current pins is caught loudly by the offline check; a re-pin it still covers needs no republish (amended 2026-07-22, PROPOSED — see design_cost_latency.md). Coverage is the trigger, not the pin string, and the check proves coverage, not input equality.
 
 The image must be **public** on GHCR so PR CI (and every machine) can pull it by digest with no auth — it holds only cached public Go modules, no secrets.

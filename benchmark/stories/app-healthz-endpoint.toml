@@ -1,0 +1,160 @@
+# Golden story: ladder rung 5 (app change with behavioral evidence).
+#
+# What this tests that nothing else does: the change must be proven by
+# EXERCISING THE RUNNING APP. Every other story is proven statically (a diff, a
+# grep) or by unit tests over pure functions. Here the test must stand the real
+# router up and speak HTTP to it, so the proof covers wiring — route
+# registration, method handling, response shape — that no pure-function test
+# can reach. A handler that is correct but never routed fails this story.
+#
+# EVIDENCE-CONTRACT NOTE. ADR 0025's ladder calls rung 5 "app change with
+# behavioral evidence", which anticipates a richer evidence kind. The kinds
+# that actually exist are pr/diff/db/usage/log (v1 adapter) and
+# test-output/evidence-dir (engine) — there is no behavioural kind, and
+# declaring one would fail every attempt as "evidence:<kind> missing" through
+# no fault of the target. So this story realises rung 5's INTENT inside the
+# contract that exists: the behaviour is exercised for real, and the evidence
+# kind remains test-output. A genuinely new evidence kind is engine work and is
+# deliberately not in scope here — tracked as issue #279.
+#
+# Self-contained: net/http + net/http/httptest, no external dependency API.
+# The cleanup run showed the coder wandering when it needs a dependency's API
+# (patches_v1.md), so keeping this stdlib-only means a red here is new
+# information rather than a re-run of a known defect.
+schema_version = 2
+id = "app-healthz-endpoint"
+title = "Add a /healthz endpoint, proven against the running server"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
+commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
+base_branch = "main"
+
+[prompt]
+text = '''
+The chat demo has no way for an operator or a load balancer to ask
+whether it is up. Add one.
+
+Serve GET /healthz from the application's router. It must respond 200
+with a JSON body containing a "status" field whose value is "ok". It must
+not require any provider to be configured — health is about the process,
+not about upstreams.
+
+Prove it behaviourally, not by inspection: add a test in health_test.go
+that stands up the real router with httptest, issues an actual HTTP
+request to /healthz, and asserts on the status code and the decoded body.
+Route it through the same constructor the application uses, so the test
+would catch a handler that exists but was never wired up.
+
+
+Scope constraint: confine ALL changes to these paths only — server.go health_test.go. Do not create or modify any other file. If completing the task would require a file outside this list, it does not; work within these paths.'''
+
+[expectations]
+allowed_paths = ["server.go", "health_test.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "vet"
+command = "go vet ./..."
+
+[[validators]]
+name = "test"
+command = "go test ./..."
+
+[[checks]]
+name = "diff-confined-to-source"
+type = "files_changed_within"
+
+[[checks]]
+# The route is registered on the application's mux, not merely defined.
+name = "healthz-route-registered"
+type = "command"
+command = "sh -c 'grep -q \"/healthz\" server.go'"
+
+[[checks]]
+name = "behavioural-test-authored"
+type = "command"
+command = "sh -c 'test -f health_test.go'"
+
+[[checks]]
+# The distinguishing requirement of this rung: a real HTTP round trip
+# rather than calling the handler function directly.
+name = "test-uses-real-http"
+type = "command"
+command = "sh -c 'grep -q \"httptest\" health_test.go'"
+
+[[checks]]
+# ...and it goes through the application's own constructor, so a handler
+# that is correct but never routed cannot pass.
+name = "test-exercises-real-router"
+type = "command"
+command = "sh -c 'grep -q \"newServer\" health_test.go'"
+
+[[checks]]
+# The response contract is asserted, not just the status code.
+name = "test-asserts-status-field"
+type = "command"
+command = "sh -c 'grep -q \"status\" health_test.go'"
+
+[[checks]]
+# Scoped to the new file: the fixture's server.go ships from upstream with
+# gofmt drift (struct-tag alignment in chatRequest), so asserting gofmt over
+# it is unsatisfiable regardless of what the agent does. Same precedent as
+# cleanup-provider-options, flag-instance-name and api-option-lookup.
+name = "gofmt-clean-tests"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l health_test.go)\"'"
+
+[[checks]]
+# ENGINE-OWNED BEHAVIOURAL ORACLE. The checks above prove a test exists that
+# mentions httptest, newServer and status — a broken route with a test merely
+# naming those strings satisfies all of them. So the engine drives a real
+# request through the application's own router (newServer) and asserts the
+# response contract: 200 with a JSON "status":"ok", no provider configured.
+# `-count=1` defeats Go's test cache. Verified to reject a missing/500 route and
+# accept a correct one.
+# See stories/_oracles/app-healthz-endpoint/zz_oracle_healthz_test.go.
+name        = "oracle-healthz-responds"
+type        = "oracle"
+assets      = ["zz_oracle_healthz_test.go"]
+package_dir = ""
+argv        = ["go", "test", "-count=1", "-run", "TestOracleHealthz", "."]
+
+[[checks]]
+# MUTATION CHECK (scratch mode) — proves the authored test is meaningful. The
+# oracle above verifies the endpoint; it cannot tell a real behavioural test
+# from one that merely mentions httptest, newServer and status.
+#
+# The mutant WRAPS the constructed handler rather than registering a second
+# /healthz route. A duplicate registration makes net/http panic during
+# construction, so a test that merely builds the router — asserting nothing —
+# would "detect" that mutant and pass for the wrong reason. Wrapping keeps
+# construction succeeding and breaks only the /healthz response, so detection
+# requires actually issuing a request and asserting on it.
+#
+# The engine checks out the immutable solution commit into $ORACLE_SCRATCH (the
+# agent's server.go + health_test.go, no oracle); the helper renames newServer
+# via go/parser and appends the wrapper there. The mutant must COMPILE before a
+# test failure counts as detection (a non-compiling mutant is a check bug). The
+# engine owns scratch cleanup on every exit path. Verified: a behavioural test
+# is accepted; a build-the-router-and-assert-nothing test is rejected.
+# See stories/_oracles/app-healthz-endpoint/zz_oracle_mutate.go.
+name    = "authored-tests-detect-broken-behaviour"
+type    = "oracle"
+assets  = ["zz_oracle_mutate.go"]
+scratch = "solution-commit"
+argv    = ["go", "run", "zz_oracle_mutate.go"]
+
+[budget]
+# Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
+# nearest completed story, with headroom for authoring a test that stands up
+# a server. Recalibrate on first acceptance per the D9 rule.
+max_tokens = 2500000
+max_wall_clock_seconds = 2700
+max_cost_usd = 24.0

@@ -4,15 +4,18 @@
 # Two guards, both defeating a stale image:
 #
 #  1. Coverage — every story's [fixture] repo+commit must appear in
-#     fixtures.txt. A story re-pinned without updating fixtures.txt (and
-#     republishing) is caught here, before any image check.
+#     fixtures.txt. A story re-pinned without updating fixtures.txt is caught
+#     here, before any image check. (Whether that re-pin also needs a REPUBLISH
+#     depends on whether the image still COVERS it — this script is the gate.
+#     It proves coverage, NOT that module inputs are unchanged: a shrinking
+#     dependency set verifies against the old image, correctly.)
 #
 #  2. Offline completeness — for each fixture, mount the CURRENT pinned
 #     go.mod/go.sum (freshly staged, NOT the copies baked into the image)
 #     and run `go mod download` with the module proxy disabled (GOPROXY=off).
 #     Using only the image's baked GOMODCACHE, this can succeed only if the
 #     image already caches exactly the modules the current pins require — so
-#     a re-pinned fixture whose deps were never republished fails offline,
+#     a re-pinned fixture whose deps are not in the image fails offline,
 #     loudly. (Running against the image's own /cache/<name>/go.mod would be
 #     a tautology: it would only prove the image caches its own old inputs.)
 #
@@ -53,7 +56,7 @@ for toml in ../stories/*.toml; do
     fi
 done
 if [ "$cov_fail" -ne 0 ]; then
-    echo "❌ story fixtures not covered by cache/fixtures.txt — update it and republish"
+    echo "❌ story fixtures not covered by cache/fixtures.txt — update it, then re-run this to see whether a republish is needed"
     exit 1
 fi
 echo "✓ every story fixture pin is represented in fixtures.txt"

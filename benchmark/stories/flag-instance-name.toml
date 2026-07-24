@@ -1,0 +1,116 @@
+# Golden story: BREADTH at roughly rung-3 difficulty (not a new rung).
+#
+# What this tests that nothing else does: a COORDINATED CHANGE ACROSS SOURCE
+# FILES. Every other story is confined to one file plus its test, and
+# dep-bump's two are generated (go.mod/go.sum), so the suite has never
+# exercised a plan that must sequence edits across files. The seam is
+# deliberate: threading a value declared in main.go to its use in server.go
+# forces newServer's signature to change, so the two files cannot be edited
+# independently and a half-done change does not compile.
+#
+# REPLACES flag-chat-timeout (2026-07-22). That story asked for the per-request
+# CHAT timeout to be configurable, which cannot be verified hermetically:
+# exercising it needs a live provider on /api/chat, so every available check
+# was structural and an implementation that accepted the parameter and ignored
+# it passed all of them. A golden story that knowingly admits false acceptance
+# is not a conformance test. The premise moved to a value whose effect IS
+# observable through the real router, keeping the coordination property while
+# gaining a true behavioural oracle.
+#
+# Self-contained (net/http, flag) — no external dependency API, so a red here
+# is new information rather than a re-run of the recorded dependency-API
+# defect (patches_v1.md).
+schema_version = 2
+id = "flag-instance-name"
+title = "Add an instance-name flag surfaced on every response"
+level = "story"
+
+[fixture]
+repo = "https://github.com/SnapdragonPartners/golden-fixture-chat"
+commit = "60e79fd075c8f3f13d7c8650012a2fc74f77de4a"
+base_branch = "main"
+
+[prompt]
+text = '''
+When several instances of the demo run behind one address, there is no way
+to tell which one served a response.
+
+Add a command-line flag named `instance-name`, following the pattern
+main.go already uses for its listen address, defaulting to "chat-demo".
+Every HTTP response the application serves must carry its value in an
+`X-Instance-Name` header — every route, not just one.
+
+The flag's value must reach the server, so an operator who passes
+`-instance-name=blue` sees `X-Instance-Name: blue` on responses.
+
+
+Scope constraint: confine ALL changes to these paths only — main.go server.go. Do not create or modify any other file. If completing the task would require a file outside this list, it does not; work within these paths.'''
+
+[expectations]
+allowed_paths = ["main.go", "server.go"]
+required_artifacts = ["pr"]
+evidence_shape = ["diff", "test-output"]
+
+[[validators]]
+name = "build"
+command = "go build ./..."
+
+[[validators]]
+name = "vet"
+command = "go vet ./..."
+
+[[checks]]
+name = "diff-confined-to-source"
+type = "files_changed_within"
+
+[[checks]]
+name = "instance-name-flag-declared"
+type = "command"
+command = "sh -c 'grep -q \"instance-name\" main.go'"
+
+[[checks]]
+# The value is threaded rather than re-derived in server.go — this is what
+# forces both files to change together, which is the point of the story.
+name = "value-threaded-through-newserver"
+type = "command"
+command = "sh -c 'grep -qE \"func newServer\\(.*string\" server.go'"
+
+[[checks]]
+# ENGINE-OWNED BEHAVIOURAL ORACLE — the REAL BINARY, driven over HTTP.
+# Materialised into the solution as a test the agent never sees, this builds
+# the application, runs it with a NON-DEFAULT `-instance-name`, and asserts the
+# value appears in X-Instance-Name on three responses served by different
+# handlers (root page, JSON API, static file server). It exercises the whole
+# path the story requires: flag parse in main → propagation to the server →
+# header on every response. A newServer-direct oracle could not see main→server
+# wiring, so `main` declaring the flag but passing a hardcoded value would slip
+# through; this rejects exactly that, plus a header on only one route and a
+# header set per-handler rather than on every response. Verified against all
+# those forgeries and a correct implementation.
+#
+# Hermetic: main() os.Exit(1)s with zero providers and every detector makes a
+# live ListModels call, so the oracle stands up a fake Ollama /api/tags endpoint
+# and launches the binary with a clean env whose only provider signal is
+# OLLAMA_HOST — no network, no keys. `-count=1` defeats Go's test cache, whose
+# key is blind to the oracle's subprocess build and network probes. See
+# stories/_oracles/flag-instance-name/zz_oracle_instance_test.go.
+name        = "oracle-instance-name-observed"
+type        = "oracle"
+assets      = ["zz_oracle_instance_test.go"]
+package_dir = ""
+argv        = ["go", "test", "-count=1", "-run", "TestOracleInstanceName", "."]
+
+[[checks]]
+# Scoped to main.go: the fixture's server.go ships from upstream with gofmt
+# drift (struct-tag alignment in chatRequest), so asserting gofmt over it is
+# unsatisfiable regardless of what the agent does.
+name = "gofmt-clean-main"
+type = "command"
+command = "sh -c 'test -z \"$(gofmt -l main.go)\"'"
+
+[budget]
+# Provisional: no accepted run exists. Sized from bugfix (727k/$7.06), the
+# nearest completed story. Recalibrate on first acceptance per the D9 rule.
+max_tokens = 2500000
+max_wall_clock_seconds = 2700
+max_cost_usd = 24.0

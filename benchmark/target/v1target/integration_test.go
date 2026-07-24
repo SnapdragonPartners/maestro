@@ -74,7 +74,7 @@ func makeLocalFixture(t *testing.T) (string, string) {
 func e2eStory(t *testing.T, repo, pin string) *story.Loaded {
 	t.Helper()
 	def := &story.Definition{
-		SchemaVersion: story.SchemaVersion,
+		SchemaVersion: story.SchemaV1,
 		ID:            "v1-e2e",
 		Title:         "fake-maestro end to end",
 		Level:         story.LevelStory,

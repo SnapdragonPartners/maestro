@@ -28,8 +28,49 @@ func runShell(ctx context.Context, dir, name, command string) runrecord.CheckRes
 // runShellFull is runShell also returning the full captured output for
 // evidence export.
 func runShellFull(ctx context.Context, dir, name, command string) (runrecord.CheckResult, string) {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	return runProcess(ctx, dir, nil, name, "sh", "-c", command)
+}
+
+// mergeEnv returns the parent environment with `extra` applied as overrides:
+// any parent entry whose key also appears in `extra` is dropped, then `extra` is
+// appended, so no key appears twice. os/exec already resolves duplicate keys in
+// favour of the last value, so this is not fixing a live bug — but it makes the
+// override unambiguous at the point of construction rather than relying on that
+// stdlib detail, and a duplicate-free env can't surprise a child that reads its
+// environment first-match.
+func mergeEnv(extra []string) []string {
+	keys := make(map[string]struct{}, len(extra))
+	for _, kv := range extra {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			keys[kv[:i]] = struct{}{}
+		}
+	}
+	parent := os.Environ()
+	out := make([]string, 0, len(parent)+len(extra))
+	for _, kv := range parent {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			if _, override := keys[kv[:i]]; override {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return append(out, extra...)
+}
+
+// runProcess executes argv in dir (with the given extra environment applied as
+// overrides on the parent's, or the parent's alone when env is nil) and reports pass on
+// exit 0. Like runShellFull it runs in its own process group and kills the
+// whole group on context expiry, so an orphaned grandchild holding the output
+// pipe cannot block CombinedOutput past the wall-clock cap. Oracle checks use
+// this directly (no shell) so nothing re-introduces the truncation/quoting
+// hazards the oracle change exists to remove.
+func runProcess(ctx context.Context, dir string, env []string, name string, argv ...string) (runrecord.CheckResult, string) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is story-authored, hashed into identity
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = mergeEnv(env)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
@@ -66,8 +107,11 @@ func runValidators(ctx context.Context, dir string, validators []story.Validator
 	return results, outputs
 }
 
-// runChecks executes every deterministic story check at the solution.
-func runChecks(ctx context.Context, dir string, def *story.Definition, pin, solution string) []runrecord.CheckResult {
+// runChecks executes every deterministic story check at the solution. loaded
+// carries the retained oracle-asset bytes an oracle check materialises; solution
+// is the immutable commit a scratch-mode oracle checks out.
+func runChecks(ctx context.Context, dir string, loaded *story.Loaded, pin, solution string) []runrecord.CheckResult {
+	def := loaded.Definition
 	out := make([]runrecord.CheckResult, 0, len(def.Checks))
 	for i := range def.Checks {
 		check := &def.Checks[i]
@@ -79,6 +123,8 @@ func runChecks(ctx context.Context, dir string, def *story.Definition, pin, solu
 			result = checkFilesChangedWithin(ctx, dir, check.Name, def.Expectations.AllowedPaths, pin, solution)
 		case story.CheckFileContains:
 			result = checkFileContains(dir, check)
+		case story.CheckOracle:
+			result = runOracle(ctx, dir, check, loaded.OracleAssets, solution)
 		default:
 			// Unknown types cannot load past story validation; belt and
 			// suspenders for hand-built definitions.

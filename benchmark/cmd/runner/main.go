@@ -12,13 +12,17 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/SnapdragonPartners/maestro/benchmark/engine"
+	"github.com/SnapdragonPartners/maestro/benchmark/internal/gitx"
 	"github.com/SnapdragonPartners/maestro/benchmark/internal/safe"
 	"github.com/SnapdragonPartners/maestro/benchmark/mph"
 	"github.com/SnapdragonPartners/maestro/benchmark/results"
+	"github.com/SnapdragonPartners/maestro/benchmark/runrecord"
 	"github.com/SnapdragonPartners/maestro/benchmark/story"
 	"github.com/SnapdragonPartners/maestro/benchmark/target"
 	"github.com/SnapdragonPartners/maestro/benchmark/target/faketarget"
@@ -31,6 +35,8 @@ commands:
   validate   load stories and configs, print what would run (no execution)
   run        execute the suite matrix and record results
   list       enumerate suite runs in a results store
+  verify     run one story's validators and checks against a prepared
+             workspace, using the SAME executor the engine uses
 
 run 'runner <command> -h' for that command's flags.`
 
@@ -55,6 +61,8 @@ func run(args []string) int {
 		err = cmdRun(ctx, args[1:])
 	case "list":
 		err = cmdList(args[1:])
+	case "verify":
+		err = cmdVerify(ctx, args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return 2
@@ -144,17 +152,37 @@ func loadBundles(path string) ([]*mph.Loaded, error) {
 	return []*mph.Loaded{one}, nil
 }
 
-func filterStories(stories []*story.Loaded, id string) []*story.Loaded {
-	if id == "" {
-		return stories
+// filterStories selects by story ID. Accepts a comma-separated list so a
+// tier runs as ONE suite: separate invocations would share a suite ID while
+// each rewrote the manifest and restarted budget accounting from zero, so the
+// tier would neither be one accounting unit nor produce one manifest.
+// Unknown IDs are reported rather than silently yielding a short suite.
+func filterStories(stories []*story.Loaded, ids string) ([]*story.Loaded, error) {
+	if ids == "" {
+		return stories, nil
+	}
+	want := make(map[string]bool)
+	for _, id := range strings.Split(ids, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			want[id] = true
+		}
 	}
 	var out []*story.Loaded
 	for _, s := range stories {
-		if s.Definition.ID == id {
+		if want[s.Definition.ID] {
 			out = append(out, s)
+			delete(want, s.Definition.ID)
 		}
 	}
-	return out
+	if len(want) > 0 {
+		missing := make([]string, 0, len(want))
+		for id := range want {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("no such story: %s", strings.Join(missing, ", "))
+	}
+	return out, nil
 }
 
 func filterBundles(bundles []*mph.Loaded, name string) []*mph.Loaded {
@@ -191,11 +219,104 @@ func cmdValidate(args []string) error {
 	return nil
 }
 
+// errVerificationFailed is the sentinel that makes `runner verify` exit
+// non-zero when a story's validators or checks fail (as opposed to a genuine
+// operational error). Its message is deliberately terse — the per-item results
+// are already printed to stdout above it.
+var errVerificationFailed = errors.New("verification failed")
+
+// cmdVerify runs ONE story's validators and checks against an
+// already-prepared solution workspace, using the same engine.Verify executor
+// the attempt flow uses — so the achievability script and the engine cannot
+// drift. It does not prepare the workspace; the caller checks out the fixture,
+// lets the agent produce a solution, and commits it. Exits 0 iff all pass.
+func cmdVerify(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	storyPath := fs.String("story", "", "story definition file")
+	workspace := fs.String("workspace", "", "prepared solution workspace (a git checkout with the solution committed)")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse flags: %w", err)
+	}
+	if *storyPath == "" || *workspace == "" {
+		return fmt.Errorf("verify requires --story and --workspace")
+	}
+	loaded, err := story.LoadFile(*storyPath)
+	if err != nil {
+		return fmt.Errorf("load story: %w", err)
+	}
+	// The solution is the workspace HEAD; the pin is the story's fixture
+	// commit. files_changed_within diffs one against the other.
+	pin := loaded.Definition.Fixture.Commit
+	solution, err := requireBoundWorkspace(ctx, *workspace, pin)
+	if err != nil {
+		return err
+	}
+	res := engine.Verify(ctx, *workspace, loaded, pin, solution)
+
+	for i := range res.Validators {
+		printItem("validator", res.Validators[i])
+	}
+	for i := range res.Checks {
+		printItem("check", res.Checks[i])
+	}
+	if !res.OK {
+		return errVerificationFailed
+	}
+	fmt.Println("verified: all validators and checks passed")
+	return nil
+}
+
+// requireBoundWorkspace proves the workspace is a valid bound solution before
+// verifying it — matching the engine's immutable bound checkout, which the
+// achievability caller must reproduce rather than have runner verify vouch for
+// any HEAD. It requires the fixture pin to exist, to be an ancestor of HEAD
+// (the solution is built ON the pin), and the worktree to be clean of tracked,
+// untracked, AND ignored state (the engine's checkout is a clean detached
+// commit after `git clean -fdx`). Returns the resolved solution commit (HEAD).
+func requireBoundWorkspace(ctx context.Context, dir, pin string) (string, error) {
+	if _, err := gitx.Run(ctx, dir, "rev-parse", "--verify", "--quiet", pin+"^{commit}"); err != nil {
+		return "", fmt.Errorf("fixture pin %s not present in workspace %s: %w", pin, dir, err)
+	}
+	head, err := gitx.Head(ctx, dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve solution HEAD in %s: %w", dir, err)
+	}
+	ok, err := gitx.IsAncestor(ctx, dir, pin, head)
+	if err != nil {
+		return "", fmt.Errorf("check pin ancestry: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("fixture pin %s is not an ancestor of workspace HEAD %s — the solution is not built on the pin", pin, head)
+	}
+	status, err := gitx.Run(ctx, dir, "status", "--porcelain", "--ignored")
+	if err != nil {
+		return "", fmt.Errorf("check worktree cleanliness: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return "", fmt.Errorf("workspace %s is not clean (commit or remove tracked/untracked/ignored files before verifying):\n%s", dir, status)
+	}
+	return head, nil
+}
+
+// printItem renders one validator/check result: pass/fail, kind, name, and
+// (on failure) the truncated detail.
+func printItem(kind string, r runrecord.CheckResult) {
+	mark := "PASS"
+	if !r.Passed {
+		mark = "FAIL"
+	}
+	if r.Detail != "" {
+		fmt.Printf("  %s %-9s %s  (%s)\n", mark, kind, r.Name, r.Detail)
+		return
+	}
+	fmt.Printf("  %s %-9s %s\n", mark, kind, r.Name)
+}
+
 func cmdRun(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	storiesPath := fs.String("stories", "stories", "story definition file or directory")
 	configsPath := fs.String("configs", "configs", "MPH bundle file or directory")
-	storyID := fs.String("story", "", "run only this story ID")
+	storyID := fs.String("story", "", "run only these story IDs (comma-separated)")
 	configName := fs.String("config", "", "run only this config name")
 	repeats := fs.Int("repeats", 1, "attempts per story per config (N)")
 	resultsDir := fs.String("results", "runs", "results store directory")
@@ -209,7 +330,10 @@ func cmdRun(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	stories = filterStories(stories, *storyID)
+	stories, err = filterStories(stories, *storyID)
+	if err != nil {
+		return err
+	}
 	bundles = filterBundles(bundles, *configName)
 	store, err := results.Open(*resultsDir)
 	if err != nil {

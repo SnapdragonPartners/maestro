@@ -1,6 +1,6 @@
 +++
 title = "Conformance Run Log"
-edit_date = "2026-07-22"
+edit_date = "2026-07-23"
 status = "live"
 type = "notes"
 summary = "The committed, distilled record of every phase-end golden-story conformance run: date, target identity, per-story verdict, and cost/token totals. The durable counterpart to the git-ignored raw results store — interim until the Phase 2 data plane makes performance records first-class artifacts."
@@ -75,4 +75,78 @@ The six attempts span **three `binary_identity` values and three commit hashes**
 
 The Run Protocol now carries a preflight warning so this cannot recur: do not commit while a run is in flight.
 
-*The first phase-end `golden-all` conformance run appends below.*
+### 2026-07-22 — item 9 story batch (pre-fix pin; **superseded**)
+
+Not a phase-end conformance run: the first execution of item 9's three new stories, kept because the reds are informative and the run is what surfaced a fixture defect. **All three ran against fixture pin `6ed67444e955`, which has since been superseded by `60e79fd075c8`** — so these rows are not comparable to anything taken after, and are recorded as history rather than as trend points.
+
+Target identity is uniform across all three (commit `5ef8443232de`, binary `e7427da43e0c`, config `paired-default`), so they are comparable *to each other*.
+
+| Story | Verdict | Tokens | Cost | Wall | Failed checks |
+|---|---|---|---|---|---|
+| `flag-chat-timeout` (story since **replaced**) | failed / checks-failed | 622,891 | $3.90 | 353s | diff-confined-to-source |
+| `api-option-lookup` | failed / branch-state | 563,892 | $4.13 | 529s | diff-confined-to-source, tests-cover-four-cases |
+| `app-healthz-endpoint` | failed / checks-failed | 691,376 | $3.64 | 611s | diff-confined-to-source |
+
+Total $11.67. **Zero validator failures across all three** — every `build`, `vet` and `test` passed.
+
+**Read the reds carefully: they are authoring defects, not capability limits.**
+
+- `diff-confined-to-source` failed on all three for one shared cause — `golden-fixture-chat`, a compiled binary committed into the fixture by mistake in the item-2 extraction. `go build` regenerated it, so the diff always carried a path no agent touched, making the check **unsatisfiable** for any chat-fixture story that builds. Fixed additively in the fixture (`60e79fd`) and all four chat stories re-pinned.
+- `tests-cover-four-cases` failed because the check counted `func Test` and `t.Run(` occurrences, which scores *any* table-driven test at 2. The pipeline had written a table with **nine** named cases covering all four required behaviours plus edge cases the story never asked for. The check now counts results reported by `go test -v` instead.
+
+**What this does and does not show.** All three official verdicts are **failures**, the fixture pin is superseded, and the engine-owned behavioural oracles added later were **never run against these solutions** — the acceptance contracts in force at the time were structural greps since shown to accept implementations that ignore the requirement entirely. So these are **promising validator-passing candidates, not proof that the pipeline succeeded** on the three new paths. What can be said: every `build`, `vet` and `test` passed, and the recorded failures trace to author defects rather than to anything the target did.
+
+`flag-chat-timeout` has since been **replaced** by `flag-instance-name`: its behaviour could not be verified hermetically, so every check it had was structural and an implementation that ignored the flag passed all of them. Establishing the stronger claim needs a re-run on current pins against the current contracts, which is item 10's phase-end `golden-all`. Not re-run at the time: re-pinning had already churned the hashes, and paying frontier prices to re-confirm known authoring bugs was poor use of budget.
+
+### 2026-07-23 — Item 9-oracle achievability control (**NOT a performance run**)
+
+This records the achievability control that closed item 9-oracle (engine-owned
+behavioural oracles), per the durability rule above — accepted evidence must be
+committed, not left in transient output. It is deliberately **non-performance**:
+a single headless agent per story with **no cost accounting** (a control, not a
+measurement, so no tokens/cost/wall-clock row). It establishes that the three
+rung-3/4/5 contracts are achievable **and that the engine-owned oracles function
+against real agent solutions** — not a baseline. The performance baseline remains
+item 10's phase-end `golden-all`.
+
+- **Executor:** `claude` CLI 2.1.218 headless (`-p`, `--permission-mode acceptEdits`), fresh clone detached at the pin, solution committed, then evaluated by `bin/runner verify` — the engine's single production `Verify` seam (`scripts/achievability-check.sh`). No facsimile of check execution.
+- **Fixture pin:** `golden-fixture-chat` @ `60e79fd075c8`.
+- **Prompt fidelity:** the agent receives `prompt.text` **verbatim** — the same bytes `target/v1target/run.go` writes to `story-spec.md`. The scope constraint each story needs lives inside `prompt.text` (so the control and the measured pipeline read identical bytes); the control does not augment the prompt. The hashes below are the committed prompts, byte-identical to what these runs received.
+
+| Story | Story hash | Verdict | Behavioural oracle(s) — all PASS |
+|---|---|---|---|
+| `flag-instance-name` | `sha256:2730eace3d79` | proven-achievable | `oracle-instance-name-observed` (real binary + fake Ollama, header on 3 handlers) |
+| `api-option-lookup` | `sha256:b33ec4422e48` | proven-achievable | `oracle-lookup-semantics` (in-solution) + `authored-tests-cover-each-behaviour` (scratch mutation, agent's own tests kill all 4 reference mutants) |
+| `app-healthz-endpoint` | `sha256:6b23d0a8105b` | proven-achievable | `oracle-healthz-responds` (httptest through `newServer`) + `authored-tests-detect-broken-behaviour` (scratch mutation, agent's own test detects both broken clauses) |
+
+Every validator and check passed for all three (`build`, `vet`, `test`, diff-confinement, the structural greps, gofmt, and the oracles above). The scratch-mode mutation oracles passing against the agents' **own authored tests** is the load-bearing result: the full engine oracle path — in-solution materialisation, scratch worktree checkout of the immutable solution commit, mutation, compile-gate, cleanup — works end-to-end on real agent output.
+
+**What this does and does not show.** It shows the contracts are achievable and the oracles are sound and functional against genuine solutions. It is **not** a pipeline verdict or a performance baseline: the executor is a single headless agent, not the PM→architect→coder pipeline, and nothing here is cost-accounted. `not-proven-achievable` from this control would bound our knowledge, never the story (a documented limitation). The official verdicts come from item 10's `golden-all`.
+
+### 2026-07-23 — Phase 1 exit: `golden-all` conformance run (N=1)
+
+**The phase-end `golden-all` run item 10 owes** — the first one, and the first time the engine-owned oracles run inside the real paired pipeline (not the single-agent control). Full active suite (6 stories), N=1, `paired-default`. **Clean single-identity series:** one target descriptor across all six attempts (the don't-commit-mid-run discipline held, unlike the 2026-07-22 baseline's three identities). Purpose is conformance — *did each rung still behave against current definitions + oracles* — not a performance baseline. **5/6 accepted, $26.40.**
+
+Target descriptor (uniform, all six):
+
+- adapter `v1-as-patched` 0.1.0; commit `75aec6e58c53`; binary `sha256:8a477bb494f3…` (`maestro dev`); enforcement **streamed** (P-1 usage-surface v1).
+- config `paired-default` `sha256:3d999b22fbbb`; MPH model routing architect `claude-opus-4-1`, coder/PM `claude-sonnet-4-6`; prompt pack `v1-embedded`, prompt hash `sha256:410ab96e5627…`, harness hash `sha256:6cfd2372be07…`, maestro `dev`.
+
+| Story | Story hash | Verdict | Tokens | Cost | Wall | Calls |
+|---|---|---|---|---|---|---|
+| `smoke-comment` | `sha256:75495b46c1a2` | accepted | 162,621 | $1.00 | 181s | 30 |
+| `dep-bump-xnet` | `sha256:6b5141b820bb` | accepted | 331,018 | $2.07 | 270s | 42 |
+| `bugfix-openai-stopreason` | `sha256:909bf81ad2ac` | accepted | 1,545,106 | $13.41 | 811s | 127 |
+| `flag-instance-name` | `sha256:2730eace3d79` | accepted | 846,126 | $4.22 | 546s | 89 |
+| `app-healthz-endpoint` | `sha256:6b23d0a8105b` | accepted | 446,478 | $2.41 | 441s | 62 |
+| `api-option-lookup` | `sha256:b33ec4422e48` | **failed / branch-state** | 489,511 | $3.28 | 458s | 60 |
+
+Total **$26.40**. Every attempt was healthy — no fatal shutdown or abandonment in any of the six; the watchdog post-`done` requeue (#221) fired benignly throughout (harmlessly failing on already-terminal stories).
+
+**The engine-owned oracles ran and PASSED against real target-produced solutions** — the first end-to-end exercise of the oracle machinery in the full pipeline (previously only via the single-agent `runner verify` control). `flag-instance-name`'s `oracle-instance-name-observed`, `app-healthz-endpoint`'s `oracle-healthz-responds` **and** its scratch-mode `authored-tests-detect-broken-behaviour`, and even `api-option-lookup`'s `oracle-lookup-semantics` **and** scratch-mode `authored-tests-cover-each-behaviour` all passed. So all three new stories are now proven achievable by **accepted pipeline runs** (the stronger evidence), retiring the single-agent caveat — with one asterisk on `api-option-lookup`, whose solution here is also in fact correct (see below).
+
+**The one red is a harness false-negative, not a target/story/oracle defect.** `api-option-lookup`'s solution is correct and merged — every validator, every check, and *both* oracles passed. The verdict is `branch-state` because the architect split the story into two internal stories; the second ("add tests") completed `done` with an **empty PR/commit** (its work already done by the first story's PR), and the v1 adapter's per-Story PR accounting (`prsSatisfied`, empty pr_id rejected) fails on it → engine `!solutionOK` → `branch-state`. Over-decomposition itself is a notice, not an error (we grade the final merged result); the empty-PR/commit completion is the real defect, filed as **[maestro#280](https://github.com/SnapdragonPartners/maestro/issues/280)** for a future fix. It recurred from the 2026-07-22 run and is rooted in **ADR backlog #15** (unreviewed Architect decomposition, ADR 0020 non-author-review gap). Per the exit criteria, a red that clears achievability is a progress marker, not a suite defect — and this one clears it twice over (proven-achievable by the control **and** its pipeline solution is actually correct).
+
+**Cost note (recorded, not smoothed):** `bugfix-openai-stopreason` ran ~2× its earlier single point ($13.41 / 1.55M vs $7.06 / 727k) — well within its 2.5M / $24 cap; an N=1 conformance point, so nondeterminism shows as a bare value rather than a distribution.
+
+*Phase 1 exit review pending on this run; the v2-derived baseline and two-configuration comparison remain Phase 1B.*

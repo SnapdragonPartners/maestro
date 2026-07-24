@@ -1,8 +1,8 @@
 +++
 title = "Golden Stories"
-edit_date = "2026-07-16"
+edit_date = "2026-07-23"
 status = "live"
-summary = "Authored golden story definitions (TOML, one file per story), validated against the story schema in CI. The first three ladder rungs — dependency bump, small cleanup, focused bug fix — against the pinned golden-fixture repos."
+summary = "Authored golden story definitions (TOML, one file per story), validated against the story schema in CI. Six active rungs — smoke, dependency bump, focused bug fix, multi-file breadth, API change with tests, and an app change proven against the running server — plus parked stories under blocked/."
 +++
 
 # Golden Stories
@@ -13,15 +13,43 @@ Definitions reference pinned fixture repositories — see the schema in
 [`../story/`](../story/story.go) and the
 [fixture conventions](../../docs/v2/phase_1/process_fixtures.md).
 
-The ladder's first three rungs:
+Active rungs (everything in this directory; `bin/runner validate` loads it
+non-recursively, so `blocked/` is excluded by construction):
 
-- `dep-bump-xnet` — dependency bump on `golden-fixture-cms`.
-- `cleanup-provider-options` — small code cleanup on `golden-fixture-chat`
-  (natural duplication, not seeded).
-- `bugfix-openai-stopreason` — focused bug fix on `golden-fixture-llms`,
-  pinned at the parent of the real upstream fix (solution not in history).
+- `smoke-comment` — rung 0, a one-line append on `golden-fixture-cms`.
+- `dep-bump-xnet` — rung 1, dependency bump on `golden-fixture-cms`.
+- `bugfix-openai-stopreason` — rung 3, focused bug fix on
+  `golden-fixture-llms`, pinned at the parent of the real upstream fix
+  (solution not in history), proven by SEEDED tests.
+- `flag-instance-name` — breadth at roughly rung 3: a coordinated change
+  across two source files, where a signature ripple means they cannot be
+  edited independently. Replaced `flag-chat-timeout`, whose behaviour could
+  not be verified hermetically.
+- `api-option-lookup` — rung 4, an API contract change the agent must prove
+  with tests it AUTHORS itself.
+- `app-healthz-endpoint` — rung 5, an app change proven behaviourally: a real
+  HTTP request through the application's own router.
+
+Parked, in `blocked/`:
+
+- `cleanup-provider-options` — rung 2, small code cleanup on
+  `golden-fixture-chat`. Authored and proven achievable, but no run has
+  completed; see the file header for the diagnosis.
+
+**Acceptance contracts carry engine-owned oracles where behaviour can be
+exercised hermetically.** Agent-authored tests are a deliverable, never proof:
+`flag-instance-name`, `api-option-lookup` and `app-healthz-endpoint` each carry
+an `oracle` check (schema v2) — a hashed Go asset under `_oracles/<story-id>/`
+that the engine materialises into the bound solution and runs, then cleans up.
+Structural greps alone were shown to accept implementations that ignore the
+requirement entirely. The two rung-4/5 stories additionally carry a scratch-mode
+oracle: the engine checks the immutable solution commit into a private worktree
+and runs a mutation helper against the agent's OWN tests, so a vacuous test is
+rejected. Oracle assets are readable, reviewable Go (see `_oracles/`), not the
+base64-shell they replaced; the leading underscore keeps them out of the
+benchmark module's build (they compile only once materialised into the
+solution). See [design_oracles.md](../../docs/v2/phase_1/design_oracles.md).
 
 Definitions are drafts until the runner executes them (items 3–5 make
-them runnable; item 6 fixes budgets from instrumented costs). The suite
-grows to 5–10 in item 9 (`stories-suite`), which also assigns the
+them runnable; item 6 fixes budgets from instrumented costs). The suite grew to six active rungs in item 9 (`stories-suite`), which also assigns the
 `golden-minimal` and `golden-all` tiers.
