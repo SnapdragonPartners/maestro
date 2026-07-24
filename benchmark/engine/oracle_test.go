@@ -183,6 +183,28 @@ func TestRemoveWorktreeFailsClosed(t *testing.T) {
 	}
 }
 
+// TestOraclePackageDirTraversalRejected: a package_dir that escapes the
+// solution root via `..` is rejected at materialise time, independent of the
+// load-time lexical check — the materialiser must not walk a `..` segment
+// upward out of the root.
+func TestOraclePackageDirTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(filepath.Dir(dir), "zz_oracle_probe.txt")
+	for _, pd := range []string{"..", "sub/../..", "../escape"} {
+		check, assets := oracleCheck([]string{"true"}, pd, "")
+		res := runOracle(context.Background(), dir, check, assets, "")
+		if res.Passed {
+			t.Fatalf("package_dir %q must be rejected as escaping the root", pd)
+		}
+		if !strings.Contains(res.Detail, "escapes") {
+			t.Errorf("package_dir %q: detail should name the escape: %q", pd, res.Detail)
+		}
+		if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+			t.Fatalf("package_dir %q materialised an asset outside the root", pd)
+		}
+	}
+}
+
 // TestOracleScratchMode proves the load-bearing scratch properties in one run:
 // $ORACLE_SCRATCH is a clean checkout of the solution commit (carries the
 // solution file), the oracle asset is NOT in the scratch (it lives only in the

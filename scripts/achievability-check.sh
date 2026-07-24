@@ -89,7 +89,8 @@ echo "▶ building runner"
     echo "❌ runner build failed" >&2; exit 2; }
 RUNNER="$root/benchmark/bin/runner"
 
-WORK="$(mktemp -d)"
+# Explicit template: BSD/macOS mktemp requires one, GNU accepts it.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/achievability.XXXXXX")"
 cleanup() { [ "$KEEP" = "--keep" ] || rm -rf "$WORK"; }
 trap cleanup EXIT
 

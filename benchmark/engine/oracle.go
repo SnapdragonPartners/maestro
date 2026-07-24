@@ -128,15 +128,24 @@ func removeWorktree(solutionDir, scratchRoot string) error {
 // component (the solution is agent-controlled, so this is a runtime check, not
 // just the load-time lexical one) and creating missing components. It returns
 // the resolved directory and the dirs it created (deepest last) so the caller
-// can remove exactly what it added. packageDir is already lexically validated
-// (no absolute/`..`) at load.
+// can remove exactly what it added.
 func ensureMaterialiseDir(root, packageDir string) (string, []string, error) {
 	if packageDir == "" || packageDir == "." {
 		return root, nil, nil
 	}
+	// Normalise before splitting and fail closed on any escape. packageDir is
+	// story-authored and load-validated (safeRelPath), but this materialiser
+	// must not rely on that: splitting the RAW value would walk a `..` segment
+	// upward out of the solution root before the per-component checks run, so a
+	// value like "sub/../.." could escape. filepath.Clean collapses interior
+	// `..` that resolves safely; anything that still escapes is rejected.
+	clean := filepath.Clean(packageDir)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return root, nil, fmt.Errorf("package dir %q escapes the solution root", packageDir)
+	}
 	var created []string
 	cur := root
-	for _, comp := range strings.Split(filepath.ToSlash(packageDir), "/") {
+	for _, comp := range strings.Split(filepath.ToSlash(clean), "/") {
 		if comp == "" || comp == "." {
 			continue
 		}
