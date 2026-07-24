@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-07-15"
+edit_date = "2026-07-24"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -79,6 +79,14 @@ Potential principle:
 - Only data-plane connection bootstrap remains local.
 
 Update (2026-07-11): a Phase 0 spike will scope this; see roadmap D8.
+
+### Live Benchmark Result Writes
+
+Have the golden runner write each completed attempt into the data plane as it finishes, rather than relying on a post-run import.
+
+Mechanism that preserves every existing constraint: the runner invokes Maestro's importer as a **subprocess** — an external surface, exactly how it already invokes targets — so `benchmark/` gains no Postgres driver, no duplicated schema, and no cross-module import of `internal/dataplane`, and plane access still routes through the Orchestrator's persistence seam (ADR 0022).
+
+Parked 2026-07-24 (Phase 2 plan, reviewer question 5): Codex resolved Phase 2 to import-destination and declined this variant for now. Picking it up requires an **ADR 0025 amendment** — it promotes the plane from import destination to results sink, against that ADR's "zero dependency on the Phase 2 data plane… Phase 2's vertical slice does that import". Wanted only if post-run import proves to lose records or lag badly enough to matter.
 
 ## UI Ideas
 
