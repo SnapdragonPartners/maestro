@@ -16,7 +16,7 @@ specifications, and stories.
 ## Documents
 
 - [Maestro v2 Roadmap](plan_roadmap.md) — The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document.
-- [Maestro v2 Build Process (Interim)](process_build.md) — Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; branching, review cadence, spikes, testing, and merge rules.
+- [Maestro v2 Build Process (Interim)](process_build.md) — Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; review cadence, branching, spikes, testing, and merge rules. Command-level mechanics live in CLAUDE.md.
 - [Maestro Wishlist For maestro-llms](requirements_maestro-llms-wishlist.md) — Maestro's running feature-request wishlist to the maestro-llms team, with generality arguments and a response field per item — so the toolkit team can say what they're comfortable adding given their other consumers.
 - [Maestro Wishlist For maestro-cms](requirements_maestro-cms-wishlist.md) — Maestro's running feature-request wishlist to the maestro-cms team, with generality arguments and a response field per item — the sibling of the maestro-llms wishlist, originating from the Phase 0 cms spike.
 - [Maestro v2 Research Synthesis](research_synthesis.md) — Synthesis of the external research corpus that informed the v2 roadmap's pillars and decisions.

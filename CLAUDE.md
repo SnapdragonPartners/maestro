@@ -27,6 +27,8 @@ Active development is the v2 redesign. v1 is frozen — v1 bugs are WONTFIX unle
 
 Roles: **Claude authors** (docs, ADRs, scopes, specs, code), **Codex reviews**, **DR orchestrates and accepts**. An artifact is Accepted only when both Codex and DR approve. All Claude/Codex communication routes through DR. Contention that does not converge escalates to DR.
 
+**Precedence.** `process_build.md` is the binding agreement and binds all three parties. This file is Claude's operating manual: it carries the command-level mechanics that execute that agreement — branch-name patterns, the git workflow, the version-tag ladder, documentation front matter — and restates just enough policy to be usable standalone. Where the two disagree, **`process_build.md` wins and this file is the bug.**
+
 ### Key Architecture Components
 
 - **Runtime Kernel** (`internal/kernel/`) - Owns shared local infrastructure: dispatcher, SQLite, persistence queue, chat, WebUI, demo service, shared LLM factory, and Docker Compose registry

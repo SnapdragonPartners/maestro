@@ -1,6 +1,6 @@
 +++
 title = "ADR 0025: Golden Stories And The Benchmark Runner"
-edit_date = "2026-07-22"
+edit_date = "2026-07-24"
 status = "live"
 summary = "Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. Amended 2026-07-22 (Codex + DR) to conformance-first sequencing: proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7."
 +++
@@ -106,6 +106,6 @@ Each conformance run is retained as a **committed distilled record** (see below)
 
 ## Related Documents
 
-- [Roadmap](../v2/plan_roadmap.md) pillar 1 (golden stories, runner constraints), D6, D9, the Phase 1 target strategy, and the economic argument; [Phase 0 plan](../v2/phase_0/plan_scope.md) item 7 and Phase 1 exit criteria; [build-process](../v2/process_build.md) (suite at phase end, build tags).
+- [Roadmap](../v2/plan_roadmap.md) pillar 1 (golden stories, runner constraints), D6, D9, the Phase 1 target strategy, and the economic argument; [Phase 0 plan](../v2/phase_0/plan_scope.md) item 7 and Phase 1 exit criteria; [build-process](../v2/process_build.md) (suite at phase end, DR approval per run).
 - [ADR 0021](0021-artifacts-and-principal-instances.md) (MPH signature, benchmark scope), [ADR 0022](0022-v2-data-plane.md) (later import), [ADR 0023](0023-v2-branch-strategy.md) (fixture branch cleanup), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (heterogeneity as a measurable).
 - [ADR backlog](../v2/notes_adr-backlog.md) Golden Stories And Benchmark Runner entry (this ADR answers its key questions).
