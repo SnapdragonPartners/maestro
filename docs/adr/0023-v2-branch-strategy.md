@@ -1,13 +1,13 @@
 +++
 title = "ADR 0023: v2 Branch Strategy"
-edit_date = "2026-07-15"
+edit_date = "2026-07-24"
 status = "live"
 summary = "Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches."
 +++
 
 # 0023. v2 Branch Strategy
 
-Status: Accepted (Codex + DR, 2026-07-13)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-24 (cross-reference correction only — human branch-naming mechanics moved to `CLAUDE.md`; no decision changed)
 
 ## Context
 
@@ -50,7 +50,7 @@ v1's phantom-diff prevention carries forward, retargeted to the hierarchy: revie
 
 ### Branch naming (Orchestrator-created branches only)
 
-Scope: this ADR governs branches the Orchestrator creates at runtime. The conventions for building Maestro v2 itself are the build process's concern and are unchanged here.
+Scope: this ADR governs branches the Orchestrator creates at runtime. The conventions for building Maestro v2 itself are unchanged here: branch *policy* (one dev branch at a time, phase branching) is the [build process](../v2/process_build.md)'s concern, and the *naming mechanics* that execute it live in `CLAUDE.md`.
 
 - `maestro/epic/<epic-id>` and `maestro/story/<story-id>`. IDs, not titles — deterministic and stable under renames. Both Epic and Story IDs are globally unique, branch-safe opaque identifiers (no `/`, forge-safe character set), so the flat forms are collision-free without encoding parentage in the name; parentage is data-plane lineage (ADR 0018), not ref-name payload.
 - The `maestro/` prefix marks machine-managed refs, keeping them disjoint from every human branch namespace.
@@ -70,5 +70,5 @@ The clone/mirror/forge workflow of historical note [0009](0009-clone-mirror-and-
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (the hierarchy and its git mapping), [ADR 0019](0019-orchestrator-boundary.md) (mechanical-vs-judgment split), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (review gates, human-reserved Accept), [ADR 0022](0022-v2-data-plane.md) (forge-independent repos).
-- [Roadmap](../v2/plan_roadmap.md) pillars 6 and 8, D4; [build-process](../v2/process_build.md) (human branch conventions); [ADR backlog](../v2/notes_adr-backlog.md) Branch Strategy entry.
+- [Roadmap](../v2/plan_roadmap.md) pillars 6 and 8, D4; [build-process](../v2/process_build.md) (human branch policy) and `CLAUDE.md` (human branch-naming mechanics); [ADR backlog](../v2/notes_adr-backlog.md) Branch Strategy entry.
 - Historical note [0009](0009-clone-mirror-and-forge-pr-workflow.md) (kept and extended; superseded only in branch topology).

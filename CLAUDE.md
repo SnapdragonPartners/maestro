@@ -17,6 +17,18 @@ Current documentation precedence:
 4. Current implementation summaries such as this file, `README.md`, and focused docs.
 5. Retained v1 references at `docs/` root with `deprecated` front-matter status (unverified against current code; never authoritative for v2 design). Archived v1-era documents in `docs/archive/` carry no authority for any question (ADR 0017).
 
+## Current Work: Maestro v2
+
+Active development is the v2 redesign. v1 is frozen — v1 bugs are WONTFIX unless they block v2 work.
+
+- `docs/v2/plan_roadmap.md` — phases, pillars, decisions D1-D10
+- `docs/v2/process_build.md` — **the binding working agreement for how v2 gets built**
+- `docs/v2/phase_x/plan_scope.md` — scope and plan for a phase; binding on that phase's work
+
+Roles: **Claude authors** (docs, ADRs, scopes, specs, code), **Codex reviews**, **DR orchestrates and accepts**. An artifact is Accepted only when both Codex and DR approve. All Claude/Codex communication routes through DR. Contention that does not converge escalates to DR.
+
+**Precedence.** `process_build.md` is the binding agreement and binds all three parties. This file is Claude's operating manual: it carries the command-level mechanics that execute that agreement — branch-name patterns, the git workflow, the version-tag ladder, documentation front matter — and restates just enough policy to be usable standalone. Where the two disagree, **`process_build.md` wins and this file is the bug.**
+
 ### Key Architecture Components
 
 - **Runtime Kernel** (`internal/kernel/`) - Owns shared local infrastructure: dispatcher, SQLite, persistence queue, chat, WebUI, demo service, shared LLM factory, and Docker Compose registry
@@ -300,6 +312,10 @@ make test              # Unit tests with mocks
 make test-integration  # Integration tests with real services (requires API keys)
 ```
 
+**Golden story suite**: runs at the end of each phase, not per-PR. Build tags `golden-minimal` (smoke subset) and `golden-all` (full suite), extending the existing `integration` tag pattern.
+
+**Golden runs spend real money.** A `golden-*` run bills live model APIs — the Phase 1a `golden-all` run cost $26.40. **Never start one without DR's explicit approval or override for that specific run.** Prior approval of a phase, a plan, or an earlier run is not approval for this one. Every phase-end run gets a digest entry in `docs/v2/notes_conformance-log.md`: date, target identity, per-story verdict, cost/token totals.
+
 ## Git Workflow and Branch Protection
 
 ### Branch Protection Rules
@@ -312,14 +328,19 @@ The `main` branch is protected with the following rules:
 ### Development Workflow
 
 When making changes:
-1. Create a feature branch: `git checkout -b feature-name`
-2. Make your changes and commit (pre-commit hooks will run)
-3. Push the branch: `git push -u origin feature-name` (pre-push hooks will run integration tests if API keys are set)
-4. Create a pull request to `main`
-5. Wait for CI checks to pass
-6. Merge via GitHub UI after approval
+1. Create a branch off `main`: `v2/phase_x/XXX` for phase work, `v2/fix/XXX` for bug fixes (e.g. `v2/phase_2/artifact-envelopes`). Never reuse a prior leaf branch name as a namespace prefix — git ref collision.
+2. Make changes and commit **locally** (pre-commit hooks will run)
+3. **Codex review, in place.** Produce branch notes for Codex and iterate until every point is resolved or explicitly overridden by DR. Claude and Codex both review the local commits directly — no push is needed to review.
+4. Push only once Codex and DR have approved: `git push -u origin <branch>` (pre-push hooks run integration tests if API keys are set)
+5. Open a pull request to `main`, referencing the phase plan or ADR it executes
+6. Resolve all CI reviewer feedback (see below), then wait for CI checks to pass
+7. **DR merges.** Final approval and the merge button are DR's, never Claude's.
 
 **Important**: Always work on feature branches. Never attempt to push directly to `main` as it will be rejected by branch protection rules.
+
+**One dev branch at a time.** Never more than one feature/dev branch open concurrently; parallel branches are acceptable only for bug fixes. This bounds DR's review load, not authoring throughput.
+
+**Push is a gate, not a step.** A branch that has not cleared Codex and DR does not get pushed. Review happens on local commits.
 
 **Resolving PR review comments**: After addressing a PR review comment (including automated reviewers like Copilot) — by fixing it, or by determining it's a non-issue — push the change and **mark that review thread resolved** (e.g. `gh api graphql` `resolveReviewThread`), with a brief reply noting how it was addressed. Don't leave addressed threads open; do not resolve a thread without actually addressing it. Re-check for new threads after each push, since reviewers re-run on new commits.
 
@@ -329,6 +350,48 @@ When creating PRs for features with specification documents:
 - **Reference the spec file** in the PR description (e.g., "See `docs/HOTFIX_MODE_SPEC.md` for detailed design")
 - This helps code reviewers understand the design intent and implementation plan
 - Spec files in `docs/` document architecture decisions, implementation phases, and acceptance criteria
+
+### Spikes And Deferred Work
+
+- Commit all open document work before a spike begins (risk minimization).
+- Spike code **never** merges into `pkg/`, `internal/`, or `cmd/`. Reports land in the phase directory; scripts worth revisiting go under `spikes/phase_x/`, a standalone module excluded from the main build, test, and lint walkers. Preserved spike scripts are unmaintained by definition.
+- Deferred work discovered along the way becomes a **GitHub Issue** on `SnapdragonPartners/maestro`. Division of labor: the roadmap holds *planned* work (phases and spikes), Issues hold *deferred* work found along the way, and `docs/v2/notes_parking-lot.md` holds *design ideas*.
+
+### Version Tagging
+
+Phases are tagged as SemVer prereleases of `v2.0.0`, so the whole v2 build is one ordered ladder:
+
+```
+v2.0.0-phase.1.0.0      phase 1 complete
+v2.0.0-phase.1.1.0      phase 1a
+v2.0.0-phase.1.1.1      phase 1a, second cut (bugfix during review)
+v2.0.0-phase.2.0.0      phase 2
+v2.0.0-phase.9.0.0      phase 9 — feature complete
+v2.0.0-rc.1
+v2.0.0
+```
+
+The ladder starts at `phase.2.0.0`. Phases 1 and 1a are deliberately **not** tagged: they predate this convention, broke several of the rules above, and were substantially corrective work on v1. Do not backfill tags for them.
+
+Format is `<phase>.<subphase>.<iteration>` — **all numeric, always three slots**. Subphase `0` is the phase proper, `1` = a, `2` = b. So "phase 1a" is written `1.1.0`; that is the tax for total ordering. `phase` sorts after `alpha`/`beta` and before `rc` on plain ASCII, so either can be dropped in later without breaking order.
+
+**Never write a mixed identifier like `v2.0.0-phase.1a`.** SemVer §11.4.3 ranks numeric identifiers *below* alphanumeric ones, so `phase.1a` sorts after `phase.2` and even `phase.10` — inverting the sequence — while git sorts it between `phase.1.1.0` and `phase.2.0.0`. The two disagree, which is a nasty class of bug. Rule: within any identifier position, keep every value the same type.
+
+Git's default `version:refname` sorts `v2.0.0` *above* its own prereleases, which is backwards. Fix per-repo (verified on git 2.50.1):
+
+```bash
+git config --add versionsort.suffix "-alpha."
+git config --add versionsort.suffix "-phase."
+git config --add versionsort.suffix "-rc."
+git config --add versionsort.suffix ""      # bare release sorts last
+```
+
+Spikes stay out of the version line entirely — a spike is not a candidate for `v2.0.0`. Git tags need not be versions:
+
+```
+spike/storage-layer-2026-07-24
+spike/phase-2-auth
+```
 
 ## Project Structure
 
@@ -398,15 +461,20 @@ All AI model interactions go through the unified `LLMClient` interface in `pkg/a
 - Adding a provider is a maestro-llms change, not a Maestro one
 - See `docs/MAESTRO_LLMS_MIGRATION.md` for the design and the divergence checklist
 
-## Story-Driven Development
+## Documentation Conventions
 
-Development follows ordered stories defined in PROJECT.md. Each story has:
-- Numeric ID and dependencies
-- Acceptance criteria
-- Estimation points (1-3)
-- Self-contained implementation scope
+Docs under `docs/` carry TOML front matter:
 
-Stories 001-012 define the complete MVP implementation path from scaffolding to end-to-end testing.
+```
++++
+title = "..."
+edit_date = "YYYY-MM-DD"
+status = "live" | "draft" | "deprecated" | "archive"
+summary = "One sentence, used verbatim in the parent README index."
++++
+```
+
+`edit_date` is stamped automatically at commit time by the pre-commit hook (`scripts/stamp-edit-date.sh`, per ADR 0017) — don't hand-maintain it, and expect it to change under you when you commit. The stamp is best-effort and never blocks a commit, so it's a backstop rather than a guarantee. When an artifact lands in a phase directory, add its one-line entry to that directory's `README.md`. Per-phase working artifacts live in `docs/v2/phase_x/` mirroring the branch namespace; cross-phase docs stay at `docs/v2/`; Accepted decisions land in `docs/adr/`.
 
 ## Data Architecture & Persistence
 
