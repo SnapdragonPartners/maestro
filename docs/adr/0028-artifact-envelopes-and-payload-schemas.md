@@ -94,12 +94,13 @@ Binding to the payload alone is too narrow, because review-relevant facts live i
 
 **Relationship links are review-relevant and are included.** `amends_artifact_id` above all: a reviewed amendment is a reviewed *change to a specific artifact*, and leaving the link out of the projection would allow reviewed content to be retargeted at a different artifact with its review intact — the same class of hole as retargeting the payload, and a worse one, since the content still reads as reviewed. `supersedes_artifact_id` and `replaces_artifact_id` follow the same rule.
 
-The reviewable projection is therefore **every envelope field except those the review process itself writes**, plus the payload:
+The reviewable projection is therefore **every review-relevant envelope field except those the review process itself writes**, plus the payload:
 
 - **Included**: `artifact_id`, `artifact_type`, `artifact_category`, `scope_type`, `scope_id`, the lineage columns, `author_instance_id`, `summary`, `schema_version`, the relationship links (`amends_artifact_id`, `supersedes_artifact_id`, `replaces_artifact_id`), and `payload` (for an amendment, its merge-patch document).
-- **Excluded**: `status`, `reviewer_instance_id`, and the review record's own timestamps. These are outputs of review, not inputs to it. Including them would be circular — accepting an artifact moves `status` from `draft` to `accepted`, which would change the digest and instantly invalidate the review that caused the change.
+- **Excluded as outputs of review**: `status`, `reviewer_instance_id`, and the review record's own timestamps. Including them would be circular — accepting an artifact moves `status` from `draft` to `accepted`, which would change the digest and instantly invalidate the review that caused the change.
+- **Excluded as not review-relevant**: `created_at`. It is immutable, so covering it would be harmless, but a reviewer is not agreeing to a timestamp; leaving it out keeps the projection to things a reviewer actually judges.
 
-The general rule behind the split: **an immutable, review-relevant envelope field is in the projection; a field the review process itself writes is out.** New envelope fields are classified by that test when they are added, not by precedent.
+The general rule behind the split is a two-part test: **a review-relevant envelope field is in the projection unless the review process itself writes it.** Both halves are load-bearing — the first keeps incidental metadata out, the second prevents circularity — and new envelope fields are classified by that test when they are added, not by precedent.
 
 #### Amendments additionally bind their base
 
