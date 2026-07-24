@@ -1,13 +1,13 @@
 +++
 title = "ADR 0028: Artifact Envelopes And Payload Schemas"
 edit_date = "2026-07-24"
-status = "draft"
+status = "live"
 summary = "The encoding layer under ADR 0021's artifact model: a fixed relational envelope plus a typed JSON payload, digested with RFC 8785 JCS under a numeric-range constraint that keeps large integers and exact decimals in strings; a code-resident payload type registry validated at the persistence seam on write; additive-within-version schema evolution where the reader is the only compatibility layer, because accepted artifacts are immutable; amendments encoded as RFC 7386 merge patches whose resulting effective payload is validated on write and again at acceptance, materialized on read and never stored; and review records bound to a digest of the whole reviewable projection — including relationship links — plus, for amendments, the base effective view they were reviewed against, which forces re-review if that base moves."
 +++
 
 # 0028. Artifact Envelopes And Payload Schemas
 
-Status: Draft — proposed 2026-07-24, Phase 2 item 1.
+Status: Accepted (Codex + DR, 2026-07-24). Phase 2 item 1; resolves [ADR backlog](../v2/notes_adr-backlog.md) candidate 1, which blocked Phase 2's DDL. Three review rounds: five P1s in total, all upheld. Two are worth carrying forward as design pressure — an amendment's review must bind to the *base* it was reviewed against, not just its patch text (deferring that would have left amendments with a weaker review binding than the one this ADR imposes on originals), and the relationship links are review-relevant envelope fields, without which reviewed content could be retargeted at a different artifact with its review intact.
 
 ## Context
 
