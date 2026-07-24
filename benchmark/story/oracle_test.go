@@ -62,11 +62,11 @@ func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
 
-// oracleFixtureID matches the id in v2Base; the oracles/<id>/ dir must agree.
+// oracleFixtureID matches the id in v2Base; the _oracles/<id>/ dir must agree.
 const oracleFixtureID = "oracle-fixture"
 
 // writeOracleStory materialises a story TOML plus optional oracle assets in a
-// temp dir laid out like stories/ (with an oracles/<id>/ subdir), and returns
+// temp dir laid out like stories/ (with an _oracles/<id>/ subdir), and returns
 // the story path.
 
 func writeOracleStory(t *testing.T, toml string, assets map[string]string) string {
@@ -329,6 +329,6 @@ func TestOracleParentSymlinkRejected(t *testing.T) {
 		t.Skipf("symlink unsupported here: %v", err)
 	}
 	if _, err := story.LoadFile(storyPath); err == nil {
-		t.Fatal("expected a symlinked oracles/ parent to be rejected")
+		t.Fatal("expected a symlinked _oracles/ parent to be rejected")
 	}
 }
