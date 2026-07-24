@@ -31,8 +31,35 @@ func runShellFull(ctx context.Context, dir, name, command string) (runrecord.Che
 	return runProcess(ctx, dir, nil, name, "sh", "-c", command)
 }
 
-// runProcess executes argv in dir (with the given extra environment appended
-// to the parent's, or the parent's alone when env is nil) and reports pass on
+// mergeEnv returns the parent environment with `extra` applied as overrides:
+// any parent entry whose key also appears in `extra` is dropped, then `extra` is
+// appended, so no key appears twice. os/exec already resolves duplicate keys in
+// favour of the last value, so this is not fixing a live bug — but it makes the
+// override unambiguous at the point of construction rather than relying on that
+// stdlib detail, and a duplicate-free env can't surprise a child that reads its
+// environment first-match.
+func mergeEnv(extra []string) []string {
+	keys := make(map[string]struct{}, len(extra))
+	for _, kv := range extra {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			keys[kv[:i]] = struct{}{}
+		}
+	}
+	parent := os.Environ()
+	out := make([]string, 0, len(parent)+len(extra))
+	for _, kv := range parent {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			if _, override := keys[kv[:i]]; override {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return append(out, extra...)
+}
+
+// runProcess executes argv in dir (with the given extra environment applied as
+// overrides on the parent's, or the parent's alone when env is nil) and reports pass on
 // exit 0. Like runShellFull it runs in its own process group and kills the
 // whole group on context expiry, so an orphaned grandchild holding the output
 // pipe cannot block CombinedOutput past the wall-clock cap. Oracle checks use
@@ -42,7 +69,7 @@ func runProcess(ctx context.Context, dir string, env []string, name string, argv
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is story-authored, hashed into identity
 	cmd.Dir = dir
 	if env != nil {
-		cmd.Env = append(os.Environ(), env...)
+		cmd.Env = mergeEnv(env)
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {

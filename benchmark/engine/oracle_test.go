@@ -205,6 +205,19 @@ func TestOraclePackageDirTraversalRejected(t *testing.T) {
 	}
 }
 
+// TestRunProcessEnvOverrideWins: an override key already present in the parent
+// environment must be the value the child sees — no duplicate key survives to be
+// resolved first-match against us.
+func TestRunProcessEnvOverrideWins(t *testing.T) {
+	t.Setenv("ORACLE_SCRATCH", "PARENT_WRONG")
+	_, out := runProcess(context.Background(), t.TempDir(),
+		[]string{"ORACLE_SCRATCH=CHILD_RIGHT"}, "probe",
+		"sh", "-c", "printf %s \"$ORACLE_SCRATCH\"")
+	if !strings.Contains(out, "CHILD_RIGHT") || strings.Contains(out, "PARENT_WRONG") {
+		t.Fatalf("child must see the override, got %q", out)
+	}
+}
+
 // TestOracleScratchMode proves the load-bearing scratch properties in one run:
 // $ORACLE_SCRATCH is a clean checkout of the solution commit (carries the
 // solution file), the oracle asset is NOT in the scratch (it lives only in the
