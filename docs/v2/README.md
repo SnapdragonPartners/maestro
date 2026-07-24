@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Planning Notes"
-edit_date = "2026-07-22"
+edit_date = "2026-07-24"
 status = "live"
 summary = "Index of the v2 planning doc set: roadmap, build process, phase artifacts, wishlists, and companion notes, with the per-phase directory convention."
 +++
@@ -26,7 +26,7 @@ specifications, and stories.
 - [Historical ADR Alignment With Maestro v2](notes_v1-adr-alignment.md) — Mapping of v1 subsystems to the historical ADR notes 0001-0016; an input to roadmap D8 and the port inventory.
 - [Maestro v2 Parking Lot](notes_parking-lot.md) — Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up.
 
-Per-phase working artifacts (scope/plan, spike reports, inventories, manifests) live in `phase_x/` directories matching the branch namespace, each with its own README index — see [phase_0/](phase_0/README.md) and [phase_1/](phase_1/README.md). Cross-phase documents stay at this root. Accepted decisions land in `docs/adr/`.
+Per-phase working artifacts (scope/plan, spike reports, inventories, manifests) live in `phase_x/` directories matching the branch namespace, each with its own README index — see [phase_0/](phase_0/README.md), [phase_1/](phase_1/README.md), and [phase_2/](phase_2/README.md). Cross-phase documents stay at this root. Accepted decisions land in `docs/adr/`.
 
 ## Planning Posture
 
