@@ -429,3 +429,30 @@ func TestEnsureServiceDataDirsLeavesNoProbeFile(t *testing.T) {
 		}
 	}
 }
+
+// The uid-mismatch branch cannot be reached in a unit test without root,
+// so the message is asserted directly. Both properties are load-bearing
+// and both were review findings: the advice must not suggest deletion (the
+// directory holds the authoritative data), and it must not print a shell
+// command (the default macOS data root contains a space, and MAESTRO_HOME
+// may contain metacharacters).
+func TestOwnershipErrorGuidance(t *testing.T) {
+	const dir = "/Users/dr/Library/Application Support/maestro/data/postgres"
+	err := ownershipError(dir, 0, 501, 20)
+
+	if !errors.Is(err, ErrServiceDataDir) {
+		t.Fatalf("got %v, want ErrServiceDataDir", err)
+	}
+	msg := err.Error()
+
+	for _, want := range []string{dir, "uid 0", "uid 501", "gid 20", "Do not delete"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message does not mention %q: %s", want, msg)
+		}
+	}
+	for _, forbidden := range []string{"sudo", "chown", "rm ", "$(", "&&", "|"} {
+		if strings.Contains(msg, forbidden) {
+			t.Errorf("message contains shell-command text %q; state the action instead: %s", forbidden, msg)
+		}
+	}
+}

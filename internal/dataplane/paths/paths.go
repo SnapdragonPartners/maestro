@@ -125,6 +125,27 @@ func (s Service) validate() error {
 	return nil
 }
 
+// ownershipError describes a wrongly-owned service directory and what to
+// do about it.
+//
+// Two things it deliberately does not do. It never suggests deleting the
+// directory: this error surfaces on existing installations, where that
+// directory holds the authoritative Postgres cluster or object store, so
+// the remedy would destroy what the check exists to protect. And it prints
+// no copy-pasteable shell command: the default macOS data root contains a
+// space (`~/Library/Application Support/...`) and MAESTRO_HOME may contain
+// shell metacharacters, so a suggested command would break at best and
+// expand into something unintended at worst. It states the action and the
+// target values, and lets the operator use their own tooling. The path is
+// quoted so its bounds are unambiguous, not so it can be pasted.
+func ownershipError(dir string, ownerUID, wantUID, wantGID int) error {
+	return fmt.Errorf(
+		"%w: %q is owned by uid %d, but Maestro runs as uid %d — containers run as the invoking user, so this directory is unusable. "+
+			"It was most likely created by Docker as root. Stop the data-plane stack, inspect the directory, and recursively change "+
+			"its ownership to uid %d and gid %d using an administrative tool. Do not delete it: it may hold the authoritative data",
+		ErrServiceDataDir, dir, ownerUID, wantUID, wantUID, wantGID)
+}
+
 // ServiceDataDir returns the bind-mount source for one data-plane service.
 //
 // Each service gets its own child of the data root rather than sharing it,
@@ -196,16 +217,7 @@ func verifyOwnedAndWritable(dir string) error {
 		return fmt.Errorf("%w: cannot read ownership of %s on this platform", ErrServiceDataDir, dir)
 	}
 	if uid := os.Getuid(); int(stat.Uid) != uid {
-		// Deliberately does NOT suggest deleting the directory: it may hold
-		// the authoritative Postgres cluster or object store, and this error
-		// is most likely to appear on an existing installation whose data is
-		// the whole point. Correcting ownership is non-destructive; removal
-		// is not recoverable.
-		return fmt.Errorf(
-			"%w: %s is owned by uid %d, but Maestro runs as uid %d — containers run as the invoking user, so this directory is unusable. "+
-				"It was most likely created by Docker as root. Stop the data-plane stack, then correct its ownership in place "+
-				"(sudo chown -R %d:%d %s). Do not delete it: it may hold the authoritative data",
-			ErrServiceDataDir, dir, stat.Uid, uid, uid, os.Getgid(), dir)
+		return ownershipError(dir, int(stat.Uid), uid, os.Getgid())
 	}
 
 	// Ownership and mode imply writability for the owner on an ordinary
