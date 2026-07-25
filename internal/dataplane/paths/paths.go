@@ -66,6 +66,33 @@ type Roots struct {
 	Data string
 }
 
+// ServiceDataDir returns the bind-mount source for one data-plane service.
+//
+// Each service gets its own child of the data root rather than sharing it,
+// so a container mounts its own directory as its mount root and never has
+// to traverse the host parent. That is what lets the data root itself stay
+// 0700 while the containers still write freely.
+func (r Roots) ServiceDataDir(service string) string {
+	return filepath.Join(r.Data, service)
+}
+
+// EnsureServiceDataDirs creates the per-service bind-mount sources.
+//
+// They are pre-created deliberately: left to Compose, Docker creates
+// missing bind-mount sources as root, which then cannot be written by a
+// container running as the invoking user — and cannot be cleaned up
+// without sudo. Creating them here means they are owned by whoever runs
+// Maestro, which is the identity the containers run as.
+func (r Roots) EnsureServiceDataDirs(services ...string) error {
+	for _, service := range services {
+		dir := r.ServiceDataDir(service)
+		if err := os.MkdirAll(dir, rootPerm); err != nil {
+			return fmt.Errorf("create service data directory %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
 // All returns the four roots in a stable order, for callers that need to
 // create or inspect every one of them.
 func (r Roots) All() []string {
