@@ -48,6 +48,17 @@ var ErrKeyPermissions = errors.New("root-of-trust key file has unsafe permission
 // reader sees either no file or the complete one, and the winner's key is
 // never replaced. This is ADR 0027's rule at file granularity: the shared
 // resource is the path, and recovery must not destroy a writer's work.
+//
+// Every successful return, on every path, satisfies this protocol in order:
+//
+//  1. the final link exists;
+//  2. this caller's temporary link has been removed, successfully;
+//  3. the containing directory has been synced, after both of the above.
+//
+// The ordering is the point. Removing the temporary after the sync would
+// leave the removal itself non-durable, so a crash could resurrect a second
+// copy of the key; and syncing only on the creating path would let a losing
+// caller return a key whose directory entry is not yet durable.
 func EnsureKey(configRoot string) ([]byte, error) {
 	path := filepath.Join(configRoot, KeyFileName)
 
@@ -55,9 +66,10 @@ func EnsureKey(configRoot string) ([]byte, error) {
 		return nil, fmt.Errorf("create config root %s: %w", configRoot, err)
 	}
 
-	// Fast path: an existing key needs no generation at all.
+	// Fast path: an existing key needs no generation at all. It still syncs
+	// before returning — see returnDurable.
 	if _, err := os.Stat(path); err == nil {
-		return readKey(path)
+		return returnDurable(configRoot, path)
 	}
 
 	key := make([]byte, keyLen)
@@ -69,28 +81,54 @@ func EnsureKey(configRoot string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The temporary name is always removed: on success it is a spare link
-	// to the same inode, on failure it is a stray key on disk.
-	defer func() { _ = os.Remove(tmp) }()
 
-	switch err := os.Link(tmp, path); {
-	case err == nil:
-		// os.Link is atomic but not durable: the new directory entry can
-		// still be lost to a crash even though the file's contents were
-		// flushed. Sync the containing directory so a key we have already
-		// returned — and may already have encrypted a vault under — cannot
-		// vanish. The backup deliberately holds no second copy.
+	linkErr := os.Link(tmp, path)
+
+	// Step 2 of the protocol, before any sync and before any return: drop
+	// our own temporary link, and verify it. On success it is a spare link
+	// to the key's inode; on failure it is a stray key. Either way a
+	// surviving temporary is a second copy of a secret on disk, so an
+	// unchecked removal is not good enough — and it must happen before the
+	// directory sync, or the removal itself is not crash-durable.
+	if rmErr := os.Remove(tmp); rmErr != nil {
+		//nolint:wrapcheck // linkErr is already wrapped or nil; Join only combines them.
+		return nil, errors.Join(linkErr, fmt.Errorf("remove temporary key file %s: %w", tmp, rmErr))
+	}
+
+	switch {
+	case linkErr == nil:
 		if syncErr := syncDir(configRoot); syncErr != nil {
 			return nil, syncErr
 		}
 		return key, nil
-	case errors.Is(err, fs.ErrExist):
+	case errors.Is(linkErr, fs.ErrExist):
 		// Another caller won. Its file is complete by construction, since
 		// it was only linked into place after being written and flushed.
-		return readKey(path)
+		return returnDurable(configRoot, path)
 	default:
-		return nil, fmt.Errorf("install root-of-trust key %s: %w", path, err)
+		return nil, fmt.Errorf("install root-of-trust key %s: %w", path, linkErr)
 	}
+}
+
+// returnDurable reads the key and makes its directory entry durable before
+// handing it back.
+//
+// Every path that returns a key carries this obligation, not just the one
+// that created it. A caller that loses the link race — or simply finds an
+// existing file — can observe the winner's freshly linked entry before the
+// winner has synced the directory. It would then return a key that a crash
+// could still erase, and it may already have encrypted a vault under it.
+// The obligation belongs to whoever returns the key, because that is who
+// causes it to be used.
+func returnDurable(configRoot, path string) ([]byte, error) {
+	key, err := readKey(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := syncDir(configRoot); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 // writeTempKey writes the encoded key to a temporary file in dir and
@@ -109,24 +147,32 @@ func writeTempKey(dir, encoded string) (string, error) {
 	// inheriting it by luck.
 	if err := f.Chmod(keyPerm); err != nil {
 		_ = f.Close()
-		_ = os.Remove(name)
-		return "", fmt.Errorf("set key file permissions: %w", err)
+		return "", discardTemp(name, fmt.Errorf("set key file permissions: %w", err))
 	}
 	if _, err := f.WriteString(encoded); err != nil {
 		_ = f.Close()
-		_ = os.Remove(name)
-		return "", fmt.Errorf("write key file: %w", err)
+		return "", discardTemp(name, fmt.Errorf("write key file: %w", err))
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
-		_ = os.Remove(name)
-		return "", fmt.Errorf("flush key file: %w", err)
+		return "", discardTemp(name, fmt.Errorf("flush key file: %w", err))
 	}
 	if err := f.Close(); err != nil {
-		_ = os.Remove(name)
-		return "", fmt.Errorf("close key file: %w", err)
+		return "", discardTemp(name, fmt.Errorf("close key file: %w", err))
 	}
 	return name, nil
+}
+
+// discardTemp removes a partial temporary key file, joining any removal
+// failure onto the error being returned rather than dropping it. A
+// surviving temporary is a second copy of the key on disk, so its removal
+// is reported even when it is cleanup for another failure.
+func discardTemp(name string, cause error) error {
+	if err := os.Remove(name); err != nil {
+		//nolint:wrapcheck // Both operands are already wrapped; Join only combines them.
+		return errors.Join(cause, fmt.Errorf("remove temporary key file %s: %w", name, err))
+	}
+	return cause
 }
 
 // syncDir flushes a directory's own entries, making a rename or link into

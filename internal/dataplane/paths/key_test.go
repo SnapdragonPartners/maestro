@@ -41,6 +41,26 @@ func TestEnsureKeyCreatesOnce(t *testing.T) {
 	if !bytes.Equal(key, again) {
 		t.Error("second EnsureKey returned a different key")
 	}
+
+	assertOnlyKeyFile(t, root)
+}
+
+// assertOnlyKeyFile fails if anything besides the key survives in the
+// config root. The creation protocol writes a temporary file and links it
+// into place, so a leftover is a second copy of a secret on disk.
+func assertOnlyKeyFile(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read config root: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != KeyFileName {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("config root holds %v, want only %q", names, KeyFileName)
+	}
 }
 
 func TestEnsureKeyCreatesConfigRoot(t *testing.T) {
@@ -85,19 +105,8 @@ func TestEnsureKeyConcurrent(t *testing.T) {
 	}
 
 	// Losers of the link race write a temporary file first; none of them
-	// may survive. A stray temp file is a second copy of a secret sitting
-	// in the config root.
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("read config root: %v", err)
-	}
-	if len(entries) != 1 || entries[0].Name() != KeyFileName {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		t.Errorf("config root holds %v, want only %q", names, KeyFileName)
-	}
+	// may survive.
+	assertOnlyKeyFile(t, root)
 }
 
 func TestEnsureKeyRefusesWidePermissions(t *testing.T) {
