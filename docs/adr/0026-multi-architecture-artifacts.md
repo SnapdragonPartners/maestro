@@ -1,8 +1,8 @@
 +++
 title = "ADR 0026: Multi-Architecture Distributable Artifacts"
-edit_date = "2026-07-18"
+edit_date = "2026-07-24"
 status = "live"
-summary = "Every artifact Maestro builds on one architecture and executes on another — embedded/packaged binaries and published container images — must be built for all target architectures (at least linux/amd64 + linux/arm64) and verified on each arch. Images ship as a multi-arch manifest pinned by its arch-independent manifest digest; binaries are cross-compiled per-arch and selected at runtime. Single-arch builds of cross-arch artifacts are a defect."
+summary = "Every artifact built on one architecture and executed on another — embedded binaries and published container images — must be built for all target architectures (at least linux/amd64 + linux/arm64) and verified on each: images as a multi-arch manifest pinned by its arch-independent digest, binaries cross-compiled and runtime-selected. Single-arch builds of cross-arch artifacts are a defect."
 +++
 
 # 0026. Multi-Architecture Distributable Artifacts
