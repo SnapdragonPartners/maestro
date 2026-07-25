@@ -1,14 +1,14 @@
 +++
 title = "Design: The Local Data-Plane Stack (Item 2)"
 edit_date = "2026-07-25"
-status = "draft"
+status = "live"
 summary = "Mini-plan for Phase 2 item 2: the four-root path resolver with MAESTRO_HOME collapse, the 0600 root-of-trust key file, and a Compose stack for Postgres and MinIO bind-mounted under the data root — isolated from v1's container labelling so a benchmark sweep cannot tear it down, digest-pinned, health-gated, and idempotent from a clean checkout."
 type = "design"
 +++
 
 # Design: The Local Data-Plane Stack (Item 2)
 
-Status: **draft** — for Codex review before the Compose and CI work lands. Follows the Phase 1 precedent of a design mini-plan for M-sized items ([design_runner.md](../phase_1/design_runner.md), [design_engine.md](../phase_1/design_engine.md), [design_adapter_v1.md](../phase_1/design_adapter_v1.md)).
+Status: **live** — Accepted by Codex and DR, 2026-07-25, after five review rounds. Follows the Phase 1 precedent of a design mini-plan for M-sized items ([design_runner.md](../phase_1/design_runner.md), [design_engine.md](../phase_1/design_engine.md), [design_adapter_v1.md](../phase_1/design_adapter_v1.md)).
 
 Implements [Phase 2 plan](plan_scope.md) item 2 under [ADR 0022](../../adr/0022-v2-data-plane.md) (local durability invariant, Docker-local default, backup boundary) and the [project-folder spike](../phase_0/spike_project-folder.md) (the four-root split and the key-file root of trust). No schema — that is item 3.
 
