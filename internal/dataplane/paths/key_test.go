@@ -3,6 +3,7 @@ package paths
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -45,21 +46,30 @@ func TestEnsureKeyCreatesOnce(t *testing.T) {
 	assertOnlyKeyFile(t, root)
 }
 
-// assertOnlyKeyFile fails if anything besides the key survives in the
-// config root. The creation protocol writes a temporary file and links it
-// into place, so a leftover is a second copy of a secret on disk.
+// assertOnlyKeyFile fails if anything beyond the key and its lock file
+// survives in the config root. The creation protocol writes a temporary
+// file and links it into place, so a leftover is a second copy of a secret
+// on disk. The allow-list is exact rather than a "no .tmp-" filter, so a
+// future file that nobody thought about also trips it.
 func assertOnlyKeyFile(t *testing.T, root string) {
 	t.Helper()
+	allowed := map[string]bool{KeyFileName: true, lockFileName: true}
+
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		t.Fatalf("read config root: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != KeyFileName {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
+	seenKey := false
+	for _, e := range entries {
+		if !allowed[e.Name()] {
+			t.Errorf("unexpected file %q in config root: a leftover temporary is a second copy of the key", e.Name())
 		}
-		t.Errorf("config root holds %v, want only %q", names, KeyFileName)
+		if e.Name() == KeyFileName {
+			seenKey = true
+		}
+	}
+	if !seenKey {
+		t.Errorf("config root has no %s", KeyFileName)
 	}
 }
 
@@ -73,9 +83,13 @@ func TestEnsureKeyCreatesConfigRoot(t *testing.T) {
 	}
 }
 
-// Concurrent setup must not race two keys into existence. Losers of the
-// O_EXCL race read the winner's key rather than overwriting it, so every
-// caller must come away with the same bytes.
+// Concurrent setup must not race two keys into existence: callers are
+// serialized, and whoever arrives second reads the first one's key rather
+// than minting its own, so every caller comes away with the same bytes.
+//
+// This covers contention, not crash-durability. The ordering guarantees in
+// EnsureKey's protocol only matter if the machine dies inside a specific
+// window, which no in-process test can produce.
 func TestEnsureKeyConcurrent(t *testing.T) {
 	root := t.TempDir()
 
@@ -107,6 +121,43 @@ func TestEnsureKeyConcurrent(t *testing.T) {
 	// Losers of the link race write a temporary file first; none of them
 	// may survive.
 	assertOnlyKeyFile(t, root)
+}
+
+// A creator that dies between writing its temporary and removing it leaves
+// a second copy of a key on disk. The next EnsureKey holds the lock, so any
+// temporary it sees can only be such an orphan, and it must be swept.
+func TestEnsureKeySweepsOrphanedTemporaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		keyExists bool // whether a key is already present when the orphan appears
+	}{
+		{name: "orphan with no key yet", keyExists: false},
+		{name: "orphan alongside an existing key", keyExists: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.keyExists {
+				if _, err := EnsureKey(root); err != nil {
+					t.Fatalf("seed EnsureKey: %v", err)
+				}
+			}
+
+			orphan := filepath.Join(root, KeyFileName+".tmp-orphaned")
+			if err := os.WriteFile(orphan, []byte("00112233\n"), keyPerm); err != nil {
+				t.Fatalf("plant orphan: %v", err)
+			}
+
+			if _, err := EnsureKey(root); err != nil {
+				t.Fatalf("EnsureKey: %v", err)
+			}
+			if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("orphaned temporary survived (stat err: %v)", err)
+			}
+			assertOnlyKeyFile(t, root)
+		})
+	}
 }
 
 func TestEnsureKeyRefusesWidePermissions(t *testing.T) {

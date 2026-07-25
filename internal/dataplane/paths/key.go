@@ -23,6 +23,18 @@ const (
 	// keyPerm is the exact mode the key file must have. Anything wider is
 	// treated as a possible exposure rather than something to quietly fix.
 	keyPerm fs.FileMode = 0o600
+
+	// lockFileName guards the whole key-creation critical section across
+	// processes. It holds no data and is never unlinked.
+	lockFileName = KeyFileName + ".lock"
+
+	// lockPerm is the lock file's mode. It carries no secret, but there is
+	// no reason for it to be wider than the directory that holds it.
+	lockPerm fs.FileMode = 0o600
+
+	// tempPattern matches the temporary files key creation writes before
+	// linking them into place.
+	tempPattern = KeyFileName + ".tmp-*"
 )
 
 // ErrKeyPermissions reports a key file whose permissions are not exactly
@@ -59,27 +71,60 @@ var ErrKeyPermissions = errors.New("root-of-trust key file has unsafe permission
 // leave the removal itself non-durable, so a crash could resurrect a second
 // copy of the key; and syncing only on the creating path would let a losing
 // caller return a key whose directory entry is not yet durable.
-func EnsureKey(configRoot string) ([]byte, error) {
+//
+// The whole section is serialized by an exclusive lock, across processes as
+// well as goroutines, because the link protocol alone cannot uphold step 2.
+// Without the lock: A links its temporary into place, B observes the key and
+// syncs the directory — durably persisting A's temporary link as well — and
+// a crash before A's removal leaves both names on disk permanently. That is
+// the second copy the protocol exists to prevent, and no test can expose it,
+// since the window only matters if the machine dies inside it. Serializing
+// by the resource's identity is ADR 0027's rule; here the resource is the
+// key path, so readers cannot return until the creator has finished.
+func EnsureKey(configRoot string) (key []byte, err error) {
 	path := filepath.Join(configRoot, KeyFileName)
 
-	if err := os.MkdirAll(configRoot, rootPerm); err != nil {
-		return nil, fmt.Errorf("create config root %s: %w", configRoot, err)
+	if mkErr := os.MkdirAll(configRoot, rootPerm); mkErr != nil {
+		return nil, fmt.Errorf("create config root %s: %w", configRoot, mkErr)
+	}
+
+	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName))
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer func() {
+		// A failed release is not cosmetic: it means the next caller's
+		// serialization guarantee is in doubt, so surface it rather than
+		// returning a key as if nothing happened.
+		if relErr := release(); relErr != nil && err == nil {
+			key, err = nil, relErr
+		}
+	}()
+
+	// Holding the lock, any temporary can only be an orphan left by a
+	// creator that died — no live creator can exist. Removing it is safe
+	// for exactly that reason, which is ADR 0027's other half: destructive
+	// recovery runs under the resource's lock so it cannot truncate a
+	// concurrent writer's work. The sync on the way out makes the removal
+	// durable.
+	if sweepErr := sweepOrphanTemps(configRoot); sweepErr != nil {
+		return nil, sweepErr
 	}
 
 	// Fast path: an existing key needs no generation at all. It still syncs
 	// before returning — see returnDurable.
-	if _, err := os.Stat(path); err == nil {
+	if _, statErr := os.Stat(path); statErr == nil {
 		return returnDurable(configRoot, path)
 	}
 
-	key := make([]byte, keyLen)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generate root-of-trust key: %w", err)
+	key = make([]byte, keyLen)
+	if _, randErr := rand.Read(key); randErr != nil {
+		return nil, fmt.Errorf("generate root-of-trust key: %w", randErr)
 	}
 
-	tmp, err := writeTempKey(configRoot, hex.EncodeToString(key)+"\n")
-	if err != nil {
-		return nil, err
+	tmp, tmpErr := writeTempKey(configRoot, hex.EncodeToString(key)+"\n")
+	if tmpErr != nil {
+		return nil, tmpErr
 	}
 
 	linkErr := os.Link(tmp, path)
@@ -173,6 +218,22 @@ func discardTemp(name string, cause error) error {
 		return errors.Join(cause, fmt.Errorf("remove temporary key file %s: %w", name, err))
 	}
 	return cause
+}
+
+// sweepOrphanTemps removes temporary key files left behind by a creator
+// that died mid-protocol. It is only safe under the lock, where no live
+// creator can exist; the caller's directory sync makes the removals durable.
+func sweepOrphanTemps(dir string) error {
+	matches, err := filepath.Glob(filepath.Join(dir, tempPattern))
+	if err != nil {
+		return fmt.Errorf("scan for orphaned temporary key files in %s: %w", dir, err)
+	}
+	for _, name := range matches {
+		if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove orphaned temporary key file %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // syncDir flushes a directory's own entries, making a rename or link into
