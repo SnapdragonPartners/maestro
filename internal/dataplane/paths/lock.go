@@ -33,19 +33,19 @@ func AcquireLock(path string) (func() error, error) {
 func acquireLock(path string) (func() error, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, lockPerm)
 	if err != nil {
-		return nil, fmt.Errorf("open key lock %s: %w", path, err)
+		return nil, fmt.Errorf("open lock file %s: %w", path, err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("acquire key lock %s: %w", path, err)
+		return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 	}
 	return func() error {
 		unlockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		closeErr := f.Close()
 		if unlockErr != nil || closeErr != nil {
 			return errors.Join(
-				wrapLockErr("release key lock", path, unlockErr),
-				wrapLockErr("close key lock", path, closeErr),
+				wrapLockErr("release lock", path, unlockErr),
+				wrapLockErr("close lock file", path, closeErr),
 			)
 		}
 		return nil

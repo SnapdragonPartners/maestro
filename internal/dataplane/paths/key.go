@@ -28,8 +28,10 @@ const (
 	// processes. It holds no data and is never unlinked.
 	lockFileName = KeyFileName + ".lock"
 
-	// lockPerm is the lock file's mode. It carries no secret, but there is
-	// no reason for it to be wider than the directory that holds it.
+	// lockPerm is the mode of any lock file this package creates, including
+	// ones held on behalf of other packages via AcquireLock. Lock files
+	// carry no secret, but there is no reason for them to be wider than the
+	// directories that hold them.
 	lockPerm fs.FileMode = 0o600
 
 	// tempPattern matches the temporary files key creation writes before
