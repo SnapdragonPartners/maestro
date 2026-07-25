@@ -153,6 +153,32 @@ jobs:
           test "$(stat -c %a "$MAESTRO_HOME/config/root-of-trust.key")" = "600" \
             || { echo "key file permissions are not 600"; exit 1; }
 
+      # Readiness must mean USABLE, not merely listening. pg_isready would
+      # report ready with the wrong password, so a mismatched root-of-trust
+      # key could produce a green "data plane ready" for a plane nobody can
+      # open. The compose-file guard in Go pins the healthcheck's form;
+      # this proves the behaviour against the running server.
+      - name: Password authentication is actually enforced
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: |
+          set -euo pipefail
+
+          # The healthcheck's own credentials work...
+          docker exec maestro-dataplane-postgres-1 sh -c \
+            'PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select 1"' \
+            >/dev/null || { echo "the configured credentials do not work"; exit 1; }
+
+          # ...and a wrong password must be REFUSED. Connecting by service
+          # name is essential: over loopback the image's pg_hba trusts any
+          # password, so this assertion would pass vacuously.
+          if docker exec maestro-dataplane-postgres-1 sh -c \
+            'PGPASSWORD=definitely-wrong psql -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select 1"' \
+            >/dev/null 2>&1; then
+            echo "a wrong password was accepted: readiness cannot distinguish a usable plane from an unopenable one"
+            exit 1
+          fi
+
       # Same command twice: the clean-checkout path and the inner-loop path
       # are one command, so re-running must be a no-op.
       #
@@ -165,18 +191,26 @@ jobs:
           MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
         run: |
           set -euo pipefail
-          before_id=$(docker inspect maestro-dataplane-postgres-1 --format '{{.Id}}')
-          before_started=$(docker inspect maestro-dataplane-postgres-1 --format '{{.State.StartedAt}}')
+          # BOTH services: checking only Postgres would let MinIO be
+          # replaced or restarted without failing the job.
+          for svc in postgres minio; do
+            eval "before_id_$svc=\$(docker inspect maestro-dataplane-$svc-1 --format '{{.Id}}')"
+            eval "before_started_$svc=\$(docker inspect maestro-dataplane-$svc-1 --format '{{.State.StartedAt}}')"
+          done
 
           make dataplane-up
 
-          after_id=$(docker inspect maestro-dataplane-postgres-1 --format '{{.Id}}')
-          after_started=$(docker inspect maestro-dataplane-postgres-1 --format '{{.State.StartedAt}}')
+          for svc in postgres minio; do
+            after_id=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.Id}}')
+            after_started=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.State.StartedAt}}')
+            eval "before_id=\$before_id_$svc"
+            eval "before_started=\$before_started_$svc"
 
-          test "$before_id" = "$after_id" \
-            || { echo "container was replaced: $before_id -> $after_id"; exit 1; }
-          test "$before_started" = "$after_started" \
-            || { echo "container was restarted: $before_started -> $after_started"; exit 1; }
+            test "$before_id" = "$after_id" \
+              || { echo "$svc was replaced: $before_id -> $after_id"; exit 1; }
+            test "$before_started" = "$after_started" \
+              || { echo "$svc was restarted: $before_started -> $after_started"; exit 1; }
+          done
 
       # reset must clear the DATA while preserving the DIRECTORIES. The
       # directories are bind-mount sources: recreating one gives it a new

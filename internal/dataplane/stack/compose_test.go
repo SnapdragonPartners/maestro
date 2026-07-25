@@ -92,3 +92,69 @@ func TestImagesArePinnedByDigest(t *testing.T) {
 		t.Errorf("found %d image pins, want 2 (postgres, minio)", pins)
 	}
 }
+
+// The Postgres healthcheck must verify USABILITY, not just liveness.
+//
+// pg_isready reports whether the server accepts connections and succeeds
+// by design with the wrong user, database or password — so a plane whose
+// credentials cannot open it would report ready. That is the exact shape
+// of a restored-but-mismatched root-of-trust key, and it is a silent
+// failure, so the healthcheck's form is pinned here.
+//
+// The host matters as much as the command: this image's generated pg_hba
+// trusts loopback inside the container, so a check against 127.0.0.1
+// accepts ANY password and proves nothing. Connecting by service name
+// reaches the container's own non-loopback address and takes the
+// scram-sha-256 path that real clients take.
+func TestPostgresHealthcheckAuthenticates(t *testing.T) {
+	source := composeSource(t)
+
+	postgres, _, found := strings.Cut(source, "  minio:")
+	if !found {
+		t.Fatal("could not isolate the postgres service block")
+	}
+	healthcheck := section(t, postgres, "healthcheck:")
+
+	if strings.Contains(healthcheck, "pg_isready") {
+		t.Error("healthcheck uses pg_isready, which succeeds with wrong credentials; use an authenticated query")
+	}
+	for _, required := range []string{"psql", "PGPASSWORD", "$$POSTGRES_USER", "$$POSTGRES_DB"} {
+		if !strings.Contains(healthcheck, required) {
+			t.Errorf("healthcheck does not use %s; it must run an authenticated query", required)
+		}
+	}
+	if strings.Contains(healthcheck, "127.0.0.1") || strings.Contains(healthcheck, "localhost") {
+		t.Error("healthcheck connects over loopback, where the image's pg_hba trusts any password; connect by service name")
+	}
+	if !strings.Contains(healthcheck, "-h postgres") {
+		t.Error("healthcheck does not connect by service name, so it may not exercise password authentication")
+	}
+}
+
+// section returns the indented block introduced by header.
+func section(t *testing.T, source, header string) string {
+	t.Helper()
+	_, after, found := strings.Cut(source, header)
+	if !found {
+		t.Fatalf("no %q found", header)
+	}
+	var block []string
+	for _, line := range strings.Split(after, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// The block ends at the next key with less indentation.
+		if !strings.HasPrefix(line, "      ") && strings.Contains(line, ":") {
+			break
+		}
+		// Comments are excluded: the ones here explain why pg_isready and
+		// loopback are wrong, so including them would make the assertions
+		// match their own rationale and fail on a correct file.
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		block = append(block, line)
+	}
+	return strings.Join(block, "\n")
+}
