@@ -183,6 +183,30 @@ ui-dev: build build-css
 	@TEMP_DIR=$$(mktemp -d) && echo "📁 Using temporary workdir: $$TEMP_DIR" && \
 	./bin/maestro -ui -workdir=$$TEMP_DIR
 
+# --- v2 data plane (Phase 2) -------------------------------------------
+#
+# The one command from a clean checkout. Idempotent: safe to re-run, and
+# the same command serves first-time setup and the everyday inner loop.
+# Deliberately separate from the agent-container and benchmark-Gitea
+# machinery, so a data-plane restart cannot disturb a benchmark run.
+.PHONY: dataplane-up dataplane-down dataplane-reset
+
+dataplane-up:
+	go run ./cmd/dataplanectl up
+
+dataplane-down:
+	go run ./cmd/dataplanectl down
+
+# Destructive: deletes the Postgres cluster and object store. Prompts
+# unless FORCE=1.
+#
+# `filter 1`, not a bare `if $(FORCE)`: Make's if is true for ANY non-empty
+# value, so FORCE=0 would skip the confirmation on a destructive command --
+# the opposite of what someone typing 0 intends. Only the exact value 1
+# suppresses the prompt; anything else prompts, which is the safe default.
+dataplane-reset:
+	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) reset
+
 # Clean build artifacts
 clean:
 	rm -rf bin/

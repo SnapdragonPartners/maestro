@@ -1,0 +1,83 @@
+# Maestro v2 data plane: Postgres + MinIO, for local mode.
+#
+# Not launched directly — `make dataplane-up` runs cmd/dataplanectl, which
+# resolves the storage roots, pre-creates and verifies the bind-mount
+# sources, derives credentials from the root-of-trust key, and only then
+# invokes compose with the variables below. Running `docker compose` here
+# by hand will fail on unset variables, which is deliberate: the launcher
+# owns the invariants.
+#
+# ISOLATION FROM v1 (design D3) — load-bearing, do not "fix" for symmetry:
+# v1 labels its containers `com.maestro.session=<id>` and the benchmark
+# adapter SWEEPS BY THAT LABEL on teardown. A data-plane container carrying
+# a session label would be destroyed mid-benchmark-run. These services
+# carry `com.maestro.component=dataplane` and MUST NEVER carry a session
+# label. A test enforces this.
+name: maestro-dataplane
+
+services:
+  postgres:
+    image: ${MAESTRO_PG_IMAGE}
+    # Design D2a: run as the invoking user so the pre-created, host-owned
+    # bind-mount source is writable. Without this, native Linux fails at
+    # first start (the image's default uid cannot write our directory)
+    # while macOS silently passes, because Docker Desktop virtualises
+    # ownership. This line and the host-side pre-creation change together.
+    user: "${MAESTRO_UID}:${MAESTRO_GID}"
+    environment:
+      POSTGRES_DB: ${MAESTRO_PG_DATABASE}
+      POSTGRES_USER: ${MAESTRO_PG_USER}
+      POSTGRES_PASSWORD: ${MAESTRO_PG_PASSWORD}
+      # Keep the cluster in a subdirectory of the mount rather than at its
+      # root: initdb requires an empty directory, and a bind-mount root can
+      # carry filesystem bookkeeping that is not ours to delete.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      # Loopback-bound: this is a local development plane, not a service.
+      - "127.0.0.1:${MAESTRO_PG_PORT}:5432"
+    volumes:
+      - "${MAESTRO_PG_DATA_DIR}:/var/lib/postgresql/data"
+    labels:
+      com.maestro.component: dataplane
+    healthcheck:
+      # An AUTHENTICATED query, not pg_isready. pg_isready reports whether
+      # the server is accepting connections and succeeds by design even
+      # when the user, database or password are wrong — so it would report
+      # "ready" for a plane whose credentials cannot open it, which is
+      # exactly the failure a restored-but-mismatched root-of-trust key
+      # produces.
+      #
+      # -h postgres, not 127.0.0.1: this image's generated pg_hba trusts
+      # loopback inside the container, so a loopback check accepts ANY
+      # password. The service name resolves to the container's own
+      # non-loopback address, which takes the scram-sha-256 path — the same
+      # one real clients take.
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$POSTGRES_PASSWORD\" psql -h postgres -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -tAc 'select 1' > /dev/null"]
+      interval: 2s
+      timeout: 3s
+      # Generous: the first start runs initdb, which is far slower than
+      # subsequent starts, and start_period failures do not count.
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  minio:
+    image: ${MAESTRO_MINIO_IMAGE}
+    user: "${MAESTRO_UID}:${MAESTRO_GID}"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MAESTRO_MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MAESTRO_MINIO_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:${MAESTRO_MINIO_PORT}:9000"
+      - "127.0.0.1:${MAESTRO_MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - "${MAESTRO_MINIO_DATA_DIR}:/data"
+    labels:
+      com.maestro.component: dataplane
+    # No container healthcheck: this image is built on a minimal base whose
+    # available tooling has changed across releases, so a healthcheck that
+    # shells out to curl or mc is a pin-bump away from silently failing.
+    # The launcher probes /minio/health/live from the host instead, which
+    # tests the published port — the thing callers actually use.
+    restart: unless-stopped

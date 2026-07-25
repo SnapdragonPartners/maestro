@@ -80,6 +80,177 @@ jobs:
           echo "verifying pinned image: $IMG"
           make cache-verify ARGS="$IMG"
 
+  # The data plane must come up from a CLEAN CHECKOUT on native Linux.
+  #
+  # Linux specifically, and cold specifically. Design D2a runs both
+  # containers as the invoking user so the pre-created, host-owned bind
+  # mounts are writable — and that is exactly what macOS cannot test, since
+  # Docker Desktop virtualises ownership and would pass either way. The
+  # failure it guards against (the image's default uid cannot write our
+  # directory) appears only here.
+  #
+  # It must also exercise FIRST-RUN initialisation rather than restarting a
+  # warm cluster: initdb is where an arbitrary uid actually bites, via the
+  # official image's nss_wrapper path for uids with no /etc/passwd entry.
+  # A job that only restarted an existing cluster would pass while the real
+  # path was broken.
+  dataplane-up:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # An isolated root, so the job never depends on runner home layout
+      # and the assertions below know exactly where to look.
+      - name: Bring up the data plane from cold
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: make dataplane-up
+
+      - name: Verify the invariants that only Linux can prove
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: |
+          set -euo pipefail
+
+          # initdb actually ran as our uid — the cold-start proof.
+          test -d "$MAESTRO_HOME/data/postgres/pgdata" \
+            || { echo "pgdata missing: initdb did not run"; exit 1; }
+          test "$(stat -c %u "$MAESTRO_HOME/data/postgres/pgdata")" = "$(id -u)" \
+            || { echo "pgdata is not owned by the invoking uid"; exit 1; }
+
+          # Containers run as the invoking user (design D2a).
+          for svc in postgres minio; do
+            got=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.Config.User}}')
+            test "$got" = "$(id -u):$(id -g)" \
+              || { echo "$svc runs as '$got', want '$(id -u):$(id -g)'"; exit 1; }
+          done
+
+          # Isolation from v1: component label present, session label absent.
+          # A session label would make the benchmark adapter's teardown sweep
+          # destroy the data plane mid-run.
+          # Per-service, not both at once: inspecting two containers into a
+          # single grep -q proves only that AT LEAST ONE carries the label,
+          # so a service that lost it would pass. The negative check below
+          # is safe either way — any match is a failure — but it is written
+          # per-service too, so both read the same way.
+          for svc in postgres minio; do
+            labels=$(docker inspect "maestro-dataplane-$svc-1" --format '{{json .Config.Labels}}')
+            echo "$labels" | grep -q '"com.maestro.component":"dataplane"' \
+              || { echo "$svc is missing the component label"; exit 1; }
+            if echo "$labels" | grep -q 'maestro.session'; then
+              echo "$svc carries a session label: the benchmark teardown sweep would destroy it mid-run"
+              exit 1
+            fi
+          done
+
+          # The bootstrap pointer exists and carries no credential.
+          test -f "$MAESTRO_HOME/config/bootstrap.json" || { echo "no bootstrap pointer"; exit 1; }
+          if grep -Eq '"(password|secret)"' "$MAESTRO_HOME/config/bootstrap.json"; then
+            echo "bootstrap pointer contains a credential"; exit 1
+          fi
+
+          # The root-of-trust key is owner-only.
+          test "$(stat -c %a "$MAESTRO_HOME/config/root-of-trust.key")" = "600" \
+            || { echo "key file permissions are not 600"; exit 1; }
+
+      # Readiness must mean USABLE, not merely listening. pg_isready would
+      # report ready with the wrong password, so a mismatched root-of-trust
+      # key could produce a green "data plane ready" for a plane nobody can
+      # open. The compose-file guard in Go pins the healthcheck's form;
+      # this proves the behaviour against the running server.
+      - name: Password authentication is actually enforced
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: |
+          set -euo pipefail
+
+          # The healthcheck's own credentials work...
+          docker exec maestro-dataplane-postgres-1 sh -c \
+            'PGPASSWORD="$POSTGRES_PASSWORD" psql -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select 1"' \
+            >/dev/null || { echo "the configured credentials do not work"; exit 1; }
+
+          # ...and a wrong password must be REFUSED. Connecting by service
+          # name is essential: over loopback the image's pg_hba trusts any
+          # password, so this assertion would pass vacuously.
+          if docker exec maestro-dataplane-postgres-1 sh -c \
+            'PGPASSWORD=definitely-wrong psql -h postgres -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select 1"' \
+            >/dev/null 2>&1; then
+            echo "a wrong password was accepted: readiness cannot distinguish a usable plane from an unopenable one"
+            exit 1
+          fi
+
+      # Same command twice: the clean-checkout path and the inner-loop path
+      # are one command, so re-running must be a no-op.
+      #
+      # "Succeeds twice" is not the claim — a restart also succeeds twice,
+      # while silently interrupting anything using the plane. The claim is
+      # that the containers are the SAME ONES, so assert on identity and
+      # start time rather than on exit status.
+      - name: Re-run is idempotent (same containers, not restarted)
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: |
+          set -euo pipefail
+          # BOTH services: checking only Postgres would let MinIO be
+          # replaced or restarted without failing the job.
+          for svc in postgres minio; do
+            eval "before_id_$svc=\$(docker inspect maestro-dataplane-$svc-1 --format '{{.Id}}')"
+            eval "before_started_$svc=\$(docker inspect maestro-dataplane-$svc-1 --format '{{.State.StartedAt}}')"
+          done
+
+          make dataplane-up
+
+          for svc in postgres minio; do
+            after_id=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.Id}}')
+            after_started=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.State.StartedAt}}')
+            eval "before_id=\$before_id_$svc"
+            eval "before_started=\$before_started_$svc"
+
+            test "$before_id" = "$after_id" \
+              || { echo "$svc was replaced: $before_id -> $after_id"; exit 1; }
+            test "$before_started" = "$after_started" \
+              || { echo "$svc was restarted: $before_started -> $after_started"; exit 1; }
+          done
+
+      # reset must clear the DATA while preserving the DIRECTORIES. The
+      # directories are bind-mount sources: recreating one gives it a new
+      # inode, leaving any existing mount attached to the old one — the
+      # hazard CLAUDE.md records for workspaces. Assert on inode numbers,
+      # since a delete-and-recreate is invisible to a path-based check.
+      - name: Reset clears data but preserves the bind-mount directories
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: |
+          set -euo pipefail
+          pg_dir="$MAESTRO_HOME/data/postgres"
+          minio_dir="$MAESTRO_HOME/data/minio"
+
+          test -d "$pg_dir/pgdata" || { echo "nothing to reset"; exit 1; }
+          pg_inode=$(stat -c %i "$pg_dir")
+          minio_inode=$(stat -c %i "$minio_dir")
+
+          make dataplane-reset FORCE=1
+
+          test "$(stat -c %i "$pg_dir")" = "$pg_inode" \
+            || { echo "postgres data directory was recreated; bind mounts would be stranded"; exit 1; }
+          test "$(stat -c %i "$minio_dir")" = "$minio_inode" \
+            || { echo "minio data directory was recreated; bind mounts would be stranded"; exit 1; }
+          test -z "$(ls -A "$pg_dir")" || { echo "postgres data survived reset"; exit 1; }
+          test -z "$(ls -A "$minio_dir")" || { echo "minio data survived reset"; exit 1; }
+
+      - name: Tear down
+        if: always()
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
+        run: make dataplane-down
+
   # Template for when e2e/integration tests move into CI (today they run only
   # in the pre-push hook). Real API-key secrets go on this job — keeping them
   # off the unit-test job above is deliberate, so unit tests can never make
