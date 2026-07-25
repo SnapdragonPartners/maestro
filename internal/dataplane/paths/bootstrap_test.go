@@ -300,6 +300,13 @@ func TestBootstrapRejectsURLShapedHost(t *testing.T) {
 		"127.0.0.1/db",
 		"127.0.0.1:5432",
 		"host name",
+		"[::1]",         // bracketed: net.JoinHostPort would produce [[::1]]:5432
+		"[2001:db8::1]", // same
+		"db?password=x", // query delimiter
+		"db#frag",       // fragment delimiter
+		"db\tname",      // tab
+		"db\nname",      // newline
+		"db,name",       // comma
 	} {
 		t.Run(host, func(t *testing.T) {
 			b := sampleBootstrap()
@@ -344,7 +351,7 @@ func TestServiceRejectsUnknownName(t *testing.T) {
 }
 
 func TestBootstrapAcceptsIPLiteralHosts(t *testing.T) {
-	for _, host := range []string{"127.0.0.1", "::1", "[::1]", "[2001:db8::1]", "db.internal"} {
+	for _, host := range []string{"127.0.0.1", "::1", "2001:db8::1", "db.internal", "pg_primary", "a-b.c"} {
 		t.Run(host, func(t *testing.T) {
 			b := sampleBootstrap()
 			b.Postgres.Host = host

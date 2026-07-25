@@ -25,6 +25,9 @@ const (
 	minPort = 1
 	maxPort = 65535
 
+	// maxHostLen is the DNS name length limit.
+	maxHostLen = 253
+
 	// BootstrapFileName is the data-plane bootstrap pointer, under the
 	// config root beside the root-of-trust key.
 	BootstrapFileName = "bootstrap.json"
@@ -246,52 +249,57 @@ func validateEndpoint(endpoint string) error {
 	return nil
 }
 
-// isIPLiteral reports whether host is an IP address, in bare or bracketed
-// form. Bracketed IPv6 is accepted because that is how it appears
-// everywhere else a host and port travel together.
-func isIPLiteral(host string) bool {
-	if inner, ok := strings.CutPrefix(host, "["); ok {
-		trimmed, closed := strings.CutSuffix(inner, "]")
-		return closed && net.ParseIP(trimmed) != nil
-	}
-	return net.ParseIP(host) != nil
-}
-
-// forbiddenInHost maps a substring that must not appear in postgres.host
-// to the reason it is refused.
-//
-//nolint:gochecknoglobals // Immutable lookup table.
-var forbiddenInHost = map[string]string{
-	"://": "a scheme",
-	"@":   "userinfo",
-	"/":   "a path",
-	":":   "a port (use postgres.port)",
-	" ":   "whitespace",
-}
-
 // validateHost requires a bare hostname or IP address. The port is a
 // separate field, so anything resembling URL syntax here — a scheme,
 // userinfo, a path — is either a mistake or an attempt to smuggle a
 // credential into a file that must not carry one.
 //
-// IP literals are checked before the substring rules, because IPv6
-// addresses are all colons and would otherwise be rejected by the
-// no-embedded-port rule. Both bare (`::1`) and bracketed (`[::1]`) forms
-// are accepted; `net.ParseIP` is what distinguishes an address from a
-// host:port, so "127.0.0.1:5432" still fails.
+// IP literals are checked first, because IPv6 addresses are all colons and
+// would otherwise fail the hostname rules. Only the **bare** form is
+// accepted: host and port are separate fields here, and connection
+// builders such as net.JoinHostPort add the brackets themselves, so
+// storing "[::1]" yields "[[::1]]:5432". One canonical representation.
+//
+// Hostnames are validated against an allow-list of characters rather than
+// a deny-list of delimiters. A deny-list is the wrong shape for this:
+// every character it forgets is a silent pass, and "db?password=x", a tab,
+// or an embedded newline are all things a deny-list of URL punctuation
+// misses while remaining obviously not bare hostnames.
 func validateHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("%w: postgres.host is required", ErrInvalidBootstrap)
 	}
-	if isIPLiteral(host) {
+	if bare, bracketed := strings.CutPrefix(host, "["); bracketed {
+		if inner, closed := strings.CutSuffix(bare, "]"); closed && net.ParseIP(inner) != nil {
+			return fmt.Errorf("%w: postgres.host %q must not be bracketed; store the bare address %q, since the port is a separate field and connection builders add brackets themselves", ErrInvalidBootstrap, host, inner)
+		}
+	}
+	if net.ParseIP(host) != nil {
 		return nil
 	}
-	for substr, reason := range forbiddenInHost {
-		if strings.Contains(host, substr) {
-			return fmt.Errorf("%w: postgres.host %q must be a bare hostname or IP, but contains %s", ErrInvalidBootstrap, host, reason)
+	if len(host) > maxHostLen {
+		return fmt.Errorf("%w: postgres.host is %d characters, over the %d-character limit", ErrInvalidBootstrap, len(host), maxHostLen)
+	}
+	for _, r := range host {
+		if !isHostRune(r) {
+			return fmt.Errorf("%w: postgres.host %q must be a bare hostname or IP address, but contains %q", ErrInvalidBootstrap, host, r)
 		}
 	}
 	return nil
+}
+
+// isHostRune reports whether r may appear in a bare hostname. Underscores
+// are permitted because they occur in practice in container and service
+// names, which is what this field usually holds.
+func isHostRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '.' || r == '-' || r == '_':
+		return true
+	default:
+		return false
+	}
 }
 
 // validate checks the root-of-trust reference. Unsupported kinds are

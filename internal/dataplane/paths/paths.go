@@ -196,7 +196,16 @@ func verifyOwnedAndWritable(dir string) error {
 		return fmt.Errorf("%w: cannot read ownership of %s on this platform", ErrServiceDataDir, dir)
 	}
 	if uid := os.Getuid(); int(stat.Uid) != uid {
-		return fmt.Errorf("%w: %s is owned by uid %d, but Maestro runs as uid %d — containers run as the invoking user, so this directory is unusable. It was most likely created by Docker as root; remove it and re-run setup", ErrServiceDataDir, dir, stat.Uid, uid)
+		// Deliberately does NOT suggest deleting the directory: it may hold
+		// the authoritative Postgres cluster or object store, and this error
+		// is most likely to appear on an existing installation whose data is
+		// the whole point. Correcting ownership is non-destructive; removal
+		// is not recoverable.
+		return fmt.Errorf(
+			"%w: %s is owned by uid %d, but Maestro runs as uid %d — containers run as the invoking user, so this directory is unusable. "+
+				"It was most likely created by Docker as root. Stop the data-plane stack, then correct its ownership in place "+
+				"(sudo chown -R %d:%d %s). Do not delete it: it may hold the authoritative data",
+			ErrServiceDataDir, dir, stat.Uid, uid, uid, os.Getgid(), dir)
 	}
 
 	// Ownership and mode imply writability for the owner on an ordinary
