@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,14 +72,17 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
-			name: "MAESTRO_HOME collapses all four as subdirectories",
+			// The override IS the base — no "maestro" component. The user
+			// already named the directory, and ~/.maestro/maestro/config
+			// is not the documented contract.
+			name: "MAESTRO_HOME collapses all four as direct subdirectories",
 			goos: "linux",
 			env:  map[string]string{HomeEnv: "/opt/maestro"},
 			want: Roots{
-				Config: "/opt/maestro/maestro/config",
-				Cache:  "/opt/maestro/maestro/cache",
-				State:  "/opt/maestro/maestro/state",
-				Data:   "/opt/maestro/maestro/data",
+				Config: "/opt/maestro/config",
+				Cache:  "/opt/maestro/cache",
+				State:  "/opt/maestro/state",
+				Data:   "/opt/maestro/data",
 			},
 		},
 		{
@@ -86,10 +90,21 @@ func TestResolve(t *testing.T) {
 			goos: "darwin",
 			env:  map[string]string{HomeEnv: "/opt/m", "XDG_DATA_HOME": "/x/data"},
 			want: Roots{
-				Config: "/opt/m/maestro/config",
-				Cache:  "/opt/m/maestro/cache",
-				State:  "/opt/m/maestro/state",
-				Data:   "/opt/m/maestro/data",
+				Config: "/opt/m/config",
+				Cache:  "/opt/m/cache",
+				State:  "/opt/m/state",
+				Data:   "/opt/m/data",
+			},
+		},
+		{
+			name: "MAESTRO_HOME is cleaned",
+			goos: "linux",
+			env:  map[string]string{HomeEnv: "/opt/./m/sub/.."},
+			want: Roots{
+				Config: "/opt/m/config",
+				Cache:  "/opt/m/cache",
+				State:  "/opt/m/state",
+				Data:   "/opt/m/data",
 			},
 		},
 	}
@@ -202,5 +217,33 @@ func TestEnsureCreatesRootsWithTightPermissions(t *testing.T) {
 	// Ensure is the everyday path, not just first-run setup.
 	if err := roots.Ensure(); err != nil {
 		t.Fatalf("second Ensure: %v", err)
+	}
+}
+
+func TestEnsureRefusesWidenedRoot(t *testing.T) {
+	base := t.TempDir()
+	roots, err := resolve("linux", envOf(map[string]string{HomeEnv: base}), "/home/u")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := roots.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	if chmodErr := os.Chmod(roots.Data, 0o755); chmodErr != nil {
+		t.Fatalf("chmod: %v", chmodErr)
+	}
+	if err := roots.Ensure(); !errors.Is(err, ErrRootPermissions) {
+		t.Fatalf("got %v, want ErrRootPermissions", err)
+	}
+
+	// As with the key file, the widened directory is left exactly as
+	// found — repairing it would erase the evidence.
+	info, statErr := os.Stat(roots.Data)
+	if statErr != nil {
+		t.Fatalf("stat: %v", statErr)
+	}
+	if perm := info.Mode().Perm(); perm != 0o755 {
+		t.Errorf("permissions changed to %#o; Ensure must not repair them", perm)
 	}
 }

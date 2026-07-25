@@ -75,6 +75,14 @@ func EnsureKey(configRoot string) ([]byte, error) {
 
 	switch err := os.Link(tmp, path); {
 	case err == nil:
+		// os.Link is atomic but not durable: the new directory entry can
+		// still be lost to a crash even though the file's contents were
+		// flushed. Sync the containing directory so a key we have already
+		// returned — and may already have encrypted a vault under — cannot
+		// vanish. The backup deliberately holds no second copy.
+		if syncErr := syncDir(configRoot); syncErr != nil {
+			return nil, syncErr
+		}
 		return key, nil
 	case errors.Is(err, fs.ErrExist):
 		// Another caller won. Its file is complete by construction, since
@@ -119,6 +127,24 @@ func writeTempKey(dir, encoded string) (string, error) {
 		return "", fmt.Errorf("close key file: %w", err)
 	}
 	return name, nil
+}
+
+// syncDir flushes a directory's own entries, making a rename or link into
+// it durable. Opening a directory read-only and calling Sync is the
+// portable POSIX idiom for this on both Linux and macOS.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open %s for sync: %w", dir, err)
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("sync directory %s: %w", dir, err)
+	}
+	if err := d.Close(); err != nil {
+		return fmt.Errorf("close %s after sync: %w", dir, err)
+	}
+	return nil
 }
 
 // readKey loads an existing key file, refusing it if the permissions are

@@ -16,6 +16,7 @@ Implements [Phase 2 plan](plan_scope.md) item 2 under [ADR 0022](../../adr/0022-
 
 1. The **path resolver**: the four OS-standard roots, the `MAESTRO_HOME` collapse, and directory creation with correct permissions.
 2. The **root-of-trust key file**: generated silently at setup, `0600`, under Maestro config, excluded from backup by design.
+2a. The **bootstrap pointer**, under the config root (resolved in review — see Q2): the Postgres endpoint and port, the object-store endpoint, and a *reference* to the root of trust. Never secrets. It records deployment facts established by this item; item 3 consumes it when applying migrations rather than introducing it.
 3. The **Compose stack**: Postgres and MinIO, both bind-mounted to durable host paths under the data root.
 4. **`make dataplane-up`**: one command from a clean checkout — compose, wait for health, idempotent. (Item 3 adds migrations to this target.)
 5. A **CI job** proving it comes up from a clean checkout.
@@ -94,7 +95,17 @@ Both images are pinned by **arch-independent manifest digest**, not tag — the 
 - Compose bring-up is an `integration`-tagged test plus the CI job — it needs Docker, so it stays out of `make test`.
 - **Explicit non-regression check**: a test asserts no compose service carries a `com.maestro.session` label, so D3's isolation is enforced mechanically rather than by memory.
 
-## Open questions for review
+## Review questions — resolved
 
-1. **Is `0700` on the data root a problem for the container bind mounts?** Postgres and MinIO run as non-root users inside their images and will write as their own uid, which need not match the host user. The likely answer is that the *contents* are container-owned while the root is host-owned, which works, but it is the most plausible thing to get wrong on first bring-up and may force `0755` on the data root specifically.
-2. **Does the bootstrap pointer land in item 2 or item 3?** The spike puts it under config alongside the key. It has nothing to point at until Postgres has a schema, so this design leaves it to item 3 and item 2 writes only the key. Flagged in case Codex reads ADR 0022's "bootstrap pointer" as item-2 scope.
+Both answered by Codex, 2026-07-24.
+
+1. **Is `0700` on the data root a problem for the container bind mounts?** **No — keep the top-level data root at `0700`.** Bind-mount *per-service child directories* (`data/postgres`, `data/minio`), each pre-created with the ownership and mode its container requires. A container sees its mounted child as its own mount root and never traverses the host parent, so the tight root costs nothing. The children must be **pre-created rather than left to Compose**, which would otherwise create them root-owned, and the arrangement is verified on macOS and on Linux CI — the two platforms differ exactly here, since Docker Desktop's VM translates ownership while native Linux does not.
+2. **Does the bootstrap pointer land in item 2 or item 3?** **Item 2.** It points at deployment facts this item establishes — the Postgres endpoint and port, and the root-of-trust reference — not at the schema. Item 3 consumes it while applying migrations rather than inventing the bootstrap mechanism. Recorded above as deliverable 2a.
+
+## Implementation corrections
+
+Findings from the first implementation round, kept here because each is a mistake worth not repeating.
+
+- **`MAESTRO_HOME` produced `<dir>/maestro/{config,…}`**, contradicting the documented `<dir>/{config,…}` contract — the override is already a user-named directory and must not gain a second `maestro` component. Worse than a plain bug: *the unit test asserted the wrong paths*, so it encoded the defect rather than catching it. The override path no longer shares the base-assembly helper with the platform path, since the two have genuinely different rules.
+- **`os.Link` is atomic but not durable.** The key file's contents were flushed, but the new directory entry was not, so a crash could lose a key that had already been returned to a caller — and possibly already used to encrypt the vault, which the backup deliberately does not hold a copy of. The containing directory is now synced before the new key is returned.
+- **`Roots.Ensure` neither repaired nor rejected pre-existing roots with wrong permissions**, while its own comment claimed such changes should be surfaced. It now refuses, matching the key-file policy and for the same reason — and refusing rather than ignoring is the other half of that policy, since a rule nothing enforces is not a rule.

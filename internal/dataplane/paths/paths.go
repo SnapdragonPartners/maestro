@@ -10,6 +10,7 @@
 package paths
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,11 @@ const (
 	rootPerm = 0o700
 )
 
+// ErrRootPermissions reports a storage root that exists with permissions
+// other than 0700. Like ErrKeyPermissions it is distinct because the
+// correct response is to investigate, not to retry.
+var ErrRootPermissions = errors.New("maestro storage root has unexpected permissions")
+
 // Roots holds Maestro's four local storage roots. They are always distinct
 // paths, and Data is never an ancestor or descendant of Config.
 type Roots struct {
@@ -67,13 +73,24 @@ func (r Roots) All() []string {
 }
 
 // Ensure creates every root that does not yet exist, with restrictive
-// permissions. It does not repair the permissions of directories that
-// already exist: silently widening or tightening a directory a user or an
-// earlier version created would hide a real change rather than surface it.
+// permissions, and refuses any that already exists with different ones.
+//
+// Refusing rather than repairing matches the key-file policy for the same
+// reason: these roots hold the Postgres cluster, the object store, and the
+// secrets unlock key, so a widened directory is a possible exposure and a
+// silent chmod destroys the only evidence that it happened. Refusing rather
+// than ignoring is the other half — a rule nothing enforces is not a rule.
 func (r Roots) Ensure() error {
 	for _, dir := range r.All() {
 		if err := os.MkdirAll(dir, rootPerm); err != nil {
 			return fmt.Errorf("create maestro root %s: %w", dir, err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			return fmt.Errorf("stat maestro root %s: %w", dir, err)
+		}
+		if perm := info.Mode().Perm(); perm != rootPerm {
+			return fmt.Errorf("%w: %s is %#o, want %#o", ErrRootPermissions, dir, perm, rootPerm)
 		}
 	}
 	return nil
@@ -97,12 +114,20 @@ func resolve(goos string, getenv func(string) string, home string) (Roots, error
 		if !filepath.IsAbs(override) {
 			return Roots{}, fmt.Errorf("%s must be an absolute path, got %q", HomeEnv, override)
 		}
-		return rootsUnder(filepath.Clean(override), filepath.Clean(override), filepath.Clean(override), filepath.Clean(override)), nil
+		// The override IS the base: <dir>/{config,cache,state,data}, with
+		// no "maestro" component. The user already named the directory.
+		dir := filepath.Clean(override)
+		return Roots{
+			Config: filepath.Join(dir, dirConfig),
+			Cache:  filepath.Join(dir, dirCache),
+			State:  filepath.Join(dir, dirState),
+			Data:   filepath.Join(dir, dirData),
+		}, nil
 	}
 
 	switch goos {
 	case "linux":
-		return rootsUnder(
+		return platformRoots(
 			xdg(getenv, "XDG_CONFIG_HOME", filepath.Join(home, ".config")),
 			xdg(getenv, "XDG_CACHE_HOME", filepath.Join(home, ".cache")),
 			xdg(getenv, "XDG_STATE_HOME", filepath.Join(home, ".local", "state")),
@@ -111,7 +136,7 @@ func resolve(goos string, getenv func(string) string, home string) (Roots, error
 	case "darwin":
 		appSupport := filepath.Join(home, "Library", "Application Support")
 		caches := filepath.Join(home, "Library", "Caches")
-		return rootsUnder(appSupport, caches, appSupport, appSupport), nil
+		return platformRoots(appSupport, caches, appSupport, appSupport), nil
 	default:
 		// Docker is already load-bearing for every mode (ADR 0022) and WSL
 		// is the documented path on Windows. A half-working %AppData% guess
@@ -120,9 +145,12 @@ func resolve(goos string, getenv func(string) string, home string) (Roots, error
 	}
 }
 
-// rootsUnder assembles the four roots from their platform bases. Each root
-// is <base>/maestro/<name>, so roots sharing a base stay distinct siblings.
-func rootsUnder(configBase, cacheBase, stateBase, dataBase string) Roots {
+// platformRoots assembles the four roots from OS base directories. Each is
+// <base>/maestro/<name>: the "maestro" component scopes us inside shared
+// OS directories, and the trailing name keeps roots that share a base
+// (macOS) distinct siblings. Under MAESTRO_HOME neither problem exists, so
+// that path does not go through here.
+func platformRoots(configBase, cacheBase, stateBase, dataBase string) Roots {
 	return Roots{
 		Config: filepath.Join(configBase, appDir, dirConfig),
 		Cache:  filepath.Join(cacheBase, appDir, dirCache),
