@@ -2,7 +2,7 @@
 title = "ADR 0028: Artifact Envelopes And Payload Schemas"
 edit_date = "2026-07-24"
 status = "live"
-summary = "The encoding layer under ADR 0021's artifact model: a fixed relational envelope plus a typed JSON payload, digested with RFC 8785 JCS under a numeric-range constraint that keeps large integers and exact decimals in strings; a code-resident payload type registry validated at the persistence seam on write; additive-within-version schema evolution where the reader is the only compatibility layer, because accepted artifacts are immutable; amendments encoded as RFC 7386 merge patches whose resulting effective payload is validated on write and again at acceptance, materialized on read and never stored; and review records bound to a digest of the whole reviewable projection — including relationship links — plus, for amendments, the base effective view they were reviewed against, which forces re-review if that base moves."
+summary = "The encoding layer under ADR 0021: a relational envelope plus a typed JSON payload digested with RFC 8785 JCS; a code-resident payload type registry validated at the persistence seam; additive-only schema evolution; amendments as RFC 7386 merge patches materialized on read; reviews bound to the whole reviewable projection, not the payload alone."
 +++
 
 # 0028. Artifact Envelopes And Payload Schemas
