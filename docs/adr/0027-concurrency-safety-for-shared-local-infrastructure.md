@@ -1,8 +1,8 @@
 +++
 title = "ADR 0027: Concurrency Safety for Shared Local Infrastructure"
-edit_date = "2026-07-21"
+edit_date = "2026-07-24"
 status = "live"
-summary = "Maestro runs many agent lifecycles concurrently against shared local state — git mirrors, workspace directories, dispatcher leases, supervisor restarts. Any operation that mutates state reachable from more than one lifecycle MUST be concurrency-safe: serialized by a key that matches the shared resource (path, agent ID, story ID) or made idempotent, and destructive recovery MUST never delete another actor's in-progress work. Bare last-writer-wins on shared infrastructure is a defect, the same class as a single-arch cross-arch artifact."
+summary = "Any operation mutating state reachable from more than one agent lifecycle — git mirrors, workspace directories, dispatcher leases, supervisor restarts — must be serialized by a key matching the shared resource (path, agent ID, story ID) or made idempotent, and destructive recovery must never delete another actor's in-progress work. Bare last-writer-wins on shared infrastructure is a defect."
 +++
 
 # 0027. Concurrency Safety for Shared Local Infrastructure

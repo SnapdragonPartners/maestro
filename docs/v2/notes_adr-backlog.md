@@ -1,9 +1,9 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-07-22"
+edit_date = "2026-07-24"
 status = "live"
 type = "notes"
-summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 with their Accepted ADRs, and open candidates ordered by the phase they block."
+summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates ordered by the phase they block."
 +++
 
 # Maestro v2 ADR Backlog
@@ -28,19 +28,21 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | Binary Attachment Storage | [ADR 0022](../adr/0022-v2-data-plane.md) — object storage first-class, content-addressed digests, binaries never in relational rows |
 | User Credentials And Configs | [Project-folder spike](phase_0/spike_project-folder.md) + ADR 0022 amendment (2026-07-14): config records and secrets vault in the plane, key-file root of trust outside it |
 
-## Open Candidates, Dependency-Ordered
+## Resolved In Later Phases
+
+| Candidate | Resolution |
+| --- | --- |
+| Artifact Envelopes And Payload Schemas (blocked Phase 2) | [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md), Accepted 2026-07-24 as Phase 2 item 1 |
+
+## Candidates, Dependency-Ordered
 
 Ordered by the phase each blocks. An entry should be Accepted before its blocking phase starts implementation.
 
-### 1. Artifact Envelopes And Payload Schemas — blocks Phase 2
+Entries are numbered, and those numbers are cited from phase plans and session notes, so a resolved candidate **keeps its slot** here as a pointer to its ADR rather than being deleted and renumbering everything below it. The section is therefore mostly open candidates with resolved stubs among them; the resolved tables above are the authoritative list of what is done.
 
-Phase 2's DDL and typed queries need the canonical artifact encoding fixed first. ADR 0021 fixed the model; the remaining decisions are the encoding layer:
+### 1. Artifact Envelopes And Payload Schemas — RESOLVED by [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md)
 
-- The envelope: JSON as storage/API canonical format; schema/version in every artifact; Markdown as rendering format; TOML/YAML allowed for prompt-facing fragments.
-- Payload type registry and validation.
-- Version evolution rules for payload schemas.
-- Amendment and effective-view encoding (how a flat amendment chain renders as one view — 0021's semantics, made concrete).
-- Review linkage encoding (how a review record binds to its artifact and revision).
+Accepted 2026-07-24 as Phase 2 item 1; see the Resolved In Later Phases table above. All five decisions it carried are fixed there: the JSON envelope and its JCS digest discipline, the code-resident payload type registry validated at the seam, additive-within-version evolution with the reader as the only compatibility layer, RFC 7386 merge-patch amendments materialized on read, and review linkage over the whole reviewable projection.
 
 ### 2. Online Backup And Restore — trails Phase 2 (non-blocking)
 
