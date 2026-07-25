@@ -2,12 +2,26 @@ package paths
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 )
 
+// ErrInvalidBootstrap reports a bootstrap pointer that is missing required
+// fields or carries values this build cannot use.
+var ErrInvalidBootstrap = errors.New("invalid bootstrap pointer")
+
 const (
+	// RootOfTrustKeyFile is the shipped root-of-trust backend. Keychain and
+	// passphrase are the opt-in upgrades, added here when implemented so an
+	// unimplemented kind cannot validate.
+	RootOfTrustKeyFile = "key_file"
+
+	minPort = 1
+	maxPort = 65535
+
 	// BootstrapFileName is the data-plane bootstrap pointer, under the
 	// config root beside the root-of-trust key.
 	BootstrapFileName = "bootstrap.json"
@@ -72,7 +86,13 @@ type RootOfTrust struct {
 // key's link protocol. Rename replaces atomically, so a reader sees either
 // the old pointer or the new one, never a partial file.
 func WriteBootstrap(configRoot string, b *Bootstrap) error {
+	if b == nil {
+		return fmt.Errorf("%w: nil bootstrap pointer", ErrInvalidBootstrap)
+	}
 	b.SchemaVersion = BootstrapSchemaVersion
+	if err := b.validate(); err != nil {
+		return err
+	}
 
 	encoded, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
@@ -123,15 +143,26 @@ func writeAndClose(f *os.File, b []byte) error {
 }
 
 // ReadBootstrap loads the pointer from the config root.
+//
+// Unknown fields are rejected. This file is hand-editable by design, so a
+// tolerant decoder would silently accept a `postgres.password` somebody
+// added in good faith — reading as if it worked while the value is ignored,
+// which is the worst of both outcomes for a credential. Strictness here is
+// what makes "this file carries no secret" a property of the format rather
+// than of today's struct definition.
 func ReadBootstrap(configRoot string) (Bootstrap, error) {
 	path := filepath.Join(configRoot, BootstrapFileName)
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Bootstrap{}, fmt.Errorf("read bootstrap pointer %s: %w", path, err)
 	}
+	defer func() { _ = f.Close() }()
+
+	dec := json.NewDecoder(f)
+	dec.DisallowUnknownFields()
 
 	var b Bootstrap
-	if err := json.Unmarshal(raw, &b); err != nil {
+	if err := dec.Decode(&b); err != nil {
 		return Bootstrap{}, fmt.Errorf("decode bootstrap pointer %s: %w", path, err)
 	}
 	// A pointer from a future Maestro may describe a plane this build
@@ -139,5 +170,73 @@ func ReadBootstrap(configRoot string) (Bootstrap, error) {
 	if b.SchemaVersion != BootstrapSchemaVersion {
 		return Bootstrap{}, fmt.Errorf("bootstrap pointer %s has schema version %d, want %d", path, b.SchemaVersion, BootstrapSchemaVersion)
 	}
+	if err := b.validate(); err != nil {
+		return Bootstrap{}, fmt.Errorf("bootstrap pointer %s: %w", path, err)
+	}
 	return b, nil
+}
+
+// validate enforces the pointer's required shape on both write and read.
+// Validating on write keeps an unusable file from being created; validating
+// on read catches hand edits, which are expected for this file.
+func (b *Bootstrap) validate() error {
+	if b.Postgres.Host == "" {
+		return fmt.Errorf("%w: postgres.host is required", ErrInvalidBootstrap)
+	}
+	if b.Postgres.Port < minPort || b.Postgres.Port > maxPort {
+		return fmt.Errorf("%w: postgres.port %d is outside 1-65535", ErrInvalidBootstrap, b.Postgres.Port)
+	}
+	if b.Postgres.Database == "" {
+		return fmt.Errorf("%w: postgres.database is required", ErrInvalidBootstrap)
+	}
+	if b.Postgres.User == "" {
+		return fmt.Errorf("%w: postgres.user is required", ErrInvalidBootstrap)
+	}
+	if b.Objects.Bucket == "" {
+		return fmt.Errorf("%w: objects.bucket is required", ErrInvalidBootstrap)
+	}
+	if err := validateEndpoint(b.Objects.Endpoint); err != nil {
+		return err
+	}
+	return b.RootOfTrust.validate()
+}
+
+// validateEndpoint requires an absolute http(s) URL with a host, so a
+// half-written value fails here rather than at first use.
+func validateEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return fmt.Errorf("%w: objects.endpoint is required", ErrInvalidBootstrap)
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%w: objects.endpoint %q is not a URL: %w", ErrInvalidBootstrap, endpoint, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: objects.endpoint %q must be http or https", ErrInvalidBootstrap, endpoint)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%w: objects.endpoint %q has no host", ErrInvalidBootstrap, endpoint)
+	}
+	return nil
+}
+
+// validate checks the root-of-trust reference. Unsupported kinds are
+// refused rather than defaulted: silently falling back to the key file
+// when someone asked for a keychain would put the key somewhere they did
+// not intend.
+func (r RootOfTrust) validate() error {
+	switch r.Kind {
+	case RootOfTrustKeyFile:
+		if r.Path == "" {
+			return fmt.Errorf("%w: root_of_trust.path is required for kind %q", ErrInvalidBootstrap, RootOfTrustKeyFile)
+		}
+		if !filepath.IsAbs(r.Path) {
+			return fmt.Errorf("%w: root_of_trust.path %q must be absolute", ErrInvalidBootstrap, r.Path)
+		}
+		return nil
+	case "":
+		return fmt.Errorf("%w: root_of_trust.kind is required", ErrInvalidBootstrap)
+	default:
+		return fmt.Errorf("%w: unsupported root_of_trust.kind %q", ErrInvalidBootstrap, r.Kind)
+	}
 }

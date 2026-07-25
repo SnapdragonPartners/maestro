@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -66,14 +67,53 @@ type Roots struct {
 	Data string
 }
 
+// Service names a data-plane service that owns a child of the data root.
+//
+// It is a named type over a closed set rather than a bare string because
+// the value becomes a filesystem path: an unvalidated "../config" would
+// escape the data root entirely, and the caller would be pointing a
+// container's bind mount at the directory holding the unlock key.
+type Service string
+
+// The services with bind-mounted state under the data root.
+const (
+	ServicePostgres Service = "postgres"
+	ServiceMinIO    Service = "minio"
+)
+
+// ErrInvalidService reports a service name that is not a plain, safe
+// single path segment.
+var ErrInvalidService = errors.New("invalid data-plane service name")
+
+// validate rejects anything that is not a single, safe path segment.
+// Constants above are the intended inputs; this guards the type's
+// convertibility from arbitrary strings.
+func (s Service) validate() error {
+	name := string(s)
+	switch {
+	case name == "":
+		return fmt.Errorf("%w: empty", ErrInvalidService)
+	case name == "." || name == "..":
+		return fmt.Errorf("%w: %q is a directory traversal", ErrInvalidService, name)
+	case strings.ContainsRune(name, '/') || strings.ContainsRune(name, filepath.Separator):
+		return fmt.Errorf("%w: %q contains a path separator", ErrInvalidService, name)
+	case name != filepath.Clean(name):
+		return fmt.Errorf("%w: %q is not a clean path segment", ErrInvalidService, name)
+	}
+	return nil
+}
+
 // ServiceDataDir returns the bind-mount source for one data-plane service.
 //
 // Each service gets its own child of the data root rather than sharing it,
 // so a container mounts its own directory as its mount root and never has
 // to traverse the host parent. That is what lets the data root itself stay
 // 0700 while the containers still write freely.
-func (r Roots) ServiceDataDir(service string) string {
-	return filepath.Join(r.Data, service)
+func (r Roots) ServiceDataDir(service Service) (string, error) {
+	if err := service.validate(); err != nil {
+		return "", err
+	}
+	return filepath.Join(r.Data, string(service)), nil
 }
 
 // EnsureServiceDataDirs creates the per-service bind-mount sources.
@@ -83,9 +123,12 @@ func (r Roots) ServiceDataDir(service string) string {
 // container running as the invoking user — and cannot be cleaned up
 // without sudo. Creating them here means they are owned by whoever runs
 // Maestro, which is the identity the containers run as.
-func (r Roots) EnsureServiceDataDirs(services ...string) error {
+func (r Roots) EnsureServiceDataDirs(services ...Service) error {
 	for _, service := range services {
-		dir := r.ServiceDataDir(service)
+		dir, err := r.ServiceDataDir(service)
+		if err != nil {
+			return err
+		}
 		if err := os.MkdirAll(dir, rootPerm); err != nil {
 			return fmt.Errorf("create service data directory %s: %w", dir, err)
 		}

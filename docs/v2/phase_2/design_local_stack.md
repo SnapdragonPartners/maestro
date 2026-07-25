@@ -1,6 +1,6 @@
 +++
 title = "Design: The Local Data-Plane Stack (Item 2)"
-edit_date = "2026-07-24"
+edit_date = "2026-07-25"
 status = "draft"
 summary = "Mini-plan for Phase 2 item 2: the four-root path resolver with MAESTRO_HOME collapse, the 0600 root-of-trust key file, and a Compose stack for Postgres and MinIO bind-mounted under the data root — isolated from v1's container labelling so a benchmark sweep cannot tear it down, digest-pinned, health-gated, and idempotent from a clean checkout."
 type = "design"
@@ -17,6 +17,14 @@ Implements [Phase 2 plan](plan_scope.md) item 2 under [ADR 0022](../../adr/0022-
 1. The **path resolver**: the four OS-standard roots, the `MAESTRO_HOME` collapse, and directory creation with correct permissions.
 2. The **root-of-trust key file**: generated silently at setup, `0600`, under Maestro config, excluded from backup by design.
 2a. The **bootstrap pointer**, under the config root (resolved in review — see Q2): the Postgres endpoint and port, the object-store endpoint, and a *reference* to the root of trust. Never secrets. It records deployment facts established by this item; item 3 consumes it when applying migrations rather than introducing it.
+
+### Scope of these structs: local deployment configuration only
+
+Stated explicitly because it is the difference between a Docker-shaped local convenience and a Docker-shaped *architecture*: **`paths.Bootstrap` and its `Postgres`/`ObjectStore`/`RootOfTrust` structs are the local module's bootstrap, not the universal persistence contract.**
+
+The cloud/local abstraction boundary is [ADR 0022](../../adr/0022-v2-data-plane.md)'s **persistence interface** — the seam with pluggable auth, data, and object modules. Cloud mode constructs that same seam from cloud Postgres, GCS or S3, and provider authentication, using none of this: no `bootstrap.json`, no key file, no key-derived password. Nothing above may be treated as the shape every deployment mode must take, and any code that reaches for `paths.Bootstrap` from above the seam is a defect, because it is precisely how a local-only assumption would harden into the architecture.
+
+The local specifics here are deliberately narrow for that reason: a key file, a derived password, and Docker bind mounts are answers to *unattended single-machine operation*, not to persistence in general.
 3. The **Compose stack**: Postgres and MinIO, both bind-mounted to durable host paths under the data root.
 4. **`make dataplane-up`**: one command from a clean checkout — compose, wait for health, idempotent. (Item 3 adds migrations to this target.)
 5. A **CI job** proving it comes up from a clean checkout.
@@ -52,6 +60,12 @@ The decisive argument is not tidiness, it is **nesting**. The alternative — ad
 `MAESTRO_HOME=<dir>` overrides all four bases at once, yielding `<dir>/{config,cache,state,data}`. It must be absolute; a relative value is an error rather than a surprise relative to the process's working directory.
 
 Windows is **not supported** in Phase 2 and returns a clear error. Docker is already load-bearing (ADR 0022) and WSL is the documented path; a half-working `%AppData%` guess is worse than a refusal.
+
+### D1a. The Postgres password is derived, never stored
+
+The vault lives inside Postgres, so the credential that opens Postgres cannot live in the vault. It is therefore **derived from the root-of-trust key** rather than stored anywhere: the key file stays the single external secret, and the bootstrap pointer stays free of anything that unlocks anything.
+
+Derivation uses **HKDF-SHA-256 with explicit domain separation** — an info string naming Maestro, the consumer, and a version (`maestro/dataplane/postgres-password/v1`) — so this password can never collide with any other value derived from the same key, and a future consumer cannot accidentally reproduce it. The root key is never used directly as a password or encoded into one. Go 1.24+ provides `crypto/hkdf` in the standard library, so this needs no dependency.
 
 ### D2. Permissions
 

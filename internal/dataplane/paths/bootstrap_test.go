@@ -2,6 +2,7 @@ package paths
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,12 +132,15 @@ func TestEnsureServiceDataDirs(t *testing.T) {
 	if ensureErr := roots.Ensure(); ensureErr != nil {
 		t.Fatalf("Ensure: %v", ensureErr)
 	}
-	if svcErr := roots.EnsureServiceDataDirs("postgres", "minio"); svcErr != nil {
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceMinIO); svcErr != nil {
 		t.Fatalf("EnsureServiceDataDirs: %v", svcErr)
 	}
 
-	for _, service := range []string{"postgres", "minio"} {
-		dir := roots.ServiceDataDir(service)
+	for _, service := range []Service{ServicePostgres, ServiceMinIO} {
+		dir, dirErr := roots.ServiceDataDir(service)
+		if dirErr != nil {
+			t.Fatalf("ServiceDataDir(%q): %v", service, dirErr)
+		}
 		info, statErr := os.Stat(dir)
 		if statErr != nil {
 			t.Fatalf("stat %s: %v", dir, statErr)
@@ -150,7 +154,7 @@ func TestEnsureServiceDataDirs(t *testing.T) {
 	}
 
 	// Re-running setup is the everyday path.
-	if svcErr := roots.EnsureServiceDataDirs("postgres", "minio"); svcErr != nil {
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceMinIO); svcErr != nil {
 		t.Fatalf("second EnsureServiceDataDirs: %v", svcErr)
 	}
 	// The data root itself stays tight; only the children are mounted.
@@ -160,5 +164,99 @@ func TestEnsureServiceDataDirs(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != rootPerm {
 		t.Errorf("data root has mode %#o, want %#o", perm, rootPerm)
+	}
+}
+
+// A service name becomes a path under the data root, so an unvalidated one
+// could point a container's bind mount at the config root holding the
+// unlock key. Reject anything that is not a plain single segment.
+func TestServiceDataDirRejectsTraversal(t *testing.T) {
+	roots, err := resolve("linux", envOf(map[string]string{HomeEnv: t.TempDir()}), "/home/u")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	for _, name := range []Service{"", ".", "..", "../config", "a/b", "./x", "sub/"} {
+		t.Run(string(name), func(t *testing.T) {
+			dir, dirErr := roots.ServiceDataDir(name)
+			if !errors.Is(dirErr, ErrInvalidService) {
+				t.Fatalf("ServiceDataDir(%q) = %q, %v; want ErrInvalidService", name, dir, dirErr)
+			}
+			if ensErr := roots.EnsureServiceDataDirs(name); !errors.Is(ensErr, ErrInvalidService) {
+				t.Errorf("EnsureServiceDataDirs(%q) = %v; want ErrInvalidService", name, ensErr)
+			}
+		})
+	}
+}
+
+// The pointer is hand-editable, so a tolerant decoder would silently
+// accept a password somebody added in good faith.
+func TestReadBootstrapRejectsUnknownFields(t *testing.T) {
+	root := t.TempDir()
+	if err := WriteBootstrap(root, sampleBootstrap()); err != nil {
+		t.Fatalf("WriteBootstrap: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(root, BootstrapFileName))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var generic map[string]any
+	if decErr := json.Unmarshal(raw, &generic); decErr != nil {
+		t.Fatalf("decode: %v", decErr)
+	}
+	pg, ok := generic["postgres"].(map[string]any)
+	if !ok {
+		t.Fatal("postgres section is not an object")
+	}
+	pg["password"] = "hunter2"
+
+	edited, err := json.Marshal(generic)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if writeErr := os.WriteFile(filepath.Join(root, BootstrapFileName), edited, bootstrapPerm); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+
+	if _, err := ReadBootstrap(root); err == nil {
+		t.Fatal("a hand-added postgres.password was accepted; it must be refused, not ignored")
+	}
+}
+
+func TestBootstrapValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Bootstrap)
+	}{
+		{name: "no postgres host", mutate: func(b *Bootstrap) { b.Postgres.Host = "" }},
+		{name: "port zero", mutate: func(b *Bootstrap) { b.Postgres.Port = 0 }},
+		{name: "port too high", mutate: func(b *Bootstrap) { b.Postgres.Port = 70000 }},
+		{name: "no database", mutate: func(b *Bootstrap) { b.Postgres.Database = "" }},
+		{name: "no user", mutate: func(b *Bootstrap) { b.Postgres.User = "" }},
+		{name: "no bucket", mutate: func(b *Bootstrap) { b.Objects.Bucket = "" }},
+		{name: "no endpoint", mutate: func(b *Bootstrap) { b.Objects.Endpoint = "" }},
+		{name: "endpoint without scheme", mutate: func(b *Bootstrap) { b.Objects.Endpoint = "127.0.0.1:9000" }},
+		{name: "endpoint with wrong scheme", mutate: func(b *Bootstrap) { b.Objects.Endpoint = "ftp://host" }},
+		{name: "no root of trust kind", mutate: func(b *Bootstrap) { b.RootOfTrust.Kind = "" }},
+		{name: "unsupported root of trust kind", mutate: func(b *Bootstrap) { b.RootOfTrust.Kind = "keychain" }},
+		{name: "key file without path", mutate: func(b *Bootstrap) { b.RootOfTrust.Path = "" }},
+		{name: "key file with relative path", mutate: func(b *Bootstrap) { b.RootOfTrust.Path = "rel/key" }},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := sampleBootstrap()
+			tc.mutate(b)
+			if err := WriteBootstrap(t.TempDir(), b); !errors.Is(err, ErrInvalidBootstrap) {
+				t.Fatalf("WriteBootstrap = %v; want ErrInvalidBootstrap", err)
+			}
+		})
+	}
+}
+
+func TestWriteBootstrapRejectsNil(t *testing.T) {
+	if err := WriteBootstrap(t.TempDir(), nil); !errors.Is(err, ErrInvalidBootstrap) {
+		t.Fatalf("WriteBootstrap(nil) = %v; want ErrInvalidBootstrap", err)
 	}
 }
