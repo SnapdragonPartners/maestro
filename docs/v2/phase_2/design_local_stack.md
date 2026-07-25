@@ -18,6 +18,10 @@ Implements [Phase 2 plan](plan_scope.md) item 2 under [ADR 0022](../../adr/0022-
 2. The **root-of-trust key file**: generated silently at setup, `0600`, under Maestro config, excluded from backup by design.
 2a. The **bootstrap pointer**, under the config root (resolved in review — see Q2): the Postgres endpoint and port, the object-store endpoint, and a *reference* to the root of trust. Never secrets. It records deployment facts established by this item; item 3 consumes it when applying migrations rather than introducing it.
 
+3. The **Compose stack**: Postgres and MinIO, both bind-mounted to durable host paths under the data root.
+4. **`make dataplane-up`**: one command from a clean checkout — compose, wait for health, idempotent. (Item 3 adds migrations to this target.)
+5. A **CI job** proving it comes up from a clean checkout.
+
 ### Scope of these structs: local deployment configuration only
 
 Stated explicitly because it is the difference between a Docker-shaped local convenience and a Docker-shaped *architecture*: **`paths.Bootstrap` and its `Postgres`/`ObjectStore`/`RootOfTrust` structs are the local module's bootstrap, not the universal persistence contract.**
@@ -25,9 +29,6 @@ Stated explicitly because it is the difference between a Docker-shaped local con
 The cloud/local abstraction boundary is [ADR 0022](../../adr/0022-v2-data-plane.md)'s **persistence interface** — the seam with pluggable auth, data, and object modules. Cloud mode constructs that same seam from cloud Postgres, GCS or S3, and provider authentication, using none of this: no `bootstrap.json`, no key file, no key-derived password. Nothing above may be treated as the shape every deployment mode must take, and any code that reaches for `paths.Bootstrap` from above the seam is a defect, because it is precisely how a local-only assumption would harden into the architecture.
 
 The local specifics here are deliberately narrow for that reason: a key file, a derived password, and Docker bind mounts are answers to *unattended single-machine operation*, not to persistence in general.
-3. The **Compose stack**: Postgres and MinIO, both bind-mounted to durable host paths under the data root.
-4. **`make dataplane-up`**: one command from a clean checkout — compose, wait for health, idempotent. (Item 3 adds migrations to this target.)
-5. A **CI job** proving it comes up from a clean checkout.
 
 ## Decisions
 
