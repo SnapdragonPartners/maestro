@@ -199,8 +199,13 @@ dataplane-down:
 
 # Destructive: deletes the Postgres cluster and object store. Prompts
 # unless FORCE=1.
+#
+# `filter 1`, not a bare `if $(FORCE)`: Make's if is true for ANY non-empty
+# value, so FORCE=0 would skip the confirmation on a destructive command --
+# the opposite of what someone typing 0 intends. Only the exact value 1
+# suppresses the prompt; anything else prompts, which is the safe default.
 dataplane-reset:
-	go run ./cmd/dataplanectl $(if $(FORCE),-force,) reset
+	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) reset
 
 # Clean build artifacts
 clean:
