@@ -34,15 +34,15 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | --- | --- |
 | Artifact Envelopes And Payload Schemas (blocked Phase 2) | [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md), Accepted 2026-07-24 as Phase 2 item 1 |
 
-## Open Candidates, Dependency-Ordered
+## Candidates, Dependency-Ordered
 
 Ordered by the phase each blocks. An entry should be Accepted before its blocking phase starts implementation.
+
+Entries are numbered, and those numbers are cited from phase plans and session notes, so a resolved candidate **keeps its slot** here as a pointer to its ADR rather than being deleted and renumbering everything below it. The section is therefore mostly open candidates with resolved stubs among them; the resolved tables above are the authoritative list of what is done.
 
 ### 1. Artifact Envelopes And Payload Schemas — RESOLVED by [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md)
 
 Accepted 2026-07-24 as Phase 2 item 1; see the Resolved In Later Phases table above. All five decisions it carried are fixed there: the JSON envelope and its JCS digest discipline, the code-resident payload type registry validated at the seam, additive-within-version evolution with the reader as the only compatibility layer, RFC 7386 merge-patch amendments materialized on read, and review linkage over the whole reviewable projection.
-
-*The slot is retained rather than removed so the numbering of the entries below stays stable — these numbers are cited from phase plans and session notes, and renumbering would silently redirect those references.*
 
 ### 2. Online Backup And Restore — trails Phase 2 (non-blocking)
 
