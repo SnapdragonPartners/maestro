@@ -40,10 +40,19 @@ services:
     labels:
       com.maestro.component: dataplane
     healthcheck:
-      # pg_isready ships in this image. -U/-d matter: the default database
-      # is `postgres`, which does not exist here, so a bare pg_isready
-      # reports ready before the real database is usable.
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -h 127.0.0.1"]
+      # An AUTHENTICATED query, not pg_isready. pg_isready reports whether
+      # the server is accepting connections and succeeds by design even
+      # when the user, database or password are wrong — so it would report
+      # "ready" for a plane whose credentials cannot open it, which is
+      # exactly the failure a restored-but-mismatched root-of-trust key
+      # produces.
+      #
+      # -h postgres, not 127.0.0.1: this image's generated pg_hba trusts
+      # loopback inside the container, so a loopback check accepts ANY
+      # password. The service name resolves to the container's own
+      # non-loopback address, which takes the scram-sha-256 path — the same
+      # one real clients take.
+      test: ["CMD-SHELL", "PGPASSWORD=\"$$POSTGRES_PASSWORD\" psql -h postgres -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -tAc 'select 1' > /dev/null"]
       interval: 2s
       timeout: 3s
       # Generous: the first start runs initdb, which is far slower than

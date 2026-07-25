@@ -7,6 +7,21 @@ import (
 	"syscall"
 )
 
+// AcquireLock takes an exclusive, cross-process advisory lock on path,
+// creating the lock file if needed, and returns a release function.
+//
+// Exported because writers span packages: ADR 0027's mirror-lock lesson is
+// that a package-private lock silently readmits the race as soon as a
+// second package touches the same resource. Callers outside this package
+// use it to serialize data-plane lifecycle operations on the data root.
+//
+// The lock is NOT re-entrant. flock is per open file description, so a
+// second acquisition in the same process blocks against the first — a
+// caller that already holds it must not take it again.
+func AcquireLock(path string) (func() error, error) {
+	return acquireLock(path)
+}
+
 // acquireLock takes an exclusive, cross-process advisory lock on path,
 // creating the lock file if needed, and returns a release function.
 //
