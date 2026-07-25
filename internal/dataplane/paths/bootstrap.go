@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -245,6 +246,17 @@ func validateEndpoint(endpoint string) error {
 	return nil
 }
 
+// isIPLiteral reports whether host is an IP address, in bare or bracketed
+// form. Bracketed IPv6 is accepted because that is how it appears
+// everywhere else a host and port travel together.
+func isIPLiteral(host string) bool {
+	if inner, ok := strings.CutPrefix(host, "["); ok {
+		trimmed, closed := strings.CutSuffix(inner, "]")
+		return closed && net.ParseIP(trimmed) != nil
+	}
+	return net.ParseIP(host) != nil
+}
+
 // forbiddenInHost maps a substring that must not appear in postgres.host
 // to the reason it is refused.
 //
@@ -257,13 +269,22 @@ var forbiddenInHost = map[string]string{
 	" ":   "whitespace",
 }
 
-// validateHost requires a bare hostname or IP. The port is a separate
-// field, so anything resembling URL syntax here — a scheme, userinfo, a
-// path — is either a mistake or an attempt to smuggle a credential into a
-// file that must not carry one.
+// validateHost requires a bare hostname or IP address. The port is a
+// separate field, so anything resembling URL syntax here — a scheme,
+// userinfo, a path — is either a mistake or an attempt to smuggle a
+// credential into a file that must not carry one.
+//
+// IP literals are checked before the substring rules, because IPv6
+// addresses are all colons and would otherwise be rejected by the
+// no-embedded-port rule. Both bare (`::1`) and bracketed (`[::1]`) forms
+// are accepted; `net.ParseIP` is what distinguishes an address from a
+// host:port, so "127.0.0.1:5432" still fails.
 func validateHost(host string) error {
 	if host == "" {
 		return fmt.Errorf("%w: postgres.host is required", ErrInvalidBootstrap)
+	}
+	if isIPLiteral(host) {
+		return nil
 	}
 	for substr, reason := range forbiddenInHost {
 		if strings.Contains(host, substr) {

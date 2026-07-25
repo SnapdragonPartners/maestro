@@ -91,6 +91,11 @@ Two ways to satisfy "each child has the ownership its container requires":
 
 The consequence to verify rather than assume: this must be exercised on **native Linux CI**, not only on macOS, because macOS would pass either way.
 
+Two follow-ons, both raised in review:
+
+- **Pre-existing directories are verified, not trusted.** `MkdirAll` succeeds on a directory that already exists regardless of owner or mode, so a directory Docker created as root on an earlier run would pass setup and fail at container start, far from its cause — recreating exactly the failure this decision prevents. Setup therefore checks owner, mode, and actual writability (a probe, since a read-only mount makes `MkdirAll` a silent no-op) and **fails with an actionable message rather than repairing**: chowning someone else's directory is not ours to do and would need root anyway.
+- **The Postgres image must be the Debian-based variant, not Alpine.** The official image documents arbitrary-`--user` support as *mostly* working: when the uid has no `/etc/passwd` entry, initialisation needs its `nss_wrapper` path, and that support is not present in every variant. Since D2a runs the container as an arbitrary host uid, the pin is `postgres:<version>` (Debian) and the CI job must prove **first-run initialisation**, not merely that a already-initialised cluster starts. MinIO documents the `--user $(id -u):$(id -g)` pattern directly, so it needs no equivalent caveat.
+
 ### D3. Compose stack isolation from v1 — the load-bearing constraint
 
 The Phase 2 plan's hard constraint is that nothing may disturb v1's path, because v1 is the benchmark target. Two concrete hazards, both easy to trip:
@@ -104,7 +109,7 @@ Host ports are **not** the service defaults: 5432 collides with any developer's 
 
 ### D5. Image pinning
 
-Both images are pinned by **arch-independent manifest digest**, not tag — the discipline [ADR 0026](../../adr/0026-multi-architecture-artifacts.md) established for the benchmark cache image, and for the same reason: development is arm64, CI is amd64, and a per-arch digest would break one of them. The digests live in one file with the tag recorded alongside as a comment, so a bump is a reviewable one-line change.
+The Postgres pin is the **Debian-based `postgres:<version>`**, not `-alpine`, for the arbitrary-uid reason in D2a. Both images are pinned by **arch-independent manifest digest**, not tag — the discipline [ADR 0026](../../adr/0026-multi-architecture-artifacts.md) established for the benchmark cache image, and for the same reason: development is arm64, CI is amd64, and a per-arch digest would break one of them. The digests live in one file with the tag recorded alongside as a comment, so a bump is a reviewable one-line change.
 
 ### D6. Health gating and idempotency
 

@@ -342,3 +342,83 @@ func TestServiceRejectsUnknownName(t *testing.T) {
 		t.Fatalf("ServiceDataDir(redis) = %v; want ErrInvalidService", dirErr)
 	}
 }
+
+func TestBootstrapAcceptsIPLiteralHosts(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "::1", "[::1]", "[2001:db8::1]", "db.internal"} {
+		t.Run(host, func(t *testing.T) {
+			b := sampleBootstrap()
+			b.Postgres.Host = host
+			if err := WriteBootstrap(t.TempDir(), b); err != nil {
+				t.Fatalf("WriteBootstrap(host=%q) = %v; want acceptance", host, err)
+			}
+		})
+	}
+}
+
+// MkdirAll succeeds on a directory that already exists no matter who owns
+// it or how it is moded — the dangerous case being one Docker created as
+// root on an earlier run. Detect it at setup with an actionable error
+// instead of at container start.
+func TestEnsureServiceDataDirsRejectsUnusableExisting(t *testing.T) {
+	roots, err := resolve("linux", envOf(map[string]string{HomeEnv: t.TempDir()}), "/home/u")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if ensureErr := roots.Ensure(); ensureErr != nil {
+		t.Fatalf("Ensure: %v", ensureErr)
+	}
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres); svcErr != nil {
+		t.Fatalf("EnsureServiceDataDirs: %v", svcErr)
+	}
+	dir, err := roots.ServiceDataDir(ServicePostgres)
+	if err != nil {
+		t.Fatalf("ServiceDataDir: %v", err)
+	}
+
+	// Widened mode: the container would be exposed to other local users.
+	if chmodErr := os.Chmod(dir, 0o755); chmodErr != nil {
+		t.Fatalf("chmod: %v", chmodErr)
+	}
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres); !errors.Is(svcErr, ErrServiceDataDir) {
+		t.Fatalf("widened mode accepted: %v", svcErr)
+	}
+	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+		t.Fatalf("restore chmod: %v", chmodErr)
+	}
+
+	// A file where the directory should be.
+	minioDir, err := roots.ServiceDataDir(ServiceMinIO)
+	if err != nil {
+		t.Fatalf("ServiceDataDir: %v", err)
+	}
+	if writeErr := os.WriteFile(minioDir, []byte("not a dir"), 0o600); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+	if svcErr := roots.EnsureServiceDataDirs(ServiceMinIO); svcErr == nil {
+		t.Fatal("a regular file was accepted as a service data directory")
+	}
+}
+
+// The writability probe must leave nothing behind.
+func TestEnsureServiceDataDirsLeavesNoProbeFile(t *testing.T) {
+	roots, err := resolve("linux", envOf(map[string]string{HomeEnv: t.TempDir()}), "/home/u")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceMinIO); svcErr != nil {
+		t.Fatalf("EnsureServiceDataDirs: %v", svcErr)
+	}
+	for _, service := range []Service{ServicePostgres, ServiceMinIO} {
+		dir, dirErr := roots.ServiceDataDir(service)
+		if dirErr != nil {
+			t.Fatalf("ServiceDataDir: %v", dirErr)
+		}
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			t.Fatalf("read %s: %v", dir, readErr)
+		}
+		if len(entries) != 0 {
+			t.Errorf("%s is not empty after setup: %v", dir, entries)
+		}
+	}
+}

@@ -16,6 +16,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+
+	"orchestrator/pkg/utils"
 )
 
 const (
@@ -95,6 +98,10 @@ var knownServices = map[Service]bool{
 // services, or whose value is not a safe single path segment.
 var ErrInvalidService = errors.New("invalid data-plane service name")
 
+// ErrServiceDataDir reports a service data directory that exists but
+// cannot be used by the identity the containers run as.
+var ErrServiceDataDir = errors.New("unusable service data directory")
+
 // validate enforces membership in the known set, then re-checks that the
 // value is a safe path segment.
 //
@@ -155,6 +162,56 @@ func (r Roots) EnsureServiceDataDirs(services ...Service) error {
 		if err := os.MkdirAll(dir, rootPerm); err != nil {
 			return fmt.Errorf("create service data directory %s: %w", dir, err)
 		}
+		if err := verifyOwnedAndWritable(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyOwnedAndWritable checks that an existing service directory is
+// usable by the identity the containers will run as.
+//
+// MkdirAll succeeds on a directory that already exists no matter who owns
+// it, which is the dangerous case: a directory Docker created as root on
+// an earlier run passes creation and then fails at container start, far
+// from the cause. That is precisely the failure D2a exists to prevent, so
+// it is detected here with an actionable message rather than repaired —
+// chowning someone else's directory is not ours to do, and would need root
+// anyway.
+func verifyOwnedAndWritable(dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat service data directory %s: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: %s is not a directory", ErrServiceDataDir, dir)
+	}
+	if perm := info.Mode().Perm(); perm != rootPerm {
+		return fmt.Errorf("%w: %s has mode %#o, want %#o", ErrServiceDataDir, dir, perm, rootPerm)
+	}
+
+	stat, ok := utils.SafeAssert[*syscall.Stat_t](info.Sys())
+	if !ok {
+		return fmt.Errorf("%w: cannot read ownership of %s on this platform", ErrServiceDataDir, dir)
+	}
+	if uid := os.Getuid(); int(stat.Uid) != uid {
+		return fmt.Errorf("%w: %s is owned by uid %d, but Maestro runs as uid %d — containers run as the invoking user, so this directory is unusable. It was most likely created by Docker as root; remove it and re-run setup", ErrServiceDataDir, dir, stat.Uid, uid)
+	}
+
+	// Ownership and mode imply writability for the owner on an ordinary
+	// filesystem, but not on a read-only mount — where MkdirAll above is a
+	// silent no-op. Probe rather than infer.
+	probe, err := os.CreateTemp(dir, ".maestro-write-probe-*")
+	if err != nil {
+		return fmt.Errorf("%w: %s is not writable: %w", ErrServiceDataDir, dir, err)
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("close write probe in %s: %w", dir, err)
+	}
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove write probe %s: %w", name, err)
 	}
 	return nil
 }
