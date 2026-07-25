@@ -113,7 +113,9 @@ The Postgres pin is the **Debian-based `postgres:<version>`**, not `-alpine`, fo
 
 ### D6. Health gating and idempotency
 
-`make dataplane-up` composes, then waits: Postgres via `pg_isready`, MinIO via its `/minio/health/live` endpoint, both with a bounded timeout that fails with the container's logs rather than a bare timeout message. Re-running is a no-op when the stack is already healthy — the "one command from a clean checkout" criterion and the everyday inner-loop command are the same command, so it must be safe to run repeatedly.
+`make dataplane-up` composes, then waits: Postgres via its container healthcheck, MinIO via its `/minio/health/live` endpoint, both with a bounded timeout that fails with the container's logs rather than a bare timeout message.
+
+**The Postgres healthcheck is an authenticated `select 1`, not `pg_isready`** (corrected in review; the first version used `pg_isready`). `pg_isready` reports whether the server accepts connections and succeeds by design when the user, database or password are wrong — so it would report ready for a plane whose credentials cannot open it, which is exactly what a restored-but-mismatched root-of-trust key produces. It connects by **service name rather than loopback**, because the image's generated `pg_hba` trusts loopback inside the container: a `127.0.0.1` check accepts any password and proves nothing. The service name resolves to the container's own non-loopback address and takes the scram path real clients take. Both properties are pinned by a test over the shipped Compose file, and the behaviour is asserted in CI against the running server. Re-running is a no-op when the stack is already healthy — the "one command from a clean checkout" criterion and the everyday inner-loop command are the same command, so it must be safe to run repeatedly.
 
 `dataplane-down` stops containers and leaves the data root untouched. `dataplane-reset` deletes the data root's contents and is the only destructive target; it prompts unless `--force`/`FORCE=1`, because the data root is the thing ADR 0022 spent an amendment making durable.
 

@@ -296,9 +296,14 @@ type composePS struct {
 
 // postgresHealthy reads the container's own healthcheck verdict.
 //
-// The check runs inside the container because pg_isready ships there and
-// speaks the protocol; a host-side TCP dial would report success as soon
-// as the port is bound, which during a cold initdb is long before the
+// The verdict comes from the container's healthcheck, which runs an
+// AUTHENTICATED query (compose.yaml, pinned by a test) — deliberately not
+// pg_isready, which succeeds with the wrong user, database or password and
+// would report a plane ready that nobody can open.
+//
+// The check lives in the container because that is where a client that
+// speaks the protocol ships. A host-side TCP dial would report success as
+// soon as the port is bound, which during a cold initdb is long before the
 // database can answer.
 func postgresHealthy(ctx context.Context, composeFile string, env []string) error {
 	// Per-probe bound: one wedged docker invocation must not consume the

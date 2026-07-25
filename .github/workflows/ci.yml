@@ -135,13 +135,20 @@ jobs:
           # Isolation from v1: component label present, session label absent.
           # A session label would make the benchmark adapter's teardown sweep
           # destroy the data plane mid-run.
-          docker inspect maestro-dataplane-postgres-1 maestro-dataplane-minio-1 \
-            --format '{{json .Config.Labels}}' | grep -q 'com.maestro.component' \
-            || { echo "component label missing"; exit 1; }
-          if docker inspect maestro-dataplane-postgres-1 maestro-dataplane-minio-1 \
-            --format '{{json .Config.Labels}}' | grep -q 'maestro.session'; then
-            echo "a data-plane container carries a session label"; exit 1
-          fi
+          # Per-service, not both at once: inspecting two containers into a
+          # single grep -q proves only that AT LEAST ONE carries the label,
+          # so a service that lost it would pass. The negative check below
+          # is safe either way — any match is a failure — but it is written
+          # per-service too, so both read the same way.
+          for svc in postgres minio; do
+            labels=$(docker inspect "maestro-dataplane-$svc-1" --format '{{json .Config.Labels}}')
+            echo "$labels" | grep -q '"com.maestro.component":"dataplane"' \
+              || { echo "$svc is missing the component label"; exit 1; }
+            if echo "$labels" | grep -q 'maestro.session'; then
+              echo "$svc carries a session label: the benchmark teardown sweep would destroy it mid-run"
+              exit 1
+            fi
+          done
 
           # The bootstrap pointer exists and carries no credential.
           test -f "$MAESTRO_HOME/config/bootstrap.json" || { echo "no bootstrap pointer"; exit 1; }

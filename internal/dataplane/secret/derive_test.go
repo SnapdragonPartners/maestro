@@ -1,6 +1,8 @@
 package secret
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -82,30 +84,51 @@ func TestDeriveIsShellAndURLSafe(t *testing.T) {
 	}
 }
 
-// The root key must not be recoverable from, or visible in, a credential.
-func TestDeriveDoesNotLeakRootKey(t *testing.T) {
+// The credential must not be a re-encoding of the root key.
+//
+// What this can and cannot check is worth being precise about. HKDF's
+// one-wayness is not unit-testable, and an earlier version of this test
+// pretended otherwise: it searched the output for the raw key bytes and
+// for their hex encoding, and *both* comparisons were vacuous. The output
+// is restricted to the base64url alphabet, so it can never contain raw
+// bytes like NUL; and a 64-character hex needle cannot occur inside a
+// 43-character haystack. It passed unconditionally, including against a
+// Derive that leaked the key outright.
+//
+// The realistic regression is someone "simplifying" Derive into a direct
+// encoding of the root key — dropping the KDF while keeping the shape. So
+// that is what is asserted: the output must differ from the key's own
+// encodings, and no meaningful run of the key may survive into it.
+func TestDeriveIsNotAnEncodingOfTheRootKey(t *testing.T) {
 	key := rootKey()
 	got, err := Derive(key, ContextPostgresPassword)
 	if err != nil {
 		t.Fatalf("Derive: %v", err)
 	}
-	for _, encoded := range []string{
-		string(key),
-		hexOf(key),
+
+	for name, encoded := range map[string]string{
+		"base64url":        base64.RawURLEncoding.EncodeToString(key),
+		"base64url padded": base64.URLEncoding.EncodeToString(key),
+		"base64 std":       base64.RawStdEncoding.EncodeToString(key),
+		"hex":              hex.EncodeToString(key),
+		"hex, uppercase":   strings.ToUpper(hex.EncodeToString(key)),
 	} {
-		if strings.Contains(got, encoded) {
-			t.Error("derived credential contains the root key verbatim")
+		if got == encoded {
+			t.Errorf("derived credential is just the root key in %s: the KDF has been bypassed", name)
 		}
 	}
-}
 
-func hexOf(b []byte) string {
-	const digits = "0123456789abcdef"
-	out := make([]byte, 0, len(b)*2)
-	for _, c := range b {
-		out = append(out, digits[c>>4], digits[c&0xf])
+	// A shared run long enough to matter would indicate the output is
+	// partly the key. 8 hex characters is 4 key bytes — far beyond
+	// coincidence for a 43-character output, and short enough to catch a
+	// truncated-prefix bug.
+	keyHex := hex.EncodeToString(key)
+	const runLen = 8
+	for i := 0; i+runLen <= len(keyHex); i++ {
+		if strings.Contains(strings.ToLower(got), keyHex[i:i+runLen]) {
+			t.Errorf("derived credential contains %q, a run of the root key's encoding", keyHex[i:i+runLen])
+		}
 	}
-	return string(out)
 }
 
 func TestDeriveRejectsEmptyInputs(t *testing.T) {
