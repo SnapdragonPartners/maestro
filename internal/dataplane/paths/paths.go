@@ -146,6 +146,11 @@ func ownershipError(dir string, ownerUID, wantUID, wantGID int) error {
 		ErrServiceDataDir, dir, ownerUID, wantUID, wantUID, wantGID)
 }
 
+// KeyPath returns the absolute path of the root-of-trust key file.
+func (r Roots) KeyPath() string {
+	return filepath.Join(r.Config, KeyFileName)
+}
+
 // ServiceDataDir returns the bind-mount source for one data-plane service.
 //
 // Each service gets its own child of the data root rather than sharing it,
