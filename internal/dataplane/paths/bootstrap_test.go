@@ -260,3 +260,85 @@ func TestWriteBootstrapRejectsNil(t *testing.T) {
 		t.Fatalf("WriteBootstrap(nil) = %v; want ErrInvalidBootstrap", err)
 	}
 }
+
+// A URL is rich enough to smuggle a credential past a file that claims to
+// hold none, so the endpoint is held to a bare origin.
+func TestBootstrapRejectsCredentialBearingEndpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "userinfo", endpoint: "http://user:hunter2@127.0.0.1:9000"},
+		{name: "user only", endpoint: "http://token@127.0.0.1:9000"},
+		{name: "query", endpoint: "http://127.0.0.1:9000?access_key=abc"},
+		{name: "fragment", endpoint: "http://127.0.0.1:9000#tok"},
+		{name: "path", endpoint: "http://127.0.0.1:9000/secret-prefix"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := sampleBootstrap()
+			b.Objects.Endpoint = tc.endpoint
+			if err := WriteBootstrap(t.TempDir(), b); !errors.Is(err, ErrInvalidBootstrap) {
+				t.Fatalf("WriteBootstrap(%q) = %v; want ErrInvalidBootstrap", tc.endpoint, err)
+			}
+		})
+	}
+
+	// A trailing slash is an origin, not a path, and must stay valid.
+	b := sampleBootstrap()
+	b.Objects.Endpoint = "http://127.0.0.1:9000/"
+	if err := WriteBootstrap(t.TempDir(), b); err != nil {
+		t.Errorf("bare origin with trailing slash rejected: %v", err)
+	}
+}
+
+func TestBootstrapRejectsURLShapedHost(t *testing.T) {
+	for _, host := range []string{
+		"http://127.0.0.1",
+		"user:pw@127.0.0.1",
+		"127.0.0.1/db",
+		"127.0.0.1:5432",
+		"host name",
+	} {
+		t.Run(host, func(t *testing.T) {
+			b := sampleBootstrap()
+			b.Postgres.Host = host
+			if err := WriteBootstrap(t.TempDir(), b); !errors.Is(err, ErrInvalidBootstrap) {
+				t.Fatalf("WriteBootstrap(host=%q) = %v; want ErrInvalidBootstrap", host, err)
+			}
+		})
+	}
+}
+
+// A JSON decoder stops at the first value, so a second object appended to
+// the file would be silently ignored while a reader assumes it applies.
+func TestReadBootstrapRejectsTrailingContent(t *testing.T) {
+	root := t.TempDir()
+	if err := WriteBootstrap(root, sampleBootstrap()); err != nil {
+		t.Fatalf("WriteBootstrap: %v", err)
+	}
+	path := filepath.Join(root, BootstrapFileName)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	appended := append(raw, []byte("\n{\"schema_version\": 1}\n")...)
+	if writeErr := os.WriteFile(path, appended, bootstrapPerm); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+
+	if _, err := ReadBootstrap(root); !errors.Is(err, ErrInvalidBootstrap) {
+		t.Fatalf("ReadBootstrap = %v; want ErrInvalidBootstrap for trailing content", err)
+	}
+}
+
+func TestServiceRejectsUnknownName(t *testing.T) {
+	roots, err := resolve("linux", envOf(map[string]string{HomeEnv: t.TempDir()}), "/home/u")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if _, dirErr := roots.ServiceDataDir(Service("redis")); !errors.Is(dirErr, ErrInvalidService) {
+		t.Fatalf("ServiceDataDir(redis) = %v; want ErrInvalidService", dirErr)
+	}
+}

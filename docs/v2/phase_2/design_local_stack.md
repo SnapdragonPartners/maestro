@@ -78,6 +78,19 @@ The key file is `0600`, created by **writing a temporary file and atomically lin
 
 Content is 32 random bytes from `crypto/rand`, hex-encoded with a trailing newline so the file is greppable and copy-pasteable for the documented "restore on a new machine" flow. If the file exists with wrong permissions, Maestro **fails loudly rather than silently fixing it** — a key that was briefly world-readable is a key that may have leaked, and quietly `chmod`-ing it hides that.
 
+### D2a. Container runtime UID — how host-owned directories become writable
+
+Pre-creating the per-service directories only works if the containers can write them, and by default they cannot: the Postgres image runs as uid 999 and MinIO as uid 1000, neither of which owns a host directory created by the invoking user. On macOS this is invisible — Docker Desktop's file sharing maps ownership — and on native Linux it fails outright, which is exactly the split that makes it a CI-only surprise.
+
+Two ways to satisfy "each child has the ownership its container requires":
+
+1. `chown` each directory to the image's uid. Needs root on the host, and hardcodes another project's uid choices into ours.
+2. **Run the containers as the invoking user.** `user: "${MAESTRO_UID}:${MAESTRO_GID}"` in Compose, with the values passed explicitly from the launcher (`id -u`/`id -g`) rather than relied upon as shell exports, since `$UID` is not exported by default in every shell. Both images support an arbitrary uid provided their data directory is writable, which is precisely what pre-creation guarantees.
+
+**Decision: option 2.** The requirement is met by choosing the container's runtime identity to match the directory's owner, not by chowning the directory to match the image's default. That keeps every path under the data root owned by the human who ran Maestro — no root-owned droppings needing `sudo` to clean up, and `dataplane-reset` stays an ordinary file removal.
+
+The consequence to verify rather than assume: this must be exercised on **native Linux CI**, not only on macOS, because macOS would pass either way.
+
 ### D3. Compose stack isolation from v1 — the load-bearing constraint
 
 The Phase 2 plan's hard constraint is that nothing may disturb v1's path, because v1 is the benchmark target. Two concrete hazards, both easy to trip:

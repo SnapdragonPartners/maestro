@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ErrInvalidBootstrap reports a bootstrap pointer that is missing required
@@ -165,6 +167,13 @@ func ReadBootstrap(configRoot string) (Bootstrap, error) {
 	if err := dec.Decode(&b); err != nil {
 		return Bootstrap{}, fmt.Errorf("decode bootstrap pointer %s: %w", path, err)
 	}
+	// A JSON decoder stops at the end of the first value, so trailing
+	// content is silently ignored — including a second, contradictory
+	// object that a reader would reasonably assume was in effect.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return Bootstrap{}, fmt.Errorf("%w: %s has content after the first JSON document", ErrInvalidBootstrap, path)
+	}
 	// A pointer from a future Maestro may describe a plane this build
 	// cannot reach. Refuse rather than half-understand it.
 	if b.SchemaVersion != BootstrapSchemaVersion {
@@ -180,8 +189,8 @@ func ReadBootstrap(configRoot string) (Bootstrap, error) {
 // Validating on write keeps an unusable file from being created; validating
 // on read catches hand edits, which are expected for this file.
 func (b *Bootstrap) validate() error {
-	if b.Postgres.Host == "" {
-		return fmt.Errorf("%w: postgres.host is required", ErrInvalidBootstrap)
+	if err := validateHost(b.Postgres.Host); err != nil {
+		return err
 	}
 	if b.Postgres.Port < minPort || b.Postgres.Port > maxPort {
 		return fmt.Errorf("%w: postgres.port %d is outside 1-65535", ErrInvalidBootstrap, b.Postgres.Port)
@@ -201,8 +210,16 @@ func (b *Bootstrap) validate() error {
 	return b.RootOfTrust.validate()
 }
 
-// validateEndpoint requires an absolute http(s) URL with a host, so a
-// half-written value fails here rather than at first use.
+// validateEndpoint requires a bare http(s) origin — scheme, host, optional
+// port, and nothing else.
+//
+// The exclusions are the point, not the scheme check. A URL is a rich
+// enough format to smuggle a credential past a file that claims to hold
+// none: userinfo (`http://user:password@host`) is the obvious one, and a
+// query or fragment carries a token just as well. Rejecting everything
+// beyond the origin keeps "this file has no secrets" true by shape rather
+// than by reviewers noticing. The path is held to "" or "/" for the same
+// reason — a token in a path segment is still a token.
 func validateEndpoint(endpoint string) error {
 	if endpoint == "" {
 		return fmt.Errorf("%w: objects.endpoint is required", ErrInvalidBootstrap)
@@ -211,11 +228,47 @@ func validateEndpoint(endpoint string) error {
 	if err != nil {
 		return fmt.Errorf("%w: objects.endpoint %q is not a URL: %w", ErrInvalidBootstrap, endpoint, err)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
 		return fmt.Errorf("%w: objects.endpoint %q must be http or https", ErrInvalidBootstrap, endpoint)
-	}
-	if u.Host == "" {
+	case u.Host == "":
 		return fmt.Errorf("%w: objects.endpoint %q has no host", ErrInvalidBootstrap, endpoint)
+	case u.User != nil:
+		return fmt.Errorf("%w: objects.endpoint must not contain userinfo; credentials never live in the bootstrap pointer", ErrInvalidBootstrap)
+	case u.RawQuery != "":
+		return fmt.Errorf("%w: objects.endpoint must not contain a query string", ErrInvalidBootstrap)
+	case u.Fragment != "":
+		return fmt.Errorf("%w: objects.endpoint must not contain a fragment", ErrInvalidBootstrap)
+	case u.Path != "" && u.Path != "/":
+		return fmt.Errorf("%w: objects.endpoint %q must be a bare origin, with no path", ErrInvalidBootstrap, endpoint)
+	}
+	return nil
+}
+
+// forbiddenInHost maps a substring that must not appear in postgres.host
+// to the reason it is refused.
+//
+//nolint:gochecknoglobals // Immutable lookup table.
+var forbiddenInHost = map[string]string{
+	"://": "a scheme",
+	"@":   "userinfo",
+	"/":   "a path",
+	":":   "a port (use postgres.port)",
+	" ":   "whitespace",
+}
+
+// validateHost requires a bare hostname or IP. The port is a separate
+// field, so anything resembling URL syntax here — a scheme, userinfo, a
+// path — is either a mistake or an attempt to smuggle a credential into a
+// file that must not carry one.
+func validateHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("%w: postgres.host is required", ErrInvalidBootstrap)
+	}
+	for substr, reason := range forbiddenInHost {
+		if strings.Contains(host, substr) {
+			return fmt.Errorf("%w: postgres.host %q must be a bare hostname or IP, but contains %s", ErrInvalidBootstrap, host, reason)
+		}
 	}
 	return nil
 }

@@ -75,26 +75,41 @@ type Roots struct {
 // container's bind mount at the directory holding the unlock key.
 type Service string
 
-// The services with bind-mounted state under the data root.
+// The services with bind-mounted state under the data root. This set is
+// closed: adding a service means adding a constant here and to
+// knownServices, which is a reviewed change rather than a caller's choice.
 const (
 	ServicePostgres Service = "postgres"
 	ServiceMinIO    Service = "minio"
 )
 
-// ErrInvalidService reports a service name that is not a plain, safe
-// single path segment.
+// knownServices is the membership test behind Service.validate.
+//
+//nolint:gochecknoglobals // Immutable lookup table for a closed constant set.
+var knownServices = map[Service]bool{
+	ServicePostgres: true,
+	ServiceMinIO:    true,
+}
+
+// ErrInvalidService reports a service name that is not one of the known
+// services, or whose value is not a safe single path segment.
 var ErrInvalidService = errors.New("invalid data-plane service name")
 
-// validate rejects anything that is not a single, safe path segment.
-// Constants above are the intended inputs; this guards the type's
-// convertibility from arbitrary strings.
+// validate enforces membership in the known set, then re-checks that the
+// value is a safe path segment.
+//
+// The second check is not redundant with the first: it guards against a
+// future constant being defined with a traversing value, which membership
+// alone would happily accept. Both matter because this value becomes a
+// directory under the data root.
 func (s Service) validate() error {
+	if !knownServices[s] {
+		return fmt.Errorf("%w: %q is not a known data-plane service", ErrInvalidService, string(s))
+	}
 	name := string(s)
 	switch {
-	case name == "":
-		return fmt.Errorf("%w: empty", ErrInvalidService)
-	case name == "." || name == "..":
-		return fmt.Errorf("%w: %q is a directory traversal", ErrInvalidService, name)
+	case name == "" || name == "." || name == "..":
+		return fmt.Errorf("%w: %q is not a usable directory name", ErrInvalidService, name)
 	case strings.ContainsRune(name, '/') || strings.ContainsRune(name, filepath.Separator):
 		return fmt.Errorf("%w: %q contains a path separator", ErrInvalidService, name)
 	case name != filepath.Clean(name):
@@ -116,13 +131,21 @@ func (r Roots) ServiceDataDir(service Service) (string, error) {
 	return filepath.Join(r.Data, string(service)), nil
 }
 
-// EnsureServiceDataDirs creates the per-service bind-mount sources.
+// EnsureServiceDataDirs creates the per-service bind-mount sources, owned
+// by the invoking user with the same tight mode as the roots.
 //
 // They are pre-created deliberately: left to Compose, Docker creates
 // missing bind-mount sources as root, which then cannot be written by a
 // container running as the invoking user — and cannot be cleaned up
-// without sudo. Creating them here means they are owned by whoever runs
-// Maestro, which is the identity the containers run as.
+// without sudo.
+//
+// Host ownership is only correct because the containers are run as the
+// invoking user (`user: "${MAESTRO_UID}:${MAESTRO_GID}"`, design D2a).
+// Neither image's default uid — 999 for Postgres, 1000 for MinIO — can
+// write a directory owned by someone else, so if that Compose setting is
+// ever dropped, native Linux will fail here at container start while macOS
+// keeps working, because Docker Desktop virtualises ownership. The two
+// halves must change together.
 func (r Roots) EnsureServiceDataDirs(services ...Service) error {
 	for _, service := range services {
 		dir, err := r.ServiceDataDir(service)
