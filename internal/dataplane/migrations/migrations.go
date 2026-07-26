@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -37,12 +38,16 @@ var FS embed.FS
 // operations on this machine), and golang-migrate additionally takes a
 // Postgres advisory lock, which covers a caller that bypassed the launcher
 // entirely.
-func Up(ctx context.Context, dsn string) error {
+func Up(ctx context.Context, dsn string) (err error) {
 	m, closeFn, err := open(dsn)
 	if err != nil {
 		return err
 	}
-	defer closeFn()
+	defer func() {
+		if closeErr := closeFn(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", closeErr)
+		}
+	}()
 
 	return run(ctx, m, m.Up, "apply migrations")
 }
@@ -120,12 +125,16 @@ func runOp(ctx context.Context, stop func(), op func() error, what string) error
 // restore-from-backup. Keeping this off the command surface is deliberate —
 // a `dataplane-down` that sounded like it stopped containers but instead
 // dropped the schema would be a trap.
-func Down(ctx context.Context, dsn string) error {
+func Down(ctx context.Context, dsn string) (err error) {
 	m, closeFn, err := open(dsn)
 	if err != nil {
 		return err
 	}
-	defer closeFn()
+	defer func() {
+		if closeErr := closeFn(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", closeErr)
+		}
+	}()
 
 	return run(ctx, m, m.Down, "reverse migrations")
 }
@@ -151,7 +160,14 @@ func withStatementTimeout(dsn string) (string, error) {
 		return "", fmt.Errorf("parse data-plane dsn: %w", err)
 	}
 	q := u.Query()
-	q.Set("options", fmt.Sprintf("-c statement_timeout=%d", statementTimeout.Milliseconds()))
+	// APPEND, never replace: `options` is a space-separated list of -c
+	// settings, and a caller supplying search_path or application_name
+	// would otherwise have them silently dropped by a timeout we added.
+	timeout := fmt.Sprintf("-c statement_timeout=%d", statementTimeout.Milliseconds())
+	if existing := strings.TrimSpace(q.Get("options")); existing != "" {
+		timeout = existing + " " + timeout
+	}
+	q.Set("options", timeout)
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
@@ -168,7 +184,7 @@ func Version(dsn string) (version uint, dirty bool, err error) {
 	if err != nil {
 		return 0, false, err
 	}
-	defer closeFn()
+	defer func() { _ = closeFn() }()
 
 	version, dirty, err = m.Version()
 	if errors.Is(err, migrate.ErrNilVersion) {
@@ -183,7 +199,7 @@ func Version(dsn string) (version uint, dirty bool, err error) {
 
 // open builds a migrate instance over the embedded files. The returned
 // function releases both the source and the database handle.
-func open(dsn string) (*migrate.Migrate, func(), error) {
+func open(dsn string) (*migrate.Migrate, func() error, error) {
 	source, err := iofs.New(FS, ".")
 	if err != nil {
 		return nil, nil, fmt.Errorf("open embedded migrations: %w", err)
@@ -211,5 +227,16 @@ func open(dsn string) (*migrate.Migrate, func(), error) {
 		return nil, nil, fmt.Errorf("prepare migrator: %w", err)
 	}
 
-	return m, func() { _ = db.Close() }, nil
+	// Close the MIGRATOR, not just the database handle: it owns the
+	// embedded source driver too, and closing only the *sql.DB leaks that
+	// source on every call -- which is every `dataplane-up`. The postgres
+	// driver's Close also closes the *sql.DB, because WithInstance records
+	// it (postgres.go: `px.db = instance`), so this is the whole cleanup
+	// rather than half of it.
+	closeFn := func() error {
+		sourceErr, dbErr := m.Close()
+		//nolint:wrapcheck // Both errors originate here; Join only combines them.
+		return errors.Join(sourceErr, dbErr)
+	}
+	return m, closeFn, nil
 }

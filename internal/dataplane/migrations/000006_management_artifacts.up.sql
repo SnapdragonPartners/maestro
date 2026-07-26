@@ -29,6 +29,12 @@ CREATE TABLE management_artifacts (
     -- Until then scope_type = 'benchmark' cannot satisfy the exactly-one
     -- check below, so the schema refuses it with no seam rule to remember.
 
+    -- Deliberately NOT declared NOT NULL, unlike lineage_key. It would be
+    -- true -- the exactly-one-scope check guarantees a non-null COALESCE --
+    -- but it buys nothing and costs a diagnosis: uuid maps to pgtype.UUID
+    -- either way, so the generated type is unchanged, while the NOT NULL
+    -- fires BEFORE one_scope_check and reports "null value in scope_id"
+    -- instead of naming the rule the row actually broke.
     scope_id uuid GENERATED ALWAYS AS (
         COALESCE(scope_organization_id, scope_product_id,
                  scope_feature_id, scope_epic_id, scope_story_id)

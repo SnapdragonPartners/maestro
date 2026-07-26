@@ -27,9 +27,16 @@ sql:
         # sqlc installed. The directory name says "generated" at every
         # import site; nothing in it is hand-edited.
         emit_json_tags: false
-        # Nullable columns become pointers rather than sql.Null* wrappers:
-        # the schema uses nullability to mean "genuinely absent" (a
-        # system-initiated call has no user), and a pointer carries that
-        # meaning at the call site without unwrapping.
+        # Nullable SCALAR columns become pointers rather than sql.Null*
+        # wrappers -- *string, *int32 -- which reads naturally where the
+        # schema uses null to mean "genuinely absent" (a system-initiated
+        # call has no user).
+        #
+        # It does NOT apply to uuid or timestamptz: with the pgx driver
+        # those are pgtype.UUID and pgtype.Timestamptz whether nullable or
+        # not, and carry their own Valid flag. So a nullable
+        # reviewer_instance_id is pgtype.UUID, not *pgtype.UUID, and call
+        # sites check .Valid rather than nil. Stated because the setting's
+        # name suggests otherwise.
         emit_pointers_for_null_types: true
         emit_empty_slices: true

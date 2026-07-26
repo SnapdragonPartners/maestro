@@ -53,7 +53,7 @@ CREATE TABLE llm_calls (
         coalesce(feature_id::text, '') || '/' ||
         coalesce(epic_id::text,    '') || '/' ||
         coalesce(story_id::text,   '')
-    ) STORED,
+    ) STORED NOT NULL,
 
     provider              text        NOT NULL,
     model                 text        NOT NULL,
@@ -161,7 +161,7 @@ CREATE TABLE tool_calls (
         coalesce(feature_id::text, '') || '/' ||
         coalesce(epic_id::text,    '') || '/' ||
         coalesce(story_id::text,   '')
-    ) STORED,
+    ) STORED NOT NULL,
 
     tool_name             text        NOT NULL,
     arguments             jsonb       NOT NULL,

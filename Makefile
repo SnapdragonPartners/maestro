@@ -213,6 +213,8 @@ install-sqlc:
 		echo "Installing sqlc $(SQLC_VERSION)..."; \
 		go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION); \
 	}
+	@sqlc version 2>/dev/null | grep -q "$(SQLC_VERSION)" || \
+		echo "⚠️  sqlc on PATH is not $(SQLC_VERSION); generated output may differ from CI and show up as sqlc-check failures"
 
 sqlc-generate: install-sqlc
 	sqlc generate

@@ -96,7 +96,7 @@ type LlmCall struct {
 	FeatureID           pgtype.UUID
 	EpicID              pgtype.UUID
 	StoryID             pgtype.UUID
-	LineageKey          *string
+	LineageKey          string
 	Provider            string
 	Model               string
 	InputTokens         int64
@@ -250,7 +250,7 @@ type ToolCall struct {
 	FeatureID           pgtype.UUID
 	EpicID              pgtype.UUID
 	StoryID             pgtype.UUID
-	LineageKey          *string
+	LineageKey          string
 	ToolName            string
 	Arguments           []byte
 	Result              []byte
