@@ -103,10 +103,16 @@ func TestRunOpStopsAndWaitsOnCancellation(t *testing.T) {
 	}
 }
 
-// The deadlock an earlier version shipped: if the operation completes in
-// the window between cancellation and the stop signal, an unbounded send on
-// migrate's unbuffered GracefulStop channel blocks forever.
-func TestRunOpDoesNotDeadlockWhenNobodyIsListening(t *testing.T) {
+// runOp accepts an arbitrary stopper, so it must not hang when one cannot
+// deliver its signal.
+//
+// This is a property of runOp's own contract, not a reproduction of
+// production behaviour: the pinned golang-migrate gives GracefulStop a
+// capacity of 1, so the real stopper never blocks. An earlier version of
+// this test claimed to reproduce a shipped deadlock, which was wrong on the
+// facts -- the value here is that runOp stays correct for any stopper,
+// including one bounded against a future upstream change.
+func TestRunOpDoesNotHangWhenTheStopperCannotDeliver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -126,6 +132,6 @@ func TestRunOpDoesNotDeadlockWhenNobodyIsListening(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("runOp deadlocked signalling a stop nobody is listening for")
+		t.Fatal("runOp hung waiting for a stopper that could not deliver")
 	}
 }

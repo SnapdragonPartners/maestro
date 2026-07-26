@@ -43,7 +43,12 @@ CREATE TABLE llm_calls (
     -- of them is null (MATCH SIMPLE) -- which is the common case -- so the
     -- provenance check below would silently not apply. Encoding the tuple
     -- into one non-null value makes it always enforced.
+    -- user_id is part of the key, not just the work tuple: without it an
+    -- LLM call and the tool call claiming it could name DIFFERENT
+    -- accountable users while passing the provenance check, which is
+    -- precisely the attribution the link exists to make trustworthy.
     lineage_key text GENERATED ALWAYS AS (
+        coalesce(user_id::text,    '') || '/' ||
         coalesce(product_id::text, '') || '/' ||
         coalesce(feature_id::text, '') || '/' ||
         coalesce(epic_id::text,    '') || '/' ||
@@ -146,7 +151,12 @@ CREATE TABLE tool_calls (
     -- of them is null (MATCH SIMPLE) -- which is the common case -- so the
     -- provenance check below would silently not apply. Encoding the tuple
     -- into one non-null value makes it always enforced.
+    -- user_id is part of the key, not just the work tuple: without it an
+    -- LLM call and the tool call claiming it could name DIFFERENT
+    -- accountable users while passing the provenance check, which is
+    -- precisely the attribution the link exists to make trustworthy.
     lineage_key text GENERATED ALWAYS AS (
+        coalesce(user_id::text,    '') || '/' ||
         coalesce(product_id::text, '') || '/' ||
         coalesce(feature_id::text, '') || '/' ||
         coalesce(epic_id::text,    '') || '/' ||

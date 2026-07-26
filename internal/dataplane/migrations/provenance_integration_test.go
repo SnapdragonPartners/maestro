@@ -309,3 +309,45 @@ func TestToolCallCannotClaimAnotherPrincipalsLLMCall(t *testing.T) {
 		t.Fatal("a tool call claimed an LLM call made by a different principal")
 	}
 }
+
+// The provenance link exists to make attribution trustworthy, so a tool
+// call and the LLM call it claims must agree on WHO is accountable, not
+// merely on which principal ran and which Story it was for.
+func TestToolCallCannotClaimAnLLMCallWithADifferentUser(t *testing.T) {
+	var err error
+	f := seed(t, openPlane(t))
+
+	otherUser := "80000000-0000-7000-8000-000000000001"
+	if _, err := f.tx.Exec(
+		`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'u2','U2')`,
+		otherUser, f.org); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	llmCall := "80000000-0000-7000-8000-000000000002"
+	if _, err := f.tx.Exec(
+		`INSERT INTO llm_calls (llm_call_id, organization_id, user_id, principal_instance_id, provider, model)
+		 VALUES ($1,$2,$3,$4,'anthropic','opus')`,
+		llmCall, f.org, otherUser, f.principal); err != nil {
+		t.Fatalf("seed llm call: %v", err)
+	}
+
+	// Same principal, same (empty) work tuple, different accountable user.
+	//
+	// Inside a savepoint: a rejected statement aborts its transaction, so
+	// without one the positive case below would fail with "transaction is
+	// aborted" while appearing to exercise its own constraint.
+	f.rejects(t, "a tool call claimed an LLM call accountable to a different user",
+		`INSERT INTO tool_calls (tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, tool_name, arguments)
+		 VALUES ($1,$2,$3,$4,$5,'write_file','{}')`,
+		"80000000-0000-7000-8000-000000000003", f.org, f.user, f.principal, llmCall)
+
+	// The matching user must still be accepted, so the constraint is
+	// discriminating rather than simply refusing every linked tool call.
+	if _, err = f.tx.Exec(
+		`INSERT INTO tool_calls (tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, tool_name, arguments)
+		 VALUES ($1,$2,$3,$4,$5,'write_file','{}')`,
+		"80000000-0000-7000-8000-000000000004", f.org, otherUser, f.principal, llmCall); err != nil {
+		t.Errorf("a tool call with the SAME accountable user was rejected: %v", err)
+	}
+}

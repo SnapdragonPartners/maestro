@@ -62,12 +62,18 @@ func run(ctx context.Context, m *migrate.Migrate, op func() error, what string) 
 
 // gracefulStopper asks migrate to stop at the next migration boundary.
 //
-// The send is bounded, and that is not defensive padding. GracefulStop is
-// unbuffered and only received while a migration is in progress, so if the
-// operation finishes in the window between the context being cancelled and
-// this send, a plain `m.GracefulStop <- true` blocks forever -- deadlocking
-// the caller while it holds the data-plane lifecycle lock. An earlier
-// version of this function did exactly that.
+// The send is bounded as insurance, NOT as a fix for an observed deadlock.
+// An earlier version of this comment claimed GracefulStop was unbuffered
+// and that a plain send could hang forever; that was wrong. In the pinned
+// golang-migrate v4.19.1 the channel is `make(chan bool, 1)` (migrate.go),
+// so one send always succeeds immediately even when the operation has
+// already finished and nobody will ever receive it.
+//
+// The bound is kept because it costs nothing and removes the dependency on
+// that capacity: a buffer that is already full -- or an upstream change to
+// an unbuffered channel -- would turn a plain send into a hang while this
+// caller holds the data-plane lifecycle lock. It guards an assumption
+// rather than a bug.
 func gracefulStopper(m *migrate.Migrate) func() {
 	return func() {
 		select {

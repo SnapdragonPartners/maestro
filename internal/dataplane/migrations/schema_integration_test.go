@@ -103,6 +103,28 @@ func seed(t *testing.T, db *sql.DB) *fixture {
 	return f
 }
 
+// rejects asserts a statement is refused, inside a savepoint so the
+// surrounding transaction stays usable.
+//
+// Without the savepoint a rejected statement aborts the transaction, and
+// every later statement fails with "transaction is aborted" -- which reads
+// like a second constraint working when it is really the first one's
+// wreckage.
+func (f *fixture) rejects(t *testing.T, because, stmt string, args ...any) {
+	t.Helper()
+
+	if _, err := f.tx.Exec("SAVEPOINT reject_probe"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	_, err := f.tx.Exec(stmt, args...)
+	if err == nil {
+		t.Fatal(because)
+	}
+	if _, rbErr := f.tx.Exec("ROLLBACK TO SAVEPOINT reject_probe"); rbErr != nil {
+		t.Fatalf("rollback to savepoint: %v", rbErr)
+	}
+}
+
 const digestA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 const digestB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
