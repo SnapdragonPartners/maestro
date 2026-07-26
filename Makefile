@@ -217,11 +217,17 @@ install-sqlc:
 sqlc-generate: install-sqlc
 	sqlc generate
 
+# git status, not git diff: diff only examines TRACKED files, so a new
+# query generating a new .sql.go file would leave the check passing while
+# the generated set is incomplete. --untracked-files=all catches the new
+# file, and porcelain also reports modifications and deletions.
 sqlc-check: sqlc-generate
-	@git diff --exit-code --stat -- internal/dataplane/gen || { \
-		echo "❌ generated code is stale: run 'make sqlc-generate' and commit the result"; \
+	@status=$$(git status --porcelain --untracked-files=all -- internal/dataplane/gen); \
+	if [ -n "$$status" ]; then \
+		echo "$$status"; \
+		echo "❌ generated code is stale or incomplete: run 'make sqlc-generate' and commit the result"; \
 		exit 1; \
-	}
+	fi
 	@echo "✅ generated code matches the schema"
 
 # Apply pending migrations to an already-running stack. `dataplane-up` also
