@@ -43,11 +43,12 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset>
+	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate>
 
-  up     start Postgres and MinIO and wait until both are usable (idempotent)
-  down   stop the containers, leaving all data in place
-  reset  stop the containers and DELETE the contents of the data directories
+  up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
+  down     stop the containers, leaving all data in place
+  reset    stop the containers and DELETE the contents of the data directories
+  migrate  apply pending migrations to an already-running stack
 
 flags:
 `)
@@ -71,6 +72,13 @@ func run(ctx context.Context, command, composeFile string, force bool) error {
 		}
 		fmt.Printf("data plane ready\n  postgres  127.0.0.1:%d/%s\n  objects   http://127.0.0.1:%d\n  console   http://127.0.0.1:%d\n",
 			cfg.PGPort, cfg.Database, cfg.MinIOPort, cfg.MinIOConsolePort)
+		return nil
+
+	case "migrate":
+		if err := stack.Migrate(ctx, cfg); err != nil {
+			return fmt.Errorf("migrate the data plane: %w", err)
+		}
+		fmt.Println("schema up to date")
 		return nil
 
 	case "down":

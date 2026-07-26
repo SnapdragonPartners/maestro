@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/paths"
 )
 
@@ -95,7 +96,47 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if err := compose(ctx, composeFile, env, "up", "-d", "--wait=false"); err != nil {
 		return err
 	}
-	return waitReady(ctx, c, composeFile, env)
+	if err := waitReady(ctx, c, composeFile, env); err != nil {
+		return err
+	}
+	return migrateLocked(c, rootKey)
+}
+
+// Migrate applies pending migrations to an already-running stack.
+//
+// It takes the lifecycle lock like every other operation: it mutates the
+// same data plane, and a migration running against a plane that `reset` is
+// concurrently emptying is exactly the interleaving the lock exists to
+// prevent.
+func Migrate(_ context.Context, c *Config) (err error) {
+	release, lockErr := lockLifecycle(c)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer func() {
+		if relErr := release(); relErr != nil && err == nil {
+			err = relErr
+		}
+	}()
+
+	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	if keyErr != nil {
+		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+	}
+	return migrateLocked(c, rootKey)
+}
+
+// migrateLocked applies migrations, assuming the caller holds the
+// lifecycle lock.
+func migrateLocked(c *Config, rootKey []byte) error {
+	dsn, err := c.DSN(rootKey)
+	if err != nil {
+		return err
+	}
+	if err := migrations.Up(dsn); err != nil {
+		return fmt.Errorf("migrate data plane schema: %w", err)
+	}
+	return nil
 }
 
 // Down stops the stack and leaves the data root untouched.

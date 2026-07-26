@@ -189,13 +189,18 @@ ui-dev: build build-css
 # the same command serves first-time setup and the everyday inner loop.
 # Deliberately separate from the agent-container and benchmark-Gitea
 # machinery, so a data-plane restart cannot disturb a benchmark run.
-.PHONY: dataplane-up dataplane-down dataplane-reset
+.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate
 
 dataplane-up:
 	go run ./cmd/dataplanectl up
 
 dataplane-down:
 	go run ./cmd/dataplanectl down
+
+# Apply pending migrations to an already-running stack. `dataplane-up` also
+# migrates, so this is for iterating on a migration without a full cycle.
+dataplane-migrate:
+	go run ./cmd/dataplanectl migrate
 
 # Destructive: deletes the Postgres cluster and object store. Prompts
 # unless FORCE=1.

@@ -1,14 +1,14 @@
 +++
 title = "Design: Core Schema And Migrations (Item 3)"
 edit_date = "2026-07-26"
-status = "draft"
+status = "live"
 summary = "Mini-plan for Phase 2 item 3: golang-migrate conventions and the core DDL applied from empty — ADR 0028's envelope as columns over a jsonb payload, Management and Audit in separate families, scope-conditional lineage enforced in SQL, app-generated UUIDv7 identifiers, text-plus-CHECK over Postgres enums, and the table-by-table trace to an Accepted ADR and a Phase 2 consumer."
 type = "design"
 +++
 
 # Design: Core Schema And Migrations (Item 3)
 
-Status: **draft** — for Codex review before any SQL merges. Follows the Phase 1 and item 2 precedent of a design mini-plan for M-sized items.
+Status: **live** — Accepted by Codex and DR, 2026-07-26, after four review rounds. Follows the Phase 1 and item 2 precedent of a design mini-plan for M-sized items.
 
 Implements [Phase 2 plan](plan_scope.md) item 3 under [ADR 0022](../../adr/0022-v2-data-plane.md) (stack, schema families, access discipline) and [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) (the encoding this turns into columns), with shapes from [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) and hierarchy from [ADR 0018](../../adr/0018-v2-work-taxonomy.md).
 
