@@ -106,6 +106,9 @@ check-coverage:
 # Pinned so lint results are reproducible across CI runs and dev machines;
 # @latest silently changes lint behavior (and busts CI caches) on new releases.
 GOLANGCI_LINT_VERSION := v1.64.8
+# Pinned so CI and local runs generate identical output; a version drift
+# would show up as spurious diffs in the sqlc-check.
+SQLC_VERSION := v1.31.1
 
 # Install golangci-lint if not present; warn (don't force-reinstall) on a
 # version mismatch — a PATH-shadowing install (e.g. homebrew) would win over
@@ -196,6 +199,30 @@ dataplane-up:
 
 dataplane-down:
 	go run ./cmd/dataplanectl down
+
+# --- sqlc ---------------------------------------------------------------
+#
+# Generated output is COMMITTED, so a clean checkout builds without sqlc
+# installed. That only stays true if regeneration is checked: sqlc-check
+# regenerates and fails if the tree moved, which is what catches a migration
+# edited without regenerating.
+.PHONY: install-sqlc sqlc-generate sqlc-check
+
+install-sqlc:
+	@which sqlc > /dev/null || { \
+		echo "Installing sqlc $(SQLC_VERSION)..."; \
+		go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION); \
+	}
+
+sqlc-generate: install-sqlc
+	sqlc generate
+
+sqlc-check: sqlc-generate
+	@git diff --exit-code --stat -- internal/dataplane/gen || { \
+		echo "❌ generated code is stale: run 'make sqlc-generate' and commit the result"; \
+		exit 1; \
+	}
+	@echo "✅ generated code matches the schema"
 
 # Apply pending migrations to an already-running stack. `dataplane-up` also
 # migrates, so this is for iterating on a migration without a full cycle.

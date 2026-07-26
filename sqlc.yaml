@@ -1,0 +1,35 @@
+# sqlc configuration for the v2 data plane.
+#
+# Item 3 lands this file and the schema it reads; the queries directory is
+# item 4's to fill. Generating from an empty queries set still produces
+# models and, more usefully, fails loudly if the migrations do not parse --
+# so this is a check on the schema from the moment it exists.
+version: "2"
+
+sql:
+  - engine: postgresql
+
+    # The migrations ARE the schema: there is no separate schema.sql to
+    # drift from them. sqlc understands golang-migrate's naming and reads
+    # only the *.up.sql files.
+    schema: internal/dataplane/migrations
+    queries: internal/dataplane/queries
+
+    gen:
+      go:
+        package: gen
+        out: internal/dataplane/gen
+        # pgx/v5 matches the driver the migration runner already opens with,
+        # so one connection type serves both.
+        sql_package: pgx/v5
+
+        # Generated output is committed, so a clean checkout builds without
+        # sqlc installed. The directory name says "generated" at every
+        # import site; nothing in it is hand-edited.
+        emit_json_tags: false
+        # Nullable columns become pointers rather than sql.Null* wrappers:
+        # the schema uses nullability to mean "genuinely absent" (a
+        # system-initiated call has no user), and a pointer carries that
+        # meaning at the call site without unwrapping.
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true

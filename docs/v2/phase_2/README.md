@@ -1,8 +1,8 @@
 +++
 title = "Phase 2 Artifacts"
-edit_date = "2026-07-25"
+edit_date = "2026-07-26"
 status = "live"
-summary = "Index of Phase 2 working artifacts: the scope/plan for the data plane and artifact core; later the migration conventions record and the vertical-slice report."
+summary = "Index of Phase 2 working artifacts: the scope/plan for the data plane and artifact core; later the vertical-slice report."
 +++
 
 # Phase 2 Artifacts
@@ -13,5 +13,6 @@ Working artifacts of Phase 2 (data plane and artifact core), produced under the 
 
 - [Design: The Local Data-Plane Stack (Item 2)](design_local_stack.md) — Mini-plan for Phase 2 item 2: the four-root path resolver with MAESTRO_HOME collapse, the 0600 root-of-trust key file, and a Compose stack for Postgres and MinIO bind-mounted under the data root — isolated from v1's container labelling so a benchmark sweep cannot tear it down, digest-pinned, health-gated, and idempotent from a clean checkout.
 - [Design: Core Schema And Migrations (Item 3)](design_schema_core.md) — Mini-plan for Phase 2 item 3: golang-migrate conventions and the core DDL applied from empty — ADR 0028's envelope as columns over a jsonb payload, Management and Audit in separate families, scope-conditional lineage enforced in SQL, app-generated UUIDv7 identifiers, text-plus-CHECK over Postgres enums, and the table-by-table trace to an Accepted ADR and a Phase 2 consumer.
+- [Schema Table Inventory: ADR And Consumer](inventory_schema-tables.md) — Every table created by Phase 2 item 3, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead.
 
 Expected to land here as the phase executes: the migration and schema conventions record (item 3) and the vertical-slice report (item 9). The artifact-envelopes ADR (item 1) lands in `docs/adr/` as an Accepted decision, not here.

@@ -80,6 +80,26 @@ jobs:
           echo "verifying pinned image: $IMG"
           make cache-verify ARGS="$IMG"
 
+  # Generated code is committed so a clean checkout builds without sqlc
+  # installed. That guarantee only holds if regeneration is checked --
+  # otherwise a migration edited without regenerating leaves the two
+  # silently disagreeing, and the disagreement surfaces as a confusing
+  # type error in whichever unrelated PR next touches the package.
+  sqlc-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generated code matches the schema
+        run: make sqlc-check
+
   # The data plane must come up from a CLEAN CHECKOUT on native Linux.
   #
   # Linux specifically, and cold specifically. Design D2a runs both
