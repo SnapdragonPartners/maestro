@@ -81,7 +81,21 @@ CREATE TABLE management_artifacts (
     -- plus the self-referencing composite key below make "an amendment of
     -- an amendment" unrepresentable, where a CHECK could not express it and
     -- a comment would only ask people not to.
-    is_amendment boolean GENERATED ALWAYS AS (amends_artifact_id IS NOT NULL) STORED,
+    -- NOT NULL, unlike scope_id: an IS NOT NULL test always yields true or
+    -- false, so this expression cannot produce null for ANY row, valid or
+    -- not. The declaration is therefore unreachable and shadows no other
+    -- constraint's message -- which is exactly why the same change on
+    -- scope_id was wrong there, since its COALESCE genuinely is null for a
+    -- row with no scope set. It also makes the UNIQUE constraints below
+    -- mean what they say: Postgres treats nulls as distinct in a unique
+    -- index, so a nullable column weakens the contract even when no null
+    -- can occur.
+    is_amendment boolean GENERATED ALWAYS AS (amends_artifact_id IS NOT NULL) STORED NOT NULL,
+
+    -- Deliberately NULLABLE, and load-bearing: the CASE has no ELSE, so
+    -- this is null whenever the row amends nothing, which is what makes the
+    -- flat-chain foreign key below skip under MATCH SIMPLE instead of
+    -- demanding a target that does not exist.
     amends_target_is_amendment boolean GENERATED ALWAYS AS (
         CASE WHEN amends_artifact_id IS NOT NULL THEN false END
     ) STORED,

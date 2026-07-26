@@ -140,7 +140,7 @@ type ManagementArtifact struct {
 	PayloadDigest           string
 	ReviewDigest            string
 	CreatedAt               pgtype.Timestamptz
-	IsAmendment             *bool
+	IsAmendment             bool
 	AmendsTargetIsAmendment *bool
 }
 
