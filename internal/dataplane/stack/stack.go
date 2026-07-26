@@ -99,7 +99,7 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if err := waitReady(ctx, c, composeFile, env); err != nil {
 		return err
 	}
-	return migrateLocked(c, rootKey)
+	return migrateLocked(ctx, c, rootKey)
 }
 
 // Migrate applies pending migrations to an already-running stack.
@@ -108,7 +108,7 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 // same data plane, and a migration running against a plane that `reset` is
 // concurrently emptying is exactly the interleaving the lock exists to
 // prevent.
-func Migrate(_ context.Context, c *Config) (err error) {
+func Migrate(ctx context.Context, c *Config) (err error) {
 	release, lockErr := lockLifecycle(c)
 	if lockErr != nil {
 		return lockErr
@@ -123,17 +123,17 @@ func Migrate(_ context.Context, c *Config) (err error) {
 	if keyErr != nil {
 		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
 	}
-	return migrateLocked(c, rootKey)
+	return migrateLocked(ctx, c, rootKey)
 }
 
 // migrateLocked applies migrations, assuming the caller holds the
 // lifecycle lock.
-func migrateLocked(c *Config, rootKey []byte) error {
+func migrateLocked(ctx context.Context, c *Config, rootKey []byte) error {
 	dsn, err := c.DSN(rootKey)
 	if err != nil {
 		return err
 	}
-	if err := migrations.Up(dsn); err != nil {
+	if err := migrations.Up(ctx, dsn); err != nil {
 		return fmt.Errorf("migrate data plane schema: %w", err)
 	}
 	return nil

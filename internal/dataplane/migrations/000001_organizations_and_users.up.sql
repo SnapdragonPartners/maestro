@@ -27,7 +27,13 @@ CREATE TABLE users (
 
     -- Handles are unique per organization, not globally: two organizations
     -- may legitimately each have a "dan".
-    CONSTRAINT users_org_handle_key UNIQUE (organization_id, handle)
+    CONSTRAINT users_org_handle_key UNIQUE (organization_id, handle),
+
+    -- Redundant with the primary key, and deliberately so: it lets other
+    -- tables carry a COMPOSITE foreign key on (user_id, organization_id),
+    -- which is what stops an artifact in one organization naming a user in
+    -- another. Every table below repeats this pattern for the same reason.
+    CONSTRAINT users_id_org_key UNIQUE (user_id, organization_id)
 );
 
 CREATE INDEX users_organization_id_idx ON users (organization_id);

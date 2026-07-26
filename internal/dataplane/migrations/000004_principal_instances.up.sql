@@ -31,16 +31,15 @@ CREATE TABLE principal_instances (
     harness_config_hash   text,
     maestro_version       text,
 
-    -- Human principals link to their user; agents and system components do
-    -- not. The seam derives 'human-<user_id>' from this rather than trusting
-    -- a caller to keep the two in step.
-    user_id               uuid REFERENCES users (user_id) ON DELETE RESTRICT,
+    user_id               uuid,
 
     -- Scope lineage: nullable, because a principal may be organization-wide
-    -- (a scheduler) or scoped to a single Story (a Coder).
-    feature_id            uuid REFERENCES features (feature_id) ON DELETE RESTRICT,
-    epic_id               uuid REFERENCES epics    (epic_id)    ON DELETE RESTRICT,
-    story_id              uuid REFERENCES stories  (story_id)   ON DELETE RESTRICT,
+    -- (a scheduler) or scoped to a single Story (a Coder). Composite, so a
+    -- principal cannot be scoped to another organization's work.
+    feature_id            uuid,
+    epic_id               uuid,
+    story_id              uuid,
+    product_id            uuid,
 
     start_time            timestamptz NOT NULL DEFAULT now(),
     stop_time             timestamptz,
@@ -59,9 +58,38 @@ CREATE TABLE principal_instances (
     CONSTRAINT principal_instances_human_user_check
         CHECK ((kind = 'human') = (user_id IS NOT NULL)),
 
-    -- stop_reason accompanies stop_time or neither.
+    CONSTRAINT principal_instances_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT,
+
+    -- A Story-scoped principal carries the whole tuple, so its scope cannot
+    -- name a Story from a different Epic.
+    CONSTRAINT principal_instances_story_fkey
+        FOREIGN KEY (story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES stories (story_id, epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT principal_instances_epic_fkey
+        FOREIGN KEY (epic_id, feature_id, product_id, organization_id)
+        REFERENCES epics (epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT principal_instances_feature_fkey
+        FOREIGN KEY (feature_id, product_id, organization_id)
+        REFERENCES features (feature_id, product_id, organization_id) ON DELETE RESTRICT,
+
+    -- Scope lineage fills top-down: a Story-scoped principal also names its
+    -- Epic and Feature. Without this a partially-filled tuple would slip
+    -- past the foreign keys above, which are unchecked when any column is
+    -- null (MATCH SIMPLE).
+    CONSTRAINT principal_instances_lineage_shape_check
+        CHECK (
+            (story_id   IS NULL OR epic_id    IS NOT NULL) AND
+            (epic_id    IS NULL OR feature_id IS NOT NULL) AND
+            (feature_id IS NULL OR product_id IS NOT NULL)
+        ),
+
     CONSTRAINT principal_instances_stop_check
-        CHECK ((stop_time IS NULL) = (stop_reason IS NULL))
+        CHECK ((stop_time IS NULL) = (stop_reason IS NULL)),
+
+    -- Lets artifacts reference an author by (id, organization).
+    CONSTRAINT principal_instances_id_org_key UNIQUE (principal_instance_id, organization_id)
 );
 
 CREATE INDEX principal_instances_organization_id_idx ON principal_instances (organization_id);

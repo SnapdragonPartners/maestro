@@ -133,6 +133,17 @@ func (c *Config) validatePorts() error {
 // of use and never written anywhere — the bootstrap pointer deliberately
 // carries no credential.
 func (c *Config) DSN(rootKey []byte) (string, error) {
+	return c.DSNFor(rootKey, c.Database)
+}
+
+// DSNFor renders a connection string for an arbitrary database on this
+// stack.
+//
+// Exists for tests, which must never run destructive migrations against the
+// canonical database: a down-migration harness pointed at `maestro` drops
+// every table the developer is working with. Tests create a disposable
+// database and point here.
+func (c *Config) DSNFor(rootKey []byte, database string) (string, error) {
 	password, err := secret.Derive(rootKey, secret.ContextPostgresPassword)
 	if err != nil {
 		return "", fmt.Errorf("derive postgres password: %w", err)
@@ -144,7 +155,7 @@ func (c *Config) DSN(rootKey []byte) (string, error) {
 		Scheme:   "postgres",
 		User:     url.UserPassword(c.User, password),
 		Host:     net.JoinHostPort("127.0.0.1", strconv.Itoa(c.PGPort)),
-		Path:     "/" + c.Database,
+		Path:     "/" + database,
 		RawQuery: "sslmode=disable",
 	}
 	return dsn.String(), nil

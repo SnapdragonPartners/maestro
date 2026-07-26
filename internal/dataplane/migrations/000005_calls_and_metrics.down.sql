@@ -2,7 +2,7 @@ BEGIN;
 
 DROP TABLE IF EXISTS audit_events;
 DROP TABLE IF EXISTS metric_events;
-DROP TABLE IF EXISTS llm_calls;
 DROP TABLE IF EXISTS tool_calls;
+DROP TABLE IF EXISTS llm_calls;
 
 COMMIT;

@@ -9,10 +9,13 @@
 package migrations
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
 	"fmt"
+	"net/url"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -34,17 +37,43 @@ var FS embed.FS
 // operations on this machine), and golang-migrate additionally takes a
 // Postgres advisory lock, which covers a caller that bypassed the launcher
 // entirely.
-func Up(dsn string) error {
+func Up(ctx context.Context, dsn string) error {
 	m, closeFn, err := open(dsn)
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("apply migrations: %w", err)
+	return run(ctx, m, m.Up, "apply migrations")
+}
+
+// run executes a migration operation under the caller's context.
+//
+// Two mechanisms, because neither alone is sufficient. GracefulStop makes
+// migrate finish the current migration and stop before the next, which
+// bounds a long SEQUENCE but not a single blocked statement. The statement
+// timeout on the connection (see open) bounds the statement itself. Without
+// both, a DDL blocked behind another session's lock hangs indefinitely --
+// while holding the data-plane lifecycle lock, so nothing else can proceed
+// either.
+func run(ctx context.Context, m *migrate.Migrate, op func() error, what string) error {
+	done := make(chan error, 1)
+	go func() { done <- op() }()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, migrate.ErrNoChange) {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		return nil
+	case <-ctx.Done():
+		// Ask migrate to stop at the next boundary, then wait for it: the
+		// alternative is returning while a migration is still running
+		// against the database we are about to report as unmigrated.
+		m.GracefulStop <- true
+		<-done
+		return fmt.Errorf("%s: %w", what, ctx.Err())
 	}
-	return nil
 }
 
 // Down reverses every migration, leaving an empty schema.
@@ -55,17 +84,36 @@ func Up(dsn string) error {
 // restore-from-backup. Keeping this off the command surface is deliberate —
 // a `dataplane-down` that sounded like it stopped containers but instead
 // dropped the schema would be a trap.
-func Down(dsn string) error {
+func Down(ctx context.Context, dsn string) error {
 	m, closeFn, err := open(dsn)
 	if err != nil {
 		return err
 	}
 	defer closeFn()
 
-	if err := m.Down(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-		return fmt.Errorf("reverse migrations: %w", err)
+	return run(ctx, m, m.Down, "reverse migrations")
+}
+
+// statementTimeout bounds a single DDL statement. Generous, because
+// creating indexes on a populated table is legitimately slow; the point is
+// that a statement blocked behind another session's lock fails instead of
+// hanging forever.
+const statementTimeout = 5 * time.Minute
+
+// withStatementTimeout returns dsn with a server-side statement timeout.
+//
+// Set through the connection options rather than a SET statement: database/
+// sql pools connections, so a SET on one connection would not apply to the
+// others migrate uses.
+func withStatementTimeout(dsn string) (string, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "", fmt.Errorf("parse data-plane dsn: %w", err)
 	}
-	return nil
+	q := u.Query()
+	q.Set("options", fmt.Sprintf("-c statement_timeout=%d", statementTimeout.Milliseconds()))
+	u.RawQuery = q.Encode()
+	return u.String(), nil
 }
 
 // Version reports the current schema version and whether it is dirty.
@@ -101,7 +149,12 @@ func open(dsn string) (*migrate.Migrate, func(), error) {
 		return nil, nil, fmt.Errorf("open embedded migrations: %w", err)
 	}
 
-	db, err := sql.Open("pgx", dsn)
+	bounded, err := withStatementTimeout(dsn)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	db, err := sql.Open("pgx", bounded)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open database: %w", err)
 	}
