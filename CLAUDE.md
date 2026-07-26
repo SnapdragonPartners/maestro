@@ -18,7 +18,7 @@ For current runtime behavior, precedence is:
 1. Code and tests.
 2. Canonical FSM docs: `pkg/pm/STATES.md`, `pkg/architect/STATES.md`, and
    `pkg/coder/STATES.md`.
-3. Current implementation summaries in this file and `README.md`.
+3. `README.md`, and the routing table below for where to look.
 4. `deprecated` v1 docs, as unverified orientation only.
 
 For v2 design intent, precedence is:
@@ -84,8 +84,7 @@ branch behavior; use the workflow above when contributing to this repository.
 - Put planned work in the roadmap, deferred work discovered during development
   in GitHub Issues on `SnapdragonPartners/maestro`, and design ideas in
   `docs/v2/notes_parking-lot.md`.
-- Spikes are not version candidates. Tags such as
-  `spike/phase-2-auth` are allowed but do not enter the v2 SemVer ladder.
+- Spikes are not version candidates and never enter the v2 SemVer ladder.
 
 ### Version Tags
 
@@ -151,6 +150,27 @@ make test              # repository unit tests, including benchmark tests
 make lint              # repository linters
 make test-integration  # integration suite; may require service credentials
 make run               # build and run Maestro
+```
+
+The v2 data plane has its own lifecycle, and nothing that touches Postgres
+or the object store works without it:
+
+```bash
+make dataplane-up        # start Postgres + MinIO, wait for health, migrate
+make dataplane-migrate   # apply migrations to an already-running stack
+make dataplane-down      # stop containers, leaving all data in place
+make dataplane-reset FORCE=1   # DESTRUCTIVE: delete the cluster and object store
+```
+
+`dataplane-up` is idempotent and is both the first-run and everyday command.
+`dataplane-reset` prompts unless `FORCE` is exactly `1`.
+
+sqlc output under `internal/dataplane/gen/` is committed so a clean checkout
+builds without sqlc installed. Regenerate after any schema or query change:
+
+```bash
+make sqlc-generate     # regenerate from migrations and queries
+make sqlc-check        # fail if committed output is stale or incomplete (CI runs this)
 ```
 
 Build targets install hooks and may include lint prerequisites. Do not copy
@@ -236,6 +256,9 @@ questions to the smallest authoritative source:
 | Shared-state concurrency | ADR 0027 |
 | Artifact encoding and schemas | ADR 0028 |
 | Current phase scope and acceptance | `docs/v2/phase_x/plan_scope.md` |
+
+If you are stuck, blocked, or unsure of intent, use the `get_help` tool
+rather than guessing.
 
 Search code before assuming a path named in a historical document still exists.
 When adding a durable design rule, prefer an ADR or focused live doc and link it
