@@ -34,13 +34,22 @@ Item 3 delivers migrations and the schema. **Typed queries are item 4**; only th
 
 `migrate force V` **only rewrites metadata — it runs no SQL**. An earlier draft of this document said to fix the file and "force the version", which is actively dangerous: forcing to the version that just failed records it as applied without ever having run it, so `migrate up` skips it forever and the schema silently lacks whatever it contained.
 
-**Always force to the last version that actually applied — `V-1`, not `V`.** That is the true state of the database once the wrapper has rolled the DDL back. What follows depends on whether the migration has ever succeeded anywhere:
+The runbook below **does not carve an exception into the approved append-only rule**. An earlier draft did — it allowed editing a merged migration that had never applied — which a design document has no standing to do; Phase 2 plan decision 4 is approved, and changing it requires a plan amendment, not a paragraph here. It turns out no exception is needed.
 
-- **Never successfully applied anywhere** (the normal case: it fails from empty, so it fails for everyone). Force to `V-1`, correct the file **in place**, run `migrate up`. This holds even if the migration is already merged — the append-only rule protects *applied history*, and a migration that has never applied has none. There is no database anywhere whose state would diverge from the corrected file, which is the only thing append-only exists to prevent. Say so in the PR that corrects it.
-- **Applied successfully somewhere, failing elsewhere** (data- or environment-dependent). Now the file is genuinely frozen: editing it would leave two databases claiming the same version with different schemas. Force to `V-1`, leave the file alone, and land a **new** migration that reaches the intended state from either starting point.
-- **Locally, in development**, the fastest route is usually neither: `make dataplane-reset && make dataplane-up` rebuilds from empty. The plane is disposable by design, and re-deriving from migration 000001 is the same path CI takes.
+**Force to the last version that actually applied — never to the one that just failed.** With the `BEGIN`/`COMMIT` wrapper the DDL has rolled back, so the database really is at `V-1`, and `force V-1` is the only value that states the truth.
 
-The distinction that matters is *whether any database has applied it*, not whether the commit merged. Append-only is a rule about divergent state, and this is the one place its purpose has to be reasoned about rather than followed mechanically.
+Three cases, exhaustively:
+
+**A. The migration fails from empty.** CI applies migrations from empty on every PR (`dataplane-up`), so this is caught **before merge** and is not a recovery scenario at all: the PR is red, the file is unmerged, fix it. This is the common case by a wide margin, and it is why the "broken migration is already merged" problem is mostly hypothetical.
+
+**B. A dirty version on a developer's local plane.** `force V-1`, then either fix the still-unmerged file and re-run, or — usually faster — `make dataplane-reset && make dataplane-up` to rebuild from empty. The plane is disposable by design, and rebuilding takes the same path CI takes.
+
+**C. A merged migration that turns out to be broken.** The file is frozen; it is never edited. Which repair applies depends on whether any database has applied it, and the two are genuinely different operations:
+
+- **It has applied nowhere** (it fails from empty, so CI must have been skipped or broken for it to have merged). The repository is broken for every new checkout, and a forward migration cannot fix that — `migrate up` from empty still stops at `V`. The remedy is at the VCS layer: **revert the merge**, then re-land a corrected migration. That is not "editing a merged migration"; it removes it. Reusing version number `V` is safe precisely because nothing applied it.
+- **It applied somewhere and fails elsewhere** (data- or environment-dependent). Here a forward fix is right, and the sequencing has a step that is easy to get wrong: after `force V-1`, `migrate up` **retries `V` and fails again**, so `V+1` never runs. The stuck database must first record `V` as deliberately skipped — `migrate force V`, which marks it applied without running it — and only then will `V+1` apply. Because `V` never executed there, **`V+1` must contain the whole of `V`'s intent, written to be correct on a database that ran `V` and on one that skipped it.** Databases that applied `V` successfully reach the same schema; the version history diverges in labelling only.
+
+The deliberate-skip step is the one that most invites a wrong move, since `force V-1` looks like the complete answer and silently leaves the database stuck retrying a migration that cannot succeed.
 
 ### D2. `dataplane-up` applies migrations
 
@@ -119,13 +128,25 @@ Local mode populates both from the default organization and default user, mirror
 
 The `benchmark` scope is in the vocabulary from item 3 but has no target table until item 9 creates one alongside the vertical slice that imports runner results — the created-when-there-is-a-caller rule working as intended. A CHECK ties `scope_type = 'benchmark'` to null work-hierarchy lineage, since a benchmark artifact belongs to no Epic.
 
-**Losing the foreign key does not mean losing the guarantee — the seam takes it over.** Dropping the FK claim without replacing it, as an earlier draft did, would have left `scope_id` as a `uuid` pointing at nothing in particular: a dangling scope is undetectable, and every lineage query silently returns less than it should. So the persistence seam **validates the scope on write**:
+**A `scopes` supertable restores the foreign key, so this is database-enforced after all.** Two earlier drafts got this wrong in opposite directions — first claiming referential integrity a polymorphic column cannot have, then replacing it with a same-transaction seam check. The seam check is not sufficient either, and the reason is worth stating plainly: a plain `SELECT` inside the writing transaction takes **no lock** on the target row, so a concurrent transaction can delete it and commit, and nothing prevents a delete afterwards at all. "Checked in the same transaction" reads like a guarantee and is not one.
 
-- `scope_type` selects the target table from the mapping above, and the write is rejected unless a row with that `scope_id` exists in it.
-- Validation happens **in the same transaction as the insert**, so a target deleted concurrently cannot slip between the check and the write.
-- `scope_type = 'benchmark'` is **rejected outright until item 9 creates the table**. Not silently tolerated as "unvalidatable" — a scope whose target does not exist is exactly the dangling reference this rule prevents, and the temporary refusal is what stops item 9's own work from landing rows the model cannot resolve.
+The fix is the standard resolution for a polymorphic association, and it is strictly better than any seam rule:
 
-This is the same division as ADR 0028's payload validation (§2): the database enforces what is true of a row in isolation, and the seam enforces what needs a lookup the database cannot express. It is weaker than an FK — nothing stops a direct `psql` insert — and that is an accepted consequence of a polymorphic scope, not an oversight. Tested per scope type, including the benchmark refusal.
+```sql
+scopes (scope_id   uuid PRIMARY KEY,
+        scope_type text NOT NULL CHECK (scope_type IN (...)),
+        UNIQUE (scope_id, scope_type))
+```
+
+- Every scopable entity — organization, product, feature, epic, story, and later a benchmark run — inserts a `scopes` row in the **same transaction** that creates it, reusing its own primary key as `scope_id`. No new identifier, and no lookup table to keep in step.
+- Each entity table carries a foreign key on `(id, <its literal type>)` into `scopes (scope_id, scope_type)`, so an entity cannot exist without its scope row, or with the wrong type.
+- Artifacts carry `FOREIGN KEY (scope_id, scope_type) REFERENCES scopes (scope_id, scope_type)`.
+
+What that buys, none of which the seam version had: a dangling scope becomes **impossible** rather than merely unlikely; deleting a scoped entity is blocked by the artifact's reference (`ON DELETE RESTRICT`) instead of silently orphaning it; `scope_type` cannot disagree with what `scope_id` actually names; and a direct `psql` insert is bound by the same rules as the seam — which matters, because a repair script is exactly how this kind of inconsistency gets introduced.
+
+It also **makes the benchmark case self-enforcing**. Until item 9 creates benchmark runs, no `scopes` row of type `benchmark` exists, so the foreign key rejects any artifact claiming that scope — with no seam rule to write, remember, or test. The special case dissolves into the general one.
+
+The cost is one extra row per scopable entity, inserted in the same transaction — and that discipline is itself enforced by the entity's own foreign key, so it cannot be forgotten. A good trade for converting an obligation people must uphold into one the database upholds for them.
 
 **Lineage is scope-conditional, and that is enforced in SQL.** ADR 0018 requires non-null lineage at every level the scope covers, which is a real constraint rather than a convention: a story-scoped artifact with a null `epic_id` is unqueryable by the lineage joins the model promises. A `CHECK` encodes it — `scope_type = 'story'` implies all four lineage columns are present, `'epic'` implies three, and so on. Getting this wrong is not caught by any test that only inserts well-formed rows, which is exactly why it belongs in the database.
 
@@ -135,9 +156,9 @@ This is the same division as ADR 0028's payload validation (§2): the database e
 
 The line: **the database enforces what is true of a row in isolation; the seam enforces what requires judgment or a registry.**
 
-In SQL — shape, vocabulary, referential integrity **where a column names one table** (lineage, authorship, organization; *not* the polymorphic `scope_id`, see D5), scope-conditional lineage, at-most-one relationship link, digest format, amendment sequence uniqueness, each table's fixed category, and the amendment chain's flatness (an artifact with `amends_artifact_id` set may not itself be amended).
+In SQL — shape, vocabulary, referential integrity including the polymorphic scope via the `scopes` supertable (D5), scope-conditional lineage, at-most-one relationship link, digest format, amendment sequence uniqueness, each table's fixed category, and the amendment chain's flatness (an artifact with `amends_artifact_id` set may not itself be amended).
 
-At the seam — payload validation against the code-resident type registry (ADR 0028 §2: the registry is code, so the database cannot consult it), **scope-target existence** (D5: `scope_id` is polymorphic, so no FK can express it), and **the acceptance rule**: an artifact reaches `accepted` only with a completed review record whose `review_digest` matches, by a distinct principal of kind agent or human.
+At the seam — payload validation against the code-resident type registry (ADR 0028 §2: the registry is code, so the database cannot consult it), and **the acceptance rule**: an artifact reaches `accepted` only with a completed review record whose `review_digest` matches, by a distinct principal of kind agent or human.
 
 That last one is the interesting call, and review settled it: **enforcement stays at the seam, but it is not equivalent to a database constraint and this document will not pretend it is.** A trigger was rejected because the author/reviewer distinctness rule reaches across principal kinds in a way that makes for fragile trigger logic, and because a trigger rewrites an actionable application error into a constraint violation surfacing three layers away.
 
@@ -179,7 +200,7 @@ Engine `postgresql`, driver `pgx/v5`. Item 4 will likely add a thin hand-written
 - **Migrations apply from empty in CI**, extending the existing `dataplane-up` job — which now covers migrations for free, since `up` runs them.
 - **Up-then-down-then-up** returns to the same schema, as the check that down migrations are real rather than decorative.
 - **Constraint tests over deliberately malformed rows**: bad digest casing, a story-scoped artifact missing `epic_id`, two relationship links set at once, a status outside the vocabulary, an artifact inserted into the wrong category table, a duplicate `(amends_artifact_id, amendment_sequence)` pair, and a benchmark-scoped artifact carrying Epic lineage. These are the assertions that matter, because a schema is only as good as what it *refuses* — and every one of them is invisible to a test that inserts only valid rows.
-- **Scope validation is tested per scope type**, including that `benchmark` is refused while its table does not exist.
+- **Scope integrity is tested per scope type**, including that an artifact claiming `benchmark` scope is refused while no such scope row exists, and that deleting a scoped entity with artifacts is blocked rather than orphaning them.
 - **Every exposed status transition is tested for its own precondition** (D6), individually rather than as one happy path, because the risk is a transition added later without the check.
 - **The ADR-and-consumer table is checked at review**, not by a test; it is a claim about intent, which no test can verify.
 
