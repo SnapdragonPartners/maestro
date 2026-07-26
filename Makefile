@@ -106,6 +106,9 @@ check-coverage:
 # Pinned so lint results are reproducible across CI runs and dev machines;
 # @latest silently changes lint behavior (and busts CI caches) on new releases.
 GOLANGCI_LINT_VERSION := v1.64.8
+# Pinned so CI and local runs generate identical output; a version drift
+# would show up as spurious diffs in the sqlc-check.
+SQLC_VERSION := v1.31.1
 
 # Install golangci-lint if not present; warn (don't force-reinstall) on a
 # version mismatch — a PATH-shadowing install (e.g. homebrew) would win over
@@ -189,13 +192,50 @@ ui-dev: build build-css
 # the same command serves first-time setup and the everyday inner loop.
 # Deliberately separate from the agent-container and benchmark-Gitea
 # machinery, so a data-plane restart cannot disturb a benchmark run.
-.PHONY: dataplane-up dataplane-down dataplane-reset
+.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate
 
 dataplane-up:
 	go run ./cmd/dataplanectl up
 
 dataplane-down:
 	go run ./cmd/dataplanectl down
+
+# --- sqlc ---------------------------------------------------------------
+#
+# Generated output is COMMITTED, so a clean checkout builds without sqlc
+# installed. That only stays true if regeneration is checked: sqlc-check
+# regenerates and fails if the tree moved, which is what catches a migration
+# edited without regenerating.
+.PHONY: install-sqlc sqlc-generate sqlc-check
+
+install-sqlc:
+	@which sqlc > /dev/null || { \
+		echo "Installing sqlc $(SQLC_VERSION)..."; \
+		go install github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION); \
+	}
+	@sqlc version 2>/dev/null | grep -q "$(SQLC_VERSION)" || \
+		echo "⚠️  sqlc on PATH is not $(SQLC_VERSION); generated output may differ from CI and show up as sqlc-check failures"
+
+sqlc-generate: install-sqlc
+	sqlc generate
+
+# git status, not git diff: diff only examines TRACKED files, so a new
+# query generating a new .sql.go file would leave the check passing while
+# the generated set is incomplete. --untracked-files=all catches the new
+# file, and porcelain also reports modifications and deletions.
+sqlc-check: sqlc-generate
+	@status=$$(git status --porcelain --untracked-files=all -- internal/dataplane/gen); \
+	if [ -n "$$status" ]; then \
+		echo "$$status"; \
+		echo "❌ generated code is stale or incomplete: run 'make sqlc-generate' and commit the result"; \
+		exit 1; \
+	fi
+	@echo "✅ generated code matches the schema"
+
+# Apply pending migrations to an already-running stack. `dataplane-up` also
+# migrates, so this is for iterating on a migration without a full cycle.
+dataplane-migrate:
+	go run ./cmd/dataplanectl migrate
 
 # Destructive: deletes the Postgres cluster and object store. Prompts
 # unless FORCE=1.

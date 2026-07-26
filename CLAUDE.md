@@ -316,6 +316,14 @@ make test-integration  # Integration tests with real services (requires API keys
 
 **Golden runs spend real money.** A `golden-*` run bills live model APIs — the Phase 1a `golden-all` run cost $26.40. **Never start one without DR's explicit approval or override for that specific run.** Prior approval of a phase, a plan, or an earlier run is not approval for this one. Every phase-end run gets a digest entry in `docs/v2/notes_conformance-log.md`: date, target identity, per-story verdict, cost/token totals.
 
+## Verification Discipline
+
+- Verify claims about dependency behavior against the pinned version's source, documentation, or a focused reproducer before recording them in code, design documents, or commit messages.
+- For nontrivial regression tests and CI guards, prove the check can fail by temporarily breaking the protected behavior or fixture. Restore the mutation before committing.
+- Treat fixes as new changes: retest the original failure, test boundary behavior introduced by the remedy, and search for the same pattern at adjacent call sites.
+- For schemas, validators, parsers, and policy checks, enumerate the invariants and rejected cases before implementation.
+- If an important guarantee cannot be tested reliably, state that boundary beside the code; do not let adjacent passing tests imply coverage.
+
 ## Git Workflow and Branch Protection
 
 ### Branch Protection Rules

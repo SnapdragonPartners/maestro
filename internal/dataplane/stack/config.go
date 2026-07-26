@@ -9,6 +9,8 @@ package stack
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 
@@ -123,6 +125,40 @@ func (c *Config) validatePorts() error {
 		seen[port] = name
 	}
 	return nil
+}
+
+// DSN renders the Postgres connection string for this stack.
+//
+// The password is derived, never stored, so this is assembled at the point
+// of use and never written anywhere — the bootstrap pointer deliberately
+// carries no credential.
+func (c *Config) DSN(rootKey []byte) (string, error) {
+	return c.DSNFor(rootKey, c.Database)
+}
+
+// DSNFor renders a connection string for an arbitrary database on this
+// stack.
+//
+// Exists for tests, which must never run destructive migrations against the
+// canonical database: a down-migration harness pointed at `maestro` drops
+// every table the developer is working with. Tests create a disposable
+// database and point here.
+func (c *Config) DSNFor(rootKey []byte, database string) (string, error) {
+	password, err := secret.Derive(rootKey, secret.ContextPostgresPassword)
+	if err != nil {
+		return "", fmt.Errorf("derive postgres password: %w", err)
+	}
+	// url.UserPassword escapes the credential; the derived value is
+	// base64url and needs none, but relying on that would make the
+	// derivation encoding load-bearing for connection-string correctness.
+	dsn := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.User, password),
+		Host:     net.JoinHostPort("127.0.0.1", strconv.Itoa(c.PGPort)),
+		Path:     "/" + database,
+		RawQuery: "sslmode=disable",
+	}
+	return dsn.String(), nil
 }
 
 // Bootstrap renders the pointer describing this stack.
