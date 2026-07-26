@@ -1,8 +1,10 @@
 # CLAUDE.md
 
 Operating instructions for Claude Code in this repository. `AGENTS.md` is a
-symbolic link to this file; edit `CLAUDE.md` only so both entry points remain in
-sync.
+tracked symbolic link to this file (Git mode `120000`; verify with
+`git ls-files -s AGENTS.md`), so edit `CLAUDE.md` only and both entry points
+stay in sync. Tooling that enumerates only regular files may not list
+`AGENTS.md`; that does not mean it is absent.
 
 ## Project And Authority
 
