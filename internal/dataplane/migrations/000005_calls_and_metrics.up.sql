@@ -20,7 +20,15 @@ CREATE TABLE llm_calls (
     llm_call_id           uuid        PRIMARY KEY,
     organization_id       uuid        NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
     principal_instance_id uuid        NOT NULL,
-    story_id              uuid        REFERENCES stories (story_id) ON DELETE RESTRICT,
+    -- Whole-tuple work lineage, like the artifact tables. Independent
+    -- single-column story/epic foreign keys accepted a call whose Story
+    -- belonged to a different Epic, or to another organization entirely --
+    -- and cost analysis groups by exactly these columns, so an inconsistent
+    -- one silently misattributes spend.
+    product_id            uuid,
+    feature_id            uuid,
+    epic_id               uuid,
+    story_id              uuid,
 
     provider              text        NOT NULL,
     model                 text        NOT NULL,
@@ -38,6 +46,30 @@ CREATE TABLE llm_calls (
 
     started_at            timestamptz NOT NULL DEFAULT now(),
     finished_at           timestamptz,
+
+
+    -- Lineage fills top-down; without this a partially-filled tuple slips
+    -- past the foreign keys below, which are unchecked when any column is
+    -- null (MATCH SIMPLE).
+    CONSTRAINT llm_calls_lineage_shape_check
+        CHECK (
+            (story_id   IS NULL OR epic_id    IS NOT NULL) AND
+            (epic_id    IS NULL OR feature_id IS NOT NULL) AND
+            (feature_id IS NULL OR product_id IS NOT NULL)
+        ),
+
+    CONSTRAINT llm_calls_story_lineage_fkey
+        FOREIGN KEY (story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES stories (story_id, epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT llm_calls_epic_lineage_fkey
+        FOREIGN KEY (epic_id, feature_id, product_id, organization_id)
+        REFERENCES epics (epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT llm_calls_feature_lineage_fkey
+        FOREIGN KEY (feature_id, product_id, organization_id)
+        REFERENCES features (feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT llm_calls_product_lineage_fkey
+        FOREIGN KEY (product_id, organization_id)
+        REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
 
     CONSTRAINT llm_calls_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)
@@ -68,8 +100,15 @@ CREATE TABLE tool_calls (
     -- parent would not be.
     llm_call_id           uuid,
 
-    story_id              uuid        REFERENCES stories (story_id) ON DELETE RESTRICT,
-    epic_id               uuid        REFERENCES epics   (epic_id)  ON DELETE RESTRICT,
+    -- Whole-tuple work lineage, like the artifact tables. Independent
+    -- single-column story/epic foreign keys accepted a call whose Story
+    -- belonged to a different Epic, or to another organization entirely --
+    -- and cost analysis groups by exactly these columns, so an inconsistent
+    -- one silently misattributes spend.
+    product_id            uuid,
+    feature_id            uuid,
+    epic_id               uuid,
+    story_id              uuid,
 
     tool_name             text        NOT NULL,
     arguments             jsonb       NOT NULL,
@@ -81,6 +120,30 @@ CREATE TABLE tool_calls (
 
     started_at            timestamptz NOT NULL DEFAULT now(),
     finished_at           timestamptz,
+
+
+    -- Lineage fills top-down; without this a partially-filled tuple slips
+    -- past the foreign keys below, which are unchecked when any column is
+    -- null (MATCH SIMPLE).
+    CONSTRAINT tool_calls_lineage_shape_check
+        CHECK (
+            (story_id   IS NULL OR epic_id    IS NOT NULL) AND
+            (epic_id    IS NULL OR feature_id IS NOT NULL) AND
+            (feature_id IS NULL OR product_id IS NOT NULL)
+        ),
+
+    CONSTRAINT tool_calls_story_lineage_fkey
+        FOREIGN KEY (story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES stories (story_id, epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT tool_calls_epic_lineage_fkey
+        FOREIGN KEY (epic_id, feature_id, product_id, organization_id)
+        REFERENCES epics (epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT tool_calls_feature_lineage_fkey
+        FOREIGN KEY (feature_id, product_id, organization_id)
+        REFERENCES features (feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT tool_calls_product_lineage_fkey
+        FOREIGN KEY (product_id, organization_id)
+        REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
 
     CONSTRAINT tool_calls_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)
@@ -106,12 +169,44 @@ CREATE TABLE metric_events (
     metric_event_id       uuid             PRIMARY KEY,
     organization_id       uuid             NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
     principal_instance_id uuid,
-    story_id              uuid             REFERENCES stories (story_id) ON DELETE RESTRICT,
+    -- Whole-tuple work lineage, like the artifact tables. Independent
+    -- single-column story/epic foreign keys accepted a call whose Story
+    -- belonged to a different Epic, or to another organization entirely --
+    -- and cost analysis groups by exactly these columns, so an inconsistent
+    -- one silently misattributes spend.
+    product_id            uuid,
+    feature_id            uuid,
+    epic_id               uuid,
+    story_id              uuid,
 
     metric_name           text             NOT NULL,
     value                 double precision NOT NULL,
     labels                jsonb            NOT NULL DEFAULT '{}'::jsonb,
     recorded_at           timestamptz      NOT NULL DEFAULT now(),
+
+
+    -- Lineage fills top-down; without this a partially-filled tuple slips
+    -- past the foreign keys below, which are unchecked when any column is
+    -- null (MATCH SIMPLE).
+    CONSTRAINT metric_events_lineage_shape_check
+        CHECK (
+            (story_id   IS NULL OR epic_id    IS NOT NULL) AND
+            (epic_id    IS NULL OR feature_id IS NOT NULL) AND
+            (feature_id IS NULL OR product_id IS NOT NULL)
+        ),
+
+    CONSTRAINT metric_events_story_lineage_fkey
+        FOREIGN KEY (story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES stories (story_id, epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT metric_events_epic_lineage_fkey
+        FOREIGN KEY (epic_id, feature_id, product_id, organization_id)
+        REFERENCES epics (epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT metric_events_feature_lineage_fkey
+        FOREIGN KEY (feature_id, product_id, organization_id)
+        REFERENCES features (feature_id, product_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT metric_events_product_lineage_fkey
+        FOREIGN KEY (product_id, organization_id)
+        REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
 
     CONSTRAINT metric_events_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)

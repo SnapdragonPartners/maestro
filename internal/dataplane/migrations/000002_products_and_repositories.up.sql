@@ -15,9 +15,16 @@ BEGIN;
 CREATE TABLE products (
     product_id      uuid        PRIMARY KEY,
     organization_id uuid        NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
+    -- User lineage, carried on every major record (ADR 0022) so team mode
+    -- never needs a backfill.
+    user_id         uuid        NOT NULL,
     slug            text        NOT NULL,
     display_name    text        NOT NULL,
     created_at      timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT products_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT,
 
     CONSTRAINT products_org_slug_key UNIQUE (organization_id, slug),
     CONSTRAINT products_id_org_key   UNIQUE (product_id, organization_id)
@@ -34,6 +41,7 @@ CREATE TABLE repositories (
     organization_id    uuid        NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
     -- The one primary Product. NOT NULL is the whole enforcement.
     primary_product_id uuid        NOT NULL,
+    user_id            uuid        NOT NULL,
     slug               text        NOT NULL,
     display_name       text        NOT NULL,
     created_at         timestamptz NOT NULL DEFAULT now(),
@@ -44,7 +52,11 @@ CREATE TABLE repositories (
     -- Composite, so the primary Product cannot belong to another organization.
     CONSTRAINT repositories_primary_product_fkey
         FOREIGN KEY (primary_product_id, organization_id)
-        REFERENCES products (product_id, organization_id) ON DELETE RESTRICT
+        REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
+
+    CONSTRAINT repositories_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT
 );
 
 CREATE INDEX repositories_organization_id_idx ON repositories (organization_id);

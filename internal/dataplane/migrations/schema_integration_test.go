@@ -87,12 +87,12 @@ func seed(t *testing.T, db *sql.DB) *fixture {
 	}{
 		{`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,'t','T')`, []any{f.org}},
 		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'u','U')`, []any{f.user, f.org}},
-		{`INSERT INTO products (product_id, organization_id, slug, display_name) VALUES ($1,$2,'p','P')`, []any{f.product, f.org}},
-		{`INSERT INTO repositories (repository_id, organization_id, primary_product_id, slug, display_name) VALUES ($1,$2,$3,'r','R')`, []any{f.repo, f.org, f.product}},
+		{`INSERT INTO products (product_id, organization_id, user_id, slug, display_name) VALUES ($1,$2,$3,'p','P')`, []any{f.product, f.org, f.user}},
+		{`INSERT INTO repositories (repository_id, organization_id, primary_product_id, user_id, slug, display_name) VALUES ($1,$2,$3,$4,'r','R')`, []any{f.repo, f.org, f.product, f.user}},
 		{`INSERT INTO product_repositories (product_id, repository_id, organization_id) VALUES ($1,$2,$3)`, []any{f.product, f.repo, f.org}},
-		{`INSERT INTO features (feature_id, organization_id, product_id, title) VALUES ($1,$2,$3,'F')`, []any{f.feature, f.org, f.product}},
-		{`INSERT INTO epics (epic_id, organization_id, product_id, feature_id, repository_id, title) VALUES ($1,$2,$3,$4,$5,'E')`, []any{f.epic, f.org, f.product, f.feature, f.repo}},
-		{`INSERT INTO stories (story_id, organization_id, product_id, feature_id, epic_id, title) VALUES ($1,$2,$3,$4,$5,'S')`, []any{f.story, f.org, f.product, f.feature, f.epic}},
+		{`INSERT INTO features (feature_id, organization_id, user_id, product_id, title) VALUES ($1,$2,$3,$4,'F')`, []any{f.feature, f.org, f.user, f.product}},
+		{`INSERT INTO epics (epic_id, organization_id, user_id, product_id, feature_id, repository_id, title) VALUES ($1,$2,$3,$4,$5,$6,'E')`, []any{f.epic, f.org, f.user, f.product, f.feature, f.repo}},
+		{`INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id, epic_id, title) VALUES ($1,$2,$3,$4,$5,$6,'S')`, []any{f.story, f.org, f.user, f.product, f.feature, f.epic}},
 		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type) VALUES ($1,$2,'agent','opus','coder')`, []any{f.principal, f.org}},
 	}
 	for _, s := range stmts {
@@ -346,17 +346,21 @@ func TestRepositoryPrimaryProductMustExistInSameOrganization(t *testing.T) {
 
 	otherOrg := "40000000-0000-7000-8000-0000000000f1"
 	otherProduct := "40000000-0000-7000-8000-0000000000f2"
+	otherUser := "40000000-0000-7000-8000-0000000000e1"
 	if _, err := f.tx.Exec(`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,'other','Other')`, otherOrg); err != nil {
 		t.Fatalf("seed other org: %v", err)
 	}
-	if _, err := f.tx.Exec(`INSERT INTO products (product_id, organization_id, slug, display_name) VALUES ($1,$2,'op','OP')`, otherProduct, otherOrg); err != nil {
+	if _, err := f.tx.Exec(`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'ou','OU')`, otherUser, otherOrg); err != nil {
+		t.Fatalf("seed other user: %v", err)
+	}
+	if _, err := f.tx.Exec(`INSERT INTO products (product_id, organization_id, user_id, slug, display_name) VALUES ($1,$2,$3,'op','OP')`, otherProduct, otherOrg, otherUser); err != nil {
 		t.Fatalf("seed other product: %v", err)
 	}
 
 	_, err := f.tx.Exec(
-		`INSERT INTO repositories (repository_id, organization_id, primary_product_id, slug, display_name)
-		 VALUES ($1,$2,$3,'x','X')`,
-		"40000000-0000-7000-8000-0000000000f3", f.org, otherProduct)
+		`INSERT INTO repositories (repository_id, organization_id, primary_product_id, user_id, slug, display_name)
+		 VALUES ($1,$2,$3,$4,'x','X')`,
+		"40000000-0000-7000-8000-0000000000f3", f.org, otherProduct, f.user)
 	if err == nil {
 		t.Fatal("a repository took its primary Product from another organization")
 	}
@@ -368,8 +372,8 @@ func TestRepositoryMustHaveAPrimaryProduct(t *testing.T) {
 	f := seed(t, openPlane(t))
 
 	_, err := f.tx.Exec(
-		`INSERT INTO repositories (repository_id, organization_id, slug, display_name) VALUES ($1,$2,'y','Y')`,
-		"40000000-0000-7000-8000-0000000000f4", f.org)
+		`INSERT INTO repositories (repository_id, organization_id, user_id, slug, display_name) VALUES ($1,$2,$3,'y','Y')`,
+		"40000000-0000-7000-8000-0000000000f4", f.org, f.user)
 	if err == nil {
 		t.Fatal("a repository was created with no primary Product")
 	}
@@ -380,16 +384,16 @@ func TestStoryCannotTakeAnEpicFromAnotherFeature(t *testing.T) {
 
 	otherFeature := "40000000-0000-7000-8000-0000000000f5"
 	if _, err := f.tx.Exec(
-		`INSERT INTO features (feature_id, organization_id, product_id, title) VALUES ($1,$2,$3,'F2')`,
-		otherFeature, f.org, f.product); err != nil {
+		`INSERT INTO features (feature_id, organization_id, user_id, product_id, title) VALUES ($1,$2,$3,$4,'F2')`,
+		otherFeature, f.org, f.user, f.product); err != nil {
 		t.Fatalf("seed other feature: %v", err)
 	}
 
 	// The Epic belongs to f.feature; this Story claims otherFeature.
 	_, err := f.tx.Exec(
-		`INSERT INTO stories (story_id, organization_id, product_id, feature_id, epic_id, title)
-		 VALUES ($1,$2,$3,$4,$5,'S2')`,
-		"40000000-0000-7000-8000-0000000000f6", f.org, f.product, otherFeature, f.epic)
+		`INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id, epic_id, title)
+		 VALUES ($1,$2,$3,$4,$5,$6,'S2')`,
+		"40000000-0000-7000-8000-0000000000f6", f.org, f.user, f.product, otherFeature, f.epic)
 	if err == nil {
 		t.Fatal("a Story claimed an Epic belonging to a different Feature")
 	}
@@ -400,9 +404,9 @@ func TestScopeMustNameTheSameEntityAsLineage(t *testing.T) {
 
 	otherStory := "40000000-0000-7000-8000-0000000000f7"
 	if _, err := f.tx.Exec(
-		`INSERT INTO stories (story_id, organization_id, product_id, feature_id, epic_id, title)
-		 VALUES ($1,$2,$3,$4,$5,'S3')`,
-		otherStory, f.org, f.product, f.feature, f.epic); err != nil {
+		`INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id, epic_id, title)
+		 VALUES ($1,$2,$3,$4,$5,$6,'S3')`,
+		otherStory, f.org, f.user, f.product, f.feature, f.epic); err != nil {
 		t.Fatalf("seed other story: %v", err)
 	}
 

@@ -49,9 +49,13 @@ CREATE TABLE management_artifacts (
     -- call, which is a real absence rather than a gap.
     produced_by_tool_call_id uuid,
 
+    -- Lifecycle links are organization-aware (composite FKs below). A
+    -- plain reference to artifact_id would let an artifact in one
+    -- organization amend or supersede one in another, quietly joining two
+    -- tenants' histories.
     amends_artifact_id     uuid,
-    supersedes_artifact_id uuid REFERENCES management_artifacts (artifact_id) ON DELETE RESTRICT,
-    replaces_artifact_id   uuid REFERENCES management_artifacts (artifact_id) ON DELETE RESTRICT,
+    supersedes_artifact_id uuid,
+    replaces_artifact_id   uuid,
 
     -- Assigned on acceptance and RETAINED thereafter. Without a stored
     -- sequence the effective view ("original plus accepted amendments in
@@ -191,8 +195,16 @@ CREATE TABLE management_artifacts (
     CONSTRAINT management_artifacts_scope_product_fkey
         FOREIGN KEY (scope_product_id) REFERENCES products (product_id) ON DELETE RESTRICT,
 
-    CONSTRAINT management_artifacts_id_kind_key UNIQUE (artifact_id, is_amendment),
-    CONSTRAINT management_artifacts_id_org_key  UNIQUE (artifact_id, organization_id)
+    CONSTRAINT management_artifacts_supersedes_fkey
+        FOREIGN KEY (supersedes_artifact_id, organization_id)
+        REFERENCES management_artifacts (artifact_id, organization_id) ON DELETE RESTRICT,
+    CONSTRAINT management_artifacts_replaces_fkey
+        FOREIGN KEY (replaces_artifact_id, organization_id)
+        REFERENCES management_artifacts (artifact_id, organization_id) ON DELETE RESTRICT,
+
+    CONSTRAINT management_artifacts_id_kind_key     UNIQUE (artifact_id, is_amendment),
+    CONSTRAINT management_artifacts_id_org_key      UNIQUE (artifact_id, organization_id),
+    CONSTRAINT management_artifacts_id_kind_org_key UNIQUE (artifact_id, is_amendment, organization_id)
 );
 
 -- The flat-chain constraint: an amendment may only target a NON-amendment.
@@ -200,8 +212,8 @@ CREATE TABLE management_artifacts (
 -- is_amendment to be both true and false.
 ALTER TABLE management_artifacts
     ADD CONSTRAINT management_artifacts_amends_original_fkey
-    FOREIGN KEY (amends_artifact_id, amends_target_is_amendment)
-    REFERENCES management_artifacts (artifact_id, is_amendment) ON DELETE RESTRICT;
+    FOREIGN KEY (amends_artifact_id, amends_target_is_amendment, organization_id)
+    REFERENCES management_artifacts (artifact_id, is_amendment, organization_id) ON DELETE RESTRICT;
 
 -- The amendment order is total by construction, not by convention.
 CREATE UNIQUE INDEX management_artifacts_amendment_sequence_key
