@@ -57,6 +57,36 @@ func Up(ctx context.Context, dsn string) error {
 // while holding the data-plane lifecycle lock, so nothing else can proceed
 // either.
 func run(ctx context.Context, m *migrate.Migrate, op func() error, what string) error {
+	return runOp(ctx, gracefulStopper(m), op, what)
+}
+
+// gracefulStopper asks migrate to stop at the next migration boundary.
+//
+// The send is bounded, and that is not defensive padding. GracefulStop is
+// unbuffered and only received while a migration is in progress, so if the
+// operation finishes in the window between the context being cancelled and
+// this send, a plain `m.GracefulStop <- true` blocks forever -- deadlocking
+// the caller while it holds the data-plane lifecycle lock. An earlier
+// version of this function did exactly that.
+func gracefulStopper(m *migrate.Migrate) func() {
+	return func() {
+		select {
+		case m.GracefulStop <- true:
+		case <-time.After(stopSignalTimeout):
+			// Nobody is listening, which means the operation is already
+			// finishing on its own. The wait below collects it.
+		}
+	}
+}
+
+// runOp executes op under the caller's context, asking it to stop early if
+// the context is cancelled.
+//
+// Split from run so the cancellation path is testable without a database:
+// its correctness is about channel choreography, not SQL, and the failure
+// it guards against (a hung migration holding the lifecycle lock) is one no
+// integration test would reliably reproduce.
+func runOp(ctx context.Context, stop func(), op func() error, what string) error {
 	done := make(chan error, 1)
 	go func() { done <- op() }()
 
@@ -67,10 +97,10 @@ func run(ctx context.Context, m *migrate.Migrate, op func() error, what string) 
 		}
 		return nil
 	case <-ctx.Done():
-		// Ask migrate to stop at the next boundary, then wait for it: the
-		// alternative is returning while a migration is still running
-		// against the database we are about to report as unmigrated.
-		m.GracefulStop <- true
+		stop()
+		// Wait for the operation to actually finish. Returning early would
+		// report the database as unmigrated while a migration is still
+		// running against it.
 		<-done
 		return fmt.Errorf("%s: %w", what, ctx.Err())
 	}
@@ -99,6 +129,10 @@ func Down(ctx context.Context, dsn string) error {
 // that a statement blocked behind another session's lock fails instead of
 // hanging forever.
 const statementTimeout = 5 * time.Minute
+
+// stopSignalTimeout bounds the attempt to signal migrate. See
+// gracefulStopper for why an unbounded send is a deadlock.
+const stopSignalTimeout = 5 * time.Second
 
 // withStatementTimeout returns dsn with a server-side statement timeout.
 //

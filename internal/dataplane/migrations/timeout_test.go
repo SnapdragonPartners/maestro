@@ -1,9 +1,12 @@
 package migrations
 
 import (
+	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A migration that hangs holds the data-plane lifecycle lock, so nothing
@@ -43,5 +46,86 @@ func TestStatementTimeoutIsAppliedToTheConnection(t *testing.T) {
 func TestStatementTimeoutRejectsAMalformedDSN(t *testing.T) {
 	if _, err := withStatementTimeout("://not a dsn"); err == nil {
 		t.Error("a malformed DSN was accepted")
+	}
+}
+
+// Cancellation choreography, tested without a database because that is
+// where its correctness lives: channels, not SQL. A hung migration holds
+// the data-plane lifecycle lock, so nothing else can proceed either, and no
+// integration test would reliably reproduce it.
+
+func TestRunOpReturnsWhenTheOperationCompletes(t *testing.T) {
+	stopped := false
+	err := runOp(context.Background(), func() { stopped = true }, func() error { return nil }, "test")
+	if err != nil {
+		t.Fatalf("runOp: %v", err)
+	}
+	if stopped {
+		t.Error("the stopper was invoked for an operation that completed normally")
+	}
+}
+
+func TestRunOpStopsAndWaitsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	stopped := make(chan struct{})
+
+	op := func() error {
+		<-release // Block until the stopper says to finish.
+		close(finished)
+		return nil
+	}
+	stop := func() {
+		close(stopped)
+		close(release)
+	}
+
+	go cancel()
+
+	err := runOp(ctx, stop, op, "test")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("runOp = %v; want context.Canceled", err)
+	}
+
+	select {
+	case <-stopped:
+	default:
+		t.Error("the operation was not asked to stop")
+	}
+	// The wait is the point: returning before the operation finishes would
+	// report the database as unmigrated while a migration still runs.
+	select {
+	case <-finished:
+	default:
+		t.Error("runOp returned before the operation finished")
+	}
+}
+
+// The deadlock an earlier version shipped: if the operation completes in
+// the window between cancellation and the stop signal, an unbounded send on
+// migrate's unbuffered GracefulStop channel blocks forever.
+func TestRunOpDoesNotDeadlockWhenNobodyIsListening(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A stopper that behaves like a send to a channel nobody reads, bounded
+	// the way gracefulStopper bounds it.
+	unheard := make(chan bool)
+	stop := func() {
+		select {
+		case unheard <- true:
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- runOp(ctx, stop, func() error { return nil }, "test") }()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runOp deadlocked signalling a stop nobody is listening for")
 	}
 }

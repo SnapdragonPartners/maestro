@@ -136,3 +136,176 @@ func TestPrimaryProductMustBeAMemberAtCommit(t *testing.T) {
 		t.Errorf("failed on the wrong constraint: %v", err)
 	}
 }
+
+// foreignOrg seeds a second organization with its own user and principal,
+// for the cross-organization rejection cases below.
+type foreign struct{ org, user, principal string }
+
+func seedForeignOrg(t *testing.T, f *fixture, suffix string) foreign {
+	t.Helper()
+	fo := foreign{
+		org:       "70000000-0000-7000-8000-0000000000" + suffix + "1",
+		user:      "70000000-0000-7000-8000-0000000000" + suffix + "2",
+		principal: "70000000-0000-7000-8000-0000000000" + suffix + "3",
+	}
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,$2,'X')`, []any{fo.org, "org" + suffix}},
+		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'fu','FU')`, []any{fo.user, fo.org}},
+		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
+		  VALUES ($1,$2,'agent','opus','coder')`, []any{fo.principal, fo.org}},
+	} {
+		if _, err := f.tx.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed foreign org: %v", err)
+		}
+	}
+	return fo
+}
+
+// Lifecycle links referencing artifact_id alone would let one tenant's
+// artifact amend or supersede another's, quietly joining two histories.
+func TestLifecycleLinksCannotCrossOrganizations(t *testing.T) {
+	for _, link := range []string{"amends_artifact_id", "supersedes_artifact_id", "replaces_artifact_id"} {
+		t.Run(link, func(t *testing.T) {
+			f := seed(t, openPlane(t))
+			fo := seedForeignOrg(t, f, "a")
+
+			// A well-formed artifact in the OTHER organization.
+			foreignArtifact := "70000000-0000-7000-8000-0000000000a4"
+			if _, err := f.tx.Exec(
+				`INSERT INTO management_artifacts
+				  (artifact_id, organization_id, user_id, artifact_type, scope_type,
+				   scope_organization_id, author_instance_id, schema_version, summary,
+				   payload, payload_digest, review_digest)
+				 VALUES ($1,$2,$3,'plan','organization',$2,$4,1,'s','{}',$5,$6)`,
+				foreignArtifact, fo.org, fo.user, fo.principal, digestA, digestB); err != nil {
+				t.Fatalf("seed foreign artifact: %v", err)
+			}
+
+			overrides := map[string]any{link: foreignArtifact}
+			if link == "amends_artifact_id" {
+				overrides["status"] = "accepted"
+				overrides["accepted_at"] = "2026-01-01T00:00:00Z"
+				overrides["amendment_sequence"] = 1
+			}
+
+			if err := f.insertStoryArtifact("70000000-0000-7000-8000-0000000000a5", overrides); err == nil {
+				t.Fatalf("%s referenced an artifact in another organization", link)
+			}
+		})
+	}
+}
+
+// An Epic owns a branch, so its repository must belong to its Product --
+// not merely to the same organization.
+func TestEpicCannotUseANonMemberRepository(t *testing.T) {
+	f := seed(t, openPlane(t))
+
+	// A second Product and a repository that belongs only to it.
+	otherProduct := "70000000-0000-7000-8000-0000000000b1"
+	otherRepo := "70000000-0000-7000-8000-0000000000b2"
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO products (product_id, organization_id, user_id, slug, display_name) VALUES ($1,$2,$3,'p2','P2')`,
+			[]any{otherProduct, f.org, f.user}},
+		{`INSERT INTO repositories (repository_id, organization_id, primary_product_id, user_id, slug, display_name)
+		  VALUES ($1,$2,$3,$4,'r2','R2')`, []any{otherRepo, f.org, otherProduct, f.user}},
+		{`INSERT INTO product_repositories (product_id, repository_id, organization_id) VALUES ($1,$2,$3)`,
+			[]any{otherProduct, otherRepo, f.org}},
+	} {
+		if _, err := f.tx.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// The Epic's Product is f.product; the repository belongs to otherProduct.
+	_, err := f.tx.Exec(
+		`INSERT INTO epics (epic_id, organization_id, user_id, product_id, feature_id, repository_id, title)
+		 VALUES ($1,$2,$3,$4,$5,$6,'E2')`,
+		"70000000-0000-7000-8000-0000000000b3", f.org, f.user, f.product, f.feature, otherRepo)
+	if err == nil {
+		t.Fatal("an Epic claimed a repository that is not a member of its Product")
+	}
+	if !strings.Contains(err.Error(), "repository_membership") {
+		t.Errorf("failed on the wrong constraint: %v", err)
+	}
+}
+
+// Cost analysis groups by exactly these columns, so an inconsistent tuple
+// silently misattributes spend.
+//
+// Two separate fixtures rather than two inserts in one: a rejected
+// statement aborts the surrounding transaction, so the second attempt would
+// fail with "transaction is aborted" and prove nothing about its own
+// constraint.
+func TestCallLineageMustReferenceARealTuple(t *testing.T) {
+	f := seed(t, openPlane(t))
+
+	otherFeature := "70000000-0000-7000-8000-0000000000c1"
+	if _, err := f.tx.Exec(
+		`INSERT INTO features (feature_id, organization_id, user_id, product_id, title) VALUES ($1,$2,$3,$4,'F3')`,
+		otherFeature, f.org, f.user, f.product); err != nil {
+		t.Fatalf("seed feature: %v", err)
+	}
+
+	// The Story belongs to f.feature; this call claims otherFeature.
+	_, err := f.tx.Exec(
+		`INSERT INTO llm_calls (llm_call_id, organization_id, principal_instance_id,
+		                        product_id, feature_id, epic_id, story_id, provider, model)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,'anthropic','opus')`,
+		"70000000-0000-7000-8000-0000000000c2", f.org, f.principal,
+		f.product, otherFeature, f.epic, f.story)
+	if err == nil {
+		t.Fatal("an LLM call carried a lineage tuple that does not exist")
+	}
+}
+
+// A partially-filled tuple must also be refused: MATCH SIMPLE skips a
+// composite foreign key entirely when any column is null, so the shape
+// CHECK is the only thing standing between a half-filled lineage and the
+// database.
+func TestCallLineageMustBeFilledTopDown(t *testing.T) {
+	f := seed(t, openPlane(t))
+
+	_, err := f.tx.Exec(
+		`INSERT INTO llm_calls (llm_call_id, organization_id, principal_instance_id,
+		                        story_id, provider, model)
+		 VALUES ($1,$2,$3,$4,'anthropic','opus')`,
+		"70000000-0000-7000-8000-0000000000c3", f.org, f.principal, f.story)
+	if err == nil {
+		t.Fatal("an LLM call named a Story with no Epic, escaping the lineage foreign key")
+	}
+	if !strings.Contains(err.Error(), "lineage_shape") {
+		t.Errorf("failed on the wrong constraint: %v", err)
+	}
+}
+
+// Provenance that can name the wrong parent is worse than none, because it
+// reads as evidence.
+func TestToolCallCannotClaimAnotherPrincipalsLLMCall(t *testing.T) {
+	f := seed(t, openPlane(t))
+
+	otherPrincipal := "70000000-0000-7000-8000-0000000000d1"
+	if _, err := f.tx.Exec(
+		`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
+		 VALUES ($1,$2,'agent','sonnet','coder')`, otherPrincipal, f.org); err != nil {
+		t.Fatalf("seed principal: %v", err)
+	}
+
+	llmCall := "70000000-0000-7000-8000-0000000000d2"
+	if _, err := f.tx.Exec(
+		`INSERT INTO llm_calls (llm_call_id, organization_id, principal_instance_id, provider, model)
+		 VALUES ($1,$2,$3,'anthropic','sonnet')`, llmCall, f.org, otherPrincipal); err != nil {
+		t.Fatalf("seed llm call: %v", err)
+	}
+
+	// Same organization, different principal.
+	err := f.insertToolCall("70000000-0000-7000-8000-0000000000d3", f.org, llmCall)
+	if err == nil {
+		t.Fatal("a tool call claimed an LLM call made by a different principal")
+	}
+}

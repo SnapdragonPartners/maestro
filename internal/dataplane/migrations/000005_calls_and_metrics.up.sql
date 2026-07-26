@@ -19,6 +19,13 @@ BEGIN;
 CREATE TABLE llm_calls (
     llm_call_id           uuid        PRIMARY KEY,
     organization_id       uuid        NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
+    -- User lineage. NOT derivable from the principal: only human principals
+    -- carry a user_id, so an agent's calls would be unattributable in team
+    -- mode -- and these tables are exactly where cost and action
+    -- attribution are reconstructed. Nullable because Orchestrator-initiated
+    -- work genuinely has no user behind it; queries must handle that rather
+    -- than assume one.
+    user_id               uuid,
     principal_instance_id uuid        NOT NULL,
     -- Whole-tuple work lineage, like the artifact tables. Independent
     -- single-column story/epic foreign keys accepted a call whose Story
@@ -29,6 +36,19 @@ CREATE TABLE llm_calls (
     feature_id            uuid,
     epic_id               uuid,
     story_id              uuid,
+
+
+    -- An always-non-null encoding of the work tuple. A composite foreign
+    -- key over the nullable lineage columns would be SKIPPED whenever any
+    -- of them is null (MATCH SIMPLE) -- which is the common case -- so the
+    -- provenance check below would silently not apply. Encoding the tuple
+    -- into one non-null value makes it always enforced.
+    lineage_key text GENERATED ALWAYS AS (
+        coalesce(product_id::text, '') || '/' ||
+        coalesce(feature_id::text, '') || '/' ||
+        coalesce(epic_id::text,    '') || '/' ||
+        coalesce(story_id::text,   '')
+    ) STORED,
 
     provider              text        NOT NULL,
     model                 text        NOT NULL,
@@ -71,6 +91,10 @@ CREATE TABLE llm_calls (
         FOREIGN KEY (product_id, organization_id)
         REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
 
+    CONSTRAINT llm_calls_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT,
+
     CONSTRAINT llm_calls_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)
         REFERENCES principal_instances (principal_instance_id, organization_id) ON DELETE RESTRICT,
@@ -81,7 +105,12 @@ CREATE TABLE llm_calls (
     CONSTRAINT llm_calls_cost_nonnegative_check
         CHECK (cost_usd IS NULL OR cost_usd >= 0),
 
-    CONSTRAINT llm_calls_id_org_key UNIQUE (llm_call_id, organization_id)
+    CONSTRAINT llm_calls_id_org_key UNIQUE (llm_call_id, organization_id),
+
+    -- The target of tool_calls' provenance foreign key: a tool call may
+    -- only claim an LLM call made by the SAME principal for the SAME work.
+    CONSTRAINT llm_calls_provenance_key
+        UNIQUE (llm_call_id, principal_instance_id, lineage_key, organization_id)
 );
 
 CREATE INDEX llm_calls_principal_idx  ON llm_calls (principal_instance_id);
@@ -92,6 +121,7 @@ CREATE INDEX llm_calls_model_idx      ON llm_calls (model);
 CREATE TABLE tool_calls (
     tool_call_id          uuid        PRIMARY KEY,
     organization_id       uuid        NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
+    user_id               uuid,
     principal_instance_id uuid        NOT NULL,
 
     -- The originating LLM call, when there was one. Nullable because the
@@ -109,6 +139,19 @@ CREATE TABLE tool_calls (
     feature_id            uuid,
     epic_id               uuid,
     story_id              uuid,
+
+
+    -- An always-non-null encoding of the work tuple. A composite foreign
+    -- key over the nullable lineage columns would be SKIPPED whenever any
+    -- of them is null (MATCH SIMPLE) -- which is the common case -- so the
+    -- provenance check below would silently not apply. Encoding the tuple
+    -- into one non-null value makes it always enforced.
+    lineage_key text GENERATED ALWAYS AS (
+        coalesce(product_id::text, '') || '/' ||
+        coalesce(feature_id::text, '') || '/' ||
+        coalesce(epic_id::text,    '') || '/' ||
+        coalesce(story_id::text,   '')
+    ) STORED,
 
     tool_name             text        NOT NULL,
     arguments             jsonb       NOT NULL,
@@ -145,13 +188,22 @@ CREATE TABLE tool_calls (
         FOREIGN KEY (product_id, organization_id)
         REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
 
+    CONSTRAINT tool_calls_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT,
+
     CONSTRAINT tool_calls_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)
         REFERENCES principal_instances (principal_instance_id, organization_id) ON DELETE RESTRICT,
 
+    -- Provenance is only meaningful if the claimed parent is actually this
+    -- call's parent. Matching on id and organization alone would let a tool
+    -- call attribute itself to another principal's LLM call, or to the same
+    -- principal's work on a different Story -- and provenance that can name
+    -- the wrong parent is worse than none, because it reads as evidence.
     CONSTRAINT tool_calls_llm_call_fkey
-        FOREIGN KEY (llm_call_id, organization_id)
-        REFERENCES llm_calls (llm_call_id, organization_id) ON DELETE RESTRICT,
+        FOREIGN KEY (llm_call_id, principal_instance_id, lineage_key, organization_id)
+        REFERENCES llm_calls (llm_call_id, principal_instance_id, lineage_key, organization_id) ON DELETE RESTRICT,
 
     CONSTRAINT tool_calls_finished_check
         CHECK ((finished_at IS NULL) = (succeeded IS NULL)),
@@ -168,6 +220,7 @@ CREATE INDEX tool_calls_tool_name_idx  ON tool_calls (tool_name);
 CREATE TABLE metric_events (
     metric_event_id       uuid             PRIMARY KEY,
     organization_id       uuid             NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
+    user_id               uuid,
     principal_instance_id uuid,
     -- Whole-tuple work lineage, like the artifact tables. Independent
     -- single-column story/epic foreign keys accepted a call whose Story
@@ -208,6 +261,10 @@ CREATE TABLE metric_events (
         FOREIGN KEY (product_id, organization_id)
         REFERENCES products (product_id, organization_id) ON DELETE RESTRICT,
 
+    CONSTRAINT metric_events_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT,
+
     CONSTRAINT metric_events_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)
         REFERENCES principal_instances (principal_instance_id, organization_id) ON DELETE RESTRICT
@@ -219,11 +276,16 @@ CREATE INDEX metric_events_story_id_idx  ON metric_events (story_id);
 CREATE TABLE audit_events (
     audit_event_id        uuid        PRIMARY KEY,
     organization_id       uuid        NOT NULL REFERENCES organizations (organization_id) ON DELETE RESTRICT,
+    user_id               uuid,
     principal_instance_id uuid,
 
     event_type            text        NOT NULL,
     detail                jsonb       NOT NULL DEFAULT '{}'::jsonb,
     occurred_at           timestamptz NOT NULL DEFAULT now(),
+
+    CONSTRAINT audit_events_user_fkey
+        FOREIGN KEY (user_id, organization_id)
+        REFERENCES users (user_id, organization_id) ON DELETE RESTRICT,
 
     CONSTRAINT audit_events_principal_fkey
         FOREIGN KEY (principal_instance_id, organization_id)
