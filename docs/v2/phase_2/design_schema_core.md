@@ -1,6 +1,6 @@
 +++
 title = "Design: Core Schema And Migrations (Item 3)"
-edit_date = "2026-07-25"
+edit_date = "2026-07-26"
 status = "draft"
 summary = "Mini-plan for Phase 2 item 3: golang-migrate conventions and the core DDL applied from empty — ADR 0028's envelope as columns over a jsonb payload, Management and Audit in separate families, scope-conditional lineage enforced in SQL, app-generated UUIDv7 identifiers, text-plus-CHECK over Postgres enums, and the table-by-table trace to an Accepted ADR and a Phase 2 consumer."
 type = "design"
@@ -28,7 +28,19 @@ Item 3 delivers migrations and the schema. **Typed queries are item 4**; only th
 - **One logical change per migration.** Not one table: a table plus the indexes and constraints that make it correct belong together, because a migration that leaves a table briefly unconstrained is a migration that can be interrupted into an invalid state.
 - **Every migration wraps itself in `BEGIN`/`COMMIT`, explicitly.** golang-migrate does **not** wrap Postgres migrations in a transaction — its own Postgres tutorial says so, and an earlier draft of this document claimed the opposite. Without the explicit wrapper, a migration that fails halfway leaves the schema half-applied *and* the version marked dirty, which is the worst combination to recover from. Reviewers should treat a migration file missing `BEGIN`/`COMMIT` as a defect.
 
-  Note what the wrapper does and does not buy: the DDL rolls back, but golang-migrate's version row is written outside it, so a failed migration still leaves a **dirty version** requiring `migrate force` before the next attempt. The wrapper turns "half a schema and a dirty version" into "no schema change and a dirty version", which is recoverable by fixing the file and forcing the version. Nothing here needs `CONCURRENTLY`; if that ever changes, it is an explicit, commented exception that must *not* be wrapped.
+  Note what the wrapper does and does not buy: the DDL rolls back, but golang-migrate's version row is written outside it, so a failed migration still leaves a **dirty version**. The wrapper turns "half a schema and a dirty version" into "no schema change and a dirty version" — a known state rather than an unknown one. Nothing here needs `CONCURRENTLY`; if that ever changes, it is an explicit, commented exception that must *not* be wrapped.
+
+#### Recovering from a dirty version
+
+`migrate force V` **only rewrites metadata — it runs no SQL**. An earlier draft of this document said to fix the file and "force the version", which is actively dangerous: forcing to the version that just failed records it as applied without ever having run it, so `migrate up` skips it forever and the schema silently lacks whatever it contained.
+
+**Always force to the last version that actually applied — `V-1`, not `V`.** That is the true state of the database once the wrapper has rolled the DDL back. What follows depends on whether the migration has ever succeeded anywhere:
+
+- **Never successfully applied anywhere** (the normal case: it fails from empty, so it fails for everyone). Force to `V-1`, correct the file **in place**, run `migrate up`. This holds even if the migration is already merged — the append-only rule protects *applied history*, and a migration that has never applied has none. There is no database anywhere whose state would diverge from the corrected file, which is the only thing append-only exists to prevent. Say so in the PR that corrects it.
+- **Applied successfully somewhere, failing elsewhere** (data- or environment-dependent). Now the file is genuinely frozen: editing it would leave two databases claiming the same version with different schemas. Force to `V-1`, leave the file alone, and land a **new** migration that reaches the intended state from either starting point.
+- **Locally, in development**, the fastest route is usually neither: `make dataplane-reset && make dataplane-up` rebuilds from empty. The plane is disposable by design, and re-deriving from migration 000001 is the same path CI takes.
+
+The distinction that matters is *whether any database has applied it*, not whether the commit merged. Append-only is a rule about divergent state, and this is the one place its purpose has to be reasoned about rather than followed mechanically.
 
 ### D2. `dataplane-up` applies migrations
 
@@ -66,6 +78,7 @@ Directly from ADR 0028 §1, which fixed both the field list and the rule that en
 | --- | --- | --- |
 | `artifact_id` | `uuid` PK | UUIDv7 (D3) |
 | `organization_id` | `uuid` NOT NULL | FK; multi-user lineage carried now (see below) |
+| `user_id` | `uuid` NOT NULL | FK → users; the accountable human (see below) |
 | `artifact_type` | `text` NOT NULL | governed vocabulary; validated against the code registry on write |
 | `artifact_category` | `text` NOT NULL | `CHECK (artifact_category = 'management')` — the table's own category, pinned |
 | `status` | `text` NOT NULL | `draft` \| `invalidated` \| `accepted` \| `superseded` \| `archived` |
@@ -84,7 +97,14 @@ Directly from ADR 0028 §1, which fixed both the field list and the rule that en
 
 **`amendment_sequence` and `accepted_at` are required by ADR 0021, not optional bookkeeping.** The effective view is "original plus accepted amendments **in sequence order**, later prevailing on conflict", so without a stored sequence there is no total order and the effective view is undefined — and ADR 0028 binds an amendment's review to the base it applied to, which needs the sequence point to be a fact rather than an inference. Both are null until acceptance, and constrained: `amendment_sequence` is non-null exactly when the artifact is an accepted amendment, with `UNIQUE (amends_artifact_id, amendment_sequence)` making the order total by construction rather than by convention.
 
-**Multi-user lineage is carried now** — `organization_id` here, and on every major record. ADR 0022 is explicit that the schema carries organization and user lineage from the start *so team mode never requires a data migration*; adding it later means backfilling every table that matters. Nothing enforces it beyond referential integrity in Phase 2: local mode uses a default organization and user, mirroring the default Product.
+**Multi-user lineage is carried now — both halves of it.** ADR 0022 requires organization *and user* lineage from the start, *so team mode never requires a data migration*; an earlier draft of this document carried only the organization, which would have left the backfill it was meant to avoid. Adding it later means touching every table that matters.
+
+`user_id` is the **accountable human**, which is a different question from `author_instance_id` (the principal that produced the artifact) and is not derivable from it: an agent-authored artifact has an agent author and a human on whose behalf the work is being done. That human is what pillar 15's user attribution in artifact and Epic views needs, and reconstructing it later by walking lineage to a Feature's submitter is exactly the migration this column exists to avoid.
+
+- On **Management** artifacts it is `NOT NULL`. ADR 0021's accountability rule already guarantees one exists: every Management artifact has an accountable agent or human principal, and every chain of agent work traces to a human who asked for it.
+- On **Audit** artifacts it is nullable. System principals emit exhaust — startup metrics, scheduler ticks — that genuinely precedes or outlives any user's action, and forcing a value there would mean inventing one.
+
+Local mode populates both from the default organization and default user, mirroring the default Product. Nothing enforces authorization on them in Phase 2; they carry lineage, not policy.
 
 **The Audit table is not this table with a different category.** Per ADR 0021, Audit artifacts are *born final and have no lifecycle*, so the Audit table has **no `status`, no `accepted_at`, no amendment or supersession links, no `review_digest`, and no `reviewer_instance_id`** — carrying a Management status vocabulary on rows that can never move through it would invite readers to interpret a value that means nothing. It keeps identity, organization and scope lineage, `author_instance_id` (any principal kind, including system), `payload`, `payload_digest`, `created_at`, and `CHECK (artifact_category = 'audit')`. Each table pins its own category, so a row can never land in the wrong family.
 
@@ -97,7 +117,15 @@ Directly from ADR 0028 §1, which fixed both the field list and the rule that en
 | `feature` / `epic` / `story` | features / epics / stories | item 3 |
 | `benchmark` | benchmark runs | **item 9**, with the import that first needs it |
 
-The `benchmark` scope is in the vocabulary from item 3 but has no target table until item 9 creates one alongside the vertical slice that imports runner results — which is the created-when-there-is-a-caller rule working as intended, not an oversight. Until then no row may legitimately carry that scope, and a CHECK ties `scope_type = 'benchmark'` to null work-hierarchy lineage, since a benchmark artifact belongs to no Epic.
+The `benchmark` scope is in the vocabulary from item 3 but has no target table until item 9 creates one alongside the vertical slice that imports runner results — the created-when-there-is-a-caller rule working as intended. A CHECK ties `scope_type = 'benchmark'` to null work-hierarchy lineage, since a benchmark artifact belongs to no Epic.
+
+**Losing the foreign key does not mean losing the guarantee — the seam takes it over.** Dropping the FK claim without replacing it, as an earlier draft did, would have left `scope_id` as a `uuid` pointing at nothing in particular: a dangling scope is undetectable, and every lineage query silently returns less than it should. So the persistence seam **validates the scope on write**:
+
+- `scope_type` selects the target table from the mapping above, and the write is rejected unless a row with that `scope_id` exists in it.
+- Validation happens **in the same transaction as the insert**, so a target deleted concurrently cannot slip between the check and the write.
+- `scope_type = 'benchmark'` is **rejected outright until item 9 creates the table**. Not silently tolerated as "unvalidatable" — a scope whose target does not exist is exactly the dangling reference this rule prevents, and the temporary refusal is what stops item 9's own work from landing rows the model cannot resolve.
+
+This is the same division as ADR 0028's payload validation (§2): the database enforces what is true of a row in isolation, and the seam enforces what needs a lookup the database cannot express. It is weaker than an FK — nothing stops a direct `psql` insert — and that is an accepted consequence of a polymorphic scope, not an oversight. Tested per scope type, including the benchmark refusal.
 
 **Lineage is scope-conditional, and that is enforced in SQL.** ADR 0018 requires non-null lineage at every level the scope covers, which is a real constraint rather than a convention: a story-scoped artifact with a null `epic_id` is unqueryable by the lineage joins the model promises. A `CHECK` encodes it — `scope_type = 'story'` implies all four lineage columns are present, `'epic'` implies three, and so on. Getting this wrong is not caught by any test that only inserts well-formed rows, which is exactly why it belongs in the database.
 
@@ -109,7 +137,7 @@ The line: **the database enforces what is true of a row in isolation; the seam e
 
 In SQL — shape, vocabulary, referential integrity **where a column names one table** (lineage, authorship, organization; *not* the polymorphic `scope_id`, see D5), scope-conditional lineage, at-most-one relationship link, digest format, amendment sequence uniqueness, each table's fixed category, and the amendment chain's flatness (an artifact with `amends_artifact_id` set may not itself be amended).
 
-At the seam — payload validation against the code-resident type registry (ADR 0028 §2: the registry is code, so the database cannot consult it), and **the acceptance rule**: an artifact reaches `accepted` only with a completed review record whose `review_digest` matches, by a distinct principal of kind agent or human.
+At the seam — payload validation against the code-resident type registry (ADR 0028 §2: the registry is code, so the database cannot consult it), **scope-target existence** (D5: `scope_id` is polymorphic, so no FK can express it), and **the acceptance rule**: an artifact reaches `accepted` only with a completed review record whose `review_digest` matches, by a distinct principal of kind agent or human.
 
 That last one is the interesting call, and review settled it: **enforcement stays at the seam, but it is not equivalent to a database constraint and this document will not pretend it is.** A trigger was rejected because the author/reviewer distinctness rule reaches across principal kinds in a way that makes for fragile trigger logic, and because a trigger rewrites an actionable application error into a constraint violation surfacing three layers away.
 
@@ -151,6 +179,7 @@ Engine `postgresql`, driver `pgx/v5`. Item 4 will likely add a thin hand-written
 - **Migrations apply from empty in CI**, extending the existing `dataplane-up` job — which now covers migrations for free, since `up` runs them.
 - **Up-then-down-then-up** returns to the same schema, as the check that down migrations are real rather than decorative.
 - **Constraint tests over deliberately malformed rows**: bad digest casing, a story-scoped artifact missing `epic_id`, two relationship links set at once, a status outside the vocabulary, an artifact inserted into the wrong category table, a duplicate `(amends_artifact_id, amendment_sequence)` pair, and a benchmark-scoped artifact carrying Epic lineage. These are the assertions that matter, because a schema is only as good as what it *refuses* — and every one of them is invisible to a test that inserts only valid rows.
+- **Scope validation is tested per scope type**, including that `benchmark` is refused while its table does not exist.
 - **Every exposed status transition is tested for its own precondition** (D6), individually rather than as one happy path, because the risk is a transition added later without the check.
 - **The ADR-and-consumer table is checked at review**, not by a test; it is a claim about intent, which no test can verify.
 
