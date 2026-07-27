@@ -11,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
@@ -540,4 +542,90 @@ func TestRegistryVersionsAreBoundedToInt32(t *testing.T) {
 	if err == nil {
 		t.Fatal("a schema version beyond int32 was registered; it would narrow silently at the write")
 	}
+}
+
+// TestAmendmentTargetStatusBackstopFiresInSQL exercises the acceptance
+// statement's own original-status condition, by calling the generated query
+// DIRECTLY and bypassing the seam.
+//
+// It exists because the seam's Go recheck runs first and always wins: every
+// path through the store exits there, so removing the SQL condition leaves
+// the whole suite green and the D5 backstop can disappear silently. A
+// backstop behind a working guard is only testable by going around the
+// guard.
+//
+// The positive control is not optional. Without it, this test would pass
+// against parameters that match nothing at all -- zero rows for the wrong
+// reason looks exactly like zero rows for the right one.
+func TestAmendmentTargetStatusBackstopFiresInSQL(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	queries := gen.New(f.pool)
+
+	// Build an amendment with a valid accepted review against its original.
+	setup := func(t *testing.T) (originalID, amendmentID, reviewID uuid.UUID) {
+		t.Helper()
+		original := acceptedOriginal(t, f, `{"title":"one"}`)
+		base := f.base(t, original.ArtifactID)
+		amendment := f.createAmendment(t, original.ArtifactID, `{"title":"two"}`)
+		rev := f.review(t, amendment.ArtifactID, amendment.ReviewDigest, store.DecisionAccepted, f.reviewer, &base)
+		return original.ArtifactID, amendment.ArtifactID, rev.ReviewID
+	}
+
+	accept := func(t *testing.T, originalID, amendmentID, reviewID uuid.UUID, sequence int32) int64 {
+		t.Helper()
+		affected, err := queries.AcceptManagementAmendment(ctx, gen.AcceptManagementAmendmentParams{
+			AmendmentSequence: &sequence,
+			ArtifactID:        pgtype.UUID{Bytes: amendmentID, Valid: true},
+			OrganizationID:    pgtype.UUID{Bytes: f.organizationID, Valid: true},
+			AmendsArtifactID:  pgtype.UUID{Bytes: originalID, Valid: true},
+			ReviewID:          pgtype.UUID{Bytes: reviewID, Valid: true},
+		})
+		if err != nil {
+			t.Fatalf("direct AcceptManagementAmendment: %v", err)
+		}
+		return affected
+	}
+
+	t.Run("positive control: accepted original", func(t *testing.T) {
+		originalID, amendmentID, reviewID := setup(t)
+		if affected := accept(t, originalID, amendmentID, reviewID, 1); affected != 1 {
+			t.Fatalf("affected %d rows, want 1; the parameters do not match a valid acceptance, so the "+
+				"negative case below would prove nothing", affected)
+		}
+	})
+
+	t.Run("archived original", func(t *testing.T) {
+		originalID, amendmentID, reviewID := setup(t)
+		if err := f.store.ArchiveArtifact(ctx, f.organizationID, originalID); err != nil {
+			t.Fatalf("archive: %v", err)
+		}
+		if affected := accept(t, originalID, amendmentID, reviewID, 1); affected != 0 {
+			t.Fatalf("affected %d rows, want 0; the statement accepted an amendment of a retired original", affected)
+		}
+	})
+
+	t.Run("superseded original", func(t *testing.T) {
+		originalID, amendmentID, reviewID := setup(t)
+		replacement, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+			Payload:              json.RawMessage(`{"title":"new"}`),
+			SupersedesArtifactID: &originalID,
+			Type:                 testType,
+			Summary:              "replaces it",
+			Scope:                f.scope(),
+			OrganizationID:       f.organizationID,
+			UserID:               f.userID,
+			AuthorInstanceID:     f.author,
+		})
+		if err != nil {
+			t.Fatalf("create replacement: %v", err)
+		}
+		rev := f.review(t, replacement.ArtifactID, replacement.ReviewDigest, store.DecisionAccepted, f.reviewer, nil)
+		if err := f.store.SupersedeArtifact(ctx, f.organizationID, originalID, replacement.ArtifactID, rev.ReviewID); err != nil {
+			t.Fatalf("supersede: %v", err)
+		}
+		if affected := accept(t, originalID, amendmentID, reviewID, 1); affected != 0 {
+			t.Fatalf("affected %d rows, want 0; the statement accepted an amendment of a superseded original", affected)
+		}
+	})
 }
