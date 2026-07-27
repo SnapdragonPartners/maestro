@@ -52,12 +52,20 @@ Not deferrable to item 6, because item 4 already needs it in two places: the pri
 
 On every artifact write, in this order:
 
-1. **Registry lookup** by `artifact_type` — unregistered types cannot be written (ADR 0028 §2: the registry is code, so the database cannot consult it).
-2. **Schema validation** of the payload against the registered validator for its `schema_version`.
-3. **The universal safe-integer rule** — no JSON number outside ±(2^53 − 1) anywhere in the payload, because JCS serializes numbers as IEEE-754 binary64 and a larger integer would not survive canonicalization. This is checked for every type, since it belongs to the encoding rather than to any one schema.
-4. **Digests computed here** — `payload_digest` over the canonical payload, `review_digest` over the reviewable projection of ADR 0028 §5. Callers never supply either: a caller-supplied digest is a caller-asserted one, and the whole point is that it is derived.
+1. **Registry lookup** by `artifact_type`, which is the *only* one of these a caller supplies. ADR 0028 §2 defines the registry as type → **category, current `schema_version`, validator**, so the seam takes all three from it. A caller choosing its own category could write a Management artifact into the Audit family; a caller choosing its own version could claim one whose validator does not match the payload. Unregistered types cannot be written at all.
+2. **Schema validation of the instance that will be stored.** For an original that is the payload itself. **For an amendment it is the merged effective payload, never the patch** — a merge patch is not an instance of the artifact's schema and validating it as one would reject every legitimate amendment while accepting patches that break the result. The patch is what gets stored; the merged result is what gets validated (and validated again at acceptance, D6).
+3. **The universal safe-integer rule** — no JSON number outside ±(2^53 − 1) anywhere in the payload, because JCS serializes numbers as IEEE-754 binary64 and a larger integer would not survive canonicalization. Checked for every type, since it belongs to the encoding rather than to any one schema.
+4. **Digests computed here** — `payload_digest` over the canonical payload, `review_digest` over the reviewable projection of ADR 0028 §5. Callers never supply either: a caller-supplied digest is a caller-asserted one, and the point is that it is derived.
 
 Reads validate the reverse direction: a payload whose `schema_version` is outside the registry's readable range is an error naming the version, never a best-effort parse.
+
+### D3a. Review records store what the reviewer saw, not what is current
+
+Creating a review record persists the `review_digest` — and, for an amendment, the `base_digest` and `base_sequence` — **exactly as observed by the reviewer**, passed in by the caller that presented the content. The seam does **not** recompute "current" values when recording the decision.
+
+The distinction is the whole mechanism. If the artifact changed between the reviewer reading it and the decision being recorded, recomputing would bind the review to content the reviewer never saw — manufacturing exactly the false attestation ADR 0028's digest binding exists to prevent, and doing it silently at the moment of record. Recording the observed digest means a stale review simply fails to match at acceptance, which is the correct outcome.
+
+The seam still validates the shape it is given: the digest is well-formed, the review names an artifact that exists, and the reviewer is a principal in the same organization. It does not validate that the digest is *current*, because a non-current digest is a legitimate thing to record.
 
 ### D4. No generic status update, enforced rather than intended
 
@@ -83,8 +91,12 @@ The digest match is what makes ADR 0028's binding real: a review of superseded c
 | --- | --- | --- |
 | Accept | `draft` | Named review: same artifact, matches current `review_digest`, decision `accepted`, reviewer ≠ author, reviewer kind ∈ {agent, human} |
 | Invalidate | `draft` only | None. Invalidation is pre-acceptance by definition (ADR 0021) |
-| Supersede | `accepted` | The superseding artifact exists, is in the same organization, and is itself being accepted in the same transaction (below) |
-| Archive | `accepted`, `superseded` | None |
+| Supersede | `accepted` | Target is an **original**, not an amendment. The superseding artifact exists, is in the same organization, is being accepted in the same transaction, and its reviewed `supersedes_artifact_id` **equals this target** |
+| Archive | `accepted`, `superseded` | Target is an **original**, not an amendment |
+
+**Amendments can be neither superseded nor archived**, which closes a hole in the first draft's matrix. Effective-view assembly loads only `accepted` amendments, so archiving one would silently drop its contribution from the effective view of an artifact nobody re-reviewed — mutating accepted content through a lifecycle side door. Amendments reach exactly two terminal states: `accepted`, or `invalidated` while still a draft. Correcting an accepted amendment is a later amendment, as ADR 0021 already says.
+
+**The superseding artifact's reviewed target is checked.** Its `supersedes_artifact_id` must equal the artifact being marked superseded. Without that, an artifact reviewed and accepted as superseding A could be used to supersede B — the reviewer approved a replacement for one thing and it retired another.
 
 **Supersession is one transaction.** Accepting the superseding artifact and marking its target `superseded` happen together, or a reader between the two statements observes **two authoritative artifacts** for the same subject — which is exactly the state the lifecycle exists to prevent. Both rows are locked, and the target is locked first so a concurrent supersession of the same target cannot deadlock against it.
 
@@ -98,7 +110,7 @@ The protocol, which is what ADR 0028 actually specifies:
 2. Assemble the current effective view and compute its digest.
 3. **Compare against the review's recorded base** (`base_digest`, `base_sequence`). A mismatch returns a distinct `ErrBaseMoved`, because "needs re-review" is operationally different from "precondition failed" and an operator acts differently on each.
 4. Apply the amendment's patch, and **validate the resulting effective payload** against the original's `artifact_type` and `schema_version` — ADR 0028 requires validation at acceptance and not only at write, since the base may have moved since the patch was authored.
-5. Allocate `amendment_sequence` as one more than the maximum over **every non-null historical sequence** for that original — including superseded and archived amendments, whose sequences persist. Allocating over currently-accepted amendments alone would reuse a number after an archive.
+5. Allocate `amendment_sequence` as one more than the maximum over **every non-null historical sequence** for that original, whatever the amendment's current status. Given D5 now forbids superseding or archiving an amendment, accepted is the only status carrying a sequence today, so this is equivalent — it is written as the historical maximum so it stays correct if that matrix ever widens, rather than silently reusing a number.
 6. Update conditionally.
 
 Two amendments reviewed against the same base now yield exactly one acceptance and one `ErrBaseMoved`, which is the contract.
@@ -121,7 +133,7 @@ Assembly: load the original, load its accepted amendments ordered by `amendment_
 
 The algorithm is ~25 lines and the specification publishes a **test-case table in Appendix A**; those vectors are the test suite. They are authored by the specification rather than derived from our implementation, so they cannot drift toward whatever we happen to build.
 
-**Citation note.** ADR 0028 names **RFC 7386**, which is obsoleted by **[RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)**. The two carry the same algorithm and the same Appendix A vectors, so nothing about the design changes — but the accepted ADR carries a stale citation, and correcting it is an ADR amendment rather than something this document changes on its own authority. Raised in the open items below.
+**Citation.** The specification is **[RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)**, which obsoletes RFC 7386 with an identical algorithm and identical Appendix A vectors. ADR 0028 originally cited 7386 and was amended alongside this design, with Codex and DR approval, since a stale citation in an Accepted ADR is not something a design document corrects on its own authority.
 
 ### D9. Driver types stop at the seam
 
@@ -136,7 +148,10 @@ So the conversion is explicit rather than incidental. `store` exposes `uuid.UUID
 - **Every transition individually, for its own precondition** — accept with no review, with a review of a *different* digest, with a review belonging to another artifact, by the author, by a system principal, from a non-`draft` status; and the corresponding matrix for invalidate, supersede and archive.
 - **Supersession atomicity**: no observable state in which both artifacts are authoritative.
 - **Amendment protocol**: two amendments against the same base yield one acceptance and one `ErrBaseMoved`; sequence allocation skips a number already used by an archived amendment; the effective payload is validated at acceptance and a patch that breaks the schema is refused there even though it passed on write.
-- **Validation**: unregistered type, payload failing its schema, an unsafe integer, an out-of-range `schema_version` on read.
+- **Validation**: unregistered type, payload failing its schema, an unsafe integer, an out-of-range `schema_version` on read; an amendment whose *patch* would not validate as an instance but whose *merged result* does, which must be accepted, and the converse, which must not.
+- **Registry authority**: a caller supplying its own `artifact_category` or `schema_version` does not get them honoured.
+- **Review recording**: the stored digest is the one supplied, not a recomputation — a review recorded after the artifact changed still carries the observed digest and consequently fails at acceptance.
+- **Amendments cannot be superseded or archived**, and a superseding artifact whose reviewed `supersedes_artifact_id` names a different target is refused.
 - **Digests**: caller-supplied digests are ignored or refused; the stored digest matches an independent JCS computation.
 - **Seeding set** written atomically with the instance — never observable without its inputs.
 - **Null conversion** in both directions at the pgtype boundary.
@@ -146,5 +161,5 @@ Integration-tagged, against item 3's disposable-database harness rather than the
 
 ## Open items
 
-1. **ADR 0028 cites the obsoleted RFC 7386.** RFC 7396 replaces it with identical content. Proposed as a one-line citation amendment to ADR 0028, needing Codex and DR approval like any ADR change; this design references 7396 and notes the discrepancy rather than resolving it unilaterally.
+1. ~~ADR 0028 cites the obsoleted RFC 7386.~~ **Resolved**: approved by Codex and DR, and applied as a citation-only amendment to ADR 0028 (status line records it; the ADR README row re-synced). Same algorithm, same Appendix A vectors, no decision changed.
 2. **Interface breadth.** D1 commits to a narrow interface, but "narrow" is a judgement: too small and Phase 3 reaches around it, too wide and no second module can implement it. The listed surface is the proposal, and the honest test is whether a cloud module could implement it without inheriting Postgres semantics.

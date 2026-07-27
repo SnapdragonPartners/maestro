@@ -1,6 +1,6 @@
 +++
 title = "Architecture Decision Records"
-edit_date = "2026-07-24"
+edit_date = "2026-07-26"
 status = "live"
 summary = "Index of Maestro ADRs: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016), with the documentation authority order in brief."
 +++
@@ -44,7 +44,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | [0025](0025-golden-stories-and-benchmark-runner.md) | Golden Stories And The Benchmark Runner | Accepted | Specifies the golden story instrument: story schema, the black-box runner contract and its self-contained results store, D9 sampling and budget mechanics, MPH configurations including the single-agent baseline, and the golden-minimal/golden-all suite tiers. Amended 2026-07-22 (Codex + DR) to conformance-first sequencing: proving the pipeline completes progressively harder stories comes first; economic baselining defers to Phase 1B after Phase 7. |
 | [0026](0026-multi-architecture-artifacts.md) | Multi-Architecture Distributable Artifacts | Accepted | Every artifact built on one architecture and executed on another — embedded binaries and published container images — must be built for all target architectures (at least linux/amd64 + linux/arm64) and verified on each: images as a multi-arch manifest pinned by its arch-independent digest, binaries cross-compiled and runtime-selected. Single-arch builds of cross-arch artifacts are a defect. |
 | [0027](0027-concurrency-safety-for-shared-local-infrastructure.md) | Concurrency Safety For Shared Local Infrastructure | Accepted | Any operation mutating state reachable from more than one agent lifecycle — git mirrors, workspace directories, dispatcher leases, supervisor restarts — must be serialized by a key matching the shared resource (path, agent ID, story ID) or made idempotent, and destructive recovery must never delete another actor's in-progress work. Bare last-writer-wins on shared infrastructure is a defect. |
-| [0028](0028-artifact-envelopes-and-payload-schemas.md) | Artifact Envelopes And Payload Schemas | Accepted | The encoding layer under ADR 0021: a relational envelope plus a typed JSON payload digested with RFC 8785 JCS; a code-resident payload type registry validated at the persistence seam; additive-only schema evolution; amendments as RFC 7386 merge patches materialized on read; reviews bound to the whole reviewable projection, not the payload alone. |
+| [0028](0028-artifact-envelopes-and-payload-schemas.md) | Artifact Envelopes And Payload Schemas | Accepted | The encoding layer under ADR 0021: a relational envelope plus a typed JSON payload digested with RFC 8785 JCS; a code-resident payload type registry validated at the persistence seam; additive-only schema evolution; amendments as RFC 7396 merge patches materialized on read; reviews bound to the whole reviewable projection, not the payload alone. |
 
 ## Historical v1 Notes
 

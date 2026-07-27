@@ -1,13 +1,13 @@
 +++
 title = "ADR 0028: Artifact Envelopes And Payload Schemas"
-edit_date = "2026-07-24"
+edit_date = "2026-07-26"
 status = "live"
-summary = "The encoding layer under ADR 0021: a relational envelope plus a typed JSON payload digested with RFC 8785 JCS; a code-resident payload type registry validated at the persistence seam; additive-only schema evolution; amendments as RFC 7386 merge patches materialized on read; reviews bound to the whole reviewable projection, not the payload alone."
+summary = "The encoding layer under ADR 0021: a relational envelope plus a typed JSON payload digested with RFC 8785 JCS; a code-resident payload type registry validated at the persistence seam; additive-only schema evolution; amendments as RFC 7396 merge patches materialized on read; reviews bound to the whole reviewable projection, not the payload alone."
 +++
 
 # 0028. Artifact Envelopes And Payload Schemas
 
-Status: Accepted (Codex + DR, 2026-07-24). Phase 2 item 1; resolves [ADR backlog](../v2/notes_adr-backlog.md) candidate 1, which blocked Phase 2's DDL. Three review rounds: five P1s in total, all upheld. Two are worth carrying forward as design pressure — an amendment's review must bind to the *base* it was reviewed against, not just its patch text (deferring that would have left amendments with a weaker review binding than the one this ADR imposes on originals), and the relationship links are review-relevant envelope fields, without which reviewed content could be retargeted at a different artifact with its review intact.
+Status: Accepted (Codex + DR, 2026-07-24); amended 2026-07-26 (citation only: RFC 7386 → RFC 7396, which obsoletes it with an identical algorithm and identical Appendix A test vectors — no decision changed). Phase 2 item 1; resolves [ADR backlog](../v2/notes_adr-backlog.md) candidate 1, which blocked Phase 2's DDL. Three review rounds: five P1s in total, all upheld. Two are worth carrying forward as design pressure — an amendment's review must bind to the *base* it was reviewed against, not just its patch text (deferring that would have left amendments with a weaker review binding than the one this ADR imposes on originals), and the relationship links are review-relevant envelope fields, without which reviewed content could be retargeted at a different artifact with its review intact.
 
 ## Context
 
@@ -66,7 +66,7 @@ This makes new versions genuinely expensive, which is the intent — the pressur
 
 ADR 0021 fixed the semantics: amendments target the original only (the chain is flat), receive a monotonic per-original sequence number on acceptance, apply in sequence order, and where they conflict the later prevails. This ADR fixes the encoding that makes "conflict" and "later prevails" mean something precise.
 
-An amendment's payload is an **RFC 7386 JSON Merge Patch** against the original artifact's payload:
+An amendment's payload is an **RFC 7396 JSON Merge Patch** against the original artifact's payload:
 
 - Present keys replace; `null` removes; absent keys leave the target untouched. Arrays replace wholesale.
 - The **effective view** is the original payload with each accepted amendment's merge patch applied in sequence order. "Later prevails" is therefore per-field and exact: two amendments touching different fields both survive; two touching the same field resolve to the higher sequence number.
