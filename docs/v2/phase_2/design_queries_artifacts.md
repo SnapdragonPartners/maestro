@@ -1,14 +1,14 @@
 +++
 title = "Design: Artifact And Principal Queries (Item 4)"
 edit_date = "2026-07-26"
-status = "draft"
+status = "live"
 summary = "Mini-plan for Phase 2 item 4: the persistence interface and its local module — registry and safe-integer validation at the seam, JCS digest construction, version-bounded reads, transitions classified under a row lock with their preconditions also in the UPDATE, amendment acceptance serialized per original, effective views assembled in Go against the RFC's own vectors, and MPH capture and query."
 type = "design"
 +++
 
 # Design: Artifact And Principal Queries (Item 4)
 
-Status: **draft** — for Codex review before the queries land. Revised after round 1 (five P1s).
+Status: **live** — Accepted by Codex and DR, 2026-07-26, after three review rounds (ten P1s).
 
 Implements [Phase 2 plan](plan_scope.md) item 4 over the schema from [item 3](design_schema_core.md), under [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) (encoding, validation, acceptance, amendments), [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) (lifecycle, MPH) and [ADR 0022](../../adr/0022-v2-data-plane.md) (persistence interface, access discipline).
 
