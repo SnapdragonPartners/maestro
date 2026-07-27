@@ -74,11 +74,17 @@ func (q *Queries) CreateArtifactReview(ctx context.Context, arg CreateArtifactRe
 
 const getArtifactReview = `-- name: GetArtifactReview :one
 SELECT review_id, organization_id, artifact_id, review_digest, base_digest, base_sequence, reviewer_instance_id, decision, rationale, decided_at FROM artifact_reviews
-WHERE review_id = $1
+WHERE review_id       = $1
+  AND organization_id = $2
 `
 
-func (q *Queries) GetArtifactReview(ctx context.Context, reviewID pgtype.UUID) (ArtifactReview, error) {
-	row := q.db.QueryRow(ctx, getArtifactReview, reviewID)
+type GetArtifactReviewParams struct {
+	ReviewID       pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+func (q *Queries) GetArtifactReview(ctx context.Context, arg GetArtifactReviewParams) (ArtifactReview, error) {
+	row := q.db.QueryRow(ctx, getArtifactReview, arg.ReviewID, arg.OrganizationID)
 	var i ArtifactReview
 	err := row.Scan(
 		&i.ReviewID,
@@ -102,8 +108,14 @@ SELECT
     p.organization_id AS reviewer_organization_id
 FROM artifact_reviews r
 JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id
-WHERE r.review_id = $1
+WHERE r.review_id       = $1
+  AND r.organization_id = $2
 `
+
+type GetArtifactReviewWithReviewerParams struct {
+	ReviewID       pgtype.UUID
+	OrganizationID pgtype.UUID
+}
 
 type GetArtifactReviewWithReviewerRow struct {
 	ArtifactReview         ArtifactReview
@@ -115,8 +127,8 @@ type GetArtifactReviewWithReviewerRow struct {
 // review joined to its reviewer, because the acceptance rules turn on the
 // reviewer's kind and identity (not the author, kind agent or human) and
 // fetching them separately would leave a window where the two disagree.
-func (q *Queries) GetArtifactReviewWithReviewer(ctx context.Context, reviewID pgtype.UUID) (GetArtifactReviewWithReviewerRow, error) {
-	row := q.db.QueryRow(ctx, getArtifactReviewWithReviewer, reviewID)
+func (q *Queries) GetArtifactReviewWithReviewer(ctx context.Context, arg GetArtifactReviewWithReviewerParams) (GetArtifactReviewWithReviewerRow, error) {
+	row := q.db.QueryRow(ctx, getArtifactReviewWithReviewer, arg.ReviewID, arg.OrganizationID)
 	var i GetArtifactReviewWithReviewerRow
 	err := row.Scan(
 		&i.ArtifactReview.ReviewID,
@@ -137,12 +149,18 @@ func (q *Queries) GetArtifactReviewWithReviewer(ctx context.Context, reviewID pg
 
 const listArtifactReviews = `-- name: ListArtifactReviews :many
 SELECT review_id, organization_id, artifact_id, review_digest, base_digest, base_sequence, reviewer_instance_id, decision, rationale, decided_at FROM artifact_reviews
-WHERE artifact_id = $1
+WHERE artifact_id     = $1
+  AND organization_id = $2
 ORDER BY decided_at, review_id
 `
 
-func (q *Queries) ListArtifactReviews(ctx context.Context, artifactID pgtype.UUID) ([]ArtifactReview, error) {
-	rows, err := q.db.Query(ctx, listArtifactReviews, artifactID)
+type ListArtifactReviewsParams struct {
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+func (q *Queries) ListArtifactReviews(ctx context.Context, arg ListArtifactReviewsParams) ([]ArtifactReview, error) {
+	rows, err := q.db.Query(ctx, listArtifactReviews, arg.ArtifactID, arg.OrganizationID)
 	if err != nil {
 		return nil, err
 	}

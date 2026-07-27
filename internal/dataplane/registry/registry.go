@@ -157,13 +157,36 @@ func MustNew(entries map[Type]Entry) *Registry {
 	return built
 }
 
+// Registration is what a lookup yields: an artifact type's metadata,
+// carrying no reference to the registry's internals.
+//
+// It is a separate type from Entry, which is the registration INPUT,
+// because returning an Entry would hand the caller the live Validators map
+// and let it add or replace a validator after construction — defeating the
+// freeze entirely. There is no map here to alias, so immutability is a
+// property of the type rather than a discipline callers must keep.
+type Registration struct {
+	// Category is the storage family for every artifact of this type.
+	Category Category
+
+	// ReadableVersions is ascending and freshly allocated per call.
+	ReadableVersions []int
+
+	// CurrentVersion is the schema version new artifacts are written at.
+	CurrentVersion int
+}
+
 // Lookup returns the registration for a type.
-func (r *Registry) Lookup(artifactType Type) (Entry, error) {
+func (r *Registry) Lookup(artifactType Type) (Registration, error) {
 	entry, ok := r.entries[artifactType]
 	if !ok {
-		return Entry{}, fmt.Errorf("%w: %q (registered: %v)", ErrUnknownType, artifactType, r.Types())
+		return Registration{}, fmt.Errorf("%w: %q (registered: %v)", ErrUnknownType, artifactType, r.Types())
 	}
-	return entry, nil
+	return Registration{
+		ReadableVersions: readableVersions(entry),
+		Category:         entry.Category,
+		CurrentVersion:   entry.CurrentVersion,
+	}, nil
 }
 
 // ValidatorFor returns the validator for one version of one type.
@@ -172,9 +195,9 @@ func (r *Registry) Lookup(artifactType Type) (Entry, error) {
 // row, and amendments pass the version of the original they amend — which
 // is why this takes a version rather than always using the current one.
 func (r *Registry) ValidatorFor(artifactType Type, version int) (Validator, error) {
-	entry, err := r.Lookup(artifactType)
-	if err != nil {
-		return nil, err
+	entry, ok := r.entries[artifactType]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q (registered: %v)", ErrUnknownType, artifactType, r.Types())
 	}
 	validator, ok := entry.Validators[version]
 	if !ok {

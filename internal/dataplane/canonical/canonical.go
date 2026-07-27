@@ -21,13 +21,18 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strings"
 
 	"github.com/gowebpki/jcs"
 )
 
-// SafeIntegerMax is the largest integer JCS can round-trip: JCS serializes
-// numbers as IEEE-754 binary64, so anything beyond 2^53-1 loses precision.
+// SafeIntegerMax is the largest magnitude a payload number may carry. JCS
+// serializes numbers as IEEE-754 binary64, so beyond 2^53-1 consecutive
+// integers stop being distinguishable and a value written once no longer
+// reads back as itself.
+//
+// The bound is on the VALUE, not on whether the number was spelled as an
+// integer. ADR 0028 states it as "no JSON number outside ±(2^53-1)", and a
+// rule that admitted 1e30 because of its notation would not be that rule.
 const SafeIntegerMax = 1<<53 - 1
 
 // ErrUnsafeNumber reports a JSON number that cannot survive
@@ -68,6 +73,10 @@ func DigestJSON(raw []byte) (string, error) {
 // rather than to any one schema, so it applies to every payload of every
 // type. Values needing more range — nanosecond timestamps, large
 // identifiers, exact decimals — are string-typed by their schema.
+//
+// The check is on magnitude alone, so it cannot be evaded by notation.
+// 9007199254740992, 9007199254740992.0 and 9.007199254740992e15 are one
+// value written three ways and all three are rejected.
 func CheckSafeNumbers(raw []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -99,39 +108,27 @@ func walk(value any, path string) error {
 	return nil
 }
 
+// checkNumber applies the rule to the number's VALUE, never to how it was
+// written.
+//
+// An earlier version classified on the literal's text — decimal point or
+// exponent meant "float, therefore fine" — which made the rule bypassable
+// by spelling: 9007199254740992.0 and 9.007199254740992e15 are the same
+// value as 9007199254740992 and all three must be treated alike. Any check
+// keyed on notation is one a payload author evades by adding ".0".
 func checkNumber(number json.Number, path string) error {
-	// Classify on the literal's written form, not on whether Int64 happens
-	// to succeed. An integer literal beyond int64 — 10^30 with no decimal
-	// point — fails Int64 and parses fine as a float, so a fallthrough to
-	// the float branch would accept exactly the value most certain to lose
-	// precision. Integer intent is textual, so read it textually.
-	if isIntegerLiteral(string(number)) {
-		integer, err := number.Int64()
-		if err != nil {
-			return fmt.Errorf("%w: %s is %s, which exceeds int64 and so is far outside ±(2^53-1)", ErrUnsafeNumber, displayPath(path), number)
-		}
-		if integer > SafeIntegerMax || integer < -SafeIntegerMax {
-			return fmt.Errorf("%w: %s is %s, outside ±(2^53-1)", ErrUnsafeNumber, displayPath(path), number)
-		}
-		return nil
-	}
-
-	// A fractional or exponential literal is already understood to be
-	// binary64, so only non-finite results are rejected.
 	value, err := number.Float64()
 	if err != nil {
-		return fmt.Errorf("%w: %s is %s, which is not representable", ErrUnsafeNumber, displayPath(path), number)
+		return fmt.Errorf("%w: %s is %s, which is not a representable number", ErrUnsafeNumber, displayPath(path), number)
 	}
 	if math.IsInf(value, 0) || math.IsNaN(value) {
 		return fmt.Errorf("%w: %s is %s, which is not finite in binary64", ErrUnsafeNumber, displayPath(path), number)
 	}
+	if math.Abs(value) > SafeIntegerMax {
+		return fmt.Errorf("%w: %s is %s, whose magnitude exceeds 2^53-1; encode it as a string in the payload's schema",
+			ErrUnsafeNumber, displayPath(path), number)
+	}
 	return nil
-}
-
-// isIntegerLiteral reports whether a JSON number was written as a plain
-// integer — no decimal point and no exponent.
-func isIntegerLiteral(text string) bool {
-	return !strings.ContainsAny(text, ".eE")
 }
 
 func displayPath(path string) string {

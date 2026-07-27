@@ -12,33 +12,51 @@ import (
 )
 
 const acceptManagementAmendment = `-- name: AcceptManagementAmendment :execrows
-UPDATE management_artifacts
+UPDATE management_artifacts a
 SET status               = 'accepted',
-    reviewer_instance_id = $1,
+    reviewer_instance_id = r.reviewer_instance_id,
     accepted_at          = now(),
-    amendment_sequence   = $2
-WHERE artifact_id   = $3
-  AND status        = 'draft'
-  AND is_amendment  = true
-  AND review_digest = $4
+    amendment_sequence   = $1
+FROM artifact_reviews r
+JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id
+WHERE a.artifact_id        = $2
+  AND a.organization_id    = $3
+  AND a.status             = 'draft'
+  AND a.is_amendment       = true
+  AND a.amends_artifact_id = $4
+  AND r.review_id          = $5
+  AND r.artifact_id        = a.artifact_id
+  AND r.organization_id    = a.organization_id
+  AND r.decision           = 'accepted'
+  AND r.review_digest      = a.review_digest
+  AND p.organization_id    = a.organization_id
+  AND p.principal_instance_id <> a.author_instance_id
+  AND p.kind IN ('agent', 'human')
 `
 
 type AcceptManagementAmendmentParams struct {
-	ReviewerInstanceID pgtype.UUID
-	AmendmentSequence  *int32
-	ArtifactID         pgtype.UUID
-	ReviewDigest       string
+	AmendmentSequence *int32
+	ArtifactID        pgtype.UUID
+	OrganizationID    pgtype.UUID
+	AmendsArtifactID  pgtype.UUID
+	ReviewID          pgtype.UUID
 }
 
 // Accept an AMENDMENT, assigning its sequence in the same statement. The
 // sequence is assigned on acceptance and retained thereafter: without a
 // stored total order the effective view is undefined.
+//
+// Carries the same review preconditions as an original, plus the base
+// checks the seam performs under the original's lock (design D6), which
+// cannot be expressed here because they compare against an assembled
+// effective view rather than against stored columns.
 func (q *Queries) AcceptManagementAmendment(ctx context.Context, arg AcceptManagementAmendmentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, acceptManagementAmendment,
-		arg.ReviewerInstanceID,
 		arg.AmendmentSequence,
 		arg.ArtifactID,
-		arg.ReviewDigest,
+		arg.OrganizationID,
+		arg.AmendsArtifactID,
+		arg.ReviewID,
 	)
 	if err != nil {
 		return 0, err
@@ -48,28 +66,50 @@ func (q *Queries) AcceptManagementAmendment(ctx context.Context, arg AcceptManag
 
 const acceptManagementArtifact = `-- name: AcceptManagementArtifact :execrows
 
-UPDATE management_artifacts
+UPDATE management_artifacts a
 SET status               = 'accepted',
-    reviewer_instance_id = $1,
+    reviewer_instance_id = r.reviewer_instance_id,
     accepted_at          = now()
-WHERE artifact_id   = $2
-  AND status        = 'draft'
-  AND is_amendment  = false
-  AND review_digest = $3
+FROM artifact_reviews r
+JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id
+WHERE a.artifact_id     = $1
+  AND a.organization_id = $2
+  AND a.status          = 'draft'
+  AND a.is_amendment    = false
+  AND r.review_id       = $3
+  AND r.artifact_id     = a.artifact_id
+  AND r.organization_id = a.organization_id
+  AND r.decision        = 'accepted'
+  AND r.review_digest   = a.review_digest
+  AND p.organization_id = a.organization_id
+  AND p.principal_instance_id <> a.author_instance_id
+  AND p.kind IN ('agent', 'human')
 `
 
 type AcceptManagementArtifactParams struct {
-	ReviewerInstanceID pgtype.UUID
-	ArtifactID         pgtype.UUID
-	ReviewDigest       string
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+	ReviewID       pgtype.UUID
 }
 
 // Transitions.
-// Accept an ORIGINAL. The review_digest condition is what makes ADR 0028's
-// binding real: a review of superseded content cannot license acceptance,
-// because the row's current review_digest no longer equals the reviewed one.
+//
+// Accept joins the NAMED review and its reviewer, so every acceptance rule
+// that can be expressed in SQL is expressed here: the review belongs to
+// this artifact and organization, its decision is 'accepted', its digest
+// still matches the row's current review_digest, and the reviewer is a
+// non-author principal of kind agent or human in the same organization.
+//
+// reviewer_instance_id is taken FROM the joined review rather than passed
+// in. A caller-supplied reviewer could disagree with the review actually
+// being acted on, and the row would then record a reviewer who never
+// reviewed it.
+//
+// The review_digest equality is what makes ADR 0028's binding real: a
+// review of superseded content cannot license acceptance, because the row's
+// current review_digest no longer equals the reviewed one.
 func (q *Queries) AcceptManagementArtifact(ctx context.Context, arg AcceptManagementArtifactParams) (int64, error) {
-	result, err := q.db.Exec(ctx, acceptManagementArtifact, arg.ReviewerInstanceID, arg.ArtifactID, arg.ReviewDigest)
+	result, err := q.db.Exec(ctx, acceptManagementArtifact, arg.ArtifactID, arg.OrganizationID, arg.ReviewID)
 	if err != nil {
 		return 0, err
 	}
@@ -79,13 +119,19 @@ func (q *Queries) AcceptManagementArtifact(ctx context.Context, arg AcceptManage
 const archiveManagementArtifact = `-- name: ArchiveManagementArtifact :execrows
 UPDATE management_artifacts
 SET status = 'archived'
-WHERE artifact_id  = $1
-  AND status       IN ('accepted', 'superseded')
-  AND is_amendment = false
+WHERE artifact_id     = $1
+  AND organization_id = $2
+  AND status          IN ('accepted', 'superseded')
+  AND is_amendment    = false
 `
 
-func (q *Queries) ArchiveManagementArtifact(ctx context.Context, artifactID pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, archiveManagementArtifact, artifactID)
+type ArchiveManagementArtifactParams struct {
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+func (q *Queries) ArchiveManagementArtifact(ctx context.Context, arg ArchiveManagementArtifactParams) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveManagementArtifact, arg.ArtifactID, arg.OrganizationID)
 	if err != nil {
 		return 0, err
 	}
@@ -147,10 +193,18 @@ type CreateManagementArtifactParams struct {
 // Management artifacts (ADR 0021 lifecycle, ADR 0028 envelope encoding).
 //
 // There is deliberately NO generic status update. Every status write below
-// is a named transition carrying its own preconditions, and a test parses
-// this file to fail the build if an un-named one appears (design D4).
+// is a named transition carrying its own preconditions, and a structural
+// test parses this file to fail the build if an un-named one appears
+// (design D4).
 //
-// Each transition's WHERE repeats the preconditions the seam has already
+// Every statement is organization-scoped, including the ones keyed on a
+// globally unique id. An artifact_id is unguessable but not a permission:
+// once this interface has a cloud implementation, a query that omits
+// organization_id is one a caller in the wrong tenant can serve, and the
+// schema's composite foreign keys already treat organization as part of
+// every artifact's identity.
+//
+// Each transition's WHERE repeats every precondition the seam has already
 // checked against the locked row. That redundancy is intentional: it is the
 // backstop that stops a classification bug from writing a transition the
 // rules forbid. Zero rows affected there is an internal invariant failure,
@@ -224,11 +278,17 @@ func (q *Queries) CreateManagementArtifact(ctx context.Context, arg CreateManage
 
 const getManagementArtifact = `-- name: GetManagementArtifact :one
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
-WHERE artifact_id = $1
+WHERE artifact_id     = $1
+  AND organization_id = $2
 `
 
-func (q *Queries) GetManagementArtifact(ctx context.Context, artifactID pgtype.UUID) (ManagementArtifact, error) {
-	row := q.db.QueryRow(ctx, getManagementArtifact, artifactID)
+type GetManagementArtifactParams struct {
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+func (q *Queries) GetManagementArtifact(ctx context.Context, arg GetManagementArtifactParams) (ManagementArtifact, error) {
+	row := q.db.QueryRow(ctx, getManagementArtifact, arg.ArtifactID, arg.OrganizationID)
 	var i ManagementArtifact
 	err := row.Scan(
 		&i.ArtifactID,
@@ -271,14 +331,20 @@ func (q *Queries) GetManagementArtifact(ctx context.Context, artifactID pgtype.U
 const invalidateManagementArtifact = `-- name: InvalidateManagementArtifact :execrows
 UPDATE management_artifacts
 SET status = 'invalidated'
-WHERE artifact_id = $1
-  AND status      = 'draft'
+WHERE artifact_id     = $1
+  AND organization_id = $2
+  AND status          = 'draft'
 `
+
+type InvalidateManagementArtifactParams struct {
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
 
 // Invalidation is pre-acceptance by definition (ADR 0021), so draft is the
 // only source status and there are no further preconditions.
-func (q *Queries) InvalidateManagementArtifact(ctx context.Context, artifactID pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, invalidateManagementArtifact, artifactID)
+func (q *Queries) InvalidateManagementArtifact(ctx context.Context, arg InvalidateManagementArtifactParams) (int64, error) {
+	result, err := q.db.Exec(ctx, invalidateManagementArtifact, arg.ArtifactID, arg.OrganizationID)
 	if err != nil {
 		return 0, err
 	}
@@ -288,16 +354,22 @@ func (q *Queries) InvalidateManagementArtifact(ctx context.Context, artifactID p
 const listAcceptedAmendments = `-- name: ListAcceptedAmendments :many
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
 WHERE amends_artifact_id = $1
-  AND status = 'accepted'
+  AND organization_id    = $2
+  AND status             = 'accepted'
 ORDER BY amendment_sequence
 `
+
+type ListAcceptedAmendmentsParams struct {
+	AmendsArtifactID pgtype.UUID
+	OrganizationID   pgtype.UUID
+}
 
 // Effective-view assembly (design D8): the original plus its ACCEPTED
 // amendments in sequence order. Draft and rejected amendments are never
 // applied, which is why this filters on status rather than assembling
 // everything and letting the caller choose.
-func (q *Queries) ListAcceptedAmendments(ctx context.Context, amendsArtifactID pgtype.UUID) ([]ManagementArtifact, error) {
-	rows, err := q.db.Query(ctx, listAcceptedAmendments, amendsArtifactID)
+func (q *Queries) ListAcceptedAmendments(ctx context.Context, arg ListAcceptedAmendmentsParams) ([]ManagementArtifact, error) {
+	rows, err := q.db.Query(ctx, listAcceptedAmendments, arg.AmendsArtifactID, arg.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -352,12 +424,18 @@ func (q *Queries) ListAcceptedAmendments(ctx context.Context, amendsArtifactID p
 
 const listManagementArtifactsByEpic = `-- name: ListManagementArtifactsByEpic :many
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
-WHERE epic_id = $1
+WHERE organization_id = $1
+  AND epic_id         = $2
 ORDER BY created_at, artifact_id
 `
 
-func (q *Queries) ListManagementArtifactsByEpic(ctx context.Context, epicID pgtype.UUID) ([]ManagementArtifact, error) {
-	rows, err := q.db.Query(ctx, listManagementArtifactsByEpic, epicID)
+type ListManagementArtifactsByEpicParams struct {
+	OrganizationID pgtype.UUID
+	EpicID         pgtype.UUID
+}
+
+func (q *Queries) ListManagementArtifactsByEpic(ctx context.Context, arg ListManagementArtifactsByEpicParams) ([]ManagementArtifact, error) {
+	rows, err := q.db.Query(ctx, listManagementArtifactsByEpic, arg.OrganizationID, arg.EpicID)
 	if err != nil {
 		return nil, err
 	}
@@ -412,12 +490,18 @@ func (q *Queries) ListManagementArtifactsByEpic(ctx context.Context, epicID pgty
 
 const listManagementArtifactsByProduct = `-- name: ListManagementArtifactsByProduct :many
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
-WHERE product_id = $1
+WHERE organization_id = $1
+  AND product_id      = $2
 ORDER BY created_at, artifact_id
 `
 
-func (q *Queries) ListManagementArtifactsByProduct(ctx context.Context, productID pgtype.UUID) ([]ManagementArtifact, error) {
-	rows, err := q.db.Query(ctx, listManagementArtifactsByProduct, productID)
+type ListManagementArtifactsByProductParams struct {
+	OrganizationID pgtype.UUID
+	ProductID      pgtype.UUID
+}
+
+func (q *Queries) ListManagementArtifactsByProduct(ctx context.Context, arg ListManagementArtifactsByProductParams) ([]ManagementArtifact, error) {
+	rows, err := q.db.Query(ctx, listManagementArtifactsByProduct, arg.OrganizationID, arg.ProductID)
 	if err != nil {
 		return nil, err
 	}
@@ -473,8 +557,8 @@ func (q *Queries) ListManagementArtifactsByProduct(ctx context.Context, productI
 const listManagementArtifactsByScope = `-- name: ListManagementArtifactsByScope :many
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
 WHERE organization_id = $1
-  AND scope_type = $2
-  AND scope_id = $3
+  AND scope_type      = $2
+  AND scope_id        = $3
 ORDER BY created_at, artifact_id
 `
 
@@ -541,14 +625,20 @@ func (q *Queries) ListManagementArtifactsByScope(ctx context.Context, arg ListMa
 const listManagementArtifactsByStory = `-- name: ListManagementArtifactsByStory :many
 
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
-WHERE story_id = $1
+WHERE organization_id = $1
+  AND story_id        = $2
 ORDER BY created_at, artifact_id
 `
 
+type ListManagementArtifactsByStoryParams struct {
+	OrganizationID pgtype.UUID
+	StoryID        pgtype.UUID
+}
+
 // Lineage reads. Each takes the denormalised column rather than walking the
 // hierarchy, which is what the denormalisation is for.
-func (q *Queries) ListManagementArtifactsByStory(ctx context.Context, storyID pgtype.UUID) ([]ManagementArtifact, error) {
-	rows, err := q.db.Query(ctx, listManagementArtifactsByStory, storyID)
+func (q *Queries) ListManagementArtifactsByStory(ctx context.Context, arg ListManagementArtifactsByStoryParams) ([]ManagementArtifact, error) {
+	rows, err := q.db.Query(ctx, listManagementArtifactsByStory, arg.OrganizationID, arg.StoryID)
 	if err != nil {
 		return nil, err
 	}
@@ -603,15 +693,21 @@ func (q *Queries) ListManagementArtifactsByStory(ctx context.Context, storyID pg
 
 const lockManagementArtifact = `-- name: LockManagementArtifact :one
 SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
-WHERE artifact_id = $1
+WHERE artifact_id     = $1
+  AND organization_id = $2
 FOR UPDATE
 `
+
+type LockManagementArtifactParams struct {
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
 
 // Lock before any transition. A rowcount carries no reason, so the seam
 // locks the row, classifies the failure in Go against what it read, and
 // only then writes conditionally (design D5).
-func (q *Queries) LockManagementArtifact(ctx context.Context, artifactID pgtype.UUID) (ManagementArtifact, error) {
-	row := q.db.QueryRow(ctx, lockManagementArtifact, artifactID)
+func (q *Queries) LockManagementArtifact(ctx context.Context, arg LockManagementArtifactParams) (ManagementArtifact, error) {
+	row := q.db.QueryRow(ctx, lockManagementArtifact, arg.ArtifactID, arg.OrganizationID)
 	var i ManagementArtifact
 	err := row.Scan(
 		&i.ArtifactID,
@@ -655,7 +751,13 @@ const maxAmendmentSequence = `-- name: MaxAmendmentSequence :one
 SELECT COALESCE(MAX(amendment_sequence), 0)::int AS max_sequence
 FROM management_artifacts
 WHERE amends_artifact_id = $1
+  AND organization_id    = $2
 `
+
+type MaxAmendmentSequenceParams struct {
+	AmendsArtifactID pgtype.UUID
+	OrganizationID   pgtype.UUID
+}
 
 // The next amendment sequence is one more than the maximum over every
 // non-null HISTORICAL sequence, whatever the amendment's current status
@@ -664,29 +766,51 @@ WHERE amends_artifact_id = $1
 // currently equivalent to filtering on it -- written as the historical
 // maximum so it stays correct if that matrix ever widens, rather than
 // silently reusing a number.
-func (q *Queries) MaxAmendmentSequence(ctx context.Context, amendsArtifactID pgtype.UUID) (int32, error) {
-	row := q.db.QueryRow(ctx, maxAmendmentSequence, amendsArtifactID)
+func (q *Queries) MaxAmendmentSequence(ctx context.Context, arg MaxAmendmentSequenceParams) (int32, error) {
+	row := q.db.QueryRow(ctx, maxAmendmentSequence, arg.AmendsArtifactID, arg.OrganizationID)
 	var max_sequence int32
 	err := row.Scan(&max_sequence)
 	return max_sequence, err
 }
 
 const supersedeManagementArtifact = `-- name: SupersedeManagementArtifact :execrows
-
-UPDATE management_artifacts
+UPDATE management_artifacts target
 SET status = 'superseded'
-WHERE artifact_id  = $1
-  AND status       = 'accepted'
-  AND is_amendment = false
+FROM management_artifacts superseding
+WHERE target.artifact_id     = $1
+  AND target.organization_id = $2
+  AND target.status          = 'accepted'
+  AND target.is_amendment    = false
+  AND superseding.artifact_id            = $3
+  AND superseding.organization_id        = target.organization_id
+  AND superseding.supersedes_artifact_id = target.artifact_id
+  AND superseding.status                 = 'accepted'
+  AND superseding.is_amendment           = false
 `
 
+type SupersedeManagementArtifactParams struct {
+	ArtifactID            pgtype.UUID
+	OrganizationID        pgtype.UUID
+	SupersedingArtifactID pgtype.UUID
+}
+
+// Supersession verifies the SUPERSEDING artifact's reviewed link. Without
+// that check, an artifact reviewed and accepted as superseding A could be
+// used to retire B -- the reviewer approved a replacement for one thing and
+// it retired another.
+//
+// The superseding artifact must already be accepted, which the seam does
+// first in the same transaction (design D5): a reader between the two
+// statements would otherwise observe two authoritative artifacts for the
+// same subject.
+//
 // Amendments can be neither superseded nor archived, hence is_amendment =
 // false on both. Effective-view assembly loads only accepted amendments, so
 // archiving one would silently drop its contribution from the effective
 // view of an artifact nobody re-reviewed -- mutating accepted content
 // through a lifecycle side door.
-func (q *Queries) SupersedeManagementArtifact(ctx context.Context, artifactID pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, supersedeManagementArtifact, artifactID)
+func (q *Queries) SupersedeManagementArtifact(ctx context.Context, arg SupersedeManagementArtifactParams) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeManagementArtifact, arg.ArtifactID, arg.OrganizationID, arg.SupersedingArtifactID)
 	if err != nil {
 		return 0, err
 	}

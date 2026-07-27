@@ -20,11 +20,13 @@ RETURNING *;
 
 -- name: GetArtifactReview :one
 SELECT * FROM artifact_reviews
-WHERE review_id = @review_id;
+WHERE review_id       = @review_id
+  AND organization_id = @organization_id;
 
 -- name: ListArtifactReviews :many
 SELECT * FROM artifact_reviews
-WHERE artifact_id = @artifact_id
+WHERE artifact_id     = @artifact_id
+  AND organization_id = @organization_id
 ORDER BY decided_at, review_id;
 
 -- Used by the accept transition to classify in Go. It fetches the named
@@ -38,4 +40,5 @@ SELECT
     p.organization_id AS reviewer_organization_id
 FROM artifact_reviews r
 JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id
-WHERE r.review_id = @review_id;
+WHERE r.review_id       = @review_id
+  AND r.organization_id = @organization_id;

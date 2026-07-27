@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -95,6 +96,9 @@ func TestNewAcceptsAValidRegistration(t *testing.T) {
 	if entry.CurrentVersion != 2 {
 		t.Fatalf("current version = %d, want 2", entry.CurrentVersion)
 	}
+	if got := fmt.Sprint(entry.ReadableVersions); got != "[1 2]" {
+		t.Fatalf("readable versions = %s, want [1 2]", got)
+	}
 }
 
 func TestLookupRejectsUnregisteredType(t *testing.T) {
@@ -182,6 +186,42 @@ func TestRegistryIsImmutableAfterConstruction(t *testing.T) {
 	}
 	if _, err := built.ValidatorFor("example", 7); !errors.Is(err, ErrVersionOutOfRange) {
 		t.Fatal("a validator added to the caller's map after construction became visible")
+	}
+}
+
+// TestLookupResultCannotReachTheRegistry closes the other half of the
+// freeze. Returning the registration Entry would hand back the live
+// Validators map, letting a caller replace the validator every later write
+// of that type is checked against — a mutation with no audit trail, since
+// stored rows carry no record of which registration produced them.
+func TestLookupResultCannotReachTheRegistry(t *testing.T) {
+	built, err := New(validEntries())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	registration, err := built.Lookup("example")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+
+	// Mutating the returned readable-version slice must not be observable.
+	for i := range registration.ReadableVersions {
+		registration.ReadableVersions[i] = 999
+	}
+	again, err := built.Lookup("example")
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	for i, version := range again.ReadableVersions {
+		if version == 999 {
+			t.Fatalf("mutating a returned ReadableVersions slice changed the registry at index %d", i)
+		}
+	}
+
+	// And version 999 must still be unreadable.
+	if _, err := built.ValidatorFor("example", 999); !errors.Is(err, ErrVersionOutOfRange) {
+		t.Fatal("a version injected through a returned registration became readable")
 	}
 }
 

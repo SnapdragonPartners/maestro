@@ -126,10 +126,16 @@ func (q *Queries) CreatePrincipalInstance(ctx context.Context, arg CreatePrincip
 const getPrincipalInstance = `-- name: GetPrincipalInstance :one
 SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_pack_id, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason FROM principal_instances
 WHERE principal_instance_id = $1
+  AND organization_id       = $2
 `
 
-func (q *Queries) GetPrincipalInstance(ctx context.Context, principalInstanceID pgtype.UUID) (PrincipalInstance, error) {
-	row := q.db.QueryRow(ctx, getPrincipalInstance, principalInstanceID)
+type GetPrincipalInstanceParams struct {
+	PrincipalInstanceID pgtype.UUID
+	OrganizationID      pgtype.UUID
+}
+
+func (q *Queries) GetPrincipalInstance(ctx context.Context, arg GetPrincipalInstanceParams) (PrincipalInstance, error) {
+	row := q.db.QueryRow(ctx, getPrincipalInstance, arg.PrincipalInstanceID, arg.OrganizationID)
 	var i PrincipalInstance
 	err := row.Scan(
 		&i.PrincipalInstanceID,
@@ -156,11 +162,17 @@ func (q *Queries) GetPrincipalInstance(ctx context.Context, principalInstanceID 
 const listPrincipalInstanceInputs = `-- name: ListPrincipalInstanceInputs :many
 SELECT principal_instance_id, artifact_id, organization_id, seeded_digest, seeded_at FROM principal_instance_inputs
 WHERE principal_instance_id = $1
+  AND organization_id       = $2
 ORDER BY seeded_at, artifact_id
 `
 
-func (q *Queries) ListPrincipalInstanceInputs(ctx context.Context, principalInstanceID pgtype.UUID) ([]PrincipalInstanceInput, error) {
-	rows, err := q.db.Query(ctx, listPrincipalInstanceInputs, principalInstanceID)
+type ListPrincipalInstanceInputsParams struct {
+	PrincipalInstanceID pgtype.UUID
+	OrganizationID      pgtype.UUID
+}
+
+func (q *Queries) ListPrincipalInstanceInputs(ctx context.Context, arg ListPrincipalInstanceInputsParams) ([]PrincipalInstanceInput, error) {
+	rows, err := q.db.Query(ctx, listPrincipalInstanceInputs, arg.PrincipalInstanceID, arg.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -342,8 +354,14 @@ func (q *Queries) ListPrincipalInstancesByPromptHash(ctx context.Context, arg Li
 const lockPrincipalInstance = `-- name: LockPrincipalInstance :one
 SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_pack_id, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason FROM principal_instances
 WHERE principal_instance_id = $1
+  AND organization_id       = $2
 FOR UPDATE
 `
+
+type LockPrincipalInstanceParams struct {
+	PrincipalInstanceID pgtype.UUID
+	OrganizationID      pgtype.UUID
+}
 
 // Lock before stopping. Stopping is once-only (design D7) and a rowcount
 // carries no reason, so the seam locks, classifies in Go, then writes
@@ -354,8 +372,8 @@ FOR UPDATE
 // statement that did not take the lock would still see the pre-stop
 // snapshot after the winner committed, reporting a null stop time for an
 // instance that has one.
-func (q *Queries) LockPrincipalInstance(ctx context.Context, principalInstanceID pgtype.UUID) (PrincipalInstance, error) {
-	row := q.db.QueryRow(ctx, lockPrincipalInstance, principalInstanceID)
+func (q *Queries) LockPrincipalInstance(ctx context.Context, arg LockPrincipalInstanceParams) (PrincipalInstance, error) {
+	row := q.db.QueryRow(ctx, lockPrincipalInstance, arg.PrincipalInstanceID, arg.OrganizationID)
 	var i PrincipalInstance
 	err := row.Scan(
 		&i.PrincipalInstanceID,
@@ -384,6 +402,7 @@ UPDATE principal_instances
 SET stop_time   = COALESCE($1::timestamptz, now()),
     stop_reason = $2
 WHERE principal_instance_id = $3
+  AND organization_id       = $4
   AND stop_time IS NULL
 `
 
@@ -391,10 +410,16 @@ type StopPrincipalInstanceParams struct {
 	StopTime            pgtype.Timestamptz
 	StopReason          *string
 	PrincipalInstanceID pgtype.UUID
+	OrganizationID      pgtype.UUID
 }
 
 func (q *Queries) StopPrincipalInstance(ctx context.Context, arg StopPrincipalInstanceParams) (int64, error) {
-	result, err := q.db.Exec(ctx, stopPrincipalInstance, arg.StopTime, arg.StopReason, arg.PrincipalInstanceID)
+	result, err := q.db.Exec(ctx, stopPrincipalInstance,
+		arg.StopTime,
+		arg.StopReason,
+		arg.PrincipalInstanceID,
+		arg.OrganizationID,
+	)
 	if err != nil {
 		return 0, err
 	}

@@ -84,6 +84,9 @@ func TestRFC7396Section3Example(t *testing.T) {
 // artifact payloads: building an effective view must not alter the stored
 // original it was assembled from, or the second reader of a cached payload
 // sees the first reader's amendments.
+//
+// This tests the unexported apply directly. The exported surface returns
+// encoded bytes precisely so this hazard cannot reach a caller.
 func TestApplyDoesNotMutateTarget(t *testing.T) {
 	target := map[string]any{
 		"keep":   "value",
@@ -92,14 +95,14 @@ func TestApplyDoesNotMutateTarget(t *testing.T) {
 	}
 	before := deepCopy(t, target)
 
-	Apply(target, map[string]any{
+	apply(target, map[string]any{
 		"drop":   nil,
 		"nested": map[string]any{"inner": "changed"},
 		"added":  "new",
 	})
 
 	if !reflect.DeepEqual(target, before) {
-		t.Fatalf("Apply mutated its target\n got: %v\nwant: %v", target, before)
+		t.Fatalf("apply mutated its target\n got: %v\nwant: %v", target, before)
 	}
 }
 
@@ -159,9 +162,30 @@ func TestApplyChainReportsWhichPatchFailed(t *testing.T) {
 	}
 }
 
+// TestDecodeRejectsTrailingContent covers the cases a Decoder.More() check
+// waves through. More() reports whether another element follows inside the
+// value being decoded, not whether input is exhausted, so a stray closing
+// bracket after a complete document reads as "no more elements" and the
+// malformed payload is accepted -- and then digested and stored.
 func TestDecodeRejectsTrailingContent(t *testing.T) {
-	if _, err := ApplyJSON([]byte(`{"a":"b"} {"c":"d"}`), []byte(`{}`)); err == nil {
-		t.Fatal("expected an error for two concatenated JSON documents")
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"two concatenated documents", `{"a":"b"} {"c":"d"}`},
+		{"trailing close bracket", `{"a":"b"}]`},
+		{"trailing close brace", `{"a":"b"}}`},
+		{"trailing comma", `{"a":"b"},`},
+		{"trailing garbage", `{"a":"b"} nonsense`},
+		{"array with trailing brace", `["a"]}`},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := ApplyJSON([]byte(testCase.input), []byte(`{}`)); err == nil {
+				t.Fatalf("accepted malformed input %s", testCase.input)
+			}
+		})
 	}
 }
 

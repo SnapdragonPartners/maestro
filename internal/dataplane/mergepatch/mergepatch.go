@@ -16,26 +16,28 @@ package mergepatch
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 )
 
-// Apply returns the result of applying patch to target per RFC 7396.
+// apply returns the result of applying patch to target per RFC 7396.
 //
 // Neither argument is modified. The RFC's reference algorithm mutates the
 // target in place, which is wrong here: targets are decoded artifact
 // payloads that may be cached or shared, and applying an amendment to build
 // a view must never alter the stored original it was built from.
 //
-// The result is not a deep copy. Subtrees the patch did not touch are
-// shared with the target, so the returned document must be treated as
-// read-only — mutating it can reach back into the target. Callers who need
-// an independent document should go through ApplyJSON or ApplyChain, which
-// return freshly encoded bytes. This is a deliberate trade: effective views
-// are assembled per read and are almost entirely untouched subtrees, so
-// deep-copying them would cost on every read to defend against a mutation
-// no caller here performs.
-func Apply(target, patch any) any {
+// It is UNEXPORTED because its result is not a deep copy: subtrees the
+// patch did not touch are shared with the target, so mutating the result
+// could reach back into the stored original. Rather than ask every caller
+// to honour that, the package exposes only ApplyJSON and ApplyChain, which
+// return freshly encoded bytes and own nothing the caller can corrupt.
+// Deep-copying here instead would cost on every effective-view read --
+// which is almost entirely untouched subtrees -- to defend against a
+// mutation no caller needs to make.
+func apply(target, patch any) any {
 	patchObject, patchIsObject := patch.(map[string]any)
 	if !patchIsObject {
 		// A non-object patch replaces the target wholesale, including when
@@ -55,7 +57,7 @@ func Apply(target, patch any) any {
 			delete(merged, key)
 			continue
 		}
-		merged[key] = Apply(merged[key], patchValue)
+		merged[key] = apply(merged[key], patchValue)
 	}
 	return merged
 }
@@ -70,7 +72,7 @@ func ApplyJSON(target, patch []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode patch: %w", err)
 	}
-	return encode(Apply(decodedTarget, decodedPatch))
+	return encode(apply(decodedTarget, decodedPatch))
 }
 
 // ApplyChain builds an effective view: base with each patch applied in
@@ -87,7 +89,7 @@ func ApplyChain(base []byte, patches [][]byte) ([]byte, error) {
 		if decodeErr != nil {
 			return nil, fmt.Errorf("decode patch %d of %d: %w", i+1, len(patches), decodeErr)
 		}
-		current = Apply(current, decodedPatch)
+		current = apply(current, decodedPatch)
 	}
 	return encode(current)
 }
@@ -104,8 +106,16 @@ func decode(raw []byte) (any, error) {
 	if err := dec.Decode(&value); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
-	if dec.More() {
-		return nil, fmt.Errorf("trailing content after the JSON value")
+	// More() is not an EOF check -- it reports whether another ELEMENT
+	// follows within the value being decoded, so stray trailing tokens
+	// like "]" or "}" slip past it. Decoding again and requiring io.EOF is
+	// the actual check.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err != nil {
+			return nil, fmt.Errorf("trailing content after the JSON value: %w", err)
+		}
+		return nil, fmt.Errorf("trailing content after the JSON value: %s", trailing)
 	}
 	return value, nil
 }

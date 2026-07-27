@@ -36,14 +36,37 @@ func TestCanonicalFormMatchesRFC8785Vector(t *testing.T) {
 	}
 }
 
-func TestDigestOfVectorIsSHA256OfCanonicalForm(t *testing.T) {
-	got, err := DigestJSON([]byte(rfc8785Input))
+// TestDigestIsSHA256OfCanonicalForm pins the composition: digest = SHA-256
+// over the JCS canonical form. It cannot use the RFC 8785 vector, because
+// that vector contains 1e30 and 1e-27 and the payload rule below rejects
+// 1e30 by magnitude. Splitting them keeps both honest: the vector proves
+// canonicalization matches the RFC, this proves the digest is that
+// canonical form hashed and nothing else.
+func TestDigestIsSHA256OfCanonicalForm(t *testing.T) {
+	payload := []byte(`{"b":[3,2,1],"a":"x","n":4.5}`)
+
+	got, err := DigestJSON(payload)
 	if err != nil {
 		t.Fatalf("DigestJSON: %v", err)
 	}
-	sum := sha256.Sum256([]byte(rfc8785Canonical))
+	canonicalForm, err := jcs.Transform(payload)
+	if err != nil {
+		t.Fatalf("transform: %v", err)
+	}
+	sum := sha256.Sum256(canonicalForm)
 	if want := hex.EncodeToString(sum[:]); got != want {
-		t.Fatalf("digest = %s, want %s (SHA-256 of the RFC 8785 canonical form)", got, want)
+		t.Fatalf("digest = %s, want %s", got, want)
+	}
+}
+
+// TestRFC8785VectorIsRejectedByThePayloadRule states the interaction
+// explicitly rather than leaving it as a surprise: the RFC's own example is
+// not a legal artifact payload here, because ADR 0028's magnitude rule is
+// stricter than what JCS alone can encode.
+func TestRFC8785VectorIsRejectedByThePayloadRule(t *testing.T) {
+	_, err := DigestJSON([]byte(rfc8785Input))
+	if !errors.Is(err, ErrUnsafeNumber) {
+		t.Fatalf("expected the vector's 1e30 to be rejected by magnitude, got %v", err)
 	}
 }
 
@@ -112,10 +135,18 @@ func TestUnsafeNumbersRejected(t *testing.T) {
 	}{
 		{"2^53 exactly", `{"n":9007199254740992}`, "/n"},
 		{"negative 2^53", `{"n":-9007199254740992}`, "/n"},
-		{"beyond int64 as an integer literal", `{"n":1000000000000000000000000000000}`, "exceeds int64"},
+		{"beyond int64 as an integer literal", `{"n":1000000000000000000000000000000}`, "/n"},
 		{"nested in an object", `{"outer":{"inner":9007199254740993}}`, "/outer/inner"},
 		{"inside an array", `{"list":[1,2,9007199254740993]}`, "/list/2"},
 		{"at the payload root", `9007199254740993`, "the payload root"},
+
+		// The spelling-evasion cases. These are the same value as
+		// "2^53 exactly" above, written so that a check keyed on notation
+		// would wave them through.
+		{"2^53 with a decimal point", `{"n":9007199254740992.0}`, "/n"},
+		{"2^53 in exponential form", `{"n":9.007199254740992e15}`, "/n"},
+		{"large magnitude as a float", `{"n":1e30}`, "/n"},
+		{"large negative magnitude as a float", `{"n":-1e30}`, "/n"},
 	}
 
 	for _, testCase := range cases {
@@ -141,12 +172,11 @@ func TestSafeNumbersAccepted(t *testing.T) {
 	}{
 		{"largest safe integer", `{"n":9007199254740991}`},
 		{"smallest safe integer", `{"n":-9007199254740991}`},
+		{"largest safe integer with a decimal point", `{"n":9007199254740991.0}`},
 		{"zero", `{"n":0}`},
-		// Large magnitudes are fine when written as floats: the schema has
-		// declared binary64, so no precision is being silently lost.
-		{"large float", `{"n":1e30}`},
 		{"tiny float", `{"n":1e-27}`},
 		{"fractional", `{"n":4.5}`},
+		{"just inside the bound", `{"n":9007199254740990.5}`},
 	}
 
 	for _, testCase := range cases {

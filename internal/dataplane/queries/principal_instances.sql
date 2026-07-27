@@ -18,7 +18,8 @@ RETURNING *;
 
 -- name: GetPrincipalInstance :one
 SELECT * FROM principal_instances
-WHERE principal_instance_id = @principal_instance_id;
+WHERE principal_instance_id = @principal_instance_id
+  AND organization_id       = @organization_id;
 
 -- Lock before stopping. Stopping is once-only (design D7) and a rowcount
 -- carries no reason, so the seam locks, classifies in Go, then writes
@@ -32,6 +33,7 @@ WHERE principal_instance_id = @principal_instance_id;
 -- name: LockPrincipalInstance :one
 SELECT * FROM principal_instances
 WHERE principal_instance_id = @principal_instance_id
+  AND organization_id       = @organization_id
 FOR UPDATE;
 
 -- name: StopPrincipalInstance :execrows
@@ -39,6 +41,7 @@ UPDATE principal_instances
 SET stop_time   = COALESCE(sqlc.narg('stop_time')::timestamptz, now()),
     stop_reason = @stop_reason
 WHERE principal_instance_id = @principal_instance_id
+  AND organization_id       = @organization_id
   AND stop_time IS NULL;
 
 -- name: AddPrincipalInstanceInput :one
@@ -52,6 +55,7 @@ RETURNING *;
 -- name: ListPrincipalInstanceInputs :many
 SELECT * FROM principal_instance_inputs
 WHERE principal_instance_id = @principal_instance_id
+  AND organization_id       = @organization_id
 ORDER BY seeded_at, artifact_id;
 
 -- The MPH reads. ADR 0021 says cost and comparison analysis anchors on
