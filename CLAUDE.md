@@ -40,14 +40,14 @@ Start with `docs/README.md`, `docs/adr/README.md`, and the applicable phase
 `docs/v2/process_build.md` is the binding working agreement for building v2.
 It binds Claude, Codex, and DR and wins over this file if they disagree. The
 current phase scope and plan at `docs/v2/phase_x/plan_scope.md` binds work in
-that phase.
+that phase. `docs/v2/plan_roadmap.md` defines the phase sequence and
+cross-phase decisions.
 
 Throughout this file and the v2 docs, `phase_x` is a placeholder for the
 current phase number — the real directories are `docs/v2/phase_0/`,
 `phase_1/`, `phase_2/`, and so on. The same convention appears in ADR 0017
 and `process_build.md`, so it is written this way here to match rather than
-diverge. `docs/v2/plan_roadmap.md` defines the phase sequence and cross-phase
-decisions.
+diverge.
 
 Roles:
 
