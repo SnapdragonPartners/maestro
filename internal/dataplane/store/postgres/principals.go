@@ -88,16 +88,18 @@ func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 // query. An instance observable without its inputs makes that promise false
 // for exactly as long as the gap, so there is no version of this that
 // writes the instance first and the seeds afterwards.
-// them after the call begins; copying one struct per instance creation is not a cost worth
-// trading that for.
 //
-//nolint:gocritic // hugeParam: the interface passes inputs by value so a caller cannot mutate
+// The input is taken by value so a caller cannot mutate it after the call
+// begins. One struct copy per instance creation is not worth trading that
+// guarantee for.
+//
+//nolint:gocritic // hugeParam: by value, deliberately — see above
 func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrincipalInstanceInput) (*store.PrincipalInstance, error) {
 	if err := checkKindFields(input); err != nil {
 		return nil, err
 	}
 
-	instanceID, err := newArtifactID(uuid.Nil)
+	instanceID, err := newIdentifier(uuid.Nil)
 	if err != nil {
 		return nil, err
 	}

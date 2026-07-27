@@ -255,11 +255,19 @@ func (t *tx) resolveManagementIdentity(ctx context.Context, input store.CreateMa
 		int(original.SchemaVersion), nil
 }
 
-// after the call begins. One struct copy per artifact write is not worth trading that for.
+// CreateManagementArtifact writes a draft Management artifact.
 //
-//nolint:gocritic // hugeParam: the seam takes inputs by value so a caller cannot mutate one
+// Category, schema version and both digests are settled here rather than by
+// the caller (design D3): a caller-supplied digest is a caller-asserted one,
+// and the point is that it is derived. The identity is allocated before the
+// digest because the digest binds it.
+//
+// The input is taken by value so a caller cannot mutate it after the call
+// begins. One struct copy per write is not worth trading that guarantee for.
+//
+//nolint:gocritic // hugeParam: by value, deliberately — see above
 func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateManagementArtifactInput) (*store.ManagementArtifact, error) {
-	artifactID, idErr := newArtifactID(input.ArtifactID)
+	artifactID, idErr := newIdentifier(input.ArtifactID)
 	if idErr != nil {
 		return nil, idErr
 	}
@@ -351,11 +359,18 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 	return &created, nil
 }
 
-// after the call begins. One struct copy per artifact write is not worth trading that for.
+// CreateAuditArtifact writes an Audit artifact, which is born final: no
+// status, no review, no amendment, no supersession.
 //
-//nolint:gocritic // hugeParam: the seam takes inputs by value so a caller cannot mutate one
+// Unlike the Management family it admits a system principal as author and
+// no user at all, because exhaust genuinely precedes any user's action.
+//
+// The input is taken by value so a caller cannot mutate it after the call
+// begins. One struct copy per write is not worth trading that guarantee for.
+//
+//nolint:gocritic // hugeParam: by value, deliberately — see above
 func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArtifactInput) (*store.AuditArtifact, error) {
-	artifactID, err := newArtifactID(input.ArtifactID)
+	artifactID, err := newIdentifier(input.ArtifactID)
 	if err != nil {
 		return nil, err
 	}
@@ -418,9 +433,18 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 	return &created, nil
 }
 
-// after the call begins. One struct copy per artifact write is not worth trading that for.
+// CreateReview records a review decision.
 //
-//nolint:gocritic // hugeParam: the seam takes inputs by value so a caller cannot mutate one
+// The digests are stored EXACTLY as observed (design D3a). The seam
+// validates the shape it is given but never recomputes "current" values,
+// because a non-current digest is a legitimate thing to record — and
+// recomputing would bind the review to content the reviewer never saw,
+// manufacturing the false attestation the digest binding exists to prevent.
+//
+// The input is taken by value so a caller cannot mutate it after the call
+// begins. One struct copy per write is not worth trading that guarantee for.
+//
+//nolint:gocritic // hugeParam: by value, deliberately — see above
 func (t *tx) CreateReview(ctx context.Context, input store.CreateReviewInput) (*store.Review, error) {
 	// The digests are stored EXACTLY as observed (design D3a). The seam
 	// checks the shape it was given -- well-formed digest, artifact exists,
@@ -470,7 +494,7 @@ func (t *tx) CreateReview(ctx context.Context, input store.CreateReviewInput) (*
 		return nil, errors.New("a review of an original must not record a base; only an amendment has one")
 	}
 
-	reviewID, err := newArtifactID(uuid.Nil)
+	reviewID, err := newIdentifier(uuid.Nil)
 	if err != nil {
 		return nil, err
 	}

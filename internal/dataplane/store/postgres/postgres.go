@@ -172,7 +172,13 @@ func scopeColumns(scope store.Scope) (scopeArc, error) {
 	}
 }
 
-// newArtifactID allocates a UUIDv7, or returns a caller's preallocated one.
+// newIdentifier allocates a UUIDv7, or returns a caller's preallocated one.
+//
+// Named for identifiers generally rather than for artifacts: every primary
+// key the seam writes comes from here — artifacts, reviews and principal
+// instances alike — and an artifact-specific name invited the assumption
+// that principals were allocated somewhere else. They were, and they were
+// still v4 when that assumption went unexamined.
 //
 // v7 rather than v4 because the schema design requires it: v7 is
 // time-ordered, so primary keys cluster by creation time instead of
@@ -181,7 +187,7 @@ func scopeColumns(scope store.Scope) (scopeArc, error) {
 // Callers may preallocate because item 6's cross-store commit order writes
 // the object FIRST, under a key derived from the artifact id, and only then
 // the row. That is impossible if the id does not exist until the INSERT.
-func newArtifactID(preallocated uuid.UUID) (uuid.UUID, error) {
+func newIdentifier(preallocated uuid.UUID) (uuid.UUID, error) {
 	if preallocated != uuid.Nil {
 		if preallocated.Version() != 7 {
 			return uuid.Nil, fmt.Errorf("preallocated id %s is UUID version %d, want 7",
