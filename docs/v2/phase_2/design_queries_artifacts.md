@@ -57,6 +57,10 @@ On every artifact write, in this order:
 3. **The universal safe-integer rule** — no JSON number outside ±(2^53 − 1) anywhere in the payload, because JCS serializes numbers as IEEE-754 binary64 and a larger integer would not survive canonicalization. Checked for every type, since it belongs to the encoding rather than to any one schema.
 4. **Digests computed here** — `payload_digest` over the canonical payload, `review_digest` over the reviewable projection of ADR 0028 §5. Callers never supply either: a caller-supplied digest is a caller-asserted one, and the point is that it is derived.
 
+**Amendments take their type, category and version from the target original, not from the registry.** This is the one exception, and it is required rather than convenient. ADR 0028 says an amendment validates against *"the original artifact's `artifact_type` and `schema_version` — an amendment cannot change either"*, and stored payloads are never rewritten, so an artifact created at v1 stays v1 for life. If the registry has since advanced to v2, taking the current version would stamp the amendment v2 and validate the merged result against the v2 validator — silently migrating an immutable artifact's version, and checking it against a schema its own payload was never written for.
+
+So on an amendment write the seam reads the target original (already locked in the same transaction) and uses its `artifact_type`, `artifact_category` and `schema_version`. The registry is still consulted for the *validator* to apply — but the validator **for that version**, which is why the registry declares a readable range rather than only a current version (D3, reads). A change genuinely needing a different type or version is a supersession, not an amendment.
+
 Reads validate the reverse direction: a payload whose `schema_version` is outside the registry's readable range is an error naming the version, never a best-effort parse.
 
 ### D3a. Review records store what the reviewer saw, not what is current
@@ -121,7 +125,13 @@ Two amendments reviewed against the same base now yield exactly one acceptance a
 
 Creating a principal instance writes its `principal_instance_inputs` rows **in the same transaction**. ADR 0021 promises that "what was this agent given to start?" is always a query; an instance observable without its inputs makes that false for exactly as long as the gap. Each row stores the artifact and the **digest as seeded**, so a later comparison against the artifact's current digest shows the seed has moved.
 
-Stopping an instance sets `stop_time` and `stop_reason` together, which the schema already requires as a pair.
+**Stopping an instance is once-only.** `StopPrincipalInstance` is a conditional update with `WHERE stop_time IS NULL`, so the first stop wins and later ones cannot overwrite it.
+
+This is not hypothetical: it is the shape of ADR 0027's supervisor double-restart (P-6), where an agent death fires two independent paths — the ERROR state-notification and the `Run()`-exit handler — within about a millisecond. Both will call this. Without the condition, the second overwrites the first's `stop_time` and `stop_reason`, and the reason is the diagnostic that says *why* the agent died; losing it to a later, blander shutdown path is losing the incident.
+
+Repeated and concurrent calls are **idempotent, not errors**: the call returns the recorded stop time and reason, and reports whether this caller was the one that recorded them. ADR 0027's premise is that two paths racing to finalise one lifecycle is normal rather than exceptional, so making the loser an error would turn correct shutdown into spurious failures — while a caller that genuinely cares (a supervisor deciding whether to requeue) can still tell from the flag.
+
+`stop_time` and `stop_reason` are set together, which the schema already requires as a pair.
 
 MPH queries read what the signature is for: instances by `model`, by `prompt_hash`, by `harness_config_hash`, and an instance's full signature including its seeding set. These are the joins ADR 0021 says cost and comparison analysis anchor on.
 
@@ -150,6 +160,8 @@ So the conversion is explicit rather than incidental. `store` exposes `uuid.UUID
 - **Amendment protocol**: two amendments against the same base yield one acceptance and one `ErrBaseMoved`; sequence allocation skips a number already used by an archived amendment; the effective payload is validated at acceptance and a patch that breaks the schema is refused there even though it passed on write.
 - **Validation**: unregistered type, payload failing its schema, an unsafe integer, an out-of-range `schema_version` on read; an amendment whose *patch* would not validate as an instance but whose *merged result* does, which must be accepted, and the converse, which must not.
 - **Registry authority**: a caller supplying its own `artifact_category` or `schema_version` does not get them honoured.
+- **Amendment version inheritance**: with the registry advanced to v2, an amendment of a v1 original is stored as v1 and validated by the v1 validator — not stamped v2, and not validated against v2.
+- **Stop is once-only**: two concurrent stops leave the first `stop_time` and `stop_reason` intact, the loser is told it did not record them, and neither call errors.
 - **Review recording**: the stored digest is the one supplied, not a recomputation — a review recorded after the artifact changed still carries the observed digest and consequently fails at acceptance.
 - **Amendments cannot be superseded or archived**, and a superseding artifact whose reviewed `supersedes_artifact_id` names a different target is refused.
 - **Digests**: caller-supplied digests are ignored or refused; the stored digest matches an independent JCS computation.
