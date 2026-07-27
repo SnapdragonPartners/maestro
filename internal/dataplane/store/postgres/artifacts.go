@@ -126,79 +126,119 @@ func reviewFromRow(row *gen.ArtifactReview) store.Review {
 // --- digests ---------------------------------------------------------------
 
 // reviewableProjection is what ADR 0028 §5 binds a review to: the whole
-// reviewable content, not the payload alone. Summary and type are part of
-// what a reviewer reads, so a change to either must invalidate the review.
-// Field ORDER here is chosen for alignment and does not affect the digest:
-// JCS sorts object keys, so the canonical form is identical whatever order
-// encoding/json emits them in. That independence is the reason ADR 0028
-// specifies a canonicalization at all.
+// reviewable envelope, not the payload alone.
+//
+// Everything a reviewer's judgement depends on belongs here. An earlier
+// version carried only type, version, summary and payload, which left the
+// scope, the lineage, the author and every relationship link outside the
+// binding — so an artifact could be re-pointed at a different Story, or
+// have its supersession target changed, and its review would still match.
+// The identity is included too, which is why the id is allocated before
+// the digest rather than by the INSERT.
+//
+// Field ORDER is chosen for alignment and does not affect the digest: JCS
+// sorts object keys, so the canonical form is identical whatever order
+// encoding/json emits them in.
 type reviewableProjection struct {
-	Type          registry.Type   `json:"artifact_type"`
-	Summary       string          `json:"summary"`
-	Payload       json.RawMessage `json:"payload"`
-	SchemaVersion int             `json:"schema_version"`
+	ProductID            *string `json:"product_id"`
+	FeatureID            *string `json:"feature_id"`
+	EpicID               *string `json:"epic_id"`
+	StoryID              *string `json:"story_id"`
+	AmendsArtifactID     *string `json:"amends_artifact_id"`
+	SupersedesArtifactID *string `json:"supersedes_artifact_id"`
+	ReplacesArtifactID   *string `json:"replaces_artifact_id"`
+
+	ArtifactID       string `json:"artifact_id"`
+	ArtifactType     string `json:"artifact_type"`
+	ArtifactCategory string `json:"artifact_category"`
+	Summary          string `json:"summary"`
+	ScopeType        string `json:"scope_type"`
+	ScopeID          string `json:"scope_id"`
+	AuthorInstanceID string `json:"author_instance_id"`
+
+	Payload json.RawMessage `json:"payload"`
+
+	SchemaVersion int `json:"schema_version"`
 }
 
-func computeDigests(artifactType registry.Type, version int, summary string, payload json.RawMessage) (payloadDigest, reviewDigest string, err error) {
-	payloadDigest, err = canonical.DigestJSON(payload)
-	if err != nil {
-		return "", "", fmt.Errorf("payload digest: %w", err)
+// optionalID renders an optional identifier for the projection.
+func optionalID(id *uuid.UUID) *string {
+	if id == nil {
+		return nil
 	}
-	reviewDigest, err = canonical.Digest(reviewableProjection{
-		Type:          artifactType,
-		SchemaVersion: version,
-		Summary:       summary,
-		Payload:       payload,
-	})
-	if err != nil {
-		return "", "", fmt.Errorf("review digest: %w", err)
-	}
-	return payloadDigest, reviewDigest, nil
+	rendered := id.String()
+	return &rendered
 }
 
 // --- creation --------------------------------------------------------------
+
+// resolveManagementIdentity settles what an artifact IS: its type, category
+// and schema version.
+//
+// An original takes all three from the registry. An amendment takes them
+// from the TARGET ORIGINAL (design D3): ADR 0028 forbids an amendment
+// changing type or version, and stored payloads are never rewritten, so an
+// artifact created at v1 stays v1 for life. Taking the registry's current
+// version would stamp the amendment v2 once the registry advanced and
+// validate the merged result against a schema its payload was never written
+// for.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (t *tx) resolveManagementIdentity(ctx context.Context, input store.CreateManagementArtifactInput) (
+	registry.Type, registry.Category, int, error,
+) {
+	if input.AmendsArtifactID == nil {
+		registration, err := t.registry.Lookup(input.Type)
+		if err != nil {
+			return "", "", 0, fmt.Errorf("management artifact write: %w", err)
+		}
+		if registration.Category != registry.CategoryManagement {
+			return "", "", 0, fmt.Errorf("type %q is registered as %q, so it cannot be written as a Management artifact",
+				input.Type, registration.Category)
+		}
+		return input.Type, registry.CategoryManagement, registration.CurrentVersion, nil
+	}
+
+	original, err := t.queries.LockManagementArtifact(ctx, gen.LockManagementArtifactParams{
+		ArtifactID:     toUUID(*input.AmendsArtifactID),
+		OrganizationID: toUUID(input.OrganizationID),
+	})
+	if err != nil {
+		return "", "", 0, notFound(err, "amendment target", *input.AmendsArtifactID)
+	}
+	if original.IsAmendment {
+		return "", "", 0, fmt.Errorf("artifact %s is itself an amendment; the amendment chain is flat (ADR 0021)",
+			*input.AmendsArtifactID)
+	}
+	// ADR 0021 defines an amendment as an after-acceptance change. A draft
+	// is edited, not amended; an invalidated, superseded or archived
+	// artifact is not current content to amend at all.
+	if store.Status(original.Status) != store.StatusAccepted {
+		return "", "", 0, fmt.Errorf("artifact %s is %q, and only an accepted artifact can be amended (ADR 0021): "+
+			"a draft is edited rather than amended", *input.AmendsArtifactID, original.Status)
+	}
+	return registry.Type(original.ArtifactType), registry.Category(original.ArtifactCategory),
+		int(original.SchemaVersion), nil
+}
 
 // after the call begins. One struct copy per artifact write is not worth trading that for.
 //
 //nolint:gocritic // hugeParam: the seam takes inputs by value so a caller cannot mutate one
 func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateManagementArtifactInput) (*store.ManagementArtifact, error) {
-	artifactType := input.Type
-	category := registry.CategoryManagement
-	version := 0
+	artifactID, idErr := newArtifactID(input.ArtifactID)
+	if idErr != nil {
+		return nil, idErr
+	}
+	// ADR 0021: a Management artifact's author is an agent or a human.
+	// System principals emit exhaust, not reviewable work product.
+	if authorErr := t.requirePrincipalKind(ctx, input.OrganizationID, input.AuthorInstanceID, "author",
+		store.PrincipalAgent, store.PrincipalHuman); authorErr != nil {
+		return nil, authorErr
+	}
 
-	if input.AmendsArtifactID == nil {
-		// An original takes type, category and version from the registry.
-		registration, err := t.registry.Lookup(artifactType)
-		if err != nil {
-			return nil, fmt.Errorf("management artifact write: %w", err)
-		}
-		if registration.Category != registry.CategoryManagement {
-			return nil, fmt.Errorf("type %q is registered as %q, so it cannot be written as a Management artifact",
-				artifactType, registration.Category)
-		}
-		version = registration.CurrentVersion
-	} else {
-		// An amendment takes all three from the TARGET ORIGINAL (design
-		// D3). ADR 0028 forbids an amendment changing type or version, and
-		// stored payloads are never rewritten, so an artifact created at v1
-		// stays v1 for life. Taking the registry's current version would
-		// stamp this amendment v2 once the registry advanced and validate
-		// the merged result against a schema its payload was never written
-		// for.
-		original, err := t.queries.LockManagementArtifact(ctx, gen.LockManagementArtifactParams{
-			ArtifactID:     toUUID(*input.AmendsArtifactID),
-			OrganizationID: toUUID(input.OrganizationID),
-		})
-		if err != nil {
-			return nil, notFound(err, "amendment target", *input.AmendsArtifactID)
-		}
-		if original.IsAmendment {
-			return nil, fmt.Errorf("artifact %s is itself an amendment; the amendment chain is flat (ADR 0021)",
-				*input.AmendsArtifactID)
-		}
-		artifactType = registry.Type(original.ArtifactType)
-		category = registry.Category(original.ArtifactCategory)
-		version = int(original.SchemaVersion)
+	artifactType, category, version, err := t.resolveManagementIdentity(ctx, input)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate the instance that will be STORED. For an original that is
@@ -206,31 +246,54 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 	// result is what must satisfy the schema, so it is validated below and
 	// again at acceptance.
 	if input.AmendsArtifactID == nil {
-		if err := t.validatePayload(artifactType, version, input.Payload); err != nil {
-			return nil, err
+		if validationErr := t.validatePayload(artifactType, version, input.Payload); validationErr != nil {
+			return nil, validationErr
 		}
 	} else {
-		merged, err := t.effectiveViewWithPatch(ctx, input.OrganizationID, *input.AmendsArtifactID, input.Payload)
-		if err != nil {
-			return nil, err
+		merged, mergeErr := t.effectiveViewWithPatch(ctx, input.OrganizationID, *input.AmendsArtifactID, input.Payload)
+		if mergeErr != nil {
+			return nil, mergeErr
 		}
-		if err := t.validatePayload(artifactType, version, merged); err != nil {
-			return nil, fmt.Errorf("merged effective payload is invalid: %w", err)
+		if validationErr := t.validatePayload(artifactType, version, merged); validationErr != nil {
+			return nil, fmt.Errorf("merged effective payload is invalid: %w", validationErr)
 		}
 	}
 
-	arc, err := scopeColumns(input.Scope)
-	if err != nil {
-		return nil, err
+	arc, scopeErr := scopeColumns(input.Scope)
+	if scopeErr != nil {
+		return nil, scopeErr
 	}
 
-	payloadDigest, reviewDigest, err := computeDigests(artifactType, version, input.Summary, input.Payload)
+	payloadDigest, err := canonical.DigestJSON(input.Payload)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("payload digest: %w", err)
+	}
+	reviewDigest, err := canonical.Digest(reviewableProjection{
+		ProductID:            optionalID(input.Lineage.ProductID),
+		FeatureID:            optionalID(input.Lineage.FeatureID),
+		EpicID:               optionalID(input.Lineage.EpicID),
+		StoryID:              optionalID(input.Lineage.StoryID),
+		AmendsArtifactID:     optionalID(input.AmendsArtifactID),
+		SupersedesArtifactID: optionalID(input.SupersedesArtifactID),
+		ReplacesArtifactID:   optionalID(input.ReplacesArtifactID),
+
+		ArtifactID:       artifactID.String(),
+		ArtifactType:     string(artifactType),
+		ArtifactCategory: string(category),
+		Summary:          input.Summary,
+		ScopeType:        string(input.Scope.Type),
+		ScopeID:          input.Scope.ID.String(),
+		AuthorInstanceID: input.AuthorInstanceID.String(),
+
+		Payload:       input.Payload,
+		SchemaVersion: version,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("review digest: %w", err)
 	}
 
 	row, err := t.queries.CreateManagementArtifact(ctx, gen.CreateManagementArtifactParams{
-		ArtifactID:       toUUID(uuid.New()),
+		ArtifactID:       toUUID(artifactID),
 		OrganizationID:   toUUID(input.OrganizationID),
 		UserID:           toUUID(input.UserID),
 		ArtifactType:     string(artifactType),
@@ -272,6 +335,10 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 //
 //nolint:gocritic // hugeParam: the seam takes inputs by value so a caller cannot mutate one
 func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArtifactInput) (*store.AuditArtifact, error) {
+	artifactID, err := newArtifactID(input.ArtifactID)
+	if err != nil {
+		return nil, err
+	}
 	registration, err := t.registry.Lookup(input.Type)
 	if err != nil {
 		return nil, fmt.Errorf("audit artifact write: %w", err)
@@ -284,9 +351,9 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 		return nil, validationErr
 	}
 
-	arc, err := scopeColumns(input.Scope)
-	if err != nil {
-		return nil, err
+	arc, scopeErr := scopeColumns(input.Scope)
+	if scopeErr != nil {
+		return nil, scopeErr
 	}
 	payloadDigest, err := canonical.DigestJSON(input.Payload)
 	if err != nil {
@@ -294,7 +361,7 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 	}
 
 	row, err := t.queries.CreateAuditArtifact(ctx, gen.CreateAuditArtifactParams{
-		ArtifactID:       toUUID(uuid.New()),
+		ArtifactID:       toUUID(artifactID),
 		OrganizationID:   toUUID(input.OrganizationID),
 		UserID:           toNullUUID(input.UserID),
 		ArtifactType:     string(input.Type),
@@ -332,17 +399,22 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 //nolint:gocritic // hugeParam: the seam takes inputs by value so a caller cannot mutate one
 func (t *tx) CreateReview(ctx context.Context, input store.CreateReviewInput) (*store.Review, error) {
 	// The digests are stored EXACTLY as observed (design D3a). The seam
-	// checks the shape it was given -- well-formed digest, artifact exists
-	// -- but never recomputes "current" values, because a non-current
-	// digest is a legitimate thing to record and recomputing would bind the
-	// review to content the reviewer never saw.
+	// checks the shape it was given -- well-formed digest, artifact exists,
+	// decision in the vocabulary -- but never recomputes "current" values,
+	// because a non-current digest is a legitimate thing to record and
+	// recomputing would bind the review to content the reviewer never saw.
+	switch input.Decision {
+	case store.DecisionAccepted, store.DecisionRejected, store.DecisionChangesRequested:
+	default:
+		return nil, fmt.Errorf("decision %q is not one of %q, %q or %q", input.Decision,
+			store.DecisionAccepted, store.DecisionRejected, store.DecisionChangesRequested)
+	}
 	if !digestPattern.MatchString(input.ReviewDigest) {
 		return nil, fmt.Errorf("review digest %q is not 64 lowercase hex characters; a review must record "+
 			"what the reviewer saw", input.ReviewDigest)
 	}
 	// The base is recorded as a PAIR or not at all, matching the schema and
-	// what design D6 compares at acceptance. Checked here so a caller reads
-	// which half it omitted rather than a constraint name.
+	// what design D6 compares at acceptance.
 	if (input.BaseDigest == nil) != (input.BaseSequence == nil) {
 		return nil, errors.New("base digest and base sequence must be given together or not at all; " +
 			"a base is a digest AT a sequence, and either alone identifies nothing")
@@ -350,20 +422,41 @@ func (t *tx) CreateReview(ctx context.Context, input store.CreateReviewInput) (*
 	if input.BaseDigest != nil && !digestPattern.MatchString(*input.BaseDigest) {
 		return nil, fmt.Errorf("base digest %q is not 64 lowercase hex characters", *input.BaseDigest)
 	}
-	if _, err := t.queries.GetManagementArtifact(ctx, gen.GetManagementArtifactParams{
-		ArtifactID:     toUUID(input.ArtifactID),
-		OrganizationID: toUUID(input.OrganizationID),
-	}); err != nil {
-		return nil, notFound(err, "artifact under review", input.ArtifactID)
+	baseSequence, err := toNullInt32(input.BaseSequence)
+	if err != nil {
+		return nil, fmt.Errorf("base sequence: %w", err)
 	}
 
+	artifact, err := t.queries.GetManagementArtifact(ctx, gen.GetManagementArtifactParams{
+		ArtifactID:     toUUID(input.ArtifactID),
+		OrganizationID: toUUID(input.OrganizationID),
+	})
+	if err != nil {
+		return nil, notFound(err, "artifact under review", input.ArtifactID)
+	}
+	// A base is meaningful only for an amendment, and an amendment review
+	// without one cannot be accepted at all (design D6 step 3). Checking
+	// applicability here means the mismatch surfaces when the review is
+	// recorded rather than at acceptance, when the reviewer has gone.
+	if artifact.IsAmendment && input.BaseDigest == nil {
+		return nil, errors.New("a review of an amendment must record the base it was reviewed against, " +
+			"or the amendment can never be accepted")
+	}
+	if !artifact.IsAmendment && input.BaseDigest != nil {
+		return nil, errors.New("a review of an original must not record a base; only an amendment has one")
+	}
+
+	reviewID, err := newArtifactID(uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
 	row, err := t.queries.CreateArtifactReview(ctx, gen.CreateArtifactReviewParams{
-		ReviewID:           toUUID(uuid.New()),
+		ReviewID:           toUUID(reviewID),
 		OrganizationID:     toUUID(input.OrganizationID),
 		ArtifactID:         toUUID(input.ArtifactID),
 		ReviewDigest:       input.ReviewDigest,
 		BaseDigest:         input.BaseDigest,
-		BaseSequence:       toNullInt32(input.BaseSequence),
+		BaseSequence:       baseSequence,
 		ReviewerInstanceID: toUUID(input.ReviewerInstanceID),
 		Decision:           string(input.Decision),
 		Rationale:          input.Rationale,
@@ -436,6 +529,12 @@ func (t *tx) effectiveViewWithPatch(ctx context.Context, organizationID, artifac
 	if original.IsAmendment {
 		return nil, fmt.Errorf("artifact %s is an amendment; effective views are assembled for originals", artifactID)
 	}
+	// Design D3's read rule applies here too. Assembling a view from a
+	// payload this build cannot validate would produce content the seam
+	// claims it cannot read, by a path that never consulted the registry.
+	if readErr := t.checkReadable(registry.Type(original.ArtifactType), int(original.SchemaVersion)); readErr != nil {
+		return nil, readErr
+	}
 
 	amendments, err := t.queries.ListAcceptedAmendments(ctx, gen.ListAcceptedAmendmentsParams{
 		AmendsArtifactID: toUUID(artifactID),
@@ -447,6 +546,9 @@ func (t *tx) effectiveViewWithPatch(ctx context.Context, organizationID, artifac
 
 	patches := make([][]byte, 0, len(amendments)+1)
 	for i := range amendments {
+		if readErr := t.checkReadable(registry.Type(amendments[i].ArtifactType), int(amendments[i].SchemaVersion)); readErr != nil {
+			return nil, fmt.Errorf("amendment %s: %w", fromUUID(amendments[i].ArtifactID), readErr)
+		}
 		patches = append(patches, amendments[i].Payload)
 	}
 	if extra != nil {
@@ -460,10 +562,24 @@ func (t *tx) effectiveViewWithPatch(ctx context.Context, organizationID, artifac
 	return view, nil
 }
 
-// AmendmentBase reads the view, its digest and the current sequence
-// together, inside whatever transaction this tx belongs to, so the three
-// cannot disagree.
+// AmendmentBase reads the view, its digest and the current sequence under
+// the ORIGINAL's lock.
+//
+// The transaction alone is not enough. inTx runs at Postgres's default READ
+// COMMITTED, where every statement takes a fresh snapshot -- so an
+// amendment accepted between the view query and the sequence query would
+// return an old digest paired with a new sequence. A reviewer would then
+// record a base that never existed, and acceptance would reject it as
+// moved. Taking the same lock acceptance takes serialises the two against
+// each other, which is what makes this a snapshot rather than two reads.
 func (t *tx) AmendmentBase(ctx context.Context, organizationID, originalID uuid.UUID) (store.AmendmentBase, error) {
+	if _, lockErr := t.queries.LockManagementArtifact(ctx, gen.LockManagementArtifactParams{
+		ArtifactID:     toUUID(originalID),
+		OrganizationID: toUUID(organizationID),
+	}); lockErr != nil {
+		return store.AmendmentBase{}, notFound(lockErr, "amendment target", originalID)
+	}
+
 	view, err := t.EffectiveView(ctx, organizationID, originalID)
 	if err != nil {
 		return store.AmendmentBase{}, err
@@ -491,7 +607,7 @@ func (t *tx) ListManagementArtifactsByScope(ctx context.Context, organizationID 
 	if err != nil {
 		return nil, fmt.Errorf("list management artifacts by scope: %w", err)
 	}
-	return managementList(rows), nil
+	return t.managementList(rows)
 }
 
 func (t *tx) ListManagementArtifactsByStory(ctx context.Context, organizationID, storyID uuid.UUID) ([]store.ManagementArtifact, error) {
@@ -502,17 +618,35 @@ func (t *tx) ListManagementArtifactsByStory(ctx context.Context, organizationID,
 	if err != nil {
 		return nil, fmt.Errorf("list management artifacts by story: %w", err)
 	}
-	return managementList(rows), nil
+	return t.managementList(rows)
 }
 
-// managementList maps a row slice, shared by every Management list query so
-// the mapping exists once rather than per query.
-func managementList(rows []gen.ManagementArtifact) []store.ManagementArtifact {
+// managementList maps a row slice, checking each row's readability.
+//
+// Shared by every Management list query so both the mapping and design D3's
+// read rule exist once. A list that skipped the check would hand back
+// payloads the seam refuses to return one at a time.
+func (t *tx) managementList(rows []gen.ManagementArtifact) ([]store.ManagementArtifact, error) {
 	artifacts := make([]store.ManagementArtifact, 0, len(rows))
 	for i := range rows {
+		if err := t.checkReadable(registry.Type(rows[i].ArtifactType), int(rows[i].SchemaVersion)); err != nil {
+			return nil, fmt.Errorf("artifact %s: %w", fromUUID(rows[i].ArtifactID), err)
+		}
 		artifacts = append(artifacts, managementFromRow(&rows[i]))
 	}
-	return artifacts
+	return artifacts, nil
+}
+
+// auditList is the Audit equivalent, with the same read rule.
+func (t *tx) auditList(rows []gen.AuditArtifact) ([]store.AuditArtifact, error) {
+	artifacts := make([]store.AuditArtifact, 0, len(rows))
+	for i := range rows {
+		if err := t.checkReadable(registry.Type(rows[i].ArtifactType), int(rows[i].SchemaVersion)); err != nil {
+			return nil, fmt.Errorf("artifact %s: %w", fromUUID(rows[i].ArtifactID), err)
+		}
+		artifacts = append(artifacts, auditFromRow(&rows[i]))
+	}
+	return artifacts, nil
 }
 
 func (t *tx) ListAuditArtifactsByScope(ctx context.Context, organizationID uuid.UUID, scope store.Scope) ([]store.AuditArtifact, error) {
@@ -524,11 +658,7 @@ func (t *tx) ListAuditArtifactsByScope(ctx context.Context, organizationID uuid.
 	if err != nil {
 		return nil, fmt.Errorf("list audit artifacts by scope: %w", err)
 	}
-	artifacts := make([]store.AuditArtifact, 0, len(rows))
-	for i := range rows {
-		artifacts = append(artifacts, auditFromRow(&rows[i]))
-	}
-	return artifacts, nil
+	return t.auditList(rows)
 }
 
 func (t *tx) ListReviews(ctx context.Context, organizationID, artifactID uuid.UUID) ([]store.Review, error) {

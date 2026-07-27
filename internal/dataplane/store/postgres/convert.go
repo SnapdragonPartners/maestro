@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,18 +81,22 @@ func fromNullTimestamptz(at pgtype.Timestamptz) *time.Time {
 	return &value
 }
 
-// toNullInt32 narrows an optional int for a nullable int column.
+// toNullInt32 narrows an optional int for a nullable int4 column, failing
+// rather than wrapping.
 //
-// The narrowing is real: amendment sequences and base sequences are int4 in
-// the schema. Values that large are not reachable in practice, so this
-// converts rather than erroring, and the domain type stays int so callers
-// are not writing int32 everywhere.
-func toNullInt32(value *int) *int32 {
+// An unchecked int32() conversion is silent and dangerous here: on a 64-bit
+// build 4294967297 narrows to 1, and a base sequence of 1 is a REAL
+// sequence. A caller passing a nonsense value would not get an error — it
+// would get a review bound to a base the reviewer never named.
+func toNullInt32(value *int) (*int32, error) {
 	if value == nil {
-		return nil
+		return nil, nil //nolint:nilnil // absent is not an error here
 	}
-	narrowed := int32(*value) //nolint:gosec // int4 column; sequences are small by construction
-	return &narrowed
+	if *value < 0 || *value > math.MaxInt32 {
+		return nil, fmt.Errorf("value %d is outside the nonnegative int32 range this column stores", *value)
+	}
+	narrowed := int32(*value)
+	return &narrowed, nil
 }
 
 // fromNullInt32 widens a nullable int column into the domain type.

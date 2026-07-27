@@ -172,6 +172,55 @@ func scopeColumns(scope store.Scope) (scopeArc, error) {
 	}
 }
 
+// newArtifactID allocates a UUIDv7, or returns a caller's preallocated one.
+//
+// v7 rather than v4 because the schema design requires it: v7 is
+// time-ordered, so primary keys cluster by creation time instead of
+// scattering across the index. uuid.New() is v4 and was wrong here.
+//
+// Callers may preallocate because item 6's cross-store commit order writes
+// the object FIRST, under a key derived from the artifact id, and only then
+// the row. That is impossible if the id does not exist until the INSERT.
+func newArtifactID(preallocated uuid.UUID) (uuid.UUID, error) {
+	if preallocated != uuid.Nil {
+		if preallocated.Version() != 7 {
+			return uuid.Nil, fmt.Errorf("preallocated id %s is UUID version %d, want 7",
+				preallocated, preallocated.Version())
+		}
+		return preallocated, nil
+	}
+	generated, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("allocate UUIDv7: %w", err)
+	}
+	return generated, nil
+}
+
+// requirePrincipalKind checks that a principal is one of the kinds a role
+// admits, and that it belongs to this organization.
+//
+// The foreign key proves only that the principal EXISTS. ADR 0021 requires
+// both the author and the reviewer of a Management artifact to be an agent
+// or a human, and without this a system principal could author one that an
+// agent then accepts — acceptance validates the reviewer's kind but had
+// nothing to say about the author's.
+func (t *tx) requirePrincipalKind(ctx context.Context, organizationID, instanceID uuid.UUID, role string, allowed ...store.PrincipalKind) error {
+	instance, err := t.queries.GetPrincipalInstance(ctx, gen.GetPrincipalInstanceParams{
+		PrincipalInstanceID: toUUID(instanceID),
+		OrganizationID:      toUUID(organizationID),
+	})
+	if err != nil {
+		return notFound(err, role+" principal", instanceID)
+	}
+	for _, kind := range allowed {
+		if store.PrincipalKind(instance.Kind) == kind {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s principal %s is of kind %q, which this artifact family does not admit",
+		role, instanceID, instance.Kind)
+}
+
 // validatePayload runs the registered validator for one version of one
 // type, plus the universal encoding rule.
 //

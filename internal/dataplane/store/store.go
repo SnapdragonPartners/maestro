@@ -54,10 +54,14 @@ const (
 // Decision is a review's verdict.
 type Decision string
 
-// The review decisions.
+// The review decisions. This is the schema's full vocabulary: omitting
+// changes_requested from the Go side would leave a decision the database
+// accepts and no caller can name, and one a reader would decode into a
+// Decision that matches neither constant.
 const (
-	DecisionAccepted Decision = "accepted"
-	DecisionRejected Decision = "rejected"
+	DecisionAccepted         Decision = "accepted"
+	DecisionRejected         Decision = "rejected"
+	DecisionChangesRequested Decision = "changes_requested"
 )
 
 // PrincipalKind distinguishes who acts (ADR 0021).
@@ -278,6 +282,13 @@ type CreateManagementArtifactInput struct {
 	Payload json.RawMessage
 	Scope   Scope
 
+	// ArtifactID may be preallocated, and must be a UUIDv7 when it is.
+	// Item 6's cross-store commit order writes the object first, under a
+	// key derived from this id, then the row — which is impossible if the
+	// id does not exist until the INSERT. Leave it zero to have the seam
+	// allocate one.
+	ArtifactID uuid.UUID
+
 	OrganizationID   uuid.UUID
 	UserID           uuid.UUID
 	AuthorInstanceID uuid.UUID
@@ -296,6 +307,9 @@ type CreateAuditArtifactInput struct {
 
 	Payload json.RawMessage
 	Scope   Scope
+
+	// ArtifactID may be preallocated; see CreateManagementArtifactInput.
+	ArtifactID uuid.UUID
 
 	OrganizationID   uuid.UUID
 	AuthorInstanceID uuid.UUID
@@ -384,7 +398,8 @@ type Reader interface {
 	EffectiveView(ctx context.Context, organizationID, artifactID uuid.UUID) (json.RawMessage, error)
 
 	// AmendmentBase returns the base a reviewer records when reviewing an
-	// amendment of this original, read at one instant.
+	// amendment of this original, read at one instant under the original's
+	// lock.
 	AmendmentBase(ctx context.Context, organizationID, originalID uuid.UUID) (AmendmentBase, error)
 
 	ListManagementArtifactsByScope(ctx context.Context, organizationID uuid.UUID, scope Scope) ([]ManagementArtifact, error)

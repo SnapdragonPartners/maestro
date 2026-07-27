@@ -18,7 +18,8 @@ SET status               = 'accepted',
     accepted_at          = now(),
     amendment_sequence   = $1
 FROM artifact_reviews r
-JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id
+JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id,
+     principal_instances author
 WHERE a.artifact_id        = $2
   AND a.organization_id    = $3
   AND a.status             = 'draft'
@@ -32,6 +33,9 @@ WHERE a.artifact_id        = $2
   AND p.organization_id    = a.organization_id
   AND p.principal_instance_id <> a.author_instance_id
   AND p.kind IN ('agent', 'human')
+  AND author.principal_instance_id = a.author_instance_id
+  AND author.organization_id       = a.organization_id
+  AND author.kind IN ('agent', 'human')
 `
 
 type AcceptManagementAmendmentParams struct {
@@ -71,7 +75,8 @@ SET status               = 'accepted',
     reviewer_instance_id = r.reviewer_instance_id,
     accepted_at          = now()
 FROM artifact_reviews r
-JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id
+JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id,
+     principal_instances author
 WHERE a.artifact_id     = $1
   AND a.organization_id = $2
   AND a.status          = 'draft'
@@ -84,6 +89,9 @@ WHERE a.artifact_id     = $1
   AND p.organization_id = a.organization_id
   AND p.principal_instance_id <> a.author_instance_id
   AND p.kind IN ('agent', 'human')
+  AND author.principal_instance_id = a.author_instance_id
+  AND author.organization_id       = a.organization_id
+  AND author.kind IN ('agent', 'human')
 `
 
 type AcceptManagementArtifactParams struct {
@@ -99,6 +107,13 @@ type AcceptManagementArtifactParams struct {
 // this artifact and organization, its decision is 'accepted', its digest
 // still matches the row's current review_digest, and the reviewer is a
 // non-author principal of kind agent or human in the same organization.
+//
+// The AUTHOR's kind is checked too, not only the reviewer's. ADR 0021
+// requires both to be an agent or a human, and the foreign key proves only
+// that the author exists -- so without this a system principal could author
+// reviewable work product and an agent accept it. The seam refuses that at
+// creation; this is the backstop, and zero rows here is an invariant
+// failure rather than a user-facing outcome.
 //
 // reviewer_instance_id is taken FROM the joined review rather than passed
 // in. A caller-supplied reviewer could disagree with the review actually
