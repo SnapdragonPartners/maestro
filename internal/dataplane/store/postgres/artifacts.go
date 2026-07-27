@@ -161,6 +161,40 @@ type reviewableProjection struct {
 	SchemaVersion int `json:"schema_version"`
 }
 
+// buildReviewableProjection assembles the envelope a review binds to.
+//
+// Extracted so the projection can be tested on its own, with the artifact
+// id HELD FIXED. Testing it through creation cannot work: every created
+// artifact gets a fresh id, the id is part of the projection, so every
+// digest differs whatever else the projection contains — a comparison that
+// passes even with the payload, scope, lineage, author and links removed.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func buildReviewableProjection(artifactID uuid.UUID, artifactType registry.Type, category registry.Category,
+	version int, input store.CreateManagementArtifactInput,
+) reviewableProjection {
+	return reviewableProjection{
+		ProductID:            optionalID(input.Lineage.ProductID),
+		FeatureID:            optionalID(input.Lineage.FeatureID),
+		EpicID:               optionalID(input.Lineage.EpicID),
+		StoryID:              optionalID(input.Lineage.StoryID),
+		AmendsArtifactID:     optionalID(input.AmendsArtifactID),
+		SupersedesArtifactID: optionalID(input.SupersedesArtifactID),
+		ReplacesArtifactID:   optionalID(input.ReplacesArtifactID),
+
+		ArtifactID:       artifactID.String(),
+		ArtifactType:     string(artifactType),
+		ArtifactCategory: string(category),
+		Summary:          input.Summary,
+		ScopeType:        string(input.Scope.Type),
+		ScopeID:          input.Scope.ID.String(),
+		AuthorInstanceID: input.AuthorInstanceID.String(),
+
+		Payload:       input.Payload,
+		SchemaVersion: version,
+	}
+}
+
 // optionalID renders an optional identifier for the projection.
 func optionalID(id *uuid.UUID) *string {
 	if id == nil {
@@ -264,30 +298,16 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 		return nil, scopeErr
 	}
 
+	storedVersion, err := toInt32(version, "schema version")
+	if err != nil {
+		return nil, err
+	}
 	payloadDigest, err := canonical.DigestJSON(input.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("payload digest: %w", err)
 	}
-	reviewDigest, err := canonical.Digest(reviewableProjection{
-		ProductID:            optionalID(input.Lineage.ProductID),
-		FeatureID:            optionalID(input.Lineage.FeatureID),
-		EpicID:               optionalID(input.Lineage.EpicID),
-		StoryID:              optionalID(input.Lineage.StoryID),
-		AmendsArtifactID:     optionalID(input.AmendsArtifactID),
-		SupersedesArtifactID: optionalID(input.SupersedesArtifactID),
-		ReplacesArtifactID:   optionalID(input.ReplacesArtifactID),
-
-		ArtifactID:       artifactID.String(),
-		ArtifactType:     string(artifactType),
-		ArtifactCategory: string(category),
-		Summary:          input.Summary,
-		ScopeType:        string(input.Scope.Type),
-		ScopeID:          input.Scope.ID.String(),
-		AuthorInstanceID: input.AuthorInstanceID.String(),
-
-		Payload:       input.Payload,
-		SchemaVersion: version,
-	})
+	reviewDigest, err := canonical.Digest(
+		buildReviewableProjection(artifactID, artifactType, category, version, input))
 	if err != nil {
 		return nil, fmt.Errorf("review digest: %w", err)
 	}
@@ -318,7 +338,7 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 		SupersedesArtifactID: toNullUUID(input.SupersedesArtifactID),
 		ReplacesArtifactID:   toNullUUID(input.ReplacesArtifactID),
 
-		SchemaVersion: int32(version), //nolint:gosec // schema versions are small
+		SchemaVersion: storedVersion,
 		Summary:       input.Summary,
 		Payload:       input.Payload,
 		PayloadDigest: payloadDigest,
@@ -355,6 +375,10 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 	if scopeErr != nil {
 		return nil, scopeErr
 	}
+	storedVersion, err := toInt32(registration.CurrentVersion, "schema version")
+	if err != nil {
+		return nil, err
+	}
 	payloadDigest, err := canonical.DigestJSON(input.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("payload digest: %w", err)
@@ -382,7 +406,7 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 		AuthorInstanceID:     toUUID(input.AuthorInstanceID),
 		ProducedByToolCallID: toNullUUID(input.ProducedByToolCallID),
 
-		SchemaVersion: int32(registration.CurrentVersion), //nolint:gosec // schema versions are small
+		SchemaVersion: storedVersion,
 		Summary:       input.Summary,
 		Payload:       input.Payload,
 		PayloadDigest: payloadDigest,
@@ -780,11 +804,22 @@ func (t *tx) AcceptAmendment(ctx context.Context, organizationID, amendmentID, r
 
 	// 1. Lock the ORIGINAL. ADR 0028 serializes amendment acceptance per
 	// original, so bases move one at a time.
-	if _, lockErr := t.queries.LockManagementArtifact(ctx, gen.LockManagementArtifactParams{
+	original, lockErr := t.queries.LockManagementArtifact(ctx, gen.LockManagementArtifactParams{
 		ArtifactID:     toUUID(originalID),
 		OrganizationID: toUUID(organizationID),
-	}); lockErr != nil {
+	})
+	if lockErr != nil {
 		return notFound(lockErr, "amendment target", originalID)
+	}
+	// The target was accepted when the amendment was WRITTEN, but review
+	// takes time and status moves. Archiving or superseding an original
+	// between the two would otherwise let it still receive an accepted
+	// amendment -- new accepted content attached to something retired, and
+	// folded into an effective view nobody expects to change. Rechecked
+	// here under the lock, and repeated in the SQL backstop.
+	if store.Status(original.Status) != store.StatusAccepted {
+		return rejected(transitionAcceptAmendment, amendmentID, store.ReasonWrongStatus,
+			fmt.Sprintf("the amended original %s is %q, not %q", originalID, original.Status, store.StatusAccepted))
 	}
 
 	amendment, review, err := t.lockAndLoadReview(ctx, organizationID, amendmentID, reviewID)

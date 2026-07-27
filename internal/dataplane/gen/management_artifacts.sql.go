@@ -19,12 +19,16 @@ SET status               = 'accepted',
     amendment_sequence   = $1
 FROM artifact_reviews r
 JOIN principal_instances p ON p.principal_instance_id = r.reviewer_instance_id,
-     principal_instances author
+     principal_instances author,
+     management_artifacts original
 WHERE a.artifact_id        = $2
   AND a.organization_id    = $3
   AND a.status             = 'draft'
   AND a.is_amendment       = true
   AND a.amends_artifact_id = $4
+  AND original.artifact_id     = a.amends_artifact_id
+  AND original.organization_id = a.organization_id
+  AND original.status          = 'accepted' 
   AND r.review_id          = $5
   AND r.artifact_id        = a.artifact_id
   AND r.organization_id    = a.organization_id
@@ -54,6 +58,11 @@ type AcceptManagementAmendmentParams struct {
 // checks the seam performs under the original's lock (design D6), which
 // cannot be expressed here because they compare against an assembled
 // effective view rather than against stored columns.
+//
+// The ORIGINAL's status is checked here as well. It was accepted when the
+// amendment was written, but review takes time: archiving or superseding it
+// in between would otherwise let it still receive an accepted amendment,
+// attaching new accepted content to something retired.
 func (q *Queries) AcceptManagementAmendment(ctx context.Context, arg AcceptManagementAmendmentParams) (int64, error) {
 	result, err := q.db.Exec(ctx, acceptManagementAmendment,
 		arg.AmendmentSequence,

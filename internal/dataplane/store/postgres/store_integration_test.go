@@ -354,36 +354,6 @@ func TestCreateDerivesCategoryVersionAndDigests(t *testing.T) {
 	}
 }
 
-// TestReviewDigestCoversTheSummary is the consequence that makes the review
-// digest worth having: a reviewer reads the summary, so changing it must
-// invalidate the review.
-func TestReviewDigestCoversTheSummary(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	first := f.createDraft(t, `{"title":"one"}`)
-	second, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
-		Payload:          json.RawMessage(`{"title":"one"}`),
-		Type:             testType,
-		Summary:          "a DIFFERENT summary",
-		Scope:            f.scope(),
-		OrganizationID:   f.organizationID,
-		UserID:           f.userID,
-		AuthorInstanceID: f.author,
-	})
-	if err != nil {
-		t.Fatalf("create second: %v", err)
-	}
-
-	if first.PayloadDigest != second.PayloadDigest {
-		t.Fatal("identical payloads produced different payload digests")
-	}
-	if first.ReviewDigest == second.ReviewDigest {
-		t.Fatal("changing the summary did not move the review digest, so a review would survive an edit " +
-			"to content the reviewer read")
-	}
-}
-
 func TestCreateRejectsUnregisteredType(t *testing.T) {
 	f := newFixture(t)
 	_, err := f.store.CreateManagementArtifact(context.Background(), store.CreateManagementArtifactInput{

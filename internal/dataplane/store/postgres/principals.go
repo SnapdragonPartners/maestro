@@ -97,8 +97,11 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 		return nil, err
 	}
 
-	instanceID := uuid.New()
-	row, err := t.queries.CreatePrincipalInstance(ctx, gen.CreatePrincipalInstanceParams{
+	instanceID, err := newArtifactID(uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+	row, createErr := t.queries.CreatePrincipalInstance(ctx, gen.CreatePrincipalInstanceParams{
 		PrincipalInstanceID: toUUID(instanceID),
 		OrganizationID:      toUUID(input.OrganizationID),
 		Kind:                string(input.Kind),
@@ -115,8 +118,8 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 		StoryID:             toNullUUID(input.Lineage.StoryID),
 		StartTime:           toNullTimestamptz(nil),
 	})
-	if err != nil {
-		return nil, fmt.Errorf("create principal instance: %w", err)
+	if createErr != nil {
+		return nil, fmt.Errorf("create principal instance: %w", createErr)
 	}
 
 	for i := range input.Seeds {

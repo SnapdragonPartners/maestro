@@ -99,6 +99,20 @@ func toNullInt32(value *int) (*int32, error) {
 	return &narrowed, nil
 }
 
+// toInt32 narrows a non-nullable int for an int4 column, failing rather
+// than wrapping.
+//
+// Schema versions reach this from the registry, which is configuration: an
+// unchecked int32() turns 4294967297 into 1, so an artifact would validate
+// under one schema version and record another. The narrowing is silent, and
+// the resulting row looks entirely ordinary.
+func toInt32(value int, what string) (int32, error) {
+	if value < 0 || value > math.MaxInt32 {
+		return 0, fmt.Errorf("%s %d is outside the nonnegative int32 range this column stores", what, value)
+	}
+	return int32(value), nil
+}
+
 // fromNullInt32 widens a nullable int column into the domain type.
 func fromNullInt32(value *int32) *int {
 	if value == nil {

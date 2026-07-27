@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 )
@@ -112,18 +113,21 @@ func New(entries map[Type]Entry) (*Registry, error) {
 			return nil, fmt.Errorf("registry: type %q has category %q, want %q or %q",
 				artifactType, entry.Category, CategoryManagement, CategoryAudit)
 		}
-		if entry.CurrentVersion < 1 {
-			return nil, fmt.Errorf("registry: type %q has current version %d, want 1 or greater",
-				artifactType, entry.CurrentVersion)
+		// Bounded above as well as below: schema versions are stored in an
+		// int4 column, and a registration beyond that range would narrow
+		// silently at the write rather than failing here.
+		if entry.CurrentVersion < 1 || entry.CurrentVersion > math.MaxInt32 {
+			return nil, fmt.Errorf("registry: type %q has current version %d, want 1..%d",
+				artifactType, entry.CurrentVersion, math.MaxInt32)
 		}
 		if len(entry.Validators) == 0 {
 			return nil, fmt.Errorf("registry: type %q has no validators, so nothing of that type could be read",
 				artifactType)
 		}
 		for version, validator := range entry.Validators {
-			if version < 1 {
-				return nil, fmt.Errorf("registry: type %q has a validator for version %d, want 1 or greater",
-					artifactType, version)
+			if version < 1 || version > math.MaxInt32 {
+				return nil, fmt.Errorf("registry: type %q has a validator for version %d, want 1..%d",
+					artifactType, version, math.MaxInt32)
 			}
 			if validator == nil {
 				return nil, fmt.Errorf("registry: type %q has a nil validator for version %d",

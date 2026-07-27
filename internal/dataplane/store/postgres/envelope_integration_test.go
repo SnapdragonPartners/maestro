@@ -19,75 +19,13 @@ import (
 
 // --- the reviewable envelope (ADR 0028 §5) ---------------------------------
 
-// TestReviewDigestCoversTheWholeEnvelope walks every field the review digest
-// must bind. Each case changes ONE field and requires the digest to move.
-//
-// A projection covering only type, summary, payload and version passes a
-// test that checks the payload and nothing else, while leaving the scope,
-// the lineage, the author and every relationship link outside the binding —
-// so an artifact could be re-pointed at a different Story, or have its
-// supersession target changed, and its review would still match.
-func TestReviewDigestCoversTheWholeEnvelope(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	// A second author and a second accepted artifact to point links at.
-	otherAuthor := f.newPrincipal(t, store.PrincipalAgent, "other-author")
-	linkTarget := acceptedOriginal(t, f, `{"title":"target"}`)
-
-	baseline := func() store.CreateManagementArtifactInput {
-		return store.CreateManagementArtifactInput{
-			Payload:          json.RawMessage(`{"title":"one"}`),
-			Type:             testType,
-			Summary:          "a summary",
-			Scope:            f.scope(),
-			OrganizationID:   f.organizationID,
-			UserID:           f.userID,
-			AuthorInstanceID: f.author,
-		}
-	}
-
-	cases := []struct {
-		name   string
-		change func(input *store.CreateManagementArtifactInput)
-	}{
-		{"payload", func(i *store.CreateManagementArtifactInput) {
-			i.Payload = json.RawMessage(`{"title":"two"}`)
-		}},
-		{"summary", func(i *store.CreateManagementArtifactInput) {
-			i.Summary = "a different summary"
-		}},
-		{"author", func(i *store.CreateManagementArtifactInput) {
-			i.AuthorInstanceID = otherAuthor
-		}},
-		{"supersedes link", func(i *store.CreateManagementArtifactInput) {
-			i.SupersedesArtifactID = &linkTarget.ArtifactID
-		}},
-		{"replaces link", func(i *store.CreateManagementArtifactInput) {
-			i.ReplacesArtifactID = &linkTarget.ArtifactID
-		}},
-	}
-
-	reference, err := f.store.CreateManagementArtifact(ctx, baseline())
-	if err != nil {
-		t.Fatalf("create reference: %v", err)
-	}
-
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			input := baseline()
-			testCase.change(&input)
-			changed, err := f.store.CreateManagementArtifact(ctx, input)
-			if err != nil {
-				t.Fatalf("create: %v", err)
-			}
-			if changed.ReviewDigest == reference.ReviewDigest {
-				t.Fatalf("changing the %s did not move the review digest, so a review would survive an "+
-					"edit to content the reviewer's judgement depended on", testCase.name)
-			}
-		})
-	}
-}
+// The review digest's field-by-field binding is tested in
+// projection_test.go, against the projection itself with the artifact id
+// held FIXED. It cannot be tested through creation: every created artifact
+// gets a fresh id, the id is part of the projection, so every digest
+// differs whatever else the projection contains -- a comparison that passes
+// even with the payload, scope, lineage, author and links all removed. The
+// test that used to live here was exactly that false positive.
 
 // TestReviewDigestBindsTheArtifactIdentity is the case that forces the id to
 // be allocated before the digest rather than by the INSERT. Two artifacts
@@ -527,5 +465,79 @@ func TestAuthorKindBackstopFiresInSQL(t *testing.T) {
 	}
 	if reloaded.Status != store.StatusDraft {
 		t.Fatalf("status = %q, want draft; the refused acceptance still wrote", reloaded.Status)
+	}
+}
+
+// TestPrincipalIdentifiersAreUUIDv7 completes the identifier rule. The
+// earlier test covered artifacts and reviews and left principals on
+// uuid.New(), which is v4 -- so the one table whose rows are written most
+// often kept the scattering keys the rule exists to avoid.
+func TestPrincipalIdentifiersAreUUIDv7(t *testing.T) {
+	f := newFixture(t)
+
+	instance, err := f.store.CreatePrincipalInstance(context.Background(), f.agentInput())
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if got := instance.PrincipalInstanceID.Version(); got != 7 {
+		t.Fatalf("principal instance id is UUID version %d, want 7", got)
+	}
+	// The fixture's own principals go through the same path.
+	for name, id := range map[string]uuid.UUID{"author": f.author, "reviewer": f.reviewer, "system": f.systemAgent} {
+		if got := id.Version(); got != 7 {
+			t.Errorf("%s principal id is UUID version %d, want 7", name, got)
+		}
+	}
+}
+
+// TestAmendmentTargetStatusIsRecheckedAtAcceptance covers the window
+// between writing an amendment and accepting it.
+//
+// Creation requires an accepted original, but review takes time and status
+// moves. Without a recheck, archiving the original in between still lets
+// the amendment be accepted -- attaching new accepted content to something
+// retired, and folding it into an effective view nobody expects to change.
+func TestAmendmentTargetStatusIsRecheckedAtAcceptance(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	original := acceptedOriginal(t, f, `{"title":"one"}`)
+	base := f.base(t, original.ArtifactID)
+	amendment := f.createAmendment(t, original.ArtifactID, `{"title":"two"}`)
+	rev := f.review(t, amendment.ArtifactID, amendment.ReviewDigest, store.DecisionAccepted, f.reviewer, &base)
+
+	// The original is retired after the amendment was written and reviewed.
+	if err := f.store.ArchiveArtifact(ctx, f.organizationID, original.ArtifactID); err != nil {
+		t.Fatalf("archive original: %v", err)
+	}
+
+	err := f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, rev.ReviewID)
+	var rejection *store.TransitionRejected
+	if !errors.As(err, &rejection) || rejection.Reason != store.ReasonWrongStatus {
+		t.Fatalf("error = %v, want ReasonWrongStatus naming the retired original", err)
+	}
+
+	reloaded, err := f.store.GetManagementArtifact(ctx, f.organizationID, amendment.ArtifactID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Status != store.StatusDraft {
+		t.Fatalf("amendment status = %q, want draft", reloaded.Status)
+	}
+}
+
+// TestRegistryVersionsAreBoundedToInt32 closes the other silent-narrowing
+// path. A configured version of 4294967297 stored as 1 would validate under
+// one schema version and record another.
+func TestRegistryVersionsAreBoundedToInt32(t *testing.T) {
+	_, err := registry.New(map[registry.Type]registry.Entry{
+		"oversized": {
+			Category:       registry.CategoryManagement,
+			CurrentVersion: math.MaxInt32 + 1,
+			Validators:     map[int]registry.Validator{math.MaxInt32 + 1: requireTitle()},
+		},
+	})
+	if err == nil {
+		t.Fatal("a schema version beyond int32 was registered; it would narrow silently at the write")
 	}
 }
