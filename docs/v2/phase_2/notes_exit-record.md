@@ -17,7 +17,7 @@ The binding exit criteria live in the [Phase 2 plan](plan_scope.md). This record
 | Item | Branch | State | What it delivered |
 | --- | --- | --- | --- |
 | 0 | `scope-and-plan` | Merged `83a8522` (#283) | Phase scope, 11-item sequence, four delegated decisions. Plus the build-process policy/mechanics split between `process_build.md` and `CLAUDE.md`. |
-| 1 | `adr-artifact-envelopes` | Merged `01e7b82` (#284) | [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) Accepted: envelope/payload split, JCS digests, code-resident type registry, additive-only evolution, RFC 7386 amendments, review bound to the reviewable projection. |
+| 1 | `adr-artifact-envelopes` | Merged `01e7b82` (#284) | [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) Accepted: envelope/payload split, JCS digests, code-resident type registry, additive-only evolution, RFC 7396 amendments, review bound to the reviewable projection. |
 | 2 | `local-stack` | Merged `dcf4dd0` (#288) | Four-root path resolver, root-of-trust key, bootstrap pointer, per-service data directories, Compose stack (Postgres + MinIO), HKDF credentials, `dataplane-up/down/reset`, Linux CI job. |
 | 3 | `schema-core` | Merged (#289) | 10 migrations / 19 tables applied from empty, embedded migration runner, sqlc config with drift check, [table inventory](inventory_schema-tables.md). |
 | 4 | `queries-artifacts` | Merged `55ab7af` (#293) | The persistence seam and its Postgres module, JCS digests, RFC 7396 effective views, the code-resident type registry, and the artifact/review/principal query families. Design [`design_queries_artifacts.md`](design_queries_artifacts.md) live. |
@@ -58,19 +58,33 @@ Run 2026-07-27, before item 5, on the item 5 branch so `main` was untouched. The
 
 **Method.** Two sentinels seeded and recorded by digest — a Postgres row (`durability_probe`, digest over `id||payload`) and a MinIO object (`s3://durability-probe/<sentinel>`), each with a unique timestamped id. Verified by digest after each phase, so a silently truncated or re-initialised store fails rather than looking empty-but-fine.
 
+**Sentinel identity**, recorded so the evidence outlives the scratchpad:
+
+| | |
+| --- | --- |
+| Sentinel id | `durability-20260727T161211Z-cf0eef8a9e36` |
+| Postgres digest | `37e8acb622b37f70542efd4a700d0e59f49fc76cd9e1c5be5f7b1fedb5d37056` (SHA-256 over `id \|\| payload`) |
+| Object digest | `66ba5ff464bb00463e89e125256ebca63b778e74ecc3d3aa5eba14b4ddc265c8` (SHA-256 over the object body via S3) |
+
 | Phase | Command | Container ids | Postgres | Object |
 | --- | --- | --- | --- | --- |
-| Baseline | seed | `c0b0abfd…` / `04be6e85…` | recorded | recorded |
-| Container recreate | `make dataplane-down` then `make dataplane-up` | **changed** → `2895737f…` / `994faec7…` | intact | intact |
-| Daemon restart | quit and relaunch Docker Desktop | unchanged (restart policy restarts, does not recreate) | intact | intact |
+| Baseline | seed | pg `c0b0abfde17abede43a0ae502e21645af02b6f5de7e47d54aea135058ada912b`, minio `04be6e85c38dc072d98b4e9151373e5c18507c1d5dd64e4ff680f72b6358ec90` | recorded | recorded |
+| Container recreate | `make dataplane-down` then `make dataplane-up` | **changed** → pg `2895737f9d8d33e7374df9bc3a916d4e0b77596c5c74e3daf4e935fdf433e0b2`, minio `994faec7e083af2a7717a4d5c6113aeb11cf175178511f1481b1b609af586486` | digest matched | digest matched |
+| Daemon restart | quit and relaunch Docker Desktop | unchanged — the restart policy restarts existing containers rather than recreating them | digest matched | digest matched |
 
 `reset` was never used; it is the destructive path and would have proven the opposite of the point.
 
 After the daemon restart the schema was still at migration version 10, not dirty, with the full table set — so the plane came back usable, not merely present.
 
-**The daemon restart did not go to plan, and the record should say so.** Docker Desktop's process stayed alive but its daemon never answered; DR quit it manually and upgraded Docker, and it returned on **server 29.6.2**. The restart therefore spanned a version upgrade rather than being the clean single-variable restart intended. That is a *stronger* test — the VM was rebuilt under a new daemon — but it is not the test that was designed, and the pre-upgrade daemon version was never captured, so the exact delta is unrecoverable. Recorded as it happened.
+**The daemon restart did not go to plan, and the record should say so.** Docker Desktop's process stayed alive but its daemon never answered; DR quit it manually and upgraded Docker, and it returned on **server 29.6.2**. The restart therefore spanned a version upgrade rather than being the clean single-variable restart intended.
 
-**One thing worth knowing for item 6.** MinIO **inlines small objects into `xl.meta`** rather than writing a bare data part, so a host-side digest of the on-disk file does not equal the object-body digest. Byte-identity has to be checked through the S3 API. Any future backup or restore verification that digests MinIO's files directly will compare the wrong bytes and either fail confusingly or pass vacuously.
+That makes it **broader but less controlled**, not stronger. More changed than was meant to, which is not the same as more having been proven: the pre-upgrade daemon version was never captured, so the delta is unrecoverable, and no claim is made here about what the upgrade did to the underlying VM — that was not observed. What the evidence supports is exactly what the table says: the sentinels' digests matched after the containers were replaced, and again after the daemon went away and came back on a different version.
+
+**One thing worth knowing for items 6 and 8.** With the **pinned image** (`minio/minio@sha256:14cea493…`, `RELEASE.2025-09-07T16-13-09Z`), a small object is stored inlined in `xl.meta` rather than as a bare data part — observed while attempting a host-side check with the daemon down. The layout is MinIO's internal business and may differ by version, object size or erasure configuration, so the durable rule is not "objects live in `xl.meta`" but:
+
+**Verify object content through the S3 API, over the object bytes. Never digest MinIO's on-disk files.**
+
+A backup or restore check that digests them directly compares the wrong bytes, and will either fail confusingly or pass vacuously depending on what it compares against.
 
 Probe artifacts were removed afterwards: the table dropped and the bucket deleted, leaving the canonical schema at exactly the migrated set and no buckets.
 

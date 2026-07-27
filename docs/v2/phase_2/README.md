@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Artifacts"
-edit_date = "2026-07-26"
+edit_date = "2026-07-27"
 status = "live"
 summary = "Index of Phase 2 working artifacts: the scope/plan for the data plane and artifact core; later the vertical-slice report."
 +++
@@ -16,5 +16,6 @@ Working artifacts of Phase 2 (data plane and artifact core), produced under the 
 - [Schema Table Inventory: ADR And Consumer](inventory_schema-tables.md) — Every table created by Phase 2 item 3, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead.
 - [Phase 2 Exit Record (In Progress)](notes_exit-record.md) — Running record of Phase 2: what each item delivered, exit-criteria status, decisions and what they cost, and the verification post-mortem behind CLAUDE.md's Verification Discipline. Accumulates as the phase runs; flips live at phase close.
 - [Design: Artifact And Principal Queries (Item 4)](design_queries_artifacts.md) — Mini-plan for Phase 2 item 4: the persistence interface and its local module — registry and safe-integer validation at the seam, JCS digest construction, version-bounded reads, transitions classified under a row lock with their preconditions also in the UPDATE, amendment acceptance serialized per original, effective views assembled in Go against the RFC's own vectors, and MPH capture and query.
+- [Phase 2 Item 5 Design: Calls, Metrics And Audit Events](design_calls_family.md) — Mini-plan for the call family's typed queries: the invariants each write must hold, the cases the seam must reject, retention-safe Audit truncation, and where transaction boundaries fall.
 
 Expected to land here as the phase executes: the migration and schema conventions record (item 3) and the vertical-slice report (item 9). The artifact-envelopes ADR (item 1) lands in `docs/adr/` as an Accepted decision, not here.
