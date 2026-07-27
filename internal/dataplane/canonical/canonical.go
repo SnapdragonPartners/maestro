@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
+	"strings"
 
 	"github.com/gowebpki/jcs"
 )
@@ -34,6 +36,19 @@ import (
 // integer. ADR 0028 states it as "no JSON number outside ±(2^53-1)", and a
 // rule that admitted 1e30 because of its notation would not be that rule.
 const SafeIntegerMax = 1<<53 - 1
+
+// maxNumberLiteralLength caps how much text one JSON number may occupy.
+// It bounds the cost of the exact-decimal comparison, which is otherwise
+// unbounded work on caller-supplied input.
+const maxNumberLiteralLength = 128
+
+// safeIntegerMaxRat returns the bound as an exact rational, so the
+// comparison never routes through a float.
+//
+// A function rather than a package-level value because big.Rat is mutable:
+// a shared instance is one Abs or Neg away from silently redefining the
+// bound for every later caller.
+func safeIntegerMaxRat() *big.Rat { return new(big.Rat).SetInt64(SafeIntegerMax) }
 
 // ErrUnsafeNumber reports a JSON number that cannot survive
 // canonicalization. It is a distinct error because the fix is a schema
@@ -74,9 +89,11 @@ func DigestJSON(raw []byte) (string, error) {
 // type. Values needing more range — nanosecond timestamps, large
 // identifiers, exact decimals — are string-typed by their schema.
 //
-// The check is on magnitude alone, so it cannot be evaded by notation.
-// 9007199254740992, 9007199254740992.0 and 9.007199254740992e15 are one
-// value written three ways and all three are rejected.
+// The check is on the EXACT decimal magnitude, so it can be evaded neither
+// by notation nor by rounding. 9007199254740992, 9007199254740992.0 and
+// 9.007199254740992e15 are one value written three ways and all three are
+// rejected; so is 9007199254740991.1, which a float comparison would round
+// down onto the limit and admit.
 func CheckSafeNumbers(raw []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -117,18 +134,76 @@ func walk(value any, path string) error {
 // value as 9007199254740992 and all three must be treated alike. Any check
 // keyed on notation is one a payload author evades by adding ".0".
 func checkNumber(number json.Number, path string) error {
+	text := string(number)
+
+	// Bound the parse before doing it. Exact decimal arithmetic on an
+	// attacker-supplied literal is unbounded work otherwise, and no
+	// legitimate payload number needs this many characters -- binary64
+	// carries about 17 significant digits, so a longer literal has already
+	// lost whatever the extra digits were for.
+	if len(text) > maxNumberLiteralLength {
+		return fmt.Errorf("%w: %s has a %d-character numeric literal, beyond the %d-character limit",
+			ErrUnsafeNumber, displayPath(path), len(text), maxNumberLiteralLength)
+	}
+
+	// ParseFloat reports ErrRange for overflow to ±Inf. It does NOT report
+	// underflow: 1e-400 and even 1e-999999999 come back as 0 with a nil
+	// error, which was checked rather than assumed after an earlier version
+	// of this comment claimed otherwise.
 	value, err := number.Float64()
 	if err != nil {
-		return fmt.Errorf("%w: %s is %s, which is not a representable number", ErrUnsafeNumber, displayPath(path), number)
+		return fmt.Errorf("%w: %s is %s, which does not survive conversion to binary64: %w",
+			ErrUnsafeNumber, displayPath(path), number, err)
 	}
 	if math.IsInf(value, 0) || math.IsNaN(value) {
 		return fmt.Errorf("%w: %s is %s, which is not finite in binary64", ErrUnsafeNumber, displayPath(path), number)
 	}
-	if math.Abs(value) > SafeIntegerMax {
-		return fmt.Errorf("%w: %s is %s, whose magnitude exceeds 2^53-1; encode it as a string in the payload's schema",
+
+	// Underflow, detected explicitly because ParseFloat will not.
+	//
+	// This is load-bearing twice over. It rejects values that do not
+	// survive binary64 -- being inside ±(2^53-1) is necessary, not
+	// sufficient -- and it is the guard that keeps a hostile exponent away
+	// from the exact comparison below. "1e-999999999" is twelve characters,
+	// so the length cap admits it, and big.Rat would faithfully build a
+	// denominator of 10^999999999 to represent it exactly.
+	if value == 0 && !isZeroLiteral(text) {
+		return fmt.Errorf("%w: %s is %s, which underflows to zero in binary64",
+			ErrUnsafeNumber, displayPath(path), number)
+	}
+
+	// Compare the EXACT decimal value, not the parsed float.
+	//
+	// Rounding before comparing hides the values nearest the boundary,
+	// which are exactly the ones the bound exists to catch:
+	// 9007199254740991.1 parses to 9007199254740991, lands precisely ON the
+	// limit, and passes a check written against the float -- despite an
+	// exact magnitude that exceeds it. big.Rat parses decimal literals
+	// without loss, so the comparison is against what the payload actually
+	// says.
+	exact, ok := new(big.Rat).SetString(text)
+	if !ok {
+		return fmt.Errorf("%w: %s is %s, which is not a representable number", ErrUnsafeNumber, displayPath(path), number)
+	}
+	if new(big.Rat).Abs(exact).Cmp(safeIntegerMaxRat()) > 0 {
+		return fmt.Errorf("%w: %s is %s, whose exact magnitude exceeds 2^53-1; encode it as a string in the payload's schema",
 			ErrUnsafeNumber, displayPath(path), number)
 	}
 	return nil
+}
+
+// isZeroLiteral reports whether a JSON number literal denotes zero, which
+// is the one value legitimately parsing to 0. It inspects the significand's
+// digits rather than the parsed value, since the parsed value is what
+// cannot distinguish a real zero from an underflowed one.
+func isZeroLiteral(text string) bool {
+	significand, _, _ := strings.Cut(strings.ToLower(text), "e")
+	for _, character := range significand {
+		if character >= '1' && character <= '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func displayPath(path string) string {

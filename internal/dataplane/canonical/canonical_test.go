@@ -147,6 +147,22 @@ func TestUnsafeNumbersRejected(t *testing.T) {
 		{"2^53 in exponential form", `{"n":9.007199254740992e15}`, "/n"},
 		{"large magnitude as a float", `{"n":1e30}`, "/n"},
 		{"large negative magnitude as a float", `{"n":-1e30}`, "/n"},
+
+		// The rounding-evasion cases. Each has an exact magnitude just
+		// ABOVE the bound but parses to a float landing exactly ON it, so a
+		// comparison made after Float64() admits every one of them.
+		{"just above the bound, fractional", `{"n":9007199254740991.1}`, "/n"},
+		{"just above the bound, negative fractional", `{"n":-9007199254740991.1}`, "/n"},
+		{"just above the bound, exponential", `{"n":9.0071992547409911e15}`, "/n"},
+		{"just above the bound, many trailing digits", `{"n":9007199254740991.00000000000001}`, "/n"},
+
+		// Underflow: an exact magnitude far below the bound, but it does not
+		// survive binary64 either, so "inside the range" is not sufficient.
+		{"underflows to zero", `{"n":1e-400}`, "/n"},
+		{"overflows to infinity", `{"n":1e400}`, "/n"},
+
+		// The literal-length cap, which bounds the exact comparison's cost.
+		{"absurdly long literal", `{"n":0.` + strings.Repeat("1", 200) + `}`, "beyond the 128-character limit"},
 	}
 
 	for _, testCase := range cases {
@@ -177,6 +193,15 @@ func TestSafeNumbersAccepted(t *testing.T) {
 		{"tiny float", `{"n":1e-27}`},
 		{"fractional", `{"n":4.5}`},
 		{"just inside the bound", `{"n":9007199254740990.5}`},
+
+		// Immediately below the bound on the other side, including the
+		// forms that the rejected cases above differ from only in the last
+		// digit -- so the boundary is pinned from both directions rather
+		// than only asserted to reject.
+		{"exactly the bound, exponential", `{"n":9.007199254740991e15}`},
+		{"exactly the negative bound, exponential", `{"n":-9.007199254740991e15}`},
+		{"a hair under the bound", `{"n":9007199254740990.9}`},
+		{"smallest normal float", `{"n":2.2250738585072014e-308}`},
 	}
 
 	for _, testCase := range cases {
@@ -185,6 +210,25 @@ func TestSafeNumbersAccepted(t *testing.T) {
 				t.Fatalf("rejected a safe number: %v", err)
 			}
 		})
+	}
+}
+
+// TestHostileExponentIsRejectedBeforeExactParse pins the guard that keeps
+// a caller-supplied exponent away from big.Rat. These literals are short
+// enough to clear the length cap, and an exact rational representation of
+// 1e-999999999 means a denominator of 10^999999999 -- so the underflow
+// check running FIRST is what makes the exact comparison affordable.
+//
+// A regression here does not fail loudly; it exhausts memory.
+func TestHostileExponentIsRejectedBeforeExactParse(t *testing.T) {
+	for _, raw := range []string{
+		`{"n":1e-999999999}`,
+		`{"n":-1e-999999999}`,
+		`{"n":1e999999999}`,
+	} {
+		if _, err := DigestJSON([]byte(raw)); !errors.Is(err, ErrUnsafeNumber) {
+			t.Fatalf("%s: expected rejection, got %v", raw, err)
+		}
 	}
 }
 

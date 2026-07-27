@@ -11,23 +11,30 @@ import (
 	"testing"
 )
 
-// namedTransitions is the complete set of statements permitted to write
-// `status` on an artifact row, from the design's D5 rejection matrix.
+// namedTransitions maps each statement permitted to write `status` to the
+// single literal destination it may write, from the design's D5 rejection
+// matrix.
 //
-// Adding a name here is the reviewable act. Design D4 says there is no
-// generic status update -- the point of the rule is that a future
-// SetArtifactStatus fails the build rather than passing review on a quiet
-// day, and quietly extending this map is the only way to defeat it.
-var namedTransitions = map[string]bool{
+// Mapping to a LITERAL rather than to a bool is what makes the rule hold.
+// An allow-list of names only checks who may write status, not what they
+// may write it to -- so rewriting an approved transition's SET clause to
+// `status = @status` keeps its allow-listed name, passes a name-only
+// check, and hands sqlc a generic status parameter: exactly the generic
+// update D4 forbids, reached by editing a permitted statement instead of
+// adding a new one.
+//
+// Adding an entry here is the reviewable act, and it now requires naming
+// the destination as well as the name.
+var namedTransitions = map[string]string{
 	// Creation writes the initial 'draft', which is a status write by any
 	// honest reading of the rule.
-	"CreateManagementArtifact": true,
+	"CreateManagementArtifact": "draft",
 
-	"AcceptManagementArtifact":     true,
-	"AcceptManagementAmendment":    true,
-	"InvalidateManagementArtifact": true,
-	"SupersedeManagementArtifact":  true,
-	"ArchiveManagementArtifact":    true,
+	"AcceptManagementArtifact":     "accepted",
+	"AcceptManagementAmendment":    "accepted",
+	"InvalidateManagementArtifact": "invalidated",
+	"SupersedeManagementArtifact":  "superseded",
+	"ArchiveManagementArtifact":    "archived",
 }
 
 var (
@@ -35,6 +42,11 @@ var (
 	lineCommentCutter = regexp.MustCompile(`--[^\n]*`)
 	statusAssignment  = regexp.MustCompile(`(?i)\bstatus\s*=`)
 	statusColumn      = regexp.MustCompile(`(?i)(^|[\s,(])status([\s,)]|$)`)
+
+	// Captures the assigned expression: a quoted literal, or anything up to
+	// the next comma -- so `@status` and `r.status` are captured and then
+	// fail the literal comparison rather than slipping through unmatched.
+	statusAssignmentValue = regexp.MustCompile(`(?i)\bstatus\s*=\s*('[^']*'|[^,]+)`)
 )
 
 // statement is one sqlc query: its name and its SQL with comments removed.
@@ -93,12 +105,31 @@ func TestOnlyNamedTransitionsWriteStatus(t *testing.T) {
 			continue
 		}
 		checked++
-		if !namedTransitions[stmt.name] {
+
+		want, permitted := namedTransitions[stmt.name]
+		if !permitted {
 			t.Errorf("%s: query %q writes `status` but is not a named transition.\n"+
 				"There is no generic status update (design D4). Either express this as one of the "+
 				"named transitions, or -- if it genuinely is a new lifecycle transition -- add it to "+
 				"the rejection matrix in design_queries_artifacts.md, give it its own preconditions, "+
 				"and then add it to namedTransitions here.", stmt.file, stmt.name)
+			continue
+		}
+
+		if isInsert(stmt.sql) {
+			// An INSERT has no SET clause. Its destination is verified
+			// against the VALUES clause by TestInsertedStatusIsALiteral,
+			// which covers every status-writing INSERT -- so skipping here
+			// delegates the check rather than dropping it.
+			continue
+		}
+
+		got := assignedStatus(stmt.sql)
+		if got != "'"+want+"'" {
+			t.Errorf("%s: query %q writes status = %s, want the literal '%s'.\n"+
+				"A named transition must write one fixed destination. Taking status from a parameter "+
+				"turns an approved transition into the generic update D4 forbids, without adding a "+
+				"single new query.", stmt.file, stmt.name, describeAssignment(got), want)
 		}
 	}
 
@@ -122,7 +153,7 @@ func TestEveryNamedTransitionExists(t *testing.T) {
 			found[stmt.name] = true
 		}
 	}
-	for name := range namedTransitions {
+	for name := range namedTransitions { //nolint:gocritic // keys only
 		if !found[name] {
 			t.Errorf("namedTransitions permits %q, but no query by that name writes status; "+
 				"remove the stale entry rather than leaving it available for reuse", name)
@@ -130,15 +161,18 @@ func TestEveryNamedTransitionExists(t *testing.T) {
 	}
 }
 
-// TestCreateDoesNotParameteriseStatus closes the way in that is not a
-// transition at all. If creation took status as a parameter, a caller could
-// insert an already-accepted artifact and skip the entire review lifecycle
-// -- no transition, no review record, no digest binding -- without ever
-// touching a statement this file's other rules police.
-func TestCreateDoesNotParameteriseStatus(t *testing.T) {
+// TestInsertedStatusIsALiteral closes the way in that is not a transition
+// at all. If an INSERT took status as a parameter, a caller could create an
+// already-accepted artifact and skip the entire review lifecycle -- no
+// transition, no review record, no digest binding -- without ever touching
+// a statement this file's other rules police.
+//
+// It covers every status-writing INSERT, not only Create-prefixed ones, so
+// the shared loop above can delegate to it without leaving a gap.
+func TestInsertedStatusIsALiteral(t *testing.T) {
 	var checked int
 	for _, stmt := range loadStatements(t) {
-		if !strings.HasPrefix(stmt.name, "Create") || !writesStatus(stmt.sql) {
+		if !isInsert(stmt.sql) || !writesStatus(stmt.sql) {
 			continue
 		}
 		checked++
@@ -146,14 +180,38 @@ func TestCreateDoesNotParameteriseStatus(t *testing.T) {
 		if values == "" {
 			t.Fatalf("%s: could not find the VALUES clause of %q", stmt.file, stmt.name)
 		}
-		if !strings.Contains(strings.ToLower(values), "'draft'") {
-			t.Errorf("%s: %q does not insert the literal 'draft'; creation must not let a caller "+
-				"choose a status, or review can be skipped entirely", stmt.file, stmt.name)
+		want := "'" + namedTransitions[stmt.name] + "'"
+		if !strings.Contains(strings.ToLower(values), want) {
+			t.Errorf("%s: %q does not insert the literal %s; creation must not let a caller "+
+				"choose a status, or review can be skipped entirely", stmt.file, stmt.name, want)
 		}
 	}
 	if checked == 0 {
-		t.Fatal("no status-writing Create statement was found, so this test enforced nothing")
+		t.Fatal("no status-writing INSERT was found, so this test enforced nothing")
 	}
+}
+
+// assignedStatus returns the right-hand side of an UPDATE's `status =`
+// assignment.
+func assignedStatus(sql string) string {
+	upper := strings.ToUpper(sql)
+	match := statusAssignmentValue.FindStringSubmatch(between(sql, upper, "SET", "WHERE"))
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
+}
+
+func describeAssignment(got string) string {
+	if got == "" {
+		return "an unparseable expression"
+	}
+	return got
+}
+
+// isInsert reports whether a statement is an INSERT rather than an UPDATE.
+func isInsert(sql string) bool {
+	return strings.Contains(strings.ToUpper(sql), "INSERT ")
 }
 
 // writesStatus reports whether a statement assigns the status column, as
