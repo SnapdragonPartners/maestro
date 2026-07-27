@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Exit Record (In Progress)"
-edit_date = "2026-07-26"
+edit_date = "2026-07-27"
 status = "draft"
 summary = "Running record of Phase 2: what each item delivered, exit-criteria status, decisions and what they cost, and the verification post-mortem behind CLAUDE.md's Verification Discipline. Accumulates as the phase runs; flips live at phase close."
 type = "notes"
@@ -19,8 +19,9 @@ The binding exit criteria live in the [Phase 2 plan](plan_scope.md). This record
 | 0 | `scope-and-plan` | Merged `83a8522` (#283) | Phase scope, 11-item sequence, four delegated decisions. Plus the build-process policy/mechanics split between `process_build.md` and `CLAUDE.md`. |
 | 1 | `adr-artifact-envelopes` | Merged `01e7b82` (#284) | [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) Accepted: envelope/payload split, JCS digests, code-resident type registry, additive-only evolution, RFC 7386 amendments, review bound to the reviewable projection. |
 | 2 | `local-stack` | Merged `dcf4dd0` (#288) | Four-root path resolver, root-of-trust key, bootstrap pointer, per-service data directories, Compose stack (Postgres + MinIO), HKDF credentials, `dataplane-up/down/reset`, Linux CI job. |
-| 3 | `schema-core` | **PR #289 open** | 10 migrations / 19 tables applied from empty, embedded migration runner, sqlc config with drift check, [table inventory](inventory_schema-tables.md). |
-| 4–10 | — | Not started | Typed queries, calls family, object module, config/secrets, backup, vertical slice, phase exit. |
+| 3 | `schema-core` | Merged (#289) | 10 migrations / 19 tables applied from empty, embedded migration runner, sqlc config with drift check, [table inventory](inventory_schema-tables.md). |
+| 4 | `queries-artifacts` | Merged `55ab7af` (#293) | The persistence seam and its Postgres module, JCS digests, RFC 7396 effective views, the code-resident type registry, and the artifact/review/principal query families. Design [`design_queries_artifacts.md`](design_queries_artifacts.md) live. |
+| 5–10 | — | Not started | Calls family, object module, config/secrets, backup, vertical slice, phase exit. |
 
 ## Exit criteria status
 
@@ -33,9 +34,12 @@ Nothing here is claimed complete that has not been demonstrated. Criteria not ye
 
 **Partially met**
 
-- **One command from a clean checkout** — `make dataplane-up` composes, health-gates, and now migrates, proven on native Linux CI from cold. The criterion also names *typed queries*, which are item 4, so this closes then.
-- **Migrations apply from empty** — done and CI-proven. The paired clause, *typed queries with tests* for the artifact, principal-instance and call families, is item 4.
-- **MinIO composed and bind-mounted; local durability invariant** — composed and bind-mounted under the data root since item 2. The invariant is *asserted* by design but has not been demonstrated by recreating containers and restarting the Docker daemon with data intact. **Outstanding, and worth doing before phase close rather than at it.**
+- **One command from a clean checkout** — `make dataplane-up` composes, health-gates, and migrates, proven on native Linux CI from cold. The criterion also names *typed queries*; the artifact, review and principal-instance families landed in item 4, and the **call family is item 5**, so this closes then rather than now.
+- **Migrations apply from empty** — done and CI-proven. The paired clause names typed queries with tests for the artifact, principal-instance **and call** families; the first two are item 4, the third is item 5.
+
+**Newly met**
+
+- **MinIO composed and bind-mounted; local durability invariant** — composed and bind-mounted under the data root since item 2, and now **demonstrated** rather than asserted. Evidence below.
 
 **Not yet met (scheduled)**
 
@@ -45,6 +49,30 @@ Nothing here is claimed complete that has not been demonstrated. Criteria not ye
 - Vertical slice, including an object write with digest reference and retention pin exercising the commit-order invariant, and idempotent re-import → item 9.
 - Phase-end `golden-all` regression run, imported and distilled into the conformance log → item 10.
 - Backlog reconciliation, and confirming the Phase 3-blocking entries → item 10.
+
+## Durability demonstration
+
+Run 2026-07-27, before item 5, on the item 5 branch so `main` was untouched. The invariant had been asserted by design since item 2 and never shown; nothing in items 5–10 would have exercised it incidentally.
+
+**Platform.** macOS (darwin arm64), Docker Desktop, bind-mounted roots under `~/Library/Application Support/maestro/data/{postgres,minio}`.
+
+**Method.** Two sentinels seeded and recorded by digest — a Postgres row (`durability_probe`, digest over `id||payload`) and a MinIO object (`s3://durability-probe/<sentinel>`), each with a unique timestamped id. Verified by digest after each phase, so a silently truncated or re-initialised store fails rather than looking empty-but-fine.
+
+| Phase | Command | Container ids | Postgres | Object |
+| --- | --- | --- | --- | --- |
+| Baseline | seed | `c0b0abfd…` / `04be6e85…` | recorded | recorded |
+| Container recreate | `make dataplane-down` then `make dataplane-up` | **changed** → `2895737f…` / `994faec7…` | intact | intact |
+| Daemon restart | quit and relaunch Docker Desktop | unchanged (restart policy restarts, does not recreate) | intact | intact |
+
+`reset` was never used; it is the destructive path and would have proven the opposite of the point.
+
+After the daemon restart the schema was still at migration version 10, not dirty, with the full table set — so the plane came back usable, not merely present.
+
+**The daemon restart did not go to plan, and the record should say so.** Docker Desktop's process stayed alive but its daemon never answered; DR quit it manually and upgraded Docker, and it returned on **server 29.6.2**. The restart therefore spanned a version upgrade rather than being the clean single-variable restart intended. That is a *stronger* test — the VM was rebuilt under a new daemon — but it is not the test that was designed, and the pre-upgrade daemon version was never captured, so the exact delta is unrecoverable. Recorded as it happened.
+
+**One thing worth knowing for item 6.** MinIO **inlines small objects into `xl.meta`** rather than writing a bare data part, so a host-side digest of the on-disk file does not equal the object-body digest. Byte-identity has to be checked through the S3 API. Any future backup or restore verification that digests MinIO's files directly will compare the wrong bytes and either fail confusingly or pass vacuously.
+
+Probe artifacts were removed afterwards: the table dropped and the bucket deleted, leaving the canonical schema at exactly the migrated set and no buckets.
 
 ## Decisions and what they cost
 
@@ -71,8 +99,17 @@ The evidence behind [`CLAUDE.md`'s Verification Discipline](../../../CLAUDE.md).
 
 **One P0.** A down-migration test ran against the canonical `maestro` database and dropped every table in it — written by copying a file through `/tmp` without asking which database it pointed at. Now behind a disposable-database harness, which itself leaked a database on first run because a deferred close ran before `t.Cleanup`.
 
+## The shape of the recurring problem
+
+Across item 3 and item 4 the implementation converged quickly and the *evidence* took the rounds. There were real implementation defects — the scope model took three wrong shapes, a down-migration test dropped every table in the canonical database, several fixes introduced new defects. But those were found. The pattern that kept recurring, and kept surviving review until someone looked twice, was different:
+
+**The recurring meta-defect was evidence that failed to discriminate correct from incorrect behaviour.**
+
+Its forms, all seen in this phase: assertions that could not fail; a drift check blind to untracked files; a mutation check whose mutant did not compile, so the build failure was counted as "no surviving mutants"; a mutant that died for the wrong reason, certifying a test that was itself a false positive; and a backstop unreachable through any normal call path, so removing it left the suite green.
+
+The rules in `CLAUDE.md`'s Verification Discipline came from the first two forms. The last three are newer and are recorded here rather than added to `CLAUDE.md` now — a holistic pass over that file is planned, and piecemeal additions are how a short rule list becomes an unread one.
+
 ## Follow-ups
 
 - [maestro#287](https://github.com/SnapdragonPartners/maestro/issues/287) — fold `dataplanectl` into the main binary; blocked on moving the compose assets under a package, since embedding cannot reach parent directories.
-- **Demonstrate the local durability invariant** (containers recreated, Docker restarted, data intact) before phase close.
 - ADR needs discovered in-phase: none so far. Confirmed at item 10.
