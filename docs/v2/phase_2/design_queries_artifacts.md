@@ -2,96 +2,149 @@
 title = "Design: Artifact And Principal Queries (Item 4)"
 edit_date = "2026-07-26"
 status = "draft"
-summary = "Mini-plan for Phase 2 item 4: typed queries over the artifact and principal-instance families — named transitions with their preconditions in the UPDATE's WHERE clause rather than a preceding read, no generic status write, effective views assembled in Go against RFC 7386's own test vectors, and the MPH seeding set captured at instance creation."
+summary = "Mini-plan for Phase 2 item 4: the persistence interface and its local module — registry and safe-integer validation at the seam, JCS digest construction, version-bounded reads, transitions classified under a row lock with their preconditions also in the UPDATE, amendment acceptance serialized per original, effective views assembled in Go against the RFC's own vectors, and MPH capture and query."
 type = "design"
 +++
 
 # Design: Artifact And Principal Queries (Item 4)
 
-Status: **draft** — for Codex review before the queries land.
+Status: **draft** — for Codex review before the queries land. Revised after round 1 (five P1s).
 
-Implements [Phase 2 plan](plan_scope.md) item 4 over the schema from [item 3](design_schema_core.md), under [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) (encoding, acceptance rule, amendment semantics), [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) (lifecycle, MPH) and [ADR 0022](../../adr/0022-v2-data-plane.md) (access discipline).
+Implements [Phase 2 plan](plan_scope.md) item 4 over the schema from [item 3](design_schema_core.md), under [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md) (encoding, validation, acceptance, amendments), [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) (lifecycle, MPH) and [ADR 0022](../../adr/0022-v2-data-plane.md) (persistence interface, access discipline).
 
-**Item 4 inherits two obligations that ADR 0028 paid to keep the acceptance rule at the seam rather than in a database trigger.** They are the reason that choice was defensible, so this item either honours them or the choice was wrong in retrospect:
+**Item 4 discharges the two obligations ADR 0028 accepted in exchange for keeping the acceptance rule at the seam rather than in a trigger**: no generic status update is exposed, and every transition is tested individually for its own precondition. If this item does not honour them, that trade was wrong in retrospect.
 
-1. **No generic status update is exposed.** Each transition is its own named operation carrying its own preconditions.
-2. **Every transition is tested individually** for the precondition it owns — because the risk is a *new* transition added later without the check, which one happy-path test would never catch.
+## What item 4 owes
+
+The first draft of this document covered transitions and effective views and silently omitted most of the write/read surface. In full:
+
+**Write path** — create artifact (Management and Audit), create review record, create principal instance with its MPH seeding set, stop a principal instance.
+
+**Validation at the seam** (ADR 0028 §2, which places it here and nowhere else) — payload conforms to its registered schema for its `schema_version`; the universal safe-integer rule; for amendments, the resulting *effective payload* rather than the patch.
+
+**Digest construction** — `payload_digest` and `review_digest` computed at the seam over JCS canonical JSON, never supplied by callers.
+
+**Read path** — artifact by id, by scope, by lineage; effective view; review records; principal instance with inputs; MPH queries (by model, prompt hash, harness hash). Reads are **version-bounded**: the registry declares which `schema_version` range a consumer can read, and an out-of-range payload is an error rather than a partial parse.
+
+**Transitions** — accept, invalidate, supersede, archive, each named and each carrying its own preconditions.
 
 ## Decisions
 
-### D1. A concrete `store` package over `gen`, no interface yet
+### D1. The persistence interface is built now
 
-Queries live in `internal/dataplane/queries/*.sql`, one file per family; sqlc generates into `internal/dataplane/gen`. Callers use a hand-written `internal/dataplane/store` package.
+**Reversed from round 1**, which proposed deferring it until a second implementation existed. That contradicted the approved plan, which says in its own words: *"Phase 2 builds the interface and its local implementations standing alone."* ADR 0022 makes it the seam where deployment modules swap, and local-versus-cloud is an established multi-backend need rather than a speculative one — which is exactly the case `CLAUDE.md`'s anti-abstraction rule admits.
 
-The seam exists for a present reason rather than a speculative one: generated code speaks `pgtype.UUID` and `pgtype.Timestamptz`, and letting those spread into item 9's importer and Phase 3's Orchestrator would make every consumer handle driver types to ask a domain question. `store` converts at the boundary (D7) and is where the transition preconditions live.
+Shape:
 
-**No interface in item 4.** ADR 0022 does require a pluggable persistence interface, but it is the seam where *deployment modules* swap, and Phase 2 has exactly one module. An interface with a single implementation and no second caller is the abstraction `CLAUDE.md` says to reject; it costs nothing to extract when the cloud module or a Phase 3 fake gives it a second shape. Flagged as open question 1 in case that reads as under-delivering ADR 0022.
+- `internal/dataplane/store` defines a **narrow interface** covering the surface above — not a mirror of every generated method, since an interface that grows with the schema is one nobody can implement twice.
+- `internal/dataplane/store/postgres` is the local module: sqlc `gen` plus the seam logic here.
+- Queries stay in `internal/dataplane/queries/*.sql`, one file per family.
 
-### D2. No generic status update, enforced rather than intended
+The interface is what the Phase 3 Orchestrator and item 9's importer depend on. Item 6 adds the object module behind the same interface.
 
-There is no `UpdateArtifactStatus`. The exposed operations are `AcceptArtifact`, `InvalidateArtifact`, `SupersedeArtifact`, `ArchiveArtifact`, and each carries the preconditions for that transition alone.
+### D2. Transaction composition belongs to item 4
 
-Enforced by a test, not a convention: it parses `queries/*.sql`, finds every statement writing `status`, and fails unless the query's sqlc name is in a known set of transitions. A future `-- name: SetArtifactStatus :exec` fails the build rather than passing review on a quiet day. That guard is itself mutation-verified by adding such a query and confirming the failure.
+Not deferrable to item 6, because item 4 already needs it in two places: the principal instance and its seeding set must be created atomically (D7), and amendment acceptance must lock, assemble, validate and update in one transaction (D6).
 
-### D3. Preconditions live in the `UPDATE`'s `WHERE`, never in a preceding read
+`store` exposes a `WithTx(ctx, func(Tx) error)` style facility; every multi-statement operation runs inside one. Item 6 builds the cross-store commit order (object first, pin recorded, row last) **on** this rather than inventing its own.
 
-Every transition is a single conditional statement. `AcceptArtifact` is the shape:
+### D3. Validation and digests at the seam
 
-```sql
-UPDATE management_artifacts a
-SET status = 'accepted', accepted_at = now(), reviewer_instance_id = r.reviewer_instance_id
-FROM artifact_reviews r, principal_instances p
-WHERE a.artifact_id = @artifact_id
-  AND a.status = 'draft'
-  AND r.artifact_id = a.artifact_id
-  AND r.review_digest = a.review_digest      -- the digest actually reviewed
-  AND r.decision = 'accepted'
-  AND p.principal_instance_id = r.reviewer_instance_id
-  AND p.principal_instance_id <> a.author_instance_id   -- non-author
-  AND p.kind IN ('agent', 'human')                      -- never a system principal
-```
+On every artifact write, in this order:
 
-Zero rows affected means a precondition failed, and the store turns that into a typed error naming which.
+1. **Registry lookup** by `artifact_type` — unregistered types cannot be written (ADR 0028 §2: the registry is code, so the database cannot consult it).
+2. **Schema validation** of the payload against the registered validator for its `schema_version`.
+3. **The universal safe-integer rule** — no JSON number outside ±(2^53 − 1) anywhere in the payload, because JCS serializes numbers as IEEE-754 binary64 and a larger integer would not survive canonicalization. This is checked for every type, since it belongs to the encoding rather than to any one schema.
+4. **Digests computed here** — `payload_digest` over the canonical payload, `review_digest` over the reviewable projection of ADR 0028 §5. Callers never supply either: a caller-supplied digest is a caller-asserted one, and the whole point is that it is derived.
 
-**Reading first and then writing would be a TOCTOU**, and not a theoretical one: two concurrent accepts, or an accept racing an amendment that moves `review_digest`, would both pass a prior `SELECT` and then write. Putting the conditions in the `WHERE` makes the check and the write the same statement. This is the same reasoning as ADR 0027's serialize-by-the-resource rule, applied where the resource is a row rather than a file.
+Reads validate the reverse direction: a payload whose `schema_version` is outside the registry's readable range is an error naming the version, never a best-effort parse.
 
-The digest match is what makes ADR 0028's binding real: a review of superseded content cannot license acceptance, because the row's current `review_digest` no longer equals the one reviewed.
+### D4. No generic status update, enforced rather than intended
 
-### D4. Effective views are assembled in Go, against RFC 7386's own test vectors
+There is no `UpdateArtifactStatus`. A test parses `queries/*.sql`, finds every statement writing `status`, and fails unless the query's sqlc name is a known transition — so a future `SetArtifactStatus` fails the build rather than passing review on a quiet day. Mutation-verified by adding such a query.
 
-Postgres 18.4 has no RFC 7386 merge-patch function — checked, not assumed — so the choice is a PL/pgSQL implementation or Go. Go, because it is the same language as its tests and because ADR 0028 requires the view be materialised on read rather than stored, so there is no database-side consumer that would benefit.
+### D5. Transitions: locked, classified, and conditionally written
 
-The algorithm is ~25 lines and the RFC publishes a **test-case table in Appendix A**. Those vectors are the test suite: they are authored by the specification rather than derived from our implementation, so they cannot drift toward whatever we happened to build.
+Round 1 claimed zero-rows-affected could be turned into an error naming the failed precondition. It cannot — a rowcount carries no reason. Every transition therefore runs in a transaction:
 
-Assembly is: load the original, load its accepted amendments ordered by `amendment_sequence`, apply each patch in order. Draft and rejected amendments are never applied. The schema already guarantees the sequence is total and the chain is flat, so the query relies on those rather than re-checking them.
+1. `SELECT … FOR UPDATE` the artifact row.
+2. **Classify in Go** against the locked row and its review records, producing a specific outcome: not in the required source status, no accepted review for the current `review_digest`, reviewer is the author, reviewer is a system principal, base moved (amendments), and so on.
+3. **Conditionally update**, with the preconditions *also* in the `WHERE`.
 
-### D5. Amendment acceptance allocates the sequence, and re-checks the base
+Step 3's conditions are redundant under the lock and kept deliberately: they are the backstop that stops a classification bug from writing a transition the rules forbid. Zero rows affected there is an internal invariant failure, not a user-facing outcome.
 
-Accepting an amendment does two things acceptance of an original does not:
+**`AcceptArtifact` names a specific `review_id`.** Multiple accepted reviews can exist for one digest, and round 1's join would have chosen the reviewer nondeterministically — then written that arbitrary choice into `reviewer_instance_id`. The caller passes the review it is acting on; the seam verifies that review belongs to this artifact, matches the current `review_digest`, has decision `accepted`, and comes from a non-author principal of kind agent or human.
 
-- **Allocates `amendment_sequence`** as `coalesce(max(...), 0) + 1` over that original's accepted amendments, computed inside the same statement. The partial unique index is the backstop rather than the mechanism: under concurrency one transaction loses and retries.
-- **Re-checks the base.** ADR 0028 binds an amendment's review to the effective view it was reviewed against, so if that base has moved the amendment requires re-review. The review record carries `base_digest` and `base_sequence`; acceptance compares the stored base against the current effective view and refuses on mismatch with a distinct error, since "re-review needed" is operationally different from "precondition failed".
+The digest match is what makes ADR 0028's binding real: a review of superseded content cannot license acceptance, because the row's current `review_digest` no longer equals the reviewed one.
 
-### D6. The MPH seeding set is written with the instance, not after it
+**Rejection matrix:**
 
-`principal_instance_inputs` rows are written in the same transaction that creates the principal instance. ADR 0021's promise is that "what was this agent given to start?" is always a query; an instance that exists briefly without its inputs makes that promise false for exactly as long as the gap. Each row records the artifact **and the digest as seeded**, so a later comparison against the artifact's current digest shows the seed has moved.
+| Transition | Allowed from | Additional preconditions |
+| --- | --- | --- |
+| Accept | `draft` | Named review: same artifact, matches current `review_digest`, decision `accepted`, reviewer ≠ author, reviewer kind ∈ {agent, human} |
+| Invalidate | `draft` only | None. Invalidation is pre-acceptance by definition (ADR 0021) |
+| Supersede | `accepted` | The superseding artifact exists, is in the same organization, and is itself being accepted in the same transaction (below) |
+| Archive | `accepted`, `superseded` | None |
 
-### D7. Driver types stop at the seam
+**Supersession is one transaction.** Accepting the superseding artifact and marking its target `superseded` happen together, or a reader between the two statements observes **two authoritative artifacts** for the same subject — which is exactly the state the lifecycle exists to prevent. Both rows are locked, and the target is locked first so a concurrent supersession of the same target cannot deadlock against it.
 
-`store` accepts and returns `uuid.UUID`, `time.Time`, `[]byte` and domain structs; `pgtype.UUID`/`pgtype.Timestamptz` do not escape it. Nullable scalars remain pointers, matching what sqlc generates and what the schema means by null (D4 of the schema design). The conversion is mechanical and lives in one file, so a caller never asks whether `.Valid` is set to answer a domain question.
+### D6. Amendment acceptance is serialized per original
+
+Round 1 proposed `max(sequence) + 1` with the unique index as a backstop and a retry on conflict. That is wrong in a way that matters: two amendments reviewed against the **same** base would both retry into distinct sequences and both be accepted, when ADR 0028 requires that a moved base forces re-review. The retry silently produced the outcome the ADR forbids.
+
+The protocol, which is what ADR 0028 actually specifies:
+
+1. `SELECT … FOR UPDATE` **the original** — ADR 0028's "serialize amendment acceptance per original `artifact_id`", so bases move one at a time.
+2. Assemble the current effective view and compute its digest.
+3. **Compare against the review's recorded base** (`base_digest`, `base_sequence`). A mismatch returns a distinct `ErrBaseMoved`, because "needs re-review" is operationally different from "precondition failed" and an operator acts differently on each.
+4. Apply the amendment's patch, and **validate the resulting effective payload** against the original's `artifact_type` and `schema_version` — ADR 0028 requires validation at acceptance and not only at write, since the base may have moved since the patch was authored.
+5. Allocate `amendment_sequence` as one more than the maximum over **every non-null historical sequence** for that original — including superseded and archived amendments, whose sequences persist. Allocating over currently-accepted amendments alone would reuse a number after an archive.
+6. Update conditionally.
+
+Two amendments reviewed against the same base now yield exactly one acceptance and one `ErrBaseMoved`, which is the contract.
+
+**Lock ordering is fixed** — original before amendment, everywhere — so concurrent acceptances cannot deadlock.
+
+### D7. Principal instances, MPH, and the seeding set
+
+Creating a principal instance writes its `principal_instance_inputs` rows **in the same transaction**. ADR 0021 promises that "what was this agent given to start?" is always a query; an instance observable without its inputs makes that false for exactly as long as the gap. Each row stores the artifact and the **digest as seeded**, so a later comparison against the artifact's current digest shows the seed has moved.
+
+Stopping an instance sets `stop_time` and `stop_reason` together, which the schema already requires as a pair.
+
+MPH queries read what the signature is for: instances by `model`, by `prompt_hash`, by `harness_config_hash`, and an instance's full signature including its seeding set. These are the joins ADR 0021 says cost and comparison analysis anchor on.
+
+### D8. Effective views assemble in Go, against the RFC's own vectors
+
+Postgres 18.4 has no merge-patch function — checked, not assumed — so the choice is PL/pgSQL or Go. Go, because it is the same language as its tests and because ADR 0028 requires the view be materialised on read, so no database-side consumer would benefit.
+
+Assembly: load the original, load its accepted amendments ordered by `amendment_sequence`, apply each patch in order. Draft and rejected amendments are never applied. The schema guarantees the sequence is total and the chain is flat, so this relies on those rather than re-checking them.
+
+The algorithm is ~25 lines and the specification publishes a **test-case table in Appendix A**; those vectors are the test suite. They are authored by the specification rather than derived from our implementation, so they cannot drift toward whatever we happen to build.
+
+**Citation note.** ADR 0028 names **RFC 7386**, which is obsoleted by **[RFC 7396](https://www.rfc-editor.org/rfc/rfc7396)**. The two carry the same algorithm and the same Appendix A vectors, so nothing about the design changes — but the accepted ADR carries a stale citation, and correcting it is an ADR amendment rather than something this document changes on its own authority. Raised in the open items below.
+
+### D9. Driver types stop at the seam
+
+Round 1 said nullable scalars "remain pointers, matching what sqlc generates". That is right for scalars and **wrong for uuid and timestamptz**: with pgx those generate as `pgtype.UUID` and `pgtype.Timestamptz` with a `.Valid` flag whether nullable or not. I had corrected exactly this claim in `sqlc.yaml` two PRs ago and then repeated it here.
+
+So the conversion is explicit rather than incidental. `store` exposes `uuid.UUID`, `*uuid.UUID`, `time.Time`, `*time.Time` and domain structs; `pgtype.*` does not escape the postgres module. The conversion lives in one file and is **tested in both directions for null**, since a `.Valid` flag dropped on the floor turns an absent reviewer into the zero UUID — a value that looks like data.
 
 ## Testing
 
-- **RFC 7386 Appendix A vectors** for merge patch, verbatim.
-- **Effective view** over conflicting amendments (later sequence prevails per field), out-of-order insertion, an amendment that deletes a field with `null`, and a chain containing draft and rejected amendments that must not be applied.
-- **Every transition tested individually** for its own precondition, not one happy path: accept without a review record, with a review of a *different* digest, by the author, by a system principal, and from a non-`draft` status. Same shape for invalidate, supersede, archive.
-- **The no-generic-status guard**, mutation-verified by adding a generic status query and confirming the failure.
-- **Concurrency**: two simultaneous accepts leave exactly one winner; two simultaneous amendment acceptances produce distinct sequences.
-- **Seeding set** written atomically with the instance — an instance never observable without its inputs.
+- **RFC 7396 Appendix A vectors** for merge patch, verbatim.
+- **Effective view**: conflicting amendments (later sequence prevails per field), out-of-order insertion, `null` deleting a field, and chains containing draft and rejected amendments that must not be applied.
+- **Every transition individually, for its own precondition** — accept with no review, with a review of a *different* digest, with a review belonging to another artifact, by the author, by a system principal, from a non-`draft` status; and the corresponding matrix for invalidate, supersede and archive.
+- **Supersession atomicity**: no observable state in which both artifacts are authoritative.
+- **Amendment protocol**: two amendments against the same base yield one acceptance and one `ErrBaseMoved`; sequence allocation skips a number already used by an archived amendment; the effective payload is validated at acceptance and a patch that breaks the schema is refused there even though it passed on write.
+- **Validation**: unregistered type, payload failing its schema, an unsafe integer, an out-of-range `schema_version` on read.
+- **Digests**: caller-supplied digests are ignored or refused; the stored digest matches an independent JCS computation.
+- **Seeding set** written atomically with the instance — never observable without its inputs.
+- **Null conversion** in both directions at the pgtype boundary.
+- **The no-generic-status guard**, mutation-verified.
 
-Integration-tagged, against the disposable-database harness from item 3 rather than the canonical database.
+Integration-tagged, against item 3's disposable-database harness rather than the canonical database.
 
-## Open questions for review
+## Open items
 
-1. **Is deferring ADR 0022's persistence interface to a second implementation right?** (D1.) The ADR mandates the interface; I read it as the module-swap seam, which Phase 2 does not yet exercise, and `CLAUDE.md` rejects single-implementation interfaces without a present reason. The counter is that Phase 3 will build against `store` directly and inherit a refactor.
-2. **Should `store` own transaction composition now?** Item 9's slice needs object-write-then-pin-then-row across two stores (ADR 0022's commit order). That could be item 4's `WithTx`-style helper or item 6's problem when the object module exists. I lean to item 6, where the second store is real, but it shapes `store`'s signatures either way and is cheaper to decide now than to retrofit.
+1. **ADR 0028 cites the obsoleted RFC 7386.** RFC 7396 replaces it with identical content. Proposed as a one-line citation amendment to ADR 0028, needing Codex and DR approval like any ADR change; this design references 7396 and notes the discrepancy rather than resolving it unilaterally.
+2. **Interface breadth.** D1 commits to a narrow interface, but "narrow" is a judgement: too small and Phase 3 reaches around it, too wide and no second module can implement it. The listed surface is the proposal, and the honest test is whether a cloud module could implement it without inheriting Postgres semantics.
