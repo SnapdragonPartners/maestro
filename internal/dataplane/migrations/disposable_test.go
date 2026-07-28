@@ -91,6 +91,19 @@ func disposableDatabase(t *testing.T) string {
 	return dsn
 }
 
+// disposableDatabaseAt is disposableDatabase stopped at a specific version,
+// for tests that must write rows under an older schema and then migrate
+// over them.
+func disposableDatabaseAt(t *testing.T, version uint) string {
+	t.Helper()
+
+	dsn := disposableDatabase(t)
+	if err := migrations.To(context.Background(), dsn, version); err != nil {
+		t.Fatalf("migrate down to v%d: %v", version, err)
+	}
+	return dsn
+}
+
 // Down migrations are written for development reversibility, and this is
 // what stops them being decorative: an up-down-up round trip must return to
 // the same schema.

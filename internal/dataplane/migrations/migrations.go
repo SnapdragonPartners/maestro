@@ -52,6 +52,26 @@ func Up(ctx context.Context, dsn string) (err error) {
 	return run(ctx, m, m.Up, "apply migrations")
 }
 
+// To migrates to a specific version, up or down.
+//
+// It exists for staged upgrades and for tests that must observe a database
+// at an intermediate version -- verifying what a migration does to data
+// written under the schema BEFORE it needs exactly this, and applying every
+// migration to an empty database can never show it.
+func To(ctx context.Context, dsn string, version uint) (err error) {
+	m, closeFn, err := open(dsn)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := closeFn(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", closeErr)
+		}
+	}()
+
+	return run(ctx, m, func() error { return m.Migrate(version) }, fmt.Sprintf("migrate to version %d", version))
+}
+
 // run executes a migration operation under the caller's context.
 //
 // Two mechanisms, because neither alone is sufficient. GracefulStop makes

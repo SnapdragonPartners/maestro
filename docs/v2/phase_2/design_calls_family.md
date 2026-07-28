@@ -50,9 +50,19 @@ The first draft left `llm_calls` with **no success, error or status column** and
 
 Deferring it was also the wrong instinct for a second reason. Without an outcome column a completed zero-token call and a failed call are indistinguishable **on the row**, which corrupts precisely the cost and reliability aggregates this family exists to serve. That is not documentation debt; it is a family that cannot answer its own question.
 
-**Migration `000011_llm_call_outcome`** adds both columns and mirrors `tool_calls`' existing pairing, `CHECK ((finished_at IS NULL) = (succeeded IS NULL))` — append-only, per the phase's delegated decision 4. It backfills before adding the constraint so it is correct on a non-empty table, and records the assumption it must make: rows completed before the migration are presumed successful because no outcome is recoverable, so `succeeded = true` on them is not evidence of anything.
+**Migration `000011_llm_call_outcome`** adds both columns and mirrors `tool_calls`' existing pairing, `CHECK ((finished_at IS NULL) = (succeeded IS NULL))` — append-only, per the phase's delegated decision 4.
 
-Coherence **between** `succeeded` and `error_message` stays the seam's rule, exactly as for tool calls — a success must not carry an error, a failure must carry a diagnostic. The schema can express "finished implies an outcome"; it cannot express which pairings are meaningful.
+It **refuses to invent an outcome**. A first version backfilled `succeeded = true` for already-completed rows and warned in a comment that the value was not evidence. That is not a defensible shape: a comment cannot constrain a query, and once written the value *is* canonical success data to every later reader. The migration now asserts that no such row exists and stops with an explanation if one does. Since no writer for these tables exists yet — item 5 adds the first — the assertion is expected never to fire, and a row that trips it arrived by a path that does not exist, which is worth stopping for rather than guessing at.
+
+Both branches are covered by a regression test that migrates a **populated** v10 database: an open call must survive with its openness intact, and a completed one must stop the migration. Applying a migration to an empty database can never show either.
+
+Coherence **between** `succeeded` and `error_message` is now enforced in **both** places, and an earlier draft was simply wrong to claim otherwise. "The schema cannot express which pairings are meaningful" is false — these are ordinary `CHECK` constraints, and migration 000011 adds them to `llm_calls` *and* `tool_calls`:
+
+- a success carrying an error message,
+- a failure with a missing or blank diagnostic,
+- an open call already carrying an error.
+
+Leaving them to the seam alone would have put the only guard in the one place a direct write goes around. The seam keeps its own checks so a caller gets a diagnostic naming the field; the constraints are the backstop for everything that does not come through the seam.
 
 ## D2. Write invariants, per table
 
@@ -205,14 +215,22 @@ Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is
 
 **Aggregates.** Cost and token totals group by **`(provider, model)`** — never model alone, consistently with D5. The same model name is served by different providers at different prices, which is the premise of Phase 1's `paired-local` config; grouping on the name alone sums two price regimes into a figure describing neither.
 
-**Aggregates run over completed calls only, and report the open ones.** A `SUM` over all rows would fold pending calls into the unmeasured bucket, so every aggregate returns:
+**Aggregates run over completed calls only, and report both cost availability and outcome.** A `SUM` over all rows would fold pending calls into the unmeasured bucket, so every cost aggregate returns, per `(provider, model)`:
 
-- the total over completed calls,
-- the count of completed calls **with** a cost (measured),
-- the count of completed calls **without** one (unmeasured — genuinely not knowable),
-- the count of **open** calls excluded from the total (pending — not yet knowable).
+| Field | Meaning |
+| --- | --- |
+| `total_cost` | Sum over completed calls that have one |
+| `measured_calls` | Completed, cost recorded |
+| `unmeasured_calls` | Completed, cost genuinely not knowable (`paired-local`) |
+| `open_calls` | Not yet ended, excluded from the total (pending) |
+| `succeeded_calls` | Completed with `succeeded = true` |
+| `failed_calls` | Completed with `succeeded = false` |
 
-Three states, reported separately, because a campaign that under-reports its own cost while still running and never corrects itself is the failure mode this exists to prevent.
+The outcome counts are not optional extras: **reliability aggregation is the reason the outcome columns were added at all**, and an aggregate that reported cost completeness while staying silent about success would leave the schema change unjustified by anything a caller can read.
+
+`succeeded_calls + failed_calls = measured_calls + unmeasured_calls` — every completed call has an outcome, by the completion constraint. There is **no historical-unknown bucket**, because the migration refuses to create rows in that state rather than admitting one.
+
+Cost and outcome are independent: a failed call can still have cost recorded, and often does.
 
 ## Resolved: completed-call insertion and batch import both go to item 9
 
