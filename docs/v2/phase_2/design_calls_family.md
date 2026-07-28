@@ -2,13 +2,13 @@
 title = "Phase 2 Item 5 Design: Calls, Metrics And Audit Events"
 edit_date = "2026-07-28"
 status = "draft"
-summary = "Mini-plan for the call family's typed queries: per-table write invariants, the open-to-completed call lifecycle, the cases the seam must reject, dependency-ordered truncation that refuses to prune pinned, open or referenced rows, and an exact decimal type for cost."
+summary = "Design for the call family's typed queries: per-table write invariants enforced in SQL, the open-to-completed call lifecycle behind a structurally enforced update surface, organization-scoped dependency-ordered truncation with reconciling retention buckets and a serialization-retry contract, bounded keyset reads with their index plan, and an exact decimal type for cost."
 type = "design"
 +++
 
 # Phase 2 Item 5 Design: Calls, Metrics And Audit Events
 
-Status: **draft** — revised after three Codex rounds (six P1s, then five, then three). Carries one schema correction, migration 000011.
+Status: **draft** — revised across eight Codex rounds. Carries one schema correction, migration 000011.
 
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
@@ -33,7 +33,14 @@ The other difference is volume. ADR 0022 makes these the largest tables in the s
 
 **Completion is once-only and idempotent**, on the shape of `StopPrincipalInstance` (item 4 D7): lock the row, classify in Go, write conditionally with `WHERE finished_at IS NULL`. Two paths can observe one call ending — a normal return and a supervisor's error handler — and the first outcome is the true one. A repeat returns **the recorded outcome with `Recorded: false`**, never an error, and a *conflicting* repeat returns the first outcome too. It is not a rejected case; a caller that cares reads the flag.
 
-No other column is updatable. There is no generic update, for the reason item 4 has no generic status update.
+No other column is updatable, and that is **enforced structurally**, not merely intended — the same way item 4 enforces "no generic status update".
+
+A test parses `queries/*.sql` and allows, for `llm_calls` and `tool_calls`:
+
+- **creation** only, with the open state written as literals (`finished_at`, `succeeded` and `error_message` absent from the column list, so a caller cannot create an already-completed row);
+- exactly two **named completion updates**, each carrying `WHERE finished_at IS NULL`.
+
+Any other statement writing these tables fails the build. Without it, a later generated update makes Audit history silently mutable — and unlike item 4's status columns, nothing about a call record's shape would make that obvious in review. Mutation-verified by adding a `SetCallOutcome`-style query and by stripping the `WHERE finished_at IS NULL` from a permitted one.
 
 ### Tool call outcomes must cohere
 
@@ -80,6 +87,20 @@ So:
 - **`llm_calls`, `tool_calls`** — lineage is a prefix chain (a Story implies its Epic, Feature and Product). The seam validates the chain before the write so a caller learns *which* level is missing rather than reading `lineage_shape_check`. `lineage_key` is generated; the seam never supplies it.
 - **`metric_events`** — same prefix-chain validation, but there is no `lineage_key` column to reference. Any design that joins or filters on one here is written against a column that does not exist.
 - **`audit_events`** — carries only organization, user and principal. It has **no work lineage and no shape check**, so there is nothing to validate beyond the principal and organization. An audit event is not scoped to a Story today; wanting it to be is a schema change, not a seam change.
+
+**Row-local invariants are enforced in SQL, not only at the seam.** The live schema design says the database enforces facts true of one row, and an earlier draft of this document assigned these to the seam alone — which puts the only guard in the place a direct write goes around. Migration 000011 adds:
+
+| Invariant | Tables |
+| --- | --- |
+| `provider`, `model`, `tool_name`, `metric_name`, `event_type` non-blank | all four |
+| `finished_at >= started_at` | `llm_calls`, `tool_calls` |
+| `cost_usd` is not `NaN` | `llm_calls` |
+| `value` is finite (not `NaN`, not ±`Infinity`) | `metric_events` |
+
+Two traps, both verified against the running server rather than reasoned about:
+
+- **`btrim(x)` strips SPACES only.** The original coherence check used the one-argument form, so a tab- or newline-only failure diagnostic satisfied "non-blank" while being blank to any reader. Every blankness check now passes an explicit character list.
+- **`NaN = NaN` is TRUE for Postgres `numeric`**, so the usual self-comparison does not detect it. Inequality against `'NaN'` does. And `metric_events.value` is `double precision`, which admits both `NaN` and the infinities — a single non-finite value poisons every aggregate that touches it.
 
 **Counters and cost.** `input/output/reasoning/cached_tokens` are `bigint`, non-negative by schema check; the seam narrows nothing. `cost_usd` is `numeric(18,8)` — see D5.
 
@@ -150,6 +171,8 @@ The Audit family is truncatable by design, and this is where the phase can destr
 
 **The first draft's pin guard could never fire.** Pins target `audit_artifacts` and `binary_attachments` — and neither table was in the truncation set, so "retained because pinned" was unreachable and its test would have been vacuous. `audit_artifacts` belongs here; attachments belong to item 6 with the object module, since deleting a row whose bytes live in object storage is that item's commit-order problem.
 
+**Truncation is organization-scoped, like every other operation in the seam.** The first draft never said so, which for the one *destructive* operation is the worst place to leave it implicit. Every candidate count, every retention check and every `DELETE` takes `organization_id`; a reference or pin in one organization can neither protect nor fail to protect a row in another. Tested with two organizations, asserting that truncating one leaves the other's rows byte-for-byte intact — a test with a single organization passes against a statement that omits the column entirely.
+
 **Per-table horizons and cutoff columns**, in deletion order:
 
 | Order | Table | Cutoff | Retained when |
@@ -199,6 +222,12 @@ That last point is the correction. A transaction at Postgres's default `READ COM
 
 This is the same error item 4 shipped and had to fix, restated here because writing it down evidently did not prevent repeating it.
 
+**`REPEATABLE READ` can abort.** Two concurrent truncations touching the same rows make Postgres raise a serialization failure, `SQLSTATE 40001`, and a raw driver error is not a stable contract for a persistence seam — every caller would have to know the code and decide what it means.
+
+The Postgres module **retries the whole operation**, up to a small fixed bound, and returns a typed `ErrConcurrentTruncation` if the bound is exhausted. Whole-operation retry rather than per-statement, because the dependency order and the retention guards only make sense evaluated against one snapshot; retrying a single statement inside a poisoned transaction is not possible anyway. The bound exists so a pathological loop surfaces rather than spinning.
+
+Truncation is the only operation here that needs this, being the only one at `REPEATABLE READ`. Covered by a test running two concurrent truncations over overlapping rows and asserting that both terminate, no row is double-counted, and the reported buckets still reconcile.
+
 ## D8. Reads
 
 Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is the first real consumer, and Phase 1B's economic comparison is where aggregate shapes get chosen against a real question. Anything not listed waits for a caller, on the rule item 3 applied to tables and the registry applies to types.
@@ -213,6 +242,26 @@ Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is
 | By type | by `(provider, model)` | by `tool_name` | by `metric_name` | by `event_type` |
 
 `audit_events` is reachable by organization, user, principal and time only. Offering a Story filter would mean inventing one, and the honest alternative — joining through the principal instance — answers a different question ("events by the agent that also worked on this Story") and must not be presented as the same one.
+
+**Every list read is bounded.** These are the largest tables in the system and the first draft's matrix implied unbounded scans over them. So:
+
+- a **mandatory limit** on every list, with a documented maximum, and
+- **keyset pagination** — `(timestamp, id)` as the cursor, using each table's own cutoff column, never `OFFSET`, which degrades exactly as the table grows.
+
+Aggregates take a **mandatory time window** and their `(provider, model)` cohort, so an aggregate always describes a stated population rather than "everything that happens to be retained".
+
+**Indexes.** The existing set was written for item 3's consumers and does not support these operations. Checked against the schema rather than assumed — `llm_calls` currently indexes `principal_instance_id`, `story_id`, `started_at` and `model` alone. The plan adds, in the same migration as the queries:
+
+| Index | Serves |
+| --- | --- |
+| `llm_calls (organization_id, finished_at)` | truncation's cutoff, which is `finished_at` not `started_at` |
+| `tool_calls (organization_id, finished_at)` | same |
+| `llm_calls (organization_id, provider, model, started_at)` | cost aggregates by cohort within a window |
+| `metric_events (organization_id, recorded_at)` | time-window reads and truncation |
+| `audit_events (organization_id, occurred_at)` | time-window reads and truncation |
+| `metric_events (principal_instance_id)`, `audit_events (principal_instance_id)` | by-principal reads, which have no index today |
+
+Each is organization-leading because every query is. `model` alone is superseded by the `(provider, model, …)` index and is dropped rather than left as a duplicate prefix nothing uses.
 
 **Aggregates.** Cost and token totals group by **`(provider, model)`** — never model alone, consistently with D5. The same model name is served by different providers at different prices, which is the premise of Phase 1's `paired-local` config; grouping on the name alone sums two price regimes into a figure describing neither.
 

@@ -48,7 +48,7 @@ BEGIN
     SELECT count(*) INTO stale_tool
     FROM tool_calls
     WHERE (succeeded IS TRUE  AND error_message IS NOT NULL)
-       OR (succeeded IS FALSE AND (error_message IS NULL OR btrim(error_message) = ''))
+       OR (succeeded IS FALSE AND (error_message IS NULL OR btrim(error_message, E' \t\n\r\f\v') = ''))
        OR (finished_at IS NULL AND error_message IS NOT NULL);
 
     IF stale_llm > 0 OR stale_tool > 0 THEN
@@ -89,16 +89,54 @@ ALTER TABLE llm_calls
             NOT (succeeded IS TRUE AND error_message IS NOT NULL)
             -- A failure carries a non-blank diagnostic; the failure path is
             -- exactly when someone reads the record.
-            AND NOT (succeeded IS FALSE AND (error_message IS NULL OR btrim(error_message) = ''))
+            AND NOT (succeeded IS FALSE AND (error_message IS NULL OR btrim(error_message, E' \t\n\r\f\v') = ''))
             -- An open call has no error yet.
             AND NOT (finished_at IS NULL AND error_message IS NOT NULL)
         );
+
+-- Row-local invariants belong in SQL.
+--
+-- The live schema design says the database enforces facts true of ONE row;
+-- an earlier draft of item 5 assigned these to the seam alone, which puts
+-- the only guard in the place a direct write goes around.
+--
+-- Note the explicit character list on btrim: with one argument it strips
+-- SPACES ONLY, so a tab- or newline-only "diagnostic" satisfied the
+-- coherence check above while being blank to any reader. Verified against
+-- the running server, not assumed.
+ALTER TABLE llm_calls
+    ADD CONSTRAINT llm_calls_names_nonblank_check
+        CHECK (btrim(provider, E' \t\n\r\f\v') <> '' AND btrim(model, E' \t\n\r\f\v') <> ''),
+    -- numeric admits 'NaN', and NaN = NaN is TRUE in Postgres, so the
+    -- usual self-comparison trick does not detect it. Inequality does.
+    ADD CONSTRAINT llm_calls_cost_finite_check
+        CHECK (cost_usd IS NULL OR cost_usd <> 'NaN'::numeric),
+    ADD CONSTRAINT llm_calls_interval_check
+        CHECK (finished_at IS NULL OR finished_at >= started_at);
+
+ALTER TABLE tool_calls
+    ADD CONSTRAINT tool_calls_name_nonblank_check
+        CHECK (btrim(tool_name, E' \t\n\r\f\v') <> ''),
+    ADD CONSTRAINT tool_calls_interval_check
+        CHECK (finished_at IS NULL OR finished_at >= started_at);
+
+-- metric_events.value is double precision, which admits NaN and both
+-- infinities. A non-finite metric poisons every aggregate that touches it.
+ALTER TABLE metric_events
+    ADD CONSTRAINT metric_events_name_nonblank_check
+        CHECK (btrim(metric_name, E' \t\n\r\f\v') <> ''),
+    ADD CONSTRAINT metric_events_value_finite_check
+        CHECK (value <> 'NaN'::float8 AND value <> 'Infinity'::float8 AND value <> '-Infinity'::float8);
+
+ALTER TABLE audit_events
+    ADD CONSTRAINT audit_events_type_nonblank_check
+        CHECK (btrim(event_type, E' \t\n\r\f\v') <> '');
 
 ALTER TABLE tool_calls
     ADD CONSTRAINT tool_calls_outcome_coherence_check
         CHECK (
             NOT (succeeded IS TRUE AND error_message IS NOT NULL)
-            AND NOT (succeeded IS FALSE AND (error_message IS NULL OR btrim(error_message) = ''))
+            AND NOT (succeeded IS FALSE AND (error_message IS NULL OR btrim(error_message, E' \t\n\r\f\v') = ''))
             AND NOT (finished_at IS NULL AND error_message IS NOT NULL)
         );
 

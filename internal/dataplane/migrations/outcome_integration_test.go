@@ -256,6 +256,11 @@ func TestOutcomeConstraintsRejectIncoherentRows(t *testing.T) {
 		{"failure with no diagnostic", `SET finished_at = now(), succeeded = false, error_message = NULL`},
 		{"failure with a blank diagnostic", `SET finished_at = now(), succeeded = false, error_message = '   '`},
 		{"open call carrying an error", `SET error_message = 'boom'`},
+		// btrim() with one argument strips SPACES only, so this passed the
+		// coherence check while being blank to any reader.
+		{"failure whose diagnostic is only whitespace", "SET finished_at = now(), succeeded = false, " +
+			"error_message = E'\t\n  '"},
+		{"finished before it started", `SET finished_at = started_at - interval '1 second', succeeded = true`},
 		{"finished with no outcome", `SET finished_at = now()`},
 		{"outcome with no finish", `SET succeeded = true`},
 	}
