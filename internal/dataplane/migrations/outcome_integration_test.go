@@ -5,6 +5,7 @@ package migrations_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 
@@ -475,53 +476,65 @@ func TestRowLocalConstraints(t *testing.T) {
 	}
 }
 
-// TestCallFamilyIndexesExist pins migration 12's index plan.
+// TestCallFamilyIndexDefinitions pins migration 12's index plan by
+// DEFINITION, not by name.
 //
-// Each entry is a promised read shape from the item 5 design. An index that
-// silently fails to be created, or is renamed without the design following,
-// leaves the query planner falling back to a sequential scan over the
-// largest tables in the system -- which is slow rather than wrong, and so
-// shows up as a production surprise rather than a red test.
-func TestCallFamilyIndexesExist(t *testing.T) {
+// Column ORDER is the load-bearing property: an index whose leading columns
+// are interrupted cannot serve the query it was created for -- which is why
+// the cohort index cannot serve the generic window read. The partial
+// predicate is equally load-bearing: without `WHERE finished_at IS NULL`
+// the open-call index is a full index paid for on every write.
+//
+// A name-only check passes when either is changed, and the failure mode is
+// a sequential scan over the largest tables in the system: slow rather than
+// wrong, so it surfaces in production instead of in CI.
+func TestCallFamilyIndexDefinitions(t *testing.T) {
 	dsn := disposableDatabase(t)
 	db := openDB(t, dsn)
 
-	for _, index := range []string{
-		"llm_calls_org_story_time_idx",
-		"tool_calls_org_story_time_idx",
-		"llm_calls_org_principal_time_idx",
-		"tool_calls_org_principal_time_idx",
-		"llm_calls_org_time_idx",
-		"tool_calls_org_time_idx",
-		"llm_calls_org_cohort_time_idx",
-		"metric_events_org_time_idx",
-		"audit_events_org_time_idx",
-		"llm_calls_org_finished_idx",
-		"tool_calls_org_finished_idx",
-		"llm_calls_org_open_started_idx",
-		"tool_calls_org_open_started_idx",
-		"audit_artifacts_org_created_idx",
-	} {
-		var present bool
-		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = $1)`,
-			index).Scan(&present); err != nil {
-			t.Fatalf("read index %s: %v", index, err)
-		}
-		if !present {
-			t.Errorf("index %s is absent; the read shape it serves falls back to a sequential scan", index)
-		}
+	want := map[string]string{
+		"llm_calls_org_story_time_idx":      "btree (organization_id, story_id, started_at, llm_call_id)",
+		"tool_calls_org_story_time_idx":     "btree (organization_id, story_id, started_at, tool_call_id)",
+		"llm_calls_org_principal_time_idx":  "btree (organization_id, principal_instance_id, started_at, llm_call_id)",
+		"tool_calls_org_principal_time_idx": "btree (organization_id, principal_instance_id, started_at, tool_call_id)",
+		"llm_calls_org_time_idx":            "btree (organization_id, started_at, llm_call_id)",
+		"tool_calls_org_time_idx":           "btree (organization_id, started_at, tool_call_id)",
+		"llm_calls_org_cohort_time_idx":     "btree (organization_id, provider, model, started_at)",
+		"metric_events_org_time_idx":        "btree (organization_id, recorded_at, metric_event_id)",
+		"audit_events_org_time_idx":         "btree (organization_id, occurred_at, audit_event_id)",
+		"llm_calls_org_finished_idx":        "btree (organization_id, finished_at, llm_call_id)",
+		"tool_calls_org_finished_idx":       "btree (organization_id, finished_at, tool_call_id)",
+		"audit_artifacts_org_created_idx":   "btree (organization_id, created_at, artifact_id)",
+
+		// Partial: the open set is a vanishing fraction of these tables, so
+		// a full index would be paid for on every write to serve a query
+		// about the few.
+		"llm_calls_org_open_started_idx":  "btree (organization_id, started_at) WHERE (finished_at IS NULL)",
+		"tool_calls_org_open_started_idx": "btree (organization_id, started_at) WHERE (finished_at IS NULL)",
+
+		// Retained from item 3: model is not a PREFIX of the cohort index,
+		// so the composite cannot serve a model-only lookup.
+		"llm_calls_model_idx": "btree (model)",
 	}
 
-	// The model-only index from item 3 is RETAINED: model is not a prefix
-	// of the cohort index, so the composite cannot serve a model-only
-	// lookup, and dropping it would be a separate decision.
-	var modelIndex bool
-	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'llm_calls_model_idx')`).
-		Scan(&modelIndex); err != nil {
-		t.Fatalf("read model index: %v", err)
-	}
-	if !modelIndex {
-		t.Error("llm_calls_model_idx was dropped; it is not a prefix of the cohort index, so the composite " +
-			"cannot replace it")
+	for name, suffix := range want {
+		var definition string
+		err := db.QueryRow(`SELECT pg_get_indexdef(c.oid) FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = $1 AND n.nspname = 'public'`, name).Scan(&definition)
+		if errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("index %s is absent; the read shape it serves falls back to a sequential scan", name)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read definition of %s: %v", name, err)
+		}
+		// Compare the tail, so the test is about columns and predicate
+		// rather than about schema qualification or index type spelling.
+		if !strings.HasSuffix(definition, "USING "+suffix) {
+			t.Errorf("index %s is defined as:\n  %s\nbut the design requires it to end with:\n  USING %s\n"+
+				"Column order and any partial predicate are the load-bearing properties; a same-named index "+
+				"with different columns serves a different query.", name, definition, suffix)
+		}
 	}
 }

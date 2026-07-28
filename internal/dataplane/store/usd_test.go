@@ -119,3 +119,61 @@ func TestUSDRatIsACopy(t *testing.T) {
 		t.Fatalf("mutating the returned Rat changed the USD: %s", got)
 	}
 }
+
+// TestUSDTotalAcceptsWhatARowCannot is the reason USDTotal is a distinct
+// type. numeric(18,8) bounds a stored row at ten integer digits, but
+// SUM(cost_usd) is unconstrained: a campaign total may legitimately exceed
+// what any single call could cost. Applying the row bound to a total would
+// reject a correct sum for being large.
+func TestUSDTotalAcceptsWhatARowCannot(t *testing.T) {
+	const big = "12345678901234.56789012" // 14 integer digits
+
+	if _, err := ParseUSD(big); !errors.Is(err, ErrCostRange) {
+		t.Fatalf("a row value of %s should be out of range: %v", big, err)
+	}
+	total, err := ParseUSDTotal(big)
+	if err != nil {
+		t.Fatalf("the same value as a TOTAL was rejected: %v", err)
+	}
+	if got := total.String(); got != big {
+		t.Fatalf("total = %q, want %q", got, big)
+	}
+}
+
+// TestUSDTotalStillBoundsScaleAndShape: unbounded in magnitude is not
+// unbounded in everything.
+func TestUSDTotalStillBoundsScaleAndShape(t *testing.T) {
+	for _, in := range []string{"0.000000001", "-1", "1e30", "lots"} {
+		if _, err := ParseUSDTotal(in); err == nil {
+			t.Errorf("ParseUSDTotal(%q) was accepted", in)
+		}
+	}
+}
+
+// TestOversizedLiteralIsRejectedBeforeParsing guards the allocation path.
+// big.Rat.SetString on a caller-supplied literal allocates proportionally
+// to its size, and no later range check can undo work already done.
+func TestOversizedLiteralIsRejectedBeforeParsing(t *testing.T) {
+	hostile := strings.Repeat("9", 200_000)
+
+	for name, parse := range map[string]func(string) error{
+		"row":   func(s string) error { _, err := ParseUSD(s); return err },
+		"total": func(s string) error { _, err := ParseUSDTotal(s); return err },
+	} {
+		err := parse(hostile)
+		if !errors.Is(err, ErrCostRange) {
+			t.Errorf("%s: a %d-character literal was not rejected on length: %v", name, len(hostile), err)
+		}
+		if !strings.Contains(err.Error(), "character limit") {
+			t.Errorf("%s: rejected for the wrong reason, so the length guard may not be what fired: %v", name, err)
+		}
+	}
+}
+
+// TestIntegerDigitsIgnoresLeadingZeros: "007.5" is one integer digit, not
+// three, or a zero-padded value would fail the bound for its padding.
+func TestIntegerDigitsIgnoresLeadingZeros(t *testing.T) {
+	if _, err := ParseUSD("0000000000000007.50000000"); err != nil {
+		t.Fatalf("a zero-padded value was rejected for its padding: %v", err)
+	}
+}

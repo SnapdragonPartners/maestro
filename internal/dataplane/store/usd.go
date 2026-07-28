@@ -50,8 +50,16 @@ var (
 	exponentDecimal = regexp.MustCompile(`^\d+(\.\d+)?[eE][+-]?\d+$`)
 )
 
-// ErrCostRange reports a cost the numeric(18,8) column cannot hold.
-var ErrCostRange = errors.New("cost is outside the range numeric(18,8) can store")
+// maxCostLiteralLength bounds the input BEFORE exact parsing.
+//
+// big.Rat.SetString on a caller-supplied literal is unbounded work: a
+// million-digit integer allocates proportionally before any range check
+// could reject it. A legal row value needs 19 characters and a legal total
+// far fewer than this, so nothing real is excluded.
+const maxCostLiteralLength = 128
+
+// ErrCostRange reports a cost outside the range its destination can hold.
+var ErrCostRange = errors.New("cost is outside the range its column can store")
 
 // ParseUSD builds a USD from a decimal string.
 //
@@ -60,36 +68,107 @@ var ErrCostRange = errors.New("cost is outside the range numeric(18,8) can store
 // 1e-9 would mean silently accepting a value with more precision than the
 // column keeps.
 func ParseUSD(text string) (USD, error) {
+	amount, err := parseDecimal(text, USDIntegerDigits)
+	if err != nil {
+		return USD{}, err
+	}
+	return USD{amount: amount}, nil
+}
+
+// USDTotal is an aggregate of costs — a SUM, not a row value.
+//
+// It is a DISTINCT type because it has a different range. numeric(18,8)
+// bounds a stored row at ten integer digits, but SUM(cost_usd) returns
+// unconstrained numeric and a campaign total may legitimately exceed that.
+// Applying the row bound to a total would reject a correct sum for being
+// large, which is precisely what a total is for; sharing one type would
+// mean one of the two bounds is always wrong.
+type USDTotal struct {
+	amount *big.Rat
+}
+
+// ParseUSDTotal builds an aggregate total. Same scale as a row value, no
+// integer bound beyond the literal-length cap that keeps parsing finite.
+func ParseUSDTotal(text string) (USDTotal, error) {
+	amount, err := parseDecimal(text, 0) // 0 = no integer-digit bound
+	if err != nil {
+		return USDTotal{}, err
+	}
+	return USDTotal{amount: amount}, nil
+}
+
+// String renders the total at the column's scale.
+func (u USDTotal) String() string {
+	if u.amount == nil {
+		return zeroUSDText()
+	}
+	return u.amount.FloatString(USDFractionalDigits)
+}
+
+// IsZero reports an exact zero total.
+func (u USDTotal) IsZero() bool { return u.amount == nil || u.amount.Sign() == 0 }
+
+// Rat returns a copy, for the reason USD.Rat does.
+func (u USDTotal) Rat() *big.Rat {
+	if u.amount == nil {
+		return new(big.Rat)
+	}
+	return new(big.Rat).Set(u.amount)
+}
+
+// parseDecimal is the shared validator. maxIntegerDigits of 0 means
+// unbounded, which is the aggregate case.
+func parseDecimal(text string, maxIntegerDigits int) (*big.Rat, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return USD{}, errors.New("cost is empty; absence is a nil *USD, not an empty string")
+		return nil, errors.New("cost is empty; absence is a nil pointer, not an empty string")
+	}
+	// Length BEFORE exact parsing: big.Rat.SetString on a hostile literal
+	// allocates proportionally to its size, and no later range check can
+	// undo work already done.
+	if len(trimmed) > maxCostLiteralLength {
+		return nil, fmt.Errorf("%w: a %d-character cost literal exceeds the %d-character limit",
+			ErrCostRange, len(trimmed), maxCostLiteralLength)
 	}
 	if strings.HasPrefix(trimmed, "-") {
-		return USD{}, fmt.Errorf("cost %q is negative", text)
+		return nil, fmt.Errorf("cost %q is negative", text)
 	}
 	// Shape first, so the diagnosis matches the actual problem. Testing for
 	// "eE" before checking the shape reported "free" as exponent notation,
 	// which is confidently wrong rather than merely unhelpful.
 	if !plainDecimal.MatchString(trimmed) {
 		if exponentDecimal.MatchString(trimmed) {
-			return USD{}, fmt.Errorf("cost %q uses exponent notation; write it in plain decimal so the "+
+			return nil, fmt.Errorf("cost %q uses exponent notation; write it in plain decimal so the "+
 				"stored precision is visible in the value itself", text)
 		}
-		return USD{}, fmt.Errorf("cost %q is not a decimal number", text)
+		return nil, fmt.Errorf("cost %q is not a decimal number", text)
 	}
 	if fractionalDigits(trimmed) > USDFractionalDigits {
-		return USD{}, fmt.Errorf("%w: %q has more than %d fractional digits, which the column would "+
-			"round away", ErrCostRange, text, USDFractionalDigits)
+		return nil, fmt.Errorf("%w: %q has more than %d fractional digits, which would be rounded away",
+			ErrCostRange, text, USDFractionalDigits)
+	}
+	// Integer digits are counted from the TEXT, before parsing, so an
+	// oversized value is rejected without being built.
+	if maxIntegerDigits > 0 && integerDigits(trimmed) > maxIntegerDigits {
+		return nil, fmt.Errorf("%w: %q has more than %d integer digits", ErrCostRange, text, maxIntegerDigits)
 	}
 
 	amount, ok := new(big.Rat).SetString(trimmed)
 	if !ok {
-		return USD{}, fmt.Errorf("cost %q is not a decimal number", text)
+		return nil, fmt.Errorf("cost %q is not a decimal number", text)
 	}
-	if err := checkIntegerDigits(amount, text); err != nil {
-		return USD{}, err
+	return amount, nil
+}
+
+// integerDigits counts the digits before the decimal point, ignoring
+// leading zeros so "007.5" is one integer digit rather than three.
+func integerDigits(text string) int {
+	integer, _, _ := strings.Cut(text, ".")
+	trimmed := strings.TrimLeft(integer, "0")
+	if trimmed == "" {
+		return 1
 	}
-	return USD{amount: amount}, nil
+	return len(trimmed)
 }
 
 // MustParseUSD is ParseUSD for literals in tests and fixed constants.
@@ -134,15 +213,6 @@ func fractionalDigits(text string) int {
 		return 0
 	}
 	return len(fraction)
-}
-
-// checkIntegerDigits enforces numeric(18,8)'s integer bound.
-func checkIntegerDigits(amount *big.Rat, text string) error {
-	integer := new(big.Int).Quo(amount.Num(), amount.Denom())
-	if len(integer.String()) > USDIntegerDigits {
-		return fmt.Errorf("%w: %q has more than %d integer digits", ErrCostRange, text, USDIntegerDigits)
-	}
-	return nil
 }
 
 func zeroUSDText() string {
