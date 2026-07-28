@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"orchestrator/internal/dataplane/gen"
@@ -126,9 +127,10 @@ func seedEvents(t *testing.T, f *fixture, org uuid.UUID) {
 func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	queries := gen.New(f.pool)
 	org := f.organizationID
 	before := pgtype.Timestamptz{Time: horizon(), Valid: true}
+	seedQueries := gen.New(f.pool)
+	_ = seedQueries
 
 	// --- LLM calls: deletable, open, referenced, open-and-referenced ----
 	deletableLLM := seedLLMCall(t, f, org, true)
@@ -145,6 +147,12 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 	// this pass -- the cascade.
 	cascadedLLM := seedLLMCall(t, f, org, true)
 	cascadedTool := seedToolCall(t, f, org, true, &cascadedLLM)
+
+	// THE PRECEDENCE COLLISION: open AND referenced at once. Without a row
+	// in this state, a count that put such a row in both buckets would
+	// still reconcile, and the precedence rule would be untested.
+	openReferencedLLM := seedLLMCall(t, f, org, false)
+	seedToolCall(t, f, org, false, &openReferencedLLM)
 
 	// --- tool calls: deletable, open, referenced ------------------------
 	deletableTool := seedToolCall(t, f, org, true, nil)
@@ -167,6 +175,21 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 		t.Fatalf("create citing management artifact: %v", err)
 	}
 
+	// The tool-call collision: open AND cited by a durable artifact.
+	openReferencedTool := seedToolCall(t, f, org, false, nil)
+	if _, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Payload:              json.RawMessage(`{"title":"cites an open tool call"}`),
+		ProducedByToolCallID: &openReferencedTool,
+		Type:                 testType,
+		Summary:              "durable provenance for an open call",
+		Scope:                f.scope(),
+		OrganizationID:       org,
+		UserID:               f.userID,
+		AuthorInstanceID:     f.author,
+	}); err != nil {
+		t.Fatalf("create second citing artifact: %v", err)
+	}
+
 	// --- audit artifacts: deletable and pinned --------------------------
 	deletableArtifact := seedAuditArtifact(t, f, org, nil)
 	pinnedArtifact := seedAuditArtifact(t, f, org, nil)
@@ -181,7 +204,20 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 
 	seedEvents(t, f, org)
 
-	// --- run in dependency order ----------------------------------------
+	// --- run in dependency order, in ONE REPEATABLE READ transaction ----
+	//
+	// The isolation level is part of the contract, not an implementation
+	// detail. At READ COMMITTED every statement takes a fresh snapshot, so
+	// the counts and the deletes would see four different instants and a
+	// row protected when the pass began could still be removed. Running
+	// these on the pool -- as an earlier version of this test did -- proves
+	// the predicates and not the operation.
+	tx, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin repeatable read: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	queries := gen.New(f.pool).WithTx(tx)
 	auditEventCandidates, err := queries.CountAuditEventCandidates(ctx,
 		gen.CountAuditEventCandidatesParams{OrganizationID: pgUUID(org), Before: before})
 	if err != nil {
@@ -254,6 +290,25 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("truncate llm calls: %v", err)
 	}
+
+	// --- exact bucket values, not only the identity ---------------------
+	//
+	// The identity alone would accept a count that put an open-and-
+	// referenced row in both buckets IF no such row existed. One does now,
+	// and precedence says it belongs to open only.
+	if llmCounts.RetainedOpen != 2 || llmCounts.RetainedReferenced != 1 {
+		t.Errorf("llm buckets = %d open, %d referenced; want 2 and 1. An open-and-referenced call belongs "+
+			"to OPEN alone: being referenced does not make a call that is still running less of an "+
+			"operational problem.", llmCounts.RetainedOpen, llmCounts.RetainedReferenced)
+	}
+	if toolCounts.RetainedOpen != 4 || toolCounts.RetainedReferenced != 1 {
+		t.Errorf("tool buckets = %d open, %d referenced; want 4 and 1",
+			toolCounts.RetainedOpen, toolCounts.RetainedReferenced)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit truncation: %v", err)
+	}
 	if got := llmDeleted + llmCounts.RetainedOpen + llmCounts.RetainedReferenced; got != llmCounts.Candidates {
 		t.Errorf("llm calls do not reconcile: %d deleted + %d open + %d referenced = %d, want %d",
 			llmDeleted, llmCounts.RetainedOpen, llmCounts.RetainedReferenced, got, llmCounts.Candidates)
@@ -265,6 +320,12 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 	}
 	if !rowExists(t, f, "llm_calls", "llm_call_id", referencedLLM) {
 		t.Error("an llm call referenced by a surviving (open) tool call was deleted")
+	}
+	if !rowExists(t, f, "llm_calls", "llm_call_id", openReferencedLLM) {
+		t.Error("an open-and-referenced llm call was deleted")
+	}
+	if !rowExists(t, f, "tool_calls", "tool_call_id", openReferencedTool) {
+		t.Error("an open-and-referenced tool call was deleted")
 	}
 	if !rowExists(t, f, "tool_calls", "tool_call_id", openTool) {
 		t.Error("an open tool call was deleted")
@@ -301,60 +362,135 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 }
 
 // TestTruncationIsOrganizationScoped is the multi-tenant boundary on the
-// destructive path. A single-organization test passes against statements
-// that omit the column entirely.
+// destructive path.
+//
+// It exercises the COUNTS as well as the deletes: an earlier version ran
+// only the deletes, so removing organization_id from any candidate-count
+// query stayed green — and a count is what an operator reads before
+// deciding to run the delete. It also seeds every table in both
+// organizations, since a check for tool-call isolation that seeds no tool
+// calls asserts nothing.
 func TestTruncationIsOrganizationScoped(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	queries := gen.New(f.pool)
 	before := pgtype.Timestamptz{Time: horizon(), Valid: true}
 
-	mine := seedLLMCall(t, f, f.organizationID, true)
-	theirs := seedLLMCall(t, f, f.otherOrgID, true)
-	seedEvents(t, f, f.organizationID)
-	seedEvents(t, f, f.otherOrgID)
-	theirArtifact := seedAuditArtifact(t, f, f.otherOrgID, nil)
+	// Seed both organizations identically across every table.
+	seeded := map[uuid.UUID]struct{ llm, tool, artifact uuid.UUID }{}
+	for _, org := range []uuid.UUID{f.organizationID, f.otherOrgID} {
+		llm := seedLLMCall(t, f, org, true)
+		tool := seedToolCall(t, f, org, true, nil)
+		artifact := seedAuditArtifact(t, f, org, nil)
+		seedEvents(t, f, org)
+		seeded[org] = struct{ llm, tool, artifact uuid.UUID }{llm, tool, artifact}
+	}
 
-	for _, truncate := range []func() error{
-		func() error {
-			_, err := queries.TruncateAuditEvents(ctx,
-				gen.TruncateAuditEventsParams{OrganizationID: pgUUID(f.organizationID), Before: before})
-			return err
-		},
-		func() error {
-			_, err := queries.TruncateMetricEvents(ctx,
-				gen.TruncateMetricEventsParams{OrganizationID: pgUUID(f.organizationID), Before: before})
-			return err
-		},
-		func() error {
-			_, err := queries.TruncateAuditArtifacts(ctx,
-				gen.TruncateAuditArtifactsParams{OrganizationID: pgUUID(f.organizationID), Before: before})
-			return err
-		},
-		func() error {
-			_, err := queries.TruncateToolCalls(ctx,
-				gen.TruncateToolCallsParams{OrganizationID: pgUUID(f.organizationID), Before: before})
-			return err
-		},
-		func() error {
-			_, err := queries.TruncateLLMCalls(ctx,
-				gen.TruncateLLMCallsParams{OrganizationID: pgUUID(f.organizationID), Before: before})
-			return err
-		},
+	mine := pgUUID(f.organizationID)
+	tx, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	queries := gen.New(f.pool).WithTx(tx)
+
+	// Every count must see ONE row -- this organization's -- not two.
+	// Seeding both organizations identically is what makes that assertion
+	// discriminate: an unscoped count returns 2.
+	auditEvents, err := queries.CountAuditEventCandidates(ctx,
+		gen.CountAuditEventCandidatesParams{OrganizationID: mine, Before: before})
+	if err != nil {
+		t.Fatalf("count audit events: %v", err)
+	}
+	metricEvents, err := queries.CountMetricEventCandidates(ctx,
+		gen.CountMetricEventCandidatesParams{OrganizationID: mine, Before: before})
+	if err != nil {
+		t.Fatalf("count metric events: %v", err)
+	}
+	artifacts, err := queries.CountAuditArtifactTruncation(ctx,
+		gen.CountAuditArtifactTruncationParams{OrganizationID: mine, Before: before})
+	if err != nil {
+		t.Fatalf("count audit artifacts: %v", err)
+	}
+	tools, err := queries.CountToolCallTruncation(ctx,
+		gen.CountToolCallTruncationParams{OrganizationID: mine, Before: before})
+	if err != nil {
+		t.Fatalf("count tool calls: %v", err)
+	}
+	calls, err := queries.CountLLMCallTruncation(ctx,
+		gen.CountLLMCallTruncationParams{OrganizationID: mine, Before: before})
+	if err != nil {
+		t.Fatalf("count llm calls: %v", err)
+	}
+
+	for name, got := range map[string]int64{
+		"audit events":    auditEvents,
+		"metric events":   metricEvents,
+		"audit artifacts": artifacts.Candidates,
+		"tool calls":      tools.Candidates,
+		"llm calls":       calls.Candidates,
 	} {
-		if err := truncate(); err != nil {
-			t.Fatalf("truncate: %v", err)
+		if got != 1 {
+			t.Errorf("%s: counted %d candidates, want 1. Both organizations were seeded identically, so a "+
+				"count that returns 2 is not organization-scoped -- and a count is what an operator reads "+
+				"before deciding to run the delete.", name, got)
 		}
 	}
 
-	if rowExists(t, f, "llm_calls", "llm_call_id", mine) {
-		t.Error("this organization's deletable call survived its own truncation")
+	// Then the deletes.
+	for name, del := range map[string]func() (int64, error){
+		"audit events": func() (int64, error) {
+			return queries.TruncateAuditEvents(ctx, gen.TruncateAuditEventsParams{OrganizationID: mine, Before: before})
+		},
+		"metric events": func() (int64, error) {
+			return queries.TruncateMetricEvents(ctx, gen.TruncateMetricEventsParams{OrganizationID: mine, Before: before})
+		},
+		"audit artifacts": func() (int64, error) {
+			return queries.TruncateAuditArtifacts(ctx, gen.TruncateAuditArtifactsParams{OrganizationID: mine, Before: before})
+		},
+		"tool calls": func() (int64, error) {
+			return queries.TruncateToolCalls(ctx, gen.TruncateToolCallsParams{OrganizationID: mine, Before: before})
+		},
+		"llm calls": func() (int64, error) {
+			return queries.TruncateLLMCalls(ctx, gen.TruncateLLMCallsParams{OrganizationID: mine, Before: before})
+		},
+	} {
+		deleted, err := del()
+		if err != nil {
+			t.Fatalf("truncate %s: %v", name, err)
+		}
+		if deleted != 1 {
+			t.Errorf("%s: deleted %d rows, want exactly 1 (this organization's)", name, deleted)
+		}
 	}
-	if !rowExists(t, f, "llm_calls", "llm_call_id", theirs) {
-		t.Error("another organization's call was deleted by this organization's truncation")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
 	}
-	if !rowExists(t, f, "audit_artifacts", "artifact_id", theirArtifact) {
-		t.Error("another organization's audit artifact was deleted")
+
+	// Mine gone, theirs untouched, on every table.
+	ours, theirs := seeded[f.organizationID], seeded[f.otherOrgID]
+	for _, gone := range []struct {
+		table, column string
+		id            uuid.UUID
+	}{
+		{"llm_calls", "llm_call_id", ours.llm},
+		{"tool_calls", "tool_call_id", ours.tool},
+		{"audit_artifacts", "artifact_id", ours.artifact},
+	} {
+		if rowExists(t, f, gone.table, gone.column, gone.id) {
+			t.Errorf("this organization's %s survived its own truncation", gone.table)
+		}
+	}
+	for _, kept := range []struct {
+		table, column string
+		id            uuid.UUID
+	}{
+		{"llm_calls", "llm_call_id", theirs.llm},
+		{"tool_calls", "tool_call_id", theirs.tool},
+		{"audit_artifacts", "artifact_id", theirs.artifact},
+	} {
+		if !rowExists(t, f, kept.table, kept.column, kept.id) {
+			t.Errorf("another organization's %s was deleted by this organization's truncation", kept.table)
+		}
 	}
 	for _, table := range []string{"metric_events", "audit_events"} {
 		var remaining int
@@ -362,8 +498,8 @@ func TestTruncationIsOrganizationScoped(t *testing.T) {
 			`SELECT count(*) FROM `+table+` WHERE organization_id = $1`, f.otherOrgID).Scan(&remaining); err != nil {
 			t.Fatalf("count %s: %v", table, err)
 		}
-		if remaining == 0 {
-			t.Errorf("another organization's %s were deleted", table)
+		if remaining != 1 {
+			t.Errorf("another organization has %d %s remaining, want 1", remaining, table)
 		}
 	}
 }
