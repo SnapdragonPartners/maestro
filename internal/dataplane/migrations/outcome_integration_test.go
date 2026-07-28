@@ -160,13 +160,20 @@ func TestOutcomeMigrationRefusesToInventAnOutcome(t *testing.T) {
 		t.Fatalf("recovery re-run failed, so the migration's own instructions do not work: %v", upErr)
 	}
 
+	// Deliberately NOT pinned to a specific head: migrations are appended
+	// over time, and a test that hardcodes the head fails every time one
+	// lands, for a reason unrelated to what it checks. What matters is that
+	// the database is clean, has advanced past the migration that failed,
+	// and -- the part metadata cannot show -- actually gained the DDL.
 	version, dirty, versionErr = migrations.Version(dsn)
 	if versionErr != nil {
 		t.Fatalf("read version after recovery: %v", versionErr)
 	}
-	if dirty || version != versionBeforeOutcome+1 {
-		t.Fatalf("after recovery version = %d dirty = %v, want %d and clean",
-			version, dirty, versionBeforeOutcome+1)
+	if dirty {
+		t.Fatal("the database is still dirty after the documented recovery")
+	}
+	if version < versionBeforeOutcome+1 {
+		t.Fatalf("after recovery version = %d, want at least %d", version, versionBeforeOutcome+1)
 	}
 
 	// Metadata alone is not evidence the migration ran. Forcing to 11
@@ -465,5 +472,56 @@ func TestRowLocalConstraints(t *testing.T) {
 				t.Fatalf("the positive control was rejected, so the constraint refuses valid rows: %v", err)
 			}
 		})
+	}
+}
+
+// TestCallFamilyIndexesExist pins migration 12's index plan.
+//
+// Each entry is a promised read shape from the item 5 design. An index that
+// silently fails to be created, or is renamed without the design following,
+// leaves the query planner falling back to a sequential scan over the
+// largest tables in the system -- which is slow rather than wrong, and so
+// shows up as a production surprise rather than a red test.
+func TestCallFamilyIndexesExist(t *testing.T) {
+	dsn := disposableDatabase(t)
+	db := openDB(t, dsn)
+
+	for _, index := range []string{
+		"llm_calls_org_story_time_idx",
+		"tool_calls_org_story_time_idx",
+		"llm_calls_org_principal_time_idx",
+		"tool_calls_org_principal_time_idx",
+		"llm_calls_org_time_idx",
+		"tool_calls_org_time_idx",
+		"llm_calls_org_cohort_time_idx",
+		"metric_events_org_time_idx",
+		"audit_events_org_time_idx",
+		"llm_calls_org_finished_idx",
+		"tool_calls_org_finished_idx",
+		"llm_calls_org_open_started_idx",
+		"tool_calls_org_open_started_idx",
+		"audit_artifacts_org_created_idx",
+	} {
+		var present bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = $1)`,
+			index).Scan(&present); err != nil {
+			t.Fatalf("read index %s: %v", index, err)
+		}
+		if !present {
+			t.Errorf("index %s is absent; the read shape it serves falls back to a sequential scan", index)
+		}
+	}
+
+	// The model-only index from item 3 is RETAINED: model is not a prefix
+	// of the cohort index, so the composite cannot serve a model-only
+	// lookup, and dropping it would be a separate decision.
+	var modelIndex bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'llm_calls_model_idx')`).
+		Scan(&modelIndex); err != nil {
+		t.Fatalf("read model index: %v", err)
+	}
+	if !modelIndex {
+		t.Error("llm_calls_model_idx was dropped; it is not a prefix of the cohort index, so the composite " +
+			"cannot replace it")
 	}
 }
