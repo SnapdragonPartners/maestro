@@ -97,6 +97,27 @@ func Force(dsn string, version int) (err error) {
 		}
 	}()
 
+	// Refuse a clean database. This exists to repair a DIRTY version, and
+	// forcing a clean one is how a schema and its recorded version come to
+	// disagree -- with nothing able to detect it afterwards.
+	//
+	// Not hypothetical: forcing a clean plane from 11 to 10 is exactly the
+	// mistake made while first exercising this, and the following migrate
+	// then failed re-adding columns that already existed.
+	//
+	// The check lives here rather than in the stack wrapper because it is a
+	// property of the repair primitive: every caller wants it, and a guard
+	// only the wrapper applies is one a direct caller skips.
+	current, dirty, versionErr := Version(dsn)
+	if versionErr != nil {
+		return fmt.Errorf("read current schema version: %w", versionErr)
+	}
+	if !dirty {
+		return fmt.Errorf("schema version %d is not dirty, so there is nothing to repair; "+
+			"forcing a clean database makes its recorded version disagree with its actual schema, "+
+			"which no later migration can detect", current)
+	}
+
 	if forceErr := m.Force(version); forceErr != nil {
 		return fmt.Errorf("force schema version to %d: %w", version, forceErr)
 	}

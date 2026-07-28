@@ -178,25 +178,10 @@ func ForceVersion(c *Config, version int) (err error) {
 		return dsnErr
 	}
 
-	// Refuse a clean database. This surface exists to repair a DIRTY
-	// version, and forcing a clean one is how the schema and its recorded
-	// version come to disagree -- with nothing able to detect it afterwards.
-	//
-	// Not hypothetical: forcing a clean plane from 11 to 10 is exactly the
-	// mistake made while first exercising this command, and the following
-	// migrate then failed trying to re-add columns that already existed.
-	// The check is read under the lifecycle lock, so a concurrent migrate
-	// cannot change the answer between reading and acting on it.
-	current, dirty, versionErr := migrations.Version(dsn)
-	if versionErr != nil {
-		return fmt.Errorf("read current schema version: %w", versionErr)
-	}
-	if !dirty {
-		return fmt.Errorf("schema version %d is not dirty, so there is nothing to repair; "+
-			"forcing a clean database makes its recorded version disagree with its actual schema, "+
-			"which no later migration can detect", current)
-	}
-
+	// The clean-database refusal lives in migrations.Force, so a direct
+	// caller cannot skip it. This wrapper adds the lifecycle lock, which is
+	// what makes the read-then-act inside it safe against a concurrent
+	// migrate.
 	if err := migrations.Force(dsn, version); err != nil {
 		return fmt.Errorf("force data plane schema version: %w", err)
 	}

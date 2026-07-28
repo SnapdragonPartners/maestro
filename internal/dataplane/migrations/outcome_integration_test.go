@@ -304,3 +304,46 @@ func TestOutcomeConstraintsRejectIncoherentRows(t *testing.T) {
 		})
 	}
 }
+
+// TestForceRefusesACleanSchema covers the guard added after an observed
+// schema break: forcing a CLEAN database is how its recorded version comes
+// to disagree with its actual schema, and nothing afterwards can detect it.
+//
+// The lifecycle test proves only that stack.ForceVersion blocks on the
+// lock; it never reaches this branch. Without this test, removing the
+// refusal leaves every suite green.
+func TestForceRefusesACleanSchema(t *testing.T) {
+	dsn := disposableDatabase(t) // migrated to head, clean
+	db := openDB(t, dsn)
+
+	before, dirty, err := migrations.Version(dsn)
+	if err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if dirty {
+		t.Fatalf("a freshly migrated database is dirty at v%d; this test needs a clean one", before)
+	}
+
+	forceErr := migrations.Force(dsn, int(before)-1)
+	if forceErr == nil {
+		t.Fatal("forcing a clean database was permitted; that is how a schema and its recorded version " +
+			"come to disagree, with nothing able to detect it afterwards")
+	}
+	if !strings.Contains(forceErr.Error(), "not dirty") {
+		t.Fatalf("refused for the wrong reason: %v", forceErr)
+	}
+
+	// The metadata must be untouched: a refusal that still wrote would be
+	// worse than no refusal, because the error would say it had not.
+	after, afterDirty, err := migrations.Version(dsn)
+	if err != nil {
+		t.Fatalf("read version after refusal: %v", err)
+	}
+	if after != before || afterDirty {
+		t.Fatalf("after a refused force version = %d dirty = %v, want %d and clean", after, afterDirty, before)
+	}
+
+	// And the schema itself, since a version can be right while the DDL is
+	// not — the divergence this guard exists to prevent.
+	assertOutcomeSchemaPresent(t, db)
+}
