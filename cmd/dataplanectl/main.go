@@ -50,9 +50,13 @@ func usage() {
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
   reset    stop the containers and DELETE the contents of the data directories
-  force-version -version <n>
-           repair a DIRTY schema version by recording <n> without running
-           migrations; for recovering from a failed migration
+  force-version
+           repair a DIRTY schema version by recording a version without
+           running migrations, for recovering from a failed migration.
+           Requires -version, which -- like every flag here -- must come
+           BEFORE the command, since Go's flag parsing stops at the first
+           positional argument:
+               dataplanectl -version 10 force-version
   migrate  apply pending migrations to an already-running stack
 
 flags:
