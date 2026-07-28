@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+
+	"orchestrator/internal/dataplane/store"
 )
 
 // This file is design D9's boundary: pgtype goes no further up than here.
@@ -52,6 +54,15 @@ func fromNullUUID(id pgtype.UUID) *uuid.UUID {
 	}
 	value := uuid.UUID(id.Bytes)
 	return &value
+}
+
+// toTimestamptz converts a domain time the schema guarantees is present.
+//
+// Removed once as unused and restored when the aggregate's mandatory window
+// gave it a consumer -- the window bounds are required, so they are never
+// the nullable form.
+func toTimestamptz(at time.Time) pgtype.Timestamptz {
+	return pgtype.Timestamptz{Time: at, Valid: true}
 }
 
 // toNullTimestamptz converts an optional domain time.
@@ -130,4 +141,79 @@ func fromNullString(value *string) *string {
 	}
 	copied := *value
 	return &copied
+}
+
+// --- money -----------------------------------------------------------------
+//
+// The D9 boundary for cost. numeric crosses the driver as pgtype.Numeric,
+// which carries an arbitrary-precision integer and an exponent; the domain
+// types are store.USD for a row value and store.USDTotal for an aggregate,
+// which have different ranges and so cannot share one conversion.
+//
+// Both directions go through the DECIMAL TEXT, never through float64.
+// pgtype.Numeric offers a Float64Value method and using it here would
+// silently undo the entire reason cost is stored exactly.
+
+// toNumeric converts a row cost for writing.
+func toNumeric(cost *store.USD) (pgtype.Numeric, error) {
+	if cost == nil {
+		return pgtype.Numeric{}, nil
+	}
+	var value pgtype.Numeric
+	if err := value.Scan(cost.String()); err != nil {
+		return pgtype.Numeric{}, fmt.Errorf("convert cost %s for storage: %w", cost, err)
+	}
+	return value, nil
+}
+
+// fromNumeric converts a nullable row cost, preserving absence as nil.
+//
+// Absence is load-bearing: on an open call it means the cost is not known
+// YET, and on a completed one that it is not knowable at all. Neither is
+// zero, which is a real measurement.
+func fromNumeric(value pgtype.Numeric) (*store.USD, error) {
+	text, ok, err := numericText(value)
+	if err != nil || !ok {
+		return nil, err
+	}
+	cost, err := store.ParseUSD(text)
+	if err != nil {
+		return nil, fmt.Errorf("read stored cost %q: %w", text, err)
+	}
+	return &cost, nil
+}
+
+// fromNumericTotal converts an aggregate. A SUM is not bounded by the row
+// column's typmod, so it parses under the aggregate's wider range.
+func fromNumericTotal(value pgtype.Numeric) (store.USDTotal, error) {
+	text, ok, err := numericText(value)
+	if err != nil {
+		return store.USDTotal{}, err
+	}
+	if !ok {
+		// COALESCE keeps the aggregate non-null, so this is defensive; an
+		// absent total reads as an exact zero rather than as an error.
+		return store.USDTotal{}, nil
+	}
+	total, err := store.ParseUSDTotal(text)
+	if err != nil {
+		return store.USDTotal{}, fmt.Errorf("read aggregate cost %q: %w", text, err)
+	}
+	return total, nil
+}
+
+// numericText renders a pgtype.Numeric as decimal text.
+func numericText(value pgtype.Numeric) (text string, present bool, err error) {
+	if !value.Valid {
+		return "", false, nil
+	}
+	rendered, err := value.Value()
+	if err != nil {
+		return "", false, fmt.Errorf("render numeric: %w", err)
+	}
+	asString, ok := rendered.(string)
+	if !ok {
+		return "", false, fmt.Errorf("numeric rendered as %T, want a decimal string", rendered)
+	}
+	return asString, true, nil
 }
