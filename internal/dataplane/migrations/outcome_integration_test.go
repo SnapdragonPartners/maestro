@@ -429,6 +429,17 @@ func TestRowLocalConstraints(t *testing.T) {
 			wantCon: "metric_events_value_finite_check",
 		},
 		{
+			// Both infinities, separately: the constraint is a conjunction,
+			// so a case for only one leaves the other conjunct removable
+			// with the suite still green.
+			name: "negative infinite metric value",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', '-Infinity'::float8)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', -1e308)`,
+			wantCon: "metric_events_value_finite_check",
+		},
+		{
 			name: "blank audit event type",
 			bad: `INSERT INTO audit_events (audit_event_id, organization_id, principal_instance_id, event_type)
 				VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, E'\t\n')`,

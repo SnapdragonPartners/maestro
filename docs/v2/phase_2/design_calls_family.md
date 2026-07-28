@@ -232,16 +232,7 @@ Truncation is the only operation here that needs this, being the only one at `RE
 
 Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is the first real consumer, and Phase 1B's economic comparison is where aggregate shapes get chosen against a real question. Anything not listed waits for a caller, on the rule item 3 applied to tables and the registry applies to types.
 
-**The read matrix is per table, because the tables do not carry the same columns.** The first draft offered "by Story" across the family, which `audit_events` cannot serve:
-
-| Read | `llm_calls` | `tool_calls` | `metric_events` | `audit_events` |
-| --- | --- | --- | --- | --- |
-| By principal instance | yes | yes | yes | yes |
-| By Story | yes | yes | yes | **no — no work lineage exists** |
-| By time range | `started_at` | `started_at` | `recorded_at` | `occurred_at` |
-| By type | by `(provider, model)` | by `tool_name` | by `metric_name` | by `event_type` |
-
-`audit_events` is reachable by organization, user, principal and time only. Offering a Story filter would mean inventing one, and the honest alternative — joining through the principal instance — answers a different question ("events by the agent that also worked on this Story") and must not be presented as the same one.
+**The read matrix is per table, because the tables do not carry the same columns** — most visibly `audit_events`, which has no work lineage at all and so can never be queried by Story. The retained surface and its indexes are the table below; it is the whole contract, and nothing outside it is offered.
 
 **Every list read is bounded.** These are the largest tables in the system and the first draft's matrix implied unbounded scans over them. So:
 
@@ -256,12 +247,14 @@ Aggregates take a **mandatory time window** and their `(provider, model)` cohort
 | --- | --- | --- | --- |
 | Calls by Story | item 9 import verification | `org, story` → `started_at, id` | `llm_calls (organization_id, story_id, started_at, llm_call_id)`; same shape on `tool_calls` |
 | Calls by principal | ADR 0021 MPH analysis | `org, principal` → `started_at, id` | `llm_calls (organization_id, principal_instance_id, started_at, llm_call_id)`; same on `tool_calls` |
-| Calls in a window | Phase 1B, truncation preview | `org` → `started_at, id` | covered by the cohort index below for `llm_calls`; `tool_calls (organization_id, started_at, tool_call_id)` |
+| Calls in a window | Phase 1B, truncation preview | `org` → `started_at, id` | `llm_calls (organization_id, started_at, llm_call_id)`; same shape on `tool_calls` |
 | Cost aggregate | Phase 1B | `org, provider, model, window` | `llm_calls (organization_id, provider, model, started_at)` |
 | Events in a window | truncation, operations | `org` → `ts, id` | `metric_events (organization_id, recorded_at, metric_event_id)`; `audit_events (organization_id, occurred_at, audit_event_id)` |
 | Truncation: completed calls | D6 | `org, finished_at` | `llm_calls (organization_id, finished_at, llm_call_id)`; same on `tool_calls` |
 | Truncation: old open calls | D6 | `org, started_at` where open | partial: `llm_calls (organization_id, started_at) WHERE finished_at IS NULL`; same on `tool_calls` |
 | Truncation: audit artifacts | D6 | `org, created_at` | `audit_artifacts (organization_id, created_at, artifact_id)` |
+
+**The cohort index cannot serve the generic window read**, and an earlier draft claimed it could. `(organization_id, provider, model, started_at)` puts `provider` and `model` between the organization and the timestamp, so a predicate naming only the organization cannot use the index's ordering on `started_at` — the prefix is interrupted. The two reads need two indexes; they differ in their predicate, not only in their projection.
 
 **Every keyset index ends in the primary key**, because the cursor is `(timestamp, id)` and an index without the tie-breaker cannot serve it — the first draft's list omitted the id on every one of them.
 
