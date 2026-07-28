@@ -352,3 +352,107 @@ func TestForceRefusesACleanSchema(t *testing.T) {
 	// not — the divergence this guard exists to prevent.
 	assertOutcomeSchemaPresent(t, db)
 }
+
+// TestRowLocalConstraints covers the backstops migration 11 adds for facts
+// true of one row. Each case writes DIRECTLY, bypassing the seam, because
+// the seam's own validation would otherwise make these vacuous — and a
+// constraint is only a backstop if something reaches it.
+//
+// Every case has a positive control. Without one, a constraint that
+// rejected everything would satisfy the negative half.
+func TestRowLocalConstraints(t *testing.T) {
+	dsn := disposableDatabase(t)
+	db := openDB(t, dsn)
+	seedOpenLLMCall(t, db)
+
+	const (
+		org       = "'11111111-1111-4111-8111-111111111111'"
+		principal = "'22222222-2222-4222-8222-222222222222'"
+	)
+
+	cases := []struct {
+		name    string
+		bad     string
+		good    string
+		wantCon string
+	}{
+		{
+			name:    "blank llm provider",
+			bad:     `UPDATE llm_calls SET provider = E'\t ' WHERE llm_call_id = ` + llmCallID,
+			good:    `UPDATE llm_calls SET provider = 'anthropic' WHERE llm_call_id = ` + llmCallID,
+			wantCon: "llm_calls_names_nonblank_check",
+		},
+		{
+			name:    "blank llm model",
+			bad:     `UPDATE llm_calls SET model = '   ' WHERE llm_call_id = ` + llmCallID,
+			good:    `UPDATE llm_calls SET model = 'sonnet' WHERE llm_call_id = ` + llmCallID,
+			wantCon: "llm_calls_names_nonblank_check",
+		},
+		{
+			// numeric admits 'NaN', and NaN = NaN is TRUE in Postgres, so
+			// the usual self-comparison would not have caught this.
+			name:    "NaN cost",
+			bad:     `UPDATE llm_calls SET cost_usd = 'NaN'::numeric WHERE llm_call_id = ` + llmCallID,
+			good:    `UPDATE llm_calls SET cost_usd = 1.25 WHERE llm_call_id = ` + llmCallID,
+			wantCon: "llm_calls_cost_finite_check",
+		},
+		{
+			name:    "blank tool name",
+			bad:     `UPDATE tool_calls SET tool_name = E'\n' WHERE tool_call_id = ` + toolCallID,
+			good:    `UPDATE tool_calls SET tool_name = 'shell' WHERE tool_call_id = ` + toolCallID,
+			wantCon: "tool_calls_name_nonblank_check",
+		},
+		{
+			name: "blank metric name",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, '  ', 1.0)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'tokens', 1.0)`,
+			wantCon: "metric_events_name_nonblank_check",
+		},
+		{
+			// double precision admits NaN and both infinities; one
+			// non-finite value poisons every aggregate that touches it.
+			name: "non-finite metric value",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', 'NaN'::float8)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', 0.5)`,
+			wantCon: "metric_events_value_finite_check",
+		},
+		{
+			name: "infinite metric value",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', 'Infinity'::float8)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', -3.5)`,
+			wantCon: "metric_events_value_finite_check",
+		},
+		{
+			name: "blank audit event type",
+			bad: `INSERT INTO audit_events (audit_event_id, organization_id, principal_instance_id, event_type)
+				VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, E'\t\n')`,
+			good: `INSERT INTO audit_events (audit_event_id, organization_id, principal_instance_id, event_type)
+				VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'agent.started')`,
+			wantCon: "audit_events_type_nonblank_check",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := db.Exec(testCase.bad)
+			if err == nil {
+				t.Fatal("the database accepted a row its constraints should refuse")
+			}
+			// Name the constraint, so a rejection by some unrelated rule --
+			// a null violation, a foreign key -- cannot masquerade as this
+			// one working.
+			if !strings.Contains(err.Error(), testCase.wantCon) {
+				t.Fatalf("rejected by something other than %s: %v", testCase.wantCon, err)
+			}
+			if _, err := db.Exec(testCase.good); err != nil {
+				t.Fatalf("the positive control was rejected, so the constraint refuses valid rows: %v", err)
+			}
+		})
+	}
+}

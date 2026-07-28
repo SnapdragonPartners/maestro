@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 5 Design: Calls, Metrics And Audit Events
 
-Status: **draft** — revised across eight Codex rounds. Carries one schema correction, migration 000011.
+Status: **draft** — revised across nine Codex rounds. Carries one schema correction, migration 000011.
 
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
@@ -250,18 +250,26 @@ Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is
 
 Aggregates take a **mandatory time window** and their `(provider, model)` cohort, so an aggregate always describes a stated population rather than "everything that happens to be retained".
 
-**Indexes.** The existing set was written for item 3's consumers and does not support these operations. Checked against the schema rather than assumed — `llm_calls` currently indexes `principal_instance_id`, `story_id`, `started_at` and `model` alone. The plan adds, in the same migration as the queries:
+**The read matrix is narrowed to shapes with a consumer, and every retained shape is indexed.** The first draft promised by-principal, by-Story, by-time and by-type across four tables — sixteen shapes, most with no caller, each needing its own composite index on the largest tables in the system. Applying the rule item 3 used for tables and the registry uses for types: a read waits for a consumer.
 
-| Index | Serves |
-| --- | --- |
-| `llm_calls (organization_id, finished_at)` | truncation's cutoff, which is `finished_at` not `started_at` |
-| `tool_calls (organization_id, finished_at)` | same |
-| `llm_calls (organization_id, provider, model, started_at)` | cost aggregates by cohort within a window |
-| `metric_events (organization_id, recorded_at)` | time-window reads and truncation |
-| `audit_events (organization_id, occurred_at)` | time-window reads and truncation |
-| `metric_events (principal_instance_id)`, `audit_events (principal_instance_id)` | by-principal reads, which have no index today |
+| Retained read | Consumer | Predicate → order | Index |
+| --- | --- | --- | --- |
+| Calls by Story | item 9 import verification | `org, story` → `started_at, id` | `llm_calls (organization_id, story_id, started_at, llm_call_id)`; same shape on `tool_calls` |
+| Calls by principal | ADR 0021 MPH analysis | `org, principal` → `started_at, id` | `llm_calls (organization_id, principal_instance_id, started_at, llm_call_id)`; same on `tool_calls` |
+| Calls in a window | Phase 1B, truncation preview | `org` → `started_at, id` | covered by the cohort index below for `llm_calls`; `tool_calls (organization_id, started_at, tool_call_id)` |
+| Cost aggregate | Phase 1B | `org, provider, model, window` | `llm_calls (organization_id, provider, model, started_at)` |
+| Events in a window | truncation, operations | `org` → `ts, id` | `metric_events (organization_id, recorded_at, metric_event_id)`; `audit_events (organization_id, occurred_at, audit_event_id)` |
+| Truncation: completed calls | D6 | `org, finished_at` | `llm_calls (organization_id, finished_at, llm_call_id)`; same on `tool_calls` |
+| Truncation: old open calls | D6 | `org, started_at` where open | partial: `llm_calls (organization_id, started_at) WHERE finished_at IS NULL`; same on `tool_calls` |
+| Truncation: audit artifacts | D6 | `org, created_at` | `audit_artifacts (organization_id, created_at, artifact_id)` |
 
-Each is organization-leading because every query is. `model` alone is superseded by the `(provider, model, …)` index and is dropped rather than left as a duplicate prefix nothing uses.
+**Every keyset index ends in the primary key**, because the cursor is `(timestamp, id)` and an index without the tie-breaker cannot serve it — the first draft's list omitted the id on every one of them.
+
+**Every index is organization-leading**, including the by-principal ones. The first draft claimed that and then listed `metric_events (principal_instance_id)` and `audit_events (principal_instance_id)` bare, contradicting itself in the same paragraph.
+
+**Dropped for want of a consumer**, not because they are unreasonable: by-type lists on `tool_name`, `metric_name` and `event_type`; by-Story and by-principal on the event tables. Each returns with the item that first needs it, together with its index.
+
+**`llm_calls (model)` is retained.** The first draft said it was superseded by the composite and could be dropped — that is wrong: `model` is not a *prefix* of `(organization_id, provider, model, started_at)`, so the composite cannot serve a model-only lookup. It stays as item 3 created it, and dropping it is a separate decision with its own evidence.
 
 **Aggregates.** Cost and token totals group by **`(provider, model)`** — never model alone, consistently with D5. The same model name is served by different providers at different prices, which is the premise of Phase 1's `paired-local` config; grouping on the name alone sums two price regimes into a figure describing neither.
 
