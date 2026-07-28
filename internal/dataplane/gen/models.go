@@ -106,6 +106,8 @@ type LlmCall struct {
 	CostUsd             pgtype.Numeric
 	StartedAt           pgtype.Timestamptz
 	FinishedAt          pgtype.Timestamptz
+	Succeeded           *bool
+	ErrorMessage        *string
 }
 
 type ManagementArtifact struct {

@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 5 Design: Calls, Metrics And Audit Events
 
-Status: **draft** — revised after Codex rounds 1 and 2 (six P1s, then five). For review before any query is written.
+Status: **draft** — revised after three Codex rounds (six P1s, then five, then three). Carries one schema correction, migration 000011.
 
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
@@ -42,15 +42,17 @@ No other column is updatable. There is no generic update, for the reason item 4 
 - `succeeded = true` **must not** carry an `error_message`. A successful call with an error recorded is a row no reader can interpret.
 - `succeeded = false` **must** carry a diagnostic. A failure with no reason is an audit record that answers nothing, and the failure path is exactly when someone reads it.
 
-### An LLM call has no success column, and that is a real limitation
+### LLM call outcome — a schema correction, not a note
 
-`CompleteLLMCall` records `finished_at`, the four token counters and `cost_usd`. There is **no `succeeded`, no `error_message` and no status** on `llm_calls` — checked, not assumed.
+`CompleteLLMCall` records `finished_at`, the four token counters, `cost_usd`, and now `succeeded` and `error_message`.
 
-So the plane cannot mark an LLM call failed. What this design does with that:
+The first draft left `llm_calls` with **no success, error or status column** and proposed recording provider failures as an `audit_event` naming the call. That does not work, and checking rather than assuming is what showed it: `audit_events` has **no `llm_call_id` column and no foreign key**, so the "link" would be an unenforced identifier buried in `detail` JSON. An unenforced pointer is not a closed gap; it is the same gap with a convention on top, and nothing would notice when a caller stopped honouring it.
 
-- Completion means **the call ended**, not that it succeeded. Stated here because the column name invites the other reading.
-- A provider failure is completed with the token counts actually incurred — often zero — and the failure itself is recorded as an `audit_event` naming the call. Cost and token accounting stay truthful; the *reason* lives in the Audit family, which is where reasons live.
-- The consequence is that a completed zero-token call and a failed call are **indistinguishable on the row**. That is a schema gap, not something the seam can paper over. Adding a status column is a migration and a later item's decision; inventing one here would put a column in the plane that no ADR asked for.
+Deferring it was also the wrong instinct for a second reason. Without an outcome column a completed zero-token call and a failed call are indistinguishable **on the row**, which corrupts precisely the cost and reliability aggregates this family exists to serve. That is not documentation debt; it is a family that cannot answer its own question.
+
+**Migration `000011_llm_call_outcome`** adds both columns and mirrors `tool_calls`' existing pairing, `CHECK ((finished_at IS NULL) = (succeeded IS NULL))` — append-only, per the phase's delegated decision 4. It backfills before adding the constraint so it is correct on a non-empty table, and records the assumption it must make: rows completed before the migration are presumed successful because no outcome is recoverable, so `succeeded = true` on them is not evidence of anything.
+
+Coherence **between** `succeeded` and `error_message` stays the seam's rule, exactly as for tool calls — a success must not carry an error, a failure must carry a diagnostic. The schema can express "finished implies an outcome"; it cannot express which pairings are meaningful.
 
 ## D2. Write invariants, per table
 
@@ -71,7 +73,14 @@ So:
 
 **Counters and cost.** `input/output/reasoning/cached_tokens` are `bigint`, non-negative by schema check; the seam narrows nothing. `cost_usd` is `numeric(18,8)` — see D5.
 
-`cost_usd` **null is load-bearing**: Phase 1's `paired-local` config reports `cost_usd: unavailable` for local models. Null means *not knowable*, not zero — the four-state metric discipline of ADR 0025 carried into the plane. A seam defaulting it to 0 would make free and unmeasured indistinguishable in exactly the aggregate the benchmark exists to compute.
+`cost_usd` **null is load-bearing, and means two different things depending on the row's state**:
+
+| Row state | `cost_usd` null means |
+| --- | --- |
+| Open (`finished_at IS NULL`) | **Pending** — the call has not ended, so no cost exists yet |
+| Completed | **Unavailable** — the call ended and its cost is not knowable, e.g. `paired-local`'s local models |
+
+Only the second is ADR 0025's *unmeasured*. Conflating them classifies in-flight usage as permanently unmeasured, which is how a running campaign would under-report its own cost and never correct itself. A seam defaulting either to 0 would additionally make free and unmeasured indistinguishable — in exactly the aggregate the benchmark exists to compute.
 
 ## D3. Provenance stays one atomic write
 
@@ -93,7 +102,7 @@ Enumerated before the queries are written, per `CLAUDE.md`:
 | --- | --- |
 | Lineage with a gap (Story without Epic) — `llm_calls`, `tool_calls`, `metric_events` | Violates the prefix chain; caller told which level is missing |
 | Work lineage supplied for `audit_events` | The columns do not exist; silently dropping it would be worse |
-| Tool call claiming another principal's or another Story's LLM call | Composite FK; translated to a domain error |
+| Tool call whose claimed LLM call fails the provenance key | Composite FK; translated to a generic `ErrInvalidProvenance`, which does not claim to know which of the four causes applied (D3) |
 | Negative tokens or cost | Schema check, refused early with the field named |
 | `cost_usd` supplied as a float | Precision loss on a reconciled number (D5) |
 | `cost_usd` whose integer part exceeds 10 digits | `numeric(18,8)` bounds TOTAL precision, not just the fraction (D5) |
@@ -150,7 +159,19 @@ The Audit family is truncatable by design, and this is where the phase can destr
 
 **`ON DELETE RESTRICT` raises an error rather than skipping.** A referenced row does not quietly survive a `DELETE`; it aborts the statement and takes the batch with it. Referenced rows must therefore be **excluded in the `WHERE`**, not discovered at commit. This is the single most important implementation consequence in this document.
 
-**The result reports each retention reason separately.** One delete count makes "nothing retained" and "everything retained" identical; one *retained* count makes "still running" and "pinned forever" identical. They are different situations with different responses.
+**The result reports each retention reason separately, and the reasons do not overlap.** One delete count makes "nothing retained" and "everything retained" identical; one *retained* count makes "still running" and "pinned forever" identical. They are different situations with different responses.
+
+But the reasons are **not naturally disjoint** — a call can be open *and* referenced at once — so independent counts would not sum to anything, and a reader adding them up would over-count. Each candidate is therefore assigned to **exactly one bucket by precedence**:
+
+**pinned → open → referenced**
+
+Open outranks referenced deliberately: a call open long past the horizon is an operational problem, and being referenced as well does not make it less so. Pinned outranks both, though it cannot currently collide with them, since only `audit_artifacts` is pinnable and it has no open state.
+
+The result therefore reconciles exactly:
+
+`candidates = deleted + retained_pinned + retained_open + retained_referenced`
+
+and the test asserts that identity rather than only the individual counts, because four numbers that each look plausible can still describe no consistent set of rows.
 
 **Testing.** Each table is seeded past the horizon in **the states that apply to it** — every table gets a deletable row; `audit_artifacts` also gets a pinned one; the call tables also get an open one and a referenced one. A test seeding only deletable rows passes against a delete with no guard clauses at all. Each guard also gets a **direct generated-query test**, since item 4 proved a backstop behind a working guard is unreachable through the normal path.
 
@@ -169,9 +190,29 @@ This is the same error item 4 shipped and had to fix, restated here because writ
 
 ## D8. Reads
 
-Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is the first real consumer, and Phase 1B's economic comparison is where aggregate shapes get chosen against a real question.
+Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is the first real consumer, and Phase 1B's economic comparison is where aggregate shapes get chosen against a real question. Anything not listed waits for a caller, on the rule item 3 applied to tables and the registry applies to types.
 
-Item 5 ships: by principal instance, by Story, by time range, and cost/token aggregates by model — the shapes Phase 1's D9 calibration already needed, each returning measured and unmeasured counts per D5. Anything else waits for a caller, on the rule item 3 applied to tables and the registry applies to types.
+**The read matrix is per table, because the tables do not carry the same columns.** The first draft offered "by Story" across the family, which `audit_events` cannot serve:
+
+| Read | `llm_calls` | `tool_calls` | `metric_events` | `audit_events` |
+| --- | --- | --- | --- | --- |
+| By principal instance | yes | yes | yes | yes |
+| By Story | yes | yes | yes | **no — no work lineage exists** |
+| By time range | `started_at` | `started_at` | `recorded_at` | `occurred_at` |
+| By type | by `(provider, model)` | by `tool_name` | by `metric_name` | by `event_type` |
+
+`audit_events` is reachable by organization, user, principal and time only. Offering a Story filter would mean inventing one, and the honest alternative — joining through the principal instance — answers a different question ("events by the agent that also worked on this Story") and must not be presented as the same one.
+
+**Aggregates.** Cost and token totals group by **`(provider, model)`** — never model alone, consistently with D5. The same model name is served by different providers at different prices, which is the premise of Phase 1's `paired-local` config; grouping on the name alone sums two price regimes into a figure describing neither.
+
+**Aggregates run over completed calls only, and report the open ones.** A `SUM` over all rows would fold pending calls into the unmeasured bucket, so every aggregate returns:
+
+- the total over completed calls,
+- the count of completed calls **with** a cost (measured),
+- the count of completed calls **without** one (unmeasured — genuinely not knowable),
+- the count of **open** calls excluded from the total (pending — not yet knowable).
+
+Three states, reported separately, because a campaign that under-reports its own cost while still running and never corrects itself is the failure mode this exists to prevent.
 
 ## Resolved: completed-call insertion and batch import both go to item 9
 
