@@ -129,8 +129,6 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 	ctx := context.Background()
 	org := f.organizationID
 	before := pgtype.Timestamptz{Time: horizon(), Valid: true}
-	seedQueries := gen.New(f.pool)
-	_ = seedQueries
 
 	// --- LLM calls: deletable, open, referenced, open-and-referenced ----
 	deletableLLM := seedLLMCall(t, f, org, true)
@@ -212,6 +210,12 @@ func TestTruncationReconcilesAndRespectsRetention(t *testing.T) {
 	// row protected when the pass began could still be removed. Running
 	// these on the pool -- as an earlier version of this test did -- proves
 	// the predicates and not the operation.
+	//
+	// This suite is single-threaded, so it would still pass at READ
+	// COMMITTED: what it pins is that the operation RUNS in one
+	// transaction, not that the isolation level is doing work. The
+	// behavioural proof is the store-level concurrency test, which drives
+	// two truncations at once and exercises the 40001 retry.
 	tx, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
 		t.Fatalf("begin repeatable read: %v", err)
