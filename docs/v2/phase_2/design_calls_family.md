@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 5 Design: Calls, Metrics And Audit Events
 
-Status: **draft** — revised after Codex round 1 (six P1s). For review before any query is written.
+Status: **draft** — revised after Codex rounds 1 and 2 (six P1s, then five). For review before any query is written.
 
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
@@ -31,11 +31,26 @@ The other difference is volume. ADR 0022 makes these the largest tables in the s
 
 `CreateLLMCall` / `CreateToolCall` write the open row: identity, principal, lineage, and the request-side facts (provider, model, tool name, arguments). `finished_at` is null and the outcome columns are unset.
 
-`CompleteLLMCall` records `finished_at`, the four token counters and `cost_usd`. `CompleteToolCall` records `finished_at`, `succeeded`, `result` and `error_message`.
+**Completion is once-only and idempotent**, on the shape of `StopPrincipalInstance` (item 4 D7): lock the row, classify in Go, write conditionally with `WHERE finished_at IS NULL`. Two paths can observe one call ending — a normal return and a supervisor's error handler — and the first outcome is the true one. A repeat returns **the recorded outcome with `Recorded: false`**, never an error, and a *conflicting* repeat returns the first outcome too. It is not a rejected case; a caller that cares reads the flag.
 
-**Completion is once-only and idempotent**, on the same shape as `StopPrincipalInstance` (item 4 D7): lock the row, classify in Go, write conditionally with `WHERE finished_at IS NULL`. Two paths can observe one call ending — a normal return and a supervisor's error handler — and the first outcome is the true one. A repeat call returns **the recorded outcome plus `Recorded: false`**, never an error, because a caller that genuinely cares can read the flag and a caller that does not should not fail.
+No other column is updatable. There is no generic update, for the reason item 4 has no generic status update.
 
-No other column is updatable. There is no generic update, for the same reason item 4 has no generic status update.
+### Tool call outcomes must cohere
+
+`CompleteToolCall` records `finished_at`, `succeeded`, `result` and `error_message`. The schema does not tie them together, so the seam does:
+
+- `succeeded = true` **must not** carry an `error_message`. A successful call with an error recorded is a row no reader can interpret.
+- `succeeded = false` **must** carry a diagnostic. A failure with no reason is an audit record that answers nothing, and the failure path is exactly when someone reads it.
+
+### An LLM call has no success column, and that is a real limitation
+
+`CompleteLLMCall` records `finished_at`, the four token counters and `cost_usd`. There is **no `succeeded`, no `error_message` and no status** on `llm_calls` — checked, not assumed.
+
+So the plane cannot mark an LLM call failed. What this design does with that:
+
+- Completion means **the call ended**, not that it succeeded. Stated here because the column name invites the other reading.
+- A provider failure is completed with the token counts actually incurred — often zero — and the failure itself is recorded as an `audit_event` naming the call. Cost and token accounting stay truthful; the *reason* lives in the Audit family, which is where reasons live.
+- The consequence is that a completed zero-token call and a failed call are **indistinguishable on the row**. That is a schema gap, not something the seam can paper over. Adding a status column is a migration and a later item's decision; inventing one here would put a column in the plane that no ADR asked for.
 
 ## D2. Write invariants, per table
 
@@ -64,7 +79,9 @@ So:
 
 The first draft proposed validating this before the insert. That is wrong twice: it adds a round trip to the hottest write path in the system, and it is a TOCTOU — the row it validated can change between the read and the write, so the check proves nothing the foreign key was not already proving.
 
-**The composite foreign key stays authoritative.** The seam issues one INSERT and maps the named constraint violation back to a domain error, so the caller still gets "this tool call claims an LLM call belonging to a different principal or a different Story" rather than a four-column constraint name. Mapping by **constraint name** (not by message text) keeps that stable across Postgres versions.
+**The composite foreign key stays authoritative.** The seam issues one INSERT and maps the named constraint violation to a domain error, matching on **constraint name** rather than message text so it stays stable across Postgres versions.
+
+The error is deliberately **generic — `ErrInvalidProvenance`** — because the constraint cannot honestly tell the causes apart. A violation means the claimed parent does not exist, *or* the principal differs, *or* the lineage differs (and `lineage_key` includes `user_id`, so that covers an accountable-user mismatch), *or* it belongs to another organization. Naming one of those would be a guess presented as a diagnosis. The error carries the four values the caller supplied so they can see what they claimed; it does not claim to know which part was wrong.
 
 This is the general rule for this family: where a constraint already expresses the invariant exactly, the seam translates its failure rather than duplicating its check.
 
@@ -79,57 +96,70 @@ Enumerated before the queries are written, per `CLAUDE.md`:
 | Tool call claiming another principal's or another Story's LLM call | Composite FK; translated to a domain error |
 | Negative tokens or cost | Schema check, refused early with the field named |
 | `cost_usd` supplied as a float | Precision loss on a reconciled number (D5) |
+| `cost_usd` whose integer part exceeds 10 digits | `numeric(18,8)` bounds TOTAL precision, not just the fraction (D5) |
 | Non-finite cost or metric value (NaN, ±Inf) | `numeric` has no NaN-safe ordering for our purposes and a non-finite cost is not a cost; refused before it can poison an aggregate |
 | Empty `provider`, `model` or `tool_name` | Unattributable call record; every MPH and cost aggregate groups by these |
 | Empty `metric_name` or `event_type` | An unnamed metric or event is unqueryable and silently useless |
-| Completing an already-completed call | Once-only; returns the recorded outcome with `Recorded: false` |
+| Tool call completed as succeeded but carrying an error message | Incoherent outcome; no reader can interpret it |
+| Tool call completed as failed with no diagnostic | The failure path is precisely when someone reads the record |
 | `finished_at` before `started_at` | Nonsense interval; no schema check exists, so the seam owns it |
 | Any write naming another organization's principal or lineage | Multi-tenant boundary, as item 4 |
 | Truncation without an explicit horizon | An unbounded delete should not be reachable by accident |
 
 ## D5. Cost is an exact decimal type
 
-Created now, in `store`, rather than deferred: item 5 writes it, item 9's import must not round on the way in, and Phase 1B's economic comparison is the reason the column exists.
+Created now, in `store`: item 5 writes it, item 9's import must not round on the way in, and Phase 1B's economic comparison is the reason the column exists.
 
-`store.USD` wraps an exact decimal and is **validated at construction** — not a freely castable string alias, which is a type that documents an intention rather than enforcing one. It parses from a decimal string, rejects non-finite and negative values, and carries at most 8 fractional digits to match `numeric(18,8)`. `float64` appears nowhere in the chain: binary64 cannot represent 8 decimal places exactly, and a cost that rounds is a cost that does not reconcile.
+`store.USD` wraps an exact decimal and is **validated at construction** — not a freely castable string alias, which documents an intention rather than enforcing one. It parses from a decimal string and rejects non-finite and negative values. `float64` appears nowhere in the chain: binary64 cannot represent 8 decimal places exactly, and a cost that rounds is a cost that does not reconcile.
 
-**The honest limit.** Item 9 imports from the Phase 1 runner, whose records carry cost as `float64` already. A new type cannot recover precision lost upstream. So the import path must either parse the **persisted numeric lexeme** where the runner preserved one, or apply a **single documented quantization** at the boundary — deterministic, applied once, and recorded as a lossy conversion rather than presented as an exact figure. Which of the two is available is a question for item 9's own design; item 5's obligation is to make sure the plane does not add loss of its own.
+**Write range and aggregate range are different, and conflating them breaks one of them.**
 
-**Aggregates must report completeness.** A `SUM(cost_usd)` silently skips nulls, so a partial total looks identical to a complete one. Every cost aggregate returns the sum **plus the measured and unmeasured call counts**. This is the same four-state discipline as the runner's metrics: unmeasured is a reportable state, not an absence.
+`numeric(18,8)` bounds **total** precision at 18 digits, of which 8 are fractional — so a stored value has at most **10 integer digits**. Validation on the write path enforces both bounds; the first draft mentioned only the fractional one, which would have let a value pass the seam and fail the column.
+
+An **aggregate is not bound by a row's typmod**. `SUM(cost_usd)` over a large campaign can exceed any single row's 10 integer digits, and Postgres returns unconstrained `numeric` for it. So the aggregate result type carries no typmod validation: applying the write-range rule to a sum would reject a correct total for being large, which is precisely what a total is for.
+
+**Aggregates group by `(provider, model)`, never model alone.** The same model name is served by more than one provider at different prices — that is the whole premise of Phase 1's `paired-local` config, where a local runner and a hosted API can answer to the same name. Grouping on model alone silently sums two price regimes into one figure that describes neither.
+
+**Aggregates report completeness.** `SUM` skips nulls, so a partial total is indistinguishable from a complete one. Every cost aggregate returns the sum **plus measured and unmeasured call counts** — the four-state discipline again: unmeasured is a reportable state, not an absence.
+
+**The honest limit.** Item 9 imports from the Phase 1 runner, whose records carry cost as `float64` already. No new type recovers precision lost upstream. The import must either parse the **persisted numeric lexeme** where the runner preserved one, or apply a **single documented quantization** at the boundary — deterministic, applied once, recorded as a lossy conversion rather than presented as exact. Which is available is item 9's question; item 5's obligation is that the plane adds no loss of its own.
 
 ## D6. Truncation
 
 The Audit family is truncatable by design, and this is where the phase can destroy what it promised to keep. Ship it in item 5: backup (item 8) is disaster recovery, not an undo mechanism, and Audit growth is the pressing problem.
 
-**Per-table horizons**, because the cutoff column differs and a single "before" against the wrong column silently deletes the wrong rows:
+**The first draft's pin guard could never fire.** Pins target `audit_artifacts` and `binary_attachments` — and neither table was in the truncation set, so "retained because pinned" was unreachable and its test would have been vacuous. `audit_artifacts` belongs here; attachments belong to item 6 with the object module, since deleting a row whose bytes live in object storage is that item's commit-order problem.
 
-| Table | Cutoff column | Dependents |
-| --- | --- | --- |
-| `audit_events` | `occurred_at` | none |
-| `metric_events` | `recorded_at` | none |
-| `tool_calls` | `started_at` | `management_artifacts`, `audit_artifacts` (`produced_by_tool_call_id`, `ON DELETE RESTRICT`) |
-| `llm_calls` | `started_at` | `tool_calls` (`ON DELETE RESTRICT`) |
+**Per-table horizons and cutoff columns**, in deletion order:
 
-**Deletion runs in dependency order** — events, then metrics, then tool calls, then LLM calls — so a tool call that becomes deletable in this pass is gone before its LLM call is considered.
+| Order | Table | Cutoff | Retained when |
+| --- | --- | --- | --- |
+| 1 | `audit_events` | `occurred_at` | — |
+| 2 | `metric_events` | `recorded_at` | — |
+| 3 | `audit_artifacts` | `created_at` | **pinned** (`retention_pins`, itself `ON DELETE RESTRICT`) |
+| 4 | `tool_calls` | `finished_at` | **open**; **referenced** by a Management or Audit artifact |
+| 5 | `llm_calls` | `finished_at` | **open**; **referenced** by a surviving tool call |
 
-**`ON DELETE RESTRICT` raises an error rather than skipping.** A referenced row does not quietly survive a `DELETE`; it aborts the statement and takes the whole batch with it. Referenced rows must therefore be **excluded in the `WHERE`**, not discovered at commit. That is the single most important implementation consequence in this document.
+`binary_attachments` — item 6.
 
-**Three reasons a row past the horizon is retained**, and all three are excluded in SQL and counted:
+**Completed calls age from completion, not from start.** The first draft used `started_at`, which deletes a long-running call the instant it finishes if it *started* before the horizon — the calls most worth keeping are exactly the slow ones. Deletion therefore tests `finished_at < before`.
 
-1. **Pinned** — `retention_pins` names it (Audit artifacts and attachments today; calls carry no pins, which is stated because "pin an expensive call record" is a schema change, not a seam change).
-2. **Open** — `finished_at IS NULL`. An unfinished call is in-flight work, not history, and deleting it destroys a record something still holds. This is ADR 0027's rule that destructive recovery must never remove another actor's in-progress work.
-3. **Referenced** — an artifact points at this tool call, or a tool call points at this LLM call.
+**Old open calls are counted, never deleted.** A call still open with `started_at < before` is reported separately, because a call open long past the horizon is an operational signal — a leaked or stuck call — and silently ignoring it wastes the one place it would have been visible. Deleting it would destroy an in-progress record, which ADR 0027 forbids.
 
-**The result reports each reason separately.** Returning only a delete count makes "nothing was retained" and "everything was retained" identical, and returning a single retained count makes "still running" and "pinned forever" identical — which are different operational situations with different responses.
+**Order is forced by the foreign keys.** `audit_artifacts` references `tool_calls`, and `tool_calls` references `llm_calls`, so artifacts must go before the calls they point at. `management_artifacts` also references `tool_calls` and is **never truncated** — durable by definition — so a tool call cited by a Management artifact is retained as referenced, permanently. That is correct: it is provenance for reviewable work product.
 
-**Testing.** Every truncation test seeds rows past the horizon in **all four states** — deletable, pinned, open, referenced — and asserts the first is gone and the other three survive. A test seeding only deletable rows passes against a delete with no guard clauses at all. Each guard also gets a **direct generated-query test**, since the seam is not the only thing that could regress, and item 4 proved that a backstop behind a working guard is unreachable through the normal path.
+**`ON DELETE RESTRICT` raises an error rather than skipping.** A referenced row does not quietly survive a `DELETE`; it aborts the statement and takes the batch with it. Referenced rows must therefore be **excluded in the `WHERE`**, not discovered at commit. This is the single most important implementation consequence in this document.
+
+**The result reports each retention reason separately.** One delete count makes "nothing retained" and "everything retained" identical; one *retained* count makes "still running" and "pinned forever" identical. They are different situations with different responses.
+
+**Testing.** Each table is seeded past the horizon in **the states that apply to it** — every table gets a deletable row; `audit_artifacts` also gets a pinned one; the call tables also get an open one and a referenced one. A test seeding only deletable rows passes against a delete with no guard clauses at all. Each guard also gets a **direct generated-query test**, since item 4 proved a backstop behind a working guard is unreachable through the normal path.
 
 ## D7. Transaction boundaries and isolation
 
 Item 4 wrapped nearly everything. Here the default inverts — but the isolation question is separate from the transaction question, and conflating them is the mistake item 4 already made once.
 
 - **Single-row writes take no transaction.** A call record is one INSERT on the hottest path in the system.
-- **Batch writes take one.** A run's imported call records are meaningless individually; the batch is the unit of failure. Exposed as a distinct method, not a loop over the single-row one.
+- **No batch-import API in item 5.** It existed in the first draft to serve item 9's importer — whose records are *already completed*, which is the very API the open question proposed deferring. The two cannot be decided apart, so both are deferred to item 9 together, with a real caller in hand. Item 5 ships the create-then-complete pair only.
 - **Completion takes one**, being lock-classify-write.
 - **Truncation takes one, at explicit `REPEATABLE READ`.**
 
@@ -143,6 +173,8 @@ Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is
 
 Item 5 ships: by principal instance, by Story, by time range, and cost/token aggregates by model — the shapes Phase 1's D9 calibration already needed, each returning measured and unmeasured counts per D5. Anything else waits for a caller, on the rule item 3 applied to tables and the registry applies to types.
 
-## Open question for review
+## Resolved: completed-call insertion and batch import both go to item 9
 
-**Should completion be permitted to arrive with no matching open row?** An importer replaying a finished run has both halves at once, and a two-step create-then-complete is a round trip it does not need. A single `CreateCompletedLLMCall` would serve it — but it is also a path that writes a terminal row directly, bypassing the once-only guard, so it wants its own justification rather than being added quietly. My inclination is to defer it to item 9 with a real caller in hand.
+The first draft asked whether a `CreateCompletedLLMCall` should exist for importers, while separately promising a batch API for the same importer. Those are one decision, not two: item 9's records arrive already completed, so a batch API for them *is* the completed-call API.
+
+**Both deferred to item 9** (DR's call). Item 5 ships create-then-complete, and item 9 designs the import path against its actual source — including whether writing a terminal row directly, bypassing the once-only guard, is justified there.
