@@ -47,6 +47,9 @@ var (
 	// the next comma -- so `@status` and `r.status` are captured and then
 	// fail the literal comparison rather than slipping through unmatched.
 	statusAssignmentValue = regexp.MustCompile(`(?i)\bstatus\s*=\s*('[^']*'|[^,]+)`)
+
+	// onceOnlyGuard is the predicate that makes completion once-only.
+	onceOnlyGuard = regexp.MustCompile(`(?i)finished_at\s+IS\s+NULL`)
 )
 
 // statement is one sqlc query: its name and its SQL with comments removed.
@@ -212,6 +215,112 @@ func describeAssignment(got string) string {
 // isInsert reports whether a statement is an INSERT rather than an UPDATE.
 func isInsert(sql string) bool {
 	return strings.Contains(strings.ToUpper(sql), "INSERT ")
+}
+
+// callTables are the two tables with an open → completed lifecycle. Their
+// mutability surface is enforced structurally, for the same reason
+// namedTransitions guards artifact status: "no other column is updatable"
+// is an intention until something fails the build.
+var callTables = []string{"llm_calls", "tool_calls"}
+
+// namedCompletions are the only statements permitted to UPDATE a call.
+// Each must carry the once-only guard.
+var namedCompletions = map[string]bool{
+	"CompleteLLMCall":  true,
+	"CompleteToolCall": true,
+}
+
+// openStateColumns must never appear in a call's INSERT column list. A
+// creation that could set any of them writes a terminal row directly,
+// bypassing the once-only guard entirely -- and unlike a status column,
+// nothing about a call record's shape makes that obvious in review.
+var openStateColumns = []string{"finished_at", "succeeded", "error_message"}
+
+// TestCallsAreCreatedOpenAndCompletedOnce enforces the call family's
+// mutability surface.
+func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
+	statements := loadStatements(t)
+
+	var inserts, updates int
+	for _, stmt := range statements {
+		table := callTableWritten(stmt.sql)
+		if table == "" {
+			continue
+		}
+
+		switch {
+		case isInsert(stmt.sql):
+			inserts++
+			columns := between(stmt.sql, strings.ToUpper(stmt.sql), "(", ")")
+			for _, forbidden := range openStateColumns {
+				if columnPattern(forbidden).MatchString(columns) {
+					t.Errorf("%s: %q inserts %s into %s. A call must be created OPEN: writing a terminal "+
+						"row directly bypasses the once-only completion guard, and Audit history becomes "+
+						"mutable through a path no lifecycle rule polices.",
+						stmt.file, stmt.name, forbidden, table)
+				}
+			}
+
+		case strings.Contains(strings.ToUpper(stmt.sql), "UPDATE "):
+			updates++
+			if !namedCompletions[stmt.name] {
+				t.Errorf("%s: %q updates %s but is not a named completion. There is no generic update on a "+
+					"call record; add a completion to namedCompletions here only if it genuinely is one.",
+					stmt.file, stmt.name, table)
+				continue
+			}
+			if !onceOnlyGuard.MatchString(stmt.sql) {
+				t.Errorf("%s: %q updates %s without `finished_at IS NULL`. That guard is what makes "+
+					"completion once-only, so the first outcome wins when two paths observe one call ending.",
+					stmt.file, stmt.name, table)
+			}
+
+		case strings.Contains(strings.ToUpper(stmt.sql), "DELETE "):
+			// Truncation deletes calls; that is D6's business, not this rule's.
+		}
+	}
+
+	// Guard against the rule going quiet: a rename or a restructure that
+	// matched nothing would leave every check above passing vacuously.
+	if inserts == 0 || updates == 0 {
+		t.Fatalf("found %d call inserts and %d call updates; this test enforced nothing", inserts, updates)
+	}
+}
+
+// TestEveryNamedCompletionExists is the other direction: a name left here
+// after its query was renamed silently widens what may update a call.
+func TestEveryNamedCompletionExists(t *testing.T) {
+	found := map[string]bool{}
+	for _, stmt := range loadStatements(t) {
+		if callTableWritten(stmt.sql) != "" && strings.Contains(strings.ToUpper(stmt.sql), "UPDATE ") {
+			found[stmt.name] = true
+		}
+	}
+	for name := range namedCompletions {
+		if !found[name] {
+			t.Errorf("namedCompletions permits %q, but no query by that name updates a call table; "+
+				"remove the stale entry rather than leaving it available for reuse", name)
+		}
+	}
+}
+
+// callTableWritten returns the call table a statement writes, or "".
+func callTableWritten(sql string) string {
+	upper := strings.ToUpper(sql)
+	for _, table := range callTables {
+		name := strings.ToUpper(table)
+		for _, verb := range []string{"INTO " + name, "UPDATE " + name, "FROM " + name} {
+			if strings.Contains(upper, verb) {
+				return table
+			}
+		}
+	}
+	return ""
+}
+
+// columnPattern matches a column name as a whole word in a column list.
+func columnPattern(column string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[\s,(])` + column + `([\s,)]|$)`)
 }
 
 // writesStatus reports whether a statement assigns the status column, as
