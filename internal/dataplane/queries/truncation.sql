@@ -21,6 +21,19 @@
 -- Open outranks referenced deliberately: a call open long past the horizon
 -- is an operational problem, and being referenced does not make it less so.
 
+-- The isolation level of the transaction this pass is running in.
+--
+-- Truncation's retention guards are only sound evaluated against ONE
+-- snapshot, and READ COMMITTED gives every STATEMENT a fresh one -- so a
+-- pass run at the default would evaluate its five guards against five
+-- instants and could delete a row that was protected when it began. The
+-- seam therefore asks the server rather than trusting that whoever opened
+-- the transaction knew, since a pass reached through a caller's own
+-- transaction inherits that caller's isolation and nothing else would say
+-- so.
+-- name: CurrentIsolationLevel :one
+SELECT current_setting('transaction_isolation')::text;
+
 -- --- audit events: no dependents, no retention -------------------------
 
 -- name: CountAuditEventCandidates :one

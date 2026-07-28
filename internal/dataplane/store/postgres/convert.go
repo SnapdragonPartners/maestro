@@ -73,6 +73,20 @@ func toNullTimestamptz(at *time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: *at, Valid: true}
 }
 
+// optionalInstant treats the ZERO time as absent, so SQL's now() fills the
+// column.
+//
+// Distinct from toNullTimestamptz, which takes a pointer: the born-final
+// event types carry their timestamp by value, and a zero time.Time is year
+// 1 -- not a plausible instant for a measurement, and one that would place
+// every such row past any retention horizon the moment it was written.
+func optionalInstant(at time.Time) pgtype.Timestamptz {
+	if at.IsZero() {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: at, Valid: true}
+}
+
 // fromTimestamptz converts a driver timestamp the schema guarantees is NOT
 // NULL. An invalid value yields the zero time.
 func fromTimestamptz(at pgtype.Timestamptz) time.Time {
@@ -191,9 +205,14 @@ func fromNumericTotal(value pgtype.Numeric) (store.USDTotal, error) {
 		return store.USDTotal{}, err
 	}
 	if !ok {
-		// COALESCE keeps the aggregate non-null, so this is defensive; an
-		// absent total reads as an exact zero rather than as an error.
-		return store.USDTotal{}, nil
+		// The aggregate query COALESCEs its SUM, so a null total cannot
+		// arise from data -- only from the query or this conversion having
+		// been changed. Reading it as zero would hide that behind a value
+		// indistinguishable from a real zero-cost cohort, which is the one
+		// number the benchmark's economic comparison turns on.
+		return store.USDTotal{}, fmt.Errorf(
+			"%w: aggregate cost total came back null, but the query guarantees a non-null total",
+			store.ErrInvariant)
 	}
 	total, err := store.ParseUSDTotal(text)
 	if err != nil {

@@ -53,7 +53,6 @@ func (q *Queries) CountAuditArtifactTruncation(ctx context.Context, arg CountAud
 
 const countAuditEventCandidates = `-- name: CountAuditEventCandidates :one
 
-
 SELECT count(*)::bigint FROM audit_events
 WHERE organization_id = $1
   AND occurred_at     < $2
@@ -64,28 +63,6 @@ type CountAuditEventCandidatesParams struct {
 	Before         pgtype.Timestamptz
 }
 
-// Audit truncation (item 5 design D6).
-//
-// The one destructive operation here, and the one place this phase can
-// destroy what it promised to keep. Every statement is ORGANIZATION-SCOPED:
-// a pin or a reference in one organization can neither protect nor fail to
-// protect a row in another.
-//
-// Callers run these in DEPENDENCY ORDER inside one REPEATABLE READ
-// transaction -- audit events, metric events, audit artifacts, tool calls,
-// LLM calls -- because artifacts reference tool calls and tool calls
-// reference LLM calls, all ON DELETE RESTRICT.
-//
-// RESTRICT ERRORS rather than skipping: a referenced row does not quietly
-// survive a DELETE, it aborts the statement and takes the whole batch with
-// it. So every referenced row is excluded in the WHERE, never discovered at
-// commit. That is the single most important thing about this file.
-//
-// Retention reasons are assigned by PRECEDENCE -- pinned, then open, then
-// referenced -- so a row counted once is not counted twice and
-// `candidates = deleted + pinned + open + referenced` reconciles exactly.
-// Open outranks referenced deliberately: a call open long past the horizon
-// is an operational problem, and being referenced does not make it less so.
 // --- audit events: no dependents, no retention -------------------------
 func (q *Queries) CountAuditEventCandidates(ctx context.Context, arg CountAuditEventCandidatesParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countAuditEventCandidates, arg.OrganizationID, arg.Before)
@@ -191,6 +168,50 @@ func (q *Queries) CountToolCallTruncation(ctx context.Context, arg CountToolCall
 	var i CountToolCallTruncationRow
 	err := row.Scan(&i.Candidates, &i.RetainedOpen, &i.RetainedReferenced)
 	return i, err
+}
+
+const currentIsolationLevel = `-- name: CurrentIsolationLevel :one
+
+SELECT current_setting('transaction_isolation')::text
+`
+
+// Audit truncation (item 5 design D6).
+//
+// The one destructive operation here, and the one place this phase can
+// destroy what it promised to keep. Every statement is ORGANIZATION-SCOPED:
+// a pin or a reference in one organization can neither protect nor fail to
+// protect a row in another.
+//
+// Callers run these in DEPENDENCY ORDER inside one REPEATABLE READ
+// transaction -- audit events, metric events, audit artifacts, tool calls,
+// LLM calls -- because artifacts reference tool calls and tool calls
+// reference LLM calls, all ON DELETE RESTRICT.
+//
+// RESTRICT ERRORS rather than skipping: a referenced row does not quietly
+// survive a DELETE, it aborts the statement and takes the whole batch with
+// it. So every referenced row is excluded in the WHERE, never discovered at
+// commit. That is the single most important thing about this file.
+//
+// Retention reasons are assigned by PRECEDENCE -- pinned, then open, then
+// referenced -- so a row counted once is not counted twice and
+// `candidates = deleted + pinned + open + referenced` reconciles exactly.
+// Open outranks referenced deliberately: a call open long past the horizon
+// is an operational problem, and being referenced does not make it less so.
+// The isolation level of the transaction this pass is running in.
+//
+// Truncation's retention guards are only sound evaluated against ONE
+// snapshot, and READ COMMITTED gives every STATEMENT a fresh one -- so a
+// pass run at the default would evaluate its five guards against five
+// instants and could delete a row that was protected when it began. The
+// seam therefore asks the server rather than trusting that whoever opened
+// the transaction knew, since a pass reached through a caller's own
+// transaction inherits that caller's isolation and nothing else would say
+// so.
+func (q *Queries) CurrentIsolationLevel(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, currentIsolationLevel)
+	var column_1 string
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const truncateAuditArtifacts = `-- name: TruncateAuditArtifacts :execrows

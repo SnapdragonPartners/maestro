@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -181,18 +182,30 @@ type CompleteToolCallInput struct {
 	Succeeded bool
 }
 
-// CompletionOutcome reports the result of completing a call.
+// LLMCompletion reports the result of completing an LLM call: the call as
+// it now stands, and whether this caller is the one who recorded it.
 //
 // Completion is once-only and idempotent: two paths can observe one call
 // ending — a normal return and a supervisor's error handler — and the first
 // outcome is the true one. A repeat returns what was recorded with
 // Recorded=false rather than an error, since making the loser fail would
 // turn correct shutdown into spurious failure.
-type CompletionOutcome struct {
-	ErrorMessage *string
-	FinishedAt   time.Time
-	Succeeded    bool
-	Recorded     bool
+//
+// It carries the whole call rather than a summary. A repeat is promised
+// "the recorded outcome", and an outcome is everything the call learned by
+// ending — tokens and cost as much as success. A loser handed only the
+// flags could not tell whether its own figures were the ones stored, which
+// is the single question it has.
+type LLMCompletion struct {
+	Call     LLMCall
+	Recorded bool
+}
+
+// ToolCompletion is the tool-call equivalent, carrying the result payload
+// for the same reason.
+type ToolCompletion struct {
+	Call     ToolCall
+	Recorded bool
 }
 
 // CostAggregate is a cost and token total over one (provider, model) cohort
@@ -215,6 +228,17 @@ type CostAggregate struct {
 	SucceededCalls int64
 	FailedCalls    int64
 }
+
+// The tables one truncation pass covers, in the order it deletes them.
+// Callers index TruncationResult.PerTable by these rather than by a string
+// literal that no compiler checks.
+const (
+	TableAuditEvents    = "audit_events"
+	TableMetricEvents   = "metric_events"
+	TableAuditArtifacts = "audit_artifacts"
+	TableToolCalls      = "tool_calls"
+	TableLLMCalls       = "llm_calls"
+)
 
 // TruncationResult reports one truncation pass.
 //
@@ -246,9 +270,36 @@ func (t TableTruncation) Reconciles() bool {
 // tables in the system, and an unbounded scan over them is not a query
 // anyone should be able to write by accident.
 type Page struct {
-	// After is the exclusive keyset cursor. Zero means the first page.
+	// After is the exclusive keyset cursor. Nil means the first page.
 	After *Cursor
 	Limit int32
+}
+
+// MaxPageLimit is the documented ceiling on a single page.
+//
+// A limit is mandatory, so the ceiling is what stops "bounded" from meaning
+// "bounded by whatever number the caller felt like". The value is a
+// judgement, not a measurement: large enough that an importer does not
+// spend its life paging, small enough that one page is a bounded amount of
+// memory on the largest tables in the system.
+const MaxPageLimit int32 = 1000
+
+// Validate checks a page request before it reaches SQL.
+func (p Page) Validate() error {
+	switch {
+	case p.Limit <= 0:
+		return fmt.Errorf("page limit %d is not positive; every list read is bounded and the limit is "+
+			"mandatory, so there is no value meaning 'all rows'", p.Limit)
+	case p.Limit > MaxPageLimit:
+		return fmt.Errorf("page limit %d exceeds the maximum of %d", p.Limit, MaxPageLimit)
+	case p.After != nil && p.After.ID == uuid.Nil:
+		// Not a formality. The cursor is compared as a row value, so a null
+		// id makes `(ts, id) > (ts, NULL)` evaluate to NULL and the page
+		// comes back EMPTY — indistinguishable from having reached the end.
+		return errors.New("keyset cursor carries a timestamp but no id; the id is the tie-breaker, and " +
+			"without it the comparison is null and the page reads as empty")
+	}
+	return nil
 }
 
 // Cursor is the (timestamp, id) position paging resumes from. The id is not
@@ -285,8 +336,8 @@ type CallWriter interface {
 	CreateLLMCall(ctx context.Context, input CreateLLMCallInput) (*LLMCall, error)
 	CreateToolCall(ctx context.Context, input CreateToolCallInput) (*ToolCall, error)
 
-	CompleteLLMCall(ctx context.Context, input CompleteLLMCallInput) (CompletionOutcome, error)
-	CompleteToolCall(ctx context.Context, input CompleteToolCallInput) (CompletionOutcome, error)
+	CompleteLLMCall(ctx context.Context, input CompleteLLMCallInput) (LLMCompletion, error)
+	CompleteToolCall(ctx context.Context, input CompleteToolCallInput) (ToolCompletion, error)
 
 	CreateMetricEvent(ctx context.Context, event MetricEvent) (*MetricEvent, error)
 	CreateAuditEvent(ctx context.Context, event AuditEvent) (*AuditEvent, error)
@@ -297,5 +348,11 @@ type CallWriter interface {
 	//
 	// There is no "delete all": an unbounded destructive operation should
 	// not be reachable by accident.
+	//
+	// Called on a Store it provides its own snapshot and retries the whole
+	// operation on a serialization failure. Called on a Tx it is one pass
+	// and inherits that transaction's isolation, so the caller owes it a
+	// REPEATABLE READ one — implementations refuse rather than run the
+	// retention guards against four different instants.
 	TruncateAuditBefore(ctx context.Context, organizationID uuid.UUID, before time.Time) (TruncationResult, error)
 }

@@ -389,7 +389,13 @@ type MPHQuery struct {
 }
 
 // Reader is the read surface, available inside and outside a transaction.
+//
+// The call family is embedded rather than offered beside the seam: a
+// surface callers cannot reach through Store is not part of the seam, and
+// the compile-time assertions would prove nothing about it.
 type Reader interface {
+	CallReader
+
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
 
@@ -415,6 +421,8 @@ type Reader interface {
 
 // Writer is the write and transition surface.
 type Writer interface {
+	CallWriter
+
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)
 	CreateReview(ctx context.Context, input CreateReviewInput) (*Review, error)

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -60,8 +61,11 @@ func (t *tx) CreateLLMCall(ctx context.Context, input store.CreateLLMCallInput) 
 	if lineageErr := checkLineageChain(input.Lineage); lineageErr != nil {
 		return nil, lineageErr
 	}
-	if input.Provider == "" || input.Model == "" {
-		return nil, errors.New("provider and model are required; every cost and MPH aggregate groups by them")
+	if nameErr := requireName(input.Provider, "provider"); nameErr != nil {
+		return nil, nameErr
+	}
+	if nameErr := requireName(input.Model, "model"); nameErr != nil {
+		return nil, nameErr
 	}
 
 	row, err := t.queries.CreateLLMCall(ctx, gen.CreateLLMCallParams{
@@ -89,35 +93,49 @@ func (t *tx) CreateLLMCall(ctx context.Context, input store.CreateLLMCallInput) 
 
 // CompleteLLMCall records the outcome, once only.
 //
+// Lock and classify BEFORE validating the proposed outcome. The order is
+// the contract: a repeat is a repeat whatever it proposes, so validating
+// first would turn a losing supervisor's incoherent second opinion into an
+// error instead of returning the winner's recorded outcome, which is
+// exactly the spurious failure design D1 exists to prevent. The proposed
+// outcome is checked only while the row is still open, when it is the
+// outcome that will actually be stored.
+//
 //nolint:gocritic // hugeParam: by value, matching the seam interface
-func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInput) (store.CompletionOutcome, error) {
-	if err := checkOutcomeCoherence(input.Succeeded, input.ErrorMessage); err != nil {
-		return store.CompletionOutcome{}, err
-	}
-
+func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInput) (store.LLMCompletion, error) {
 	locked, err := t.queries.LockLLMCall(ctx, gen.LockLLMCallParams{
 		LlmCallID:      toUUID(input.LLMCallID),
 		OrganizationID: toUUID(input.OrganizationID),
 	})
 	if err != nil {
-		return store.CompletionOutcome{}, notFound(err, "llm call", input.LLMCallID)
+		return store.LLMCompletion{}, notFound(err, "llm call", input.LLMCallID)
 	}
 
-	// Already complete: return what the winner recorded, unchanged. Two
-	// paths observing one call ending is normal, so the loser is not an
-	// error -- but it can tell from Recorded.
+	// Already complete: return what the winner recorded, whole and
+	// unchanged. Two paths observing one call ending is normal, so the
+	// loser is not an error -- but it can tell from Recorded.
 	if locked.FinishedAt.Valid {
-		return store.CompletionOutcome{
-			FinishedAt:   fromTimestamptz(locked.FinishedAt),
-			Succeeded:    locked.Succeeded != nil && *locked.Succeeded,
-			ErrorMessage: fromNullString(locked.ErrorMessage),
-			Recorded:     false,
-		}, nil
+		recorded, convErr := llmCallFromRow(&locked)
+		if convErr != nil {
+			return store.LLMCompletion{}, convErr
+		}
+		return store.LLMCompletion{Call: recorded, Recorded: false}, nil
+	}
+
+	if outcomeErr := checkOutcomeCoherence(input.Succeeded, input.ErrorMessage); outcomeErr != nil {
+		return store.LLMCompletion{}, outcomeErr
+	}
+	if tokenErr := checkTokenCounts(input.Tokens); tokenErr != nil {
+		return store.LLMCompletion{}, tokenErr
+	}
+	started := fromTimestamptz(locked.StartedAt)
+	if intervalErr := checkCompletionInterval(input.FinishedAt, started, input.LLMCallID); intervalErr != nil {
+		return store.LLMCompletion{}, intervalErr
 	}
 
 	cost, err := toNumeric(input.Cost)
 	if err != nil {
-		return store.CompletionOutcome{}, err
+		return store.LLMCompletion{}, err
 	}
 	affected, err := t.queries.CompleteLLMCall(ctx, gen.CompleteLLMCallParams{
 		FinishedAt:      toNullTimestamptz(input.FinishedAt),
@@ -132,27 +150,29 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 		OrganizationID:  toUUID(input.OrganizationID),
 	})
 	if err != nil {
-		return store.CompletionOutcome{}, fmt.Errorf("complete llm call %s: %w", input.LLMCallID, err)
+		return store.LLMCompletion{}, fmt.Errorf("complete llm call %s: %w", input.LLMCallID, err)
 	}
 	if affected != 1 {
-		return store.CompletionOutcome{}, fmt.Errorf(
+		return store.LLMCompletion{}, fmt.Errorf(
 			"%w: completing llm call %s affected no rows while holding its lock with a null finished_at",
 			store.ErrInvariant, input.LLMCallID)
 	}
 
+	// Re-read rather than assembling the outcome from the input: finished_at
+	// defaults to now() in SQL when the caller does not supply one, so the
+	// stored instant is only knowable by reading it back.
 	completed, err := t.queries.GetLLMCall(ctx, gen.GetLLMCallParams{
 		LlmCallID:      toUUID(input.LLMCallID),
 		OrganizationID: toUUID(input.OrganizationID),
 	})
 	if err != nil {
-		return store.CompletionOutcome{}, notFound(err, "llm call", input.LLMCallID)
+		return store.LLMCompletion{}, notFound(err, "llm call", input.LLMCallID)
 	}
-	return store.CompletionOutcome{
-		FinishedAt:   fromTimestamptz(completed.FinishedAt),
-		Succeeded:    input.Succeeded,
-		ErrorMessage: input.ErrorMessage,
-		Recorded:     true,
-	}, nil
+	call, err := llmCallFromRow(&completed)
+	if err != nil {
+		return store.LLMCompletion{}, err
+	}
+	return store.LLMCompletion{Call: call, Recorded: true}, nil
 }
 
 func (t *tx) GetLLMCall(ctx context.Context, organizationID, callID uuid.UUID) (*store.LLMCall, error) {
@@ -174,9 +194,15 @@ func (t *tx) GetLLMCall(ctx context.Context, organizationID, callID uuid.UUID) (
 func (t *tx) AggregateCost(ctx context.Context, organizationID uuid.UUID, provider, model string,
 	from, to time.Time,
 ) (store.CostAggregate, error) {
-	if provider == "" || model == "" {
-		return store.CostAggregate{}, errors.New("an aggregate needs both provider and model: the same " +
-			"model name is served by different providers at different prices, so a cohort of one is not a cohort")
+	// Blank, not merely empty: a cohort named by whitespace matches nothing,
+	// and a total of zero over a cohort that cannot exist reads exactly like
+	// a real cohort that cost nothing.
+	if err := requireName(provider, "aggregate cohort provider"); err != nil {
+		return store.CostAggregate{}, fmt.Errorf("%w: the same model name is served by different providers "+
+			"at different prices, so a cohort of one is not a cohort", err)
+	}
+	if err := requireName(model, "aggregate cohort model"); err != nil {
+		return store.CostAggregate{}, err
 	}
 	if !to.After(from) {
 		return store.CostAggregate{}, fmt.Errorf("window end %s is not after window start %s", to, from)
@@ -241,4 +267,87 @@ func checkOutcomeCoherence(succeeded bool, errorMessage *string) error {
 			"when someone reads the record")
 	}
 	return nil
+}
+
+// requireName rejects a blank identifying name.
+//
+// Blank, not empty. An empty check passes a tab, and migration 000011
+// learned the same lesson from the other side: `btrim(x)` with one argument
+// strips SPACES ONLY, so a newline-only name satisfied a "non-blank"
+// constraint while being blank to every reader. strings.TrimSpace covers a
+// superset of the constraint's character list, so nothing the seam accepts
+// can fail the column for this reason.
+func requireName(value, field string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is blank; an unnamed call or event is unattributable, and every cost, MPH "+
+			"and reliability aggregate groups by exactly these names", field)
+	}
+	return nil
+}
+
+// checkTokenCounts refuses negative counters, naming the field.
+//
+// The schema's check refuses the row as a whole; this one says which
+// counter was wrong. A caller reading `llm_calls_tokens_nonnegative_check`
+// off a failed write has to go and read the migration to learn that much.
+func checkTokenCounts(tokens store.TokenCounts) error {
+	for _, counter := range []struct {
+		field string
+		value int64
+	}{
+		{"input_tokens", tokens.Input},
+		{"output_tokens", tokens.Output},
+		{"reasoning_tokens", tokens.Reasoning},
+		{"cached_tokens", tokens.Cached},
+	} {
+		if counter.value < 0 {
+			return fmt.Errorf("%s is %d; a token counter is a count and cannot be negative",
+				counter.field, counter.value)
+		}
+	}
+	return nil
+}
+
+// checkCompletionInterval refuses a completion that ends before the call
+// started, against the LOCKED row's start rather than a caller-supplied one.
+//
+// A nil finishedAt is not checkable here and does not need to be: SQL fills
+// it with now(), and the schema's interval constraint is the backstop for
+// the one case that can still be wrong -- a call whose start was recorded
+// in the future.
+func checkCompletionInterval(finishedAt *time.Time, startedAt time.Time, callID uuid.UUID) error {
+	if finishedAt == nil || !finishedAt.Before(startedAt) {
+		return nil
+	}
+	return fmt.Errorf("call %s would finish at %s, before it started at %s; that is not an interval",
+		callID, finishedAt.UTC(), startedAt.UTC())
+}
+
+// requiredJSON prepares a NOT NULL jsonb column.
+//
+// Absent becomes an empty object rather than an error: a tool call with no
+// arguments and an event with no labels are ordinary, and the column's
+// default says the same thing. Malformed JSON is refused here so the caller
+// reads which field it mangled instead of a driver-level syntax error.
+func requiredJSON(value json.RawMessage, field string) ([]byte, error) {
+	if len(value) == 0 {
+		return []byte("{}"), nil
+	}
+	if !json.Valid(value) {
+		return nil, fmt.Errorf("%s is not valid JSON", field)
+	}
+	return value, nil
+}
+
+// optionalJSON prepares a nullable jsonb column, preserving absence as NULL.
+// A tool call that failed has no result, and an empty object would claim it
+// returned one.
+func optionalJSON(value json.RawMessage, field string) ([]byte, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	if !json.Valid(value) {
+		return nil, fmt.Errorf("%s is not valid JSON", field)
+	}
+	return value, nil
 }
