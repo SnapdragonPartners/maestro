@@ -133,7 +133,6 @@ func allListCases(story uuid.UUID) []listCase {
 		return pgtype.Timestamptz{Time: at.Add(-time.Hour), Valid: true},
 			pgtype.Timestamptz{Time: at.Add(time.Hour), Valid: true}
 	}
-	_ = window
 
 	return []listCase{
 		{
@@ -484,13 +483,13 @@ func TestAggregateWindowExcludesOutsideCalls(t *testing.T) {
 	}
 }
 
-func fromPgUUID(id pgtype.UUID) uuid.UUID { return id.Bytes }
-
 // numericText renders a pgtype.Numeric at the column's scale.
 //
-// The aggregate crosses the seam as numeric, and comparing it as TEXT is
-// deliberate: a float comparison here would defeat the point of storing
-// cost exactly in the first place.
+// These tests call the GENERATED queries directly, so the aggregate arrives
+// as pgtype.Numeric — the D9 conversion that will hand callers a
+// store.USDTotal is part of the seam and does not exist yet. Comparing as
+// TEXT rather than as a float is deliberate either way: a float comparison
+// would defeat the point of storing cost exactly.
 func numericText(t *testing.T, value pgtype.Numeric) string {
 	t.Helper()
 	if !value.Valid {

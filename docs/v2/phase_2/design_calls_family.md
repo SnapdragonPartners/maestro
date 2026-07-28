@@ -1,14 +1,14 @@
 +++
 title = "Phase 2 Item 5 Design: Calls, Metrics And Audit Events"
 edit_date = "2026-07-28"
-status = "draft"
+status = "live"
 summary = "Design for the call family's typed queries: per-table write invariants enforced in SQL, the open-to-completed call lifecycle behind a structurally enforced update surface, organization-scoped dependency-ordered truncation with reconciling retention buckets and a serialization-retry contract, bounded keyset reads with their index plan, and an exact decimal type for cost."
 type = "design"
 +++
 
 # Phase 2 Item 5 Design: Calls, Metrics And Audit Events
 
-Status: **draft** — revised across nine Codex rounds. Carries one schema correction, migration 000011.
+Status: **live** — Accepted by Codex and DR after ten review rounds. Carries two migrations: 000011 (the LLM outcome correction and row-local constraints) and 000012 (the index plan). The SQL surface and its behavioural suite passed the mid-item checkpoint; the seam is built against this contract.
 
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
