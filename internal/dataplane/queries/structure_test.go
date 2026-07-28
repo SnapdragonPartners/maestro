@@ -255,19 +255,30 @@ var completionSetColumns = map[string]bool{
 	"cached_tokens": true, "cost_usd": true, "result": true,
 }
 
-// bornFinalTables are written once and never updated or deleted outside
-// truncation. The asymmetry with the call tables is the point.
-var bornFinalTables = []string{"metric_events", "audit_events"}
+// bornFinalTables are written once and never updated. The asymmetry with
+// the call tables is the point.
+//
+// audit_artifacts belongs here as much as the event tables do: ADR 0021
+// makes Audit artifacts born final, with retention pinning rather than a
+// lifecycle. Its absence from an earlier version of this list meant a
+// generic UPDATE or DELETE against the one pinnable family in scope would
+// have passed every check here.
+var bornFinalTables = []string{"metric_events", "audit_events", "audit_artifacts"}
 
-// namedTruncations are the only statements permitted to DELETE from the
-// call or event families. Deletion is retention policy (design D6), not
-// something any query may do incidentally.
-var namedTruncations = map[string]bool{
-	"TruncateAuditEvents":    true,
-	"TruncateMetricEvents":   true,
-	"TruncateAuditArtifacts": true,
-	"TruncateToolCalls":      true,
-	"TruncateLLMCalls":       true,
+// namedTruncations maps each permitted DELETE to the ONE table it may
+// delete from. Deletion here is retention policy (design D6), with a
+// per-table horizon and its own retention guards.
+//
+// A name→table map rather than a name allow-list, because the names are not
+// interchangeable: TruncateAuditEvents deleting from llm_calls would apply
+// the wrong cutoff column and skip every retention guard, while passing a
+// check that only asked whether the name was approved.
+var namedTruncations = map[string]string{
+	"TruncateAuditEvents":    "audit_events",
+	"TruncateMetricEvents":   "metric_events",
+	"TruncateAuditArtifacts": "audit_artifacts",
+	"TruncateToolCalls":      "tool_calls",
+	"TruncateLLMCalls":       "llm_calls",
 }
 
 // TestCallsAreCreatedOpenAndCompletedOnce enforces the call family's
@@ -324,12 +335,8 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 				}
 			}
 
-		case strings.Contains(strings.ToUpper(stmt.sql), "DELETE "):
-			if !namedTruncations[stmt.name] {
-				t.Errorf("%s: %q deletes from %s but is not a named truncation. Deletion here is retention "+
-					"policy (design D6), with its own horizon and retention guards -- not something a query "+
-					"may do incidentally.", stmt.file, stmt.name, table)
-			}
+		case deleteTarget(stmt.sql) == table:
+			assertNamedTruncation(t, stmt, table)
 		}
 	}
 
@@ -347,19 +354,19 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 func TestBornFinalTablesAreNeverUpdated(t *testing.T) {
 	var seen int
 	for _, stmt := range loadStatements(t) {
-		upper := strings.ToUpper(stmt.sql)
+		target := writeTarget(stmt.sql)
 		for _, table := range bornFinalTables {
-			name := strings.ToUpper(table)
-			if strings.Contains(upper, "INTO "+name) || strings.Contains(upper, "FROM "+name) {
-				seen++
+			if target != table {
+				continue
 			}
-			if strings.Contains(upper, "UPDATE "+name) {
+			seen++
+			upper := strings.ToUpper(stmt.sql)
+			switch {
+			case strings.Contains(upper, "UPDATE "):
 				t.Errorf("%s: %q updates %s, which is born final and has no lifecycle to move through",
 					stmt.file, stmt.name, table)
-			}
-			if strings.Contains(upper, "DELETE ") && strings.Contains(upper, "FROM "+name) &&
-				!namedTruncations[stmt.name] {
-				t.Errorf("%s: %q deletes from %s but is not a named truncation", stmt.file, stmt.name, table)
+			case deleteTarget(stmt.sql) == table:
+				assertNamedTruncation(t, stmt, table)
 			}
 		}
 	}
@@ -385,18 +392,67 @@ func TestEveryNamedCompletionExists(t *testing.T) {
 	}
 }
 
-// callTableWritten returns the call table a statement writes, or "".
-func callTableWritten(sql string) string {
-	upper := strings.ToUpper(sql)
-	for _, table := range callTables {
-		name := strings.ToUpper(table)
-		for _, verb := range []string{"INTO " + name, "UPDATE " + name, "FROM " + name} {
-			if strings.Contains(upper, verb) {
-				return table
-			}
+// deleteTarget returns the table a DELETE actually removes rows from.
+//
+// Naively searching for "FROM <table>" is wrong here and was: the
+// truncation statements carry retention guards like
+// `EXISTS (SELECT 1 FROM audit_artifacts ...)`, so a substring match finds
+// the SUBQUERY's table and concludes the statement deletes from it. That
+// misreads the one file these rules exist to police.
+var deleteFromPattern = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+([a-z_]+)`)
+
+func deleteTarget(sql string) string {
+	match := deleteFromPattern.FindStringSubmatch(sql)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.ToLower(match[1])
+}
+
+// writeTarget returns the table a statement writes to, for any of the three
+// verbs, or "".
+var (
+	insertIntoPattern = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+([a-z_]+)`)
+	updatePattern     = regexp.MustCompile(`(?is)\bUPDATE\s+([a-z_]+)`)
+)
+
+func writeTarget(sql string) string {
+	for _, pattern := range []*regexp.Regexp{insertIntoPattern, updatePattern, deleteFromPattern} {
+		if match := pattern.FindStringSubmatch(sql); len(match) >= 2 {
+			return strings.ToLower(match[1])
 		}
 	}
 	return ""
+}
+
+// callTableWritten returns the call table a statement writes, or "".
+func callTableWritten(sql string) string {
+	target := writeTarget(sql)
+	for _, table := range callTables {
+		if target == table {
+			return table
+		}
+	}
+	return ""
+}
+
+// assertNamedTruncation checks that a DELETE is one of the permitted
+// truncations AND that it targets the table that name is bound to.
+func assertNamedTruncation(t *testing.T, stmt statement, table string) {
+	t.Helper()
+
+	target, permitted := namedTruncations[stmt.name]
+	if !permitted {
+		t.Errorf("%s: %q deletes from %s but is not a named truncation. Deletion here is retention policy "+
+			"(design D6), with its own horizon and retention guards -- not something a query may do "+
+			"incidentally.", stmt.file, stmt.name, table)
+		return
+	}
+	if target != table {
+		t.Errorf("%s: %q is the truncation for %s but deletes from %s. The names are not interchangeable: "+
+			"each carries its own cutoff column and retention guards, and using one against another table "+
+			"applies the wrong horizon and skips every guard.", stmt.file, stmt.name, target, table)
+	}
 }
 
 // assignedColumns lists the columns a SET clause assigns.
