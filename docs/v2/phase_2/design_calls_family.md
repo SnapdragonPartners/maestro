@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 5 Design: Calls, Metrics And Audit Events"
-edit_date = "2026-07-27"
+edit_date = "2026-07-28"
 status = "draft"
 summary = "Mini-plan for the call family's typed queries: per-table write invariants, the open-to-completed call lifecycle, the cases the seam must reject, dependency-ordered truncation that refuses to prune pinned, open or referenced rows, and an exact decimal type for cost."
 type = "design"
@@ -56,7 +56,7 @@ It **refuses to invent an outcome**. A first version backfilled `succeeded = tru
 
 Both branches are covered by a regression test that migrates a **populated** v10 database: an open call must survive with its openness intact, and a completed one must stop the migration. Applying a migration to an empty database can never show either.
 
-Coherence **between** `succeeded` and `error_message` is now enforced in **both** places, and an earlier draft was simply wrong to claim otherwise. "The schema cannot express which pairings are meaningful" is false — these are ordinary `CHECK` constraints, and migration 000011 adds them to `llm_calls` *and* `tool_calls`:
+Coherence **between** `succeeded` and `error_message` is enforced for **both call types** and in **both places**, and an earlier draft was simply wrong to claim otherwise. "The schema cannot express which pairings are meaningful" is false — these are ordinary `CHECK` constraints, and migration 000011 adds them to `llm_calls` *and* `tool_calls`:
 
 - a success carrying an error message,
 - a failure with a missing or blank diagnostic,
@@ -119,8 +119,9 @@ Enumerated before the queries are written, per `CLAUDE.md`:
 | Non-finite cost or metric value (NaN, ±Inf) | `numeric` has no NaN-safe ordering for our purposes and a non-finite cost is not a cost; refused before it can poison an aggregate |
 | Empty `provider`, `model` or `tool_name` | Unattributable call record; every MPH and cost aggregate groups by these |
 | Empty `metric_name` or `event_type` | An unnamed metric or event is unqueryable and silently useless |
-| Tool call completed as succeeded but carrying an error message | Incoherent outcome; no reader can interpret it |
-| Tool call completed as failed with no diagnostic | The failure path is precisely when someone reads the record |
+| **Either call type** completed as succeeded but carrying an error message | Incoherent outcome; no reader can interpret it |
+| **Either call type** completed as failed with a missing or blank diagnostic | The failure path is precisely when someone reads the record |
+| **Either call type** open but already carrying an error message | An unfinished call has no outcome yet |
 | `finished_at` before `started_at` | Nonsense interval; no schema check exists, so the seam owns it |
 | Any write naming another organization's principal or lineage | Multi-tenant boundary, as item 4 |
 | Truncation without an explicit horizon | An unbounded delete should not be reachable by accident |

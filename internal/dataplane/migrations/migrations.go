@@ -72,6 +72,37 @@ func To(ctx context.Context, dsn string, version uint) (err error) {
 	return run(ctx, m, func() error { return m.Migrate(version) }, fmt.Sprintf("migrate to version %d", version))
 }
 
+// Force sets the recorded schema version and clears the dirty flag WITHOUT
+// running any migration.
+//
+// This is a repair tool, and the only way out of a dirty version. When a
+// migration fails, golang-migrate has already recorded the target version
+// with dirty = true -- it marks BEFORE executing -- so every later
+// migration refuses to run until the flag is cleared. Deleting the rows
+// that caused the failure is not enough on its own; the metadata still says
+// a migration is half-applied.
+//
+// It changes only the metadata. The caller is asserting that the database
+// really is at the version being forced, and a wrong assertion leaves the
+// schema and its recorded version disagreeing, which no later migration can
+// detect. Use it after establishing what actually applied.
+func Force(dsn string, version int) (err error) {
+	m, closeFn, err := open(dsn)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := closeFn(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", closeErr)
+		}
+	}()
+
+	if forceErr := m.Force(version); forceErr != nil {
+		return fmt.Errorf("force schema version to %d: %w", version, forceErr)
+	}
+	return nil
+}
+
 // run executes a migration operation under the caller's context.
 //
 // Two mechanisms, because neither alone is sufficient. GracefulStop makes

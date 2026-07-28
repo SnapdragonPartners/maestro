@@ -26,8 +26,16 @@ BEGIN;
 -- response to an impossible row is to stop rather than to guess what it
 -- meant. In every real environment this assertion is a no-op.
 --
--- If it does fire, the data is pre-item-5 and disposable: clear the rows,
--- or `make dataplane-reset FORCE=1`, and re-run.
+-- Recovery, if it does fire. golang-migrate records the target version with
+-- dirty = true BEFORE executing this file, and the BEGIN/COMMIT here rolls
+-- back the DDL but not that metadata -- so the database is left at version
+-- 11, dirty, and every later run refuses until the flag is cleared.
+-- "Delete the rows and re-run" therefore does NOT work on its own.
+--
+-- Either:
+--   `make dataplane-reset FORCE=1`                  (destroys the plane), or
+--   delete the offending rows, force the recorded version back to 10, then
+--   migrate up again.
 DO $$
 DECLARE
     stale_llm  bigint;
@@ -47,8 +55,10 @@ BEGIN
         RAISE EXCEPTION
             'migration 000011 found % completed llm_calls and % incoherent tool_calls predating this item; '
             'their outcome is unrecoverable and this migration will not invent one. '
-            'These rows predate any writer, so they are disposable: delete them or run '
-            '`make dataplane-reset FORCE=1`, then re-run.',
+            'These rows predate any writer, so they are disposable. NOTE that this failure leaves the '
+            'schema version recorded as 11 and dirty, so re-running alone will not work: either run '
+            '`make dataplane-reset FORCE=1`, or delete the rows, force the recorded version back to 10, '
+            'and migrate up again.',
             stale_llm, stale_tool;
     END IF;
 END $$;
