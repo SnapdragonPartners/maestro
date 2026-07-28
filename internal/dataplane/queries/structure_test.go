@@ -230,11 +230,45 @@ var namedCompletions = map[string]bool{
 	"CompleteToolCall": true,
 }
 
-// openStateColumns must never appear in a call's INSERT column list. A
-// creation that could set any of them writes a terminal row directly,
-// bypassing the once-only guard entirely -- and unlike a status column,
-// nothing about a call record's shape makes that obvious in review.
-var openStateColumns = []string{"finished_at", "succeeded", "error_message"}
+// outcomeColumns must never appear in a call's INSERT column list.
+//
+// Not just the three lifecycle flags: an outcome is everything a call
+// learns by ENDING. Tokens, cost and a tool's result are all outcome, so a
+// creation naming any of them writes a terminal row directly and bypasses
+// the once-only guard -- and unlike a status column, nothing about a call
+// record's shape makes that obvious in review.
+var outcomeColumns = []string{
+	"finished_at", "succeeded", "error_message",
+	"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cost_usd",
+	"result",
+}
+
+// completionSetColumns are the ONLY columns a completion may assign.
+//
+// An allow-listed completion could otherwise rewrite the request side --
+// provider, model, arguments -- or the lineage, mutating history through a
+// statement that passes the name check. What a call was asked to do is not
+// something ending it can change.
+var completionSetColumns = map[string]bool{
+	"finished_at": true, "succeeded": true, "error_message": true,
+	"input_tokens": true, "output_tokens": true, "reasoning_tokens": true,
+	"cached_tokens": true, "cost_usd": true, "result": true,
+}
+
+// bornFinalTables are written once and never updated or deleted outside
+// truncation. The asymmetry with the call tables is the point.
+var bornFinalTables = []string{"metric_events", "audit_events"}
+
+// namedTruncations are the only statements permitted to DELETE from the
+// call or event families. Deletion is retention policy (design D6), not
+// something any query may do incidentally.
+var namedTruncations = map[string]bool{
+	"TruncateAuditEvents":    true,
+	"TruncateMetricEvents":   true,
+	"TruncateAuditArtifacts": true,
+	"TruncateToolCalls":      true,
+	"TruncateLLMCalls":       true,
+}
 
 // TestCallsAreCreatedOpenAndCompletedOnce enforces the call family's
 // mutability surface.
@@ -252,7 +286,7 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 		case isInsert(stmt.sql):
 			inserts++
 			columns := between(stmt.sql, strings.ToUpper(stmt.sql), "(", ")")
-			for _, forbidden := range openStateColumns {
+			for _, forbidden := range outcomeColumns {
 				if columnPattern(forbidden).MatchString(columns) {
 					t.Errorf("%s: %q inserts %s into %s. A call must be created OPEN: writing a terminal "+
 						"row directly bypasses the once-only completion guard, and Audit history becomes "+
@@ -269,14 +303,33 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 					stmt.file, stmt.name, table)
 				continue
 			}
-			if !onceOnlyGuard.MatchString(stmt.sql) {
-				t.Errorf("%s: %q updates %s without `finished_at IS NULL`. That guard is what makes "+
-					"completion once-only, so the first outcome wins when two paths observe one call ending.",
-					stmt.file, stmt.name, table)
+			// The guard must be in the WHERE clause, not merely somewhere in
+			// the statement: the phrase appears in SET expressions and in
+			// comments too, and matching those would accept a completion
+			// with no guard at all.
+			where := between(stmt.sql, strings.ToUpper(stmt.sql), "WHERE", ";")
+			if !onceOnlyGuard.MatchString(where) {
+				t.Errorf("%s: %q updates %s without `finished_at IS NULL` in its WHERE clause. That guard "+
+					"is what makes completion once-only, so the first outcome wins when two paths observe "+
+					"one call ending.", stmt.file, stmt.name, table)
+			}
+			// And it may only assign outcome columns.
+			setClause := between(stmt.sql, strings.ToUpper(stmt.sql), "SET", "WHERE")
+			for _, assigned := range assignedColumns(setClause) {
+				if !completionSetColumns[assigned] {
+					t.Errorf("%s: %q assigns %s while completing %s. A completion records what the call "+
+						"LEARNED by ending; rewriting the request side or the lineage mutates history "+
+						"through a statement that passed the name check.",
+						stmt.file, stmt.name, assigned, table)
+				}
 			}
 
 		case strings.Contains(strings.ToUpper(stmt.sql), "DELETE "):
-			// Truncation deletes calls; that is D6's business, not this rule's.
+			if !namedTruncations[stmt.name] {
+				t.Errorf("%s: %q deletes from %s but is not a named truncation. Deletion here is retention "+
+					"policy (design D6), with its own horizon and retention guards -- not something a query "+
+					"may do incidentally.", stmt.file, stmt.name, table)
+			}
 		}
 	}
 
@@ -284,6 +337,34 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 	// matched nothing would leave every check above passing vacuously.
 	if inserts == 0 || updates == 0 {
 		t.Fatalf("found %d call inserts and %d call updates; this test enforced nothing", inserts, updates)
+	}
+}
+
+// TestBornFinalTablesAreNeverUpdated covers the event tables, which the
+// first version of this guard did not mention at all. They have no
+// lifecycle, so an UPDATE against one is not a wrong transition -- it is a
+// statement with no meaning the schema can express.
+func TestBornFinalTablesAreNeverUpdated(t *testing.T) {
+	var seen int
+	for _, stmt := range loadStatements(t) {
+		upper := strings.ToUpper(stmt.sql)
+		for _, table := range bornFinalTables {
+			name := strings.ToUpper(table)
+			if strings.Contains(upper, "INTO "+name) || strings.Contains(upper, "FROM "+name) {
+				seen++
+			}
+			if strings.Contains(upper, "UPDATE "+name) {
+				t.Errorf("%s: %q updates %s, which is born final and has no lifecycle to move through",
+					stmt.file, stmt.name, table)
+			}
+			if strings.Contains(upper, "DELETE ") && strings.Contains(upper, "FROM "+name) &&
+				!namedTruncations[stmt.name] {
+				t.Errorf("%s: %q deletes from %s but is not a named truncation", stmt.file, stmt.name, table)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no statement touched a born-final table, so this test enforced nothing")
 	}
 }
 
@@ -316,6 +397,21 @@ func callTableWritten(sql string) string {
 		}
 	}
 	return ""
+}
+
+// assignedColumns lists the columns a SET clause assigns.
+func assignedColumns(setClause string) []string {
+	var assigned []string
+	for _, part := range strings.Split(setClause, ",") {
+		name, _, found := strings.Cut(part, "=")
+		if !found {
+			continue
+		}
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			assigned = append(assigned, strings.ToLower(trimmed))
+		}
+	}
+	return assigned
 }
 
 // columnPattern matches a column name as a whole word in a column list.
