@@ -168,6 +168,45 @@ func TestOutcomeMigrationRefusesToInventAnOutcome(t *testing.T) {
 		t.Fatalf("after recovery version = %d dirty = %v, want %d and clean",
 			version, dirty, versionBeforeOutcome+1)
 	}
+
+	// Metadata alone is not evidence the migration ran. Forcing to 11
+	// instead of 10 would make Up a no-op and leave these same assertions
+	// passing over a schema that never gained the columns -- exactly the
+	// metadata/schema divergence the recovery design warns about, certified
+	// by its own test. So assert the SCHEMA.
+	assertOutcomeSchemaPresent(t, db)
+}
+
+// assertOutcomeSchemaPresent checks that migration 11's DDL actually ran,
+// rather than trusting the recorded version.
+func assertOutcomeSchemaPresent(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var columns int
+	if err := db.QueryRow(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'llm_calls' AND column_name IN ('succeeded', 'error_message')`).Scan(&columns); err != nil {
+		t.Fatalf("read columns: %v", err)
+	}
+	if columns != 2 {
+		t.Fatalf("llm_calls has %d of the 2 outcome columns; the migration was recorded but its DDL did "+
+			"not run", columns)
+	}
+
+	for _, name := range []string{
+		"llm_calls_completion_check",
+		"llm_calls_outcome_coherence_check",
+		"tool_calls_outcome_coherence_check",
+	} {
+		var present bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $1)`,
+			name).Scan(&present); err != nil {
+			t.Fatalf("read constraint %s: %v", name, err)
+		}
+		if !present {
+			t.Fatalf("constraint %s is absent; the migration was recorded but its DDL did not run", name)
+		}
+	}
 }
 
 // TestOutcomeMigrationRefusesIncoherentToolCalls is the tool-call half of

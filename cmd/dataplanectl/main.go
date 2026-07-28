@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -21,7 +22,8 @@ import (
 
 func main() {
 	composeFile := flag.String("compose", stack.DefaultComposeFile, "path to the data-plane compose file")
-	force := flag.Bool("force", false, "for reset: proceed without the interactive confirmation")
+	force := flag.Bool("force", false, "for reset and force-version: proceed without the interactive confirmation")
+	forceVersion := flag.Int("version", -1, "for force-version: the schema version to record")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -34,7 +36,7 @@ func main() {
 	// operation: Compose has already been told to start, so the containers
 	// keep coming up and a later `up` picks them up.
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx, flag.Arg(0), *composeFile, *force)
+	err := run(ctx, flag.Arg(0), *composeFile, *force, *forceVersion)
 	stopSignals()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dataplanectl: %v\n", err)
@@ -43,11 +45,14 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate>
+	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version>
 
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
   reset    stop the containers and DELETE the contents of the data directories
+  force-version -version <n>
+           repair a DIRTY schema version by recording <n> without running
+           migrations; for recovering from a failed migration
   migrate  apply pending migrations to an already-running stack
 
 flags:
@@ -55,7 +60,7 @@ flags:
 	flag.PrintDefaults()
 }
 
-func run(ctx context.Context, command, composeFile string, force bool) error {
+func run(ctx context.Context, command, composeFile string, force bool, forceVersion int) error {
 	roots, err := paths.Resolve()
 	if err != nil {
 		return fmt.Errorf("resolve storage roots: %w", err)
@@ -87,6 +92,9 @@ func run(ctx context.Context, command, composeFile string, force bool) error {
 		}
 		return nil
 
+	case "force-version":
+		return runForceVersion(cfg, force, forceVersion)
+
 	case "reset":
 		if !force {
 			if !confirmReset(cfg) {
@@ -103,6 +111,46 @@ func run(ctx context.Context, command, composeFile string, force bool) error {
 		usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+// runForceVersion repairs a dirty schema version.
+//
+// Guarded like reset, because both can quietly destroy the ability to
+// reason about the schema: reset by removing the data, this by asserting a
+// version that may not be true.
+func runForceVersion(cfg *stack.Config, force bool, version int) error {
+	if version < 0 {
+		return errors.New("force-version requires -version <n>")
+	}
+	if !force && !confirmForceVersion(version) {
+		fmt.Println("force-version cancelled")
+		return nil
+	}
+	if err := stack.ForceVersion(cfg, version); err != nil {
+		return fmt.Errorf("force the schema version: %w", err)
+	}
+	fmt.Printf("schema version forced to %d\n", version)
+	return nil
+}
+
+// confirmForceVersion requires an explicit yes before recording a schema
+// version that was not reached by running migrations.
+//
+// Guarded like reset, because both can quietly destroy the ability to
+// reason about the schema: reset by removing the data, this by asserting a
+// version that may not be true. A wrong force is worse in one respect --
+// it leaves no trace and nothing later can detect it.
+func confirmForceVersion(version int) bool {
+	fmt.Printf("Record schema version %d WITHOUT running migrations?\n"+
+		"This changes metadata only. If the schema is not really at %d, nothing will detect the "+
+		"disagreement.\nType 'yes' to continue: ", version, version)
+
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		// Unreadable stdin is a "no", for the same reason as reset.
+		return false
+	}
+	return answer == "yes"
 }
 
 // confirmReset requires an explicit yes before destroying the data root's

@@ -139,6 +139,50 @@ func migrateLocked(ctx context.Context, c *Config, rootKey []byte) error {
 	return nil
 }
 
+// ForceVersion repairs a dirty schema version WITHOUT running migrations.
+//
+// A failed migration leaves the recorded version marked dirty --
+// golang-migrate marks BEFORE executing -- and every later migration
+// refuses until that is cleared. Fixing whatever caused the failure is not
+// enough on its own; the metadata still claims a migration is half-applied.
+//
+// This exists because a migration's own recovery instructions must name an
+// operation an operator can actually perform. It is deliberately narrow: it
+// changes metadata only, and the caller is asserting the schema really is
+// at the version being forced. A wrong assertion leaves the schema and its
+// recorded version disagreeing, which no later migration can detect.
+//
+// Serialized on the lifecycle lock like every other stack operation, so it
+// cannot race a concurrent migrate.
+//
+// Takes no context, unlike its neighbours: golang-migrate's Force is not
+// context-aware, and accepting one this operation cannot honour would
+// promise cancellation that never happens. It is a single metadata write.
+func ForceVersion(c *Config, version int) (err error) {
+	release, lockErr := lockLifecycle(c)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer func() {
+		if relErr := release(); relErr != nil && err == nil {
+			err = relErr
+		}
+	}()
+
+	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	if keyErr != nil {
+		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+	}
+	dsn, dsnErr := c.DSN(rootKey)
+	if dsnErr != nil {
+		return dsnErr
+	}
+	if err := migrations.Force(dsn, version); err != nil {
+		return fmt.Errorf("force data plane schema version: %w", err)
+	}
+	return nil
+}
+
 // Down stops the stack and leaves the data root untouched.
 func Down(ctx context.Context, c *Config, composeFile string) (err error) {
 	release, lockErr := lockLifecycle(c)

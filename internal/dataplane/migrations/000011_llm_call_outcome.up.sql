@@ -33,9 +33,9 @@ BEGIN;
 -- "Delete the rows and re-run" therefore does NOT work on its own.
 --
 -- Either:
---   `make dataplane-reset FORCE=1`                  (destroys the plane), or
---   delete the offending rows, force the recorded version back to 10, then
---   migrate up again.
+--   `make dataplane-reset FORCE=1`                          (destroys the plane), or
+--   delete the offending rows, then
+--   `make dataplane-force-version VERSION=10` and `make dataplane-migrate`.
 DO $$
 DECLARE
     stale_llm  bigint;
@@ -57,8 +57,8 @@ BEGIN
             'their outcome is unrecoverable and this migration will not invent one. '
             'These rows predate any writer, so they are disposable. NOTE that this failure leaves the '
             'schema version recorded as 11 and dirty, so re-running alone will not work: either run '
-            '`make dataplane-reset FORCE=1`, or delete the rows, force the recorded version back to 10, '
-            'and migrate up again.',
+            '`make dataplane-reset FORCE=1`, or delete the rows and run '
+            '`make dataplane-force-version VERSION=10` followed by `make dataplane-migrate`.',
             stale_llm, stale_tool;
     END IF;
 END $$;
