@@ -143,6 +143,9 @@ type fixture struct {
 	author         uuid.UUID
 	reviewer       uuid.UUID
 	systemAgent    uuid.UUID
+	// otherAuthor belongs to otherOrgID, so cross-tenant tests can seed
+	// rows there without borrowing this organization's principals.
+	otherAuthor uuid.UUID
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -188,6 +191,7 @@ func newFixture(t *testing.T) *fixture {
 	f.author = f.newPrincipal(t, store.PrincipalAgent, "author-model")
 	f.reviewer = f.newPrincipal(t, store.PrincipalAgent, "reviewer-model")
 	f.systemAgent = f.newPrincipal(t, store.PrincipalSystem, "system")
+	f.otherAuthor = f.newPrincipalIn(t, f.otherOrgID, store.PrincipalAgent, "other-author")
 	return f
 }
 
@@ -208,6 +212,31 @@ func (f *fixture) newPrincipal(t *testing.T, kind store.PrincipalKind, model str
 		t.Fatalf("create %s principal: %v", kind, err)
 	}
 	return instance.PrincipalInstanceID
+}
+
+// newPrincipalIn creates a principal in a named organization.
+func (f *fixture) newPrincipalIn(t *testing.T, org uuid.UUID, kind store.PrincipalKind, model string) uuid.UUID {
+	t.Helper()
+	input := store.CreatePrincipalInstanceInput{Kind: kind, Model: model, OrganizationID: org}
+	if kind == store.PrincipalAgent {
+		agentType := "coder"
+		input.AgentType = &agentType
+	}
+	instance, err := f.store.CreatePrincipalInstance(context.Background(), input)
+	if err != nil {
+		t.Fatalf("create %s principal in %s: %v", kind, org, err)
+	}
+	return instance.PrincipalInstanceID
+}
+
+// principalFor returns a principal belonging to the named organization.
+// A principal is organization-scoped by composite foreign key, so borrowing
+// one across the boundary fails at the database rather than at the seam.
+func (f *fixture) principalFor(org uuid.UUID) uuid.UUID {
+	if org == f.organizationID {
+		return f.author
+	}
+	return f.otherAuthor
 }
 
 // agentInput builds a valid agent instance input, so tests that are not
