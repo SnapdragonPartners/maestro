@@ -20,10 +20,13 @@ import (
 //
 // The invariants, and what fails if one is absent:
 //
-//	a lease's key is under ITS organization's staging prefix
-//	    -- otherwise cleanup, which deletes every version of the leased
-//	       key, can be aimed at a digest key holding evidence, or across
-//	       the tenant boundary at another organization's staging object;
+//	a lease's key has the EXACT shape `staging/<its org>/<uuid>`
+//	    -- cleanup enumerates by PREFIX, so anything looser aims it at
+//	       storage the lease does not own: a digest key holding evidence,
+//	       another organization's staging object, or -- worst, and what a
+//	       trailing wildcard admits first -- a key that is a prefix of its
+//	       siblings, taking every one of them with it. A fixed-length uuid
+//	       segment makes that last case impossible by construction;
 //	a lease's term is non-empty
 //	    -- an already-expired lease is one cleanup may act on immediately,
 //	       which is the timer failure the token exists to prevent;
@@ -78,7 +81,13 @@ func TestReclamationConstraints(t *testing.T) {
 	const claimInsert = `INSERT INTO deletion_claims
 		(deletion_claim_id, organization_id, object_digest, version_ids, upload_ids) VALUES `
 
-	goodKey := "'staging/" + reclamationOrgID + "/upload-a'"
+	// Staging keys are `staging/<organization_id>/<uuid>` exactly, so the
+	// fixtures are uuids: a name like "upload-a" would encode a looser
+	// contract than the one under test.
+	stagingKey := func(uuid string) string {
+		return "'staging/" + reclamationOrgID + "/" + uuid + "'"
+	}
+	goodKey := stagingKey("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 	cases := []struct {
 		name    string
@@ -103,22 +112,75 @@ func TestReclamationConstraints(t *testing.T) {
 			// organization rather than just matching 'staging/'.
 			name: "lease over another organization's staging key",
 			bad: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
-				`, 'staging/99999999-9999-4999-8999-999999999999/upload-b', gen_random_uuid(),
-				now() + interval '1 hour')`,
+				`, 'staging/99999999-9999-4999-8999-999999999999/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+				gen_random_uuid(), now() + interval '1 hour')`,
 			good: leaseInsert + `(gen_random_uuid(), ` + otherOrg +
-				`, 'staging/99999999-9999-4999-8999-999999999999/upload-b', gen_random_uuid(),
-				now() + interval '1 hour')`,
+				`, 'staging/99999999-9999-4999-8999-999999999999/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+				gen_random_uuid(), now() + interval '1 hour')`,
 			wantCon: "staging_leases_key_scope_check",
 		},
 		{
 			name: "lease that expires before it begins",
 			bad: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
-				`, 'staging/` + reclamationOrgID + `/upload-c', gen_random_uuid(),
+				`, ` + stagingKey("cccccccc-cccc-4ccc-8ccc-cccccccccccc") + `, gen_random_uuid(),
 				now() - interval '1 hour')`,
 			good: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
-				`, 'staging/` + reclamationOrgID + `/upload-c', gen_random_uuid(),
+				`, ` + stagingKey("cccccccc-cccc-4ccc-8ccc-cccccccccccc") + `, gen_random_uuid(),
 				now() + interval '1 second')`,
 			wantCon: "staging_leases_term_check",
+		},
+		{
+			// The prefix itself. Cleanup enumerates by prefix, so this
+			// lease authorises deleting every staging object the
+			// organization has in flight -- the widest possible blast
+			// radius, and the one a trailing wildcard admits first.
+			name: "lease over the bare staging prefix",
+			bad: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, 'staging/` + reclamationOrgID + `/', gen_random_uuid(),
+				now() + interval '1 hour')`,
+			good: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, ` + stagingKey("dddddddd-dddd-4ddd-8ddd-dddddddddddd") + `, gen_random_uuid(),
+				now() + interval '1 hour')`,
+			wantCon: "staging_leases_key_scope_check",
+		},
+		{
+			// A key that is a PREFIX of its siblings. Prefix enumeration
+			// would take every one of them out with it.
+			name: "lease over a key that prefixes other keys",
+			bad: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, 'staging/` + reclamationOrgID + `/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee',
+				gen_random_uuid(), now() + interval '1 hour')`,
+			good: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, ` + stagingKey("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee") + `, gen_random_uuid(),
+				now() + interval '1 hour')`,
+			wantCon: "staging_leases_key_scope_check",
+		},
+		{
+			// A leading segment. Without the start anchor the pattern
+			// matches anywhere in the key, so this lease would sit outside
+			// the staging prefix entirely — where the final-object sweep,
+			// which is defined never to consider staging, would also be
+			// free to act on it.
+			name: "lease over a key with a segment before the prefix",
+			bad: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, 'elsewhere/staging/` + reclamationOrgID + `/99999999-8888-4777-8666-555555555555',
+				gen_random_uuid(), now() + interval '1 hour')`,
+			good: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, ` + stagingKey("99999999-8888-4777-8666-555555555555") + `, gen_random_uuid(),
+				now() + interval '1 hour')`,
+			wantCon: "staging_leases_key_scope_check",
+		},
+		{
+			// A trailing suffix, which the anchored pattern refuses and an
+			// unanchored one does not.
+			name: "lease over a key with a suffix past the uuid",
+			bad: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, 'staging/` + reclamationOrgID + `/ffffffff-ffff-4fff-8fff-ffffffffffff/part-1',
+				gen_random_uuid(), now() + interval '1 hour')`,
+			good: leaseInsert + `(gen_random_uuid(), ` + reclamationOrg +
+				`, ` + stagingKey("ffffffff-ffff-4fff-8fff-ffffffffffff") + `, gen_random_uuid(),
+				now() + interval '1 hour')`,
+			wantCon: "staging_leases_key_scope_check",
 		},
 		{
 			name: "claim on a malformed digest",
@@ -215,7 +277,7 @@ func TestOneLeasePerStagingKey(t *testing.T) {
 	const insert = `INSERT INTO staging_leases
 		(staging_lease_id, organization_id, staging_key, owner_token, expires_at)
 		VALUES (gen_random_uuid(), ` + reclamationOrg + `, 'staging/` + reclamationOrgID +
-		`/contended', gen_random_uuid(), now() + interval '1 hour')`
+		`/11111111-2222-4333-8444-555555555555', gen_random_uuid(), now() + interval '1 hour')`
 
 	if _, err := db.Exec(insert); err != nil {
 		t.Fatalf("first lease: %v", err)
@@ -233,7 +295,7 @@ func TestOneLeasePerStagingKey(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO staging_leases
 		(staging_lease_id, organization_id, staging_key, owner_token, expires_at)
 		VALUES (gen_random_uuid(), ` + reclamationOrg + `, 'staging/` + reclamationOrgID +
-		`/uncontended', gen_random_uuid(), now() + interval '1 hour')`); err != nil {
+		`/66666666-7777-4888-8999-aaaaaaaaaaaa', gen_random_uuid(), now() + interval '1 hour')`); err != nil {
 		t.Fatalf("a lease on a different key was refused: %v", err)
 	}
 }
@@ -297,7 +359,7 @@ func TestReclamationRowsAreOrganizationScoped(t *testing.T) {
 		"lease": `INSERT INTO staging_leases
 			(staging_lease_id, organization_id, staging_key, owner_token, expires_at)
 			VALUES (gen_random_uuid(), ` + unknownOrg +
-			`, 'staging/55555555-5555-4555-8555-555555555555/x', gen_random_uuid(),
+			`, 'staging/55555555-5555-4555-8555-555555555555/bbbbbbbb-cccc-4ddd-8eee-ffffffffffff', gen_random_uuid(),
 			now() + interval '1 hour')`,
 		"claim": `INSERT INTO deletion_claims
 			(deletion_claim_id, organization_id, object_digest, version_ids, upload_ids)

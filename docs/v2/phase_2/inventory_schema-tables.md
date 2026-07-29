@@ -2,7 +2,7 @@
 title = "Schema Table Inventory: ADR And Consumer"
 edit_date = "2026-07-29"
 status = "live"
-summary = "Every table created by Phase 2 item 3, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead."
+summary = "Every table the Phase 2 schema creates, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead."
 type = "inventory"
 +++
 
