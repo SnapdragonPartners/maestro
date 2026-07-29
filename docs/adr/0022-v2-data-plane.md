@@ -1,13 +1,13 @@
 +++
 title = "ADR 0022: v2 Data Plane"
-edit_date = "2026-07-15"
+edit_date = "2026-07-28"
 status = "live"
 summary = "Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam."
 +++
 
 # 0022. v2 Data Plane
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (local durability invariant; config and secrets resolved into the plane with an external root of trust; backup contract)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (local durability invariant; config and secrets resolved into the plane with an external root of trust; backup contract); amended 2026-07-28 (cross-store commit order restated in schema-implementable terms, enforced at acceptance)
 
 ## Context
 
@@ -52,7 +52,16 @@ All data-plane access flows through the Orchestrator's persistence seam (ADR 001
 
 The seam is a generalized **persistence interface** — restructured from v1's persistence layer, keeping its generality — behind which authentication, relational data, and object persistence are pluggable modules selected per deployment mode. Local mode plugs in direct modules; cloud mode plugs in its own (below). The interface is the same in every mode.
 
-Cross-store consistency is the seam's invariant: an authoritative artifact or evidence reference is never committed unless the referenced object exists by digest and its retention pin is recorded — object first, pin recorded, row last. A database row must never point at a missing or prunable blob. Orphan cleanup and retry are implementation details; the commit-order invariant is not.
+Cross-store consistency is the seam's invariant: an authoritative artifact or evidence reference is never committed unless the referenced object exists by digest and its retention pin is recorded. A database row must never point at a missing or prunable blob. Orphan cleanup and retry are implementation details; the commit-order invariant is not.
+
+**Commit order (amended 2026-07-28).** The original wording — *object first, pin recorded, row last* — cannot be implemented against the schema it governs: a retention pin's holder is itself a row (`retention_pins.pinned_by_artifact_id` references `management_artifacts`), so no ordering exists in which every pin precedes every row. The invariant is restated in the terms the schema admits, unchanged in substance:
+
+1. the **object** is written and verified first;
+2. the **attachment row** recording its digest follows;
+3. the **referencing artifact and its retention pins** are written in **one transaction**;
+4. the artifact becomes **authoritative on acceptance**, which verifies that every referenced object exists and that every pin's digest equals its attachment's.
+
+So the guarantee stands as before — **no authoritative artifact ever references a missing or prunable blob** — while every step before acceptance leaves only removable garbage rather than a dangling authoritative reference. Acceptance is the enforcement point because ADR 0021 makes it the moment an artifact becomes authoritative; a design that enforced the order only by convention would leave the existing creation and acceptance operations able to produce exactly the forbidden state.
 
 ### Multi-user boundaries (MVP)
 
