@@ -91,6 +91,11 @@ type EvidenceRef struct {
 // leaving CreateManagementArtifact reachable with no pins at all would let
 // any caller produce exactly the state the invariant forbids (design D5).
 type AttachEvidenceInput struct {
+	// Every attachment must carry a preallocated UUIDv7 id, belong to the
+	// artifact's organization, and be named by one of the Pins below. An
+	// id allocated during the write could not have been referenced by a
+	// payload built beforehand, and an attachment stored here but unpinned
+	// is a durable row the artifact never references.
 	// Pins are what the artifact holds. Every reference the reviewed
 	// payload names must appear here, and nothing else may: acceptance
 	// compares the two as SETS, because an extra pin is an unreviewed
@@ -154,9 +159,20 @@ type ObjectStore interface {
 	// AttachEvidence stores objects and creates the draft artifact that
 	// references them, with its pins, in one transaction.
 	//
-	// It is the supported path for evidence-bearing artifacts, and it
-	// cannot be half-done: either the artifact exists with the complete pin
-	// set the payload names, or nothing relational exists at all.
+	// It is the supported path for evidence-bearing artifacts. What is
+	// atomic is the ARTIFACT AND ITS PINS: either the artifact exists
+	// holding the complete set, or neither exists.
+	//
+	// The attachments are not part of that transaction and cannot be. Each
+	// is a full PutAttachment -- an object write followed by a committed
+	// row -- performed before the transaction opens, because the pins have
+	// to name rows that already exist. So a failure here DOES leave
+	// attachment rows behind, along with their objects. That residue is
+	// unreferenced rather than dangling, which is the distinction that
+	// matters: nothing authoritative points at it. Reclaiming it takes two
+	// steps in order -- attachment truncation removes the rows, which makes
+	// the objects unreachable, and only then can the object sweep collect
+	// them.
 	AttachEvidence(ctx context.Context, input AttachEvidenceInput) (*AttachEvidenceResult, error)
 
 	// Pin and Unpin maintain a DRAFT ORIGINAL's evidence set.

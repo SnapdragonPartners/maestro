@@ -1002,6 +1002,19 @@ func (t *tx) SupersedeArtifact(ctx context.Context, organizationID, targetID, su
 	if classifyErr := classifyAcceptance(transitionSupersede, &superseding, &review); classifyErr != nil {
 		return classifyErr
 	}
+	// The SUPERSEDING artifact becomes authoritative here, so it faces the
+	// same evidence preconditions as any other acceptance. Without this,
+	// supersession was a second door into accepted status that skipped
+	// them entirely -- and it is the door an evidence-bearing artifact is
+	// most likely to arrive through, since superseding is how a corrected
+	// version of one replaces it.
+	//
+	// The TARGET is not checked: it keeps the pins it was accepted with,
+	// because ADR 0021 preserves accepted history immutably and history
+	// without its evidence is not preserved.
+	if evidenceErr := t.checkEvidence(ctx, transitionSupersede, &superseding, superseding.Payload); evidenceErr != nil {
+		return evidenceErr
+	}
 
 	// Accept the superseding artifact and retire the target in ONE
 	// transaction: a reader between the two would otherwise observe two

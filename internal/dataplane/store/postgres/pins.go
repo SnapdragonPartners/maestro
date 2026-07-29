@@ -16,8 +16,9 @@ import (
 // because the operator response differs: one means "accept it first", the
 // other means "amend the original, do not pin from here".
 const (
-	transitionPin   = "pin"
-	transitionUnpin = "unpin"
+	transitionPin            = "pin"
+	transitionUnpin          = "unpin"
+	transitionAttachEvidence = "attach evidence"
 )
 
 // Pin adds one reference to a draft original's evidence set.
@@ -98,10 +99,12 @@ func (t *tx) requirePinnableHolder(
 		return notFound(err, "management artifact", artifactID)
 	}
 	if artifact.AmendsArtifactID.Valid {
-		return &store.TransitionRejected{Transition: transition, Reason: store.ReasonIsAmendment}
+		return rejected(transition, artifactID, store.ReasonIsAmendment,
+			"all pins in a chain are held by the original")
 	}
 	if store.Status(artifact.Status) != store.StatusDraft {
-		return &store.TransitionRejected{Transition: transition, Reason: store.ReasonWrongStatus}
+		return rejected(transition, artifactID, store.ReasonWrongStatus,
+			fmt.Sprintf("status is %q; a verified pin set is not editable afterwards", artifact.Status))
 	}
 	return nil
 }
@@ -236,8 +239,14 @@ func pinFromRow(row *gen.RetentionPin) store.Pin {
 func (s *Store) AttachEvidence(
 	ctx context.Context, input store.AttachEvidenceInput,
 ) (*store.AttachEvidenceResult, error) {
-	// Preallocated here, before anything is written, because a pin has to
-	// name the attachment it protects and the caller may name it too.
+	// Checked BEFORE anything is stored. Every failure below is a caller
+	// error that no amount of writing will fix, and refusing after the
+	// uploads would leave objects and attachment rows behind for a request
+	// that was never going to succeed.
+	if err := checkAttachEvidence(&input); err != nil {
+		return nil, err
+	}
+
 	attachments := make([]store.Attachment, 0, len(input.Attachments))
 	for i := range input.Attachments {
 		stored, err := s.PutAttachment(ctx, input.Attachments[i])
@@ -255,10 +264,13 @@ func (s *Store) AttachEvidence(
 
 		pins := make([]store.Pin, 0, len(input.Pins))
 		for i := range input.Pins {
-			// t.pin, not the public Pin: the artifact was created in THIS
-			// transaction and is a draft original by construction, so
-			// re-locking and re-classifying it would only re-derive what
-			// the line above already established.
+			// t.pin, not the public Pin: this artifact was created in THIS
+			// transaction, as a draft, and checkAttachEvidence refused an
+			// amendment before any of it began -- so the classification
+			// requirePinnableHolder performs has already been established
+			// by construction. It is established by that check, not by the
+			// creation: CreateManagementArtifact will happily create an
+			// amendment if asked.
 			written, pinErr := t.pin(ctx, artifact.OrganizationID, artifact.ArtifactID, input.Pins[i])
 			if pinErr != nil {
 				return nil, fmt.Errorf("pin evidence %d of %d: %w", i+1, len(input.Pins), pinErr)
@@ -291,6 +303,68 @@ func (t *tx) releasePins(ctx context.Context, transition string, organizationID,
 		PinnedByArtifactID: toUUID(artifactID),
 	}); err != nil {
 		return fmt.Errorf("release pins on %s of artifact %s: %w", transition, artifactID, err)
+	}
+	return nil
+}
+
+// checkAttachEvidence refuses a composite request that could not produce a
+// coherent result, before any of it is written.
+//
+// Three rules, each closing a hole the happy path does not show:
+//
+//   - The artifact may not be an AMENDMENT. Every pin in a chain is held
+//     by the original, and this path reaches t.pin directly, so an
+//     amendment here would write pins that no artifact can ever release:
+//     item 4 refuses to archive an amendment at all, and archiving the
+//     original removes only the original's own pins.
+//   - Every attachment must carry a PREALLOCATED UUIDv7. An attachment
+//     whose id is allocated during the write gets it after the payload and
+//     the pins were built, so nothing could have named it -- the caller
+//     would be asking to store evidence it cannot reference.
+//   - Every attachment must be PINNED by this artifact, and belong to its
+//     organization. An attachment stored here and left unpinned is a
+//     durable row the artifact never references, holding an object the
+//     sweep cannot reclaim until something truncates the row.
+func checkAttachEvidence(input *store.AttachEvidenceInput) error {
+	if input.Artifact.AmendsArtifactID != nil {
+		return &store.TransitionRejected{
+			Transition: transitionAttachEvidence,
+			ArtifactID: input.Artifact.ArtifactID,
+			Reason:     store.ReasonIsAmendment,
+			Detail: "an amendment cannot hold pins; its additions are written to the original by " +
+				"amendment acceptance",
+		}
+	}
+
+	pinnedHere := make(map[uuid.UUID]struct{}, len(input.Pins))
+	for _, reference := range input.Pins {
+		if reference.AttachmentID != nil {
+			pinnedHere[*reference.AttachmentID] = struct{}{}
+		}
+	}
+
+	for i := range input.Attachments {
+		attachment := &input.Attachments[i]
+		switch {
+		case attachment.AttachmentID == uuid.Nil:
+			return fmt.Errorf("attachment %d of %d has no preallocated id: the payload that references "+
+				"it and the pins that protect it are both built before this call, so an id allocated "+
+				"during the write is one nothing could have named",
+				i+1, len(input.Attachments))
+		case attachment.AttachmentID.Version() != 7:
+			return fmt.Errorf("attachment %d of %d has a UUID version %d id, want 7",
+				i+1, len(input.Attachments), attachment.AttachmentID.Version())
+		case attachment.OrganizationID != input.Artifact.OrganizationID:
+			return fmt.Errorf("attachment %d of %d belongs to organization %s and the artifact to %s; "+
+				"evidence and the artifact citing it are always in one organization",
+				i+1, len(input.Attachments), attachment.OrganizationID, input.Artifact.OrganizationID)
+		}
+		if _, pinned := pinnedHere[attachment.AttachmentID]; !pinned {
+			return fmt.Errorf("attachment %d of %d (%s) is stored by this call and pinned by none of "+
+				"its pins: it would be a durable row the artifact never references, holding an object "+
+				"nothing can reclaim until the row is truncated",
+				i+1, len(input.Attachments), attachment.AttachmentID)
+		}
 	}
 	return nil
 }

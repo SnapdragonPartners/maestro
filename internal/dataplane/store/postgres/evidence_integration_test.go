@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -448,3 +449,256 @@ func TestATypeWithNoExtractorRequiresZeroPins(t *testing.T) {
 	assertRejected(t, err, "a pin names evidence the reviewed payload does not",
 		"accepting a no-extractor type that holds a pin")
 }
+
+// TestSupersessionFacesTheEvidencePreconditions covers the second door
+// into accepted status.
+//
+// Supersession accepts the superseding artifact, so it becomes
+// authoritative -- and it is the door an evidence-bearing artifact is most
+// likely to arrive through, since superseding is how a corrected version
+// replaces one. A check on AcceptArtifact alone leaves it wide open.
+func TestSupersessionFacesTheEvidencePreconditions(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	// An accepted original to supersede.
+	target := f.attachEvidence(t, []byte("the first version's evidence"))
+	if err := f.store.AcceptArtifact(ctx, f.organizationID, target.Artifact.ArtifactID,
+		f.acceptableReview(t, target.Artifact)); err != nil {
+		t.Fatalf("accept the target: %v", err)
+	}
+
+	// A superseding artifact whose payload names evidence, with its pin
+	// removed. Nothing about the supersession itself is wrong.
+	superseding := f.attachSuperseding(t, target.Artifact.ArtifactID, []byte("the second version's evidence"))
+	if err := f.store.Unpin(ctx, f.organizationID, superseding.Artifact.ArtifactID,
+		superseding.Pins[0].PinID); err != nil {
+		t.Fatalf("Unpin: %v", err)
+	}
+
+	err := f.store.SupersedeArtifact(ctx, f.organizationID, target.Artifact.ArtifactID,
+		superseding.Artifact.ArtifactID, f.acceptableReview(t, superseding.Artifact))
+	assertRejected(t, err, "reviewed payload names evidence that is not pinned",
+		"superseding with an unpinned reference")
+
+	// Neither artifact moved: the target is still accepted, the
+	// superseding one still a draft.
+	for _, check := range []struct {
+		id   uuid.UUID
+		want store.Status
+	}{
+		{target.Artifact.ArtifactID, store.StatusAccepted},
+		{superseding.Artifact.ArtifactID, store.StatusDraft},
+	} {
+		artifact, readErr := f.store.GetManagementArtifact(ctx, f.organizationID, check.id)
+		if readErr != nil {
+			t.Fatalf("read artifact: %v", readErr)
+		}
+		if artifact.Status != check.want {
+			t.Fatalf("artifact %s is %q, want %q after a refused supersession",
+				check.id, artifact.Status, check.want)
+		}
+	}
+
+	// The positive control, on the same transition: restore the pin and it
+	// goes through. Without this the case above would pass against a
+	// supersession that refused everything.
+	if _, err := f.store.Pin(ctx, f.organizationID, superseding.Artifact.ArtifactID,
+		store.EvidenceRef{AttachmentID: &superseding.Attachments[0].AttachmentID}); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if err := f.store.SupersedeArtifact(ctx, f.organizationID, target.Artifact.ArtifactID,
+		superseding.Artifact.ArtifactID, f.acceptableReview(t, superseding.Artifact)); err != nil {
+		t.Fatalf("SupersedeArtifact refused a correct evidence set: %v", err)
+	}
+}
+
+// TestAttachEvidenceRefusesIncoherentRequests covers what the composite
+// path must refuse BEFORE it writes anything, since none of these could
+// produce a coherent result and all of them would leave residue.
+func TestAttachEvidenceRefusesIncoherentRequests(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	// An accepted original, so the amendment case has something to amend.
+	original := f.attachEvidence(t, []byte("the original's evidence"))
+	if err := f.store.AcceptArtifact(ctx, f.organizationID, original.Artifact.ArtifactID,
+		f.acceptableReview(t, original.Artifact)); err != nil {
+		t.Fatalf("accept the original: %v", err)
+	}
+
+	// Each case asserts the reason it was refused, not merely that it
+	// was. These rules subsume one another -- a nil id is also not a v7,
+	// an id nobody pinned is also unpinned -- so a case checking only
+	// "some error" passes with its own rule deleted, caught by the next
+	// one along. Every one of these three survived exactly that way before
+	// the messages were asserted.
+	for name, testCase := range map[string]struct {
+		mutate func(*store.AttachEvidenceInput)
+		reason string
+	}{
+		// The one that matters most: pins held by an amendment can never
+		// be released, because nothing archives an amendment and archiving
+		// the original removes only its own.
+		"the artifact is an amendment": {
+			mutate: func(i *store.AttachEvidenceInput) {
+				i.Artifact.AmendsArtifactID = &original.Artifact.ArtifactID
+			},
+			reason: "an amendment cannot hold pins",
+		},
+		"an attachment has no preallocated id": {
+			mutate: func(i *store.AttachEvidenceInput) { i.Attachments[0].AttachmentID = uuid.Nil },
+			reason: "no preallocated id",
+		},
+		"an attachment id is not a UUIDv7": {
+			mutate: func(i *store.AttachEvidenceInput) { i.Attachments[0].AttachmentID = uuid.New() },
+			reason: "UUID version 4",
+		},
+		"an attachment belongs to another organization": {
+			mutate: func(i *store.AttachEvidenceInput) { i.Attachments[0].OrganizationID = f.otherOrgID },
+			reason: "belongs to organization",
+		},
+		"an attachment is stored but not pinned": {
+			mutate: func(i *store.AttachEvidenceInput) { i.Pins = nil },
+			reason: "pinned by none",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := f.evidenceInput(t, []byte("evidence for a request that will be refused"))
+			testCase.mutate(&input)
+
+			// Counted across EVERY organization. An org-scoped count misses
+			// the cross-tenant case entirely: the row it writes lands in
+			// the other organization, where this test was not looking.
+			before := f.countAllAttachments(ctx, t)
+			_, err := f.store.AttachEvidence(ctx, input)
+			if err == nil {
+				t.Fatal("AttachEvidence accepted a request it must refuse")
+			}
+			if !strings.Contains(err.Error(), testCase.reason) {
+				t.Fatalf("refused with %v, which does not name %q; another rule caught this input "+
+					"and the rule under test may be doing nothing", err, testCase.reason)
+			}
+			// Refused before anything was stored, which is the point of
+			// checking first: a request that cannot succeed must not leave
+			// objects and rows behind on its way to failing.
+			if after := f.countAllAttachments(ctx, t); after != before {
+				t.Fatalf("a refused request wrote %d attachment rows", after-before)
+			}
+		})
+	}
+}
+
+// TestAttachEvidenceRollsBackTheArtifactWithItsPins is the atomicity claim
+// under test. The happy path passes whether or not the two are one
+// transaction; only a failure between them can tell.
+func TestAttachEvidenceRollsBackTheArtifactWithItsPins(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	input := f.evidenceInput(t, []byte("evidence that will be rolled back"))
+	// A second pin naming evidence that does not exist. The first pin is
+	// perfectly good, so the failure lands BETWEEN the artifact insert and
+	// the end of the pin writes.
+	missing := uuid.New()
+	input.Pins = append(input.Pins, store.EvidenceRef{AuditArtifactID: &missing})
+
+	beforeArtifacts := f.countArtifacts(t)
+	beforePins := f.countPins(t)
+
+	if _, err := f.store.AttachEvidence(ctx, input); err == nil {
+		t.Fatal("AttachEvidence accepted a pin naming evidence that does not exist")
+	}
+
+	if after := f.countArtifacts(t); after != beforeArtifacts {
+		t.Fatalf("%d artifacts survived a failed AttachEvidence; the artifact and its pins are "+
+			"supposed to commit together or not at all", after-beforeArtifacts)
+	}
+	if after := f.countPins(t); after != beforePins {
+		t.Fatalf("%d pins survived a failed AttachEvidence", after-beforePins)
+	}
+	// The attachment row DOES survive, and saying so is the contract: it
+	// was committed by PutAttachment before this transaction opened. It is
+	// unreferenced rather than dangling, and truncation is what makes its
+	// object reclaimable.
+	var rows int
+	if err := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM binary_attachments WHERE attachment_id = $1`,
+		input.Attachments[0].AttachmentID).Scan(&rows); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("the attachment row was rolled back too; the documented residue is wrong")
+	}
+}
+
+// evidenceInput builds a valid composite request.
+func (f *fixture) evidenceInput(t *testing.T, body []byte) store.AttachEvidenceInput {
+	t.Helper()
+	attachmentID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("allocate attachment id: %v", err)
+	}
+	payload, err := json.Marshal(evidencePayload{
+		Title:       "an artifact with evidence",
+		Attachments: []uuid.UUID{attachmentID},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return store.AttachEvidenceInput{
+		Attachments: []store.PutAttachmentInput{{
+			Body:           bytes.NewReader(body),
+			Digest:         digestOf(body),
+			MediaType:      mediaType,
+			SizeBytes:      int64(len(body)),
+			OrganizationID: f.organizationID,
+			AttachmentID:   attachmentID,
+		}},
+		Artifact: store.CreateManagementArtifactInput{
+			Payload:          payload,
+			Type:             evidenceType,
+			Summary:          "an artifact with evidence",
+			Scope:            f.scope(),
+			OrganizationID:   f.organizationID,
+			UserID:           f.userID,
+			AuthorInstanceID: f.author,
+		},
+		Pins: []store.EvidenceRef{{AttachmentID: &attachmentID}},
+	}
+}
+
+// attachSuperseding is evidenceInput plus a supersession target.
+func (f *fixture) attachSuperseding(t *testing.T, targetID uuid.UUID, body []byte) *store.AttachEvidenceResult {
+	t.Helper()
+	input := f.evidenceInput(t, body)
+	input.Artifact.SupersedesArtifactID = &targetID
+	result, err := f.store.AttachEvidence(context.Background(), input)
+	if err != nil {
+		t.Fatalf("AttachEvidence for a superseding artifact: %v", err)
+	}
+	return result
+}
+
+func (f *fixture) countRows(t *testing.T, table string) int {
+	t.Helper()
+	var rows int
+	if err := f.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM `+table+` WHERE organization_id = $1`, f.organizationID).Scan(&rows); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return rows
+}
+
+// countAllAttachments ignores the organization, so a write that lands in
+// the WRONG one is still counted.
+func (f *fixture) countAllAttachments(ctx context.Context, t *testing.T) int {
+	t.Helper()
+	var rows int
+	if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM binary_attachments`).Scan(&rows); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	return rows
+}
+func (f *fixture) countArtifacts(t *testing.T) int { return f.countRows(t, "management_artifacts") }
+func (f *fixture) countPins(t *testing.T) int      { return f.countRows(t, "retention_pins") }
