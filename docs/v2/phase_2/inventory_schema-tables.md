@@ -1,6 +1,6 @@
 +++
 title = "Schema Table Inventory: ADR And Consumer"
-edit_date = "2026-07-27"
+edit_date = "2026-07-29"
 status = "live"
 summary = "Every table created by Phase 2 item 3, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead."
 type = "inventory"
@@ -39,6 +39,19 @@ It exists because [ADR 0022](../../adr/0022-v2-data-plane.md) claims Phase 2's D
 | `retention_pins` | [0021](../../adr/0021-artifacts-and-principal-instances.md) retention pinning | Item 5 Audit truncation; item 9's pin |
 
 Nineteen tables, plus golang-migrate's own `schema_migrations`.
+
+## Created by item 6
+
+Reclamation needs durable state of its own, and neither table existed before
+there was something to reclaim. Both follow the same rule: created by the
+item that first has a caller.
+
+| Table | Required by | Consumed by |
+| --- | --- | --- |
+| `staging_leases` | [0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md) — destructive recovery must never remove another actor's in-progress work | Item 6: the writer takes the lease before the first byte and holds its row lock through promotion; staging cleanup acts only on a lease that is absent or expired **as judged under that lock** |
+| `deletion_claims` | [0022](../../adr/0022-v2-data-plane.md) object module; [0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md) | Item 6: the sweep commits a claim naming the exact versions and upload ids it will remove **before** issuing any delete, because an advisory lock cannot fence a call the database does not make |
+
+Twenty-one tables.
 
 ## Not created by item 3
 

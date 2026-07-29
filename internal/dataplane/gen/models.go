@@ -66,6 +66,15 @@ type BinaryAttachment struct {
 	CreatedAt      pgtype.Timestamptz
 }
 
+type DeletionClaim struct {
+	DeletionClaimID pgtype.UUID
+	OrganizationID  pgtype.UUID
+	ObjectDigest    string
+	VersionIds      []string
+	UploadIds       []string
+	ClaimedAt       pgtype.Timestamptz
+}
+
 type Epic struct {
 	EpicID         pgtype.UUID
 	OrganizationID pgtype.UUID
@@ -229,6 +238,15 @@ type RetentionPin struct {
 	PinnedAttachmentID    pgtype.UUID
 	PinnedDigest          string
 	CreatedAt             pgtype.Timestamptz
+}
+
+type StagingLease struct {
+	StagingLeaseID pgtype.UUID
+	OrganizationID pgtype.UUID
+	StagingKey     string
+	OwnerToken     pgtype.UUID
+	CreatedAt      pgtype.Timestamptz
+	ExpiresAt      pgtype.Timestamptz
 }
 
 type Story struct {
