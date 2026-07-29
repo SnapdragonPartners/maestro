@@ -10,7 +10,9 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after ten review rounds. Carries two migrations: 000011 (the LLM outcome correction and row-local constraints) and 000012 (the index plan). The SQL surface and its behavioural suite passed the mid-item checkpoint; the seam is built against this contract.
 
-**Amended after implementation** (2026-07-28), with the decisions that came out of building the seam rather than designing it. Each is marked **Amendment** where it belongs — D1's materialised completion instant and the asymmetry of outcome coherence, D7's placement of truncation on `Store` alone, and D8's concrete page bound. They are recorded here rather than in the phase exit record, which is a post-mortem and not where anyone looks for the contract.
+**Amended after implementation** (2026-07-28), **accepted by Codex and DR**. The amendment carries the decisions that came out of building the seam rather than designing it, each marked **Amendment** where it belongs — D1's materialised completion instant and the asymmetry of outcome coherence, D7's placement of truncation on `Store` alone, and D8's concrete page bound. They are recorded here rather than in the phase exit record, which is a post-mortem and not where anyone looks for the contract.
+
+The same round corrected two claims the implementation had falsified: D4 said no schema check existed for the completion interval, when migration 000011 adds one to both call tables; and D7 described a concurrency test that runs two passes at once, which is not what proves the retry and would not reliably prove anything.
 
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
@@ -160,7 +162,7 @@ Enumerated before the queries are written, per `CLAUDE.md`:
 | **Either call type** completed as succeeded but carrying an error message | Incoherent outcome; no reader can interpret it |
 | **Either call type** completed as failed with a missing or blank diagnostic | The failure path is precisely when someone reads the record |
 | **Either call type** open but already carrying an error message | An unfinished call has no outcome yet |
-| `finished_at` before `started_at` | Nonsense interval; no schema check exists, so the seam owns it |
+| `finished_at` before `started_at` | Nonsense interval. Migration 000011 adds the interval check to **both** call tables, so the schema enforces the row invariant and the seam supplies the diagnostic naming the field — the division every row-local rule here follows (D2) |
 | Any write naming another organization's principal or lineage | Multi-tenant boundary, as item 4 |
 | Truncation without an explicit horizon | An unbounded delete should not be reachable by accident |
 
@@ -224,6 +226,8 @@ The result therefore reconciles exactly:
 
 and the test asserts that identity rather than only the individual counts, because four numbers that each look plausible can still describe no consistent set of rows.
 
+The seam **enforces** it as well as reporting it: a table whose buckets do not sum to its candidates means the counting query and the delete disagreed about which rows were in scope, and returning either number would be returning a guess. That is an `ErrInvariant`, not a result.
+
 **Testing.** Each table is seeded past the horizon in **the states that apply to it** — every table gets a deletable row; `audit_artifacts` also gets a pinned one; the call tables also get an open one and a referenced one. A test seeding only deletable rows passes against a delete with no guard clauses at all. Each guard also gets a **direct generated-query test**, since item 4 proved a backstop behind a working guard is unreachable through the normal path.
 
 ## D7. Transaction boundaries and isolation
@@ -235,19 +239,30 @@ Item 4 wrapped nearly everything. Here the default inverts — but the isolation
 - **Completion takes one**, being lock-classify-write.
 - **Truncation takes one, at explicit `REPEATABLE READ`.**
 
-That last point is the correction. A transaction at Postgres's default `READ COMMITTED` gives **every statement a fresh snapshot**, so a multi-table delete would evaluate its guards against four different instants: a call could be completed, a pin created, or an artifact written between the statements, and the pass would delete a row that was protected when the operation began. Truncation therefore sets `REPEATABLE READ` explicitly and performs its deletes in dependency order within that one snapshot.
+That last point is the correction. A transaction at Postgres's default `READ COMMITTED` gives **every statement a fresh snapshot**, so a multi-table delete would evaluate its guards against as many instants as it issues statements: a call could be completed, a pin created, or an artifact written between any two of them, and the pass would delete a row that was protected when the operation began. Truncation therefore sets `REPEATABLE READ` explicitly and performs its deletes in dependency order within that one snapshot.
 
 This is the same error item 4 shipped and had to fix, restated here because writing it down evidently did not prevent repeating it.
 
-**`REPEATABLE READ` can abort.** Two concurrent truncations touching the same rows make Postgres raise a serialization failure, `SQLSTATE 40001`, and a raw driver error is not a stable contract for a persistence seam — every caller would have to know the code and decide what it means.
+**`REPEATABLE READ` can abort.** Concurrent truncations touching the same rows **can** make Postgres raise a serialization failure, `SQLSTATE 40001` — when one commits a change to a row the other's snapshot has already read and now wants to delete. Whether that happens depends on how the two interleave, which is precisely why a test cannot simply start two and wait. A raw driver error is also not a stable contract for a persistence seam: every caller would have to know the code and decide what it means.
 
 The Postgres module **retries the whole operation**, up to a small fixed bound, and returns a typed `ErrConcurrentTruncation` if the bound is exhausted. Whole-operation retry rather than per-statement, because the dependency order and the retention guards only make sense evaluated against one snapshot; retrying a single statement inside a poisoned transaction is not possible anyway. The bound exists so a pathological loop surfaces rather than spinning.
 
-Truncation is the only operation here that needs this, being the only one at `REPEATABLE READ`. Covered by a test running two concurrent truncations over overlapping rows and asserting that both terminate, no row is double-counted, and the reported buckets still reconcile.
+Truncation is the only operation here that needs this, being the only one at `REPEATABLE READ`.
+
+**How it is proved, since starting two passes at once proves nothing.** Two concurrent truncations may or may not collide depending on how they interleave, so that test is flaky when it fails and vacuous when it passes. The conflict is **constructed** instead:
+
+1. rows are seeded past the horizon;
+2. a competing transaction deletes one of them and holds it **uncommitted**;
+3. one pass runs, takes its snapshot — seeing every seeded row — and **blocks** on the locked row, which the test waits for by watching the server's activity view rather than by sleeping;
+4. the competitor commits, and the blocked delete raises `40001`, because a row this pass wants was changed by a transaction that committed after its snapshot.
+
+The evidence a **retry** happened is the reported candidate count: the first attempt's snapshot saw every seeded row, and the returned result reports one fewer, so the result came from a snapshot taken after the competitor committed. A pass that never conflicted would report the original count.
+
+**Retry exhaustion and the typed error are tested separately**, without a database. A live test cannot reach the bound on purpose — that would mean provoking conflicts on demand, repeatedly — so the retry helper is exercised against a stub raising a synthetic `40001`, which also covers the rule that any *other* error returns immediately rather than being retried into a misleading concurrency failure.
 
 **Amendment: truncation is offered on the Store and NOT on a transaction.** The seam's transaction entry point opens at the pool's default isolation and gives a caller no way to ask for another. A `Tx` advertising truncation would therefore promise an operation that *necessarily refuses* wherever a caller could reach it — an interface making a claim no implementation can honour there. It lives on a separate `Maintenance` surface that only the `Store` embeds, and the `Store` supplies the snapshot and the retry with it.
 
-The implementation retains the pass on its transactional type, because that is how the `Store` runs it, and the pass asks the server for its isolation level and refuses at `READ COMMITTED`. That check now guards an internal path rather than a public one, which is precisely its value: it is what makes a later change to open the transaction the ordinary way fail loudly instead of quietly evaluating five retention guards against five instants.
+The implementation retains the pass on its transactional type, because that is how the `Store` runs it, and the pass asks the server for its isolation level and refuses at `READ COMMITTED`. That check now guards an internal path rather than a public one, which is precisely its value: it is what makes a later change to open the transaction the ordinary way fail loudly instead of quietly evaluating each retention guard against its own statement's snapshot.
 
 Which interface a method sits on is a contract, and **moving one between interfaces does not fail to compile** — the concrete type goes on satisfying both. The split is therefore held by a test asserting the method's absence from the transactional surfaces *and* its presence on the `Store`; the second direction matters, since deleting it outright would satisfy the first.
 
