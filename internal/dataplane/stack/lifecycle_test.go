@@ -34,13 +34,25 @@ func testConfig(t *testing.T) *Config {
 // which is fine and deliberately irrelevant. What matters is that it does
 // not proceed while the lock is held elsewhere. This is the ADR 0027 rule
 // that a lock needs a test which fails without it — removing the
-// lockLifecycle call from any of the three makes its case return
-// immediately, and the case fails.
+// lockLifecycle call from any of them makes its case return immediately,
+// and the case fails.
+//
+// The list must cover EVERY lifecycle operation, and enumerating it by hand
+// is the weak point: Migrate and ForceVersion were added later and were
+// absent here, so removing either lock left this suite green. The adapters
+// below exist so operations with different signatures are still covered
+// rather than quietly omitted.
 func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 	operations := map[string]func(context.Context, *Config, string) error{
 		"Up":    Up,
 		"Down":  Down,
 		"Reset": Reset,
+		"Migrate": func(ctx context.Context, c *Config, _ string) error {
+			return Migrate(ctx, c)
+		},
+		"ForceVersion": func(_ context.Context, c *Config, _ string) error {
+			return ForceVersion(c, 1)
+		},
 	}
 
 	for name, operate := range operations {

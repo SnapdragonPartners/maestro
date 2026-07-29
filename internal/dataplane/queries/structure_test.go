@@ -47,6 +47,9 @@ var (
 	// the next comma -- so `@status` and `r.status` are captured and then
 	// fail the literal comparison rather than slipping through unmatched.
 	statusAssignmentValue = regexp.MustCompile(`(?i)\bstatus\s*=\s*('[^']*'|[^,]+)`)
+
+	// onceOnlyGuard is the predicate that makes completion once-only.
+	onceOnlyGuard = regexp.MustCompile(`(?i)finished_at\s+IS\s+NULL`)
 )
 
 // statement is one sqlc query: its name and its SQL with comments removed.
@@ -212,6 +215,264 @@ func describeAssignment(got string) string {
 // isInsert reports whether a statement is an INSERT rather than an UPDATE.
 func isInsert(sql string) bool {
 	return strings.Contains(strings.ToUpper(sql), "INSERT ")
+}
+
+// callTables are the two tables with an open → completed lifecycle. Their
+// mutability surface is enforced structurally, for the same reason
+// namedTransitions guards artifact status: "no other column is updatable"
+// is an intention until something fails the build.
+var callTables = []string{"llm_calls", "tool_calls"}
+
+// namedCompletions are the only statements permitted to UPDATE a call.
+// Each must carry the once-only guard.
+var namedCompletions = map[string]bool{
+	"CompleteLLMCall":  true,
+	"CompleteToolCall": true,
+}
+
+// outcomeColumns must never appear in a call's INSERT column list.
+//
+// Not just the three lifecycle flags: an outcome is everything a call
+// learns by ENDING. Tokens, cost and a tool's result are all outcome, so a
+// creation naming any of them writes a terminal row directly and bypasses
+// the once-only guard -- and unlike a status column, nothing about a call
+// record's shape makes that obvious in review.
+var outcomeColumns = []string{
+	"finished_at", "succeeded", "error_message",
+	"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cost_usd",
+	"result",
+}
+
+// completionSetColumns are the ONLY columns a completion may assign.
+//
+// An allow-listed completion could otherwise rewrite the request side --
+// provider, model, arguments -- or the lineage, mutating history through a
+// statement that passes the name check. What a call was asked to do is not
+// something ending it can change.
+var completionSetColumns = map[string]bool{
+	"finished_at": true, "succeeded": true, "error_message": true,
+	"input_tokens": true, "output_tokens": true, "reasoning_tokens": true,
+	"cached_tokens": true, "cost_usd": true, "result": true,
+}
+
+// bornFinalTables are written once and never updated. The asymmetry with
+// the call tables is the point.
+//
+// audit_artifacts belongs here as much as the event tables do: ADR 0021
+// makes Audit artifacts born final, with retention pinning rather than a
+// lifecycle. Its absence from an earlier version of this list meant a
+// generic UPDATE or DELETE against the one pinnable family in scope would
+// have passed every check here.
+var bornFinalTables = []string{"metric_events", "audit_events", "audit_artifacts"}
+
+// namedTruncations maps each permitted DELETE to the ONE table it may
+// delete from. Deletion here is retention policy (design D6), with a
+// per-table horizon and its own retention guards.
+//
+// A name→table map rather than a name allow-list, because the names are not
+// interchangeable: TruncateAuditEvents deleting from llm_calls would apply
+// the wrong cutoff column and skip every retention guard, while passing a
+// check that only asked whether the name was approved.
+var namedTruncations = map[string]string{
+	"TruncateAuditEvents":    "audit_events",
+	"TruncateMetricEvents":   "metric_events",
+	"TruncateAuditArtifacts": "audit_artifacts",
+	"TruncateToolCalls":      "tool_calls",
+	"TruncateLLMCalls":       "llm_calls",
+}
+
+// TestCallsAreCreatedOpenAndCompletedOnce enforces the call family's
+// mutability surface.
+func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
+	statements := loadStatements(t)
+
+	var inserts, updates int
+	for _, stmt := range statements {
+		table := callTableWritten(stmt.sql)
+		if table == "" {
+			continue
+		}
+
+		switch {
+		case isInsert(stmt.sql):
+			inserts++
+			columns := between(stmt.sql, strings.ToUpper(stmt.sql), "(", ")")
+			for _, forbidden := range outcomeColumns {
+				if columnPattern(forbidden).MatchString(columns) {
+					t.Errorf("%s: %q inserts %s into %s. A call must be created OPEN: writing a terminal "+
+						"row directly bypasses the once-only completion guard, and Audit history becomes "+
+						"mutable through a path no lifecycle rule polices.",
+						stmt.file, stmt.name, forbidden, table)
+				}
+			}
+
+		case strings.Contains(strings.ToUpper(stmt.sql), "UPDATE "):
+			updates++
+			if !namedCompletions[stmt.name] {
+				t.Errorf("%s: %q updates %s but is not a named completion. There is no generic update on a "+
+					"call record; add a completion to namedCompletions here only if it genuinely is one.",
+					stmt.file, stmt.name, table)
+				continue
+			}
+			// The guard must be in the WHERE clause, not merely somewhere in
+			// the statement: the phrase appears in SET expressions and in
+			// comments too, and matching those would accept a completion
+			// with no guard at all.
+			where := between(stmt.sql, strings.ToUpper(stmt.sql), "WHERE", ";")
+			if !onceOnlyGuard.MatchString(where) {
+				t.Errorf("%s: %q updates %s without `finished_at IS NULL` in its WHERE clause. That guard "+
+					"is what makes completion once-only, so the first outcome wins when two paths observe "+
+					"one call ending.", stmt.file, stmt.name, table)
+			}
+			// And it may only assign outcome columns.
+			setClause := between(stmt.sql, strings.ToUpper(stmt.sql), "SET", "WHERE")
+			for _, assigned := range assignedColumns(setClause) {
+				if !completionSetColumns[assigned] {
+					t.Errorf("%s: %q assigns %s while completing %s. A completion records what the call "+
+						"LEARNED by ending; rewriting the request side or the lineage mutates history "+
+						"through a statement that passed the name check.",
+						stmt.file, stmt.name, assigned, table)
+				}
+			}
+
+		case deleteTarget(stmt.sql) == table:
+			assertNamedTruncation(t, stmt, table)
+		}
+	}
+
+	// Guard against the rule going quiet: a rename or a restructure that
+	// matched nothing would leave every check above passing vacuously.
+	if inserts == 0 || updates == 0 {
+		t.Fatalf("found %d call inserts and %d call updates; this test enforced nothing", inserts, updates)
+	}
+}
+
+// TestBornFinalTablesAreNeverUpdated covers the event tables, which the
+// first version of this guard did not mention at all. They have no
+// lifecycle, so an UPDATE against one is not a wrong transition -- it is a
+// statement with no meaning the schema can express.
+func TestBornFinalTablesAreNeverUpdated(t *testing.T) {
+	var seen int
+	for _, stmt := range loadStatements(t) {
+		target := writeTarget(stmt.sql)
+		for _, table := range bornFinalTables {
+			if target != table {
+				continue
+			}
+			seen++
+			upper := strings.ToUpper(stmt.sql)
+			switch {
+			case strings.Contains(upper, "UPDATE "):
+				t.Errorf("%s: %q updates %s, which is born final and has no lifecycle to move through",
+					stmt.file, stmt.name, table)
+			case deleteTarget(stmt.sql) == table:
+				assertNamedTruncation(t, stmt, table)
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("no statement touched a born-final table, so this test enforced nothing")
+	}
+}
+
+// TestEveryNamedCompletionExists is the other direction: a name left here
+// after its query was renamed silently widens what may update a call.
+func TestEveryNamedCompletionExists(t *testing.T) {
+	found := map[string]bool{}
+	for _, stmt := range loadStatements(t) {
+		if callTableWritten(stmt.sql) != "" && strings.Contains(strings.ToUpper(stmt.sql), "UPDATE ") {
+			found[stmt.name] = true
+		}
+	}
+	for name := range namedCompletions {
+		if !found[name] {
+			t.Errorf("namedCompletions permits %q, but no query by that name updates a call table; "+
+				"remove the stale entry rather than leaving it available for reuse", name)
+		}
+	}
+}
+
+// deleteTarget returns the table a DELETE actually removes rows from.
+//
+// Naively searching for "FROM <table>" is wrong here and was: the
+// truncation statements carry retention guards like
+// `EXISTS (SELECT 1 FROM audit_artifacts ...)`, so a substring match finds
+// the SUBQUERY's table and concludes the statement deletes from it. That
+// misreads the one file these rules exist to police.
+var deleteFromPattern = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+([a-z_]+)`)
+
+func deleteTarget(sql string) string {
+	match := deleteFromPattern.FindStringSubmatch(sql)
+	if len(match) < 2 {
+		return ""
+	}
+	return strings.ToLower(match[1])
+}
+
+// writeTarget returns the table a statement writes to, for any of the three
+// verbs, or "".
+var (
+	insertIntoPattern = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+([a-z_]+)`)
+	updatePattern     = regexp.MustCompile(`(?is)\bUPDATE\s+([a-z_]+)`)
+)
+
+func writeTarget(sql string) string {
+	for _, pattern := range []*regexp.Regexp{insertIntoPattern, updatePattern, deleteFromPattern} {
+		if match := pattern.FindStringSubmatch(sql); len(match) >= 2 {
+			return strings.ToLower(match[1])
+		}
+	}
+	return ""
+}
+
+// callTableWritten returns the call table a statement writes, or "".
+func callTableWritten(sql string) string {
+	target := writeTarget(sql)
+	for _, table := range callTables {
+		if target == table {
+			return table
+		}
+	}
+	return ""
+}
+
+// assertNamedTruncation checks that a DELETE is one of the permitted
+// truncations AND that it targets the table that name is bound to.
+func assertNamedTruncation(t *testing.T, stmt statement, table string) {
+	t.Helper()
+
+	target, permitted := namedTruncations[stmt.name]
+	if !permitted {
+		t.Errorf("%s: %q deletes from %s but is not a named truncation. Deletion here is retention policy "+
+			"(design D6), with its own horizon and retention guards -- not something a query may do "+
+			"incidentally.", stmt.file, stmt.name, table)
+		return
+	}
+	if target != table {
+		t.Errorf("%s: %q is the truncation for %s but deletes from %s. The names are not interchangeable: "+
+			"each carries its own cutoff column and retention guards, and using one against another table "+
+			"applies the wrong horizon and skips every guard.", stmt.file, stmt.name, target, table)
+	}
+}
+
+// assignedColumns lists the columns a SET clause assigns.
+func assignedColumns(setClause string) []string {
+	var assigned []string
+	for _, part := range strings.Split(setClause, ",") {
+		name, _, found := strings.Cut(part, "=")
+		if !found {
+			continue
+		}
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			assigned = append(assigned, strings.ToLower(trimmed))
+		}
+	}
+	return assigned
+}
+
+// columnPattern matches a column name as a whole word in a column list.
+func columnPattern(column string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)(^|[\s,(])` + column + `([\s,)]|$)`)
 }
 
 // writesStatus reports whether a statement assigns the status column, as

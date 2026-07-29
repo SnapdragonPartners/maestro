@@ -192,7 +192,7 @@ ui-dev: build build-css
 # the same command serves first-time setup and the everyday inner loop.
 # Deliberately separate from the agent-container and benchmark-Gitea
 # machinery, so a data-plane restart cannot disturb a benchmark run.
-.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate
+.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate dataplane-force-version
 
 dataplane-up:
 	go run ./cmd/dataplanectl up
@@ -246,6 +246,16 @@ dataplane-migrate:
 # suppresses the prompt; anything else prompts, which is the safe default.
 dataplane-reset:
 	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) reset
+
+# Repair a DIRTY schema version after a failed migration, by recording
+# VERSION without running anything. Metadata only: if the schema is not
+# really at VERSION, nothing will detect the disagreement.
+#
+# Same `filter 1` rule as reset -- only the exact value 1 suppresses the
+# confirmation, so FORCE=0 still prompts.
+dataplane-force-version:
+	@test -n "$(VERSION)" || { echo "usage: make dataplane-force-version VERSION=<n> [FORCE=1]"; exit 1; }
+	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) -version $(VERSION) force-version
 
 # Clean build artifacts
 clean:

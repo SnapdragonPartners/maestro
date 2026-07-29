@@ -143,6 +143,14 @@ type fixture struct {
 	author         uuid.UUID
 	reviewer       uuid.UUID
 	systemAgent    uuid.UUID
+	// otherAuthor belongs to otherOrgID, so cross-tenant tests can seed
+	// rows there without borrowing this organization's principals.
+	otherAuthor uuid.UUID
+
+	// Lineage, populated by seedLineage for Story-scoped reads.
+	product uuid.UUID
+	feature uuid.UUID
+	epic    uuid.UUID
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -188,6 +196,7 @@ func newFixture(t *testing.T) *fixture {
 	f.author = f.newPrincipal(t, store.PrincipalAgent, "author-model")
 	f.reviewer = f.newPrincipal(t, store.PrincipalAgent, "reviewer-model")
 	f.systemAgent = f.newPrincipal(t, store.PrincipalSystem, "system")
+	f.otherAuthor = f.newPrincipalIn(t, f.otherOrgID, store.PrincipalAgent, "other-author")
 	return f
 }
 
@@ -208,6 +217,88 @@ func (f *fixture) newPrincipal(t *testing.T, kind store.PrincipalKind, model str
 		t.Fatalf("create %s principal: %v", kind, err)
 	}
 	return instance.PrincipalInstanceID
+}
+
+// newPrincipalIn creates a principal in a named organization.
+func (f *fixture) newPrincipalIn(t *testing.T, org uuid.UUID, kind store.PrincipalKind, model string) uuid.UUID {
+	t.Helper()
+	input := store.CreatePrincipalInstanceInput{Kind: kind, Model: model, OrganizationID: org}
+	if kind == store.PrincipalAgent {
+		agentType := "coder"
+		input.AgentType = &agentType
+	}
+	instance, err := f.store.CreatePrincipalInstance(context.Background(), input)
+	if err != nil {
+		t.Fatalf("create %s principal in %s: %v", kind, org, err)
+	}
+	return instance.PrincipalInstanceID
+}
+
+// seedLineage creates the product/repository/feature/epic/story chain a
+// Story-scoped call needs, and returns the Story id.
+//
+// The chain is required rather than convenient: story_id on a call carries
+// a composite foreign key over the whole tuple, so a call cannot name a
+// Story without naming the Epic, Feature and Product it belongs to.
+func (f *fixture) seedLineage(t *testing.T) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	product, repository := uuid.New(), uuid.New()
+	feature, epic, story := uuid.New(), uuid.New(), uuid.New()
+
+	// ONE transaction, because repositories_primary_is_member_fkey is
+	// DEFERRABLE INITIALLY DEFERRED: a repository's primary Product must
+	// also be a member, and the membership row necessarily comes after the
+	// repository. Autocommitting each statement fires the check at every
+	// commit and the repository can never be written.
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin lineage: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, step := range []struct {
+		what string
+		sql  string
+		args []any
+	}{
+		{"product", `INSERT INTO products (product_id, organization_id, user_id, slug, display_name)
+			VALUES ($1, $2, $3, 'p', 'P')`, []any{product, f.organizationID, f.userID}},
+		{"repository", `INSERT INTO repositories (repository_id, organization_id, primary_product_id,
+			user_id, slug, display_name) VALUES ($1, $2, $3, $4, 'r', 'R')`,
+			[]any{repository, f.organizationID, product, f.userID}},
+		{"membership", `INSERT INTO product_repositories (product_id, repository_id, organization_id)
+			VALUES ($1, $2, $3)`, []any{product, repository, f.organizationID}},
+		{"feature", `INSERT INTO features (feature_id, organization_id, user_id, product_id, title,
+			is_wrapper) VALUES ($1, $2, $3, $4, 'F', false)`,
+			[]any{feature, f.organizationID, f.userID, product}},
+		{"epic", `INSERT INTO epics (epic_id, organization_id, user_id, product_id, feature_id,
+			repository_id, title) VALUES ($1, $2, $3, $4, $5, $6, 'E')`,
+			[]any{epic, f.organizationID, f.userID, product, feature, repository}},
+		{"story", `INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id,
+			epic_id, title) VALUES ($1, $2, $3, $4, $5, $6, 'S')`,
+			[]any{story, f.organizationID, f.userID, product, feature, epic}},
+	} {
+		if _, err := tx.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatalf("seed %s: %v", step.what, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit lineage: %v", err)
+	}
+
+	f.product, f.feature, f.epic = product, feature, epic
+	return story
+}
+
+// principalFor returns a principal belonging to the named organization.
+// A principal is organization-scoped by composite foreign key, so borrowing
+// one across the boundary fails at the database rather than at the seam.
+func (f *fixture) principalFor(org uuid.UUID) uuid.UUID {
+	if org == f.organizationID {
+		return f.author
+	}
+	return f.otherAuthor
 }
 
 // agentInput builds a valid agent instance input, so tests that are not

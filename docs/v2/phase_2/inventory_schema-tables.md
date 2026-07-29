@@ -1,6 +1,6 @@
 +++
 title = "Schema Table Inventory: ADR And Consumer"
-edit_date = "2026-07-26"
+edit_date = "2026-07-27"
 status = "live"
 summary = "Every table created by Phase 2 item 3, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead."
 type = "inventory"
@@ -28,7 +28,7 @@ It exists because [ADR 0022](../../adr/0022-v2-data-plane.md) claims Phase 2's D
 | `stories` | [0018](../../adr/0018-v2-work-taxonomy.md) | Item 4; artifact lineage; call attribution |
 | `principal_instances` | [0021](../../adr/0021-artifacts-and-principal-instances.md) (agent/human/system principals, MPH) | Item 4; artifact authorship and review |
 | `principal_instance_inputs` | [0021](../../adr/0021-artifacts-and-principal-instances.md) (the MPH seeding set) | Item 4 — without it "what was this agent given to start?" is not a query |
-| `llm_calls` | [0022](../../adr/0022-v2-data-plane.md) (LLM calls as metrics/trace) | Item 5 call queries; item 9 imports runner cost records |
+| `llm_calls` | [0022](../../adr/0022-v2-data-plane.md) (LLM calls as metrics/trace) | Item 5 call queries; item 9 imports runner cost records. **Amended by migration 000011** (item 5): gained `succeeded` / `error_message`, since a completed zero-token call and a failed one were otherwise indistinguishable on the row. |
 | `tool_calls` | [0022](../../adr/0022-v2-data-plane.md) (the atomic Audit **action** unit) | Item 5; artifact provenance |
 | `metric_events` | [0022](../../adr/0022-v2-data-plane.md) metrics family | Item 5; item 9 imports runner metrics |
 | `audit_events` | [0021](../../adr/0021-artifacts-and-principal-instances.md) Audit enumeration | Item 5 |

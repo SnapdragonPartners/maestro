@@ -52,6 +52,78 @@ func Up(ctx context.Context, dsn string) (err error) {
 	return run(ctx, m, m.Up, "apply migrations")
 }
 
+// To migrates to a specific version, up or down.
+//
+// It exists for staged upgrades and for tests that must observe a database
+// at an intermediate version -- verifying what a migration does to data
+// written under the schema BEFORE it needs exactly this, and applying every
+// migration to an empty database can never show it.
+func To(ctx context.Context, dsn string, version uint) (err error) {
+	m, closeFn, err := open(dsn)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := closeFn(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", closeErr)
+		}
+	}()
+
+	return run(ctx, m, func() error { return m.Migrate(version) }, fmt.Sprintf("migrate to version %d", version))
+}
+
+// Force sets the recorded schema version and clears the dirty flag WITHOUT
+// running any migration.
+//
+// This is a repair tool, and the only way out of a dirty version. When a
+// migration fails, golang-migrate has already recorded the target version
+// with dirty = true -- it marks BEFORE executing -- so every later
+// migration refuses to run until the flag is cleared. Deleting the rows
+// that caused the failure is not enough on its own; the metadata still says
+// a migration is half-applied.
+//
+// It changes only the metadata. The caller is asserting that the database
+// really is at the version being forced, and a wrong assertion leaves the
+// schema and its recorded version disagreeing, which no later migration can
+// detect. Use it after establishing what actually applied.
+func Force(dsn string, version int) (err error) {
+	m, closeFn, err := open(dsn)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := closeFn(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close migrator: %w", closeErr)
+		}
+	}()
+
+	// Refuse a clean database. This exists to repair a DIRTY version, and
+	// forcing a clean one is how a schema and its recorded version come to
+	// disagree -- with nothing able to detect it afterwards.
+	//
+	// Not hypothetical: forcing a clean plane from 11 to 10 is exactly the
+	// mistake made while first exercising this, and the following migrate
+	// then failed re-adding columns that already existed.
+	//
+	// The check lives here rather than in the stack wrapper because it is a
+	// property of the repair primitive: every caller wants it, and a guard
+	// only the wrapper applies is one a direct caller skips.
+	current, dirty, versionErr := Version(dsn)
+	if versionErr != nil {
+		return fmt.Errorf("read current schema version: %w", versionErr)
+	}
+	if !dirty {
+		return fmt.Errorf("schema version %d is not dirty, so there is nothing to repair; "+
+			"forcing a clean database makes its recorded version disagree with its actual schema, "+
+			"which no later migration can detect", current)
+	}
+
+	if forceErr := m.Force(version); forceErr != nil {
+		return fmt.Errorf("force schema version to %d: %w", version, forceErr)
+	}
+	return nil
+}
+
 // run executes a migration operation under the caller's context.
 //
 // Two mechanisms, because neither alone is sufficient. GracefulStop makes

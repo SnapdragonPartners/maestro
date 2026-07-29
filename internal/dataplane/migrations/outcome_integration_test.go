@@ -1,0 +1,540 @@
+//go:build integration
+
+package migrations_test
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"strings"
+	"testing"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"orchestrator/internal/dataplane/migrations"
+)
+
+// Migration 000011 adds the LLM call outcome columns and the coherence
+// constraints for both call tables. Its behaviour on a POPULATED database
+// is the part that cannot be checked by applying it to an empty one, which
+// is what every other migration test does.
+//
+// The claim under test is deliberately narrow: the migration refuses to
+// invent an outcome it cannot recover, and refuses incoherent rows
+// afterwards. An earlier version backfilled succeeded = true for
+// already-completed rows and warned in a comment that the value was not
+// evidence -- a warning no query can honour.
+const versionBeforeOutcome = 10
+
+// seedCall inserts the organization, principal and call rows a call record
+// needs, and returns the call id. Written against v10's schema, so it must
+// not name the columns migration 11 adds.
+func seedOpenLLMCall(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		INSERT INTO organizations (organization_id, slug, display_name)
+		VALUES ('11111111-1111-4111-8111-111111111111', 'probe', 'Probe');
+		INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
+		VALUES ('22222222-2222-4222-8222-222222222222', '11111111-1111-4111-8111-111111111111',
+		        'agent', 'test-model', 'coder');
+		INSERT INTO llm_calls (llm_call_id, organization_id, principal_instance_id, provider, model)
+		VALUES ('33333333-3333-4333-8333-333333333333', '11111111-1111-4111-8111-111111111111',
+		        '22222222-2222-4222-8222-222222222222', 'anthropic', 'test-model');
+		INSERT INTO tool_calls (tool_call_id, organization_id, principal_instance_id, tool_name, arguments)
+		VALUES ('44444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111',
+		        '22222222-2222-4222-8222-222222222222', 'shell', '{}'::jsonb);`); err != nil {
+		t.Fatalf("seed open calls: %v", err)
+	}
+}
+
+const (
+	llmCallID  = "'33333333-3333-4333-8333-333333333333'"
+	toolCallID = "'44444444-4444-4444-8444-444444444444'"
+)
+
+// singularID maps a call table to its primary key column.
+func singularID(table string) string {
+	if table == "llm_calls" {
+		return "llm_call_id"
+	}
+	return "tool_call_id"
+}
+
+func openDB(t *testing.T, dsn string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+// TestOutcomeMigrationPreservesOpenCalls is the benign path: an in-flight
+// call predates the migration, has no outcome to recover, and must survive
+// with its openness intact rather than being completed by the backfill.
+func TestOutcomeMigrationPreservesOpenCalls(t *testing.T) {
+	dsn := disposableDatabaseAt(t, versionBeforeOutcome)
+	db := openDB(t, dsn)
+	seedOpenLLMCall(t, db)
+
+	if err := migrations.Up(context.Background(), dsn); err != nil {
+		t.Fatalf("migrate to head over an open call: %v", err)
+	}
+
+	var finished, succeeded sql.NullString
+	if err := db.QueryRow(`
+		SELECT finished_at::text, succeeded::text FROM llm_calls
+		WHERE llm_call_id = '33333333-3333-4333-8333-333333333333'`).Scan(&finished, &succeeded); err != nil {
+		t.Fatalf("read call: %v", err)
+	}
+	if finished.Valid {
+		t.Fatalf("an open call was completed by the migration: finished_at = %s", finished.String)
+	}
+	if succeeded.Valid {
+		t.Fatalf("an open call was given an outcome: succeeded = %s", succeeded.String)
+	}
+}
+
+// TestOutcomeMigrationRefusesToInventAnOutcome is the point of the change.
+// A completed call predating the migration has an unrecoverable outcome,
+// and the migration must stop rather than record a success that was never
+// observed.
+func TestOutcomeMigrationRefusesToInventAnOutcome(t *testing.T) {
+	ctx := context.Background()
+	dsn := disposableDatabaseAt(t, versionBeforeOutcome)
+	db := openDB(t, dsn)
+	seedOpenLLMCall(t, db)
+
+	// Complete it under v10, where no outcome column exists to record how.
+	if _, err := db.Exec(`
+		UPDATE llm_calls SET finished_at = now()
+		WHERE llm_call_id = '33333333-3333-4333-8333-333333333333'`); err != nil {
+		t.Fatalf("complete call under v10: %v", err)
+	}
+
+	err := migrations.Up(ctx, dsn)
+	if err == nil {
+		t.Fatal("the migration accepted a completed call with no recoverable outcome; it must refuse " +
+			"rather than record a success that was never observed")
+	}
+	// Match the FORMATTED counts, not the message text. golang-migrate
+	// echoes the whole migration SOURCE in its error, and the RAISE
+	// message lives in that source -- so matching on wording passes
+	// whenever the migration fails for any reason at all, including
+	// reasons this test is not about. Only the substituted counts prove
+	// the pre-flight assertion is what fired.
+	if !strings.Contains(err.Error(), "found 1 completed llm_calls and 0 incoherent tool_calls") {
+		t.Fatalf("the pre-flight assertion did not fire with the expected counts: %v", err)
+	}
+
+	// The failure leaves the recorded version dirty -- golang-migrate marks
+	// BEFORE executing -- which is why the message names forcing it back
+	// rather than only deleting rows. The first version of that message was
+	// mechanically wrong, so the recovery is walked end to end here.
+	version, dirty, versionErr := migrations.Version(dsn)
+	if versionErr != nil {
+		t.Fatalf("read version: %v", versionErr)
+	}
+	if !dirty {
+		t.Fatal("expected the failed migration to leave the version dirty; if that ever changes, the " +
+			"recovery instruction in the migration is wrong")
+	}
+	if version != versionBeforeOutcome+1 {
+		t.Fatalf("version = %d, want %d", version, versionBeforeOutcome+1)
+	}
+
+	// Re-running without clearing the flag must fail, or forcing would be
+	// unnecessary and the instruction overstated.
+	if rerun := migrations.Up(ctx, dsn); rerun == nil {
+		t.Fatal("a re-run succeeded despite the dirty flag, so the documented recovery is overstated")
+	}
+
+	// The documented recovery, end to end.
+	if _, delErr := db.Exec(`DELETE FROM llm_calls WHERE llm_call_id = ` + llmCallID); delErr != nil {
+		t.Fatalf("delete the offending row: %v", delErr)
+	}
+	if forceErr := migrations.Force(dsn, versionBeforeOutcome); forceErr != nil {
+		t.Fatalf("force back to v%d: %v", versionBeforeOutcome, forceErr)
+	}
+	if upErr := migrations.Up(ctx, dsn); upErr != nil {
+		t.Fatalf("recovery re-run failed, so the migration's own instructions do not work: %v", upErr)
+	}
+
+	// Deliberately NOT pinned to a specific head: migrations are appended
+	// over time, and a test that hardcodes the head fails every time one
+	// lands, for a reason unrelated to what it checks. What matters is that
+	// the database is clean, has advanced past the migration that failed,
+	// and -- the part metadata cannot show -- actually gained the DDL.
+	version, dirty, versionErr = migrations.Version(dsn)
+	if versionErr != nil {
+		t.Fatalf("read version after recovery: %v", versionErr)
+	}
+	if dirty {
+		t.Fatal("the database is still dirty after the documented recovery")
+	}
+	if version < versionBeforeOutcome+1 {
+		t.Fatalf("after recovery version = %d, want at least %d", version, versionBeforeOutcome+1)
+	}
+
+	// Metadata alone is not evidence the migration ran. Forcing to 11
+	// instead of 10 would make Up a no-op and leave these same assertions
+	// passing over a schema that never gained the columns -- exactly the
+	// metadata/schema divergence the recovery design warns about, certified
+	// by its own test. So assert the SCHEMA.
+	assertOutcomeSchemaPresent(t, db)
+}
+
+// assertOutcomeSchemaPresent checks that migration 11's DDL actually ran,
+// rather than trusting the recorded version.
+func assertOutcomeSchemaPresent(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	var columns int
+	if err := db.QueryRow(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'llm_calls' AND column_name IN ('succeeded', 'error_message')`).Scan(&columns); err != nil {
+		t.Fatalf("read columns: %v", err)
+	}
+	if columns != 2 {
+		t.Fatalf("llm_calls has %d of the 2 outcome columns; the migration was recorded but its DDL did "+
+			"not run", columns)
+	}
+
+	for _, name := range []string{
+		"llm_calls_completion_check",
+		"llm_calls_outcome_coherence_check",
+		"tool_calls_outcome_coherence_check",
+	} {
+		var present bool
+		if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $1)`,
+			name).Scan(&present); err != nil {
+			t.Fatalf("read constraint %s: %v", name, err)
+		}
+		if !present {
+			t.Fatalf("constraint %s is absent; the migration was recorded but its DDL did not run", name)
+		}
+	}
+}
+
+// TestOutcomeMigrationRefusesIncoherentToolCalls is the tool-call half of
+// the same refusal. v10 permits a completed tool call carrying BOTH a
+// success and an error message, since only the finished/succeeded pairing
+// was constrained then -- so migration 11 must refuse rather than adopt it.
+func TestOutcomeMigrationRefusesIncoherentToolCalls(t *testing.T) {
+	dsn := disposableDatabaseAt(t, versionBeforeOutcome)
+	db := openDB(t, dsn)
+	seedOpenLLMCall(t, db)
+
+	if _, err := db.Exec(`UPDATE tool_calls SET finished_at = now(), succeeded = true,
+		error_message = 'contradictory' WHERE tool_call_id = ` + toolCallID); err != nil {
+		t.Fatalf("write an incoherent tool call under v10: %v", err)
+	}
+
+	err := migrations.Up(context.Background(), dsn)
+	if err == nil {
+		t.Fatal("the migration adopted a tool call that is both successful and errored")
+	}
+	// Formatted counts again, for the same reason: the bare phrase appears
+	// in the migration source that golang-migrate echoes back.
+	if !strings.Contains(err.Error(), "found 0 completed llm_calls and 1 incoherent tool_calls") {
+		t.Fatalf("the pre-flight assertion did not catch the tool call -- the ALTER TABLE did, which is a "+
+			"different guarantee and a worse error: %v", err)
+	}
+}
+
+// TestOutcomeConstraintsRejectIncoherentRows covers the backstop on BOTH
+// call tables. The seam checks these too, but the seam is not the only way
+// a row is written.
+//
+// An earlier version exercised only llm_calls, so removing
+// tool_calls_outcome_coherence_check left the suite green -- a constraint
+// with no test that could fail for it.
+func TestOutcomeConstraintsRejectIncoherentRows(t *testing.T) {
+	dsn := disposableDatabase(t) // migrated to head
+	db := openDB(t, dsn)
+	seedOpenLLMCall(t, db)
+
+	tables := []struct{ table, id string }{
+		{"llm_calls", llmCallID},
+		{"tool_calls", toolCallID},
+	}
+	incoherent := []struct{ name, update string }{
+		{"success carrying an error", `SET finished_at = now(), succeeded = true, error_message = 'boom'`},
+		{"failure with no diagnostic", `SET finished_at = now(), succeeded = false, error_message = NULL`},
+		{"failure with a blank diagnostic", `SET finished_at = now(), succeeded = false, error_message = '   '`},
+		{"open call carrying an error", `SET error_message = 'boom'`},
+		// btrim() with one argument strips SPACES only, so this passed the
+		// coherence check while being blank to any reader.
+		{"failure whose diagnostic is only whitespace", "SET finished_at = now(), succeeded = false, " +
+			"error_message = E'\t\n  '"},
+		{"finished before it started", `SET finished_at = started_at - interval '1 second', succeeded = true`},
+		{"finished with no outcome", `SET finished_at = now()`},
+		{"outcome with no finish", `SET succeeded = true`},
+	}
+	coherent := []string{
+		`SET finished_at = now(), succeeded = true`,
+		`SET finished_at = now(), succeeded = false, error_message = 'provider timeout'`,
+	}
+
+	for _, target := range tables {
+		t.Run(target.table, func(t *testing.T) {
+			// Reset before every case. The cases share one row, and under
+			// working constraints each UPDATE fails so the row stays
+			// pristine BY ACCIDENT -- with a guard missing, state leaks
+			// forward and later cases stop testing what they name.
+			reset := func(t *testing.T) {
+				t.Helper()
+				if _, err := db.Exec(`UPDATE ` + target.table + ` SET finished_at = NULL, succeeded = NULL,
+					error_message = NULL WHERE ` + singularID(target.table) + ` = ` + target.id); err != nil {
+					t.Fatalf("reset: %v", err)
+				}
+			}
+
+			for _, testCase := range incoherent {
+				t.Run(testCase.name, func(t *testing.T) {
+					reset(t)
+					_, err := db.Exec(`UPDATE ` + target.table + ` ` + testCase.update +
+						` WHERE ` + singularID(target.table) + ` = ` + target.id)
+					if err == nil {
+						t.Fatal("the database accepted an incoherent outcome")
+					}
+					if !strings.Contains(err.Error(), "check constraint") {
+						t.Fatalf("rejected for the wrong reason: %v", err)
+					}
+				})
+			}
+
+			// The coherent completions must still be accepted, or the
+			// constraints would be satisfied by rejecting everything.
+			for _, update := range coherent {
+				reset(t)
+				if _, err := db.Exec(`UPDATE ` + target.table + ` ` + update +
+					` WHERE ` + singularID(target.table) + ` = ` + target.id); err != nil {
+					t.Fatalf("a coherent completion was rejected (%s): %v", update, err)
+				}
+			}
+		})
+	}
+}
+
+// TestForceRefusesACleanSchema covers the guard added after an observed
+// schema break: forcing a CLEAN database is how its recorded version comes
+// to disagree with its actual schema, and nothing afterwards can detect it.
+//
+// The lifecycle test proves only that stack.ForceVersion blocks on the
+// lock; it never reaches this branch. Without this test, removing the
+// refusal leaves every suite green.
+func TestForceRefusesACleanSchema(t *testing.T) {
+	dsn := disposableDatabase(t) // migrated to head, clean
+	db := openDB(t, dsn)
+
+	before, dirty, err := migrations.Version(dsn)
+	if err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if dirty {
+		t.Fatalf("a freshly migrated database is dirty at v%d; this test needs a clean one", before)
+	}
+
+	forceErr := migrations.Force(dsn, int(before)-1)
+	if forceErr == nil {
+		t.Fatal("forcing a clean database was permitted; that is how a schema and its recorded version " +
+			"come to disagree, with nothing able to detect it afterwards")
+	}
+	if !strings.Contains(forceErr.Error(), "not dirty") {
+		t.Fatalf("refused for the wrong reason: %v", forceErr)
+	}
+
+	// The metadata must be untouched: a refusal that still wrote would be
+	// worse than no refusal, because the error would say it had not.
+	after, afterDirty, err := migrations.Version(dsn)
+	if err != nil {
+		t.Fatalf("read version after refusal: %v", err)
+	}
+	if after != before || afterDirty {
+		t.Fatalf("after a refused force version = %d dirty = %v, want %d and clean", after, afterDirty, before)
+	}
+
+	// And the schema itself, since a version can be right while the DDL is
+	// not — the divergence this guard exists to prevent.
+	assertOutcomeSchemaPresent(t, db)
+}
+
+// TestRowLocalConstraints covers the backstops migration 11 adds for facts
+// true of one row. Each case writes DIRECTLY, bypassing the seam, because
+// the seam's own validation would otherwise make these vacuous — and a
+// constraint is only a backstop if something reaches it.
+//
+// Every case has a positive control. Without one, a constraint that
+// rejected everything would satisfy the negative half.
+func TestRowLocalConstraints(t *testing.T) {
+	dsn := disposableDatabase(t)
+	db := openDB(t, dsn)
+	seedOpenLLMCall(t, db)
+
+	const (
+		org       = "'11111111-1111-4111-8111-111111111111'"
+		principal = "'22222222-2222-4222-8222-222222222222'"
+	)
+
+	cases := []struct {
+		name    string
+		bad     string
+		good    string
+		wantCon string
+	}{
+		{
+			name:    "blank llm provider",
+			bad:     `UPDATE llm_calls SET provider = E'\t ' WHERE llm_call_id = ` + llmCallID,
+			good:    `UPDATE llm_calls SET provider = 'anthropic' WHERE llm_call_id = ` + llmCallID,
+			wantCon: "llm_calls_names_nonblank_check",
+		},
+		{
+			name:    "blank llm model",
+			bad:     `UPDATE llm_calls SET model = '   ' WHERE llm_call_id = ` + llmCallID,
+			good:    `UPDATE llm_calls SET model = 'sonnet' WHERE llm_call_id = ` + llmCallID,
+			wantCon: "llm_calls_names_nonblank_check",
+		},
+		{
+			// numeric admits 'NaN', and NaN = NaN is TRUE in Postgres, so
+			// the usual self-comparison would not have caught this.
+			name:    "NaN cost",
+			bad:     `UPDATE llm_calls SET cost_usd = 'NaN'::numeric WHERE llm_call_id = ` + llmCallID,
+			good:    `UPDATE llm_calls SET cost_usd = 1.25 WHERE llm_call_id = ` + llmCallID,
+			wantCon: "llm_calls_cost_finite_check",
+		},
+		{
+			name:    "blank tool name",
+			bad:     `UPDATE tool_calls SET tool_name = E'\n' WHERE tool_call_id = ` + toolCallID,
+			good:    `UPDATE tool_calls SET tool_name = 'shell' WHERE tool_call_id = ` + toolCallID,
+			wantCon: "tool_calls_name_nonblank_check",
+		},
+		{
+			name: "blank metric name",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, '  ', 1.0)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'tokens', 1.0)`,
+			wantCon: "metric_events_name_nonblank_check",
+		},
+		{
+			// double precision admits NaN and both infinities; one
+			// non-finite value poisons every aggregate that touches it.
+			name: "non-finite metric value",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', 'NaN'::float8)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', 0.5)`,
+			wantCon: "metric_events_value_finite_check",
+		},
+		{
+			name: "infinite metric value",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', 'Infinity'::float8)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', -3.5)`,
+			wantCon: "metric_events_value_finite_check",
+		},
+		{
+			// Both infinities, separately: the constraint is a conjunction,
+			// so a case for only one leaves the other conjunct removable
+			// with the suite still green.
+			name: "negative infinite metric value",
+			bad: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', '-Infinity'::float8)`,
+			good: `INSERT INTO metric_events (metric_event_id, organization_id, principal_instance_id,
+				metric_name, value) VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'm', -1e308)`,
+			wantCon: "metric_events_value_finite_check",
+		},
+		{
+			name: "blank audit event type",
+			bad: `INSERT INTO audit_events (audit_event_id, organization_id, principal_instance_id, event_type)
+				VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, E'\t\n')`,
+			good: `INSERT INTO audit_events (audit_event_id, organization_id, principal_instance_id, event_type)
+				VALUES (gen_random_uuid(), ` + org + `, ` + principal + `, 'agent.started')`,
+			wantCon: "audit_events_type_nonblank_check",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := db.Exec(testCase.bad)
+			if err == nil {
+				t.Fatal("the database accepted a row its constraints should refuse")
+			}
+			// Name the constraint, so a rejection by some unrelated rule --
+			// a null violation, a foreign key -- cannot masquerade as this
+			// one working.
+			if !strings.Contains(err.Error(), testCase.wantCon) {
+				t.Fatalf("rejected by something other than %s: %v", testCase.wantCon, err)
+			}
+			if _, err := db.Exec(testCase.good); err != nil {
+				t.Fatalf("the positive control was rejected, so the constraint refuses valid rows: %v", err)
+			}
+		})
+	}
+}
+
+// TestCallFamilyIndexDefinitions pins migration 12's index plan by
+// DEFINITION, not by name.
+//
+// Column ORDER is the load-bearing property: an index whose leading columns
+// are interrupted cannot serve the query it was created for -- which is why
+// the cohort index cannot serve the generic window read. The partial
+// predicate is equally load-bearing: without `WHERE finished_at IS NULL`
+// the open-call index is a full index paid for on every write.
+//
+// A name-only check passes when either is changed, and the failure mode is
+// a sequential scan over the largest tables in the system: slow rather than
+// wrong, so it surfaces in production instead of in CI.
+func TestCallFamilyIndexDefinitions(t *testing.T) {
+	dsn := disposableDatabase(t)
+	db := openDB(t, dsn)
+
+	want := map[string]string{
+		"llm_calls_org_story_time_idx":      "btree (organization_id, story_id, started_at, llm_call_id)",
+		"tool_calls_org_story_time_idx":     "btree (organization_id, story_id, started_at, tool_call_id)",
+		"llm_calls_org_principal_time_idx":  "btree (organization_id, principal_instance_id, started_at, llm_call_id)",
+		"tool_calls_org_principal_time_idx": "btree (organization_id, principal_instance_id, started_at, tool_call_id)",
+		"llm_calls_org_time_idx":            "btree (organization_id, started_at, llm_call_id)",
+		"tool_calls_org_time_idx":           "btree (organization_id, started_at, tool_call_id)",
+		"llm_calls_org_cohort_time_idx":     "btree (organization_id, provider, model, started_at)",
+		"metric_events_org_time_idx":        "btree (organization_id, recorded_at, metric_event_id)",
+		"audit_events_org_time_idx":         "btree (organization_id, occurred_at, audit_event_id)",
+		"llm_calls_org_finished_idx":        "btree (organization_id, finished_at, llm_call_id)",
+		"tool_calls_org_finished_idx":       "btree (organization_id, finished_at, tool_call_id)",
+		"audit_artifacts_org_created_idx":   "btree (organization_id, created_at, artifact_id)",
+
+		// Partial: the open set is a vanishing fraction of these tables, so
+		// a full index would be paid for on every write to serve a query
+		// about the few.
+		"llm_calls_org_open_started_idx":  "btree (organization_id, started_at) WHERE (finished_at IS NULL)",
+		"tool_calls_org_open_started_idx": "btree (organization_id, started_at) WHERE (finished_at IS NULL)",
+
+		// Retained from item 3: model is not a PREFIX of the cohort index,
+		// so the composite cannot serve a model-only lookup.
+		"llm_calls_model_idx": "btree (model)",
+	}
+
+	for name, suffix := range want {
+		var definition string
+		err := db.QueryRow(`SELECT pg_get_indexdef(c.oid) FROM pg_class c
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			WHERE c.relname = $1 AND n.nspname = 'public'`, name).Scan(&definition)
+		if errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("index %s is absent; the read shape it serves falls back to a sequential scan", name)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read definition of %s: %v", name, err)
+		}
+		// Compare the tail, so the test is about columns and predicate
+		// rather than about schema qualification or index type spelling.
+		if !strings.HasSuffix(definition, "USING "+suffix) {
+			t.Errorf("index %s is defined as:\n  %s\nbut the design requires it to end with:\n  USING %s\n"+
+				"Column order and any partial predicate are the load-bearing properties; a same-named index "+
+				"with different columns serves a different query.", name, definition, suffix)
+		}
+	}
+}
