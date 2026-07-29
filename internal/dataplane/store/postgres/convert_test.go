@@ -210,6 +210,17 @@ func TestTheRetryPredicateMatchesBothHalves(t *testing.T) {
 			// attachment correctly retained.
 			retried: true,
 		},
+		"the measured concurrent audit pin failure": {
+			// The other pin target. Audit artifacts have been truncated
+			// with the same RESTRICT shape since item 5, so this race is
+			// older than the attachment one and had no handler at all.
+			err:     &pgconn.PgError{Code: "23001", ConstraintName: "retention_pins_audit_target_fkey"},
+			retried: true,
+		},
+		"a foreign-key violation on the audit constraint": {
+			err:     &pgconn.PgError{Code: "23503", ConstraintName: "retention_pins_audit_target_fkey"},
+			retried: false,
+		},
 		"a restriction from another constraint": {
 			// A real dependency the pass must not delete through. Retrying
 			// it would report exhausted concurrency for a problem that was

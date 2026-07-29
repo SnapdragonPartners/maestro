@@ -420,11 +420,21 @@ func isSerializationFailure(err error) bool {
 // intermittently kill an entire truncation pass.
 const restrictViolation = "23001"
 
-// attachmentPinRestrict is the constraint both codes name.
-const attachmentPinRestrict = attachmentPinConstraint
+// The two constraints a concurrent pin can raise this on. A pin targets an
+// Audit artifact or an attachment, and BOTH families are truncated with the
+// same NOT EXISTS plus ON DELETE RESTRICT shape -- so both races exist, and
+// the audit one has existed since item 5 with no handler at all.
+//
+// Measured separately rather than assumed to mirror each other
+// (pinrace_integration_test.go): both orderings on audit_artifacts behave
+// exactly as the attachment pair does, 23503 to the pin and 23001 to the
+// truncation, each naming its own constraint.
+func isRetriablePinConstraint(name string) bool {
+	return name == attachmentPinConstraint || name == auditPinConstraint
+}
 
-// isRetriablePinRestriction reports the one restriction violation this pass
-// may retry through.
+// isRetriablePinRestriction reports the restriction violations this pass may
+// retry through.
 //
 // BOTH halves, not the code alone. 23001 is a generic restriction
 // violation, and retrying every one of them would take a PERSISTENT
@@ -440,5 +450,5 @@ func isRetriablePinRestriction(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) &&
 		pgErr.Code == restrictViolation &&
-		pgErr.ConstraintName == attachmentPinRestrict
+		isRetriablePinConstraint(pgErr.ConstraintName)
 }

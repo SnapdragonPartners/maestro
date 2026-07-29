@@ -987,3 +987,62 @@ func TestAnAmendmentThatDoesNotMentionEvidenceKeepsIt(t *testing.T) {
 		t.Fatalf("the original holds %+v, want exactly the pin it was accepted with", pins)
 	}
 }
+
+// TestAnAmendmentDoesNotRepairAMissingInheritedPin covers the difference
+// between "what this amendment introduces" and "what is not currently
+// pinned".
+//
+// If the additions were computed against the pins actually held, an
+// accepted original that had lost one would have it silently recreated
+// here: the amendment would succeed, and the corrupted accepted state would
+// never be reported. Detection is the job -- a pin missing from an accepted
+// artifact is exactly the dangling reference this item exists to prevent,
+// and repairing it quietly would destroy the evidence that it happened.
+func TestAnAmendmentDoesNotRepairAMissingInheritedPin(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	original := f.acceptedOriginal(t)
+
+	// The accepted original loses its pin, beneath the seam -- the public
+	// Unpin refuses an accepted artifact, which is the rule that makes this
+	// state a corruption rather than an ordinary edit.
+	if _, err := f.pool.Exec(ctx,
+		`DELETE FROM retention_pins WHERE retention_pin_id = $1`, original.Pins[0].PinID); err != nil {
+		t.Fatalf("remove the inherited pin: %v", err)
+	}
+
+	// A title-only amendment: it introduces no evidence at all, so it has
+	// nothing of its own to pin and no reason to touch the original's set.
+	amendment, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Payload:          json.RawMessage(`{"title":"a better title"}`),
+		AmendsArtifactID: &original.Artifact.ArtifactID,
+		Type:             evidenceType,
+		Summary:          "a title-only amendment",
+		Scope:            f.scope(),
+		OrganizationID:   f.organizationID,
+		UserID:           f.userID,
+		AuthorInstanceID: f.author,
+	})
+	if err != nil {
+		t.Fatalf("create amendment: %v", err)
+	}
+	base := f.base(t, original.Artifact.ArtifactID)
+	review := f.review(t, amendment.ArtifactID, amendment.ReviewDigest,
+		store.DecisionAccepted, f.reviewer, &base)
+
+	err = f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, review.ReviewID)
+	assertRejected(t, err, "reviewed payload names evidence that is not pinned",
+		"amending an original whose inherited pin is gone")
+
+	// And nothing was recreated: the corruption is still visible to
+	// whoever investigates.
+	pins, err := f.store.ListPins(ctx, f.organizationID, original.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins: %v", err)
+	}
+	if len(pins) != 0 {
+		t.Fatalf("the amendment recreated %d pins; a repaired original hides the state that caused "+
+			"this refusal", len(pins))
+	}
+}

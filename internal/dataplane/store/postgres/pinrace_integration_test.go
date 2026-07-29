@@ -11,6 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"orchestrator/internal/dataplane/gen"
 )
 
 // What happens when attachment truncation races a pin — measured, and then
@@ -48,23 +51,35 @@ const (
 	pinAttachmentConstraint = "retention_pins_attachment_fkey"
 )
 
-// attachmentTruncation is item 5's pass restricted to the one table item 6
-// adds: organization-scoped, horizon-bounded, pinned rows excluded in the
-// WHERE rather than discovered at commit.
+// pinAuditConstraint is the constraint an audit-artifact pin names. Pins
+// have two possible targets and both truncations use the same NOT EXISTS
+// plus ON DELETE RESTRICT shape, so both races exist and each has to be
+// measured rather than assumed to mirror the other.
+const pinAuditConstraint = "retention_pins_audit_target_fkey"
+
+// truncateAttachments and truncateAuditArtifacts run the SHIPPED queries
+// inside a caller-controlled transaction.
 //
-// Written out here because item 6's generated query does not exist yet.
-// When it lands, this constant is replaced by the generated one — the
-// measurement is only about the SQL the pass will actually issue, and a
-// copy that drifts from it measures nothing. Tracked as part of item 6's
-// implementation, not as a standing TODO.
-const attachmentTruncation = `
-DELETE FROM binary_attachments a
-WHERE a.organization_id = $1
-  AND a.created_at      < $2
-  AND NOT EXISTS (
-      SELECT 1 FROM retention_pins p
-      WHERE p.pinned_attachment_id = a.attachment_id
-        AND p.organization_id      = a.organization_id)`
+// They used to be handwritten copies of the pass's SQL, because item 6's
+// generated queries did not exist when the measurement was first taken.
+// A copy measures nothing once it can drift: a change to the shipped
+// statement would leave this regression green while the race it describes
+// changed underneath it.
+func truncateAttachments(ctx context.Context, handle gen.DBTX, org uuid.UUID, before time.Time) error {
+	_, err := gen.New(handle).TruncateAttachments(ctx, gen.TruncateAttachmentsParams{
+		OrganizationID: toPgUUID(org),
+		Before:         pgtype.Timestamptz{Time: before, Valid: true},
+	})
+	return err
+}
+
+func truncateAuditArtifacts(ctx context.Context, handle gen.DBTX, org uuid.UUID, before time.Time) error {
+	_, err := gen.New(handle).TruncateAuditArtifacts(ctx, gen.TruncateAuditArtifactsParams{
+		OrganizationID: toPgUUID(org),
+		Before:         pgtype.Timestamptz{Time: before, Valid: true},
+	})
+	return err
+}
 
 func seedAttachment(t *testing.T, f *fixture, at time.Time) uuid.UUID {
 	t.Helper()
@@ -122,7 +137,7 @@ func TestPinRacingAttachmentTruncation(t *testing.T) {
 			t.Fatalf("begin truncator: %v", err)
 		}
 		defer func() { _ = truncator.Rollback(ctx) }()
-		if _, err := truncator.Exec(ctx, attachmentTruncation, f.organizationID, time.Now()); err != nil {
+		if err := truncateAttachments(ctx, truncator, f.organizationID, time.Now()); err != nil {
 			t.Fatalf("truncate: %v", err)
 		}
 
@@ -181,7 +196,7 @@ func TestPinRacingAttachmentTruncation(t *testing.T) {
 			t.Fatalf("pin: %v", err)
 		}
 
-		_, truncErr := truncator.Exec(ctx, attachmentTruncation, f.organizationID, time.Now())
+		truncErr := truncateAttachments(ctx, truncator, f.organizationID, time.Now())
 		requirePgError(t, truncErr, restrictViolation, pinAttachmentConstraint, "the truncation")
 
 		// The whole pass is lost, not just the statement: the surrounding
@@ -195,4 +210,111 @@ func TestPinRacingAttachmentTruncation(t *testing.T) {
 			t.Error("the pinned attachment was deleted; a pin points at nothing")
 		}
 	})
+}
+
+// TestPinRacingAuditArtifactTruncation is the same race on the OTHER pin
+// target, and it is measured rather than assumed to mirror the first.
+//
+// Pins point at an Audit artifact or an attachment, and audit_artifacts has
+// been in the truncation pass since item 5 with the same NOT EXISTS plus
+// ON DELETE RESTRICT shape. So this race has existed all along; what was
+// missing was any handler for it. Both orderings are fixed here for the
+// same reason the attachment pair is: the codes decide the retry predicate,
+// and a predicate written from the attachment case alone would let one
+// concurrent audit pin kill an entire pass.
+func TestPinRacingAuditArtifactTruncation(t *testing.T) {
+	t.Run("truncate first, pin second", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		holder := acceptedOriginal(t, f, `{"title":"holder"}`)
+		audit := seedAgedAuditArtifact(t, f)
+
+		truncator, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+		if err != nil {
+			t.Fatalf("begin truncator: %v", err)
+		}
+		defer func() { _ = truncator.Rollback(ctx) }()
+		if err := truncateAuditArtifacts(ctx, truncator, f.organizationID, time.Now()); err != nil {
+			t.Fatalf("truncate: %v", err)
+		}
+
+		pinErr := make(chan error, 1)
+		go func() {
+			sql, args := auditPinStatement(holder.ArtifactID, audit, f.organizationID)
+			_, execErr := f.pool.Exec(context.Background(), sql, args...)
+			pinErr <- execErr
+		}()
+		waitForLockWait(t, f)
+		if err := truncator.Commit(ctx); err != nil {
+			t.Fatalf("commit truncator: %v", err)
+		}
+
+		select {
+		case err := <-pinErr:
+			requirePgError(t, err, foreignKeyViolation, pinAuditConstraint, "the pin")
+		case <-time.After(30 * time.Second):
+			t.Fatal("the pin never returned")
+		}
+		if rowExists(t, f, "audit_artifacts", "artifact_id", audit) {
+			t.Error("the audit artifact survived the truncation, so the pin failed for another reason")
+		}
+	})
+
+	t.Run("pin first, truncate second", func(t *testing.T) {
+		f := newFixture(t)
+		ctx := context.Background()
+		holder := acceptedOriginal(t, f, `{"title":"holder"}`)
+		audit := seedAgedAuditArtifact(t, f)
+
+		truncator, err := f.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+		if err != nil {
+			t.Fatalf("begin truncator: %v", err)
+		}
+		defer func() { _ = truncator.Rollback(ctx) }()
+
+		// The snapshot is established BEFORE the pin exists, so the pass's
+		// NOT EXISTS is evaluated against a state in which the row is
+		// unpinned. Without this the test proves only that a committed pin
+		// is visible to a later snapshot, which is not the race.
+		var seen int
+		if err := truncator.QueryRow(ctx,
+			`SELECT count(*) FROM audit_artifacts WHERE organization_id = $1`,
+			f.organizationID).Scan(&seen); err != nil {
+			t.Fatalf("establish snapshot: %v", err)
+		}
+
+		sql, args := auditPinStatement(holder.ArtifactID, audit, f.organizationID)
+		if _, err := f.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("pin: %v", err)
+		}
+
+		truncErr := truncateAuditArtifacts(ctx, truncator, f.organizationID, time.Now())
+		requirePgError(t, truncErr, restrictViolation, pinAuditConstraint, "the truncation")
+
+		if commitErr := truncator.Commit(ctx); commitErr == nil {
+			t.Error("the transaction committed after its DELETE was aborted")
+		}
+		if !rowExists(t, f, "audit_artifacts", "artifact_id", audit) {
+			t.Error("the pinned audit artifact was deleted; a pin points at nothing")
+		}
+	})
+}
+
+// seedAgedAuditArtifact reuses the truncation suite's seeder, which already
+// writes a row past the horizon, and reports the digest a pin on it must
+// bind.
+func seedAgedAuditArtifact(t *testing.T, f *fixture) uuid.UUID {
+	t.Helper()
+	return seedAuditArtifact(t, f, f.organizationID, nil)
+}
+
+// auditPinDigest is the digest that seeder writes. A pin binding anything
+// else would be refused for a reason this test is not about.
+const auditPinDigest = "repeat('a', 64)"
+
+func auditPinStatement(holder, audit, org uuid.UUID) (string, []any) {
+	return `INSERT INTO retention_pins (retention_pin_id, organization_id, pinned_by_artifact_id,
+			pinned_audit_artifact_id, pinned_digest)
+		VALUES (gen_random_uuid(), $1, $2, $3, ` + auditPinDigest + `)`,
+		[]any{org, holder, audit}
 }

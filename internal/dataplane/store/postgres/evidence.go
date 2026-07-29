@@ -312,24 +312,17 @@ func (t *tx) extendOriginalPins(
 		}
 	}
 
-	held, err := t.queries.ListPinsByArtifact(ctx, gen.ListPinsByArtifactParams{
-		OrganizationID:     original.OrganizationID,
-		PinnedByArtifactID: original.ArtifactID,
-	})
-	if err != nil {
-		return fmt.Errorf("read pins for original %s: %w", fromUUID(original.ArtifactID), err)
-	}
-	pinnedTargets := make(map[evidenceKey]struct{}, len(held))
-	for i := range held {
-		pinnedTargets[keyOfPin(&held[i])] = struct{}{}
-	}
-
-	// Only the additions. Re-pinning something already held would leave a
-	// duplicate whose only purpose is to record that two amendments
-	// mentioned the same evidence.
+	// The additions are what this amendment INTRODUCES: the effective set
+	// minus the base set. Deliberately not "minus what is currently
+	// pinned", which is a different quantity and a dangerous one -- an
+	// accepted original that has lost an inherited pin would have it
+	// silently recreated here, and the amendment would succeed while the
+	// corrupted accepted state it papered over went unreported. What the
+	// base names is the original's business, and the verification below is
+	// what judges it.
 	additions := sortedKeys(afterSet)
 	for i := range additions {
-		if _, already := pinnedTargets[additions[i]]; already {
+		if _, inherited := beforeSet[additions[i]]; inherited {
 			continue
 		}
 		if _, err := t.pin(ctx, fromUUID(original.OrganizationID),

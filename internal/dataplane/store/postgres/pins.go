@@ -185,21 +185,30 @@ func (t *tx) evidenceDigest(
 // a contract.
 const (
 	attachmentPinConstraint = "retention_pins_attachment_fkey"
+	auditPinConstraint      = "retention_pins_audit_target_fkey"
 	foreignKeyViolation     = "23503"
 )
 
 // mapPinViolation turns the schema's refusal into something a caller can
 // act on.
 //
-// A 23503 on the attachment key means the attachment is gone -- truncated
-// between the digest read and this insert -- and surfacing a constraint
-// name to a caller who cannot act on it is not a diagnostic (design D6a).
+// A 23503 on either pin key means the target is gone -- truncated between
+// the digest read and this insert -- and surfacing a constraint name to a
+// caller who cannot act on it is not a diagnostic (design D6a). Both
+// targets are covered: a pin points at an Audit artifact or an attachment,
+// and both families are truncated.
 func mapPinViolation(err error, reference store.EvidenceRef) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation &&
-		pgErr.ConstraintName == attachmentPinConstraint && reference.AttachmentID != nil {
+	if !errors.As(err, &pgErr) || pgErr.Code != foreignKeyViolation {
+		return fmt.Errorf("record pin: %w", err)
+	}
+	switch {
+	case pgErr.ConstraintName == attachmentPinConstraint && reference.AttachmentID != nil:
 		return fmt.Errorf("%w: attachment %s no longer exists; it was truncated while this pin was "+
 			"being written", store.ErrNotFound, *reference.AttachmentID)
+	case pgErr.ConstraintName == auditPinConstraint && reference.AuditArtifactID != nil:
+		return fmt.Errorf("%w: audit artifact %s no longer exists; it was truncated while this pin "+
+			"was being written", store.ErrNotFound, *reference.AuditArtifactID)
 	}
 	return fmt.Errorf("record pin: %w", err)
 }
