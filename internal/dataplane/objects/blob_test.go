@@ -306,3 +306,50 @@ func TestAbortUploadStillReportsOtherFailures(t *testing.T) {
 		t.Fatal("AbortUpload swallowed an access-denied response")
 	}
 }
+
+// TestFencedVersionRejectsAnUnusableID covers both halves of the fence a
+// write depends on, one of which the pinned server cannot produce.
+//
+// It answers an unversioned or suspended write with an EMPTY id, so the
+// integration suite exercises that arm and nothing else. A store following
+// S3 reports the literal null version instead, and there the empty check
+// alone would let an unfenced write through — the layers above would
+// record "null" as a version and later issue a version-specific delete
+// naming it, which reclaims nothing.
+//
+// Tested here rather than through PutStaged because reaching it any other
+// way means a server that reports what this one does not.
+func TestFencedVersionRejectsAnUnusableID(t *testing.T) {
+	const good = "4281afe4-9a7e-43ef-80aa-306635b5957f"
+	for name, testCase := range map[string]struct {
+		version  string
+		accepted bool
+	}{
+		"a real version":      {good, true},
+		"no version at all":   {"", false},
+		"the null version":    {"null", false},
+		"a version named nul": {"nul", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := fencedVersion("org/aa/bb/digest", testCase.version)
+			if testCase.accepted {
+				if err != nil {
+					t.Fatalf("fencedVersion(%q) refused a usable id: %v", testCase.version, err)
+				}
+				if got != testCase.version {
+					t.Fatalf("fencedVersion(%q) returned %q", testCase.version, got)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("fencedVersion(%q) accepted an id nothing can delete by name", testCase.version)
+			}
+			if got != "" {
+				t.Fatalf("fencedVersion(%q) returned %q alongside its error", testCase.version, got)
+			}
+			if !strings.Contains(err.Error(), "not versioned") {
+				t.Fatalf("the refusal does not name the cause: %v", err)
+			}
+		})
+	}
+}

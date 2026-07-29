@@ -10,7 +10,7 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 
-**D1a and the D2 measurement table are amendments made during implementation and are awaiting review.** Both correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written.
+**D1a and the D2 measurement table are amendments made during implementation. Their substance is approved by Codex (2026-07-29); DR's acceptance is outstanding.** Both correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written.
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -56,7 +56,7 @@ So the adapter is built on the client's lower-level pair, which is upload-id-spe
 
 ## D1a. What the pinned server actually does with a multipart listing
 
-Amended during implementation, from measurement rather than review. Three
+Amended during implementation, from measurement rather than review. Two
 things the design assumed about `ListMultipartUploads` are not true of the
 pinned MinIO image (`RELEASE.2025-09-07T16-13-09Z`), and each fails silently
 rather than loudly, which is the class this document has spent nine rounds
@@ -112,13 +112,13 @@ Pin and unpin stay relational because that is what they are: rows with foreign k
 
 There is no public raw delete at either layer. `Delete` is a Layer 1 primitive with two callers inside the module, and D8's rejection stands without contradicting D1.
 
-## D2. Three facts about the bytes, and the mechanisms that answer them
+## D2. Four facts about the bytes, and the mechanisms that answer them
 
-Round 1 hashed the source and called it verification, which proves what the client read and nothing about what arrived. Round 2 then swung too far and treated the server checksum as proof of the address. Both were one mistake: **one check was asked to answer three different questions.**
+Round 1 hashed the source and called it verification, which proves what the client read and nothing about what arrived. Round 2 then swung too far and treated the server checksum as proof of the address. Both were one mistake: **one check was asked to answer three different questions** — what the source is, what arrived, and what landed.
 
 **The server checksum is transport integrity at best, and never the address.** Round 2 called `PutObjectOptions.Checksum` a server verification of our digest; it is not. It selects an *algorithm* — the client computes the value — and for a multipart upload the SHA-256 it carries is a **composite** checksum-of-checksums, which is not the full-object SHA-256 this design uses as the key. Comparing it to a digest would compare two different numbers and pass whenever they happened to be equal, which for a small single-part object they are. That is the worst kind of check: correct on the easy case, silently absent on the large evidence media this module exists for.
 
-Three separate facts are needed, and each has its own mechanism:
+Four separate facts are needed, and each has its own mechanism:
 
 | Fact | How |
 | --- | --- |
