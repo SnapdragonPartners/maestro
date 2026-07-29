@@ -13,22 +13,50 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// What happens when attachment truncation races a pin, measured rather than
-// asserted (item 6 design, D6a).
+// What happens when attachment truncation races a pin — measured, and then
+// pinned down (item 6 design, D6a).
 //
-// The foreign key guarantees the thing that matters — no interleaving
-// leaves a pin pointing at a deleted attachment — but it does not say which
-// party sees which error, and that decides the contract: a serialization
-// failure joins item 5's existing retry, while a foreign-key violation has
-// to be mapped at the seam into a diagnostic naming the attachment.
+// The foreign key guarantees the thing that matters: no interleaving leaves
+// a pin pointing at a deleted attachment. It does not say which party sees
+// which error, and that decides the contract. Neither ordering raises
+// 40001, so item 5's serialization retry does not cover this at all.
+//
+// An earlier version of this test only LOGGED what it observed, which made
+// it exactly the vacuous guard it claimed to be: it would have passed if
+// 23001 became something else, if the constraint name changed, or if the
+// commit stopped failing — the three regressions it exists to catch. Every
+// observation is now asserted.
 //
 // Both orderings run under a controlled barrier, because whichever error
 // arises depends on lock acquisition and commit order, and a test that
 // merely starts two transactions proves nothing about either.
 
+// The measured contract. These constants ARE the contract the seam's retry
+// predicate and error mapping are written against; changing one here means
+// changing the handler that reads it.
+const (
+	// foreignKeyViolation is what the PIN receives when the attachment was
+	// already deleted.
+	foreignKeyViolation = "23503"
+	// restrictViolation is what the TRUNCATION receives when a pin was
+	// created after its snapshot. It is NOT 23503, and a handler matching
+	// only foreign-key violations misses it.
+	restrictViolation = "23001"
+	// pinAttachmentConstraint is the constraint both errors name. The retry
+	// predicate matches on it as well as on the code, so an unrelated
+	// RESTRICT violation is never retried into a misleading exhaustion.
+	pinAttachmentConstraint = "retention_pins_attachment_fkey"
+)
+
 // attachmentTruncation is item 5's pass restricted to the one table item 6
 // adds: organization-scoped, horizon-bounded, pinned rows excluded in the
 // WHERE rather than discovered at commit.
+//
+// Written out here because item 6's generated query does not exist yet.
+// When it lands, this constant is replaced by the generated one — the
+// measurement is only about the SQL the pass will actually issue, and a
+// copy that drifts from it measures nothing. Tracked as part of item 6's
+// implementation, not as a standing TODO.
 const attachmentTruncation = `
 DELETE FROM binary_attachments a
 WHERE a.organization_id = $1
@@ -51,23 +79,37 @@ func seedAttachment(t *testing.T, f *fixture, at time.Time) uuid.UUID {
 	return id
 }
 
-func pinStatement(holder, attachment uuid.UUID, org uuid.UUID) (string, []any) {
+func pinStatement(holder, attachment, org uuid.UUID) (string, []any) {
 	return `INSERT INTO retention_pins (retention_pin_id, organization_id, pinned_by_artifact_id,
 			pinned_attachment_id, pinned_digest)
 		VALUES (gen_random_uuid(), $1, $2, $3, repeat('c', 64))`,
 		[]any{org, holder, attachment}
 }
 
-// sqlstate reports the SQLSTATE of a Postgres error, or "" for anything else.
-func sqlstate(err error) string {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code
+// requirePgError asserts the SQLSTATE and constraint name of a failure.
+//
+// Both halves matter. The code alone would accept a RESTRICT violation from
+// any other foreign key, which the retry predicate must NOT treat as this
+// race; the constraint alone would accept a different failure mode against
+// the same constraint.
+func requirePgError(t *testing.T, err error, wantCode, wantConstraint, what string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s succeeded; want %s on %s", what, wantCode, wantConstraint)
 	}
-	return ""
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("%s failed with a non-Postgres error %v; want %s on %s", what, err, wantCode, wantConstraint)
+	}
+	if pgErr.Code != wantCode {
+		t.Errorf("%s returned SQLSTATE %s, want %s: %v", what, pgErr.Code, wantCode, err)
+	}
+	if pgErr.ConstraintName != wantConstraint {
+		t.Errorf("%s named constraint %q, want %q: %v", what, pgErr.ConstraintName, wantConstraint, err)
+	}
 }
 
-// TestPinRacingAttachmentTruncation records the contract for both orderings.
+// TestPinRacingAttachmentTruncation fixes the contract for both orderings.
 func TestPinRacingAttachmentTruncation(t *testing.T) {
 	t.Run("truncate first, pin second", func(t *testing.T) {
 		f := newFixture(t)
@@ -89,8 +131,8 @@ func TestPinRacingAttachmentTruncation(t *testing.T) {
 		pinErr := make(chan error, 1)
 		go func() {
 			sql, args := pinStatement(holder.ArtifactID, attachment, f.organizationID)
-			_, err := f.pool.Exec(context.Background(), sql, args...)
-			pinErr <- err
+			_, execErr := f.pool.Exec(context.Background(), sql, args...)
+			pinErr <- execErr
 		}()
 		waitForLockWait(t, f)
 		if err := truncator.Commit(ctx); err != nil {
@@ -99,12 +141,15 @@ func TestPinRacingAttachmentTruncation(t *testing.T) {
 
 		select {
 		case err := <-pinErr:
-			t.Logf("OBSERVED pin-after-truncate: sqlstate=%q err=%v", sqlstate(err), err)
-			if err == nil {
-				t.Fatal("the pin succeeded against a deleted attachment; the foreign key did not hold")
-			}
+			requirePgError(t, err, foreignKeyViolation, pinAttachmentConstraint, "the pin")
 		case <-time.After(30 * time.Second):
 			t.Fatal("the pin never returned")
+		}
+
+		// And the attachment really is gone: a pin that failed because the
+		// row still existed would be a different result with the same error.
+		if rowExists(t, f, "binary_attachments", "attachment_id", attachment) {
+			t.Error("the attachment survived the truncation, so the pin failed for another reason")
 		}
 	})
 
@@ -137,17 +182,16 @@ func TestPinRacingAttachmentTruncation(t *testing.T) {
 		}
 
 		_, truncErr := truncator.Exec(ctx, attachmentTruncation, f.organizationID, time.Now())
-		commitErr := truncator.Commit(ctx)
-		t.Logf("OBSERVED truncate-after-pin: delete sqlstate=%q err=%v", sqlstate(truncErr), truncErr)
-		t.Logf("OBSERVED truncate-after-pin: commit sqlstate=%q err=%v", sqlstate(commitErr), commitErr)
+		requirePgError(t, truncErr, restrictViolation, pinAttachmentConstraint, "the truncation")
 
-		var survives bool
-		if err := f.pool.QueryRow(context.Background(),
-			`SELECT EXISTS (SELECT 1 FROM binary_attachments WHERE attachment_id = $1)`,
-			attachment).Scan(&survives); err != nil {
-			t.Fatalf("check survival: %v", err)
+		// The whole pass is lost, not just the statement: the surrounding
+		// commit fails as a rollback. That is why the retry has to be
+		// whole-operation rather than per-statement.
+		if commitErr := truncator.Commit(ctx); commitErr == nil {
+			t.Error("the transaction committed after its DELETE was aborted")
 		}
-		if !survives {
+
+		if !rowExists(t, f, "binary_attachments", "attachment_id", attachment) {
 			t.Error("the pinned attachment was deleted; a pin points at nothing")
 		}
 	})
