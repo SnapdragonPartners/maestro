@@ -104,17 +104,38 @@ func (c *countingHasher) digest() string {
 // reaches neither the hash nor the object. "We stopped at size" is not the
 // same claim: a source longer than stated hashes to something plausible
 // over its first `size` bytes and stores a truncation nobody detects.
+//
+// A zero-length read is NOT proof of anything. io.Reader permits (0, nil),
+// meaning no progress was made -- a network reader between packets returns
+// it -- and treating that as exhaustion is how a source that yields the
+// declared prefix, pauses, and then produces more gets silently accepted as
+// complete. So the probe continues until it sees data, EOF, or a real
+// error, and gives up after a bounded number of idle reads rather than
+// spinning forever on a reader that never makes progress.
 func (c *countingHasher) exhausted() (bool, error) {
 	var probe [1]byte
-	n, err := c.source.Read(probe[:])
-	if n > 0 {
-		return false, nil
+	for range maxIdleProbes {
+		n, err := c.source.Read(probe[:])
+		if n > 0 {
+			return false, nil
+		}
+		if err == io.EOF { //nolint:errorlint // io.EOF is compared by identity, per io.Reader
+			return true, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read past the stated size: %w", err)
+		}
+		// (0, nil): no progress, no ending. Ask again.
 	}
-	if err == nil || err == io.EOF { //nolint:errorlint // io.EOF is compared by identity, per io.Reader
-		return true, nil
-	}
-	return false, fmt.Errorf("read past the stated size: %w", err)
+	return false, fmt.Errorf("source returned no data and no error in %d reads past the stated size, "+
+		"so whether it is finished cannot be established", maxIdleProbes)
 }
+
+// maxIdleProbes bounds the no-progress case. The number only has to be
+// larger than any honest reader's momentary stall; a source that cannot
+// answer in this many attempts is one whose length this module will not
+// vouch for either way.
+const maxIdleProbes = 16
 
 // verifyingReader streams an object and fails at EOF if what it read does
 // not hash to the digest that addressed it.

@@ -69,16 +69,35 @@ func digestLockKey(organizationID uuid.UUID, digest string) int64 {
 	return int64(binary.BigEndian.Uint64(sum[:8])) //nolint:gosec // the sign carries no meaning; the key is opaque
 }
 
-// AttachmentExists answers without transferring anything.
+// AttachmentExists answers without transferring the object.
+//
+// It checks BOTH halves, because the question acceptance asks is whether
+// the evidence exists -- and a row whose object is gone is precisely the
+// state that would let missing evidence pass as present (design D5). The
+// two failures are reported differently on purpose: no row is an ordinary
+// false, while a row without its object is the store contradicting itself,
+// which ADR 0021 requires to fail loudly rather than weaken a proof.
 func (s *Store) AttachmentExists(ctx context.Context, organizationID, attachmentID uuid.UUID) (bool, error) {
-	exists, err := s.queries.BinaryAttachmentExists(ctx, gen.BinaryAttachmentExistsParams{
+	row, err := s.queries.GetBinaryAttachment(ctx, gen.GetBinaryAttachmentParams{
 		AttachmentID:   toUUID(attachmentID),
 		OrganizationID: toUUID(organizationID),
 	})
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
 		return false, fmt.Errorf("check attachment %s: %w", attachmentID, err)
 	}
-	return exists, nil
+
+	stored, err := s.blob.Exists(ctx, objectKey(organizationID, row.ObjectDigest))
+	if err != nil {
+		return false, fmt.Errorf("check object for attachment %s: %w", attachmentID, err)
+	}
+	if !stored {
+		return false, fmt.Errorf("%w: attachment %s references object %s, which is not stored",
+			store.ErrInvariant, attachmentID, row.ObjectDigest)
+	}
+	return true, nil
 }
 
 // GetAttachment streams an attachment's bytes, verifying them.
@@ -182,9 +201,24 @@ func (s *Store) putOverExisting(
 
 		switch err := s.verifyStored(ctx, input.OrganizationID, input.Digest); {
 		case errors.Is(err, objects.ErrNoSuchObject):
-			// Nothing there: the full path uploads it.
+			// Nothing there: the full path uploads it. The source has not
+			// been touched, which is what keeps that path available.
 			return outcome{}, nil
 		case err != nil:
+			return outcome{}, err
+		}
+
+		// The stored object being correct says nothing about the CALLER's
+		// bytes. Skipping the upload must not also skip the contract: an
+		// unread source could be shorter, longer, or unrelated, and the row
+		// would record a size nobody measured. So it is read and proven
+		// here, exactly as the upload path proves it -- the difference is
+		// only that these bytes are discarded rather than sent.
+		//
+		// After the stored verification, not before: a source consumed on a
+		// path that then discovers it must upload after all is a source
+		// nothing can rewind.
+		if err := drainAndCheckSource(input); err != nil {
 			return outcome{}, err
 		}
 
@@ -313,8 +347,20 @@ func (s *Store) uploadStaged(
 		return "", fmt.Errorf("upload to staging: %w", err)
 	}
 
+	if err := checkSource(source, input); err != nil {
+		return "", err
+	}
+	return version, nil
+}
+
+// checkSource proves the caller's bytes are the length and the content
+// they were claimed to be.
+//
+// Both paths use it, so the contract cannot drift between the write that
+// uploads and the write that recognises an object it already holds.
+func checkSource(source *countingHasher, input *store.PutAttachmentInput) error {
 	if source.read != input.SizeBytes {
-		return "", fmt.Errorf("%w: read %d bytes, stated %d",
+		return fmt.Errorf("%w: read %d bytes, stated %d",
 			store.ErrSizeMismatch, source.read, input.SizeBytes)
 	}
 	// "We stopped at size" is not the same claim as "the source ended".
@@ -322,17 +368,27 @@ func (s *Store) uploadStaged(
 	// digest matched nothing the caller has.
 	exhausted, err := source.exhausted()
 	if err != nil {
-		return "", err
+		return err
 	}
 	if !exhausted {
-		return "", fmt.Errorf("%w: source is longer than the stated %d bytes",
+		return fmt.Errorf("%w: source is longer than the stated %d bytes",
 			store.ErrSizeMismatch, input.SizeBytes)
 	}
 	if got := source.digest(); got != input.Digest {
-		return "", fmt.Errorf("%w: source hashes to %s, claimed %s",
+		return fmt.Errorf("%w: source hashes to %s, claimed %s",
 			store.ErrContentMismatch, got, input.Digest)
 	}
-	return version, nil
+	return nil
+}
+
+// drainAndCheckSource reads the caller's source without storing it, and
+// holds it to the same contract as an uploaded one.
+func drainAndCheckSource(input *store.PutAttachmentInput) error {
+	source := newCountingHasher(input.Body, input.SizeBytes)
+	if _, err := io.Copy(io.Discard, source); err != nil {
+		return fmt.Errorf("read source: %w", err)
+	}
+	return checkSource(source, input)
 }
 
 // renewLeaseUntilDone keeps the lease alive while a long upload runs, and

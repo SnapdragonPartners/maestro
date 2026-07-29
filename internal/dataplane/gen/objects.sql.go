@@ -79,7 +79,7 @@ INSERT INTO staging_leases (
     staging_lease_id, organization_id, staging_key, owner_token, expires_at
 ) VALUES (
     $1, $2, $3, $4,
-    now() + make_interval(secs => $5::double precision)
+    clock_timestamp() + make_interval(secs => $5::double precision)
 )
 RETURNING staging_lease_id, organization_id, staging_key, owner_token, created_at, expires_at
 `
@@ -198,7 +198,7 @@ func (q *Queries) LiveDeletionClaimExists(ctx context.Context, arg LiveDeletionC
 }
 
 const lockStagingLease = `-- name: LockStagingLease :one
-SELECT staging_leases.staging_lease_id, staging_leases.organization_id, staging_leases.staging_key, staging_leases.owner_token, staging_leases.created_at, staging_leases.expires_at, now()::timestamptz AS locked_at
+SELECT staging_leases.staging_lease_id, staging_leases.organization_id, staging_leases.staging_key, staging_leases.owner_token, staging_leases.created_at, staging_leases.expires_at, clock_timestamp()::timestamptz AS locked_at
 FROM staging_leases
 WHERE organization_id = $1
   AND staging_key = $2
@@ -228,6 +228,14 @@ type LockStagingLeaseRow struct {
 // The clock comes from the server so that ownership and expiry are judged
 // against the same instant the row was written with, not against a client
 // whose clock may differ.
+//
+// It is clock_timestamp(), NOT now(). `now()` is the TRANSACTION's start
+// timestamp, and this transaction takes the digest lock before it reaches
+// this statement: after a long wait behind another writer, `now()` reports
+// an instant that may precede an expiry which has since passed, and the
+// ownership check would authorise a promotion for a lease that is already
+// gone. The whole point of reading the clock here is to read it AFTER the
+// waiting is done.
 func (q *Queries) LockStagingLease(ctx context.Context, arg LockStagingLeaseParams) (LockStagingLeaseRow, error) {
 	row := q.db.QueryRow(ctx, lockStagingLease, arg.OrganizationID, arg.StagingKey)
 	var i LockStagingLeaseRow
@@ -245,11 +253,11 @@ func (q *Queries) LockStagingLease(ctx context.Context, arg LockStagingLeasePara
 
 const renewStagingLease = `-- name: RenewStagingLease :one
 UPDATE staging_leases
-SET expires_at = now() + make_interval(secs => $1::double precision)
+SET expires_at = clock_timestamp() + make_interval(secs => $1::double precision)
 WHERE organization_id = $2
   AND staging_key = $3
   AND owner_token = $4
-  AND expires_at > now()
+  AND expires_at > clock_timestamp()
 RETURNING staging_lease_id, organization_id, staging_key, owner_token, created_at, expires_at
 `
 
@@ -265,8 +273,12 @@ type RenewStagingLeaseParams struct {
 // Conditional on BOTH halves: the row still carries this token, and it has
 // not expired. Zero rows updated means the lease is lost, and the writer
 // aborts -- there is no re-insert, so an actor that lost its lease can
-// never resurrect it. `now()` is the transaction timestamp, which is the
-// same instant the schema's own defaults use.
+// never resurrect it.
+//
+// clock_timestamp() throughout, for the reason spelled out under
+// LockStagingLease: `now()` freezes at the transaction's start, and any
+// statement that can wait -- this one waits for the row lock -- may then
+// judge expiry against an instant that has already passed.
 func (q *Queries) RenewStagingLease(ctx context.Context, arg RenewStagingLeaseParams) (StagingLease, error) {
 	row := q.db.QueryRow(ctx, renewStagingLease,
 		arg.TermSeconds,

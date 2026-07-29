@@ -6,12 +6,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -162,8 +166,10 @@ func TestPutAttachmentRejectsASourceShorterThanStated(t *testing.T) {
 	input.SizeBytes = int64(len(body)) + 100
 
 	_, err := f.store.PutAttachment(ctx, input)
-	if err == nil {
-		t.Fatal("PutAttachment accepted a source shorter than its stated size")
+	if !errors.Is(err, store.ErrSizeMismatch) {
+		t.Fatalf("PutAttachment returned %v, want ErrSizeMismatch. Asserting only that SOMETHING "+
+			"failed would pass on the client's opaque transport error, which is what the "+
+			"short-source classification exists to replace", err)
 	}
 	f.assertNoAttachmentFor(t, input.Digest)
 }
@@ -454,4 +460,185 @@ func (f *fixture) deleteStoredObject(t *testing.T, digest string) {
 // would agree with it however wrong both were.
 func objectKeyFor(organizationID uuid.UUID, digest string) string {
 	return organizationID.String() + "/" + digest[:2] + "/" + digest[2:4] + "/" + digest
+}
+
+// TestPutAttachmentValidatesTheSourceOnTheShortcut is the contract the
+// shortcut must not skip.
+//
+// When the object is already stored there is nothing to upload, and it
+// would be easy to record the row on the strength of the digest alone. But
+// the caller's bytes are still a claim: an unread source could be shorter,
+// longer, or unrelated, and the row would carry a size nobody measured. The
+// shortcut skips the transfer, not the proof.
+func TestPutAttachmentValidatesTheSourceOnTheShortcut(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	body := []byte("the bytes this digest names")
+
+	// First put stores the object, so every case below takes the shortcut.
+	if _, err := f.store.PutAttachment(ctx, putInput(f.organizationID, body)); err != nil {
+		t.Fatalf("first put: %v", err)
+	}
+
+	for name, testCase := range map[string]struct {
+		mutate func(*store.PutAttachmentInput)
+		want   error
+	}{
+		"an unrelated source of the SAME length": {
+			// Same length on purpose: a shorter one would fail the size
+			// check first and never reach the digest comparison, leaving
+			// the content half of the contract untested.
+			mutate: func(i *store.PutAttachmentInput) {
+				i.Body = bytes.NewReader(bytes.Repeat([]byte("x"), len(body)))
+			},
+			want: store.ErrContentMismatch,
+		},
+		"a source longer than stated": {
+			mutate: func(i *store.PutAttachmentInput) {
+				i.Body = bytes.NewReader(append(append([]byte{}, body...), " and more"...))
+			},
+			want: store.ErrSizeMismatch,
+		},
+		"a source shorter than stated": {
+			mutate: func(i *store.PutAttachmentInput) { i.Body = bytes.NewReader(body[:len(body)-3]) },
+			want:   store.ErrSizeMismatch,
+		},
+		"a size the source does not have": {
+			mutate: func(i *store.PutAttachmentInput) { i.SizeBytes = int64(len(body)) + 40 },
+			want:   store.ErrSizeMismatch,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := putInput(f.organizationID, body)
+			testCase.mutate(&input)
+
+			_, err := f.store.PutAttachment(ctx, input)
+			if !errors.Is(err, testCase.want) {
+				t.Fatalf("the shortcut returned %v, want %v", err, testCase.want)
+			}
+
+			// Exactly one row still references the digest: the first put's.
+			var rows int
+			if err := f.pool.QueryRow(ctx,
+				`SELECT count(*) FROM binary_attachments WHERE organization_id = $1 AND object_digest = $2`,
+				f.organizationID, digestOf(body)).Scan(&rows); err != nil {
+				t.Fatalf("count attachments: %v", err)
+			}
+			if rows != 1 {
+				t.Fatalf("%d rows reference the digest after a refused shortcut, want only the first put's", rows)
+			}
+		})
+	}
+}
+
+// TestAttachmentExistsChecksTheObjectToo covers the precondition acceptance
+// depends on. A row whose object is gone must not read as present, or
+// acceptance would verify evidence that is not there.
+func TestAttachmentExistsChecksTheObjectToo(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	attachment, err := f.store.PutAttachment(ctx, putInput(f.organizationID, []byte("evidence")))
+	if err != nil {
+		t.Fatalf("PutAttachment: %v", err)
+	}
+	exists, err := f.store.AttachmentExists(ctx, f.organizationID, attachment.AttachmentID)
+	if err != nil || !exists {
+		t.Fatalf("AttachmentExists returned (%v, %v) for a complete attachment", exists, err)
+	}
+
+	f.deleteStoredObject(t, attachment.Digest)
+
+	exists, err = f.store.AttachmentExists(ctx, f.organizationID, attachment.AttachmentID)
+	if exists {
+		t.Fatal("a row whose object is gone reports as present; acceptance would verify missing evidence")
+	}
+	// And it is loud: a dangling row is the store contradicting itself, not
+	// an ordinary absence.
+	if !errors.Is(err, store.ErrInvariant) {
+		t.Fatalf("a dangling attachment reported %v, want ErrInvariant", err)
+	}
+
+	// An id that was never written is the ordinary absence, and must not
+	// be reported as an invariant failure.
+	missing, err := f.store.AttachmentExists(ctx, f.organizationID, uuid.New())
+	if err != nil || missing {
+		t.Fatalf("an unknown attachment returned (%v, %v), want (false, nil)", missing, err)
+	}
+}
+
+// TestLeaseExpiryIsJudgedAfterTheLockWait is the stale-clock case.
+//
+// A promoting transaction takes the digest lock BEFORE it locks the lease
+// row, and that lock can be held by another writer for a long time.
+// Postgres `now()` is the TRANSACTION's start timestamp, so a transaction
+// that began before a lease expired and reached the ownership check long
+// after would compare against an instant that has since passed, and
+// authorise a promotion for a lease that is already gone -- the exact
+// window the row lock exists to close.
+//
+// It drives the GENERATED query rather than SQL of its own. An earlier
+// version wrote out both clocks by hand and compared them: it proved what
+// Postgres does, which was never in doubt, and passed just as happily when
+// the shipped statement was reverted to now().
+//
+// The wait is pg_sleep INSIDE the transaction, which is what makes this
+// deterministic: no second connection, no scheduling luck.
+func TestLeaseExpiryIsJudgedAfterTheLockWait(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+
+	key := fmt.Sprintf("staging/%s/019faee5-84ef-74a7-a8dd-f376e6d3f5ee", f.organizationID)
+	if _, err := f.pool.Exec(ctx, `
+		INSERT INTO staging_leases (staging_lease_id, organization_id, staging_key, owner_token, expires_at)
+		VALUES (gen_random_uuid(), $1, $2, gen_random_uuid(),
+		        clock_timestamp() + interval '500 milliseconds')`,
+		f.organizationID, key); err != nil {
+		t.Fatalf("insert lease: %v", err)
+	}
+
+	pgTx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = pgTx.Rollback(ctx) }()
+
+	// The transaction has started; its `now()` is fixed at this instant.
+	// The sleep stands in for waiting on the digest lock.
+	if _, err = pgTx.Exec(ctx, `SELECT pg_sleep(1)`); err != nil {
+		t.Fatalf("sleep: %v", err)
+	}
+
+	locked, err := gen.New(pgTx).LockStagingLease(ctx, gen.LockStagingLeaseParams{
+		OrganizationID: toPgUUID(f.organizationID),
+		StagingKey:     key,
+	})
+	if err != nil {
+		t.Fatalf("LockStagingLease: %v", err)
+	}
+
+	expiresAt := locked.StagingLease.ExpiresAt.Time
+	if !locked.LockedAt.Time.After(expiresAt) {
+		t.Fatalf("the query reported the lock taken at %s, which does not follow the expiry %s. "+
+			"A clock frozen at the transaction's start calls an expired lease alive, and the "+
+			"promotion it authorises writes over storage cleanup is entitled to remove.",
+			locked.LockedAt.Time, expiresAt)
+	}
+
+	// The control: the transaction's own timestamp still PRECEDES the
+	// expiry, so this really is the window, and a check written against
+	// now() really would get it wrong.
+	var transactionStart time.Time
+	if err := pgTx.QueryRow(ctx, `SELECT now()`).Scan(&transactionStart); err != nil {
+		t.Fatalf("read transaction timestamp: %v", err)
+	}
+	if transactionStart.After(expiresAt) {
+		t.Fatal("the transaction began after the lease expired, so this case proves nothing about now()")
+	}
+}
+
+// toPgUUID mirrors the seam's own conversion. The test package cannot reach
+// the unexported helper, and a uuid is two fields.
+func toPgUUID(id uuid.UUID) pgtype.UUID {
+	return pgtype.UUID{Bytes: id, Valid: true}
 }

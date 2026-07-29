@@ -59,7 +59,7 @@ INSERT INTO staging_leases (
     staging_lease_id, organization_id, staging_key, owner_token, expires_at
 ) VALUES (
     @staging_lease_id, @organization_id, @staging_key, @owner_token,
-    now() + make_interval(secs => @term_seconds::double precision)
+    clock_timestamp() + make_interval(secs => @term_seconds::double precision)
 )
 RETURNING *;
 
@@ -68,16 +68,20 @@ RETURNING *;
 -- Conditional on BOTH halves: the row still carries this token, and it has
 -- not expired. Zero rows updated means the lease is lost, and the writer
 -- aborts -- there is no re-insert, so an actor that lost its lease can
--- never resurrect it. `now()` is the transaction timestamp, which is the
--- same instant the schema's own defaults use.
+-- never resurrect it.
+--
+-- clock_timestamp() throughout, for the reason spelled out under
+-- LockStagingLease: `now()` freezes at the transaction's start, and any
+-- statement that can wait -- this one waits for the row lock -- may then
+-- judge expiry against an instant that has already passed.
 --
 -- name: RenewStagingLease :one
 UPDATE staging_leases
-SET expires_at = now() + make_interval(secs => @term_seconds::double precision)
+SET expires_at = clock_timestamp() + make_interval(secs => @term_seconds::double precision)
 WHERE organization_id = @organization_id
   AND staging_key = @staging_key
   AND owner_token = @owner_token
-  AND expires_at > now()
+  AND expires_at > clock_timestamp()
 RETURNING *;
 
 -- LockStagingLease takes the row lock a promotion is performed under, and
@@ -94,8 +98,16 @@ RETURNING *;
 -- against the same instant the row was written with, not against a client
 -- whose clock may differ.
 --
+-- It is clock_timestamp(), NOT now(). `now()` is the TRANSACTION's start
+-- timestamp, and this transaction takes the digest lock before it reaches
+-- this statement: after a long wait behind another writer, `now()` reports
+-- an instant that may precede an expiry which has since passed, and the
+-- ownership check would authorise a promotion for a lease that is already
+-- gone. The whole point of reading the clock here is to read it AFTER the
+-- waiting is done.
+--
 -- name: LockStagingLease :one
-SELECT sqlc.embed(staging_leases), now()::timestamptz AS locked_at
+SELECT sqlc.embed(staging_leases), clock_timestamp()::timestamptz AS locked_at
 FROM staging_leases
 WHERE organization_id = @organization_id
   AND staging_key = @staging_key
