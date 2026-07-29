@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"orchestrator/internal/dataplane/migrations"
+	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/secret"
 )
 
 // DefaultComposeFile is the Compose file's path relative to the repository
@@ -99,7 +101,46 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if err := waitReady(ctx, c, composeFile, env); err != nil {
 		return err
 	}
+	if err := ensureBucket(ctx, c, rootKey); err != nil {
+		return err
+	}
 	return migrateLocked(ctx, c, rootKey)
+}
+
+// ensureBucket provisions the object store the way migrateLocked
+// provisions the schema: a service answering its health probe is not the
+// same as a service ready to be used.
+//
+// Nothing created this bucket before. The config named it and the bootstrap
+// pointer published it, so `up` reported a ready plane whose first write
+// would have failed on a bucket that did not exist. Design D3.
+//
+// The endpoint comes from the bootstrap pointer rather than being formatted
+// again here, so what `up` provisions is by construction the endpoint every
+// caller is told to use.
+func ensureBucket(ctx context.Context, c *Config, rootKey []byte) error {
+	accessKey, err := secret.Derive(rootKey, secret.ContextObjectAccessKey)
+	if err != nil {
+		return fmt.Errorf("derive object access key: %w", err)
+	}
+	secretKey, err := secret.Derive(rootKey, secret.ContextObjectSecretKey)
+	if err != nil {
+		return fmt.Errorf("derive object secret key: %w", err)
+	}
+
+	blob, err := objects.New(objects.Config{
+		Endpoint:  c.Bootstrap().Objects.Endpoint,
+		Bucket:    c.Bucket,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+	})
+	if err != nil {
+		return fmt.Errorf("build object store client: %w", err)
+	}
+	if err := blob.EnsureBucket(ctx); err != nil {
+		return fmt.Errorf("provision object storage: %w", err)
+	}
+	return nil
 }
 
 // Migrate applies pending migrations to an already-running stack.
