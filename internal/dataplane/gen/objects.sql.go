@@ -153,6 +153,32 @@ func (q *Queries) CreateStagingLease(ctx context.Context, arg CreateStagingLease
 	return i, err
 }
 
+const deleteExpiredStagingLease = `-- name: DeleteExpiredStagingLease :execrows
+DELETE FROM staging_leases
+WHERE organization_id = $1
+  AND staging_key = $2
+  AND expires_at <= clock_timestamp()
+`
+
+type DeleteExpiredStagingLeaseParams struct {
+	OrganizationID pgtype.UUID
+	StagingKey     string
+}
+
+// DeleteExpiredStagingLease removes a lease cleanup has finished with.
+//
+// Fenced by expiry, because cleanup holds no owner token -- that is the
+// writer's. The caller has already locked this row and rechecked expiry
+// under the lock; the condition here is the backstop that makes a delete
+// issued outside that discipline impossible rather than merely wrong.
+func (q *Queries) DeleteExpiredStagingLease(ctx context.Context, arg DeleteExpiredStagingLeaseParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredStagingLease, arg.OrganizationID, arg.StagingKey)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deletePin = `-- name: DeletePin :execrows
 DELETE FROM retention_pins
 WHERE organization_id = $1
@@ -288,6 +314,55 @@ func (q *Queries) GetBinaryAttachment(ctx context.Context, arg GetBinaryAttachme
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listExpiredStagingLeases = `-- name: ListExpiredStagingLeases :many
+SELECT staging_lease_id, organization_id, staging_key, owner_token, created_at, expires_at FROM staging_leases
+WHERE organization_id = $1
+  AND expires_at <= clock_timestamp()
+ORDER BY expires_at, staging_lease_id
+LIMIT $2
+`
+
+type ListExpiredStagingLeasesParams struct {
+	OrganizationID pgtype.UUID
+	RowLimit       int32
+}
+
+// ListExpiredStagingLeases finds leases cleanup may CONSIDER abandoned.
+//
+// Expiry decides only that: whether a writer still holds the lease is the
+// owner token's question, and who acts first when both are live is the row
+// lock's. This read is the first of the three and the weakest -- everything
+// it returns is rechecked under the lock before anything is deleted.
+//
+// clock_timestamp(), not now(): a pass that has been running for a while
+// would otherwise judge expiry against the instant it started.
+func (q *Queries) ListExpiredStagingLeases(ctx context.Context, arg ListExpiredStagingLeasesParams) ([]StagingLease, error) {
+	rows, err := q.db.Query(ctx, listExpiredStagingLeases, arg.OrganizationID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []StagingLease{}
+	for rows.Next() {
+		var i StagingLease
+		if err := rows.Scan(
+			&i.StagingLeaseID,
+			&i.OrganizationID,
+			&i.StagingKey,
+			&i.OwnerToken,
+			&i.CreatedAt,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listPinsByArtifact = `-- name: ListPinsByArtifact :many

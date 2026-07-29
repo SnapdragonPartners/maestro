@@ -200,3 +200,33 @@ WHERE artifact_id = @artifact_id
 SELECT object_digest FROM binary_attachments
 WHERE attachment_id = @attachment_id
   AND organization_id = @organization_id;
+
+-- ListExpiredStagingLeases finds leases cleanup may CONSIDER abandoned.
+--
+-- Expiry decides only that: whether a writer still holds the lease is the
+-- owner token's question, and who acts first when both are live is the row
+-- lock's. This read is the first of the three and the weakest -- everything
+-- it returns is rechecked under the lock before anything is deleted.
+--
+-- clock_timestamp(), not now(): a pass that has been running for a while
+-- would otherwise judge expiry against the instant it started.
+--
+-- name: ListExpiredStagingLeases :many
+SELECT * FROM staging_leases
+WHERE organization_id = @organization_id
+  AND expires_at <= clock_timestamp()
+ORDER BY expires_at, staging_lease_id
+LIMIT @row_limit;
+
+-- DeleteExpiredStagingLease removes a lease cleanup has finished with.
+--
+-- Fenced by expiry, because cleanup holds no owner token -- that is the
+-- writer's. The caller has already locked this row and rechecked expiry
+-- under the lock; the condition here is the backstop that makes a delete
+-- issued outside that discipline impossible rather than merely wrong.
+--
+-- name: DeleteExpiredStagingLease :execrows
+DELETE FROM staging_leases
+WHERE organization_id = @organization_id
+  AND staging_key = @staging_key
+  AND expires_at <= clock_timestamp();

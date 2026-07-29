@@ -188,4 +188,18 @@ type ObjectStore interface {
 
 	// ListPins returns what an artifact holds.
 	ListPins(ctx context.Context, organizationID, artifactID uuid.UUID) ([]Pin, error)
+
+	// CleanUpStaging releases staging objects whose writers are gone, and
+	// reports how many leases it released.
+	//
+	// It never removes work that is still in progress. Expiry only decides
+	// which leases it may CONSIDER; the row lock decides who acts first
+	// when a lease has expired while its writer is still running, and
+	// cleanup takes the same lock a promotion holds. ADR 0027: destructive
+	// recovery must never remove another actor's in-progress work, and
+	// "the victim finds out" is not a mitigation.
+	//
+	// Idempotent and re-runnable. It is bounded per pass, so a backlog is
+	// cleared over several rather than under one long-held set of locks.
+	CleanUpStaging(ctx context.Context, organizationID uuid.UUID) (int, error)
 }

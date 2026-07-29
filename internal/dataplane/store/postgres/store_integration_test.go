@@ -151,7 +151,8 @@ type fixture struct {
 	// blob is the object store behind the seam. Tests reach it directly
 	// only to produce states the seam refuses to produce -- a corrupt
 	// object at a digest key is the whole point of the verification.
-	blob *objects.Blob
+	blob       *objects.Blob
+	blobConfig objects.Config
 
 	// Lineage, populated by seedLineage for Story-scoped reads.
 	product uuid.UUID
@@ -170,7 +171,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(pool.Close)
 
-	blob := disposableBlob(t)
+	blob, blobConfig := disposableBlob(t)
 	built, err := postgres.New(pool, testRegistry(t), blob)
 	if err != nil {
 		t.Fatalf("store: %v", err)
@@ -179,6 +180,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{
 		store:          built,
 		blob:           blob,
+		blobConfig:     blobConfig,
 		pool:           pool,
 		organizationID: uuid.New(),
 		otherOrgID:     uuid.New(),
@@ -794,7 +796,7 @@ func TestAmendmentInheritsVersionFromTheOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("advanced registry: %v", err)
 	}
-	advancedStore, err := postgres.New(f.pool, advanced, disposableBlob(t))
+	advancedStore, err := postgres.New(f.pool, advanced, f.blob)
 	if err != nil {
 		t.Fatalf("advanced store: %v", err)
 	}
