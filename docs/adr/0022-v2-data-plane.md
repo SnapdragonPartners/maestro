@@ -7,7 +7,7 @@ summary = "Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by de
 
 # 0022. v2 Data Plane
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (local durability invariant; config and secrets resolved into the plane with an external root of trust; backup contract); amended 2026-07-28 (cross-store commit order restated in schema-implementable terms, enforced at acceptance)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (local durability invariant; config and secrets resolved into the plane with an external root of trust; backup contract); **amendment PROPOSED 2026-07-28** (cross-store commit order restated in schema-implementable terms, enforced at acceptance) — not yet accepted
 
 ## Context
 
@@ -54,7 +54,7 @@ The seam is a generalized **persistence interface** — restructured from v1's p
 
 Cross-store consistency is the seam's invariant: an authoritative artifact or evidence reference is never committed unless the referenced object exists by digest and its retention pin is recorded. A database row must never point at a missing or prunable blob. Orphan cleanup and retry are implementation details; the commit-order invariant is not.
 
-**Commit order (amended 2026-07-28).** The original wording — *object first, pin recorded, row last* — cannot be implemented against the schema it governs: a retention pin's holder is itself a row (`retention_pins.pinned_by_artifact_id` references `management_artifacts`), so no ordering exists in which every pin precedes every row. The invariant is restated in the terms the schema admits, unchanged in substance:
+**Commit order (amendment proposed 2026-07-28, pending Codex and DR approval).** The original wording — *object first, pin recorded, row last* — cannot be implemented against the schema it governs: a retention pin's holder is itself a row (`retention_pins.pinned_by_artifact_id` references `management_artifacts`), so no ordering exists in which every pin precedes every row. The invariant is restated in the terms the schema admits, unchanged in substance:
 
 1. the **object** is written and verified first;
 2. the **attachment row** recording its digest follows;
@@ -62,6 +62,8 @@ Cross-store consistency is the seam's invariant: an authoritative artifact or ev
 4. the artifact becomes **authoritative on acceptance**, which verifies that every referenced object exists and that every pin's digest equals its attachment's.
 
 So the guarantee stands as before — **no authoritative artifact ever references a missing or prunable blob** — while every step before acceptance leaves only removable garbage rather than a dangling authoritative reference. Acceptance is the enforcement point because ADR 0021 makes it the moment an artifact becomes authoritative; a design that enforced the order only by convention would leave the existing creation and acceptance operations able to produce exactly the forbidden state.
+
+On acceptance of this amendment, the two statements of the original order in `docs/v2/phase_2/plan_scope.md` (the in-scope bullet and item 6's row) are updated to match; until then they stand as written.
 
 ### Multi-user boundaries (MVP)
 
