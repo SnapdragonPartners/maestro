@@ -28,6 +28,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+
+	"github.com/google/uuid"
 )
 
 // Type is an artifact type drawn from ADR 0021's governed vocabulary.
@@ -66,6 +68,33 @@ type ValidatorFunc func(payload []byte) error
 // Validate implements Validator.
 func (f ValidatorFunc) Validate(payload []byte) error { return f(payload) }
 
+// Reference is one piece of evidence a payload names.
+//
+// Exactly one target, mirroring the exclusive arc retention pins already
+// use: an artifact cites an Audit record or an attachment, and a reference
+// naming both, or neither, describes nothing the schema can pin.
+type Reference struct {
+	AuditArtifactID *uuid.UUID
+	AttachmentID    *uuid.UUID
+}
+
+// Extractor reports the evidence a payload references.
+//
+// It exists because acceptance has to know what evidence was REVIEWED, and
+// the pins cannot answer that: a set derived from the pins would be
+// checked against itself. ADR 0028 binds the review digest over the whole
+// reviewable envelope including the payload, so a set derived from the
+// payload is a set the reviewer saw.
+type Extractor interface {
+	References(payload []byte) ([]Reference, error)
+}
+
+// ExtractorFunc adapts a function to Extractor.
+type ExtractorFunc func(payload []byte) ([]Reference, error)
+
+// References implements Extractor.
+func (f ExtractorFunc) References(payload []byte) ([]Reference, error) { return f(payload) }
+
 // Entry is one type's registration.
 type Entry struct {
 	// Validators is keyed by schema version. Its key set *is* the readable
@@ -76,6 +105,18 @@ type Entry struct {
 	// ADR 0028's evolution rule is additive-only, so old versions keep
 	// their validators here rather than being dropped when a new one lands.
 	Validators map[int]Validator
+
+	// Extractors is keyed by schema version, like Validators, and is
+	// OPTIONAL. Its absence is a statement, not an omission: a type with no
+	// extractor carries no evidence, and acceptance therefore requires
+	// exactly zero pins for it. Treating a missing extractor as "cannot
+	// tell" would let an unreviewed retention claim through on every type
+	// nobody had got round to registering.
+	//
+	// Versioned with the type because a v2 payload may name its evidence
+	// differently from a v1, and item 4's rule that a v1 artifact stays v1
+	// for life applies unchanged.
+	Extractors map[int]Extractor
 
 	// Category is the storage family for every artifact of this type.
 	Category Category
@@ -104,51 +145,95 @@ func New(entries map[Type]Entry) (*Registry, error) {
 
 	for _, artifactType := range slices.Sorted(maps.Keys(entries)) {
 		entry := entries[artifactType]
-		if artifactType == "" {
-			return nil, errors.New("registry: an artifact type is empty")
+		if err := checkEntry(artifactType, entry); err != nil {
+			return nil, err
 		}
-		switch entry.Category {
-		case CategoryManagement, CategoryAudit:
-		default:
-			return nil, fmt.Errorf("registry: type %q has category %q, want %q or %q",
-				artifactType, entry.Category, CategoryManagement, CategoryAudit)
-		}
-		// Bounded above as well as below: schema versions are stored in an
-		// int4 column, and a registration beyond that range would narrow
-		// silently at the write rather than failing here.
-		if entry.CurrentVersion < 1 || entry.CurrentVersion > math.MaxInt32 {
-			return nil, fmt.Errorf("registry: type %q has current version %d, want 1..%d",
-				artifactType, entry.CurrentVersion, math.MaxInt32)
-		}
-		if len(entry.Validators) == 0 {
-			return nil, fmt.Errorf("registry: type %q has no validators, so nothing of that type could be read",
-				artifactType)
-		}
-		for version, validator := range entry.Validators {
-			if version < 1 || version > math.MaxInt32 {
-				return nil, fmt.Errorf("registry: type %q has a validator for version %d, want 1..%d",
-					artifactType, version, math.MaxInt32)
-			}
-			if validator == nil {
-				return nil, fmt.Errorf("registry: type %q has a nil validator for version %d",
-					artifactType, version)
-			}
-		}
-		// The current version must be readable. Without this a type could
-		// be written at a version nothing can validate, which passes every
-		// write and fails every read.
-		if _, ok := entry.Validators[entry.CurrentVersion]; !ok {
-			return nil, fmt.Errorf("registry: type %q writes at version %d but has no validator for it (has %v)",
-				artifactType, entry.CurrentVersion, readableVersions(entry))
-		}
-
 		frozen[artifactType] = Entry{
 			Category:       entry.Category,
 			CurrentVersion: entry.CurrentVersion,
 			Validators:     maps.Clone(entry.Validators),
+			Extractors:     maps.Clone(entry.Extractors),
 		}
 	}
 	return &Registry{entries: frozen}, nil
+}
+
+// checkEntry validates one registration. Split out of New so that adding a
+// rule does not make the loop that applies them harder to read than the
+// rules themselves.
+func checkEntry(artifactType Type, entry Entry) error {
+	if artifactType == "" {
+		return errors.New("registry: an artifact type is empty")
+	}
+	switch entry.Category {
+	case CategoryManagement, CategoryAudit:
+	default:
+		return fmt.Errorf("registry: type %q has category %q, want %q or %q",
+			artifactType, entry.Category, CategoryManagement, CategoryAudit)
+	}
+	// Bounded above as well as below: schema versions are stored in an
+	// int4 column, and a registration beyond that range would narrow
+	// silently at the write rather than failing here.
+	if entry.CurrentVersion < 1 || entry.CurrentVersion > math.MaxInt32 {
+		return fmt.Errorf("registry: type %q has current version %d, want 1..%d",
+			artifactType, entry.CurrentVersion, math.MaxInt32)
+	}
+	if len(entry.Validators) == 0 {
+		return fmt.Errorf("registry: type %q has no validators, so nothing of that type could be read",
+			artifactType)
+	}
+	for version, validator := range entry.Validators {
+		if version < 1 || version > math.MaxInt32 {
+			return fmt.Errorf("registry: type %q has a validator for version %d, want 1..%d",
+				artifactType, version, math.MaxInt32)
+		}
+		if validator == nil {
+			return fmt.Errorf("registry: type %q has a nil validator for version %d",
+				artifactType, version)
+		}
+	}
+	if err := checkExtractors(artifactType, entry); err != nil {
+		return err
+	}
+	// The current version must be readable. Without this a type could
+	// be written at a version nothing can validate, which passes every
+	// write and fails every read.
+	if _, ok := entry.Validators[entry.CurrentVersion]; !ok {
+		return fmt.Errorf("registry: type %q writes at version %d but has no validator for it (has %v)",
+			artifactType, entry.CurrentVersion, readableVersions(entry))
+	}
+
+	return nil
+}
+
+// checkExtractors validates the optional reference extractors, which have
+// two rules of their own: every one must be for a readable version, and a
+// type either registers them for all its readable versions or for none.
+func checkExtractors(artifactType Type, entry Entry) error {
+	for version, extractor := range entry.Extractors {
+		if extractor == nil {
+			return fmt.Errorf("registry: type %q has a nil extractor for version %d",
+				artifactType, version)
+		}
+		// An extractor for a version nothing can read is one that will
+		// never run, and its absence at the versions that ARE readable
+		// would be read as "this type carries no evidence".
+		if _, readable := entry.Validators[version]; !readable {
+			return fmt.Errorf("registry: type %q has an extractor for version %d, which is not "+
+				"readable (readable: %v)", artifactType, version, readableVersions(entry))
+		}
+	}
+	// Partial extraction is refused. A type that extracts references at
+	// one readable version and not another would accept an artifact
+	// with zero pins at the second version -- silently, and only for
+	// artifacts written before the extractor was added.
+	if len(entry.Extractors) > 0 && len(entry.Extractors) != len(entry.Validators) {
+		return fmt.Errorf("registry: type %q registers extractors for %d of its %d readable "+
+			"versions; a version without one is a version whose evidence goes unpinned",
+			artifactType, len(entry.Extractors), len(entry.Validators))
+	}
+
+	return nil
 }
 
 // MustNew is New for package-level registrations, where a malformed entry
@@ -209,6 +294,29 @@ func (r *Registry) ValidatorFor(artifactType Type, version int) (Validator, erro
 			ErrVersionOutOfRange, artifactType, version, readableVersions(entry))
 	}
 	return validator, nil
+}
+
+// ExtractorFor returns the reference extractor for a type and version.
+//
+// A registered type with NO extractor at all is reported as such rather
+// than as an error: acceptance treats that as "this type carries no
+// evidence" and requires zero pins. A type that has extractors but not for
+// this version cannot happen -- New refuses partial registration -- so it
+// is an invariant failure rather than a caller's mistake.
+func (r *Registry) ExtractorFor(artifactType Type, version int) (Extractor, bool, error) {
+	entry, ok := r.entries[artifactType]
+	if !ok {
+		return nil, false, fmt.Errorf("%w: %q (registered: %v)", ErrUnknownType, artifactType, r.Types())
+	}
+	if len(entry.Extractors) == 0 {
+		return nil, false, nil
+	}
+	extractor, ok := entry.Extractors[version]
+	if !ok {
+		return nil, false, fmt.Errorf("registry: type %q has extractors but none for version %d (readable: %v)",
+			artifactType, version, readableVersions(entry))
+	}
+	return extractor, true, nil
 }
 
 // Types returns every registered type in a stable order, for error

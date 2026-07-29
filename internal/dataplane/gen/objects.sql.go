@@ -11,27 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const binaryAttachmentExists = `-- name: BinaryAttachmentExists :one
-SELECT EXISTS (
-    SELECT 1 FROM binary_attachments
-    WHERE attachment_id = $1
-      AND organization_id = $2
-)
-`
-
-type BinaryAttachmentExistsParams struct {
-	AttachmentID   pgtype.UUID
-	OrganizationID pgtype.UUID
-}
-
-// BinaryAttachmentExists answers without transferring the object.
-func (q *Queries) BinaryAttachmentExists(ctx context.Context, arg BinaryAttachmentExistsParams) (bool, error) {
-	row := q.db.QueryRow(ctx, binaryAttachmentExists, arg.AttachmentID, arg.OrganizationID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const createBinaryAttachment = `-- name: CreateBinaryAttachment :one
 INSERT INTO binary_attachments (
     attachment_id, organization_id, object_digest, media_type, size_bytes
@@ -69,6 +48,60 @@ func (q *Queries) CreateBinaryAttachment(ctx context.Context, arg CreateBinaryAt
 		&i.ObjectDigest,
 		&i.MediaType,
 		&i.SizeBytes,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createPin = `-- name: CreatePin :one
+
+INSERT INTO retention_pins (
+    retention_pin_id, organization_id, pinned_by_artifact_id,
+    pinned_audit_artifact_id, pinned_attachment_id, pinned_digest
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6
+)
+RETURNING retention_pin_id, organization_id, pinned_by_artifact_id, pinned_audit_artifact_id, pinned_attachment_id, pinned_digest, created_at
+`
+
+type CreatePinParams struct {
+	RetentionPinID        pgtype.UUID
+	OrganizationID        pgtype.UUID
+	PinnedByArtifactID    pgtype.UUID
+	PinnedAuditArtifactID pgtype.UUID
+	PinnedAttachmentID    pgtype.UUID
+	PinnedDigest          string
+}
+
+// Retention pins (item 6 design, D5).
+//
+// Pins are relational because that is what they are: rows with foreign
+// keys, an exclusive-arc target and a digest binding, which ADR 0021
+// requires to fail verification when dangling. A blob store tracking them
+// would hold a second, unconstrained copy of the same state.
+// CreatePin records one artifact's hold on one piece of evidence.
+//
+// The digest is bound here, not looked up later: a pin recording a
+// different digest from its target protects nothing the artifact cites,
+// and acceptance compares the two precisely to catch that.
+func (q *Queries) CreatePin(ctx context.Context, arg CreatePinParams) (RetentionPin, error) {
+	row := q.db.QueryRow(ctx, createPin,
+		arg.RetentionPinID,
+		arg.OrganizationID,
+		arg.PinnedByArtifactID,
+		arg.PinnedAuditArtifactID,
+		arg.PinnedAttachmentID,
+		arg.PinnedDigest,
+	)
+	var i RetentionPin
+	err := row.Scan(
+		&i.RetentionPinID,
+		&i.OrganizationID,
+		&i.PinnedByArtifactID,
+		&i.PinnedAuditArtifactID,
+		&i.PinnedAttachmentID,
+		&i.PinnedDigest,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -120,6 +153,54 @@ func (q *Queries) CreateStagingLease(ctx context.Context, arg CreateStagingLease
 	return i, err
 }
 
+const deletePin = `-- name: DeletePin :execrows
+DELETE FROM retention_pins
+WHERE organization_id = $1
+  AND retention_pin_id = $2
+  AND pinned_by_artifact_id = $3
+`
+
+type DeletePinParams struct {
+	OrganizationID     pgtype.UUID
+	RetentionPinID     pgtype.UUID
+	PinnedByArtifactID pgtype.UUID
+}
+
+// DeletePin removes one pin by identity.
+func (q *Queries) DeletePin(ctx context.Context, arg DeletePinParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePin, arg.OrganizationID, arg.RetentionPinID, arg.PinnedByArtifactID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deletePinsByArtifact = `-- name: DeletePinsByArtifact :execrows
+DELETE FROM retention_pins
+WHERE organization_id = $1
+  AND pinned_by_artifact_id = $2
+`
+
+type DeletePinsByArtifactParams struct {
+	OrganizationID     pgtype.UUID
+	PinnedByArtifactID pgtype.UUID
+}
+
+// DeletePinsByArtifact releases everything an artifact holds.
+//
+// Used by the lifecycle transitions that end an artifact's claim on its
+// evidence -- invalidation and archival -- through INTERNAL queries rather
+// than the public Unpin, so the draft-only rule is not something a
+// transition has to be exempted from, and so removal happens in the
+// transition's own transaction and is atomic with the status change.
+func (q *Queries) DeletePinsByArtifact(ctx context.Context, arg DeletePinsByArtifactParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePinsByArtifact, arg.OrganizationID, arg.PinnedByArtifactID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteStagingLease = `-- name: DeleteStagingLease :execrows
 DELETE FROM staging_leases
 WHERE organization_id = $1
@@ -145,6 +226,45 @@ func (q *Queries) DeleteStagingLease(ctx context.Context, arg DeleteStagingLease
 	return result.RowsAffected(), nil
 }
 
+const getAttachmentDigest = `-- name: GetAttachmentDigest :one
+SELECT object_digest FROM binary_attachments
+WHERE attachment_id = $1
+  AND organization_id = $2
+`
+
+type GetAttachmentDigestParams struct {
+	AttachmentID   pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// GetAttachmentDigest reads the digest a pin on an attachment must bind.
+func (q *Queries) GetAttachmentDigest(ctx context.Context, arg GetAttachmentDigestParams) (string, error) {
+	row := q.db.QueryRow(ctx, getAttachmentDigest, arg.AttachmentID, arg.OrganizationID)
+	var object_digest string
+	err := row.Scan(&object_digest)
+	return object_digest, err
+}
+
+const getAuditArtifactDigest = `-- name: GetAuditArtifactDigest :one
+SELECT payload_digest FROM audit_artifacts
+WHERE artifact_id = $1
+  AND organization_id = $2
+`
+
+type GetAuditArtifactDigestParams struct {
+	ArtifactID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// GetAuditArtifactDigest reads the digest a pin on an Audit artifact must
+// bind, scoped to the organization like every other read here.
+func (q *Queries) GetAuditArtifactDigest(ctx context.Context, arg GetAuditArtifactDigestParams) (string, error) {
+	row := q.db.QueryRow(ctx, getAuditArtifactDigest, arg.ArtifactID, arg.OrganizationID)
+	var payload_digest string
+	err := row.Scan(&payload_digest)
+	return payload_digest, err
+}
+
 const getBinaryAttachment = `-- name: GetBinaryAttachment :one
 SELECT attachment_id, organization_id, object_digest, media_type, size_bytes, created_at FROM binary_attachments
 WHERE attachment_id = $1
@@ -168,6 +288,51 @@ func (q *Queries) GetBinaryAttachment(ctx context.Context, arg GetBinaryAttachme
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listPinsByArtifact = `-- name: ListPinsByArtifact :many
+SELECT retention_pin_id, organization_id, pinned_by_artifact_id, pinned_audit_artifact_id, pinned_attachment_id, pinned_digest, created_at FROM retention_pins
+WHERE organization_id = $1
+  AND pinned_by_artifact_id = $2
+ORDER BY pinned_audit_artifact_id NULLS LAST, pinned_attachment_id NULLS LAST, retention_pin_id
+`
+
+type ListPinsByArtifactParams struct {
+	OrganizationID     pgtype.UUID
+	PinnedByArtifactID pgtype.UUID
+}
+
+// ListPinsByArtifact returns everything one artifact holds.
+//
+// Ordered so that two reads of an unchanged set compare equal without the
+// caller sorting: acceptance compares SETS, and a stable order makes the
+// diagnostic it produces on failure stable too.
+func (q *Queries) ListPinsByArtifact(ctx context.Context, arg ListPinsByArtifactParams) ([]RetentionPin, error) {
+	rows, err := q.db.Query(ctx, listPinsByArtifact, arg.OrganizationID, arg.PinnedByArtifactID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RetentionPin{}
+	for rows.Next() {
+		var i RetentionPin
+		if err := rows.Scan(
+			&i.RetentionPinID,
+			&i.OrganizationID,
+			&i.PinnedByArtifactID,
+			&i.PinnedAuditArtifactID,
+			&i.PinnedAttachmentID,
+			&i.PinnedDigest,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const liveDeletionClaimExists = `-- name: LiveDeletionClaimExists :one

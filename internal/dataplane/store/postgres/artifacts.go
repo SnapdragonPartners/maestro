@@ -795,6 +795,15 @@ func (t *tx) AcceptArtifact(ctx context.Context, organizationID, artifactID, rev
 	if classifyErr := classifyAcceptance(transitionAccept, &artifact, &review); classifyErr != nil {
 		return classifyErr
 	}
+	// The evidence preconditions, under the same row lock the
+	// classification used. An artifact becomes authoritative here, and this
+	// is what makes the cross-store invariant hold for its life rather than
+	// for the instant it was written: every reference the REVIEWED payload
+	// names is pinned, every pin matches its target's digest, every
+	// referenced object exists, and nothing else is pinned (design D5).
+	if evidenceErr := t.checkEvidence(ctx, transitionAccept, &artifact, artifact.Payload); evidenceErr != nil {
+		return evidenceErr
+	}
 
 	affected, err := t.queries.AcceptManagementArtifact(ctx, gen.AcceptManagementArtifactParams{
 		ArtifactID:     toUUID(artifactID),
@@ -956,7 +965,10 @@ func (t *tx) InvalidateArtifact(ctx context.Context, organizationID, artifactID 
 	if affected != 1 {
 		return invariant(transitionInvalidate, artifactID)
 	}
-	return nil
+	// The artifact never became authoritative, so nothing justifies its
+	// hold on the evidence. Removed in THIS transaction, so the release is
+	// atomic with the status change (design D5).
+	return t.releasePins(ctx, transitionInvalidate, organizationID, artifactID)
 }
 
 func (t *tx) SupersedeArtifact(ctx context.Context, organizationID, targetID, supersedingID, reviewID uuid.UUID) error {
@@ -1049,5 +1061,12 @@ func (t *tx) ArchiveArtifact(ctx context.Context, organizationID, artifactID uui
 	if affected != 1 {
 		return invariant(transitionArchive, artifactID)
 	}
-	return nil
+	// Archived is terminal and non-authoritative, which makes it the
+	// retention boundary: without a release here nothing ever lets go of a
+	// retired artifact's storage, and retention has no terminal state.
+	//
+	// Superseding deliberately does NOT do this. ADR 0021 preserves
+	// accepted history immutably, and history without its evidence is not
+	// preserved.
+	return t.releasePins(ctx, transitionArchive, organizationID, artifactID)
 }

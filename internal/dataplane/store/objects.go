@@ -65,6 +65,55 @@ var (
 	ErrCorruptObject = errors.New("stored object does not match the digest addressing it")
 )
 
+// Pin is one artifact's hold on one piece of evidence.
+type Pin struct {
+	AuditArtifactID *uuid.UUID
+	AttachmentID    *uuid.UUID
+	CreatedAt       time.Time
+	Digest          string
+	PinID           uuid.UUID
+	OrganizationID  uuid.UUID
+	HeldByArtifact  uuid.UUID
+}
+
+// EvidenceRef names one piece of evidence to pin. Exactly one target, the
+// same exclusive arc the schema enforces.
+type EvidenceRef struct {
+	AuditArtifactID *uuid.UUID
+	AttachmentID    *uuid.UUID
+}
+
+// AttachEvidenceInput is the supported way to create an artifact that
+// references evidence.
+//
+// One call, one transaction: the attachments are written, then the draft
+// artifact and its pins together. Describing that order in prose while
+// leaving CreateManagementArtifact reachable with no pins at all would let
+// any caller produce exactly the state the invariant forbids (design D5).
+type AttachEvidenceInput struct {
+	// Pins are what the artifact holds. Every reference the reviewed
+	// payload names must appear here, and nothing else may: acceptance
+	// compares the two as SETS, because an extra pin is an unreviewed
+	// retention claim.
+	Pins []EvidenceRef
+
+	// Attachments are stored FIRST, each by the full PutAttachment path,
+	// before the transaction that references them opens. They are ordinary
+	// object writes: if the transaction below fails, they are unreferenced
+	// garbage the sweep collects, never a dangling reference.
+	Attachments []PutAttachmentInput
+
+	// Artifact is the draft this evidence belongs to.
+	Artifact CreateManagementArtifactInput
+}
+
+// AttachEvidenceResult is what one composite write produced.
+type AttachEvidenceResult struct {
+	Artifact    *ManagementArtifact
+	Attachments []Attachment
+	Pins        []Pin
+}
+
 // ObjectStore is the object module's seam surface (ADR 0022).
 //
 // It sits on Store and not on Tx, for the reason Maintenance does: every
@@ -94,6 +143,33 @@ type ObjectStore interface {
 	// verification rather than quietly weaken a proof.
 	GetAttachment(ctx context.Context, organizationID, attachmentID uuid.UUID) (io.ReadCloser, *Attachment, error)
 
-	// AttachmentExists answers without transferring anything.
+	// AttachmentExists reports whether the row AND its object exist.
+	//
+	// Both, because the question acceptance asks is whether the evidence is
+	// there. A row whose object is gone answers false with ErrInvariant --
+	// the store contradicting itself -- while an unknown id is an ordinary
+	// false with no error.
 	AttachmentExists(ctx context.Context, organizationID, attachmentID uuid.UUID) (bool, error)
+
+	// AttachEvidence stores objects and creates the draft artifact that
+	// references them, with its pins, in one transaction.
+	//
+	// It is the supported path for evidence-bearing artifacts, and it
+	// cannot be half-done: either the artifact exists with the complete pin
+	// set the payload names, or nothing relational exists at all.
+	AttachEvidence(ctx context.Context, input AttachEvidenceInput) (*AttachEvidenceResult, error)
+
+	// Pin and Unpin maintain a DRAFT ORIGINAL's evidence set.
+	//
+	// Only a draft original: acceptance verifies the set, and a later
+	// change would leave that verification true for an instant rather than
+	// for the artifact's life. A draft AMENDMENT may not use them at all --
+	// every pin in a chain is held by the original, so an amendment
+	// pinning would mutate the accepted original's verified set before
+	// anyone reviewed the amendment (design D5).
+	Pin(ctx context.Context, organizationID, artifactID uuid.UUID, reference EvidenceRef) (*Pin, error)
+	Unpin(ctx context.Context, organizationID, artifactID, pinID uuid.UUID) error
+
+	// ListPins returns what an artifact holds.
+	ListPins(ctx context.Context, organizationID, artifactID uuid.UUID) ([]Pin, error)
 }

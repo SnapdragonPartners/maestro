@@ -36,15 +36,6 @@ SELECT * FROM binary_attachments
 WHERE attachment_id = @attachment_id
   AND organization_id = @organization_id;
 
--- BinaryAttachmentExists answers without transferring the object.
---
--- name: BinaryAttachmentExists :one
-SELECT EXISTS (
-    SELECT 1 FROM binary_attachments
-    WHERE attachment_id = @attachment_id
-      AND organization_id = @organization_id
-);
-
 -- CreateStagingLease claims a staging key before the first byte is sent.
 --
 -- The term is an interval, not an instant: every judgement about this
@@ -138,3 +129,74 @@ SELECT EXISTS (
     WHERE organization_id = @organization_id
       AND object_digest = @object_digest
 );
+
+-- Retention pins (item 6 design, D5).
+--
+-- Pins are relational because that is what they are: rows with foreign
+-- keys, an exclusive-arc target and a digest binding, which ADR 0021
+-- requires to fail verification when dangling. A blob store tracking them
+-- would hold a second, unconstrained copy of the same state.
+
+-- CreatePin records one artifact's hold on one piece of evidence.
+--
+-- The digest is bound here, not looked up later: a pin recording a
+-- different digest from its target protects nothing the artifact cites,
+-- and acceptance compares the two precisely to catch that.
+--
+-- name: CreatePin :one
+INSERT INTO retention_pins (
+    retention_pin_id, organization_id, pinned_by_artifact_id,
+    pinned_audit_artifact_id, pinned_attachment_id, pinned_digest
+) VALUES (
+    @retention_pin_id, @organization_id, @pinned_by_artifact_id,
+    @pinned_audit_artifact_id, @pinned_attachment_id, @pinned_digest
+)
+RETURNING *;
+
+-- ListPinsByArtifact returns everything one artifact holds.
+--
+-- Ordered so that two reads of an unchanged set compare equal without the
+-- caller sorting: acceptance compares SETS, and a stable order makes the
+-- diagnostic it produces on failure stable too.
+--
+-- name: ListPinsByArtifact :many
+SELECT * FROM retention_pins
+WHERE organization_id = @organization_id
+  AND pinned_by_artifact_id = @pinned_by_artifact_id
+ORDER BY pinned_audit_artifact_id NULLS LAST, pinned_attachment_id NULLS LAST, retention_pin_id;
+
+-- DeletePin removes one pin by identity.
+--
+-- name: DeletePin :execrows
+DELETE FROM retention_pins
+WHERE organization_id = @organization_id
+  AND retention_pin_id = @retention_pin_id
+  AND pinned_by_artifact_id = @pinned_by_artifact_id;
+
+-- DeletePinsByArtifact releases everything an artifact holds.
+--
+-- Used by the lifecycle transitions that end an artifact's claim on its
+-- evidence -- invalidation and archival -- through INTERNAL queries rather
+-- than the public Unpin, so the draft-only rule is not something a
+-- transition has to be exempted from, and so removal happens in the
+-- transition's own transaction and is atomic with the status change.
+--
+-- name: DeletePinsByArtifact :execrows
+DELETE FROM retention_pins
+WHERE organization_id = @organization_id
+  AND pinned_by_artifact_id = @pinned_by_artifact_id;
+
+-- GetAuditArtifactDigest reads the digest a pin on an Audit artifact must
+-- bind, scoped to the organization like every other read here.
+--
+-- name: GetAuditArtifactDigest :one
+SELECT payload_digest FROM audit_artifacts
+WHERE artifact_id = @artifact_id
+  AND organization_id = @organization_id;
+
+-- GetAttachmentDigest reads the digest a pin on an attachment must bind.
+--
+-- name: GetAttachmentDigest :one
+SELECT object_digest FROM binary_attachments
+WHERE attachment_id = @attachment_id
+  AND organization_id = @organization_id;

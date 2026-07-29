@@ -75,6 +75,12 @@ func (s *Store) Close() { s.pool.Close() }
 type tx struct {
 	queries  *gen.Queries
 	registry *registry.Registry
+	// blob is here for one reason: acceptance must check that referenced
+	// objects EXIST, which is the single precondition reaching outside
+	// Postgres (design D5). It is safe in that order because the
+	// attachment row already exists and the sweep's reachable set is
+	// exactly the attachment rows.
+	blob *objects.Blob
 }
 
 // WithTx runs fn inside one transaction.
@@ -89,7 +95,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Tx) error) error {
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry}); err != nil {
+	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, blob: s.blob}); err != nil {
 		return err
 	}
 	if err := pgxTx.Commit(ctx); err != nil {
@@ -193,9 +199,12 @@ func scopeColumns(scope store.Scope) (scopeArc, error) {
 // time-ordered, so primary keys cluster by creation time instead of
 // scattering across the index. uuid.New() is v4 and was wrong here.
 //
-// Callers may preallocate because item 6's cross-store commit order writes
-// the object FIRST, under a key derived from the artifact id, and only then
-// the row. That is impossible if the id does not exist until the INSERT.
+// Callers may preallocate because item 6's cross-store commit order needs
+// identifiers before the transaction that writes them: the object lands
+// first, then its attachment row, and then the referencing artifact and its
+// retention pins TOGETHER -- and a pin names the attachment it protects, so
+// that id has to exist before the transaction begins. The object's own key
+// is derived from its digest, not from any id.
 func newIdentifier(preallocated uuid.UUID) (uuid.UUID, error) {
 	if preallocated != uuid.Nil {
 		if preallocated.Version() != 7 {
