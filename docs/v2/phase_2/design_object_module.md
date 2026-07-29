@@ -2,13 +2,13 @@
 title = "Phase 2 Item 6 Design: The Object Module"
 edit_date = "2026-07-28"
 status = "draft"
-summary = "Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload, pins mutable only while their holder is a draft, and reclamation split between a leased staging cleanup, attachment truncation and an advisory-locked object sweep."
+summary = "Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload and assembled from the locked base for amendments, pins mutable only while their holder is a draft, and reclamation fenced by owner-token leases and durable deletion claims rather than by timers."
 type = "design"
 +++
 
 # Phase 2 Item 6 Design: The Object Module
 
-Status: **draft** — revised after review rounds 1 and 2 (four P1s, then five, all upheld).
+Status: **draft** — revised after review rounds 1, 2 and 3 (four P1s, then five, then four, all upheld). The ADR 0022 amendment (D5) is approved by Codex; DR's approval is outstanding, and implementation waits on it.
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -126,6 +126,19 @@ Acceptance then compares the **complete expected set against the pins as sets**,
 
 The extractor is versioned with the type because a v2 payload may name evidence differently from a v1; item 4's rule that a v1 artifact stays v1 for life applies unchanged.
 
+**An amendment's payload is a patch, so extracting from it gives the wrong set.** ADR 0028 stores an amendment as an RFC 7386 merge patch; running the extractor over it returns whatever the patch happens to mention, which is neither the complete reviewed set nor a subset with any useful meaning. At amendment acceptance the seam therefore **assembles the effective payload against the locked reviewed base** — item 4 already holds that base under the original's lock and compares both its digest and its sequence — and extracts from the assembled result, which is what the reviewer actually read.
+
+Each artifact holds pins for what **it** introduced, so the comparison decomposes:
+
+| Artifact | Expected pin set |
+| --- | --- |
+| Original | `extract(payload)` |
+| Amendment | `extract(effective) − extract(base)` — the references it adds |
+
+**Amendments may add references and may not remove them.** Exact set equality over the effective payload would otherwise drop a pin the original still needs, and ADR 0021 preserves accepted history immutably — history without its evidence is not preserved. So acceptance additionally requires `extract(base) ⊆ extract(effective)`, and an amendment that drops a reference is refused with that specific reason.
+
+The alternative — tracking historical pins separately so a removal keeps the old evidence alive under a different holder — buys a case nobody has yet, at the cost of a second retention concept. Additive-only matches ADR 0028's additive-within-version evolution and needs no new table.
+
 The object-existence check is the one precondition that reaches outside the database. It is safe in this order because the attachment row already exists, and the sweep's reachable set is exactly the attachment rows (D6) — so between the check and the commit there is nothing that may delete the object.
 
 **Pins follow the lifecycle that justifies them, in the transition's own transaction.** Round 1 created pins and never removed them, so a draft that was invalidated pinned its evidence forever.
@@ -161,11 +174,42 @@ The recheck under the lock is what makes the sweep's decision sound: "unreferenc
 
 The lock is held across a server-side copy and a read-back, which are remote calls inside a database transaction and worth stating rather than hiding. Both are bounded by a context timeout, and the alternative is the race. The upload — the genuinely long operation — stays outside.
 
+### The lock cannot fence a remote call it does not control
+
+An advisory lock lives in a Postgres connection. If that connection dies while the delete is **in flight at the object store**, the lock is released and the delete is not cancelled. A writer can then take the lock, verify or promote the object, insert its attachment row, commit — and the delayed delete arrives afterwards and removes an object a committed row references. The lock protocol above is necessary and not sufficient, and no amount of ordering inside Postgres fixes it, because the operation being ordered is outside Postgres.
+
+So the intent to delete is made **durable before the delete is issued**, and the claim outlives the connection:
+
+| Step | Under the digest lock | Durable state |
+| --- | --- | --- |
+| 1 | Recheck unreferenced, insert a **deletion claim**, commit | Claim exists |
+| 2 | — | Remote delete issued |
+| 3 | Clear the claim, commit | Claim gone |
+
+A crash between 1 and 3 leaves a claim, which is exactly the state a later actor must not ignore. **Every writer checks for a live claim under the digest lock**, and on finding one it finishes the claim rather than working around it: re-issue the delete (idempotent), clear the claim, and then take the **full upload path** — never the existing-object shortcut, because the object under a claim may be deleted at any moment by a delete already in flight. `PutAttachment` always receives the source bytes, so re-uploading is always available; a writer is never stuck.
+
+A reconciler run at `dataplane-up` finishes claims left by processes that died, so a claim cannot outlive the machine that made it.
+
+This is the same shape as the staging lease below: a durable record of an intention that a crash cannot silently abandon.
+
 **Staging is leased, not swept by age.** Round 2 argued that deleting a live staging object was safe because the writer's promote would then fail. That is precisely the reasoning ADR 0027 forbids: **destructive recovery must never remove another actor's in-progress work**, and "the victim finds out" is not a mitigation.
 
-So a staging upload records a lease — organization, key, expiry — before the first byte, and renews it if the upload outlives one term. Staging cleanup deletes only objects whose lease row is **absent or expired**, and removes the row in the same transaction. A writer that dies leaves an expiring lease, so nothing leaks permanently; a writer that is merely slow renews, so nothing live is deleted. The final-object sweep never considers the staging prefix, and the staging cleanup never considers digest keys.
+Round 3 answered with a renewable lease, which is still a timer: a writer paused past its term has its staging object deleted and then resumes, promoting an object that no longer exists — or worse, one another writer has since created at the same staging key. **Expiry alone cannot decide whether a writer is alive.**
 
-The lease table is a new migration in this item, on item 3's rule that a family is added by the item that first needs it.
+The lease is therefore **fenced by an owner token**, and the fence is checked where it matters:
+
+- a writer generates a token and inserts the lease — organization, staging key, token, expiry — before the first byte;
+- **renewal is conditional**: `expires_at` moves only where the row still carries *this* token and has not expired. Zero rows updated means the lease is lost, and the writer aborts. There is no re-insert, so an expired lease can never be resurrected by the actor that lost it;
+- **ownership is verified immediately before promotion**, under the same digest lock that guards the promote. A writer that lost its lease — paused, descheduled, or partitioned — cannot promote, whatever it believes about its own liveness;
+- cleanup deletes the staging object and its lease row together, only where the lease is absent or expired.
+
+The fence is what makes the timer safe rather than the timer making the fence unnecessary: expiry decides when cleanup *may* act, and the token decides whether a writer *may still* promote. Both are needed, and round 3 had only the first.
+
+The alternative is a session-level advisory lock held for the whole upload, which fences correctly but pins a connection per concurrent upload for as long as the upload runs. The lease keeps connections free, at the cost of a table.
+
+The final-object sweep never considers the staging prefix, and staging cleanup never considers digest keys.
+
+**Two new tables in this item** — staging leases and deletion claims — each a new migration, on item 3's rule that a family is added by the item that first needs it.
 
 **The grace period stays as defence in depth, and cannot be zero.** It supplements the lock rather than replacing it, and D8's rejection of sweeping without one stands. Age is tested by **injecting a clock**, not by disabling the rule — a test that switches the guard off proves the guard is switchable.
 
@@ -180,7 +224,9 @@ Round 2 approved adding this and then omitted it from the design, which would ha
 
 **Deleting the row does not delete the object.** It makes the object unreachable, and the sweep reclaims it afterwards under D6's lock. The two steps are deliberately separate: the relational pass runs under one snapshot at `REPEATABLE READ`, and object deletion cannot participate in that snapshot.
 
-**Concurrency with pin creation is decided by the schema, not by timing.** A pass deleting an unpinned attachment while another transaction pins it either aborts the pinning insert with a foreign-key violation or aborts the pass with `40001`, depending on which commits first. Both outcomes are safe — there is no interleaving that leaves a pin pointing at a deleted attachment — and the pass's existing serialization retry covers the second.
+**Concurrency with pin creation is safe by the schema, but the operational outcome is measured rather than asserted.** The foreign key guarantees the thing that matters: no interleaving leaves a pin pointing at a deleted attachment. It does **not** by itself tell either party which error it sees — under `REPEATABLE READ` the loser may surface `40001` or the named foreign-key violation depending on lock acquisition and commit order, and item 5's retry handles only `40001`.
+
+Round 3 stated both outcomes as though they were known. They are not, so this item **runs both orderings under a barrier** — pin-then-truncate and truncate-then-pin, each with the competitor committing at a controlled point — records the SQLSTATEs actually observed against the pinned Postgres image, and handles what it finds: a serialization failure joins the existing retry, and a foreign-key violation is mapped at the seam to a diagnostic naming the attachment rather than surfacing a constraint name. The observed codes are written into this section once measured.
 
 Tested with a pinned row that survives, an unpinned row that goes, and a second organization's rows untouched, as item 5 requires of every truncation.
 
@@ -193,7 +239,8 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | Object put fails | No attachment row, no pin, no artifact |
 | Put succeeds, attachment insert fails | Orphan object, sweepable; nothing references it |
 | Attachment exists, artifact+pin transaction fails | Neither artifact nor pin — asserted by reading both tables |
-| Declared checksum does not match the body | The **server** rejects the upload; nothing at staging or the digest key |
+| Source does not hash to the claimed digest | Rejected locally before promotion; nothing at the digest key |
+| Body corrupted in transit | The **server** rejects the upload on the transport checksum; nothing at staging |
 | Observed size differs from the stated size | Rejected before any row is written |
 | `Put` where a **corrupt object already occupies the digest key** | The idempotent shortcut verifies, fails, and does not write an attachment row |
 | Acceptance with a missing object | Refused, with the specific reason, and the artifact stays `draft` |
@@ -207,6 +254,13 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | Idempotent shortcut racing the sweep, under a **barrier** | The sweep blocks on the digest lock and then finds the attachment row; the object survives |
 | Staging cleanup against a **live lease** | The staging object survives; only an absent or expired lease permits deletion |
 | Attachment truncation | Pinned row survives, unpinned row goes, another organization untouched |
+| Amendment **adding** a reference | Accepted; the amendment holds a pin for the addition, the original keeps its own |
+| Amendment **removing** a reference | Refused, naming the dropped reference; the original's pins are untouched |
+| Amendment acceptance generally | The expected set comes from the effective payload assembled against the locked base, not from the patch |
+| Writer **whose lease expired while it was still running** | Promotion refused at the ownership check, whatever the writer believed; no object at the digest key |
+| Remote delete succeeds, then the claim-clearing transaction fails | The claim survives; the next writer finishes it, re-uploads, and commits a row whose object exists |
+| Crash between claim and delete | The reconciler finishes the claim; no object is left that a row references |
+| Pin racing attachment truncation, **both orderings**, under a barrier | No dangling pin either way; the observed SQLSTATEs are recorded and handled |
 | Sweep racing the relational commit, under a **barrier** | With the writer holding the lock, the sweep blocks and then finds the reference; the object survives |
 | Sweep inside the grace period | A fresh unreferenced object is not deleted |
 | Corrupted object read | `GetAttachment` fails at EOF, and no destination file is left in place |
@@ -218,7 +272,8 @@ The barrier-controlled race follows item 5's recipe: launching a sweep and a wri
 | Rejected | Why |
 | --- | --- |
 | A digest that is not 64 lowercase hex | The schema's `CHECK` shape; refused at the seam so the caller reads the field |
-| A body whose server-verified checksum differs from the stated digest | The whole contract |
+| A source whose local hash differs from the claimed digest | The whole contract: the digest is the address |
+| A body the server's transport checksum rejects | Corruption on the wire, distinct from a wrong claim about content |
 | A body whose length differs from the stated size | `size_bytes` would misreport storage forever |
 | Negative or absent size | Schema check, refused early |
 | Idempotent success over an unverified existing object | Blesses corruption into a new row |
@@ -228,6 +283,10 @@ The barrier-controlled race follows item 5's recipe: launching a sweep and a wri
 | Public raw object delete | Not offered at either layer; the sweep computes its own candidate set |
 | Sweeping without the advisory lock, or without a grace period | Deletes in-flight writes |
 | Deleting a staging object under a live lease | ADR 0027: destructive recovery must never remove in-progress work |
+| Promoting after losing the lease | The ownership fence; expiry alone cannot decide whether a writer is alive |
+| Taking the existing-object shortcut while a deletion claim is live | The object may vanish under an in-flight delete the lock cannot cancel |
+| An amendment that removes an evidence reference | Accepted history would lose its evidence |
+| Extracting an amendment's references from its stored patch | A patch is not the reviewed set |
 | `Pin` or `Unpin` against an accepted or superseded artifact | Acceptance's verification would hold for an instant rather than for the artifact's life |
 | Treating a composite multipart checksum as the object digest | Two different numbers, equal only for small single-part objects |
 | Accepting an artifact whose evidence is missing, unpinned or digest-mismatched | The invariant this item exists to enforce |
