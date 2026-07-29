@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 6 Design: The Object Module
 
-Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is approved by Codex; DR's approval is outstanding, and implementation waits on it.
+Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -20,7 +20,7 @@ Item 2 composed MinIO, bind-mounted its data directory under the Maestro data ro
 
 **Nothing creates the bucket.** `stack.Config` names it, `Bootstrap()` publishes it, and no code has ever issued a create — so `dataplane-up` reports a ready plane that cannot store an object. D3 closes this.
 
-**ADR 0022's commit order cannot be implemented as written**, so this item proposes an amendment to the ADR rather than quietly restating it in a phase document (D5). Implementation waits on that amendment being accepted.
+**ADR 0022's commit order cannot be implemented as written**, so this item amended the ADR rather than quietly restating it in a phase document (D5).
 
 ## D1. Two layers, because they answer to different authorities
 
@@ -111,7 +111,7 @@ Verification can only complete at the end of the stream, so the reader returns i
 
 ADR 0022 says *object first, pin recorded, row last*. Read literally that is impossible: `retention_pins.pinned_by_artifact_id` is a foreign key to `management_artifacts`, so a pin cannot precede every row — its holder is one.
 
-Round 1 restated the order in this document. That was the wrong instrument: a phase design does not get to reinterpret an accepted ADR's invariant. **An amendment to ADR 0022 is proposed in this item, before implementation** — proposed, not accepted, and its status line says so until Codex and DR act on it — stating the order in terms that can be built:
+Round 1 restated the order in this document. That was the wrong instrument: a phase design does not get to reinterpret an accepted ADR's invariant. **ADR 0022 is amended by this item, before implementation** — accepted by Codex and DR on 2026-07-29 — stating the order in terms that can be built:
 
 > Object first; the attachment row next; the referencing artifact and its retention pins in one transaction; and the artifact becomes authoritative only on acceptance, which verifies that every referenced object exists and every pin matches its attachment's digest.
 
@@ -410,4 +410,4 @@ Resolved in round 2:
 
 5. **Archival removes pins, approved** — `archived` is terminal and non-authoritative, so it is a reasonable explicit retention boundary.
 
-Open: nothing. The ADR 0022 amendment (D5) is **proposed and Codex-approved, awaiting DR**; `plan_scope.md`'s two statements of the original commit order are synced only once it is accepted, and implementation waits on the same approval.
+Open: nothing. The ADR 0022 amendment (D5) is **accepted** (Codex and DR, 2026-07-29), and `plan_scope.md`'s two statements of the original commit order are synced to match.
