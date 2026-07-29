@@ -22,8 +22,12 @@ INSERT INTO tool_calls (
 )
 RETURNING *;
 
+-- Locks and returns the transaction timestamp, for the reason LockLLMCall
+-- documents: the seam materialises the completion default so the instant it
+-- validates is the instant it stores.
 -- name: LockToolCall :one
-SELECT * FROM tool_calls
+SELECT sqlc.embed(tool_calls), now()::timestamptz AS locked_at
+FROM tool_calls
 WHERE tool_call_id    = @tool_call_id
   AND organization_id = @organization_id
 FOR UPDATE;

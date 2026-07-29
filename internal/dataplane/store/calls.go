@@ -298,6 +298,13 @@ func (p Page) Validate() error {
 		// comes back EMPTY — indistinguishable from having reached the end.
 		return errors.New("keyset cursor carries a timestamp but no id; the id is the tie-breaker, and " +
 			"without it the comparison is null and the page reads as empty")
+	case p.After != nil && p.After.At.IsZero():
+		// The other half, and it fails in the opposite direction: the zero
+		// time is year 1, so every row sorts after it and paging RESTARTS
+		// from the beginning instead of resuming — an infinite loop for any
+		// caller that pages until a short page.
+		return errors.New("keyset cursor carries an id but no timestamp; the zero time precedes every " +
+			"row, so paging would restart from the beginning rather than resume")
 	}
 	return nil
 }
@@ -341,18 +348,23 @@ type CallWriter interface {
 
 	CreateMetricEvent(ctx context.Context, event MetricEvent) (*MetricEvent, error)
 	CreateAuditEvent(ctx context.Context, event AuditEvent) (*AuditEvent, error)
+}
 
+// Maintenance is the retention surface: destructive operations that own
+// their own transaction.
+//
+// Separate from Writer, and embedded by Store alone, because truncation is
+// only sound under ONE snapshot. Store opens a REPEATABLE READ transaction
+// for it; WithTx opens at the pool's default, and offers no way to ask for
+// anything else. Advertising truncation on Tx would advertise an operation
+// that necessarily refuses wherever a caller could reach it — an interface
+// promising something no implementation can honour there.
+type Maintenance interface {
 	// TruncateAuditBefore removes Audit history older than the horizon,
 	// organization-scoped, in dependency order, under one REPEATABLE READ
 	// snapshot with a bounded retry on serialization failure.
 	//
 	// There is no "delete all": an unbounded destructive operation should
 	// not be reachable by accident.
-	//
-	// Called on a Store it provides its own snapshot and retries the whole
-	// operation on a serialization failure. Called on a Tx it is one pass
-	// and inherits that transaction's isolation, so the caller owes it a
-	// REPEATABLE READ one — implementations refuse rather than run the
-	// retention guards against four different instants.
 	TruncateAuditBefore(ctx context.Context, organizationID uuid.UUID, before time.Time) (TruncationResult, error)
 }

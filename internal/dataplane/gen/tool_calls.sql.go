@@ -350,7 +350,8 @@ func (q *Queries) ListToolCallsInWindow(ctx context.Context, arg ListToolCallsIn
 }
 
 const lockToolCall = `-- name: LockToolCall :one
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, succeeded, error_message, started_at, finished_at FROM tool_calls
+SELECT tool_calls.tool_call_id, tool_calls.organization_id, tool_calls.user_id, tool_calls.principal_instance_id, tool_calls.llm_call_id, tool_calls.product_id, tool_calls.feature_id, tool_calls.epic_id, tool_calls.story_id, tool_calls.lineage_key, tool_calls.tool_name, tool_calls.arguments, tool_calls.result, tool_calls.succeeded, tool_calls.error_message, tool_calls.started_at, tool_calls.finished_at, now()::timestamptz AS locked_at
+FROM tool_calls
 WHERE tool_call_id    = $1
   AND organization_id = $2
 FOR UPDATE
@@ -361,27 +362,36 @@ type LockToolCallParams struct {
 	OrganizationID pgtype.UUID
 }
 
-func (q *Queries) LockToolCall(ctx context.Context, arg LockToolCallParams) (ToolCall, error) {
+type LockToolCallRow struct {
+	ToolCall ToolCall
+	LockedAt pgtype.Timestamptz
+}
+
+// Locks and returns the transaction timestamp, for the reason LockLLMCall
+// documents: the seam materialises the completion default so the instant it
+// validates is the instant it stores.
+func (q *Queries) LockToolCall(ctx context.Context, arg LockToolCallParams) (LockToolCallRow, error) {
 	row := q.db.QueryRow(ctx, lockToolCall, arg.ToolCallID, arg.OrganizationID)
-	var i ToolCall
+	var i LockToolCallRow
 	err := row.Scan(
-		&i.ToolCallID,
-		&i.OrganizationID,
-		&i.UserID,
-		&i.PrincipalInstanceID,
-		&i.LlmCallID,
-		&i.ProductID,
-		&i.FeatureID,
-		&i.EpicID,
-		&i.StoryID,
-		&i.LineageKey,
-		&i.ToolName,
-		&i.Arguments,
-		&i.Result,
-		&i.Succeeded,
-		&i.ErrorMessage,
-		&i.StartedAt,
-		&i.FinishedAt,
+		&i.ToolCall.ToolCallID,
+		&i.ToolCall.OrganizationID,
+		&i.ToolCall.UserID,
+		&i.ToolCall.PrincipalInstanceID,
+		&i.ToolCall.LlmCallID,
+		&i.ToolCall.ProductID,
+		&i.ToolCall.FeatureID,
+		&i.ToolCall.EpicID,
+		&i.ToolCall.StoryID,
+		&i.ToolCall.LineageKey,
+		&i.ToolCall.ToolName,
+		&i.ToolCall.Arguments,
+		&i.ToolCall.Result,
+		&i.ToolCall.Succeeded,
+		&i.ToolCall.ErrorMessage,
+		&i.ToolCall.StartedAt,
+		&i.ToolCall.FinishedAt,
+		&i.LockedAt,
 	)
 	return i, err
 }

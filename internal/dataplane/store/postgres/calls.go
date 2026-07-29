@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
@@ -114,8 +115,8 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 	// Already complete: return what the winner recorded, whole and
 	// unchanged. Two paths observing one call ending is normal, so the
 	// loser is not an error -- but it can tell from Recorded.
-	if locked.FinishedAt.Valid {
-		recorded, convErr := llmCallFromRow(&locked)
+	if locked.LlmCall.FinishedAt.Valid {
+		recorded, convErr := llmCallFromRow(&locked.LlmCall)
 		if convErr != nil {
 			return store.LLMCompletion{}, convErr
 		}
@@ -128,8 +129,9 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 	if tokenErr := checkTokenCounts(input.Tokens); tokenErr != nil {
 		return store.LLMCompletion{}, tokenErr
 	}
-	started := fromTimestamptz(locked.StartedAt)
-	if intervalErr := checkCompletionInterval(input.FinishedAt, started, input.LLMCallID); intervalErr != nil {
+	finishedAt := completionInstant(input.FinishedAt, locked.LockedAt)
+	started := fromTimestamptz(locked.LlmCall.StartedAt)
+	if intervalErr := checkCompletionInterval(finishedAt, started, input.LLMCallID); intervalErr != nil {
 		return store.LLMCompletion{}, intervalErr
 	}
 
@@ -138,7 +140,7 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 		return store.LLMCompletion{}, err
 	}
 	affected, err := t.queries.CompleteLLMCall(ctx, gen.CompleteLLMCallParams{
-		FinishedAt:      toNullTimestamptz(input.FinishedAt),
+		FinishedAt:      toTimestamptz(finishedAt),
 		Succeeded:       &input.Succeeded,
 		ErrorMessage:    input.ErrorMessage,
 		InputTokens:     input.Tokens.Input,
@@ -158,9 +160,10 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 			store.ErrInvariant, input.LLMCallID)
 	}
 
-	// Re-read rather than assembling the outcome from the input: finished_at
-	// defaults to now() in SQL when the caller does not supply one, so the
-	// stored instant is only knowable by reading it back.
+	// Re-read rather than assembling the outcome from the input: the row
+	// carries generated columns and defaults the input never mentions, and
+	// a caller reading the outcome should see the row, not a reconstruction
+	// of it.
 	completed, err := t.queries.GetLLMCall(ctx, gen.GetLLMCallParams{
 		LlmCallID:      toUUID(input.LLMCallID),
 		OrganizationID: toUUID(input.OrganizationID),
@@ -257,12 +260,21 @@ func checkLineageChain(lineage store.Lineage) error {
 // caller gets a diagnostic naming the field rather than a constraint name.
 // The constraint remains as the backstop for writes that bypass the seam.
 func checkOutcomeCoherence(succeeded bool, errorMessage *string) error {
-	blank := errorMessage == nil || strings.TrimSpace(*errorMessage) == ""
-	switch {
-	case succeeded && !blank:
-		return errors.New("a successful call must not carry an error message; the row would be one no " +
-			"reader can interpret")
-	case !succeeded && blank:
+	// The two halves are NOT symmetric, and treating them as one blankness
+	// test was wrong. The schema requires error_message IS NULL for a
+	// success -- an empty or whitespace-only string is a VALUE, so the row
+	// would be refused by the column after passing the seam. Absence is a
+	// nil pointer, never an empty string.
+	if succeeded {
+		if errorMessage != nil {
+			return errors.New("a successful call must not carry an error message at all; absence is a nil " +
+				"pointer, not an empty string, and the row would be one no reader can interpret")
+		}
+		return nil
+	}
+	// Blankness applies only to failures, where the question is whether the
+	// diagnostic says anything.
+	if errorMessage == nil || strings.TrimSpace(*errorMessage) == "" {
 		return errors.New("a failed call must carry a non-blank diagnostic; the failure path is exactly " +
 			"when someone reads the record")
 	}
@@ -308,15 +320,25 @@ func checkTokenCounts(tokens store.TokenCounts) error {
 	return nil
 }
 
+// completionInstant materialises the instant the completion will store.
+//
+// SQL would default a null finished_at to now(), which is the TRANSACTION
+// timestamp -- so the value the lock query returned is exactly what the
+// update would have written. Taking it here rather than leaving the default
+// to SQL means the instant that gets validated is the instant that gets
+// stored; leaving it to SQL sent a call whose start was recorded in the
+// future to a constraint name instead of a diagnostic.
+func completionInstant(supplied *time.Time, lockedAt pgtype.Timestamptz) time.Time {
+	if supplied != nil {
+		return *supplied
+	}
+	return fromTimestamptz(lockedAt)
+}
+
 // checkCompletionInterval refuses a completion that ends before the call
 // started, against the LOCKED row's start rather than a caller-supplied one.
-//
-// A nil finishedAt is not checkable here and does not need to be: SQL fills
-// it with now(), and the schema's interval constraint is the backstop for
-// the one case that can still be wrong -- a call whose start was recorded
-// in the future.
-func checkCompletionInterval(finishedAt *time.Time, startedAt time.Time, callID uuid.UUID) error {
-	if finishedAt == nil || !finishedAt.Before(startedAt) {
+func checkCompletionInterval(finishedAt, startedAt time.Time, callID uuid.UUID) error {
+	if !finishedAt.Before(startedAt) {
 		return nil
 	}
 	return fmt.Errorf("call %s would finish at %s, before it started at %s; that is not an interval",

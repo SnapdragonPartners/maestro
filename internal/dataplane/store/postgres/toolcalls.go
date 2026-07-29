@@ -108,15 +108,16 @@ func (t *tx) CompleteToolCall(ctx context.Context, input store.CompleteToolCallI
 	if err != nil {
 		return store.ToolCompletion{}, notFound(err, "tool call", input.ToolCallID)
 	}
-	if locked.FinishedAt.Valid {
-		return store.ToolCompletion{Call: toolCallFromRow(&locked), Recorded: false}, nil
+	if locked.ToolCall.FinishedAt.Valid {
+		return store.ToolCompletion{Call: toolCallFromRow(&locked.ToolCall), Recorded: false}, nil
 	}
 
 	if outcomeErr := checkOutcomeCoherence(input.Succeeded, input.ErrorMessage); outcomeErr != nil {
 		return store.ToolCompletion{}, outcomeErr
 	}
-	started := fromTimestamptz(locked.StartedAt)
-	if intervalErr := checkCompletionInterval(input.FinishedAt, started, input.ToolCallID); intervalErr != nil {
+	finishedAt := completionInstant(input.FinishedAt, locked.LockedAt)
+	started := fromTimestamptz(locked.ToolCall.StartedAt)
+	if intervalErr := checkCompletionInterval(finishedAt, started, input.ToolCallID); intervalErr != nil {
 		return store.ToolCompletion{}, intervalErr
 	}
 	result, err := optionalJSON(input.Result, "result")
@@ -125,7 +126,7 @@ func (t *tx) CompleteToolCall(ctx context.Context, input store.CompleteToolCallI
 	}
 
 	affected, err := t.queries.CompleteToolCall(ctx, gen.CompleteToolCallParams{
-		FinishedAt:     toNullTimestamptz(input.FinishedAt),
+		FinishedAt:     toTimestamptz(finishedAt),
 		Succeeded:      &input.Succeeded,
 		Result:         result,
 		ErrorMessage:   input.ErrorMessage,

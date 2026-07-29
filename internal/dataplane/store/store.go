@@ -459,9 +459,14 @@ type Tx interface {
 }
 
 // Store is the persistence seam.
+//
+// It carries Maintenance, which Tx deliberately does not: truncation opens
+// its own REPEATABLE READ transaction, and there is no isolation-aware
+// transaction API for a caller to reach it through.
 type Store interface {
 	Reader
 	Writer
+	Maintenance
 
 	// WithTx runs fn inside one transaction, committing when it returns nil
 	// and rolling back otherwise. Every multi-statement operation above

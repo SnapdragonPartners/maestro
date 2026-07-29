@@ -473,7 +473,8 @@ func (q *Queries) ListLLMCallsInWindow(ctx context.Context, arg ListLLMCallsInWi
 }
 
 const lockLLMCall = `-- name: LockLLMCall :one
-SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd, started_at, finished_at, succeeded, error_message FROM llm_calls
+SELECT llm_calls.llm_call_id, llm_calls.organization_id, llm_calls.user_id, llm_calls.principal_instance_id, llm_calls.product_id, llm_calls.feature_id, llm_calls.epic_id, llm_calls.story_id, llm_calls.lineage_key, llm_calls.provider, llm_calls.model, llm_calls.input_tokens, llm_calls.output_tokens, llm_calls.reasoning_tokens, llm_calls.cached_tokens, llm_calls.cost_usd, llm_calls.started_at, llm_calls.finished_at, llm_calls.succeeded, llm_calls.error_message, now()::timestamptz AS locked_at
+FROM llm_calls
 WHERE llm_call_id     = $1
   AND organization_id = $2
 FOR UPDATE
@@ -484,33 +485,48 @@ type LockLLMCallParams struct {
 	OrganizationID pgtype.UUID
 }
 
+type LockLLMCallRow struct {
+	LlmCall  LlmCall
+	LockedAt pgtype.Timestamptz
+}
+
 // Lock before completing. Completion is once-only (design D1) and a
 // rowcount carries no reason, so the seam locks, classifies in Go, then
 // writes conditionally -- the shape every once-only operation here uses.
-func (q *Queries) LockLLMCall(ctx context.Context, arg LockLLMCallParams) (LlmCall, error) {
+//
+// It also returns now(), which is the TRANSACTION timestamp and therefore
+// exactly the default the completion below would apply. The seam
+// materialises that default rather than letting SQL apply it, so a caller
+// who supplies no finished_at still has the stored instant validated
+// against started_at at the seam -- otherwise a call whose start was
+// recorded in the future reaches a constraint name instead of a
+// diagnostic. Embedded rather than flattened so the row still converts
+// through the ordinary model type.
+func (q *Queries) LockLLMCall(ctx context.Context, arg LockLLMCallParams) (LockLLMCallRow, error) {
 	row := q.db.QueryRow(ctx, lockLLMCall, arg.LlmCallID, arg.OrganizationID)
-	var i LlmCall
+	var i LockLLMCallRow
 	err := row.Scan(
-		&i.LlmCallID,
-		&i.OrganizationID,
-		&i.UserID,
-		&i.PrincipalInstanceID,
-		&i.ProductID,
-		&i.FeatureID,
-		&i.EpicID,
-		&i.StoryID,
-		&i.LineageKey,
-		&i.Provider,
-		&i.Model,
-		&i.InputTokens,
-		&i.OutputTokens,
-		&i.ReasoningTokens,
-		&i.CachedTokens,
-		&i.CostUsd,
-		&i.StartedAt,
-		&i.FinishedAt,
-		&i.Succeeded,
-		&i.ErrorMessage,
+		&i.LlmCall.LlmCallID,
+		&i.LlmCall.OrganizationID,
+		&i.LlmCall.UserID,
+		&i.LlmCall.PrincipalInstanceID,
+		&i.LlmCall.ProductID,
+		&i.LlmCall.FeatureID,
+		&i.LlmCall.EpicID,
+		&i.LlmCall.StoryID,
+		&i.LlmCall.LineageKey,
+		&i.LlmCall.Provider,
+		&i.LlmCall.Model,
+		&i.LlmCall.InputTokens,
+		&i.LlmCall.OutputTokens,
+		&i.LlmCall.ReasoningTokens,
+		&i.LlmCall.CachedTokens,
+		&i.LlmCall.CostUsd,
+		&i.LlmCall.StartedAt,
+		&i.LlmCall.FinishedAt,
+		&i.LlmCall.Succeeded,
+		&i.LlmCall.ErrorMessage,
+		&i.LockedAt,
 	)
 	return i, err
 }

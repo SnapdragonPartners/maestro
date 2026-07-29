@@ -103,6 +103,18 @@ func TestTruncationNeedsAnExplicitHorizon(t *testing.T) {
 	requireRejection(t, err, "explicit horizon")
 }
 
+// auditTruncator is the pass as the IMPLEMENTATION carries it.
+//
+// The seam deliberately does not offer truncation on Tx: WithTx opens at
+// the pool default and there is no way to ask it for anything else, so a
+// method that necessarily refuses there does not belong on the interface.
+// The concrete transaction type still has it — that is how Store runs the
+// pass — and this local interface reaches it to prove what happens if some
+// future code inside a transaction ever does.
+type auditTruncator interface {
+	TruncateAuditBefore(ctx context.Context, organizationID uuid.UUID, before time.Time) (store.TruncationResult, error)
+}
+
 // TestTruncationRefusesReadCommitted is design D7's guard.
 //
 // A pass reached through a caller's own transaction inherits that
@@ -117,7 +129,11 @@ func TestTruncationRefusesReadCommitted(t *testing.T) {
 	seedAuditEvents(t, f, f.organizationID, 1)
 
 	err := f.store.WithTx(ctx, func(handle store.Tx) error {
-		_, passErr := handle.TruncateAuditBefore(ctx, f.organizationID, horizon())
+		pass, reachable := handle.(auditTruncator)
+		if !reachable {
+			t.Fatal("the transaction implementation no longer carries a truncation pass at all")
+		}
+		_, passErr := pass.TruncateAuditBefore(ctx, f.organizationID, horizon())
 		return passErr
 	})
 	if err == nil {

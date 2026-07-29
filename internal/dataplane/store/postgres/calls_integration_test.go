@@ -217,6 +217,20 @@ func TestCompletionRejections(t *testing.T) {
 			want:  "must not carry an error message",
 		},
 		{
+			// The schema requires error_message IS NULL for a success, so
+			// an EMPTY string is a value the column refuses. Absence is a
+			// nil pointer; a seam that treated "" as absence would pass the
+			// row to a constraint name.
+			name:  "success carrying an empty error message",
+			input: store.CompleteLLMCallInput{Succeeded: true, ErrorMessage: pointerTo("")},
+			want:  "must not carry an error message at all",
+		},
+		{
+			name:  "success carrying a whitespace-only error message",
+			input: store.CompleteLLMCallInput{Succeeded: true, ErrorMessage: &blank},
+			want:  "must not carry an error message at all",
+		},
+		{
 			name:  "failure with no diagnostic",
 			input: store.CompleteLLMCallInput{Succeeded: false},
 			want:  "must carry a non-blank diagnostic",
@@ -335,6 +349,101 @@ func TestCreationRejections(t *testing.T) {
 		})
 		requireRejection(t, err, "event_type is blank")
 	})
+}
+
+func pointerTo[T any](value T) *T { return &value }
+
+// TestToolCompletionCoherenceCoversBothCallTypes: the coherence rule is one
+// helper, but each call table has its own constraint, and a test on one
+// says nothing about the other.
+func TestToolCompletionCoherenceCoversBothCallTypes(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	for _, testCase := range []struct {
+		name  string
+		input store.CompleteToolCallInput
+		want  string
+	}{
+		{
+			name:  "success carrying an empty error message",
+			input: store.CompleteToolCallInput{Succeeded: true, ErrorMessage: pointerTo("")},
+			want:  "must not carry an error message at all",
+		},
+		{
+			name:  "success carrying a real error message",
+			input: store.CompleteToolCallInput{Succeeded: true, ErrorMessage: pointerTo("boom")},
+			want:  "must not carry an error message at all",
+		},
+		{
+			name:  "failure whose diagnostic is only whitespace",
+			input: store.CompleteToolCallInput{Succeeded: false, ErrorMessage: pointerTo(" \t ")},
+			want:  "must carry a non-blank diagnostic",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			call := openToolCall(t, f)
+			input := testCase.input
+			input.OrganizationID = f.organizationID
+			input.ToolCallID = call.ToolCallID
+
+			_, err := f.store.CompleteToolCall(ctx, input)
+			requireRejection(t, err, testCase.want)
+
+			stored, readErr := f.store.GetToolCall(ctx, f.organizationID, call.ToolCallID)
+			if readErr != nil {
+				t.Fatalf("read back: %v", readErr)
+			}
+			if stored.FinishedAt != nil {
+				t.Error("the refused completion still closed the call")
+			}
+		})
+	}
+}
+
+// TestDefaultCompletionInstantIsValidated closes the gap a defaulted
+// finished_at left open.
+//
+// started_at is caller-supplied and may be in the future. If the seam let
+// SQL default finished_at to now(), the interval rule would be enforced by
+// the schema's constraint rather than by the seam — the caller would read
+// llm_calls_interval_check instead of a sentence. So the seam materialises
+// the same instant SQL would have used, validates THAT, and stores it.
+func TestDefaultCompletionInstantIsValidated(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	future := time.Now().Add(2 * time.Hour)
+
+	call, err := f.store.CreateLLMCall(ctx, store.CreateLLMCallInput{
+		Provider: "anthropic", Model: "opus", StartedAt: &future,
+		OrganizationID: f.organizationID, PrincipalInstanceID: f.author,
+	})
+	if err != nil {
+		t.Fatalf("create call started in the future: %v", err)
+	}
+
+	// No FinishedAt: the default applies, and it precedes started_at.
+	_, err = f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
+		OrganizationID: f.organizationID, LLMCallID: call.LLMCallID, Succeeded: true,
+	})
+	requireRejection(t, err, "not an interval")
+	if strings.Contains(err.Error(), "interval_check") {
+		t.Errorf("the diagnostic came from the schema constraint, not the seam: %v", err)
+	}
+
+	// And the ordinary case still stores an instant, taken from the
+	// database's clock rather than this process's.
+	ordinary := openLLMCall(t, f)
+	outcome, err := f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
+		OrganizationID: f.organizationID, LLMCallID: ordinary.LLMCallID, Succeeded: true,
+	})
+	if err != nil {
+		t.Fatalf("ordinary completion: %v", err)
+	}
+	if outcome.Call.FinishedAt == nil || outcome.Call.FinishedAt.Before(outcome.Call.StartedAt) {
+		t.Errorf("stored finished_at %v does not follow started_at %v",
+			outcome.Call.FinishedAt, outcome.Call.StartedAt)
+	}
 }
 
 func requireRejection(t *testing.T, err error, want string) {
@@ -601,6 +710,15 @@ func TestListsAreBounded(t *testing.T) {
 			name: "cursor without its tie-breaker",
 			page: store.Page{Limit: 10, After: &store.Cursor{At: time.Now()}},
 			want: "the id is the tie-breaker",
+		},
+		{
+			// The other half of the cursor, failing the opposite way: the
+			// zero time precedes every row, so this pages from the start
+			// again rather than resuming — and a caller looping until a
+			// short page never terminates.
+			name: "cursor without its timestamp",
+			page: store.Page{Limit: 10, After: &store.Cursor{ID: uuid.New()}},
+			want: "paging would restart from the beginning",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

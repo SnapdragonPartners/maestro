@@ -1,0 +1,44 @@
+package store
+
+import (
+	"reflect"
+	"testing"
+)
+
+// The seam's shape, asserted rather than assumed.
+//
+// Which interface a method sits on is a contract with callers, and nothing
+// about moving one back would fail to compile: the Postgres transaction
+// type carries the truncation pass either way, so it would go on satisfying
+// a Tx that advertised it. Only a test can hold this line.
+
+// TestTxDoesNotAdvertiseTruncation guards the split.
+//
+// WithTx opens at the pool's default isolation, READ COMMITTED, and offers
+// a caller no way to ask for another. A truncation pass is only sound under
+// one snapshot, so a Tx advertising TruncateAuditBefore would be promising
+// an operation that necessarily refuses wherever a caller could reach it.
+func TestTxDoesNotAdvertiseTruncation(t *testing.T) {
+	const method = "TruncateAuditBefore"
+
+	for _, surface := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"Tx", reflect.TypeOf((*Tx)(nil)).Elem()},
+		{"Writer", reflect.TypeOf((*Writer)(nil)).Elem()},
+		{"CallWriter", reflect.TypeOf((*CallWriter)(nil)).Elem()},
+	} {
+		if _, found := surface.typ.MethodByName(method); found {
+			t.Errorf("%s advertises %s. Truncation opens its own REPEATABLE READ transaction; reached "+
+				"through a caller's transaction it can only refuse, so it belongs on Maintenance, which "+
+				"only Store embeds.", surface.name, method)
+		}
+	}
+
+	// The other direction: a split that removed it from the seam entirely
+	// would also pass the checks above.
+	if _, found := reflect.TypeOf((*Store)(nil)).Elem().MethodByName(method); !found {
+		t.Errorf("Store no longer offers %s, so the operation is unreachable through the seam", method)
+	}
+}

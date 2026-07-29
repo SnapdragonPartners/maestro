@@ -111,7 +111,15 @@ func (s *Store) truncateOnce(ctx context.Context, organizationID uuid.UUID, befo
 //
 // It owns the dependency order and the retention accounting; it does not
 // own isolation or retry, because a pass cannot re-open a transaction it
-// did not begin. Reached through Store those come with it.
+// did not begin. Store supplies both.
+//
+// It is NOT part of store.Tx. The seam offers truncation on Store alone,
+// since WithTx opens at the pool's default isolation and gives a caller no
+// way to ask for another — so a pass reachable through Tx could only ever
+// refuse. The isolation check below therefore guards this internal path
+// rather than a public one, and is the reason changing truncateOnce to use
+// WithTx would fail loudly instead of quietly evaluating five retention
+// guards against five instants.
 func (t *tx) TruncateAuditBefore(ctx context.Context, organizationID uuid.UUID, before time.Time) (store.TruncationResult, error) {
 	if before.IsZero() {
 		return store.TruncationResult{}, errors.New("truncation needs an explicit horizon; there is no " +

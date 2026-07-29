@@ -27,8 +27,18 @@ RETURNING *;
 -- Lock before completing. Completion is once-only (design D1) and a
 -- rowcount carries no reason, so the seam locks, classifies in Go, then
 -- writes conditionally -- the shape every once-only operation here uses.
+--
+-- It also returns now(), which is the TRANSACTION timestamp and therefore
+-- exactly the default the completion below would apply. The seam
+-- materialises that default rather than letting SQL apply it, so a caller
+-- who supplies no finished_at still has the stored instant validated
+-- against started_at at the seam -- otherwise a call whose start was
+-- recorded in the future reaches a constraint name instead of a
+-- diagnostic. Embedded rather than flattened so the row still converts
+-- through the ordinary model type.
 -- name: LockLLMCall :one
-SELECT * FROM llm_calls
+SELECT sqlc.embed(llm_calls), now()::timestamptz AS locked_at
+FROM llm_calls
 WHERE llm_call_id     = @llm_call_id
   AND organization_id = @organization_id
 FOR UPDATE;
