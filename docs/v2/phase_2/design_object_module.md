@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 6 Design: The Object Module
 
-Status: **draft** — revised after review rounds 1–7 (four P1s, then five, four, three, four, one and one, all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is approved by Codex; DR's approval is outstanding, and implementation waits on it.
+Status: **draft** — revised after review rounds 1–8 (four P1s, then five, four, three, four, one, one and one, all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is approved by Codex; DR's approval is outstanding, and implementation waits on it.
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -318,12 +318,13 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | Idempotent shortcut racing the sweep, under a **barrier** | The sweep blocks on the digest lock and then finds the attachment row; the object survives |
 | Staging cleanup against a **live lease** | The staging object survives; only an absent or expired lease permits deletion |
 | Attachment truncation | Pinned row survives, unpinned row goes, another organization untouched |
-| Amendment **adding** a reference | Accepted; the amendment holds a pin for the addition, the original keeps its own |
-| Amendment **removing** a reference | Refused, naming the dropped reference; the original's pins are untouched |
+| Amendment **adding** a reference | Accepted; the pin for the addition is written **to the original's set**, in the acceptance transaction, and the original's existing pins are unchanged |
+| Amendment **removing** a reference | Refused, naming the dropped reference; the original's pin set is exactly what it was |
 | Amendment acceptance generally | The expected set comes from the effective payload assembled against the locked base, not from the patch |
 | Writer **whose lease expired while it was still running** | Promotion refused at the ownership check, whatever the writer believed; no object at the digest key |
-| Remote delete succeeds, then the claim-clearing transaction fails | The claim survives; the next writer finishes it, re-uploads, and commits a row whose object exists |
-| Crash between claim and delete | The reconciler finishes the claim; no object is left that a row references |
+| Remote delete succeeds, then the claim-clearing transaction fails | The claim survives. A writer arriving meanwhile **leaves it alone**, takes the full path, and commits a row against a **new version** the condemned delete cannot touch; the owner or the reconciler clears the claim afterwards |
+| Crash between claim and delete | The **reconciler** — not a writer — re-issues the claim's recorded version and upload ids and clears it; no object is left that a row references |
+| A writer meeting a live claim | It never clears or completes the claim, and never takes the existing-object shortcut |
 | Pin racing attachment truncation, **both orderings**, under a barrier | Measured: `23503` to the pin, `23001` to the truncation; no dangling pin either way. Retained as the regression test for the retry predicate |
 | Original with **several accepted amendments**, then superseded | Every pin in the chain retained, including amendment-introduced ones |
 | Original with **several accepted amendments**, then archived | **Every** pin in the chain removed — the case that leaks if amendments hold their own |
