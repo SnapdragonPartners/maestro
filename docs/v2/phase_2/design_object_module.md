@@ -34,7 +34,7 @@ Round 1 collapsed the blob store and the object module into one interface, dropp
 
 | Primitive | Returns / used by |
 | --- | --- |
-| `PutStaged` | Uploads to a staging key, **returning its version id**, and failing if the store returns none |
+| `PutStaged` | Uploads to a staging key, **returning its version id**, and failing if the store returns one that cannot fence a delete — none at all, or the reused `null` slot |
 | `Promote` | Server-side copy of a **named staged version** to the digest key, **returning the new version id**; multipart above the single-request copy limit (D1a) |
 | `Get`, `Stat`, `Exists` | Reads and verification |
 | `ListVersions` | Enumerates every version of a key or prefix, **including delete markers and the `null` version** left by anything written before versioning was enabled |

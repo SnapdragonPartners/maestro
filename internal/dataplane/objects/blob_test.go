@@ -313,9 +313,14 @@ func TestAbortUploadStillReportsOtherFailures(t *testing.T) {
 // It answers an unversioned or suspended write with an EMPTY id, so the
 // integration suite exercises that arm and nothing else. A store following
 // S3 reports the literal null version instead, and there the empty check
-// alone would let an unfenced write through — the layers above would
-// record "null" as a version and later issue a version-specific delete
-// naming it, which reclaims nothing.
+// alone would let an unfenced write through.
+//
+// A null version is perfectly deletable — TestListVersionsSeesTheNullVersion
+// removes one by name, because the sweep has to reclaim objects that
+// predate versioning. What it cannot do is FENCE: `null` is the slot every
+// unversioned write to a key reuses, not one generation, so a delete
+// condemning this object would remove whatever occupies the slot when it
+// arrives.
 //
 // Tested here rather than through PutStaged because reaching it any other
 // way means a server that reports what this one does not.
@@ -342,7 +347,8 @@ func TestFencedVersionRejectsAnUnusableID(t *testing.T) {
 				return
 			}
 			if err == nil {
-				t.Fatalf("fencedVersion(%q) accepted an id nothing can delete by name", testCase.version)
+				t.Fatalf("fencedVersion(%q) accepted an id that cannot fence a later delete",
+					testCase.version)
 			}
 			if got != "" {
 				t.Fatalf("fencedVersion(%q) returned %q alongside its error", testCase.version, got)

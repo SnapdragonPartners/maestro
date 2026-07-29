@@ -241,20 +241,34 @@ const singleCopyLimit = 5 * 1024 * 1024 * 1024
 // version — what a write lands as while versioning is off or suspended.
 const nullVersion = "null"
 
-// fencedVersion rejects a write that produced no usable version id.
+// fencedVersion rejects a write whose version id cannot fence a delete.
 //
-// Every fence in the object sweep names the version it removes, because a
-// delete issued under a lock can arrive after that lock is gone. A write
-// that returns no version cannot be fenced at all, and the layers above
-// have no way to notice: they would record an empty string and later
-// delete by name with nothing to name. MEASURED: a write to an unversioned
-// or suspended bucket returns an EMPTY id on the pinned server, and the
-// literal "null" on a store that reports S3's null version.
+// Every deletion in this module names a version, because a delete issued
+// under a lock can arrive after that lock is gone, and naming one immutable
+// generation is what stops it removing a newer writer's object. The two
+// unusable answers fail that for different reasons, and neither is "the
+// object cannot be reclaimed" — the sweep reclaims a null version by name,
+// which ListVersions and DeleteVersion both support deliberately:
+//
+//   - an EMPTY id gives a later delete nothing to name at all;
+//   - the NULL id is deletable, but it is a SLOT rather than a generation.
+//     Every unversioned write to that key lands as `null` again, so a
+//     delayed delete condemning this object removes whatever occupies the
+//     slot when it arrives, which is the unfenced delete versioning exists
+//     to close.
+//
+// MEASURED: a write to an unversioned or suspended bucket returns an EMPTY
+// id on the pinned server, and the literal "null" on a store that reports
+// S3's null version.
 func fencedVersion(key, version string) (string, error) {
-	if version == "" || version == nullVersion {
-		return "", fmt.Errorf("%s was stored with version id %q: the bucket is not versioned, and "+
-			"every deletion in this module is version-specific, so nothing could ever reclaim it",
-			key, version)
+	switch version {
+	case "":
+		return "", fmt.Errorf("%s was stored without a version id: the bucket is not versioned, so "+
+			"no later delete can name what was written here", key)
+	case nullVersion:
+		return "", fmt.Errorf("%s was stored as the %q version: the bucket is not versioned. That id "+
+			"can be deleted, but it names a slot every unversioned write reuses rather than this "+
+			"object, so a delayed delete would remove whatever occupies it on arrival", key, nullVersion)
 	}
 	return version, nil
 }
