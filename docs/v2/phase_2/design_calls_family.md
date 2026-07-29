@@ -10,6 +10,8 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after ten review rounds. Carries two migrations: 000011 (the LLM outcome correction and row-local constraints) and 000012 (the index plan). The SQL surface and its behavioural suite passed the mid-item checkpoint; the seam is built against this contract.
 
+**Amended after implementation** (2026-07-28), with the decisions that came out of building the seam rather than designing it. Each is marked **Amendment** where it belongs — D1's materialised completion instant and the asymmetry of outcome coherence, D7's placement of truncation on `Store` alone, and D8's concrete page bound. They are recorded here rather than in the phase exit record, which is a post-mortem and not where anyone looks for the contract.
+
 Covers `llm_calls`, `tool_calls`, `metric_events` and `audit_events`, plus the **truncation** operation that makes the Audit family's retention posture real. The seam and its conventions are item 4's ([`design_queries_artifacts.md`](design_queries_artifacts.md), live); this records only what differs.
 
 ## What is different from item 4
@@ -34,6 +36,10 @@ The other difference is volume. ADR 0022 makes these the largest tables in the s
 **Completion is once-only and idempotent**, on the shape of `StopPrincipalInstance` (item 4 D7): lock the row, classify in Go, write conditionally with `WHERE finished_at IS NULL`. Two paths can observe one call ending — a normal return and a supervisor's error handler — and the first outcome is the true one. A repeat returns **the recorded outcome with `Recorded: false`**, never an error, and a *conflicting* repeat returns the first outcome too. It is not a rejected case; a caller that cares reads the flag.
 
 No other column is updatable, and that is **enforced structurally**, not merely intended — the same way item 4 enforces "no generic status update".
+
+**Amendment: the completion instant is materialised at the seam.** `finished_at` may be defaulted, and the obvious implementation lets SQL apply `now()`. That leaves one rule unenforced by the seam: `started_at` is caller-supplied and may be in the *future*, so a defaulted completion could precede the start and be caught by `llm_calls_interval_check` — a constraint name where the design promised a diagnostic naming the field.
+
+The lock queries therefore return `now()` alongside the row. It is the **transaction** timestamp, so it is exactly the value the update would have defaulted to; the seam validates that instant and then writes it explicitly. **The instant that is validated is the instant that is stored** — reading it back afterwards and validating then would be checking a row already written. `sqlc.embed` keeps the locked row converting through the ordinary model type instead of a hand-copied projection that would drift from the table.
 
 A test parses `queries/*.sql` and allows, for `llm_calls` and `tool_calls`:
 
@@ -70,6 +76,17 @@ Coherence **between** `succeeded` and `error_message` is enforced for **both cal
 - an open call already carrying an error.
 
 Leaving them to the seam alone would have put the only guard in the one place a direct write goes around. The seam keeps its own checks so a caller gets a diagnostic naming the field; the constraints are the backstop for everything that does not come through the seam.
+
+**Amendment: the two halves of coherence are not symmetric, and one blankness test does not express both.** The constraint requires `error_message IS NULL` for a success, so an empty or whitespace-only string is a **value** the column refuses — treating it as absence let the row pass the seam and fail at the constraint, which is the failure mode the seam checks exist to prevent. Absence is a nil pointer, never an empty string.
+
+Blankness applies only to failures, where the question is different: whether the diagnostic *says* anything. So:
+
+| Outcome | Rule |
+| --- | --- |
+| `succeeded = true` | `error_message` must be **absent** — any non-nil value is refused |
+| `succeeded = false` | `error_message` must be present and **non-blank** |
+
+Both call types share one helper and both need their own test: each table carries its own constraint, and a test on one proves nothing about the other.
 
 ## D2. Write invariants, per table
 
@@ -228,6 +245,12 @@ The Postgres module **retries the whole operation**, up to a small fixed bound, 
 
 Truncation is the only operation here that needs this, being the only one at `REPEATABLE READ`. Covered by a test running two concurrent truncations over overlapping rows and asserting that both terminate, no row is double-counted, and the reported buckets still reconcile.
 
+**Amendment: truncation is offered on the Store and NOT on a transaction.** The seam's transaction entry point opens at the pool's default isolation and gives a caller no way to ask for another. A `Tx` advertising truncation would therefore promise an operation that *necessarily refuses* wherever a caller could reach it — an interface making a claim no implementation can honour there. It lives on a separate `Maintenance` surface that only the `Store` embeds, and the `Store` supplies the snapshot and the retry with it.
+
+The implementation retains the pass on its transactional type, because that is how the `Store` runs it, and the pass asks the server for its isolation level and refuses at `READ COMMITTED`. That check now guards an internal path rather than a public one, which is precisely its value: it is what makes a later change to open the transaction the ordinary way fail loudly instead of quietly evaluating five retention guards against five instants.
+
+Which interface a method sits on is a contract, and **moving one between interfaces does not fail to compile** — the concrete type goes on satisfying both. The split is therefore held by a test asserting the method's absence from the transactional surfaces *and* its presence on the `Store`; the second direction matters, since deleting it outright would satisfy the first.
+
 ## D8. Reads
 
 Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is the first real consumer, and Phase 1B's economic comparison is where aggregate shapes get chosen against a real question. Anything not listed waits for a caller, on the rule item 3 applied to tables and the registry applies to types.
@@ -238,6 +261,15 @@ Deliberately few. ADR 0022 says these are metrics and traces; item 9's import is
 
 - a **mandatory limit** on every list, with a documented maximum, and
 - **keyset pagination** — `(timestamp, id)` as the cursor, using each table's own cutoff column, never `OFFSET`, which degrades exactly as the table grows.
+
+**Amendment: the maximum is 1000 rows, and both halves of the cursor are required.** The ceiling is a judgement rather than a measurement — large enough that an importer does not spend its life paging, small enough that one page is a bounded amount of memory on the largest tables in the system. It is named in the seam so "bounded" does not come to mean "bounded by whatever number the caller felt like".
+
+A half-populated cursor is refused, and the two halves fail in **opposite** directions, which is why neither check covers the other:
+
+| Missing half | What happens without the check |
+| --- | --- |
+| id | The row comparison is `NULL`, so the page comes back **empty** — indistinguishable from having reached the end |
+| timestamp | The zero time precedes every row, so paging **restarts from the beginning**, and a caller looping until a short page never terminates |
 
 Aggregates take a **mandatory time window** and their `(provider, model)` cohort, so an aggregate always describes a stated population rather than "everything that happens to be retained".
 
