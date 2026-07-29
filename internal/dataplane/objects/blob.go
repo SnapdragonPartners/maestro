@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 
 	"github.com/minio/minio-go/v7"
@@ -69,6 +70,19 @@ var ErrNoSuchObject = errors.New("object not found")
 
 // New builds an adapter. It does not contact the server.
 func New(cfg Config) (*Blob, error) {
+	return newBlob(cfg, nil)
+}
+
+// newBlob builds an adapter over a caller-supplied transport.
+//
+// The transport seam exists because two of this module's guards cannot be
+// proven through the client at all: the upload checksum is transport
+// integrity, so demonstrating that the server enforces it means corrupting
+// the body AFTER the client has computed the header, and the versioning
+// check refuses a state a cooperating server will not report. Both are
+// claims the design requires measuring rather than citing, and a guard that
+// can only be described is a guard nobody has seen fire.
+func newBlob(cfg Config, transport http.RoundTripper) (*Blob, error) {
 	if cfg.Endpoint == "" || cfg.Bucket == "" {
 		return nil, errors.New("object store endpoint and bucket are required")
 	}
@@ -80,6 +94,13 @@ func New(cfg Config) (*Blob, error) {
 	core, err := minio.NewCore(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.UseTLS,
+		// Required for the upload checksum below, which the pinned client
+		// sends as a trailing header: without this it refuses the request
+		// outright with "Checksum requires Client with TrailingHeaders
+		// enabled", so every upload fails rather than falling back to an
+		// unverified one. Measured against v7.2.1, not assumed.
+		TrailingHeaders: true,
+		Transport:       transport,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build object store client: %w", err)
@@ -241,28 +262,72 @@ func (b *Blob) DeleteVersion(ctx context.Context, key, versionID string) error {
 	return nil
 }
 
-// ListIncompleteUploads enumerates multipart uploads started and never
-// completed, with their upload ids.
+// Incomplete multipart uploads are the third storage state, and the other
+// two cannot see it: parts are not an object version, so ListVersions does
+// not report them and DeleteVersion cannot remove them. A process that dies
+// mid-upload leaves them behind forever unless something enumerates them.
 //
-// This is the third storage state, and the other two cannot see it: parts
-// are not an object version, so ListVersions does not report them and
-// DeleteVersion cannot remove them. A process that dies mid-upload leaves
-// them behind forever unless something enumerates them by name.
-func (b *Blob) ListIncompleteUploads(ctx context.Context, prefix string) ([]Upload, error) {
+// There are two operations rather than one, because the server offers two
+// modes and no third. MEASURED against the pinned MinIO image
+// (RELEASE.2025-09-07T16-13-09Z), `ListMultipartUploads` treats its prefix
+// parameter as an EXACT object key:
+//
+//	prefix ""                    -> every upload in the bucket
+//	prefix "staging/org/upload"  -> that key's uploads
+//	prefix "staging/"            -> NOTHING, with no error
+//	prefix "staging/org/uploa"   -> NOTHING, with no error
+//
+// This is deliberate upstream and long-standing, not a defect in this
+// deployment (minio/minio#11686, closed as intended; #20989, open), and it
+// diverges from S3. A single prefix-taking operation would therefore be a
+// silent lie: a sweep asking for one organization's residue would be told
+// there is none and would reclaim nothing, which is the same
+// correct-on-the-easy-case failure the composite checksum had.
+//
+// So prefix matching happens HERE, over the only listing the server will
+// actually answer, and each caller names which question it is asking. Both
+// operations filter client-side, which also makes them correct against a
+// store with true prefix semantics: real S3 would answer the exact-key form
+// with `key` plus every key it prefixes, and the abort fence depends on not
+// getting those.
+
+// ListUploadsForKey enumerates the incomplete uploads on exactly one key.
+func (b *Blob) ListUploadsForKey(ctx context.Context, key string) ([]Upload, error) {
+	if key == "" {
+		return nil, errors.New("refusing to list uploads for an empty key: on this server that " +
+			"enumerates the whole bucket")
+	}
+	return b.listUploads(ctx, key, func(candidate string) bool { return candidate == key })
+}
+
+// ListUploadsUnder enumerates every incomplete upload whose key carries the
+// given prefix. An empty prefix means the whole bucket, which is what the
+// sweep's candidate discovery and teardown both want.
+func (b *Blob) ListUploadsUnder(ctx context.Context, prefix string) ([]Upload, error) {
+	return b.listUploads(ctx, "", func(candidate string) bool {
+		return strings.HasPrefix(candidate, prefix)
+	})
+}
+
+// listUploads pages the multipart listing, keeping what the caller wants.
+func (b *Blob) listUploads(ctx context.Context, serverPrefix string, keep func(key string) bool) ([]Upload, error) {
 	var (
 		uploads        []Upload
 		keyMarker      string
 		uploadIDMarker string
 	)
 	for {
-		result, err := b.core.ListMultipartUploads(ctx, b.bucket, prefix,
+		result, err := b.core.ListMultipartUploads(ctx, b.bucket, serverPrefix,
 			keyMarker, uploadIDMarker, "", listPageSize)
 		if err != nil {
-			return nil, fmt.Errorf("list incomplete uploads under %s: %w", prefix, err)
+			return nil, fmt.Errorf("list incomplete uploads: %w", err)
 		}
 		for i := range result.Uploads {
 			// Indexed rather than ranged by value: ObjectMultipartInfo is
 			// 160 bytes and only two fields are wanted.
+			if !keep(result.Uploads[i].Key) {
+				continue
+			}
 			uploads = append(uploads, Upload{
 				Key:      result.Uploads[i].Key,
 				UploadID: result.Uploads[i].UploadID,
@@ -278,8 +343,17 @@ func (b *Blob) ListIncompleteUploads(ctx context.Context, prefix string) ([]Uplo
 }
 
 // listPageSize bounds one page of multipart uploads. The value is the
-// protocol's own default maximum; paging is implemented either way, so it
-// only decides how many round trips a large sweep costs.
+// protocol's own default maximum.
+//
+// MEASURED: the pinned MinIO image IGNORES this parameter and answers with
+// every upload it has, `IsTruncated` false, whatever is asked for — one
+// upload requested returns four. The paging above is therefore dead against
+// this server and cannot be exercised by it at any bucket size, which is
+// why the marker arithmetic is tested against canned responses instead.
+//
+// It stays because a store that honours the protocol will truncate at a
+// thousand and answer the rest only to a correct pair of markers, and
+// ADR 0022 names other backends as a later choice.
 const listPageSize = 1000
 
 // AbortUpload aborts exactly one upload id on one key.

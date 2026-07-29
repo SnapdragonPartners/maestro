@@ -10,6 +10,8 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 
+**D1a and the D2 measurement table are amendments made during implementation and are awaiting review.** Both correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written.
+
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
 Naming follows the phase directory (`design_local_stack.md`, `design_queries_artifacts.md`, `design_calls_family.md`) rather than ADR 0017's kebab-case slug rule, which those three already diverge from. Renaming all four is a separate decision, not this item's.
@@ -37,7 +39,8 @@ Round 1 collapsed the blob store and the object module into one interface, dropp
 | `Get`, `Stat`, `Exists` | Reads and verification |
 | `ListVersions` | Enumerates every version of a key or prefix, **including delete markers and the `null` version** left by anything written before versioning was enabled |
 | `DeleteVersion` | Removes **exactly one** named version, and nothing else |
-| `ListIncompleteUploads` | Enumerates multipart uploads started and never completed, **returning their upload ids** |
+| `ListUploadsForKey` | Enumerates the incomplete multipart uploads on **exactly one key**, with their upload ids |
+| `ListUploadsUnder` | Enumerates the incomplete multipart uploads **under a prefix** (D1a) |
 | `AbortUpload` | Aborts **exactly one** upload id on one key |
 | `EnsureBucket` | `dataplane-up`: creates the bucket, enables versioning, and **verifies on every run that it is still enabled** |
 
@@ -50,6 +53,48 @@ There is no `Delete(key)` and no `ListPrefix`. Both are the version-unaware shap
 So the adapter is built on the client's lower-level pair, which is upload-id-specific at the pinned version: `Core.ListMultipartUploads` returns each upload's id, and `Core.AbortMultipartUpload` takes one. Key-scoped abort remains correct for **staging** keys, which are unique per upload — but it is expressed as "enumerate this key, abort the ids found" rather than as a key-level call, so no operation in this module can abort an upload nobody named.
 
 `EnsureBucket` **verifies** rather than assuming, because versioning can be turned off after the fact — by an operator, a restored backup, or a hand-run `mc` command — and every fence in D6 silently stops fencing if it is. A plane that cannot prove versioning is on refuses to start rather than running unprotected.
+
+## D1a. What the pinned server actually does with a multipart listing
+
+Amended during implementation, from measurement rather than review. Three
+things the design assumed about `ListMultipartUploads` are not true of the
+pinned MinIO image (`RELEASE.2025-09-07T16-13-09Z`), and each fails silently
+rather than loudly, which is the class this document has spent nine rounds
+closing.
+
+**The prefix parameter is an exact object key.** Measured:
+
+| Argument | Result |
+| --- | --- |
+| `""` | Every incomplete upload in the bucket |
+| `staging/org/upload-7` | That key's uploads |
+| `staging/` | **Nothing, with no error** |
+| `staging/org/uploa` | **Nothing, with no error** |
+
+This is deliberate upstream and long-standing, not a defect in this
+deployment — `minio/minio#11686` was closed with "list multipart uploads only
+return values for exact object name", and `#20989` tracks the S3 divergence.
+So the sweep's candidate discovery, which asks for one organization's residue
+by prefix, would have been told there is none and would have reclaimed
+nothing. A single prefix-taking primitive is therefore not implementable
+against this server, and the design's one row becomes two: **`ListUploadsUnder`
+enumerates the whole bucket and filters in Go**, and `ListUploadsForKey` uses
+the exact-key form the server does answer.
+
+Both filter client-side, which is also what makes them correct on a store with
+real S3 semantics: there, the exact-key form would return every key the given
+one prefixes, and staging cleanup would abort a different writer's upload —
+the unfenced abort of D1.
+
+**`max-uploads` is ignored and the listing is never truncated.** Asked for one
+upload with four in the bucket, the pinned server returns four and reports
+`IsTruncated` false. The two-marker paging of round 8 is therefore unreachable
+against this server at any bucket size. It stays, because a store that honours
+the protocol truncates at a thousand and answers the rest only to a correct
+marker pair, and ADR 0022 names other backends as a later choice — but it is
+tested against canned responses, since no real-server test in this suite can
+fail when it is broken. Both guards were confirmed unexercisable by mutation:
+they survive every real-server test in the package.
 
 **Layer 2 — the object module in the seam**, which is what ADR 0022 describes. It owns the relational half and offers the ADR's vocabulary:
 
@@ -89,7 +134,19 @@ The write path:
 
 **The idempotent shortcut verifies too.** An object already at the digest key is *not* proof of correct content — it is exactly where a previously corrupted or partially promoted object would sit, and returning success would bless it into a new attachment row. So the shortcut reads the object back and hashes it. That costs one read of an object whose upload it skips, so the shortcut still wins; correctness is not the thing being traded for speed.
 
-**The transport claim is proven, not cited.** A test corrupts the body between hashing and transmission against the **pinned MinIO image** and asserts the PUT fails. A server that silently ignored the checksum header would otherwise leave transport unverified with the suite green — and because content correctness now rests on the local hash rather than on the header, this test measures exactly what the header is claimed to add and nothing more.
+**The transport claim is proven, not cited** — and proving it corrected which mechanism gets the credit. A test flips one byte of the payload *at the transport*, after the client has read, hashed and signed it, against the **pinned MinIO image**. Measured, with every length left intact:
+
+| Configuration | Outcome |
+| --- | --- |
+| Signed chunks + checksum — **what ships** | Refused, `SignatureDoesNotMatch` |
+| Unsigned payload + checksum | Refused, `XAmzContentChecksumMismatch` |
+| Neither | **Accepted; the corruption is stored** |
+
+So on the shipped path the per-chunk signature refuses the body before the checksum is ever consulted; the checksum is enforced too, and is what would catch it if the payload were ever unsigned. The design's earlier wording gave the header sole credit for the wire, which the measurement does not support. Nothing else changes: both values are computed by the client from the same buffer, so neither says anything about content, and the local hash remains the only proof of the address.
+
+The third row is the control. Without it the first two are unfalsifiable — a server ignoring both would fail no assertion, because nothing else in the module ever sends bytes it did not mean to send.
+
+**Enabling the checksum is not free of configuration.** The pinned client sends it as a trailing header and **refuses the request outright** unless the client was built with trailing headers enabled — every upload fails with `Checksum requires Client with TrailingHeaders enabled` rather than falling back to an unchecked one. The first integration test written against this adapter is what found it; nothing in the module had ever completed an upload.
 
 ## D3. Keys are organization-scoped, and the bucket is provisioned by `up`
 
@@ -339,7 +396,10 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | Public `Pin` against a **draft amendment** | Refused; the original's verified set is untouched |
 | Amendment acceptance that **fails** | The original's pin set is exactly what it was before |
 | A **persistent** `RESTRICT` violation from another constraint | Propagated unchanged, never retried into a concurrency error |
-| Versioning disabled behind the module's back | `EnsureBucket` refuses to start the plane |
+| Versioning disabled behind the module's back | `EnsureBucket` refuses to start the plane — proven by rewriting the versioning read in transit, since a cooperating server re-enables it on request and then reports it enabled |
+| Body corrupted in transit with **neither** wire mechanism | Stored, corruption and all — the control that makes the two rejections above falsifiable (D2) |
+| An incomplete upload asked for **by prefix** | The server answers nothing; the prefix is applied in the adapter (D1a) |
+| A multipart listing asked to truncate | The server ignores `max-uploads`; the paging path is exercised against canned responses (D1a) |
 | A key-level delete where a version-specific one was meant | Not expressible: the adapter offers no key-level delete |
 | Cleanup that only deletes versions | Leaves multipart parts, which are neither an object nor a version |
 | Cleanup that trusts the lease to name the version | The writer may have died before recording it |
