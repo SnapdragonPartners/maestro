@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"orchestrator/internal/dataplane/gen"
+	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 )
@@ -27,6 +28,11 @@ type Store struct {
 	pool     *pgxpool.Pool
 	queries  *gen.Queries
 	registry *registry.Registry
+	// blob is the object module's Layer 1 adapter. It is required, not
+	// optional: ADR 0022 makes object storage part of the data plane, and a
+	// store that satisfied the seam while answering every object operation
+	// with "no backend" would be a nil trap wearing an interface.
+	blob *objects.Blob
 }
 
 // New builds a Store over an existing pool.
@@ -34,23 +40,26 @@ type Store struct {
 // The registry is injected rather than read from a package-level default,
 // so a test can register the types it needs without mutating global state
 // that another test observes.
-func New(pool *pgxpool.Pool, types *registry.Registry) (*Store, error) {
+func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("postgres store: pool is nil")
 	}
 	if types == nil {
 		return nil, errors.New("postgres store: registry is nil")
 	}
-	return &Store{pool: pool, queries: gen.New(pool), registry: types}, nil
+	if blob == nil {
+		return nil, errors.New("postgres store: object adapter is nil")
+	}
+	return &Store{pool: pool, queries: gen.New(pool), registry: types, blob: blob}, nil
 }
 
 // Open builds a Store from a DSN.
-func Open(ctx context.Context, dsn string, types *registry.Registry) (*Store, error) {
+func Open(ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open data plane pool: %w", err)
 	}
-	built, err := New(pool, types)
+	built, err := New(pool, types, blob)
 	if err != nil {
 		pool.Close()
 		return nil, err

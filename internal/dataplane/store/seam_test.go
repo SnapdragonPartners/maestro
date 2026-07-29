@@ -42,3 +42,41 @@ func TestTxDoesNotAdvertiseTruncation(t *testing.T) {
 		t.Errorf("Store no longer offers %s, so the operation is unreachable through the seam", method)
 	}
 }
+
+// TestTxDoesNotAdvertiseObjectOperations guards the other split.
+//
+// Every object operation makes REMOTE calls, and the write path opens its
+// own transaction so it can hold the digest lock and the lease's row lock
+// across a server-side copy and a read-back. Reached through a caller's
+// transaction it could take neither in the order it needs, nor bound them —
+// and nothing about moving one back would fail to compile, because the
+// Postgres store satisfies both surfaces either way.
+func TestTxDoesNotAdvertiseObjectOperations(t *testing.T) {
+	objectMethods := []string{"PutAttachment", "GetAttachment", "AttachmentExists"}
+
+	for _, surface := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"Tx", reflect.TypeOf((*Tx)(nil)).Elem()},
+		{"Writer", reflect.TypeOf((*Writer)(nil)).Elem()},
+		{"Reader", reflect.TypeOf((*Reader)(nil)).Elem()},
+	} {
+		for _, method := range objectMethods {
+			if _, found := surface.typ.MethodByName(method); found {
+				t.Errorf("%s advertises %s. The object module opens its own transaction and holds it "+
+					"across remote calls; reached through a caller's transaction it cannot do that, so "+
+					"it belongs on ObjectStore, which only Store embeds.", surface.name, method)
+			}
+		}
+	}
+
+	// The other direction: a split that dropped them from the seam would
+	// pass every check above.
+	storeType := reflect.TypeOf((*Store)(nil)).Elem()
+	for _, method := range objectMethods {
+		if _, found := storeType.MethodByName(method); !found {
+			t.Errorf("Store no longer offers %s, so the operation is unreachable through the seam", method)
+		}
+	}
+}

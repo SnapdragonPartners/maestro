@@ -19,6 +19,7 @@ import (
 
 	"orchestrator/internal/dataplane/canonical"
 	"orchestrator/internal/dataplane/migrations"
+	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/stack"
@@ -147,6 +148,11 @@ type fixture struct {
 	// rows there without borrowing this organization's principals.
 	otherAuthor uuid.UUID
 
+	// blob is the object store behind the seam. Tests reach it directly
+	// only to produce states the seam refuses to produce -- a corrupt
+	// object at a digest key is the whole point of the verification.
+	blob *objects.Blob
+
 	// Lineage, populated by seedLineage for Story-scoped reads.
 	product uuid.UUID
 	feature uuid.UUID
@@ -164,13 +170,15 @@ func newFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(pool.Close)
 
-	built, err := postgres.New(pool, testRegistry(t))
+	blob := disposableBlob(t)
+	built, err := postgres.New(pool, testRegistry(t), blob)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
 
 	f := &fixture{
 		store:          built,
+		blob:           blob,
 		pool:           pool,
 		organizationID: uuid.New(),
 		otherOrgID:     uuid.New(),
@@ -786,7 +794,7 @@ func TestAmendmentInheritsVersionFromTheOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("advanced registry: %v", err)
 	}
-	advancedStore, err := postgres.New(f.pool, advanced)
+	advancedStore, err := postgres.New(f.pool, advanced, disposableBlob(t))
 	if err != nil {
 		t.Fatalf("advanced store: %v", err)
 	}

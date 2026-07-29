@@ -467,6 +467,7 @@ type Store interface {
 	Reader
 	Writer
 	Maintenance
+	ObjectStore
 
 	// WithTx runs fn inside one transaction, committing when it returns nil
 	// and rolling back otherwise. Every multi-statement operation above
