@@ -264,3 +264,82 @@ func sortedKeys[V any](set map[evidenceKey]V) []evidenceKey {
 	})
 	return keys
 }
+
+// ReasonEvidenceDropped is an amendment that removes a reference the
+// original still needs.
+const ReasonEvidenceDropped store.RejectionReason = "an amendment removes an evidence reference"
+
+// extendOriginalPins applies an amendment's evidence to the ORIGINAL's pin
+// set, in the amendment's own acceptance transaction (design D5).
+//
+// Three things happen here, and the order matters:
+//
+//  1. The expected set is extracted from the ASSEMBLED effective payload,
+//     never from the amendment's stored patch. A patch is an RFC 7386 merge
+//     document: running the extractor over it returns whatever the patch
+//     happens to mention, which is neither the complete reviewed set nor a
+//     subset with any useful meaning. The reviewer read the assembled
+//     result, so that is what the pins must match.
+//  2. An amendment may ADD references and may not remove them. Exact set
+//     equality against the effective payload would otherwise drop a pin the
+//     original still needs, and ADR 0021 preserves accepted history
+//     immutably -- history without its evidence is not preserved.
+//  3. The additions are written to the ORIGINAL, because every pin in a
+//     chain is held by the original. This is an INTERNAL write, not the
+//     public draft-only Pin: the original is `accepted` by now, and the
+//     draft-only rule exists to stop callers dismantling a verified set,
+//     not to stop the seam maintaining one.
+func (t *tx) extendOriginalPins(
+	ctx context.Context, transition string, original *gen.ManagementArtifact,
+	amendmentID uuid.UUID, base, effective []byte,
+) error {
+	// Both extractions use the ORIGINAL's type and version, which item 4
+	// already guarantees the amendment inherits: a v1 artifact stays v1 for
+	// life, so one extractor reads both sides of this comparison.
+	beforeSet, err := t.expectedReferences(original, base)
+	if err != nil {
+		return err
+	}
+	afterSet, err := t.expectedReferences(original, effective)
+	if err != nil {
+		return err
+	}
+
+	dropped := sortedKeys(beforeSet)
+	for i := range dropped {
+		if _, kept := afterSet[dropped[i]]; !kept {
+			return rejected(transition, amendmentID, ReasonEvidenceDropped, dropped[i].String())
+		}
+	}
+
+	held, err := t.queries.ListPinsByArtifact(ctx, gen.ListPinsByArtifactParams{
+		OrganizationID:     original.OrganizationID,
+		PinnedByArtifactID: original.ArtifactID,
+	})
+	if err != nil {
+		return fmt.Errorf("read pins for original %s: %w", fromUUID(original.ArtifactID), err)
+	}
+	pinnedTargets := make(map[evidenceKey]struct{}, len(held))
+	for i := range held {
+		pinnedTargets[keyOfPin(&held[i])] = struct{}{}
+	}
+
+	// Only the additions. Re-pinning something already held would leave a
+	// duplicate whose only purpose is to record that two amendments
+	// mentioned the same evidence.
+	additions := sortedKeys(afterSet)
+	for i := range additions {
+		if _, already := pinnedTargets[additions[i]]; already {
+			continue
+		}
+		if _, err := t.pin(ctx, fromUUID(original.OrganizationID),
+			fromUUID(original.ArtifactID), additions[i].reference()); err != nil {
+			return fmt.Errorf("pin %s introduced by amendment %s: %w", additions[i], amendmentID, err)
+		}
+	}
+
+	// And the whole set is verified afterwards, exactly as an original's is
+	// at its own acceptance: the additions are new, but the pins this
+	// amendment inherits may have rotted since the original was accepted.
+	return t.checkEvidence(ctx, transition, original, effective)
+}

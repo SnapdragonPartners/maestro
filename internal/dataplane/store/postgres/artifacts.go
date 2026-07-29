@@ -881,6 +881,15 @@ func (t *tx) AcceptAmendment(ctx context.Context, organizationID, amendmentID, r
 		return fmt.Errorf("amendment %s produces an invalid effective payload: %w", amendmentID, validationErr)
 	}
 
+	// 4a. The evidence the assembled payload names, applied to the
+	// ORIGINAL's pin set. Extracting from the amendment's stored patch
+	// instead would read whatever the patch happened to mention, which is
+	// not the set anyone reviewed.
+	if evidenceErr := t.extendOriginalPins(ctx, transitionAcceptAmendment,
+		&original, amendmentID, base, merged); evidenceErr != nil {
+		return evidenceErr
+	}
+
 	// 5. Allocate the sequence from the historical maximum.
 	next := currentSequence + 1
 

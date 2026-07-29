@@ -776,3 +776,214 @@ func TestACorruptedDuplicatePinIsStillChecked(t *testing.T) {
 		t.Fatalf("acceptance refused two correctly bound pins on one target: %v", acceptErr)
 	}
 }
+
+// amendWithEvidence writes a draft amendment whose patch names the
+// original's evidence plus whatever is added.
+func (f *fixture) amendWithEvidence(
+	t *testing.T, originalID uuid.UUID, references []uuid.UUID,
+) *store.ManagementArtifact {
+	t.Helper()
+	patch, err := json.Marshal(evidencePayload{Attachments: references})
+	if err != nil {
+		t.Fatalf("marshal patch: %v", err)
+	}
+	amendment, err := f.store.CreateManagementArtifact(context.Background(),
+		store.CreateManagementArtifactInput{
+			Payload:          patch,
+			AmendsArtifactID: &originalID,
+			Type:             evidenceType,
+			Summary:          "an amendment with evidence",
+			Scope:            f.scope(),
+			OrganizationID:   f.organizationID,
+			UserID:           f.userID,
+			AuthorInstanceID: f.author,
+		})
+	if err != nil {
+		t.Fatalf("create amendment: %v", err)
+	}
+	return amendment
+}
+
+// acceptedOriginal is an accepted artifact holding one pinned attachment.
+func (f *fixture) acceptedOriginal(t *testing.T) *store.AttachEvidenceResult {
+	t.Helper()
+	result := f.attachEvidence(t, []byte("the original's evidence"))
+	if err := f.store.AcceptArtifact(context.Background(), f.organizationID,
+		result.Artifact.ArtifactID, f.acceptableReview(t, result.Artifact)); err != nil {
+		t.Fatalf("accept the original: %v", err)
+	}
+	return result
+}
+
+// TestAnAmendmentAddsPinsToTheOriginal covers where a chain's pins live.
+//
+// The amendment introduces evidence, and the pin for it is written to the
+// ORIGINAL, in the acceptance transaction. If each artifact held what it
+// introduced, an amendment's pins would leak: item 4 refuses to archive an
+// amendment at all, and archiving the original removes only the original's
+// own -- so nothing could ever release them.
+func TestAnAmendmentAddsPinsToTheOriginal(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	original := f.acceptedOriginal(t)
+	added, err := f.store.PutAttachment(ctx, putInput(f.organizationID, []byte("evidence the amendment adds")))
+	if err != nil {
+		t.Fatalf("PutAttachment: %v", err)
+	}
+
+	// The patch names both: the original's reference and the new one. The
+	// effective payload is what the reviewer read.
+	amendment := f.amendWithEvidence(t, original.Artifact.ArtifactID,
+		[]uuid.UUID{original.Attachments[0].AttachmentID, added.AttachmentID})
+	base := f.base(t, original.Artifact.ArtifactID)
+	review := f.review(t, amendment.ArtifactID, amendment.ReviewDigest,
+		store.DecisionAccepted, f.reviewer, &base)
+
+	if acceptErr := f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, review.ReviewID); acceptErr != nil {
+		t.Fatalf("AcceptAmendment: %v", acceptErr)
+	}
+
+	// The ORIGINAL holds both pins; the amendment holds none.
+	originalPins, err := f.store.ListPins(ctx, f.organizationID, original.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins on the original: %v", err)
+	}
+	if len(originalPins) != 2 {
+		t.Fatalf("the original holds %d pins, want the one it was accepted with plus the addition",
+			len(originalPins))
+	}
+	amendmentPins, err := f.store.ListPins(ctx, f.organizationID, amendment.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins on the amendment: %v", err)
+	}
+	if len(amendmentPins) != 0 {
+		t.Fatalf("the amendment holds %d pins; every pin in a chain is held by the original, and one "+
+			"held here could never be released", len(amendmentPins))
+	}
+}
+
+// TestAnAmendmentMayNotDropAnEvidenceReference is the additive rule. Exact
+// set equality against the effective payload would drop a pin the original
+// still needs, and accepted history without its evidence is not preserved.
+func TestAnAmendmentMayNotDropAnEvidenceReference(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	original := f.acceptedOriginal(t)
+
+	// A patch that empties the reference list. RFC 7386 makes this an
+	// explicit removal rather than an omission, which is exactly the case
+	// the rule is about.
+	amendment := f.amendWithEvidence(t, original.Artifact.ArtifactID, []uuid.UUID{})
+	base := f.base(t, original.Artifact.ArtifactID)
+	review := f.review(t, amendment.ArtifactID, amendment.ReviewDigest,
+		store.DecisionAccepted, f.reviewer, &base)
+
+	err := f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, review.ReviewID)
+	assertRejected(t, err, "an amendment removes an evidence reference", "an amendment dropping evidence")
+
+	// The original's set is exactly what it was: a refused amendment
+	// changes nothing.
+	pins, err := f.store.ListPins(ctx, f.organizationID, original.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins: %v", err)
+	}
+	if len(pins) != 1 || pins[0].PinID != original.Pins[0].PinID {
+		t.Fatalf("the original holds %+v after a refused amendment", pins)
+	}
+	// And the amendment is still a draft.
+	stillDraft, err := f.store.GetManagementArtifact(ctx, f.organizationID, amendment.ArtifactID)
+	if err != nil {
+		t.Fatalf("read the amendment: %v", err)
+	}
+	if stillDraft.Status != store.StatusDraft {
+		t.Fatalf("the amendment is %q after a refused acceptance", stillDraft.Status)
+	}
+}
+
+// TestAFailedAmendmentLeavesTheOriginalsPinsAlone covers the transaction
+// boundary: the pin additions and the amendment's acceptance are one write,
+// so a failure after the additions must take them with it.
+func TestAFailedAmendmentLeavesTheOriginalsPinsAlone(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	original := f.acceptedOriginal(t)
+	added, err := f.store.PutAttachment(ctx, putInput(f.organizationID, []byte("evidence that will not stick")))
+	if err != nil {
+		t.Fatalf("PutAttachment: %v", err)
+	}
+
+	amendment := f.amendWithEvidence(t, original.Artifact.ArtifactID,
+		[]uuid.UUID{original.Attachments[0].AttachmentID, added.AttachmentID})
+	base := f.base(t, original.Artifact.ArtifactID)
+	review := f.review(t, amendment.ArtifactID, amendment.ReviewDigest,
+		store.DecisionAccepted, f.reviewer, &base)
+
+	// Remove the object beneath the addition. The pin write succeeds and
+	// the verification that follows does not, so the failure lands after
+	// the original's set has already been extended.
+	f.deleteStoredObject(t, added.Digest)
+
+	err = f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, review.ReviewID)
+	assertRejected(t, err, "referenced evidence is not stored", "an amendment adding missing evidence")
+
+	pins, err := f.store.ListPins(ctx, f.organizationID, original.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins: %v", err)
+	}
+	if len(pins) != 1 || pins[0].PinID != original.Pins[0].PinID {
+		t.Fatalf("the original holds %+v; a failed amendment must take its pin additions with it", pins)
+	}
+}
+
+// TestAnAmendmentThatDoesNotMentionEvidenceKeepsIt is what makes the
+// distinction between the patch and the effective payload observable.
+//
+// An amendment is stored as an RFC 7386 merge patch, and most amendments
+// do not restate the evidence they inherit -- this one changes the title
+// and nothing else. Extracting from the PATCH would then produce an empty
+// set, and the original's perfectly good pin would read as an unreviewed
+// retention claim, refusing an amendment that is entirely correct.
+//
+// Every other amendment test here happens to name the full list in its
+// patch, so all of them pass against that defect. This one does not.
+func TestAnAmendmentThatDoesNotMentionEvidenceKeepsIt(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	original := f.acceptedOriginal(t)
+
+	// A patch touching only the title. The effective payload still names
+	// the original's attachment; the patch does not mention it at all.
+	amendment, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Payload:          json.RawMessage(`{"title":"a better title"}`),
+		AmendsArtifactID: &original.Artifact.ArtifactID,
+		Type:             evidenceType,
+		Summary:          "a title-only amendment",
+		Scope:            f.scope(),
+		OrganizationID:   f.organizationID,
+		UserID:           f.userID,
+		AuthorInstanceID: f.author,
+	})
+	if err != nil {
+		t.Fatalf("create amendment: %v", err)
+	}
+	base := f.base(t, original.Artifact.ArtifactID)
+	review := f.review(t, amendment.ArtifactID, amendment.ReviewDigest,
+		store.DecisionAccepted, f.reviewer, &base)
+
+	if acceptErr := f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, review.ReviewID); acceptErr != nil {
+		t.Fatalf("AcceptAmendment refused an amendment that changes only the title: %v", acceptErr)
+	}
+
+	// The inherited pin is still there, and no duplicate was added for it.
+	pins, err := f.store.ListPins(ctx, f.organizationID, original.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins: %v", err)
+	}
+	if len(pins) != 1 || pins[0].PinID != original.Pins[0].PinID {
+		t.Fatalf("the original holds %+v, want exactly the pin it was accepted with", pins)
+	}
+}
