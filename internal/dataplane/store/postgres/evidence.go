@@ -71,49 +71,81 @@ func (t *tx) checkEvidence(
 		return fmt.Errorf("read pins for artifact %s: %w", fromUUID(artifact.ArtifactID), err)
 	}
 
-	pinned := make(map[evidenceKey]*gen.RetentionPin, len(held))
-	for i := range held {
-		pinned[keyOfPin(&held[i])] = &held[i]
-	}
-
 	artifactID := fromUUID(artifact.ArtifactID)
 	organizationID := fromUUID(artifact.OrganizationID)
 
-	// Every expected reference is pinned, its pin binds the target's real
-	// digest, and the object behind it exists.
+	// Which targets are pinned, for the missing-reference check below.
+	// Duplicates collapse here, and that is correct: the design compares
+	// SETS, and two pins on one target name the same member twice.
+	pinnedTargets := make(map[evidenceKey]struct{}, len(held))
+	for i := range held {
+		pinnedTargets[keyOfPin(&held[i])] = struct{}{}
+	}
+
+	// Every expected reference is pinned by something.
 	wanted := sortedKeys(expected)
 	for i := range wanted {
-		want := wanted[i]
-		pin, ok := pinned[want]
-		if !ok {
-			return rejected(transition, artifactID, ReasonEvidenceUnpinned, want.String())
-		}
-		if err := t.checkPinTarget(ctx, transition, artifactID, organizationID, want, pin); err != nil {
-			return err
+		if _, ok := pinnedTargets[wanted[i]]; !ok {
+			return rejected(transition, artifactID, ReasonEvidenceUnpinned, wanted[i].String())
 		}
 	}
 
-	// And nothing else is pinned.
-	holding := sortedKeys(pinned)
-	for i := range holding {
-		if _, expectedIt := expected[holding[i]]; !expectedIt {
-			return rejected(transition, artifactID, ReasonPinUnreviewed, holding[i].String())
+	// And EVERY held row is checked -- every row, not one per target.
+	//
+	// Nothing forbids two pins on one target: the schema has no uniqueness
+	// over (holder, target), the public Pin will write a second, and the
+	// design's set comparison is indifferent to the duplication. But a
+	// map keyed by target keeps only the LAST row for each, and this
+	// listing is ordered, so a correctly bound duplicate reliably hides a
+	// corrupted one -- acceptance would verify a pin it never looked at.
+	//
+	// Forbidding duplicates with a unique constraint was the alternative.
+	// It is not this item's decision to make: the accepted design compares
+	// sets and says nothing against a redundant pin, and the check has to
+	// be right for the rows that exist either way.
+	targets := newTargetCache()
+	for i := range held {
+		pin := &held[i]
+		key := keyOfPin(pin)
+		if _, expectedIt := expected[key]; !expectedIt {
+			return rejected(transition, artifactID, ReasonPinUnreviewed, key.String())
+		}
+		if err := t.checkPinTarget(ctx, transition, artifactID, organizationID, key, pin, targets); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
+// targetCache remembers what each referenced target actually is, so a
+// target pinned twice costs one lookup and one existence check rather than
+// two of each. The pins are still compared individually; only the reads
+// they compare against are shared.
+type targetCache struct {
+	digests map[evidenceKey]string
+	stored  map[evidenceKey]bool
+}
+
+func newTargetCache() *targetCache {
+	return &targetCache{digests: map[evidenceKey]string{}, stored: map[evidenceKey]bool{}}
+}
+
 // checkPinTarget verifies one pin against what it claims to protect.
 func (t *tx) checkPinTarget(
 	ctx context.Context, transition string, artifactID, organizationID uuid.UUID,
-	want evidenceKey, pin *gen.RetentionPin,
+	want evidenceKey, pin *gen.RetentionPin, targets *targetCache,
 ) error {
-	actual, err := t.evidenceDigest(ctx, organizationID, want.reference())
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return rejected(transition, artifactID, ReasonEvidenceMissing, want.String())
+	actual, cached := targets.digests[want]
+	if !cached {
+		read, err := t.evidenceDigest(ctx, organizationID, want.reference())
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return rejected(transition, artifactID, ReasonEvidenceMissing, want.String())
+			}
+			return err
 		}
-		return err
+		actual = read
+		targets.digests[want] = read
 	}
 	if pin.PinnedDigest != actual {
 		return rejected(transition, artifactID, ReasonPinDigestMismatch,
@@ -124,9 +156,14 @@ func (t *tx) checkPinTarget(
 	// bytes. Audit artifacts are rows, and the digest comparison above is
 	// the whole of their check.
 	if want.attachment != uuid.Nil {
-		stored, err := t.blob.Exists(ctx, objectKey(organizationID, actual))
-		if err != nil {
-			return fmt.Errorf("check stored object for %s: %w", want, err)
+		stored, cached := targets.stored[want]
+		if !cached {
+			present, err := t.blob.Exists(ctx, objectKey(organizationID, actual))
+			if err != nil {
+				return fmt.Errorf("check stored object for %s: %w", want, err)
+			}
+			stored = present
+			targets.stored[want] = present
 		}
 		if !stored {
 			return rejected(transition, artifactID, ReasonEvidenceMissing, want.String())

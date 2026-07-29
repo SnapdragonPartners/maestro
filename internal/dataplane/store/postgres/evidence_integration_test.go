@@ -503,13 +503,34 @@ func TestSupersessionFacesTheEvidencePreconditions(t *testing.T) {
 	// The positive control, on the same transition: restore the pin and it
 	// goes through. Without this the case above would pass against a
 	// supersession that refused everything.
-	if _, err := f.store.Pin(ctx, f.organizationID, superseding.Artifact.ArtifactID,
-		store.EvidenceRef{AttachmentID: &superseding.Attachments[0].AttachmentID}); err != nil {
-		t.Fatalf("Pin: %v", err)
+	if _, pinErr := f.store.Pin(ctx, f.organizationID, superseding.Artifact.ArtifactID,
+		store.EvidenceRef{AttachmentID: &superseding.Attachments[0].AttachmentID}); pinErr != nil {
+		t.Fatalf("Pin: %v", pinErr)
 	}
-	if err := f.store.SupersedeArtifact(ctx, f.organizationID, target.Artifact.ArtifactID,
-		superseding.Artifact.ArtifactID, f.acceptableReview(t, superseding.Artifact)); err != nil {
-		t.Fatalf("SupersedeArtifact refused a correct evidence set: %v", err)
+	if supersedeErr := f.store.SupersedeArtifact(ctx, f.organizationID, target.Artifact.ArtifactID,
+		superseding.Artifact.ArtifactID, f.acceptableReview(t, superseding.Artifact)); supersedeErr != nil {
+		t.Fatalf("SupersedeArtifact refused a correct evidence set: %v", supersedeErr)
+	}
+
+	// The superseded TARGET keeps its pins. That is a separate requirement
+	// from the check above, and deleting them here would leave every other
+	// assertion in this test green: ADR 0021 preserves accepted history
+	// immutably, and history without its evidence is not preserved.
+	retained, err := f.store.ListPins(ctx, f.organizationID, target.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("ListPins on the superseded target: %v", err)
+	}
+	if len(retained) != 1 || retained[0].PinID != target.Pins[0].PinID {
+		t.Fatalf("the superseded target holds %+v, want the pin it was accepted with", retained)
+	}
+	// And it is genuinely superseded, so the retention is not an artefact
+	// of a supersession that did not happen.
+	retired, err := f.store.GetManagementArtifact(ctx, f.organizationID, target.Artifact.ArtifactID)
+	if err != nil {
+		t.Fatalf("read the target: %v", err)
+	}
+	if retired.Status != store.StatusSuperseded {
+		t.Fatalf("the target is %q, want %q", retired.Status, store.StatusSuperseded)
 	}
 }
 
@@ -702,3 +723,56 @@ func (f *fixture) countAllAttachments(ctx context.Context, t *testing.T) int {
 }
 func (f *fixture) countArtifacts(t *testing.T) int { return f.countRows(t, "management_artifacts") }
 func (f *fixture) countPins(t *testing.T) int      { return f.countRows(t, "retention_pins") }
+
+// TestACorruptedDuplicatePinIsStillChecked covers what a map keyed by
+// target hides.
+//
+// Nothing forbids two pins on one target -- the schema has no uniqueness
+// over (holder, target) and the public Pin writes a second happily -- so
+// collapsing them before validation checks whichever the ordered listing
+// happened to put last. A correctly bound duplicate then reliably conceals
+// a corrupted one, and acceptance verifies a pin it never looked at.
+func TestACorruptedDuplicatePinIsStillChecked(t *testing.T) {
+	f := evidenceFixture(t)
+	ctx := context.Background()
+
+	result := f.attachEvidence(t, []byte("evidence pinned twice"))
+	attachmentID := result.Attachments[0].AttachmentID
+
+	// A second pin on the SAME target, through the public operation.
+	duplicate, err := f.store.Pin(ctx, f.organizationID, result.Artifact.ArtifactID,
+		store.EvidenceRef{AttachmentID: &attachmentID})
+	if err != nil {
+		t.Fatalf("a second pin on one target was refused, so this test describes nothing: %v", err)
+	}
+
+	// Corrupt exactly one of the two. Which one is not left to chance: the
+	// listing orders by target and then by pin id, so corrupting the
+	// EARLIER of the two is what a last-write-wins map would skip.
+	first, second := result.Pins[0], *duplicate
+	if second.PinID.String() < first.PinID.String() {
+		first, second = second, first
+	}
+	if _, corruptErr := f.pool.Exec(ctx,
+		`UPDATE retention_pins SET pinned_digest = $1 WHERE retention_pin_id = $2`,
+		digestOf([]byte("not what this attachment is")), first.PinID); corruptErr != nil {
+		t.Fatalf("corrupt the earlier pin: %v", corruptErr)
+	}
+
+	err = f.store.AcceptArtifact(ctx, f.organizationID, result.Artifact.ArtifactID,
+		f.acceptableReview(t, result.Artifact))
+	assertRejected(t, err, "a pin's digest does not match its target",
+		"accepting with one of two pins corrupted")
+
+	// And with both correct it accepts, so the case above is not passing
+	// because duplicates are refused outright.
+	if _, restoreErr := f.pool.Exec(ctx,
+		`UPDATE retention_pins SET pinned_digest = $1 WHERE retention_pin_id = $2`,
+		result.Attachments[0].Digest, first.PinID); restoreErr != nil {
+		t.Fatalf("restore the pin: %v", restoreErr)
+	}
+	if acceptErr := f.store.AcceptArtifact(ctx, f.organizationID, result.Artifact.ArtifactID,
+		f.acceptableReview(t, result.Artifact)); acceptErr != nil {
+		t.Fatalf("acceptance refused two correctly bound pins on one target: %v", acceptErr)
+	}
+}
