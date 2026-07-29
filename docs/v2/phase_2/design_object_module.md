@@ -34,8 +34,8 @@ Round 1 collapsed the blob store and the object module into one interface, dropp
 
 | Primitive | Returns / used by |
 | --- | --- |
-| `PutStaged` | Uploads to a staging key, **returning its version id** |
-| `Promote` | Server-side copy to the digest key, **returning the new version id** |
+| `PutStaged` | Uploads to a staging key, **returning its version id**, and failing if the store returns none |
+| `Promote` | Server-side copy of a **named staged version** to the digest key, **returning the new version id**; multipart above the single-request copy limit (D1a) |
 | `Get`, `Stat`, `Exists` | Reads and verification |
 | `ListVersions` | Enumerates every version of a key or prefix, **including delete markers and the `null` version** left by anything written before versioning was enabled |
 | `DeleteVersion` | Removes **exactly one** named version, and nothing else |
@@ -86,10 +86,12 @@ real S3 semantics: there, the exact-key form would return every key the given
 one prefixes, and staging cleanup would abort a different writer's upload —
 the unfenced abort of D1.
 
-**`max-uploads` is ignored and the listing is never truncated.** Asked for one
-upload with four in the bucket, the pinned server returns four and reports
-`IsTruncated` false. The two-marker paging of round 8 is therefore unreachable
-against this server at any bucket size. It stays, because a store that honours
+**The requested page limit is ignored.** Asked for one upload with four in
+the bucket, the pinned server returns all four and reports `IsTruncated`
+false. Nothing here establishes what it does at a scale where it might
+truncate on its own; what is measured is that it does not truncate on
+request, which is the only lever a test has. The two-marker paging of round
+8 is therefore unexercised against this server. It stays, because a store that honours
 the protocol truncates at a thousand and answers the rest only to a correct
 marker pair, and ADR 0022 names other backends as a later choice — but it is
 tested against canned responses, since no real-server test in this suite can
@@ -110,11 +112,11 @@ Pin and unpin stay relational because that is what they are: rows with foreign k
 
 There is no public raw delete at either layer. `Delete` is a Layer 1 primitive with two callers inside the module, and D8's rejection stands without contradicting D1.
 
-## D2. Three facts about the bytes, three mechanisms
+## D2. Three facts about the bytes, and the mechanisms that answer them
 
 Round 1 hashed the source and called it verification, which proves what the client read and nothing about what arrived. Round 2 then swung too far and treated the server checksum as proof of the address. Both were one mistake: **one check was asked to answer three different questions.**
 
-**The server checksum is transport integrity, not the address.** Round 2 called `PutObjectOptions.Checksum` a server verification of our digest; it is not. It selects an *algorithm* — the client computes the value — and for a multipart upload the SHA-256 it carries is a **composite** checksum-of-checksums, which is not the full-object SHA-256 this design uses as the key. Comparing it to a digest would compare two different numbers and pass whenever they happened to be equal, which for a small single-part object they are. That is the worst kind of check: correct on the easy case, silently absent on the large evidence media this module exists for.
+**The server checksum is transport integrity at best, and never the address.** Round 2 called `PutObjectOptions.Checksum` a server verification of our digest; it is not. It selects an *algorithm* — the client computes the value — and for a multipart upload the SHA-256 it carries is a **composite** checksum-of-checksums, which is not the full-object SHA-256 this design uses as the key. Comparing it to a digest would compare two different numbers and pass whenever they happened to be equal, which for a small single-part object they are. That is the worst kind of check: correct on the easy case, silently absent on the large evidence media this module exists for.
 
 Three separate facts are needed, and each has its own mechanism:
 
@@ -122,14 +124,14 @@ Three separate facts are needed, and each has its own mechanism:
 | --- | --- |
 | The **source** hashes to the claimed digest | Hash the complete stream **locally** while it is read, and compare |
 | The source is the **stated length** | Count bytes; after `size` bytes, one more read must return EOF |
-| The bytes **arrived** as sent | The server checksum, retained as transport verification |
+| The bytes **arrived** as sent | The wire mechanisms, retained as transport verification: the client signs each chunk, and the upload checksum is enforced where the payload is unsigned (measured below) |
 | The **promotion** landed intact | Read the promoted object back and hash it |
 
 The write path:
 
-1. **Staging upload**, streaming through a hashing, counting reader, with a SHA-256 upload checksum enabled for transport. The local hash is the authority on content; the server checksum guards the wire.
+1. **Staging upload**, streaming through a hashing, counting reader, with a SHA-256 upload checksum enabled for transport. The local hash is the authority on content; the wire is guarded by the chunk signature and that checksum together, in that order (measured below).
 2. **Length and digest check.** A source longer than the stated size fails — the check is an explicit read past `size` that must return EOF, not merely "we stopped at `size`", which silently truncates. A source shorter than stated fails on the count. Then the local hash must equal the claimed digest.
-3. **Promote** by server-side copy to the digest key, then **read the promoted object back and hash it**. A composite checksum cannot answer this, and a copy landing intact is a claim like any other. The cost is one read per genuinely new object, which the idempotent shortcut already avoids paying twice.
+3. **Promote** by server-side copy of the **named staged version** to the digest key — multipart above the protocol's single-request copy limit (D1a) — then **read the promoted object back and hash it**. A composite checksum cannot answer this, and a copy landing intact is a claim like any other. The cost is one read per genuinely new object, which the idempotent shortcut already avoids paying twice.
 4. **Staging release** — the lease row and the staging object (D6), whose failure is logged rather than failing a completed write.
 
 **The idempotent shortcut verifies too.** An object already at the digest key is *not* proof of correct content — it is exactly where a previously corrupted or partially promoted object would sit, and returning success would bless it into a new attachment row. So the shortcut reads the object back and hashes it. That costs one read of an object whose upload it skips, so the shortcut still wins; correctness is not the thing being traded for speed.

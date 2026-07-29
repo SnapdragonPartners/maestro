@@ -47,6 +47,11 @@ type Config struct {
 type Blob struct {
 	core   *minio.Core
 	bucket string
+	// copyLimit is the size above which a promote must go multipart. It is
+	// a field only because a test cannot upload five gibibytes to reach
+	// the branch, and an untested multipart-copy path is the one that runs
+	// for the largest, most expensive evidence media.
+	copyLimit int64
 }
 
 // Version is one stored version of a key, including delete markers.
@@ -105,7 +110,7 @@ func newBlob(cfg Config, transport http.RoundTripper) (*Blob, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build object store client: %w", err)
 	}
-	return &Blob{core: core, bucket: cfg.Bucket}, nil
+	return &Blob{core: core, bucket: cfg.Bucket, copyLimit: singleCopyLimit}, nil
 }
 
 // EnsureBucket creates the bucket if it is missing, enables versioning, and
@@ -160,28 +165,98 @@ func (b *Blob) EnsureBucket(ctx context.Context) error {
 // verification at the seam where the claimed digest lives.
 func (b *Blob) PutStaged(ctx context.Context, key string, size int64, body io.Reader) (string, error) {
 	info, err := b.core.Client.PutObject(ctx, b.bucket, key, body, size, minio.PutObjectOptions{
-		// SHA-256 here is TRANSPORT integrity: the server verifies what it
-		// received against what the client computed. It is not proof of the
-		// object's address — a multipart upload's value is a composite
-		// checksum-of-checksums, not the full-object digest.
+		// SHA-256 here is TRANSPORT integrity, and the wire has two
+		// mechanisms: the client stream-signs each chunk, and this header
+		// is verified on an unsigned payload. Neither is proof of the
+		// object's address — both are computed by the client from the same
+		// buffer, and a multipart upload's value is a composite
+		// checksum-of-checksums rather than the full-object digest.
 		Checksum: minio.ChecksumSHA256,
 	})
 	if err != nil {
 		return "", fmt.Errorf("upload staging object %s: %w", key, err)
 	}
-	return info.VersionID, nil
+	return fencedVersion(key, info.VersionID)
 }
 
-// Promote server-side copies a staging object onto its digest key and
+// Promote server-side copies one staged VERSION onto its digest key and
 // returns the new version.
-func (b *Blob) Promote(ctx context.Context, stagingKey, digestKey string) (string, error) {
-	info, err := b.core.Client.CopyObject(ctx,
-		minio.CopyDestOptions{Bucket: b.bucket, Object: digestKey},
-		minio.CopySrcOptions{Bucket: b.bucket, Object: stagingKey})
-	if err != nil {
-		return "", fmt.Errorf("promote %s to %s: %w", stagingKey, digestKey, err)
+//
+// The staged version is named rather than implied. A copy that takes
+// whatever is current at the staging key is not the object this writer
+// staged and holds a lease on: staging keys are unique per upload, so this
+// should not happen — but "should not happen" is what the lease, the token
+// and the row lock all exist to stop being load-bearing, and naming the
+// version costs one field.
+func (b *Blob) Promote(ctx context.Context, stagingKey, stagingVersion, digestKey string) (string, error) {
+	if stagingVersion == "" {
+		return "", fmt.Errorf("refusing to promote %s without a version id: the copy would take "+
+			"whatever version is current rather than the one that was staged and verified", stagingKey)
 	}
-	return info.VersionID, nil
+	source := minio.CopySrcOptions{Bucket: b.bucket, Object: stagingKey, VersionID: stagingVersion}
+	dest := minio.CopyDestOptions{Bucket: b.bucket, Object: digestKey}
+
+	// The size decides which copy the protocol permits, so it has to be
+	// known first. Statting the exact version also fails here — before
+	// anything is written to the digest key — if the staged version is gone.
+	staged, err := b.core.Client.StatObject(ctx, b.bucket, stagingKey,
+		minio.StatObjectOptions{VersionID: stagingVersion})
+	if err != nil {
+		if isNoSuchKey(err) {
+			return "", fmt.Errorf("%w: %s version %s", ErrNoSuchObject, stagingKey, stagingVersion)
+		}
+		return "", fmt.Errorf("stat staged %s version %s: %w", stagingKey, stagingVersion, err)
+	}
+
+	var info minio.UploadInfo
+	if staged.Size <= b.copyLimit {
+		info, err = b.core.Client.CopyObject(ctx, dest, source)
+	} else {
+		info, err = b.core.Client.ComposeObject(ctx, dest, source)
+	}
+	if err != nil {
+		return "", fmt.Errorf("promote %s version %s to %s (%d bytes): %w",
+			stagingKey, stagingVersion, digestKey, staged.Size, err)
+	}
+	return fencedVersion(digestKey, info.VersionID)
+}
+
+// singleCopyLimit is the largest object the protocol will copy in one
+// request. Above it the copy must be multipart, which is what
+// ComposeObject does — evidence media are exactly the objects that get
+// there, and the design's own cleanup assumes a promote can be multipart
+// and die halfway.
+//
+// The branch is explicit because ComposeObject does NOT fall back for a
+// small object at the pinned version, whatever its shape suggests: the
+// single-request path requires a source `Start` of -1, and the option
+// validator rejects any negative `Start`, so the fallback is unreachable
+// through that entry point. MEASURED — composing a twelve-byte object
+// yields a multipart ETag. Sending every promote through a three-step
+// multipart copy would also mean every promote could leave an incomplete
+// upload on a digest key.
+const singleCopyLimit = 5 * 1024 * 1024 * 1024
+
+// nullVersion is the id a store reports for an object it holds without a
+// version — what a write lands as while versioning is off or suspended.
+const nullVersion = "null"
+
+// fencedVersion rejects a write that produced no usable version id.
+//
+// Every fence in the object sweep names the version it removes, because a
+// delete issued under a lock can arrive after that lock is gone. A write
+// that returns no version cannot be fenced at all, and the layers above
+// have no way to notice: they would record an empty string and later
+// delete by name with nothing to name. MEASURED: a write to an unversioned
+// or suspended bucket returns an EMPTY id on the pinned server, and the
+// literal "null" on a store that reports S3's null version.
+func fencedVersion(key, version string) (string, error) {
+	if version == "" || version == nullVersion {
+		return "", fmt.Errorf("%s was stored with version id %q: the bucket is not versioned, and "+
+			"every deletion in this module is version-specific, so nothing could ever reclaim it",
+			key, version)
+	}
+	return version, nil
 }
 
 // Get streams an object back. The caller verifies the bytes; a reader that
@@ -345,11 +420,12 @@ func (b *Blob) listUploads(ctx context.Context, serverPrefix string, keep func(k
 // listPageSize bounds one page of multipart uploads. The value is the
 // protocol's own default maximum.
 //
-// MEASURED: the pinned MinIO image IGNORES this parameter and answers with
-// every upload it has, `IsTruncated` false, whatever is asked for — one
-// upload requested returns four. The paging above is therefore dead against
-// this server and cannot be exercised by it at any bucket size, which is
-// why the marker arithmetic is tested against canned responses instead.
+// MEASURED: the pinned MinIO image IGNORES this parameter — asked for one
+// upload with four present it returns all four, `IsTruncated` false. That
+// is the only lever a test has, so nothing here establishes what it would
+// do at a scale where it might truncate of its own accord; what is
+// established is that paging above cannot be reached by asking. The marker
+// arithmetic is tested against canned responses instead.
 //
 // It stays because a store that honours the protocol will truncate at a
 // thousand and answer the rest only to a correct pair of markers, and
@@ -369,12 +445,45 @@ func (b *Blob) AbortUpload(ctx context.Context, key, uploadID string) error {
 			"would cancel a concurrent writer's upload", key)
 	}
 	if err := b.core.AbortMultipartUpload(ctx, b.bucket, key, uploadID); err != nil {
-		return fmt.Errorf("abort upload %s on %s: %w", uploadID, key, err)
+		// An upload that is already gone is the outcome this asked for.
+		// Cleanup is re-run by construction — a crash between the server
+		// aborting and the lease or claim recording it leaves the
+		// reconciler to retry the same id — so an error here would strand
+		// that claim permanently, on the one path whose whole purpose is
+		// to finish work an earlier actor could not.
+		//
+		// MEASURED: the pinned server returns no error at all for a repeat
+		// abort, or for an id that never existed. S3 answers NoSuchUpload,
+		// so this tolerance is for a store that follows the protocol and
+		// cannot be exercised here; it is unit-tested against a canned
+		// response instead.
+		if minio.ToErrorResponse(err).Code != noSuchUpload {
+			return fmt.Errorf("abort upload %s on %s: %w", uploadID, key, err)
+		}
 	}
 	return nil
 }
 
-// isNoSuchKey recognises the store's not-found response.
+// noSuchUpload is the response code for an upload id the server does not
+// hold — already aborted, already completed, or never started.
+const noSuchUpload = "NoSuchUpload"
+
+// isNoSuchKey recognises the store's not-found responses.
+//
+// There are two, and they are not interchangeable: a key that does not
+// exist answers NoSuchKey, and a key whose NAMED VERSION is gone answers
+// NoSuchVersion — which is what a promote sees when cleanup removed the
+// staged version out from under it. Measured, because matching only the
+// first turned a routine lost-lease outcome into an unrecognised error.
+//
+// A malformed version id is deliberately NOT here: it answers
+// InvalidArgument with status 400, and it means the caller passed
+// something that was never a version id rather than one that has gone.
 func isNoSuchKey(err error) bool {
-	return minio.ToErrorResponse(err).Code == "NoSuchKey"
+	switch minio.ToErrorResponse(err).Code {
+	case "NoSuchKey", "NoSuchVersion":
+		return true
+	default:
+		return false
+	}
 }

@@ -369,12 +369,9 @@ func TestPutStagedPromoteAndRead(t *testing.T) {
 		t.Fatal("Exists reports the staged object missing")
 	}
 
-	promotedVersion, err := blob.Promote(ctx, stagingKey, digestKey)
+	promotedVersion, err := blob.Promote(ctx, stagingKey, stagedVersion, digestKey)
 	if err != nil {
 		t.Fatalf("Promote: %v", err)
-	}
-	if promotedVersion == "" {
-		t.Fatal("Promote returned no version id; the sweep would have nothing to fence on")
 	}
 	if promotedVersion == stagedVersion {
 		t.Fatal("the promoted copy carries the staging object's version id")
@@ -383,6 +380,179 @@ func TestPutStagedPromoteAndRead(t *testing.T) {
 	// host-side read of the bind mount is not the object body.
 	if got := readAll(t, blob, digestKey); !bytes.Equal(got, body) {
 		t.Fatalf("promoted read returned %q, want %q", got, body)
+	}
+}
+
+// TestPromoteCopiesTheNamedVersion is the fence on the copy itself: a
+// promote must move the version the writer staged and verified, not
+// whatever is current at the key when the copy is issued.
+func TestPromoteCopiesTheNamedVersion(t *testing.T) {
+	blob := testBlob(t)
+	ctx := t.Context()
+	stagingKey := "staging/org/upload-1"
+	digestKey := "org/aa/bb/aabb"
+
+	staged := put(t, blob, stagingKey, []byte("the verified bytes"))
+	// Something writes the staging key again. It should not be possible on
+	// a key that is unique per upload, which is exactly why relying on that
+	// rather than naming the version is the kind of assumption this module
+	// keeps refusing to make.
+	put(t, blob, stagingKey, []byte("a different object entirely"))
+
+	if _, err := blob.Promote(ctx, stagingKey, staged, digestKey); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if got := readAll(t, blob, digestKey); !bytes.Equal(got, []byte("the verified bytes")) {
+		t.Fatalf("promote landed %q, want the version it was told to copy", got)
+	}
+}
+
+func TestPromoteRefusesAnUnnamedVersion(t *testing.T) {
+	blob := testBlob(t)
+	stagingKey := "staging/org/upload-1"
+	put(t, blob, stagingKey, []byte("evidence bytes"))
+
+	_, err := blob.Promote(t.Context(), stagingKey, "", "org/aa/bb/aabb")
+	if err == nil {
+		t.Fatal("Promote accepted a staging object with no version named")
+	}
+	exists, err := blob.Exists(t.Context(), "org/aa/bb/aabb")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists {
+		t.Fatal("the refused promote wrote to the digest key anyway")
+	}
+}
+
+// TestPromoteReportsAMissingStagedVersion covers the window the lease
+// exists to close: cleanup deleted the staged version before this writer
+// promoted it. It must fail before anything reaches the digest key, not
+// leave a partial object there.
+func TestPromoteReportsAMissingStagedVersion(t *testing.T) {
+	blob := testBlob(t)
+	ctx := t.Context()
+	stagingKey := "staging/org/upload-1"
+	digestKey := "org/aa/bb/aabb"
+
+	staged := put(t, blob, stagingKey, []byte("evidence bytes"))
+	if err := blob.DeleteVersion(ctx, stagingKey, staged); err != nil {
+		t.Fatalf("DeleteVersion: %v", err)
+	}
+
+	_, err := blob.Promote(ctx, stagingKey, staged, digestKey)
+	if !errors.Is(err, ErrNoSuchObject) {
+		t.Fatalf("Promote of a deleted staged version returned %v, want ErrNoSuchObject", err)
+	}
+	exists, err := blob.Exists(ctx, digestKey)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists {
+		t.Fatal("a failed promote left an object at the digest key")
+	}
+}
+
+// TestPromoteGoesMultipartAboveTheCopyLimit exercises the branch that runs
+// for the largest evidence media, which is the one no test can reach
+// honestly: a single-request copy is capped at five gibibytes, and
+// uploading that much to prove it would make the suite unusable. The limit
+// is lowered instead, so the multipart path runs over a small object.
+//
+// A multipart copy is identifiable: its ETag carries a `-<parts>` suffix,
+// which a single-request copy does not. That is what makes this test able
+// to fail — the bytes come back correct either way.
+func TestPromoteGoesMultipartAboveTheCopyLimit(t *testing.T) {
+	blob := testBlob(t)
+	ctx := t.Context()
+	body := []byte("small enough to test, large enough to branch")
+	blob.copyLimit = int64(len(body)) - 1
+
+	stagingKey := "staging/org/upload-1"
+	digestKey := "org/aa/bb/aabb"
+	staged := put(t, blob, stagingKey, body)
+
+	if _, err := blob.Promote(ctx, stagingKey, staged, digestKey); err != nil {
+		t.Fatalf("Promote above the copy limit: %v", err)
+	}
+	if got := readAll(t, blob, digestKey); !bytes.Equal(got, body) {
+		t.Fatalf("multipart promote landed %q, want %q", got, body)
+	}
+
+	info, err := blob.core.Client.StatObject(ctx, blob.bucket, digestKey, minio.StatObjectOptions{})
+	if err != nil {
+		t.Fatalf("stat promoted object: %v", err)
+	}
+	if !strings.Contains(info.ETag, "-") {
+		t.Fatalf("promoted object has ETag %q, which is a single-request copy; "+
+			"an object over the limit must be copied multipart", info.ETag)
+	}
+	// A completed multipart copy leaves nothing behind. The sweep's
+	// upload enumeration would otherwise find residue from every promote.
+	uploads, err := blob.ListUploadsUnder(ctx, "")
+	if err != nil {
+		t.Fatalf("ListUploadsUnder: %v", err)
+	}
+	if len(uploads) != 0 {
+		t.Fatalf("a completed multipart promote left %d incomplete uploads", len(uploads))
+	}
+}
+
+// TestWritesRefuseAnUnversionedBucket is the invariant behind every fence
+// in the sweep. A write that returns no version id cannot be deleted by
+// name later, and the layers above would record an empty string and never
+// notice — so the write fails here instead.
+func TestWritesRefuseAnUnversionedBucket(t *testing.T) {
+	cfg := testConfig(t)
+	blob := rawTestBlob(t, cfg)
+	ctx := t.Context()
+
+	// Deliberately NOT through EnsureBucket, which is what turns
+	// versioning on and verifies it.
+	if err := blob.core.MakeBucket(ctx, cfg.Bucket, minio.MakeBucketOptions{}); err != nil {
+		t.Fatalf("create unversioned bucket: %v", err)
+	}
+
+	_, err := blob.PutStaged(ctx, "staging/org/x", 4, strings.NewReader("body"))
+	if err == nil {
+		t.Fatal("PutStaged accepted a write that produced no version id")
+	}
+	if !strings.Contains(err.Error(), "not versioned") {
+		t.Fatalf("the refusal does not name the cause: %v", err)
+	}
+	// The object is still there — this is an invariant failure reported
+	// after the fact, not a rollback, and saying so matters: the caller's
+	// staging cleanup is what removes it.
+	exists, err := blob.Exists(ctx, "staging/org/x")
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !exists {
+		t.Fatal("the unversioned write left nothing; this test no longer describes the failure")
+	}
+}
+
+// TestAbortUploadIsIdempotent covers the reconciler's retry: a crash
+// between the server aborting and the claim recording it leaves the same
+// upload id to be aborted again.
+//
+// The pinned server returns no error for a repeat abort or an unknown id,
+// so this passes whether or not the tolerance below it exists. It is here
+// because the reconciler's retry is a real path and this is what it does;
+// the tolerance itself is unit-tested against a canned NoSuchUpload.
+func TestAbortUploadIsIdempotent(t *testing.T) {
+	blob := testBlob(t)
+	ctx := t.Context()
+	key := "staging/org/died-mid-upload"
+	uploadID := startAbandonedUpload(t, blob, key)
+
+	for attempt := range 2 {
+		if err := blob.AbortUpload(ctx, key, uploadID); err != nil {
+			t.Fatalf("abort attempt %d: %v", attempt+1, err)
+		}
+	}
+	if err := blob.AbortUpload(ctx, key, "an-id-that-never-existed"); err != nil {
+		t.Fatalf("abort of an unknown id: %v", err)
 	}
 }
 
@@ -482,7 +652,13 @@ func TestListVersionsSeesTheNullVersion(t *testing.T) {
 		t.Fatalf("create unversioned bucket: %v", err)
 	}
 	key := "org/aa/bb/predates-versioning"
-	if _, err := blob.PutStaged(ctx, key, 6, strings.NewReader("before")); err != nil {
+	// Written with the raw client. PutStaged refuses a write that produces
+	// no version id, so staging this fixture through the adapter would be
+	// asserting the opposite of what the module guarantees — and the state
+	// under test is one that PREDATES the adapter, which the sweep has to
+	// reclaim whoever wrote it.
+	if _, err := blob.core.Client.PutObject(ctx, cfg.Bucket, key,
+		strings.NewReader("before"), 6, minio.PutObjectOptions{}); err != nil {
 		t.Fatalf("write before versioning: %v", err)
 	}
 	if err := blob.EnsureBucket(ctx); err != nil {

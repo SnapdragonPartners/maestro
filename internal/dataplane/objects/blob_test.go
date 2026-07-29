@@ -254,3 +254,55 @@ func TestListUploadsForKeyRefusesAnEmptyKey(t *testing.T) {
 		t.Fatal("expected a refusal: an empty key enumerates the whole bucket")
 	}
 }
+
+// errorResponse serves one canned S3 error to every request except the
+// bucket-region lookup.
+type errorResponse struct {
+	code   string
+	status int
+}
+
+func (e errorResponse) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Query().Has("location") {
+		return xmlResponse(req, `<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
+			`us-east-1</LocationConstraint>`), nil
+	}
+	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><Error><Code>%s</Code>`+
+		`<Message>canned</Message></Error>`, e.code)
+	response := xmlResponse(req, body)
+	response.StatusCode = e.status
+	return response, nil
+}
+
+// TestAbortUploadToleratesAnAlreadyGoneUpload protects the reconciler's
+// retry against a store that follows S3.
+//
+// The pinned server answers a repeat abort with no error at all, so the
+// integration suite cannot tell whether this tolerance exists — it passes
+// either way. S3 answers NoSuchUpload, and there the tolerance is the
+// difference between a claim that clears and one that is retried forever.
+func TestAbortUploadToleratesAnAlreadyGoneUpload(t *testing.T) {
+	blob, err := newBlob(Config{Endpoint: "127.0.0.1:59000", Bucket: "maestro"},
+		errorResponse{code: "NoSuchUpload", status: http.StatusNotFound})
+	if err != nil {
+		t.Fatalf("newBlob: %v", err)
+	}
+	if err := blob.AbortUpload(context.Background(), "staging/org/gone", "upload-1"); err != nil {
+		t.Fatalf("abort of an already-gone upload: %v", err)
+	}
+}
+
+// TestAbortUploadStillReportsOtherFailures is the other half: tolerating
+// every error would turn a permissions failure or an unreachable server
+// into a silent success, and the claim would be cleared over storage that
+// was never reclaimed.
+func TestAbortUploadStillReportsOtherFailures(t *testing.T) {
+	blob, err := newBlob(Config{Endpoint: "127.0.0.1:59000", Bucket: "maestro"},
+		errorResponse{code: "AccessDenied", status: http.StatusForbidden})
+	if err != nil {
+		t.Fatalf("newBlob: %v", err)
+	}
+	if err := blob.AbortUpload(context.Background(), "staging/org/denied", "upload-1"); err == nil {
+		t.Fatal("AbortUpload swallowed an access-denied response")
+	}
+}
