@@ -89,6 +89,42 @@ WHERE a.organization_id = @organization_id
       WHERE p.pinned_audit_artifact_id = a.artifact_id
         AND p.organization_id          = a.organization_id);
 
+-- --- binary attachments: pinned rows are retained ----------------------
+--
+-- Deliberately left out of item 5's pass, because deleting a row whose
+-- bytes live in object storage is item 6's problem (design D6a).
+--
+-- Deleting the row does NOT delete the object. It makes the object
+-- unreachable -- the sweep's reachable set is exactly these rows -- and the
+-- sweep reclaims it afterwards under the digest lock. The two steps are
+-- separate on purpose: this pass runs under one REPEATABLE READ snapshot,
+-- and object deletion cannot participate in a snapshot.
+--
+-- Pinned rows are excluded in the WHERE and never discovered at commit.
+-- retention_pins references attachments ON DELETE RESTRICT, which ABORTS
+-- the statement rather than skipping the row, and an aborted DELETE takes
+-- the whole pass with it.
+
+-- name: CountAttachmentTruncation :one
+SELECT
+    count(*)::bigint                                        AS candidates,
+    count(*) FILTER (WHERE EXISTS (
+        SELECT 1 FROM retention_pins p
+        WHERE p.pinned_attachment_id = b.attachment_id
+          AND p.organization_id      = b.organization_id))::bigint AS retained_pinned
+FROM binary_attachments b
+WHERE b.organization_id = @organization_id
+  AND b.created_at      < @before;
+
+-- name: TruncateAttachments :execrows
+DELETE FROM binary_attachments b
+WHERE b.organization_id = @organization_id
+  AND b.created_at      < @before
+  AND NOT EXISTS (
+      SELECT 1 FROM retention_pins p
+      WHERE p.pinned_attachment_id = b.attachment_id
+        AND p.organization_id      = b.organization_id);
+
 -- --- tool calls: open, or referenced by an artifact ---------------------
 --
 -- Completed calls age from finished_at, NOT started_at: ageing from the

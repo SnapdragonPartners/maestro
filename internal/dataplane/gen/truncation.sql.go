@@ -11,6 +11,51 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countAttachmentTruncation = `-- name: CountAttachmentTruncation :one
+
+SELECT
+    count(*)::bigint                                        AS candidates,
+    count(*) FILTER (WHERE EXISTS (
+        SELECT 1 FROM retention_pins p
+        WHERE p.pinned_attachment_id = b.attachment_id
+          AND p.organization_id      = b.organization_id))::bigint AS retained_pinned
+FROM binary_attachments b
+WHERE b.organization_id = $1
+  AND b.created_at      < $2
+`
+
+type CountAttachmentTruncationParams struct {
+	OrganizationID pgtype.UUID
+	Before         pgtype.Timestamptz
+}
+
+type CountAttachmentTruncationRow struct {
+	Candidates     int64
+	RetainedPinned int64
+}
+
+// --- binary attachments: pinned rows are retained ----------------------
+//
+// Deliberately left out of item 5's pass, because deleting a row whose
+// bytes live in object storage is item 6's problem (design D6a).
+//
+// Deleting the row does NOT delete the object. It makes the object
+// unreachable -- the sweep's reachable set is exactly these rows -- and the
+// sweep reclaims it afterwards under the digest lock. The two steps are
+// separate on purpose: this pass runs under one REPEATABLE READ snapshot,
+// and object deletion cannot participate in a snapshot.
+//
+// Pinned rows are excluded in the WHERE and never discovered at commit.
+// retention_pins references attachments ON DELETE RESTRICT, which ABORTS
+// the statement rather than skipping the row, and an aborted DELETE takes
+// the whole pass with it.
+func (q *Queries) CountAttachmentTruncation(ctx context.Context, arg CountAttachmentTruncationParams) (CountAttachmentTruncationRow, error) {
+	row := q.db.QueryRow(ctx, countAttachmentTruncation, arg.OrganizationID, arg.Before)
+	var i CountAttachmentTruncationRow
+	err := row.Scan(&i.Candidates, &i.RetainedPinned)
+	return i, err
+}
+
 const countAuditArtifactTruncation = `-- name: CountAuditArtifactTruncation :one
 
 SELECT
@@ -212,6 +257,29 @@ func (q *Queries) CurrentIsolationLevel(ctx context.Context) (string, error) {
 	var column_1 string
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const truncateAttachments = `-- name: TruncateAttachments :execrows
+DELETE FROM binary_attachments b
+WHERE b.organization_id = $1
+  AND b.created_at      < $2
+  AND NOT EXISTS (
+      SELECT 1 FROM retention_pins p
+      WHERE p.pinned_attachment_id = b.attachment_id
+        AND p.organization_id      = b.organization_id)
+`
+
+type TruncateAttachmentsParams struct {
+	OrganizationID pgtype.UUID
+	Before         pgtype.Timestamptz
+}
+
+func (q *Queries) TruncateAttachments(ctx context.Context, arg TruncateAttachmentsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, truncateAttachments, arg.OrganizationID, arg.Before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const truncateAuditArtifacts = `-- name: TruncateAuditArtifacts :execrows

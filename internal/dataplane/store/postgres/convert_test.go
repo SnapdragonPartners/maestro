@@ -188,3 +188,79 @@ func TestConstraintMatchingIsByName(t *testing.T) {
 		t.Error("a non-Postgres error matched a constraint name")
 	}
 }
+
+// TestTheRetryPredicateMatchesBothHalves covers the measured contract
+// (design D6a), and it is a unit test of the predicate rather than a race.
+//
+// The race itself is already pinned by pinrace_integration_test.go, which
+// measured the two SQLSTATEs against the live server. What that test cannot
+// show is the predicate's SECOND half: it only ever produces this one
+// constraint, so a predicate matching 23001 alone passes it while turning
+// every persistent RESTRICT failure into three attempts and a misleading
+// concurrency error.
+func TestTheRetryPredicateMatchesBothHalves(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		err     error
+		retried bool
+	}{
+		"the measured concurrent-pin failure": {
+			err: &pgconn.PgError{Code: "23001", ConstraintName: "retention_pins_attachment_fkey"},
+			// The next attempt's snapshot sees the pin, the NOT EXISTS
+			// excludes the row, and the pass completes with that
+			// attachment correctly retained.
+			retried: true,
+		},
+		"a restriction from another constraint": {
+			// A real dependency the pass must not delete through. Retrying
+			// it would report exhausted concurrency for a problem that was
+			// never concurrency.
+			err:     &pgconn.PgError{Code: "23001", ConstraintName: "some_other_fkey"},
+			retried: false,
+		},
+		"a foreign-key violation on the same constraint": {
+			// 23503 is what the PIN receives, not the truncation. It is a
+			// different code and not this pass's to retry.
+			err:     &pgconn.PgError{Code: "23503", ConstraintName: "retention_pins_attachment_fkey"},
+			retried: false,
+		},
+		"a lost snapshot": {
+			err:     &pgconn.PgError{Code: "40001"},
+			retried: true,
+		},
+		"an unrelated error": {
+			err:     errors.New("the connection went away"),
+			retried: false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempts := 0
+			_, err := retryOnSerializationFailure(truncationAttempts, func() (int, error) {
+				attempts++
+				return 0, testCase.err
+			})
+			if err == nil {
+				t.Fatal("the retry helper reported success for an operation that always failed")
+			}
+
+			if testCase.retried {
+				if attempts != truncationAttempts {
+					t.Fatalf("made %d attempts, want the full bound", attempts)
+				}
+				if !errors.Is(err, store.ErrConcurrentTruncation) {
+					t.Fatalf("exhaustion reported %v, want ErrConcurrentTruncation", err)
+				}
+				return
+			}
+			if attempts != 1 {
+				t.Fatalf("made %d attempts for an error it must not retry", attempts)
+			}
+			if errors.Is(err, store.ErrConcurrentTruncation) {
+				t.Fatal("a non-retriable error was reported as exhausted concurrency, which describes " +
+					"a problem that never happened")
+			}
+			if !errors.Is(err, testCase.err) {
+				t.Fatalf("returned %v, want the original error", err)
+			}
+		})
+	}
+}

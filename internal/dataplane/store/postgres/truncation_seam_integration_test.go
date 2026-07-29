@@ -39,8 +39,12 @@ func seedAuditEvents(t *testing.T, f *fixture, org uuid.UUID, n int) []uuid.UUID
 }
 
 // TestTruncationThroughTheSeamReportsEveryTable covers the pass a caller
-// gets: all five tables accounted for, each bucket reconciling, and the
-// rows actually gone.
+// gets: every table accounted for, each bucket reconciling, and the rows
+// actually gone.
+//
+// The count is asserted as well as the membership, so a table added to the
+// pass without a row here is a failure rather than a silent omission --
+// which is how binary_attachments arrived in item 6.
 func TestTruncationThroughTheSeamReportsEveryTable(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -59,7 +63,7 @@ func TestTruncationThroughTheSeamReportsEveryTable(t *testing.T) {
 
 	wanted := []string{
 		store.TableAuditEvents, store.TableMetricEvents, store.TableAuditArtifacts,
-		store.TableToolCalls, store.TableLLMCalls,
+		store.TableAttachments, store.TableToolCalls, store.TableLLMCalls,
 	}
 	if len(result.PerTable) != len(wanted) {
 		t.Errorf("result covers %d tables, want %d", len(result.PerTable), len(wanted))
