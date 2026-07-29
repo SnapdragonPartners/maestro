@@ -85,7 +85,7 @@ func (t *tx) CreateToolCall(ctx context.Context, input store.CreateToolCallInput
 		StartedAt:           toNullTimestamptz(input.StartedAt),
 	})
 	if err != nil {
-		if violatesConstraint(err, provenanceConstraint) {
+		if violatesProvenanceKey(err) {
 			return nil, invalidProvenance(input, err)
 		}
 		return nil, fmt.Errorf("create tool call: %w", err)
@@ -163,11 +163,16 @@ func (t *tx) GetToolCall(ctx context.Context, organizationID, callID uuid.UUID) 
 	return &call, nil
 }
 
-// violatesConstraint reports whether err is a Postgres integrity violation
-// of one named constraint.
-func violatesConstraint(err error, name string) bool {
+// violatesProvenanceKey reports whether err is the provenance foreign key's
+// refusal, matched by CONSTRAINT NAME.
+//
+// Named specifically rather than parameterised: it is the one constraint
+// this seam translates, and the other foreign keys on tool_calls -- the
+// principal, the lineage, the user -- must NOT be read as a provenance
+// failure, which would blame the wrong claim.
+func violatesProvenanceKey(err error) bool {
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.ConstraintName == name
+	return errors.As(err, &pgErr) && pgErr.ConstraintName == provenanceConstraint
 }
 
 // invalidProvenance translates the composite foreign key's refusal.
