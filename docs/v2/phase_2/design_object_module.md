@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 6 Design: The Object Module
 
-Status: **draft** — revised after review rounds 1–6 (four P1s, then five, four, three, four and one, all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is approved by Codex; DR's approval is outstanding, and implementation waits on it.
+Status: **draft** — revised after review rounds 1–7 (four P1s, then five, four, three, four, one and one, all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is approved by Codex; DR's approval is outstanding, and implementation waits on it.
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -37,13 +37,17 @@ Round 1 collapsed the blob store and the object module into one interface, dropp
 | `Get`, `Stat`, `Exists` | Reads and verification |
 | `ListVersions` | Enumerates every version of a key or prefix, **including delete markers and the `null` version** left by anything written before versioning was enabled |
 | `DeleteVersion` | Removes **exactly one** named version, and nothing else |
-| `ListIncompleteUploads` | Enumerates multipart uploads that were started and never completed |
-| `AbortIncompleteUploads` | Aborts them, **by key**: the pinned client's `RemoveIncompleteUpload` takes an object name, not an upload id |
+| `ListIncompleteUploads` | Enumerates multipart uploads started and never completed, **returning their upload ids** |
+| `AbortUpload` | Aborts **exactly one** upload id on one key |
 | `EnsureBucket` | `dataplane-up`: creates the bucket, enables versioning, and **verifies on every run that it is still enabled** |
 
 There is no `Delete(key)` and no `ListPrefix`. Both are the version-unaware shapes whose behaviour changes silently under a versioned bucket, and neither has a caller once deletion is version-specific: the sweep enumerates versions and removes them one by one, and staging cleanup deletes the versions it finds.
 
 **Incomplete multipart uploads are a third storage state, invisible to both of the others.** A process that dies partway through a multipart upload leaves uploaded parts that are not an object version — `ListVersions` does not show them and `DeleteVersion` cannot remove them — so a lease expires, its cleanup finds nothing to delete, and the parts occupy storage forever. Neither the object nor the version vocabulary can express that state, which is why the adapter needs its own pair of primitives for it rather than a cleverer query over the first two.
+
+**Abort is upload-id-specific, and the convenient key-scoped form is refused.** The pinned client's high-level `RemoveIncompleteUpload` aborts *every* upload in progress on a key. Round 7 used it on digest keys as well as staging keys, which quietly reintroduced the unfenced-delete class that versioning exists to close: **digest keys are reused**, so an abort issued by a sweep whose lock has since been released — or by a reconciler finishing an old claim — kills a *newer* writer's promotion. The key is the same; the upload is not.
+
+So the adapter is built on the client's lower-level pair, which is upload-id-specific at the pinned version: `Core.ListMultipartUploads` returns each upload's id, and `Core.AbortMultipartUpload` takes one. Key-scoped abort remains correct for **staging** keys, which are unique per upload — but it is expressed as "enumerate this key, abort the ids found" rather than as a key-level call, so no operation in this module can abort an upload nobody named.
 
 `EnsureBucket` **verifies** rather than assuming, because versioning can be turned off after the fact — by an operator, a restored backup, or a hand-run `mc` command — and every fence in D6 silently stops fencing if it is. A plane that cannot prove versioning is on refuses to start rather than running unprotected.
 
@@ -213,7 +217,11 @@ The bucket is therefore **versioned**, and every sweep delete names the version 
 - **writers never clear or take over another actor's claim.** They may proceed — a fresh upload creates a new version the pending delete cannot affect — but a live claim forbids the existing-object shortcut, because the current version may vanish at any moment. `PutAttachment` always receives the source bytes, so the full path is always available and a writer is never stuck;
 - the claim's own completion is the **owner's** job, or the reconciler's at `dataplane-up`, which re-issues the version-specific deletes idempotently and clears the row. Repeating a version-specific delete is harmless by construction, which is what makes recovery safe to run at any time.
 
-Versioning also means the sweep enumerates and removes **every** version of an unreferenced digest, not just the current one — and aborts any incomplete uploads for that key, since a promote is a server-side copy that is itself multipart for large objects and can die halfway. That is safe to do under the digest lock precisely because a live promotion holds the same lock, so the sweep never aborts an upload that is still in progress.
+Versioning also means the sweep enumerates and removes **every** version of an unreferenced digest, not just the current one.
+
+A promote is a server-side copy, which is multipart for large objects and can die halfway, so the digest key accumulates incomplete uploads too. The claim therefore records **both** what it observed under the lock — the version ids *and* the upload ids — and cleanup touches only those. Holding the lock is not enough on its own: the lock is released at commit, while the aborts happen afterwards, so a claim naming ids observed at a point in time is what keeps a delayed abort from reaching a later writer's upload.
+
+**A digest key with only incomplete uploads is itself a sweep candidate.** It has no version, so version enumeration never discovers it, and nothing else would ever look at it — the residue of a promote that died before completing, which the reachability check cannot see because there is no object to be unreferenced. The sweep's candidate discovery therefore unions version enumeration with upload enumeration.
 
 This is the same shape as the staging lease below: a durable record of an intention that a crash cannot silently abandon, plus a fence that makes a late arrival harmless.
 
@@ -230,10 +238,10 @@ The lease is therefore **fenced by an owner token**, and the fence is checked wh
 
     | Crash window | What survives | Cleanup step |
     | --- | --- | --- |
-    | During the multipart upload | Uploaded **parts**, no version at all | Abort incomplete uploads for the staging key |
+    | During the multipart upload | Uploaded **parts**, no version at all | Enumerate the staging key's upload ids and abort each |
     | After completion, before the version id is recorded | A **version** the lease does not name | Enumerate the staging key's versions and delete each |
 
-    So cleanup **aborts first, then enumerates, then deletes the lease row** — in that order, because an upload that completes between the two steps appears as a version the enumeration then finds. It never assumes the lease carries a version id: the staging key is unique per upload, so enumerating it is both safe and complete, and a lease whose writer died before recording anything is exactly the common case. A key-level delete would write a delete marker and reclaim nothing.
+    So cleanup **aborts the enumerated upload ids first, then enumerates versions, then deletes the lease row** — in that order, because an upload that completes between the two steps appears as a version the enumeration then finds. It never assumes the lease carries a version id: the staging key is unique per upload, so enumerating it is both safe and complete, and a lease whose writer died before recording anything is exactly the common case. A key-level delete would write a delete marker and reclaim nothing.
 
     Cleanup is idempotent and re-runnable by construction, so a version that appears after one pass is removed by the next.
 
@@ -324,7 +332,9 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | Reconciler re-running a claim's deletes | Idempotent; the claim clears and nothing else is removed |
 | Writer dying **during** a multipart staging upload | Cleanup aborts the incomplete upload; no parts survive, and the bucket reports no storage for that key |
 | Writer dying **after** completing the upload but **before** recording the version | Cleanup enumerates the staging key and deletes the version it never recorded |
-| Promote dying partway | The sweep aborts the digest key's incomplete upload under the lock |
+| Promote dying partway | The sweep aborts the upload ids its claim recorded, and nothing else |
+| A **delayed abort** from an old claim, against a **newer** promotion on the same digest key | The newer upload survives: only the claim's recorded ids are aborted |
+| A digest key carrying **only** incomplete uploads | Discovered as a sweep candidate and reclaimed, though it has no version to find it by |
 | Public `Pin` against a **draft amendment** | Refused; the original's verified set is untouched |
 | Amendment acceptance that **fails** | The original's pin set is exactly what it was before |
 | A **persistent** `RESTRICT` violation from another constraint | Propagated unchanged, never retried into a concurrency error |
@@ -332,6 +342,8 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | A key-level delete where a version-specific one was meant | Not expressible: the adapter offers no key-level delete |
 | Cleanup that only deletes versions | Leaves multipart parts, which are neither an object nor a version |
 | Cleanup that trusts the lease to name the version | The writer may have died before recording it |
+| Key-scoped abort on a digest key | Digest keys are reused; it would kill a newer writer's upload |
+| A sweep candidate set built from versions alone | Misses keys whose only residue is incomplete uploads |
 | Sweep racing the relational commit, under a **barrier** | With the writer holding the lock, the sweep blocks and then finds the reference; the object survives |
 | Sweep inside the grace period | A fresh unreferenced object is not deleted |
 | Corrupted object read | `GetAttachment` fails at EOF, and no destination file is left in place |
