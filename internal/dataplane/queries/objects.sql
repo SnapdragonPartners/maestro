@@ -231,16 +231,20 @@ WHERE organization_id = @organization_id
   AND staging_key = @staging_key
   AND expires_at <= clock_timestamp();
 
--- StagingLeaseExists reports whether a staging key is still owned.
+-- ListOwnedStagingKeys reports which of the given keys still have leases.
 --
--- Used by orphan discovery, where its ABSENCE is what licenses deletion: a
--- writer inserts its lease before the first byte and a lost lease can never
--- be resurrected, so a staging object with no lease belongs to a writer
--- that provably cannot promote.
+-- Ownership is what orphan discovery turns on, and its ABSENCE is what
+-- licenses deletion: a writer inserts its lease before the first byte and a
+-- lost lease can never be resurrected, so a staging object with no lease
+-- belongs to a writer that provably cannot promote.
 --
--- name: StagingLeaseExists :one
-SELECT EXISTS (
-    SELECT 1 FROM staging_leases
-    WHERE organization_id = @organization_id
-      AND staging_key = @staging_key
-);
+-- One query for a whole candidate set, rather than one per key. Orphan
+-- discovery examines every key under an organization's staging prefix, and
+-- asking per key made the number of round trips a function of how much
+-- legitimate work was in flight -- unbounded in exactly the case where
+-- there is nothing to collect.
+--
+-- name: ListOwnedStagingKeys :many
+SELECT staging_key FROM staging_leases
+WHERE organization_id = @organization_id
+  AND staging_key = ANY(@staging_keys::text[]);

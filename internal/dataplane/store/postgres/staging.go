@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 
@@ -121,29 +122,49 @@ func (s *Store) collectStagingOrphans(ctx context.Context, organizationID uuid.U
 		keys[uploads[i].Key] = struct{}{}
 	}
 
-	collected := 0
-	for _, key := range slices.Sorted(maps.Keys(keys)) {
-		if collected >= stagingSweepLimit {
-			// Bounded like the lease pass, and for the same reason. The
-			// remainder is the next pass's, which will still find it: an
-			// orphan is discovered by its own residue, not by a record that
-			// could be lost.
-			break
+	// One query for the whole candidate set. Asking per key made the round
+	// trips a function of how much legitimate work was in flight: an
+	// organization with many live writers and no residue at all did the
+	// most work and collected nothing.
+	candidates := slices.Sorted(maps.Keys(keys))
+	ownedRows, err := s.queries.ListOwnedStagingKeys(ctx, gen.ListOwnedStagingKeysParams{
+		OrganizationID: toUUID(organizationID),
+		StagingKeys:    candidates,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("read leases for %d staging keys: %w", len(candidates), err)
+	}
+	owned := make(map[string]struct{}, len(ownedRows))
+	for _, key := range ownedRows {
+		owned[key] = struct{}{}
+	}
+
+	// Owned keys are filtered out BEFORE the budget is applied, so they
+	// never consume it. Spending the budget on keys it must not touch would
+	// let a busy organization starve its own orphan collection -- and
+	// starve it repeatedly, since the same keys sort first every pass.
+	unowned := make([]string, 0, len(candidates))
+	for _, key := range candidates {
+		if _, isOwned := owned[key]; !isOwned {
+			unowned = append(unowned, key)
 		}
-		owned, err := s.queries.StagingLeaseExists(ctx, gen.StagingLeaseExistsParams{
-			OrganizationID: toUUID(organizationID),
-			StagingKey:     key,
-		})
-		if err != nil {
-			return collected, fmt.Errorf("check lease for %s: %w", key, err)
-		}
-		if owned {
-			continue
-		}
+	}
+
+	// The destructive work is bounded; discovery is not. A staging prefix
+	// is normally near-empty -- writers release their own keys -- so
+	// enumerating it is cheap, and an orphan is discovered by its own
+	// residue rather than by a record that can be lost, which is what makes
+	// deferring the remainder safe rather than a silent cap.
+	collected := len(unowned)
+	if collected > stagingSweepLimit {
+		collected = stagingSweepLimit
+		slog.Default().WarnContext(ctx, "more orphaned staging keys than one pass collects",
+			"organization_id", organizationID, "found", len(unowned), "collecting", collected)
+	}
+	for _, key := range unowned[:collected] {
 		if err := s.emptyStagingKey(ctx, key); err != nil {
-			return collected, err
+			return 0, err
 		}
-		collected++
 	}
 	return collected, nil
 }

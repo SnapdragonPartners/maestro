@@ -365,6 +365,49 @@ func (q *Queries) ListExpiredStagingLeases(ctx context.Context, arg ListExpiredS
 	return items, nil
 }
 
+const listOwnedStagingKeys = `-- name: ListOwnedStagingKeys :many
+SELECT staging_key FROM staging_leases
+WHERE organization_id = $1
+  AND staging_key = ANY($2::text[])
+`
+
+type ListOwnedStagingKeysParams struct {
+	OrganizationID pgtype.UUID
+	StagingKeys    []string
+}
+
+// ListOwnedStagingKeys reports which of the given keys still have leases.
+//
+// Ownership is what orphan discovery turns on, and its ABSENCE is what
+// licenses deletion: a writer inserts its lease before the first byte and a
+// lost lease can never be resurrected, so a staging object with no lease
+// belongs to a writer that provably cannot promote.
+//
+// One query for a whole candidate set, rather than one per key. Orphan
+// discovery examines every key under an organization's staging prefix, and
+// asking per key made the number of round trips a function of how much
+// legitimate work was in flight -- unbounded in exactly the case where
+// there is nothing to collect.
+func (q *Queries) ListOwnedStagingKeys(ctx context.Context, arg ListOwnedStagingKeysParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listOwnedStagingKeys, arg.OrganizationID, arg.StagingKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var staging_key string
+		if err := rows.Scan(&staging_key); err != nil {
+			return nil, err
+		}
+		items = append(items, staging_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPinsByArtifact = `-- name: ListPinsByArtifact :many
 SELECT retention_pin_id, organization_id, pinned_by_artifact_id, pinned_audit_artifact_id, pinned_attachment_id, pinned_digest, created_at FROM retention_pins
 WHERE organization_id = $1
@@ -536,32 +579,6 @@ func (q *Queries) RenewStagingLease(ctx context.Context, arg RenewStagingLeasePa
 		&i.ExpiresAt,
 	)
 	return i, err
-}
-
-const stagingLeaseExists = `-- name: StagingLeaseExists :one
-SELECT EXISTS (
-    SELECT 1 FROM staging_leases
-    WHERE organization_id = $1
-      AND staging_key = $2
-)
-`
-
-type StagingLeaseExistsParams struct {
-	OrganizationID pgtype.UUID
-	StagingKey     string
-}
-
-// StagingLeaseExists reports whether a staging key is still owned.
-//
-// Used by orphan discovery, where its ABSENCE is what licenses deletion: a
-// writer inserts its lease before the first byte and a lost lease can never
-// be resurrected, so a staging object with no lease belongs to a writer
-// that provably cannot promote.
-func (q *Queries) StagingLeaseExists(ctx context.Context, arg StagingLeaseExistsParams) (bool, error) {
-	row := q.db.QueryRow(ctx, stagingLeaseExists, arg.OrganizationID, arg.StagingKey)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
 }
 
 const takeDigestLock = `-- name: TakeDigestLock :exec

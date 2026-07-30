@@ -2,7 +2,7 @@
 title = "Phase 2 Item 6 Design: The Object Module"
 edit_date = "2026-07-29"
 status = "live"
-summary = "Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload and assembled from the locked base for amendments, pins mutable only while their holder is a draft, and reclamation fenced by owner-token leases whose expiry is one of three mechanisms rather than the only one, and by durable claims over version-specific deletes."
+summary = "Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload and assembled from the locked base for amendments, pins mutable only while their holder is a draft, and reclamation fenced by owner-token leases whose expiry is one of three mechanisms rather than the only one, and by durable claims over version-specific deletes, with abandoned staging discovered by prefix scan where lease absence is the licence to delete."
 type = "design"
 +++
 
@@ -10,7 +10,9 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 
-**D1a and the D2 measurement table are amendments made during implementation. Their substance is approved by Codex (2026-07-29); DR's acceptance is outstanding.** Both correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written.
+**D1a, the D2 measurement table and D6b are amendments made during implementation.** D1a and D2's substance is approved by Codex (2026-07-29); DR's acceptance is outstanding. **D6b is awaiting review by both**: it grants destructive authority the accepted design did not describe — lease absence as the licence to delete storage found by prefix scan — and the sweep is built on the same reasoning, so it should be settled before that lands.
+
+D1a and D2 correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written. D6b is different in kind — it adds a capability the design lacked rather than correcting a mechanism it named.
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -305,6 +307,27 @@ The lease is therefore **fenced by an owner token**, and the fence is checked wh
     Cleanup is idempotent and re-runnable by construction, so a version that appears after one pass is removed by the next.
 
 Three mechanisms, each answering a different question: **expiry** decides when cleanup may consider a lease abandoned, the **token** decides whether a writer may still promote, and the **row lock** decides who acts first when both are live at once. Round 3 had only the first; round 4 added the second and left the third as a race.
+
+### D6b. Orphan discovery, because the lease is the only record
+
+Amended during implementation. **Awaiting review.**
+
+The claim above that "cleanup is idempotent and re-runnable by construction, so a version that appears after one pass is removed by the next" was not true as designed, and the reason is structural: cleanup **deletes the lease row** when it finishes with a key, and that row is the only record by which the key can be found. The final-object sweep never considers the staging prefix, and nothing else looks there — so anything appearing after a pass was undiscoverable, which is to say permanent.
+
+Two ways it appears:
+
+- a writer **paused past its term** resumes and starts an upload. The owner token stops it *promoting*; nothing stops it writing to its own staging key;
+- an upload **completes between** cleanup's abort step and its version enumeration, appearing as a version the pass has already looked past.
+
+So cleanup gains a second half: enumerate the organization's staging prefix in **both** storage vocabularies, and empty every key **no lease owns**.
+
+**The absence of a lease is the licence, and it is a strong one.** A writer inserts its lease before the first byte, and a lost lease can never be resurrected — there is no re-insert. A staging object with no lease therefore belongs to a writer that *provably cannot promote*, and removing it is not removing work that might still complete. ADR 0027 forbids destroying another actor's in-progress work; it does not require preserving work that has been made impossible. A key that still has a lease, in any state, is left to the lease-driven path above, which locks its row and rechecks expiry — the orphan pass does neither and must not act on it.
+
+**The two outcomes are accounted for separately.** A released lease is an abandoned writer collected, which is routine. A collected orphan is residue that outlived its own discovery record, which says something went wrong earlier and is worth an operator's attention rather than being folded into a total.
+
+**Bounded work, unbounded discovery, and the distinction is deliberate.** Owned keys are filtered out *before* the destructive budget applies, so they never consume it — otherwise a busy organization would starve its own orphan collection, and starve it repeatedly, since the same keys sort first every pass. Ownership is settled in **one** query for the whole candidate set: asking per key made the round trips a function of how much legitimate work was in flight, so an organization with many live writers and no residue at all did the most work and collected nothing. The prefix enumeration itself is not bounded, which is acceptable because a staging prefix is normally near-empty — writers release their own keys — and because an orphan is discovered by its own residue rather than by a record that can be lost, so a pass that defers the remainder loses nothing.
+
+**The writer's own release runs the same protocol**, and originally did not: it deleted versions only, never aborting an incomplete multipart upload, and it deleted the lease whether or not that succeeded. Dropping the lease after a failed emptying is what converted recoverable residue into an orphan. The lease now goes only when the key is provably empty; left in place it expires and the next pass collects it under the lock.
 
 The alternative is a session-level advisory lock held for the whole upload, which fences correctly but pins a connection per concurrent upload for as long as the upload runs. The lease keeps connections free, at the cost of a table.
 

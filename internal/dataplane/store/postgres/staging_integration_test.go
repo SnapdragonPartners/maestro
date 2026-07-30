@@ -653,3 +653,65 @@ func (refuseDeletes) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	return http.DefaultTransport.RoundTrip(req)
 }
+
+// TestOrphanDiscoveryCostsOneQueryWhateverTheCandidateCount is the bounded-
+// pass contract on the discovery half.
+//
+// Both listings materialise the organization's whole staging prefix, which
+// is fine -- the prefix is normally near-empty because writers release their
+// own keys. What was not fine was asking the database once PER KEY: an
+// organization with many live writers and no residue at all did the most
+// work and collected nothing, which is the opposite of bounded.
+//
+// What this asserts is the OUTCOME, not the query count: many owned keys,
+// one orphan, and afterwards every lease intact and the orphan gone. The
+// round-trip count is a property of the code rather than of the database,
+// and the batched query it now uses is visible in the source; what a test
+// can show is that owned keys neither consume the budget nor come to harm.
+func TestOrphanDiscoveryCostsOneQueryWhateverTheCandidateCount(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// Twenty owned keys with real staged objects, and one orphan.
+	const owned = 20
+	for range owned {
+		key := stagingKeyFor(t, f.organizationID)
+		f.seedLease(t, key, 3600)
+		body := []byte("owned by a live writer")
+		if _, err := f.blob.PutStaged(ctx, key, int64(len(body)), bytes.NewReader(body)); err != nil {
+			t.Fatalf("stage an owned object: %v", err)
+		}
+	}
+	orphan := stagingKeyFor(t, f.organizationID)
+	body := []byte("owned by nobody")
+	if _, err := f.blob.PutStaged(ctx, orphan, int64(len(body)), bytes.NewReader(body)); err != nil {
+		t.Fatalf("stage the orphan: %v", err)
+	}
+
+	result, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	if err != nil {
+		t.Fatalf("CleanUpStaging: %v", err)
+	}
+	if result.OrphansCollected != 1 {
+		t.Fatalf("collected %d orphans among %d owned keys, want the one", result.OrphansCollected, owned)
+	}
+
+	// Every owned key is intact: the budget is spent on work, and owned
+	// keys never consume it.
+	var remaining int
+	if countErr := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM staging_leases WHERE organization_id = $1`,
+		f.organizationID).Scan(&remaining); countErr != nil {
+		t.Fatalf("count leases: %v", countErr)
+	}
+	if remaining != owned {
+		t.Fatalf("%d leases survived, want all %d", remaining, owned)
+	}
+	versions, err := f.blob.ListVersions(ctx, orphan)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Fatal("the orphan was not collected")
+	}
+}
