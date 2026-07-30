@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 6 Design: The Object Module"
-edit_date = "2026-07-29"
+edit_date = "2026-07-30"
 status = "live"
 summary = "Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload and assembled from the locked base for amendments, pins mutable only while their holder is a draft, and reclamation fenced by owner-token leases whose expiry is one of three mechanisms rather than the only one, and by durable claims over version-specific deletes, with abandoned staging discovered by prefix scan where lease absence is the licence to delete."
 type = "design"
@@ -339,6 +339,20 @@ The final-object sweep never considers the staging prefix, and staging cleanup n
 
 **The grace period stays as defence in depth, and cannot be zero.** It supplements the lock rather than replacing it, and D8's rejection of sweeping without one stands. Age is tested by **injecting a clock**, not by disabling the rule — a test that switches the guard off proves the guard is switchable.
 
+### D6c. What building the sweep settled that the design had not
+
+Amended during implementation. **Awaiting review.**
+
+Three rules the sections above leave open, each discovered by building or by mutating the result rather than by reading the design again.
+
+**A sweep meeting a live claim declines the digest; it does not finish it.** D6 says *writers* never clear or take over another actor's claim, and the reasoning is about writers — but the actor that meets a claim most often is the next sweep, because a digest whose claim survived is still unreferenced and so is a candidate again on the very next pass. The rule is the same and for the same reason: intent is not a fence, the earlier delete may still be in flight, and a second claim over the same storage would condemn it twice while fencing neither attempt. Completion stays with the claim's owner or the reconciler.
+
+Stating it matters more than restating the writer rule, because the alternative is not a subtle race. Without an explicit check, ordinary post-crash residue reaches the insert, trips `deletion_claims_digest_unique`, and fails the **whole pass** — routine recovery state turning into a hard error on every sweep until someone intervenes. The unique constraint remains the backstop it was; the check is what keeps the common case from reaching it.
+
+**The candidate parse is a diagnostic; the addressing is the guarantee.** Discovery reads keys from the bucket, and a key that does not match this module's layout is skipped and reported. That check looks protective and is not: nothing is ever deleted by the key it was discovered under, because every destructive call rebuilds the key from the digest with `objectKey()`. A lenient parse therefore yields a spurious *candidate* whose canonical key is empty, and the pass declines it — which is why loosening the rule survives every behavioural test, and why the mutation that proved this indicted the comment rather than the test. The check earns its place by naming keys nobody here wrote. What protects a misfiled object is that the sweep only ever deletes at an address it computed, and that is what the test now asserts: one digest with residue at its canonical address and at a misfiled one, and exactly the first is reclaimed.
+
+**The grace period compares two clocks, and that is tolerable only because it is a backstop.** The object store dates the storage and the sweeping process reads the horizon, so skew moves the margin. It cannot move the decision: the lock and the recheck do that. Skew one way defers a reclamation; the other way it removes a backstop the lock still stands behind. A timestamp in the future is reported, because a store running fast would otherwise defer every candidate forever and the sweep would look like it had nothing to do. The clock is injected, and the *duration* deliberately is not — a settable grace period invites a zero, which D8 rejects.
+
 ## D6a. Attachment truncation, which is what makes the sweep able to reclaim anything
 
 Round 2 approved adding this and then omitted it from the design, which would have left every object referenced forever and `DeleteUnpinned` reclaiming nothing. `binary_attachments` joins item 5's truncation pass under exactly its rules:
@@ -433,7 +447,10 @@ The invariant is entirely about what happens when a step fails, so a happy-path 
 | Key-scoped abort on a digest key | Digest keys are reused; it would kill a newer writer's upload |
 | A sweep candidate set built from versions alone | Misses keys whose only residue is incomplete uploads |
 | Sweep racing the relational commit, under a **barrier** | With the writer holding the lock, the sweep blocks and then finds the reference; the object survives |
-| Sweep inside the grace period | A fresh unreferenced object is not deleted |
+| Sweep inside the grace period | A fresh unreferenced object is not deleted, and no claim is written for it |
+| Sweep meeting a digest its own earlier pass **claimed** | Declined and reported, never taken over; the claim survives for its owner or the reconciler, and the pass does not fail (D6c) |
+| A **misfiled** key under the organization's prefix | Left alone. The same digest's canonically addressed residue is reclaimed in the same pass, which is what proves deletes are addressed rather than enumerated (D6c) |
+| Reconciliation at `dataplane-up` against the wrong bucket | Caught: a claim cleared without its storage reclaimed is the failure the wiring test asserts against |
 | Corrupted object read | `GetAttachment` fails at EOF, and no destination file is left in place |
 
 The barrier-controlled race follows item 5's recipe: launching a sweep and a writer concurrently and hoping they collide is flaky when it fails and vacuous when it passes. Each guard is mutation-verified — this item has more backstops than most, and item 5's lesson was that a backstop behind a working guard is untestable through the normal path.
