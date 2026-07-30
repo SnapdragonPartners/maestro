@@ -16,7 +16,13 @@ import (
 // because a plane that reports itself ready and migrated while unable to
 // store an object is exactly the state this item found on a live stack --
 // healthy for forty-five hours, holding no bucket at all.
-var provisioningOrder = []string{"waitReady", "ensureBucket", "migrateLocked"}
+//
+// Reconciliation comes last, and its position is as load-bearing as the
+// others: it reads a table the migrations create, and it must finish before
+// `up` returns, because a surviving deletion claim is condemned storage that
+// may still be there AND a digest whose writers cannot take the
+// existing-object shortcut until it clears.
+var provisioningOrder = []string{"waitReady", "ensureBucket", "migrateLocked", "reconcileClaims"}
 
 // TestUpProvisionsBetweenReadinessAndMigration reads `up`'s own source.
 //
@@ -62,7 +68,9 @@ func TestUpProvisionsBetweenReadinessAndMigration(t *testing.T) {
 	if !slices.Equal(called, provisioningOrder) {
 		t.Fatalf("up() calls %v; it must call %v, in that order.\n"+
 			"Provisioning follows readiness because it talks to the service, and precedes migration "+
-			"because `up` must never report a ready plane that cannot store an object.",
+			"because `up` must never report a ready plane that cannot store an object. Claim "+
+			"reconciliation follows migration because it reads a migrated table, and `up` must never "+
+			"report a plane ready while it still carries unfinished destructive work.",
 			called, provisioningOrder)
 	}
 }
