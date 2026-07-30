@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Artifacts"
-edit_date = "2026-07-29"
+edit_date = "2026-07-30"
 status = "live"
 summary = "Index of Phase 2 working artifacts: the scope/plan for the data plane and artifact core; later the vertical-slice report."
 +++
@@ -18,5 +18,6 @@ Working artifacts of Phase 2 (data plane and artifact core), produced under the 
 - [Design: Artifact And Principal Queries (Item 4)](design_queries_artifacts.md) — Mini-plan for Phase 2 item 4: the persistence interface and its local module — registry and safe-integer validation at the seam, JCS digest construction, version-bounded reads, transitions classified under a row lock with their preconditions also in the UPDATE, amendment acceptance serialized per original, effective views assembled in Go against the RFC's own vectors, and MPH capture and query.
 - [Phase 2 Item 5 Design: Calls, Metrics And Audit Events](design_calls_family.md) — Design (live) for the call family's typed queries: per-table write invariants enforced in SQL, the open-to-completed call lifecycle behind a structurally enforced update surface, organization-scoped dependency-ordered truncation with reconciling retention buckets and a serialization-retry contract, bounded keyset reads with their index plan, and an exact decimal type for cost.
 - [Phase 2 Item 6 Design: The Object Module](design_object_module.md) — Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload and assembled from the locked base for amendments, pins mutable only while their holder is a draft, and reclamation fenced by owner-token leases whose expiry is one of three mechanisms rather than the only one, and by durable claims over version-specific deletes, with abandoned staging discovered by prefix scan where lease absence is the licence to delete.
+- [Phase 2 Item 7 Design: Configuration Records And The Secrets Vault](design_config_secrets.md) — Design (draft) for item 7: configuration records resolved along the org/product/repo lineage with most-specific-wins precedence, and a secrets vault encrypted at rest inside the plane under a per-secret key derived from the external key-file root of trust, with keychain and passphrase backends refused rather than stubbed, a redacting value type that makes a leaked secret a compile-time-shaped mistake, and a locked plane that fails loudly on secrets while every other family keeps working.
 
 Expected to land here as the phase executes: the migration and schema conventions record (item 3) and the vertical-slice report (item 9). The artifact-envelopes ADR (item 1) lands in `docs/adr/` as an Accepted decision, not here.
