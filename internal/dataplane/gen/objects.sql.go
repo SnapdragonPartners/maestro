@@ -11,6 +11,33 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearDeletionClaim = `-- name: ClearDeletionClaim :execrows
+DELETE FROM deletion_claims
+WHERE organization_id = $1
+  AND deletion_claim_id = $2
+`
+
+type ClearDeletionClaimParams struct {
+	OrganizationID  pgtype.UUID
+	DeletionClaimID pgtype.UUID
+}
+
+// ClearDeletionClaim completes one claim, fenced by its own identity.
+//
+// By claim id, never by digest. A claim is cleared only by the actor that
+// owns it or by the reconciler finishing that same row, and clearing "the
+// claim on this digest" would let one actor complete another's -- which
+// reports storage as reclaimed while the original delete may still be in
+// flight. Intent is not a fence, so the row that records the intent is the
+// thing that must be named.
+func (q *Queries) ClearDeletionClaim(ctx context.Context, arg ClearDeletionClaimParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearDeletionClaim, arg.OrganizationID, arg.DeletionClaimID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createBinaryAttachment = `-- name: CreateBinaryAttachment :one
 INSERT INTO binary_attachments (
     attachment_id, organization_id, object_digest, media_type, size_bytes
@@ -49,6 +76,57 @@ func (q *Queries) CreateBinaryAttachment(ctx context.Context, arg CreateBinaryAt
 		&i.MediaType,
 		&i.SizeBytes,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createDeletionClaim = `-- name: CreateDeletionClaim :one
+INSERT INTO deletion_claims (
+    deletion_claim_id, organization_id, object_digest, version_ids, upload_ids
+) VALUES (
+    $1, $2, $3,
+    $4::text[], $5::text[]
+)
+RETURNING deletion_claim_id, organization_id, object_digest, version_ids, upload_ids, claimed_at
+`
+
+type CreateDeletionClaimParams struct {
+	DeletionClaimID pgtype.UUID
+	OrganizationID  pgtype.UUID
+	ObjectDigest    string
+	VersionIds      []string
+	UploadIds       []string
+}
+
+// CreateDeletionClaim records what the sweep is about to remove, BEFORE it
+// removes any of it (design D6).
+//
+// It RETURNS the row, and the sweep issues its deletes from what came back
+// rather than from what it enumerated. That is not a convenience: the whole
+// point of the claim is that the ids are durable before the first remote
+// call, so an id that failed to commit must not be deletable. Reading them
+// back from the database is what makes "deleted only what was recorded" a
+// property of the data flow instead of a discipline a later edit can drop.
+//
+// The unique constraint on (organization_id, object_digest) is what stops
+// two sweeps condemning one digest at once: the loser's insert fails rather
+// than adding a second claim over the same storage.
+func (q *Queries) CreateDeletionClaim(ctx context.Context, arg CreateDeletionClaimParams) (DeletionClaim, error) {
+	row := q.db.QueryRow(ctx, createDeletionClaim,
+		arg.DeletionClaimID,
+		arg.OrganizationID,
+		arg.ObjectDigest,
+		arg.VersionIds,
+		arg.UploadIds,
+	)
+	var i DeletionClaim
+	err := row.Scan(
+		&i.DeletionClaimID,
+		&i.OrganizationID,
+		&i.ObjectDigest,
+		&i.VersionIds,
+		&i.UploadIds,
+		&i.ClaimedAt,
 	)
 	return i, err
 }
@@ -252,6 +330,34 @@ func (q *Queries) DeleteStagingLease(ctx context.Context, arg DeleteStagingLease
 	return result.RowsAffected(), nil
 }
 
+const digestIsReferenced = `-- name: DigestIsReferenced :one
+SELECT EXISTS (
+    SELECT 1 FROM binary_attachments
+    WHERE organization_id = $1
+      AND object_digest = $2
+)
+`
+
+type DigestIsReferencedParams struct {
+	OrganizationID pgtype.UUID
+	ObjectDigest   string
+}
+
+// DigestIsReferenced is the sweep's recheck, and the reason its decision is
+// sound (design D6).
+//
+// The reachable set is exactly the attachment rows: an object is reclaimable
+// when nothing references its digest. Asked under the digest lock, this
+// establishes "unreferenced" in mutual exclusion with the commit that would
+// make it referenced -- so a writer that has not yet taken the lock has not
+// yet promoted, and there is nothing at the digest key to delete.
+func (q *Queries) DigestIsReferenced(ctx context.Context, arg DigestIsReferencedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, digestIsReferenced, arg.OrganizationID, arg.ObjectDigest)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const getAttachmentDigest = `-- name: GetAttachmentDigest :one
 SELECT object_digest FROM binary_attachments
 WHERE attachment_id = $1
@@ -314,6 +420,56 @@ func (q *Queries) GetBinaryAttachment(ctx context.Context, arg GetBinaryAttachme
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listDeletionClaims = `-- name: ListDeletionClaims :many
+SELECT deletion_claim_id, organization_id, object_digest, version_ids, upload_ids, claimed_at FROM deletion_claims
+ORDER BY claimed_at, deletion_claim_id
+`
+
+// ListDeletionClaims enumerates every surviving claim, across every
+// organization, for the reconciler at `dataplane-up`.
+//
+// The one read in this file that is NOT organization-scoped, and the reason
+// is that its caller is not a tenant. A claim is the plane's own record of
+// an unfinished intention: nobody asked for it, no tenant can see it, and
+// the recovery it drives is exactly what the tenancy rule exists to keep
+// tenants from doing to each other. Every lock and delete the reconciler
+// then issues is scoped by the claim's OWN organization_id, so the boundary
+// holds where it matters -- at the mutation, not at the enumeration.
+//
+// Unbounded, deliberately. This table is empty whenever nothing is
+// mid-delete, and every row in it is storage already condemned whose claim
+// also forbids the existing-object shortcut for its digest until it clears.
+// A limit here would defer that cost to the next `up`, which may be days
+// away.
+//
+// Oldest first, so a claim that has survived longest is finished first.
+func (q *Queries) ListDeletionClaims(ctx context.Context) ([]DeletionClaim, error) {
+	rows, err := q.db.Query(ctx, listDeletionClaims)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeletionClaim{}
+	for rows.Next() {
+		var i DeletionClaim
+		if err := rows.Scan(
+			&i.DeletionClaimID,
+			&i.OrganizationID,
+			&i.ObjectDigest,
+			&i.VersionIds,
+			&i.UploadIds,
+			&i.ClaimedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listExpiredStagingLeases = `-- name: ListExpiredStagingLeases :many
@@ -446,6 +602,44 @@ func (q *Queries) ListPinsByArtifact(ctx context.Context, arg ListPinsByArtifact
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listReferencedDigests = `-- name: ListReferencedDigests :many
+SELECT DISTINCT object_digest FROM binary_attachments
+WHERE organization_id = $1
+  AND object_digest = ANY($2::text[])
+`
+
+type ListReferencedDigestsParams struct {
+	OrganizationID pgtype.UUID
+	ObjectDigests  []string
+}
+
+// ListReferencedDigests reports which of the given digests are still
+// reachable, in one query for the whole candidate set.
+//
+// A pre-filter, not the decision: the decision is DigestIsReferenced under
+// the lock. This exists so a sweep over an organization whose objects are
+// nearly all referenced -- the normal case -- does not take a lock and a
+// transaction per digest to discover it.
+func (q *Queries) ListReferencedDigests(ctx context.Context, arg ListReferencedDigestsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listReferencedDigests, arg.OrganizationID, arg.ObjectDigests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var object_digest string
+		if err := rows.Scan(&object_digest); err != nil {
+			return nil, err
+		}
+		items = append(items, object_digest)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -130,6 +130,95 @@ SELECT EXISTS (
       AND object_digest = @object_digest
 );
 
+-- CreateDeletionClaim records what the sweep is about to remove, BEFORE it
+-- removes any of it (design D6).
+--
+-- It RETURNS the row, and the sweep issues its deletes from what came back
+-- rather than from what it enumerated. That is not a convenience: the whole
+-- point of the claim is that the ids are durable before the first remote
+-- call, so an id that failed to commit must not be deletable. Reading them
+-- back from the database is what makes "deleted only what was recorded" a
+-- property of the data flow instead of a discipline a later edit can drop.
+--
+-- The unique constraint on (organization_id, object_digest) is what stops
+-- two sweeps condemning one digest at once: the loser's insert fails rather
+-- than adding a second claim over the same storage.
+--
+-- name: CreateDeletionClaim :one
+INSERT INTO deletion_claims (
+    deletion_claim_id, organization_id, object_digest, version_ids, upload_ids
+) VALUES (
+    @deletion_claim_id, @organization_id, @object_digest,
+    @version_ids::text[], @upload_ids::text[]
+)
+RETURNING *;
+
+-- ClearDeletionClaim completes one claim, fenced by its own identity.
+--
+-- By claim id, never by digest. A claim is cleared only by the actor that
+-- owns it or by the reconciler finishing that same row, and clearing "the
+-- claim on this digest" would let one actor complete another's -- which
+-- reports storage as reclaimed while the original delete may still be in
+-- flight. Intent is not a fence, so the row that records the intent is the
+-- thing that must be named.
+--
+-- name: ClearDeletionClaim :execrows
+DELETE FROM deletion_claims
+WHERE organization_id = @organization_id
+  AND deletion_claim_id = @deletion_claim_id;
+
+-- ListDeletionClaims enumerates every surviving claim, across every
+-- organization, for the reconciler at `dataplane-up`.
+--
+-- The one read in this file that is NOT organization-scoped, and the reason
+-- is that its caller is not a tenant. A claim is the plane's own record of
+-- an unfinished intention: nobody asked for it, no tenant can see it, and
+-- the recovery it drives is exactly what the tenancy rule exists to keep
+-- tenants from doing to each other. Every lock and delete the reconciler
+-- then issues is scoped by the claim's OWN organization_id, so the boundary
+-- holds where it matters -- at the mutation, not at the enumeration.
+--
+-- Unbounded, deliberately. This table is empty whenever nothing is
+-- mid-delete, and every row in it is storage already condemned whose claim
+-- also forbids the existing-object shortcut for its digest until it clears.
+-- A limit here would defer that cost to the next `up`, which may be days
+-- away.
+--
+-- Oldest first, so a claim that has survived longest is finished first.
+--
+-- name: ListDeletionClaims :many
+SELECT * FROM deletion_claims
+ORDER BY claimed_at, deletion_claim_id;
+
+-- DigestIsReferenced is the sweep's recheck, and the reason its decision is
+-- sound (design D6).
+--
+-- The reachable set is exactly the attachment rows: an object is reclaimable
+-- when nothing references its digest. Asked under the digest lock, this
+-- establishes "unreferenced" in mutual exclusion with the commit that would
+-- make it referenced -- so a writer that has not yet taken the lock has not
+-- yet promoted, and there is nothing at the digest key to delete.
+--
+-- name: DigestIsReferenced :one
+SELECT EXISTS (
+    SELECT 1 FROM binary_attachments
+    WHERE organization_id = @organization_id
+      AND object_digest = @object_digest
+);
+
+-- ListReferencedDigests reports which of the given digests are still
+-- reachable, in one query for the whole candidate set.
+--
+-- A pre-filter, not the decision: the decision is DigestIsReferenced under
+-- the lock. This exists so a sweep over an organization whose objects are
+-- nearly all referenced -- the normal case -- does not take a lock and a
+-- transaction per digest to discover it.
+--
+-- name: ListReferencedDigests :many
+SELECT DISTINCT object_digest FROM binary_attachments
+WHERE organization_id = @organization_id
+  AND object_digest = ANY(@object_digests::text[]);
+
 -- Retention pins (item 6 design, D5).
 --
 -- Pins are relational because that is what they are: rows with foreign
