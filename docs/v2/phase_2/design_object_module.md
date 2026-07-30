@@ -10,7 +10,7 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 
-**D1a, the D2 measurement table and D6b are amendments made during implementation, and all three are approved by DR (2026-07-29).** D1a and D2 are **Accepted**: Codex approved their substance the same day. **D6b awaits Codex's review of its wording** — Codex called for the amendment and has not yet read it — so the sweep, which rests on the same lease-absence reasoning, waits on that.
+**D1a, the D2 measurement table and D6b are amendments made during implementation, and all three are Accepted by Codex and DR (2026-07-29).** Codex called for D6b and approved it as written.
 
 D1a and D2 correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written. D6b is different in kind — it adds a capability the design lacked rather than correcting a mechanism it named.
 
@@ -310,7 +310,7 @@ Three mechanisms, each answering a different question: **expiry** decides when c
 
 ### D6b. Orphan discovery, because the lease is the only record
 
-Amended during implementation. **Awaiting review.**
+Amended during implementation. **Accepted by Codex and DR (2026-07-29).**
 
 The claim above that "cleanup is idempotent and re-runnable by construction, so a version that appears after one pass is removed by the next" was not true as designed, and the reason is structural: cleanup **deletes the lease row** when it finishes with a key, and that row is the only record by which the key can be found. The final-object sweep never considers the staging prefix, and nothing else looks there — so anything appearing after a pass was undiscoverable, which is to say permanent.
 
