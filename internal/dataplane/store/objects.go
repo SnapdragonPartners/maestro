@@ -251,12 +251,14 @@ type ObjectStore interface {
 
 // ObjectSweep reports one sweep pass.
 //
-// The five counts answer different questions, and the two DEFERRED ones are
-// not failures. A digest deferred because a reference appeared is the lock
-// protocol working; a digest deferred because its residue is young is the
-// grace period working. Folding either into a total would make the pass
-// that protected an in-flight write indistinguishable from the pass that
-// found nothing to do.
+// The seven counts answer different questions, and none of the four DEFERRED
+// ones is a failure. A digest deferred because a reference appeared is the
+// lock protocol working; one deferred because its residue is young is the
+// grace period working; one deferred because a claim already condemns it is
+// recovery work waiting for its owner; one deferred to the next pass is the
+// bound. Folding any of them into a total would make the pass that protected
+// an in-flight write indistinguishable from the pass that found nothing to
+// do.
 type ObjectSweep struct {
 	// DigestsReclaimed counts digests condemned, deleted and cleared.
 	DigestsReclaimed int

@@ -10,9 +10,9 @@ type = "design"
 
 Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 
-**D1a, the D2 measurement table and D6b are amendments made during implementation, and all three are Accepted by Codex and DR (2026-07-29).** Codex called for D6b and approved it as written.
+**D1a, the D2 measurement table, D6b and D6c are amendments made during implementation, and all four are Accepted by Codex and DR.** D1a, D2 and D6b on 2026-07-29; D6c on 2026-07-30, after the review round that produced half of it.
 
-D1a and D2 correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written. D6b is different in kind — it adds a capability the design lacked rather than correcting a mechanism it named.
+D1a and D2 correct claims this document made about the object store, from measurement against the pinned image: one primitive became two because the server's multipart listing does not accept a prefix, and the transport rejection is enforced by the chunk signature rather than by the checksum header that D2 credited. The reasoning either supported is unchanged; the mechanisms are not what was written. D6b and D6c are different in kind — D6b adds a capability the design lacked, and D6c records rules the design left open, rather than correcting a mechanism either one named.
 
 Delivers ADR 0022's object module: put/get by content digest, existence check, pin/unpin, delete-unpinned, with an S3-compatible adapter over the MinIO container item 2 composes. The seam and its conventions are items 4 and 5's; this records only what differs.
 
@@ -341,15 +341,15 @@ The final-object sweep never considers the staging prefix, and staging cleanup n
 
 ### D6c. What building the sweep settled that the design had not
 
-Amended during implementation. **Awaiting review.**
+Amended during implementation. **Accepted by Codex and DR (2026-07-30).**
 
-Three rules the sections above leave open, each discovered by building or by mutating the result rather than by reading the design again.
+The rules below are ones the sections above leave open, each discovered by building or by mutating the result rather than by reading the design again.
 
 **A sweep meeting a live claim declines the digest; it does not finish it.** D6 says *writers* never clear or take over another actor's claim, and the reasoning is about writers — but the actor that meets a claim most often is the next sweep, because a digest whose claim survived is still unreferenced and so is a candidate again on the very next pass. The rule is the same and for the same reason: intent is not a fence, the earlier delete may still be in flight, and a second claim over the same storage would condemn it twice while fencing neither attempt. Completion stays with the claim's owner or the reconciler.
 
 Stating it matters more than restating the writer rule, because the alternative is not a subtle race. Without an explicit check, ordinary post-crash residue reaches the insert, trips `deletion_claims_digest_unique`, and fails the **whole pass** — routine recovery state turning into a hard error on every sweep until someone intervenes. The unique constraint remains the backstop it was; the check is what keeps the common case from reaching it.
 
-**And claimed digests are filtered out before the per-pass bound, not under the lock.** Classifying them only at the lock is correct and still starves reclamation, which review caught. The two deferrals decay differently: a referenced digest stops being a candidate the moment it is referenced, while a claim persists until somebody finishes it — so a claimed digest classified under the lock consumes a budget slot on *every* pass for as long as the claim lasts. A full budget's worth of them sorting ahead of one ordinary unreferenced object means that object is never reached at all. So claims join references as a batch pre-filter over the whole candidate set, and the locked recheck stays exactly where it was, catching a claim inserted between the two.
+**And claimed digests are filtered out before the per-pass bound, not only under the lock.** Classifying them only at the lock is correct and still starves reclamation, which review caught. The two deferrals decay differently: a referenced digest stops being a candidate the moment it is referenced, while a claim persists until somebody finishes it — so a claimed digest classified under the lock consumes a budget slot on *every* pass for as long as the claim lasts. A full budget's worth of them sorting ahead of one ordinary unreferenced object means that object is never reached at all. So claims join references as a batch pre-filter over the whole candidate set, and the locked recheck stays exactly where it was, catching a claim inserted between the two.
 
 The counts are deliberately asymmetric. Digests already known to be referenced are not reported, because in a healthy store that is nearly every object and the number would describe the bucket rather than the pass; claimed ones are reported from both places, because a claim is unfinished recovery work and a count that persists across passes is storage nothing is reclaiming.
 
