@@ -374,7 +374,28 @@ func (b *Blob) DeleteVersion(ctx context.Context, key, versionID string) error {
 	if err := b.core.Client.RemoveObject(ctx, b.bucket, key, minio.RemoveObjectOptions{
 		VersionID: versionID,
 	}); err != nil {
-		return fmt.Errorf("delete %s version %s: %w", key, versionID, err)
+		// A version that is already gone is the outcome this asked for, and
+		// tolerating it is what makes the deletion claim's central promise
+		// true. The claim exists for a crash AFTER the remote delete and
+		// BEFORE the row clears, so the very next reconciliation re-issues a
+		// delete for a version that is no longer there. Reporting that as a
+		// failure would strand the claim permanently -- on the one path whose
+		// whole purpose is finishing work an earlier actor could not.
+		//
+		// "Repeating a version-specific delete is harmless by construction"
+		// has to be a property of this adapter rather than of one server's
+		// leniency, which is the difference between a claim that clears and a
+		// claim retried forever.
+		//
+		// MEASURED: the pinned server returns no error at all for a repeated
+		// delete, for an unknown version id on a live key, or for a key that
+		// never existed -- so the integration suite cannot tell whether this
+		// tolerance is here. A store that answers NoSuchVersion or NoSuchKey
+		// can, and it is unit-tested against a canned response instead, as
+		// AbortUpload's equivalent tolerance is.
+		if !isNoSuchKey(err) {
+			return fmt.Errorf("delete %s version %s: %w", key, versionID, err)
+		}
 	}
 	return nil
 }

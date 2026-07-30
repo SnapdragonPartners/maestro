@@ -292,6 +292,44 @@ func TestAbortUploadToleratesAnAlreadyGoneUpload(t *testing.T) {
 	}
 }
 
+// TestDeleteVersionToleratesAnAlreadyGoneVersion is the same protection for
+// the other half of a claim, and it is the case the claim is FOR: a crash
+// after the remote delete and before the row clears leaves the reconciler to
+// re-issue a delete for a version that is already gone.
+//
+// The pinned server answers that with no error at all -- measured, including
+// for an unknown version id and for a key that never existed -- so the
+// integration suite passes whether or not this tolerance exists. On a store
+// that answers NoSuchVersion it is the difference between a claim that clears
+// and one retried at every startup forever.
+func TestDeleteVersionToleratesAnAlreadyGoneVersion(t *testing.T) {
+	for _, code := range []string{"NoSuchVersion", "NoSuchKey"} {
+		blob, err := newBlob(Config{Endpoint: "127.0.0.1:59000", Bucket: "maestro"},
+			errorResponse{code: code, status: http.StatusNotFound})
+		if err != nil {
+			t.Fatalf("newBlob: %v", err)
+		}
+		if err := blob.DeleteVersion(context.Background(), "org/aa/bb/gone", "version-1"); err != nil {
+			t.Errorf("delete of an already-gone version answering %s: %v", code, err)
+		}
+	}
+}
+
+// TestDeleteVersionStillReportsOtherFailures is the other half, and it
+// matters more here than anywhere: a swallowed failure would let the sweep
+// clear a claim over storage that is still in the bucket, which is precisely
+// the leak the claim was written to prevent.
+func TestDeleteVersionStillReportsOtherFailures(t *testing.T) {
+	blob, err := newBlob(Config{Endpoint: "127.0.0.1:59000", Bucket: "maestro"},
+		errorResponse{code: "AccessDenied", status: http.StatusForbidden})
+	if err != nil {
+		t.Fatalf("newBlob: %v", err)
+	}
+	if err := blob.DeleteVersion(context.Background(), "org/aa/bb/denied", "version-1"); err == nil {
+		t.Fatal("DeleteVersion swallowed an access-denied response")
+	}
+}
+
 // TestAbortUploadStillReportsOtherFailures is the other half: tolerating
 // every error would turn a permissions failure or an unreachable server
 // into a silent success, and the claim would be cleared over storage that

@@ -561,6 +561,52 @@ func TestReconcilerIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestReconcilerFinishesAClaimWhoseStorageIsAlreadyGone covers the exact
+// window the deletion claim exists for, which nothing else reached.
+//
+// The claim is committed BEFORE the first remote call, so the crash it
+// anticipates is the one AFTER the deletes have landed and before the row
+// clears. Recovery then re-issues a delete for a version that is no longer
+// there. If that reads as a failure, the claim is stranded permanently -- and
+// it goes on forbidding the existing-object shortcut for its digest at every
+// startup, forever, on the one path whose purpose is to finish work an
+// earlier actor could not.
+//
+// The pinned server answers a repeated version delete with no error, so what
+// this test can show is that the OUTCOME is right end to end. That the
+// tolerance is in the adapter rather than in the server's manners is pinned
+// separately, against a canned NoSuchVersion, in the objects package.
+func TestReconcilerFinishesAClaimWhoseStorageIsAlreadyGone(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	digest := f.unreferencedObject(t, []byte("deleted, but the claim never cleared"))
+	broken := f.storeThatCannotDelete(t, postgres.WithClock(pastGrace))
+	if _, err := broken.DeleteUnpinned(ctx, f.organizationID); err == nil {
+		t.Fatal("the sweep reported success although its object store refuses deletions")
+	}
+	if f.liveClaims(t) != 1 {
+		t.Fatal("no claim survived, so this test is not exercising recovery")
+	}
+
+	// The deletes land after all -- the crash is between them and the clear.
+	f.deleteStoredObject(t, digest)
+	if f.storedVersions(t, digest) != 0 {
+		t.Fatal("the storage is still there; this test is about a claim whose work is already done")
+	}
+
+	recovered, err := f.store.ReconcileDeletionClaims(ctx)
+	if err != nil {
+		t.Fatalf("reconciling a claim whose storage is already gone: %v", err)
+	}
+	if recovered.ClaimsCleared != 1 {
+		t.Fatalf("reconciler reported %+v, want the claim cleared", recovered)
+	}
+	if claims := f.liveClaims(t); claims != 0 {
+		t.Fatalf("%d claims survive; a claim stranded here is retried at every startup forever", claims)
+	}
+}
+
 // TestSweepIgnoresAnotherOrganizationsStorage is the tenancy boundary, which
 // applies to the sweep exactly as it does to every read and write on this
 // seam. Organization-first keys are what make it a prefix question rather
