@@ -90,9 +90,12 @@ func disposableBlob(t *testing.T) (*objects.Blob, objects.Config) {
 }
 
 // startAbandonedUpload begins a multipart upload and never completes it,
-// using the raw client. The adapter offers no way to do this, which is why
-// the state has to be built here rather than through it.
-func startAbandonedUpload(t *testing.T, cfg objects.Config, key string) {
+// using the raw client, and returns its id. The adapter offers no way to do
+// this, which is why the state has to be built here rather than through it.
+//
+// The id matters to the sweep's fence: a claim may abort only the upload ids
+// it recorded, so a test proving that needs to name the ones it created.
+func startAbandonedUpload(t *testing.T, cfg objects.Config, key string) string {
 	t.Helper()
 	ctx := context.Background()
 
@@ -113,6 +116,7 @@ func startAbandonedUpload(t *testing.T, cfg objects.Config, key string) {
 		bytes.NewReader(part), int64(len(part)), minio.PutObjectPartOptions{}); err != nil {
 		t.Fatalf("upload part on %s: %v", key, err)
 	}
+	return uploadID
 }
 
 // removeTestBucket empties and drops a disposable bucket. A versioned

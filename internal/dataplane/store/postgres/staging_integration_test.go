@@ -628,7 +628,7 @@ func TestWriterCleanupKeepsItsLeaseWhenEmptyingFails(t *testing.T) {
 
 // storeThatCannotDelete builds a store whose object backend refuses DELETE,
 // and nothing else.
-func (f *fixture) storeThatCannotDelete(t *testing.T) *postgres.Store {
+func (f *fixture) storeThatCannotDelete(t *testing.T, opts ...postgres.Option) *postgres.Store {
 	t.Helper()
 	cfg := f.blobConfig
 	cfg.Transport = refuseDeletes{}
@@ -636,7 +636,7 @@ func (f *fixture) storeThatCannotDelete(t *testing.T) *postgres.Store {
 	if err != nil {
 		t.Fatalf("build a blob that cannot delete: %v", err)
 	}
-	built, err := postgres.New(f.pool, testRegistry(t), blob)
+	built, err := postgres.New(f.pool, testRegistry(t), blob, opts...)
 	if err != nil {
 		t.Fatalf("build the store: %v", err)
 	}

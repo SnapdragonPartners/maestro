@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,36 @@ type Store struct {
 	// store that satisfied the seam while answering every object operation
 	// with "no backend" would be a nil trap wearing an interface.
 	blob *objects.Blob
+	// now reads the wall clock for the ONE decision that needs a clock this
+	// side of the database: the sweep's grace period, which judges the age
+	// of storage the object store dated.
+	//
+	// Every other time-based decision here is made with the SERVER's clock,
+	// in SQL, and must stay that way -- a lease's expiry is judged by
+	// several participants and a client-side answer would put one process's
+	// skew into every other's decision. An unreferenced object has no row,
+	// so there is no server-side timestamp to compare it against.
+	//
+	// Injectable because design D6 requires the grace period to be tested by
+	// MOVING THE CLOCK rather than by switching the rule off: a test that
+	// disables a guard proves the guard is switchable.
+	now func() time.Time
+}
+
+// Option adjusts a Store at construction.
+type Option func(*Store)
+
+// WithClock replaces the wall clock the sweep's grace period reads.
+//
+// The grace period cannot be configured, only aged past. That asymmetry is
+// deliberate: a settable duration invites a zero, and design D6 requires the
+// guard to be non-zero and unswitchable.
+func WithClock(now func() time.Time) Option {
+	return func(s *Store) {
+		if now != nil {
+			s.now = now
+		}
+	}
 }
 
 // New builds a Store over an existing pool.
@@ -40,7 +71,7 @@ type Store struct {
 // The registry is injected rather than read from a package-level default,
 // so a test can register the types it needs without mutating global state
 // that another test observes.
-func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob) (*Store, error) {
+func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts ...Option) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("postgres store: pool is nil")
 	}
@@ -50,16 +81,20 @@ func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob) (*Sto
 	if blob == nil {
 		return nil, errors.New("postgres store: object adapter is nil")
 	}
-	return &Store{pool: pool, queries: gen.New(pool), registry: types, blob: blob}, nil
+	built := &Store{pool: pool, queries: gen.New(pool), registry: types, blob: blob, now: time.Now}
+	for _, opt := range opts {
+		opt(built)
+	}
+	return built, nil
 }
 
 // Open builds a Store from a DSN.
-func Open(ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob) (*Store, error) {
+func Open(ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob, opts ...Option) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open data plane pool: %w", err)
 	}
-	built, err := New(pool, types, blob)
+	built, err := New(pool, types, blob, opts...)
 	if err != nil {
 		pool.Close()
 		return nil, err

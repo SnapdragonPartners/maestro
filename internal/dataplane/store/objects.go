@@ -201,6 +201,93 @@ type ObjectStore interface {
 	// Idempotent and re-runnable. It is bounded per pass, so a backlog is
 	// cleared over several rather than under one long-held set of locks.
 	CleanUpStaging(ctx context.Context, organizationID uuid.UUID) (StagingCleanup, error)
+
+	// DeleteUnpinned reclaims the storage of digests nothing references.
+	//
+	// The reachable set is exactly the attachment rows, so this runs AFTER
+	// attachment truncation has removed them: truncation makes an object
+	// unreachable, and this makes it gone. The two cannot be one step,
+	// because truncation runs under one REPEATABLE READ snapshot and object
+	// deletion cannot participate in a snapshot (design D6a).
+	//
+	// It is coordinated, not timed. Writers and the sweep serialise per
+	// (organization, digest) on an advisory lock, and "unreferenced" is
+	// established under that lock -- in mutual exclusion with the commit
+	// that would make it referenced. The grace period below the lock is
+	// defence in depth and nothing more: age cannot prove abandonment, and
+	// the design rejected it as the mechanism.
+	//
+	// Because the deletes are REMOTE, the lock is necessary and not
+	// sufficient: a connection can die with a delete in flight, releasing
+	// the lock without cancelling anything. So the intent is made durable
+	// first, in a deletion claim naming the exact version and upload ids
+	// observed under the lock, and every delete names one of them. A late
+	// arrival removes something already condemned and nothing else.
+	//
+	// Bounded per pass and re-runnable: candidates are discovered by their
+	// own residue, so a deferred remainder is the next pass's rather than
+	// lost.
+	DeleteUnpinned(ctx context.Context, organizationID uuid.UUID) (ObjectSweep, error)
+
+	// ReconcileDeletionClaims finishes deletes an earlier actor could not.
+	//
+	// A claim survives a crash between recording the intent and clearing it,
+	// and that row is the only record of storage that was condemned but may
+	// not be gone. Re-issuing a version-specific delete is harmless by
+	// construction, which is what makes this safe to run at any time -- and
+	// it runs at `dataplane-up`, because a surviving claim also forbids the
+	// existing-object shortcut for its digest until it clears.
+	//
+	// It is the ONLY actor besides a claim's owner that may clear one.
+	// Writers never clear or take over another actor's claim: intent is not
+	// a fence, and the original delete may still be in flight.
+	//
+	// Not organization-scoped, unlike everything else on this seam. A claim
+	// is the plane's own record of an unfinished intention rather than a
+	// tenant's data, and no tenant can ask for this. Every lock and delete
+	// it issues is scoped by the claim's own organization.
+	ReconcileDeletionClaims(ctx context.Context) (ClaimReconciliation, error)
+}
+
+// ObjectSweep reports one sweep pass.
+//
+// The five counts answer different questions, and the two DEFERRED ones are
+// not failures. A digest deferred because a reference appeared is the lock
+// protocol working; a digest deferred because its residue is young is the
+// grace period working. Folding either into a total would make the pass
+// that protected an in-flight write indistinguishable from the pass that
+// found nothing to do.
+type ObjectSweep struct {
+	// DigestsReclaimed counts digests condemned, deleted and cleared.
+	DigestsReclaimed int
+	// VersionsDeleted and UploadsAborted count the storage actually named.
+	// Both, because they are separate storage states and neither is
+	// visible to the other's vocabulary.
+	VersionsDeleted int
+	UploadsAborted  int
+
+	// DeferredReferenced counts digests that turned out to be referenced
+	// once the lock was granted -- the recheck doing its job.
+	DeferredReferenced int
+	// DeferredYoung counts digests whose residue was inside the grace
+	// period.
+	DeferredYoung int
+	// DeferredClaimed counts digests an earlier pass had already condemned
+	// and not finished. Their completion belongs to that pass's owner or to
+	// the reconciler; a second claim over the same storage would fence
+	// neither attempt.
+	DeferredClaimed int
+	// DeferredForNextPass counts candidates the pass's own bound left
+	// behind. Reported rather than only logged: a bound that drops work
+	// silently reads as "there was nothing more to do".
+	DeferredForNextPass int
+}
+
+// ClaimReconciliation reports one recovery pass over surviving claims.
+type ClaimReconciliation struct {
+	ClaimsCleared   int
+	VersionsDeleted int
+	UploadsAborted  int
 }
 
 // StagingCleanup reports one cleanup pass.
