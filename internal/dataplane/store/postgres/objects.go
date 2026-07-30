@@ -465,13 +465,22 @@ func leaseHeld(locked *gen.LockStagingLeaseRow, token uuid.UUID) error {
 	return nil
 }
 
-// releaseStaging drops the lease row and the staging object.
+// releaseStaging empties the staging key and drops the lease.
 //
 // Failure is LOGGED rather than returned: by the time this runs the
 // attachment row is committed and the write has succeeded, and reporting a
 // cleanup failure as a write failure would tell a caller to retry an
-// operation that already happened. What is left behind -- a lease row and
-// one staging object -- is exactly what staging cleanup exists to collect.
+// operation that already happened.
+//
+// It uses the SAME protocol CleanUpStaging uses, not a subset. An earlier
+// version deleted versions only -- it never aborted an incomplete multipart
+// upload, which is half the residue a write can leave -- and it deleted the
+// lease whether or not that worked. The lease is the only record by which
+// cleanup can find this key again, so removing it after a failed emptying
+// turned recoverable residue into an orphan.
+//
+// So the lease goes only when the key is provably empty. Left in place, it
+// expires and the next cleanup pass collects what this one could not.
 func (s *Store) releaseStaging(ctx context.Context, organizationID uuid.UUID, stagingKey string, token uuid.UUID) {
 	// A fresh context: the caller's may already be cancelled by the error
 	// that brought us here, and the release would then never be attempted.
@@ -480,15 +489,10 @@ func (s *Store) releaseStaging(ctx context.Context, organizationID uuid.UUID, st
 
 	logger := slog.Default().With("staging_key", stagingKey, "organization_id", organizationID)
 
-	versions, err := s.blob.ListVersions(releaseCtx, stagingKey)
-	if err != nil {
-		logger.WarnContext(releaseCtx, "could not list staging versions to release", "error", err)
-	}
-	for i := range versions {
-		if delErr := s.blob.DeleteVersion(releaseCtx, versions[i].Key, versions[i].VersionID); delErr != nil {
-			logger.WarnContext(releaseCtx, "could not delete staging object",
-				"version_id", versions[i].VersionID, "error", delErr)
-		}
+	if err := s.emptyStagingKey(releaseCtx, stagingKey); err != nil {
+		logger.WarnContext(releaseCtx,
+			"could not empty the staging key; leaving its lease for cleanup to retry", "error", err)
+		return
 	}
 
 	if _, err := s.queries.DeleteStagingLease(releaseCtx, gen.DeleteStagingLeaseParams{

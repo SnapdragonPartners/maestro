@@ -189,8 +189,7 @@ type ObjectStore interface {
 	// ListPins returns what an artifact holds.
 	ListPins(ctx context.Context, organizationID, artifactID uuid.UUID) ([]Pin, error)
 
-	// CleanUpStaging releases staging objects whose writers are gone, and
-	// reports how many leases it released.
+	// CleanUpStaging releases staging objects whose writers are gone.
 	//
 	// It never removes work that is still in progress. Expiry only decides
 	// which leases it may CONSIDER; the row lock decides who acts first
@@ -201,5 +200,18 @@ type ObjectStore interface {
 	//
 	// Idempotent and re-runnable. It is bounded per pass, so a backlog is
 	// cleared over several rather than under one long-held set of locks.
-	CleanUpStaging(ctx context.Context, organizationID uuid.UUID) (int, error)
+	CleanUpStaging(ctx context.Context, organizationID uuid.UUID) (StagingCleanup, error)
+}
+
+// StagingCleanup reports one cleanup pass.
+//
+// The two counts mean different things. A released lease is an abandoned
+// writer collected, which is routine. A collected ORPHAN is residue that
+// outlived its own discovery record -- a paused writer that resumed after
+// its lease was removed, or an upload that completed between cleanup's two
+// enumerations -- so a non-zero count says something went wrong earlier and
+// is worth an operator's attention rather than being folded into a total.
+type StagingCleanup struct {
+	LeasesReleased   int
+	OrphansCollected int
 }

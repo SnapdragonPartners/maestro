@@ -5,11 +5,18 @@ package postgres_test
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"orchestrator/internal/dataplane/gen"
+	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/store"
+	"orchestrator/internal/dataplane/store/postgres"
 )
 
 // Staging cleanup (item 6 design, D6).
@@ -80,12 +87,12 @@ func TestCleanupRemovesAnAbandonedStagingObject(t *testing.T) {
 		t.Fatalf("stage the object: %v", err)
 	}
 
-	released, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	result, err := f.store.CleanUpStaging(ctx, f.organizationID)
 	if err != nil {
 		t.Fatalf("CleanUpStaging: %v", err)
 	}
-	if released != 1 {
-		t.Fatalf("released %d leases, want 1", released)
+	if result.LeasesReleased != 1 {
+		t.Fatalf("released %d leases, want 1", result.LeasesReleased)
 	}
 
 	versions, err := f.blob.ListVersions(ctx, key)
@@ -154,12 +161,12 @@ func TestCleanupSparesALiveLease(t *testing.T) {
 		t.Fatalf("stage the object: %v", err)
 	}
 
-	released, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	result, err := f.store.CleanUpStaging(ctx, f.organizationID)
 	if err != nil {
 		t.Fatalf("CleanUpStaging: %v", err)
 	}
-	if released != 0 {
-		t.Fatalf("released %d live leases", released)
+	if result.LeasesReleased != 0 {
+		t.Fatalf("released %d live leases", result.LeasesReleased)
 	}
 
 	versions, err := f.blob.ListVersions(ctx, key)
@@ -214,12 +221,16 @@ func TestCleanupIsOrganizationScoped(t *testing.T) {
 		t.Fatalf("stage in the other organization: %v", err)
 	}
 
-	released, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	result, err := f.store.CleanUpStaging(ctx, f.organizationID)
 	if err != nil {
 		t.Fatalf("CleanUpStaging: %v", err)
 	}
-	if released != 0 {
-		t.Fatalf("released %d leases belonging to another organization", released)
+	if result.LeasesReleased != 0 {
+		t.Fatalf("released %d leases belonging to another organization", result.LeasesReleased)
+	}
+	if result.OrphansCollected != 0 {
+		t.Fatalf("collected %d orphans from another organization's staging prefix",
+			result.OrphansCollected)
 	}
 	versions, versionsErr := f.blob.ListVersions(ctx, otherKey)
 	if versionsErr != nil {
@@ -316,78 +327,98 @@ func TestCleanupBlocksOnAPromotionHoldingTheLeaseRow(t *testing.T) {
 //
 // The listing returns only expired leases, so an ordinarily-live lease
 // never reaches the recheck at all -- which means every other test here
-// passes with the recheck deleted. What the recheck defends against is the
-// window between the listing and the lock: cleanup decides a lease looks
-// abandoned, waits for a lock the writer holds, and by the time it gets in
-// the writer has RENEWED. Acting on the stale answer is exactly the
-// destructive recovery ADR 0027 forbids.
+// passes with the recheck deleted. What it defends is the window between
+// the listing and the lock: cleanup decides a lease looks abandoned, waits
+// for a lock the writer holds, and by the time it gets in the writer has
+// RENEWED. Acting on the stale answer is exactly the destructive recovery
+// ADR 0027 forbids.
 //
-// Deterministic: cleanup is observed blocking in pg_stat_activity, the
-// renewal happens under the lock it is waiting for, and nothing is timed.
+// The renewal is the GENERATED one, performed while the lease is still
+// live, which is the only renewal production permits: RenewStagingLease
+// requires expires_at > clock_timestamp(), so an expired lease revived by a
+// hand-written UPDATE is a state no actor could ever produce. An earlier
+// version of this test did exactly that and proved nothing about the
+// system.
+//
+// The sequence, and nothing in it is timed loosely:
+//
+//  1. a lease with a short but LIVE term;
+//  2. the writer renews it through the generated query and holds the
+//     transaction open, so the committed row still shows the old expiry;
+//  3. wait -- polling the server's clock -- until that old expiry passes;
+//  4. cleanup lists the lease as expired and blocks on the row lock,
+//     observed in pg_stat_activity;
+//  5. the writer commits; cleanup takes the lock, sees the committed
+//     extension, and leaves everything alone.
 func TestCleanupSkipsALeaseRenewedWhileItWaited(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
 	key := stagingKeyFor(t, f.organizationID)
-	f.seedLease(t, key, -60)
+	const shortTerm = 2
+	token := f.seedLiveLease(t, key, shortTerm)
 	body := []byte("still being uploaded, and the lease will be renewed")
 	if _, err := f.blob.PutStaged(ctx, key, int64(len(body)), bytes.NewReader(body)); err != nil {
 		t.Fatalf("stage the object: %v", err)
 	}
 
-	// The writer takes the row lock, as its renewal does.
+	// The writer renews through the SHIPPED query, while the lease is still
+	// live, and holds the transaction. This is also what takes the row lock.
 	writer, err := f.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the writer's transaction: %v", err)
 	}
 	defer func() { _ = writer.Rollback(ctx) }()
-	var locked string
-	if err := writer.QueryRow(ctx,
-		`SELECT staging_key FROM staging_leases
-		 WHERE organization_id = $1 AND staging_key = $2 FOR UPDATE`,
-		f.organizationID, key).Scan(&locked); err != nil {
-		t.Fatalf("lock the lease as the writer would: %v", err)
+	renewed, err := gen.New(writer).RenewStagingLease(ctx, gen.RenewStagingLeaseParams{
+		OrganizationID: toPgUUID(f.organizationID),
+		StagingKey:     key,
+		OwnerToken:     toPgUUID(token),
+		TermSeconds:    3600,
+	})
+	if err != nil {
+		t.Fatalf("RenewStagingLease: %v", err)
+	}
+	if !renewed.ExpiresAt.Time.After(time.Now().Add(time.Hour / 2)) {
+		t.Fatalf("the renewal set expires_at to %s, which is not the extension it was asked for",
+			renewed.ExpiresAt.Time)
 	}
 
-	// Cleanup lists the lease -- still expired at this instant -- and then
-	// blocks on the lock.
+	// The OLD expiry passes. Polled against the server's clock rather than
+	// slept against the client's.
+	f.waitPastCommittedExpiry(t, key)
+
 	type outcome struct {
-		released int
-		err      error
+		result store.StagingCleanup
+		err    error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		released, cleanupErr := f.store.CleanUpStaging(context.Background(), f.organizationID)
-		done <- outcome{released, cleanupErr}
+		result, cleanupErr := f.store.CleanUpStaging(context.Background(), f.organizationID)
+		done <- outcome{result, cleanupErr}
 	}()
 	waitForLockWait(t, f)
 
-	// The renewal, under the lock cleanup is waiting for. From here on the
-	// lease is alive and the listing's answer is stale.
-	if _, renewErr := writer.Exec(ctx,
-		`UPDATE staging_leases SET expires_at = clock_timestamp() + interval '1 hour'
-		 WHERE organization_id = $1 AND staging_key = $2`,
-		f.organizationID, key); renewErr != nil {
-		t.Fatalf("renew the lease: %v", renewErr)
-	}
 	if commitErr := writer.Commit(ctx); commitErr != nil {
 		t.Fatalf("commit the renewal: %v", commitErr)
 	}
 
 	select {
-	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("CleanUpStaging: %v", result.err)
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("CleanUpStaging: %v", got.err)
 		}
-		if result.released != 0 {
-			t.Fatalf("released %d leases; the lease was renewed before cleanup got the lock, so "+
-				"there was nothing abandoned to collect", result.released)
+		if got.result.LeasesReleased != 0 {
+			t.Fatalf("released %d leases; the lease was renewed before cleanup got the lock, so there "+
+				"was nothing abandoned to collect", got.result.LeasesReleased)
+		}
+		if got.result.OrphansCollected != 0 {
+			t.Fatalf("collected %d orphans; the key still has a lease, so the orphan pass must leave "+
+				"it to the lease-driven path", got.result.OrphansCollected)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("cleanup never returned after the renewal committed")
 	}
 
-	// The writer's object and its lease both survive.
 	versions, versionsErr := f.blob.ListVersions(ctx, key)
 	if versionsErr != nil {
 		t.Fatalf("ListVersions: %v", versionsErr)
@@ -398,4 +429,227 @@ func TestCleanupSkipsALeaseRenewedWhileItWaited(t *testing.T) {
 	if !f.leaseExists(t, key) {
 		t.Fatal("a renewed lease was deleted")
 	}
+}
+
+// seedLiveLease writes a lease that is valid now and expires termSeconds
+// from now, returning its owner token so a test can renew it the way a
+// writer does.
+func (f *fixture) seedLiveLease(t *testing.T, stagingKey string, termSeconds int) uuid.UUID {
+	t.Helper()
+	token := uuid.New()
+	if _, err := f.pool.Exec(context.Background(), `
+		INSERT INTO staging_leases (staging_lease_id, organization_id, staging_key, owner_token, expires_at)
+		VALUES (gen_random_uuid(), $1, $2, $3,
+		        clock_timestamp() + make_interval(secs => $4::double precision))`,
+		f.organizationID, stagingKey, token, termSeconds); err != nil {
+		t.Fatalf("seed lease: %v", err)
+	}
+	return token
+}
+
+// waitPastCommittedExpiry blocks until the server's clock passes the expiry
+// visible in the COMMITTED row -- which, with a renewal held uncommitted, is
+// still the original one.
+//
+// Polled on a separate connection so it reads committed state, and against
+// the server's clock so no client-side timing is involved.
+func (f *fixture) waitPastCommittedExpiry(t *testing.T, stagingKey string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var expired bool
+		if err := f.pool.QueryRow(context.Background(),
+			`SELECT expires_at <= clock_timestamp() FROM staging_leases
+			 WHERE organization_id = $1 AND staging_key = $2`,
+			f.organizationID, stagingKey).Scan(&expired); err != nil {
+			t.Fatalf("read the committed expiry: %v", err)
+		}
+		if expired {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the committed expiry never passed")
+}
+
+// TestCleanupCollectsResidueThatOutlivedItsLease covers what had no next
+// pass at all.
+//
+// The idempotence claim is that "a version appearing after one pass is
+// removed by the next". That was not true: cleanup deletes the lease row
+// when it finishes with a key, and the lease is the only record by which
+// the key can be found -- the final object sweep never considers the
+// staging prefix, and nothing else looked there. So anything appearing
+// afterwards was permanent.
+//
+// A paused writer resuming is the realistic route: the owner token stops it
+// PROMOTING, and stops nothing about writing to its own staging key.
+func TestCleanupCollectsResidueThatOutlivedItsLease(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	key := stagingKeyFor(t, f.organizationID)
+	f.seedLease(t, key, -60)
+
+	// First pass collects the abandoned lease and removes the record.
+	first, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if first.LeasesReleased != 1 {
+		t.Fatalf("the first pass released %d leases, want 1", first.LeasesReleased)
+	}
+	if f.leaseExists(t, key) {
+		t.Fatal("the lease survived, so this test is not producing the state it describes")
+	}
+
+	// The paused writer wakes up and writes. Both residue shapes, since
+	// each is invisible to the other's enumeration.
+	body := []byte("written after the lease was gone")
+	if _, writeErr := f.blob.PutStaged(ctx, key, int64(len(body)), bytes.NewReader(body)); writeErr != nil {
+		t.Fatalf("late staging write: %v", writeErr)
+	}
+	lateUploadKey := stagingKeyFor(t, f.organizationID)
+	startAbandonedUpload(t, f.blobConfig, lateUploadKey)
+
+	second, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if second.OrphansCollected != 2 {
+		t.Fatalf("the second pass collected %d orphans, want the late version and the late upload",
+			second.OrphansCollected)
+	}
+	// Reported as orphans and not as leases: a released lease is routine,
+	// while residue that outlived its record says something went wrong
+	// earlier, and folding the two together would hide that.
+	if second.LeasesReleased != 0 {
+		t.Fatalf("the second pass released %d leases; there were none left", second.LeasesReleased)
+	}
+
+	for _, orphaned := range []string{key, lateUploadKey} {
+		versions, versionsErr := f.blob.ListVersions(ctx, orphaned)
+		if versionsErr != nil {
+			t.Fatalf("ListVersions(%s): %v", orphaned, versionsErr)
+		}
+		uploads, uploadsErr := f.blob.ListUploadsForKey(ctx, orphaned)
+		if uploadsErr != nil {
+			t.Fatalf("ListUploadsForKey(%s): %v", orphaned, uploadsErr)
+		}
+		if len(versions) != 0 || len(uploads) != 0 {
+			t.Errorf("%s still holds %d versions and %d uploads after the orphan pass",
+				orphaned, len(versions), len(uploads))
+		}
+	}
+}
+
+// TestOrphanCollectionSparesAnOwnedKey is the other half of the licence.
+//
+// The absence of a lease is what permits deleting an orphan, so a key that
+// HAS one must be left to the lease-driven path however it looks -- that
+// path locks the row and rechecks expiry, and the orphan pass does neither.
+func TestOrphanCollectionSparesAnOwnedKey(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	key := stagingKeyFor(t, f.organizationID)
+	f.seedLease(t, key, 3600)
+	body := []byte("owned by a live writer")
+	if _, err := f.blob.PutStaged(ctx, key, int64(len(body)), bytes.NewReader(body)); err != nil {
+		t.Fatalf("stage the object: %v", err)
+	}
+
+	result, err := f.store.CleanUpStaging(ctx, f.organizationID)
+	if err != nil {
+		t.Fatalf("CleanUpStaging: %v", err)
+	}
+	if result.OrphansCollected != 0 {
+		t.Fatalf("collected %d orphans; the key has a live lease", result.OrphansCollected)
+	}
+	versions, err := f.blob.ListVersions(ctx, key)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatal("a live writer's staging object was collected as an orphan")
+	}
+}
+
+// TestWriterCleanupKeepsItsLeaseWhenEmptyingFails is the writer's own
+// release path, and the reason it must not delete the lease
+// unconditionally.
+//
+// The lease is the only record by which cleanup can find the key again, so
+// removing it after a failed emptying converts recoverable residue into an
+// orphan -- which, before orphan discovery existed, meant permanent.
+// Leaving it in place means the lease expires and the next pass collects the
+// key properly, under its lock.
+//
+// The write SUCCEEDS here and only its cleanup fails, which is the case
+// that matters and the one no external condition can produce: a broken
+// bucket fails the write itself long before the release. So the object
+// store's DELETE calls are failed at the transport -- the fault injection
+// design D7 asks for -- while everything else is left alone.
+func TestWriterCleanupKeepsItsLeaseWhenEmptyingFails(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	brokenRelease := f.storeThatCannotDelete(t)
+
+	body := []byte("stored successfully, cleaned up unsuccessfully")
+	attachment, err := brokenRelease.PutAttachment(ctx, store.PutAttachmentInput{
+		Body:           bytes.NewReader(body),
+		Digest:         digestOf(body),
+		MediaType:      "application/octet-stream",
+		SizeBytes:      int64(len(body)),
+		OrganizationID: f.organizationID,
+	})
+	if err != nil {
+		t.Fatalf("the write itself failed, so this test is not exercising the release: %v", err)
+	}
+	if attachment == nil {
+		t.Fatal("no attachment was returned")
+	}
+
+	// The lease it took before the first byte is still there. With the
+	// release deleting it unconditionally this is zero, and the staging
+	// object it could not delete is discoverable by nothing.
+	var leases int
+	if countErr := f.pool.QueryRow(ctx,
+		`SELECT count(*) FROM staging_leases WHERE organization_id = $1`,
+		f.organizationID).Scan(&leases); countErr != nil {
+		t.Fatalf("count leases: %v", countErr)
+	}
+	if leases != 1 {
+		t.Fatalf("%d staging leases survived a write whose cleanup failed, want the one it took: a "+
+			"release that drops the lease after failing to empty leaves residue nothing can find", leases)
+	}
+}
+
+// storeThatCannotDelete builds a store whose object backend refuses DELETE,
+// and nothing else.
+func (f *fixture) storeThatCannotDelete(t *testing.T) *postgres.Store {
+	t.Helper()
+	cfg := f.blobConfig
+	cfg.Transport = refuseDeletes{}
+	blob, err := objects.New(cfg)
+	if err != nil {
+		t.Fatalf("build a blob that cannot delete: %v", err)
+	}
+	built, err := postgres.New(f.pool, testRegistry(t), blob)
+	if err != nil {
+		t.Fatalf("build the store: %v", err)
+	}
+	return built
+}
+
+// refuseDeletes fails every DELETE and passes everything else through, so a
+// write succeeds and the cleanup after it does not.
+type refuseDeletes struct{}
+
+func (refuseDeletes) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodDelete {
+		return nil, errors.New("injected: the object store refuses deletions")
+	}
+	return http.DefaultTransport.RoundTrip(req)
 }

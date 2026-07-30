@@ -27,6 +27,8 @@ import (
 )
 
 // Config locates the object store and the credentials to reach it.
+//
+//nolint:govet // fieldalignment: grouped by what it configures, read once at startup
 type Config struct {
 	Endpoint  string
 	Bucket    string
@@ -34,6 +36,16 @@ type Config struct {
 	SecretKey string
 	// UseTLS is false for the local stack, which listens on loopback.
 	UseTLS bool
+
+	// Transport replaces the HTTP transport, for the fault injection design
+	// D7 requires: "the adapter is fronted by a fault-injecting decorator,
+	// and each step is failed in turn". Several of those steps cannot be
+	// failed any other way -- a promote that dies halfway, a delete that
+	// fails while the write it follows succeeded -- because the store
+	// itself has no way to be asked for them.
+	//
+	// Nil in production, which is every caller outside a test.
+	Transport http.RoundTripper
 }
 
 // Blob is the S3-compatible adapter.
@@ -74,8 +86,10 @@ type Upload struct {
 var ErrNoSuchObject = errors.New("object not found")
 
 // New builds an adapter. It does not contact the server.
+//
+//nolint:gocritic // hugeParam: by value, so a caller cannot mutate it afterwards
 func New(cfg Config) (*Blob, error) {
-	return newBlob(cfg, nil)
+	return newBlob(cfg, cfg.Transport)
 }
 
 // newBlob builds an adapter over a caller-supplied transport.
@@ -87,6 +101,8 @@ func New(cfg Config) (*Blob, error) {
 // check refuses a state a cooperating server will not report. Both are
 // claims the design requires measuring rather than citing, and a guard that
 // can only be described is a guard nobody has seen fire.
+//
+//nolint:gocritic // hugeParam: by value, matching New
 func newBlob(cfg Config, transport http.RoundTripper) (*Blob, error) {
 	if cfg.Endpoint == "" || cfg.Bucket == "" {
 		return nil, errors.New("object store endpoint and bucket are required")

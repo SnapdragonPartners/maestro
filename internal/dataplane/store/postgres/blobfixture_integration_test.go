@@ -129,6 +129,16 @@ func removeTestBucket(t *testing.T, cfg objects.Config) {
 		t.Errorf("cleanup: build client: %v", err)
 		return
 	}
+	exists, err := client.BucketExists(ctx, cfg.Bucket)
+	if err != nil {
+		t.Errorf("cleanup: check bucket %s: %v", cfg.Bucket, err)
+		return
+	}
+	if !exists {
+		// A test may have removed it deliberately, to make every remote
+		// call fail.
+		return
+	}
 	if err := client.RemoveBucketWithOptions(ctx, cfg.Bucket,
 		minio.RemoveBucketOptions{ForceDelete: true}); err != nil {
 		t.Errorf("cleanup: remove bucket %s: %v", cfg.Bucket, err)

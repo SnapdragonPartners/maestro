@@ -230,3 +230,17 @@ DELETE FROM staging_leases
 WHERE organization_id = @organization_id
   AND staging_key = @staging_key
   AND expires_at <= clock_timestamp();
+
+-- StagingLeaseExists reports whether a staging key is still owned.
+--
+-- Used by orphan discovery, where its ABSENCE is what licenses deletion: a
+-- writer inserts its lease before the first byte and a lost lease can never
+-- be resurrected, so a staging object with no lease belongs to a writer
+-- that provably cannot promote.
+--
+-- name: StagingLeaseExists :one
+SELECT EXISTS (
+    SELECT 1 FROM staging_leases
+    WHERE organization_id = @organization_id
+      AND staging_key = @staging_key
+);
