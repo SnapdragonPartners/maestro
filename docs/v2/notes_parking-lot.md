@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-07-24"
+edit_date = "2026-07-30"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -259,3 +259,13 @@ Would require:
 
 Not needed initially. Lightweight signatures and hashes are enough unless compliance or external audit demands stronger guarantees.
 
+
+### Paging Staging Orphan Discovery
+
+Moved to [issue #296](https://github.com/SnapdragonPartners/maestro/issues/296),
+which is where work deferred during development belongs. The issue covers the
+unbounded prefix enumeration in **both** passes that have one — staging
+cleanup and the final-object sweep — rather than only the staging half
+recorded here.
+
+This document is for design ideas. Deferred work goes to GitHub Issues.

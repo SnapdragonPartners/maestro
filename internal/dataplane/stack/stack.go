@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,7 +14,12 @@ import (
 	"time"
 
 	"orchestrator/internal/dataplane/migrations"
+	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/registry"
+	"orchestrator/internal/dataplane/secret"
+	"orchestrator/internal/dataplane/store"
+	"orchestrator/internal/dataplane/store/postgres"
 )
 
 // DefaultComposeFile is the Compose file's path relative to the repository
@@ -99,7 +105,105 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if err := waitReady(ctx, c, composeFile, env); err != nil {
 		return err
 	}
-	return migrateLocked(ctx, c, rootKey)
+	blob, err := ensureBucket(ctx, c, rootKey)
+	if err != nil {
+		return err
+	}
+	if err := migrateLocked(ctx, c, rootKey); err != nil {
+		return err
+	}
+	// AFTER the migrations, because the claims table is part of the schema
+	// they apply, and before `up` reports a ready plane, because a surviving
+	// claim is unfinished destructive work.
+	return reconcileClaims(ctx, c, rootKey, blob)
+}
+
+// ensureBucket provisions the object store the way migrateLocked
+// provisions the schema: a service answering its health probe is not the
+// same as a service ready to be used.
+//
+// Nothing created this bucket before. The config named it and the bootstrap
+// pointer published it, so `up` reported a ready plane whose first write
+// would have failed on a bucket that did not exist. Design D3.
+//
+// The endpoint comes from the bootstrap pointer rather than being formatted
+// again here, so what `up` provisions is by construction the endpoint every
+// caller is told to use.
+//
+// It returns the adapter it built. Claim reconciliation needs one over the
+// same bucket, and building a second from the same inputs would be two places
+// that have to agree about which bucket the plane uses.
+func ensureBucket(ctx context.Context, c *Config, rootKey []byte) (*objects.Blob, error) {
+	accessKey, err := secret.Derive(rootKey, secret.ContextObjectAccessKey)
+	if err != nil {
+		return nil, fmt.Errorf("derive object access key: %w", err)
+	}
+	secretKey, err := secret.Derive(rootKey, secret.ContextObjectSecretKey)
+	if err != nil {
+		return nil, fmt.Errorf("derive object secret key: %w", err)
+	}
+
+	blob, err := objects.New(objects.Config{
+		Endpoint:  c.Bootstrap().Objects.Endpoint,
+		Bucket:    c.Bucket,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build object store client: %w", err)
+	}
+	if err := blob.EnsureBucket(ctx); err != nil {
+		return nil, fmt.Errorf("provision object storage: %w", err)
+	}
+	return blob, nil
+}
+
+// reconcileClaims finishes object deletes an earlier actor could not.
+//
+// It belongs to `up` for the same reason migration does: both make the plane
+// CONSISTENT rather than merely running, and a caller must not be handed a
+// plane that is migrated but still carrying unfinished destructive work. A
+// surviving deletion claim is exactly that -- storage condemned and possibly
+// still there, on a digest whose writers cannot take the existing-object
+// shortcut until the claim clears.
+//
+// Safe to run every time, including on a plane with nothing to recover:
+// re-issuing a version-specific delete is a no-op by construction, and the
+// claims table is empty whenever nothing is mid-delete.
+//
+// The registry is empty on purpose. Reconciliation reads no payload and
+// validates no artifact type; a registry populated for this caller's benefit
+// would be a second, drifting copy of the one the Orchestrator will own.
+func reconcileClaims(ctx context.Context, c *Config, rootKey []byte, blob *objects.Blob) error {
+	dsn, err := c.DSN(rootKey)
+	if err != nil {
+		return err
+	}
+	types, err := registry.New(nil)
+	if err != nil {
+		return fmt.Errorf("build an empty artifact registry: %w", err)
+	}
+	seam, err := postgres.Open(ctx, dsn, types, blob)
+	if err != nil {
+		return fmt.Errorf("open the persistence seam: %w", err)
+	}
+	defer seam.Close()
+
+	recovered, err := seam.ReconcileDeletionClaims(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile deletion claims: %w", err)
+	}
+	// Silent when there was nothing to do, which is every ordinary `up`. A
+	// claim exists only because something went wrong earlier, so having
+	// finished one is worth an operator's attention rather than a line in the
+	// noise.
+	if recovered != (store.ClaimReconciliation{}) {
+		slog.Default().InfoContext(ctx, "finished object deletions left behind by an earlier run",
+			"claims_cleared", recovered.ClaimsCleared,
+			"versions_deleted", recovered.VersionsDeleted,
+			"uploads_aborted", recovered.UploadsAborted)
+	}
+	return nil
 }
 
 // Migrate applies pending migrations to an already-running stack.

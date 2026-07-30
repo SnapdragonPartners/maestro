@@ -12,12 +12,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"orchestrator/internal/dataplane/gen"
+	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 )
@@ -27,6 +29,41 @@ type Store struct {
 	pool     *pgxpool.Pool
 	queries  *gen.Queries
 	registry *registry.Registry
+	// blob is the object module's Layer 1 adapter. It is required, not
+	// optional: ADR 0022 makes object storage part of the data plane, and a
+	// store that satisfied the seam while answering every object operation
+	// with "no backend" would be a nil trap wearing an interface.
+	blob *objects.Blob
+	// now reads the wall clock for the ONE decision that needs a clock this
+	// side of the database: the sweep's grace period, which judges the age
+	// of storage the object store dated.
+	//
+	// Every other time-based decision here is made with the SERVER's clock,
+	// in SQL, and must stay that way -- a lease's expiry is judged by
+	// several participants and a client-side answer would put one process's
+	// skew into every other's decision. An unreferenced object has no row,
+	// so there is no server-side timestamp to compare it against.
+	//
+	// Injectable because design D6 requires the grace period to be tested by
+	// MOVING THE CLOCK rather than by switching the rule off: a test that
+	// disables a guard proves the guard is switchable.
+	now func() time.Time
+}
+
+// Option adjusts a Store at construction.
+type Option func(*Store)
+
+// WithClock replaces the wall clock the sweep's grace period reads.
+//
+// The grace period cannot be configured, only aged past. That asymmetry is
+// deliberate: a settable duration invites a zero, and design D6 requires the
+// guard to be non-zero and unswitchable.
+func WithClock(now func() time.Time) Option {
+	return func(s *Store) {
+		if now != nil {
+			s.now = now
+		}
+	}
 }
 
 // New builds a Store over an existing pool.
@@ -34,23 +71,30 @@ type Store struct {
 // The registry is injected rather than read from a package-level default,
 // so a test can register the types it needs without mutating global state
 // that another test observes.
-func New(pool *pgxpool.Pool, types *registry.Registry) (*Store, error) {
+func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts ...Option) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("postgres store: pool is nil")
 	}
 	if types == nil {
 		return nil, errors.New("postgres store: registry is nil")
 	}
-	return &Store{pool: pool, queries: gen.New(pool), registry: types}, nil
+	if blob == nil {
+		return nil, errors.New("postgres store: object adapter is nil")
+	}
+	built := &Store{pool: pool, queries: gen.New(pool), registry: types, blob: blob, now: time.Now}
+	for _, opt := range opts {
+		opt(built)
+	}
+	return built, nil
 }
 
 // Open builds a Store from a DSN.
-func Open(ctx context.Context, dsn string, types *registry.Registry) (*Store, error) {
+func Open(ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob, opts ...Option) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open data plane pool: %w", err)
 	}
-	built, err := New(pool, types)
+	built, err := New(pool, types, blob, opts...)
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -66,6 +110,12 @@ func (s *Store) Close() { s.pool.Close() }
 type tx struct {
 	queries  *gen.Queries
 	registry *registry.Registry
+	// blob is here for one reason: acceptance must check that referenced
+	// objects EXIST, which is the single precondition reaching outside
+	// Postgres (design D5). It is safe in that order because the
+	// attachment row already exists and the sweep's reachable set is
+	// exactly the attachment rows.
+	blob *objects.Blob
 }
 
 // WithTx runs fn inside one transaction.
@@ -80,7 +130,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Tx) error) error {
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry}); err != nil {
+	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, blob: s.blob}); err != nil {
 		return err
 	}
 	if err := pgxTx.Commit(ctx); err != nil {
@@ -184,9 +234,12 @@ func scopeColumns(scope store.Scope) (scopeArc, error) {
 // time-ordered, so primary keys cluster by creation time instead of
 // scattering across the index. uuid.New() is v4 and was wrong here.
 //
-// Callers may preallocate because item 6's cross-store commit order writes
-// the object FIRST, under a key derived from the artifact id, and only then
-// the row. That is impossible if the id does not exist until the INSERT.
+// Callers may preallocate because item 6's cross-store commit order needs
+// identifiers before the transaction that writes them: the object lands
+// first, then its attachment row, and then the referencing artifact and its
+// retention pins TOGETHER -- and a pin names the attachment it protects, so
+// that id has to exist before the transaction begins. The object's own key
+// is derived from its digest, not from any id.
 func newIdentifier(preallocated uuid.UUID) (uuid.UUID, error) {
 	if preallocated != uuid.Nil {
 		if preallocated.Version() != 7 {

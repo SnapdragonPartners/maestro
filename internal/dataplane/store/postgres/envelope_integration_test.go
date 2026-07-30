@@ -358,7 +358,7 @@ func TestReadsAreVersionBoundedOnEveryPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("narrowed registry: %v", err)
 	}
-	narrowStore, err := postgres.New(f.pool, narrowed)
+	narrowStore, err := postgres.New(f.pool, narrowed, f.blob)
 	if err != nil {
 		t.Fatalf("narrowed store: %v", err)
 	}

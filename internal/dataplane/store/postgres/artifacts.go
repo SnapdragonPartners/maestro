@@ -795,6 +795,15 @@ func (t *tx) AcceptArtifact(ctx context.Context, organizationID, artifactID, rev
 	if classifyErr := classifyAcceptance(transitionAccept, &artifact, &review); classifyErr != nil {
 		return classifyErr
 	}
+	// The evidence preconditions, under the same row lock the
+	// classification used. An artifact becomes authoritative here, and this
+	// is what makes the cross-store invariant hold for its life rather than
+	// for the instant it was written: every reference the REVIEWED payload
+	// names is pinned, every pin matches its target's digest, every
+	// referenced object exists, and nothing else is pinned (design D5).
+	if evidenceErr := t.checkEvidence(ctx, transitionAccept, &artifact, artifact.Payload); evidenceErr != nil {
+		return evidenceErr
+	}
 
 	affected, err := t.queries.AcceptManagementArtifact(ctx, gen.AcceptManagementArtifactParams{
 		ArtifactID:     toUUID(artifactID),
@@ -870,6 +879,15 @@ func (t *tx) AcceptAmendment(ctx context.Context, organizationID, amendmentID, r
 	}
 	if validationErr := t.validatePayload(registry.Type(amendment.ArtifactType), int(amendment.SchemaVersion), merged); validationErr != nil {
 		return fmt.Errorf("amendment %s produces an invalid effective payload: %w", amendmentID, validationErr)
+	}
+
+	// 4a. The evidence the assembled payload names, applied to the
+	// ORIGINAL's pin set. Extracting from the amendment's stored patch
+	// instead would read whatever the patch happened to mention, which is
+	// not the set anyone reviewed.
+	if evidenceErr := t.extendOriginalPins(ctx, transitionAcceptAmendment,
+		&original, amendmentID, base, merged); evidenceErr != nil {
+		return evidenceErr
 	}
 
 	// 5. Allocate the sequence from the historical maximum.
@@ -956,7 +974,10 @@ func (t *tx) InvalidateArtifact(ctx context.Context, organizationID, artifactID 
 	if affected != 1 {
 		return invariant(transitionInvalidate, artifactID)
 	}
-	return nil
+	// The artifact never became authoritative, so nothing justifies its
+	// hold on the evidence. Removed in THIS transaction, so the release is
+	// atomic with the status change (design D5).
+	return t.releasePins(ctx, transitionInvalidate, organizationID, artifactID)
 }
 
 func (t *tx) SupersedeArtifact(ctx context.Context, organizationID, targetID, supersedingID, reviewID uuid.UUID) error {
@@ -989,6 +1010,19 @@ func (t *tx) SupersedeArtifact(ctx context.Context, organizationID, targetID, su
 	}
 	if classifyErr := classifyAcceptance(transitionSupersede, &superseding, &review); classifyErr != nil {
 		return classifyErr
+	}
+	// The SUPERSEDING artifact becomes authoritative here, so it faces the
+	// same evidence preconditions as any other acceptance. Without this,
+	// supersession was a second door into accepted status that skipped
+	// them entirely -- and it is the door an evidence-bearing artifact is
+	// most likely to arrive through, since superseding is how a corrected
+	// version of one replaces it.
+	//
+	// The TARGET is not checked: it keeps the pins it was accepted with,
+	// because ADR 0021 preserves accepted history immutably and history
+	// without its evidence is not preserved.
+	if evidenceErr := t.checkEvidence(ctx, transitionSupersede, &superseding, superseding.Payload); evidenceErr != nil {
+		return evidenceErr
 	}
 
 	// Accept the superseding artifact and retire the target in ONE
@@ -1049,5 +1083,12 @@ func (t *tx) ArchiveArtifact(ctx context.Context, organizationID, artifactID uui
 	if affected != 1 {
 		return invariant(transitionArchive, artifactID)
 	}
-	return nil
+	// Archived is terminal and non-authoritative, which makes it the
+	// retention boundary: without a release here nothing ever lets go of a
+	// retired artifact's storage, and retention has no terminal state.
+	//
+	// Superseding deliberately does NOT do this. ADR 0021 preserves
+	// accepted history immutably, and history without its evidence is not
+	// preserved.
+	return t.releasePins(ctx, transitionArchive, organizationID, artifactID)
 }

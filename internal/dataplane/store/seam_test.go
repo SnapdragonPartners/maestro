@@ -42,3 +42,52 @@ func TestTxDoesNotAdvertiseTruncation(t *testing.T) {
 		t.Errorf("Store no longer offers %s, so the operation is unreachable through the seam", method)
 	}
 }
+
+// TestTxDoesNotAdvertiseObjectOperations guards the other split.
+//
+// Every object operation makes REMOTE calls, and the write path opens its
+// own transaction so it can hold the digest lock and the lease's row lock
+// across a server-side copy and a read-back. Reached through a caller's
+// transaction it could take neither in the order it needs, nor bound them —
+// and nothing about moving one back would fail to compile, because the
+// Postgres store satisfies both surfaces either way.
+//
+// The guarded set is DERIVED from ObjectStore rather than listed here. A
+// hand-written list guards the methods someone remembered: this test
+// already missed AttachEvidence, Pin, Unpin and ListPins when they landed,
+// and would have missed CleanUpStaging too. Deriving it means an operation
+// added to the seam is guarded by having been added.
+func TestTxDoesNotAdvertiseObjectOperations(t *testing.T) {
+	objectStore := reflect.TypeOf((*ObjectStore)(nil)).Elem()
+	if objectStore.NumMethod() == 0 {
+		t.Fatal("ObjectStore declares no methods, so this test guards nothing")
+	}
+
+	for _, surface := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"Tx", reflect.TypeOf((*Tx)(nil)).Elem()},
+		{"Writer", reflect.TypeOf((*Writer)(nil)).Elem()},
+		{"Reader", reflect.TypeOf((*Reader)(nil)).Elem()},
+	} {
+		for i := range objectStore.NumMethod() {
+			method := objectStore.Method(i).Name
+			if _, found := surface.typ.MethodByName(method); found {
+				t.Errorf("%s advertises %s. The object module opens its own transaction and holds it "+
+					"across remote calls; reached through a caller's transaction it cannot do that, so "+
+					"it belongs on ObjectStore, which only Store embeds.", surface.name, method)
+			}
+		}
+	}
+
+	// The other direction: a split that dropped them from the seam would
+	// pass every check above.
+	storeType := reflect.TypeOf((*Store)(nil)).Elem()
+	for i := range objectStore.NumMethod() {
+		method := objectStore.Method(i).Name
+		if _, found := storeType.MethodByName(method); !found {
+			t.Errorf("Store no longer offers %s, so the operation is unreachable through the seam", method)
+		}
+	}
+}

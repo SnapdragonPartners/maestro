@@ -52,6 +52,11 @@ func (s *Store) TruncateAuditBefore(ctx context.Context, organizationID uuid.UUI
 // retryOnSerializationFailure re-runs an operation that lost a snapshot
 // race, to a bound, and translates exhaustion into the seam's typed error.
 //
+// Two conditions qualify, and they are different failures with the same
+// remedy: a lost snapshot (40001), and the restrict violation a pin created
+// concurrently with the pass raises on the attachment key (23001). Both are
+// resolved by the next attempt reading a snapshot that sees the pin.
+//
 // Separated from the operation itself so the retry contract can be tested
 // without provoking a real 40001: exhaustion and the error mapping are
 // decidable from a stub, while the live path proves only that a conflict
@@ -71,7 +76,7 @@ func retryOnSerializationFailure[T any](attempts int, run func() (T, error)) (T,
 		if last == nil {
 			return result, nil
 		}
-		if !isSerializationFailure(last) {
+		if !isSerializationFailure(last) && !isRetriablePinRestriction(last) {
 			var zero T
 			return zero, last
 		}
@@ -162,6 +167,7 @@ func truncationSteps() []truncationStep {
 		(*tx).truncateAuditEvents,
 		(*tx).truncateMetricEvents,
 		(*tx).truncateAuditArtifacts,
+		(*tx).truncateAttachments,
 		(*tx).truncateToolCalls,
 		(*tx).truncateLLMCalls,
 	}
@@ -224,6 +230,8 @@ func (t *tx) truncateMetricEvents(ctx context.Context, result *store.TruncationR
 // the pinned ones. This is the only pinnable family in item 5's scope;
 // binary attachments are item 6's, where deleting a row whose bytes live in
 // object storage is that item's commit-order problem.
+//
+//nolint:dupl // one shape as binary_attachments, distinct generated types; see truncateAuditEvents
 func (t *tx) truncateAuditArtifacts(ctx context.Context, result *store.TruncationResult,
 	organizationID pgtype.UUID, before pgtype.Timestamptz,
 ) error {
@@ -242,6 +250,42 @@ func (t *tx) truncateAuditArtifacts(ctx context.Context, result *store.Truncatio
 		return fmt.Errorf("truncate audit artifacts: %w", err)
 	}
 	return record(result, store.TableAuditArtifacts, store.TableTruncation{
+		Candidates:     counted.Candidates,
+		RetainedPinned: counted.RetainedPinned,
+	}, deleted)
+}
+
+// truncateAttachments removes unpinned attachment rows past the horizon
+// (design D6a).
+//
+// Its position is not forced by a foreign key -- nothing but pins
+// references attachments -- so it sits beside audit_artifacts, the other
+// pinnable family, because that is where a reader will look for it.
+//
+// Deleting the row does NOT delete the object. It makes the object
+// unreachable, and the object sweep reclaims it afterwards under the digest
+// lock. Attempting both here would put a remote call inside a snapshot that
+// cannot contain it.
+//
+//nolint:dupl // one shape as audit_artifacts, distinct generated types; see truncateAuditEvents
+func (t *tx) truncateAttachments(ctx context.Context, result *store.TruncationResult,
+	organizationID pgtype.UUID, before pgtype.Timestamptz,
+) error {
+	counted, err := t.queries.CountAttachmentTruncation(ctx, gen.CountAttachmentTruncationParams{
+		OrganizationID: organizationID,
+		Before:         before,
+	})
+	if err != nil {
+		return fmt.Errorf("count attachment candidates: %w", err)
+	}
+	deleted, err := t.queries.TruncateAttachments(ctx, gen.TruncateAttachmentsParams{
+		OrganizationID: organizationID,
+		Before:         before,
+	})
+	if err != nil {
+		return fmt.Errorf("truncate attachments: %w", err)
+	}
+	return record(result, store.TableAttachments, store.TableTruncation{
 		Candidates:     counted.Candidates,
 		RetainedPinned: counted.RetainedPinned,
 	}, deleted)
@@ -359,4 +403,52 @@ func (t *tx) requireSnapshotIsolation(ctx context.Context) error {
 func isSerializationFailure(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == serializationFailure
+}
+
+// The measured contract for a pin created concurrently with this pass
+// (design D6a). Both halves were run against the pinned Postgres image
+// before the design was finished, and neither was guessable:
+//
+//	truncate first, pin second -> the PIN fails, 23503, foreign_key_violation
+//	pin first, truncate second -> the TRUNCATION fails, 23001,
+//	                              restrict_violation
+//
+// 23001 is restrict_violation, NOT 23503. They are different codes, and a
+// handler matching only foreign-key violations misses the one this pass
+// actually sees. Nothing here raises 40001, so the serialization retry
+// above does not cover it -- left alone, one concurrent pin would
+// intermittently kill an entire truncation pass.
+const restrictViolation = "23001"
+
+// The two constraints a concurrent pin can raise this on. A pin targets an
+// Audit artifact or an attachment, and BOTH families are truncated with the
+// same NOT EXISTS plus ON DELETE RESTRICT shape -- so both races exist, and
+// the audit one has existed since item 5 with no handler at all.
+//
+// Measured separately rather than assumed to mirror each other
+// (pinrace_integration_test.go): both orderings on audit_artifacts behave
+// exactly as the attachment pair does, 23503 to the pin and 23001 to the
+// truncation, each naming its own constraint.
+func isRetriablePinConstraint(name string) bool {
+	return name == attachmentPinConstraint || name == auditPinConstraint
+}
+
+// isRetriablePinRestriction reports the restriction violations this pass may
+// retry through.
+//
+// BOTH halves, not the code alone. 23001 is a generic restriction
+// violation, and retrying every one of them would take a PERSISTENT
+// RESTRICT failure -- a genuine dependency the pass must not delete
+// through -- and turn it into three identical attempts followed by
+// ErrConcurrentTruncation, describing concurrency that was never the
+// problem. Every other restriction propagates unchanged.
+//
+// A retry is the right answer for this one: the next attempt's snapshot
+// sees the pin, the NOT EXISTS excludes the row, and the pass completes
+// with that attachment correctly retained.
+func isRetriablePinRestriction(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == restrictViolation &&
+		isRetriablePinConstraint(pgErr.ConstraintName)
 }

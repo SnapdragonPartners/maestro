@@ -279,6 +279,7 @@ var namedTruncations = map[string]string{
 	"TruncateAuditArtifacts": "audit_artifacts",
 	"TruncateToolCalls":      "tool_calls",
 	"TruncateLLMCalls":       "llm_calls",
+	"TruncateAttachments":    "binary_attachments",
 }
 
 // TestCallsAreCreatedOpenAndCompletedOnce enforces the call family's

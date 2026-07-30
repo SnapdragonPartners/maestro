@@ -283,8 +283,8 @@ type CreateManagementArtifactInput struct {
 	Scope   Scope
 
 	// ArtifactID may be preallocated, and must be a UUIDv7 when it is.
-	// Item 6's cross-store commit order writes the object first, under a
-	// key derived from this id, then the row — which is impossible if the
+	// Item 6's cross-store commit order needs identifiers before the
+	// transaction that writes them — which is impossible if the
 	// id does not exist until the INSERT. Leave it zero to have the seam
 	// allocate one.
 	ArtifactID uuid.UUID
@@ -467,13 +467,17 @@ type Store interface {
 	Reader
 	Writer
 	Maintenance
+	ObjectStore
 
 	// WithTx runs fn inside one transaction, committing when it returns nil
 	// and rolling back otherwise. Every multi-statement operation above
 	// runs inside one already; this is for callers composing several.
 	//
-	// Item 6 builds the cross-store commit order — object first, pin
-	// recorded, row last — on this rather than inventing its own.
+	// Item 6 builds the cross-store commit order on this rather than
+	// inventing its own: object first, attachment row next, then the
+	// referencing artifact and its retention pins in ONE transaction, with
+	// the artifact becoming authoritative only on acceptance (ADR 0022 as
+	// amended by item 6, design D5).
 	WithTx(ctx context.Context, fn func(Tx) error) error
 
 	Close()

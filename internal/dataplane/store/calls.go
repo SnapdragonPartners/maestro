@@ -236,8 +236,13 @@ const (
 	TableAuditEvents    = "audit_events"
 	TableMetricEvents   = "metric_events"
 	TableAuditArtifacts = "audit_artifacts"
-	TableToolCalls      = "tool_calls"
-	TableLLMCalls       = "llm_calls"
+
+	// TableAttachments joins the pass in item 6: deleting a row whose bytes
+	// live in object storage is that item's problem, and the row's deletion
+	// is what makes the object unreachable to the sweep.
+	TableAttachments = "binary_attachments"
+	TableToolCalls   = "tool_calls"
+	TableLLMCalls    = "llm_calls"
 )
 
 // TruncationResult reports one truncation pass.
