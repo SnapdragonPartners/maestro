@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
@@ -703,6 +705,82 @@ func TestSweepLeavesStagingAndUnrecognisedKeysAlone(t *testing.T) {
 		if len(versions) != 1 {
 			t.Fatalf("%s was swept; nothing here is addressed by that key", key)
 		}
+	}
+}
+
+// TestClaimedDigestsNeverConsumeTheBudget is the starvation case, and it is
+// the difference between a deferral and a permanent one.
+//
+// A referenced digest stops being a candidate the moment it is referenced. A
+// CLAIMED digest does not: the claim survives until its owner or the
+// reconciler finishes it, so the digest is discovered again on every pass. If
+// classifying it consumed a slot of the per-pass budget, a full budget's
+// worth of claims sorting ahead of one ordinary unreferenced object would
+// spend every pass declining the same digests and never reach that object --
+// not for a pass or two, but for as long as the claims lasted.
+//
+// The claims are made to sort FIRST rather than left to chance: digests are
+// examined in lexical order, so the reclaimable one is the largest of the set
+// and every claimed one precedes it.
+func TestClaimedDigestsNeverConsumeTheBudget(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	// One more than the pass condemns, so the budget cannot absorb them even
+	// if it were spent on them.
+	const claimed = 101
+
+	// Every digest gets residue, because a digest with none is not a
+	// candidate at all and would prove nothing.
+	digests := make([]string, 0, claimed+1)
+	for i := range claimed + 1 {
+		digests = append(digests, f.unreferencedObject(t, []byte(strings.Repeat("y", i+1))))
+	}
+	slices.Sort(digests)
+	// The largest sorts last; everything before it is claimed.
+	reclaimable := digests[len(digests)-1]
+
+	for _, digest := range digests[:len(digests)-1] {
+		f.seedClaim(t, digest)
+	}
+
+	swept, err := f.storeAfterGrace(t).DeleteUnpinned(ctx, f.organizationID)
+	if err != nil {
+		t.Fatalf("DeleteUnpinned: %v", err)
+	}
+	if swept.DeferredClaimed != claimed {
+		t.Fatalf("sweep reported %+v, want all %d claimed digests declined", swept, claimed)
+	}
+	if swept.DigestsReclaimed != 1 {
+		t.Fatalf("sweep reported %+v: the one reclaimable digest sorts behind %d claimed ones, and "+
+			"a budget spent on those never reaches it", swept, claimed)
+	}
+	if swept.DeferredForNextPass != 0 {
+		t.Fatalf("sweep reported %+v, want the claimed digests filtered out BEFORE the bound rather "+
+			"than counted against it", swept)
+	}
+	if f.storedVersions(t, reclaimable) != 0 {
+		t.Fatal("the reclaimable object survived a pass that had budget for it")
+	}
+	// And the claims are untouched: declining is not finishing.
+	if claims := f.liveClaims(t); claims != claimed {
+		t.Fatalf("%d claims survive, want all %d left for their owners", claims, claimed)
+	}
+}
+
+// seedClaim condemns a digest on behalf of an actor that never came back.
+//
+// Written directly, because what the test needs is the STATE a crashed sweep
+// leaves, at a scale no sequence of failing sweeps would produce in
+// reasonable time. The protocol that writes one is exercised, through the
+// shipped path, by TestAClaimAbortsOnlyTheUploadItRecorded.
+func (f *fixture) seedClaim(t *testing.T, digest string) {
+	t.Helper()
+	if _, err := f.pool.Exec(context.Background(),
+		`INSERT INTO deletion_claims (deletion_claim_id, organization_id, object_digest, version_ids, upload_ids)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		uuid.New(), f.organizationID, digest, []string{"stale-version"}, []string{}); err != nil {
+		t.Fatalf("seed a deletion claim on %s: %v", digest, err)
 	}
 }
 

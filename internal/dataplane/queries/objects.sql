@@ -206,6 +206,25 @@ SELECT EXISTS (
       AND object_digest = @object_digest
 );
 
+-- ListClaimedDigests reports which of the given digests an unfinished claim
+-- already condemns.
+--
+-- The same shape as ListReferencedDigests and for a sharper reason. A claimed
+-- digest is not this pass's to touch, and it stays a candidate for as long as
+-- its claim survives -- so classifying it only under the lock means it
+-- consumes a slot of the per-pass budget every pass, forever. Enough of them
+-- sorting ahead of an ordinary unreferenced digest and reclamation never
+-- reaches it at all.
+--
+-- This is the pre-filter, not the decision. A claim inserted between this
+-- read and the lock is caught by the locked recheck, which is the same
+-- division of labour references have.
+--
+-- name: ListClaimedDigests :many
+SELECT object_digest FROM deletion_claims
+WHERE organization_id = @organization_id
+  AND object_digest = ANY(@object_digests::text[]);
+
 -- ListReferencedDigests reports which of the given digests are still
 -- reachable, in one query for the whole candidate set.
 --

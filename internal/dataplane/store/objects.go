@@ -267,15 +267,24 @@ type ObjectSweep struct {
 	UploadsAborted  int
 
 	// DeferredReferenced counts digests that turned out to be referenced
-	// once the lock was granted -- the recheck doing its job.
+	// once the lock was granted -- the recheck doing its job. Digests already
+	// known to be referenced before the pass took any lock are NOT counted:
+	// in a healthy store that is nearly every object, so the number would
+	// report the size of the bucket rather than anything about this pass.
 	DeferredReferenced int
 	// DeferredYoung counts digests whose residue was inside the grace
 	// period.
 	DeferredYoung int
 	// DeferredClaimed counts digests an earlier pass had already condemned
-	// and not finished. Their completion belongs to that pass's owner or to
-	// the reconciler; a second claim over the same storage would fence
-	// neither attempt.
+	// and not finished, whether that was known before the lock or discovered
+	// under it. Their completion belongs to that pass's owner or to the
+	// reconciler; a second claim over the same storage would fence neither
+	// attempt.
+	//
+	// Counted from BOTH places, unlike DeferredReferenced, because this
+	// number means something an operator may have to act on: a claim is
+	// unfinished recovery work, and one that persists across passes is
+	// storage nothing is reclaiming.
 	DeferredClaimed int
 	// DeferredForNextPass counts candidates the pass's own bound left
 	// behind. Reported rather than only logged: a bound that drops work

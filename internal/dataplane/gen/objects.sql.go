@@ -422,6 +422,50 @@ func (q *Queries) GetBinaryAttachment(ctx context.Context, arg GetBinaryAttachme
 	return i, err
 }
 
+const listClaimedDigests = `-- name: ListClaimedDigests :many
+SELECT object_digest FROM deletion_claims
+WHERE organization_id = $1
+  AND object_digest = ANY($2::text[])
+`
+
+type ListClaimedDigestsParams struct {
+	OrganizationID pgtype.UUID
+	ObjectDigests  []string
+}
+
+// ListClaimedDigests reports which of the given digests an unfinished claim
+// already condemns.
+//
+// The same shape as ListReferencedDigests and for a sharper reason. A claimed
+// digest is not this pass's to touch, and it stays a candidate for as long as
+// its claim survives -- so classifying it only under the lock means it
+// consumes a slot of the per-pass budget every pass, forever. Enough of them
+// sorting ahead of an ordinary unreferenced digest and reclamation never
+// reaches it at all.
+//
+// This is the pre-filter, not the decision. A claim inserted between this
+// read and the lock is caught by the locked recheck, which is the same
+// division of labour references have.
+func (q *Queries) ListClaimedDigests(ctx context.Context, arg ListClaimedDigestsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listClaimedDigests, arg.OrganizationID, arg.ObjectDigests)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var object_digest string
+		if err := rows.Scan(&object_digest); err != nil {
+			return nil, err
+		}
+		items = append(items, object_digest)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeletionClaims = `-- name: ListDeletionClaims :many
 SELECT deletion_claim_id, organization_id, object_digest, version_ids, upload_ids, claimed_at FROM deletion_claims
 ORDER BY claimed_at, deletion_claim_id

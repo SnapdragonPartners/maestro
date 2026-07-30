@@ -66,16 +66,25 @@ const sweepGracePeriod = 15 * time.Minute
 func (s *Store) DeleteUnpinned(ctx context.Context, organizationID uuid.UUID) (store.ObjectSweep, error) {
 	var result store.ObjectSweep
 
-	candidates, err := s.sweepCandidates(ctx, organizationID)
+	found, err := s.sweepCandidates(ctx, organizationID)
 	if err != nil {
 		return result, err
 	}
+	candidates := found.actionable
+	result.DeferredClaimed = found.claimed
 
-	// Bounded here, AFTER referenced digests have been filtered out, so the
-	// budget is spent only on candidates. Spending it on digests the pass
-	// will decline to touch would let a busy organization starve its own
-	// reclamation -- and starve it repeatedly, since the same digests sort
+	// Bounded here, AFTER both kinds of digest this pass will not touch have
+	// been filtered out: those something references, and those an unfinished
+	// claim already condemns. Spending the budget on either starves
+	// reclamation, and starves it repeatedly, because the same digests sort
 	// first every pass.
+	//
+	// The claimed half is the one that starves it FOREVER rather than for a
+	// pass or two. A referenced digest stops being a candidate as soon as it
+	// is referenced, but a claim survives until its owner or the reconciler
+	// finishes it -- so classifying claims only under the lock let a hundred
+	// of them sort ahead of one ordinary unreferenced object and consume
+	// every slot, on every pass, indefinitely.
 	if len(candidates) > objectSweepLimit {
 		result.DeferredForNextPass = len(candidates) - objectSweepLimit
 		candidates = candidates[:objectSweepLimit]
@@ -138,24 +147,43 @@ const (
 	foundNothing
 )
 
-// sweepCandidates finds every digest under an organization's prefix that no
-// attachment row references.
+// candidateSet is what discovery produced: the digests this pass may act on,
+// and how many it set aside before the budget was applied.
+type candidateSet struct {
+	actionable []string
+	// claimed counts digests an unfinished claim already condemns. They are
+	// separated here rather than under the lock because they persist: a claim
+	// survives until its owner or the reconciler finishes it, so a claimed
+	// digest that consumed a budget slot would consume one on every pass for
+	// as long as the claim lasted.
+	claimed int
+}
+
+// sweepCandidates finds every digest under an organization's prefix that this
+// pass may act on.
 //
 // The candidate set is the UNION of both storage vocabularies, and the union
 // is not redundant: a digest key can carry incomplete multipart uploads and
 // no version at all -- the residue of a promote that died before completing
 // -- which version enumeration can never discover, and which the reachability
 // check cannot see either because there is no object to be unreferenced.
-func (s *Store) sweepCandidates(ctx context.Context, organizationID uuid.UUID) ([]string, error) {
+//
+// Two batch reads then remove what the pass will not touch. Both are
+// pre-filters and neither is the decision -- references and claims are
+// rechecked under the digest lock, which is where a race is caught -- but
+// making them here is what keeps a lock and two transactions per digest off
+// the normal case, where nearly everything is referenced.
+func (s *Store) sweepCandidates(ctx context.Context, organizationID uuid.UUID) (candidateSet, error) {
+	var found candidateSet
 	prefix := organizationID.String() + "/"
 
 	versions, err := s.blob.ListVersions(ctx, prefix)
 	if err != nil {
-		return nil, fmt.Errorf("list object versions under %s: %w", prefix, err)
+		return found, fmt.Errorf("list object versions under %s: %w", prefix, err)
 	}
 	uploads, err := s.blob.ListUploadsUnder(ctx, prefix)
 	if err != nil {
-		return nil, fmt.Errorf("list object uploads under %s: %w", prefix, err)
+		return found, fmt.Errorf("list object uploads under %s: %w", prefix, err)
 	}
 
 	digests := make(map[string]struct{}, len(versions)+len(uploads))
@@ -166,34 +194,56 @@ func (s *Store) sweepCandidates(ctx context.Context, organizationID uuid.UUID) (
 		s.noteCandidate(ctx, digests, organizationID, uploads[i].Key)
 	}
 	if len(digests) == 0 {
-		return nil, nil
+		return found, nil
 	}
 
-	// One query for the whole candidate set. This is a pre-filter and not
-	// the decision -- the decision is made again under the lock -- but on a
-	// content-addressed store nearly every object is referenced, and taking
-	// a lock and two transactions per digest to discover that would make the
-	// normal case the expensive one.
 	candidates := slices.Sorted(maps.Keys(digests))
 	referencedRows, err := s.queries.ListReferencedDigests(ctx, gen.ListReferencedDigestsParams{
 		OrganizationID: toUUID(organizationID),
 		ObjectDigests:  candidates,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("read references for %d digests: %w", len(candidates), err)
+		return found, fmt.Errorf("read references for %d digests: %w", len(candidates), err)
 	}
-	referenced := make(map[string]struct{}, len(referencedRows))
-	for _, digest := range referencedRows {
-		referenced[digest] = struct{}{}
+	claimedRows, err := s.queries.ListClaimedDigests(ctx, gen.ListClaimedDigestsParams{
+		OrganizationID: toUUID(organizationID),
+		ObjectDigests:  candidates,
+	})
+	if err != nil {
+		return found, fmt.Errorf("read deletion claims for %d digests: %w", len(candidates), err)
 	}
+	referenced, claimed := digestSet(referencedRows), digestSet(claimedRows)
 
-	unreferenced := make([]string, 0, len(candidates))
+	found.actionable = make([]string, 0, len(candidates))
 	for _, digest := range candidates {
-		if _, isReferenced := referenced[digest]; !isReferenced {
-			unreferenced = append(unreferenced, digest)
+		// Referenced digests are not counted, and claimed ones are. The
+		// asymmetry is what an operator needs from each: nearly every digest
+		// in a healthy bucket is referenced, so counting those would report
+		// the size of the store rather than anything about this pass, while a
+		// claim is unfinished recovery work and its count is the number
+		// somebody may have to act on.
+		if _, isReferenced := referenced[digest]; isReferenced {
+			continue
 		}
+		if _, isClaimed := claimed[digest]; isClaimed {
+			found.claimed++
+			continue
+		}
+		found.actionable = append(found.actionable, digest)
 	}
-	return unreferenced, nil
+	return found, nil
+}
+
+// digestSet turns one batch read's rows into a set to test membership
+// against. The two reads answer different questions through distinct
+// generated parameter types, but the answer has the same shape and only the
+// loop is worth sharing.
+func digestSet(rows []string) map[string]struct{} {
+	found := make(map[string]struct{}, len(rows))
+	for _, digest := range rows {
+		found[digest] = struct{}{}
+	}
+	return found
 }
 
 // noteCandidate records the digest a key addresses, or refuses to guess.
