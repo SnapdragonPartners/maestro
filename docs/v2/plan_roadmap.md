@@ -869,7 +869,7 @@ Outputs:
 
 V1 retirement belongs here rather than to a phase or a standing cleanup track of its own, because this is the phase that replaces the runtime and `cmd/maestro`. Leaving v1 beside its replacement creates two competing factory paths, and a cleanup track with no phase to force it has no completion condition — which is how the port inventory's `drop` dispositions came to be unscheduled in the first place ([issue #298](https://github.com/SnapdragonPartners/maestro/issues/298)). The Phase 2 plan already anticipates this: `pkg/persistence` is deleted rather than edited "during Phase 3's Orchestrator rework".
 
-**The measuring instrument has to survive the transition.** The benchmark target is v1-as-patched and the golden suite runs at every phase end, so removing the v1 factory path removes the only target the runner can currently drive. That must be sequenced deliberately rather than discovered afterwards: this is the phase whose output most wants measuring, and the tail of it is the worst moment to lose the ability.
+**The measuring instrument has to survive the transition, and that is not optional.** The benchmark target is v1-as-patched, so removing the v1 factory path removes the only target the runner can currently drive — and ADR 0025's cadence table requires `golden-all` at N = 1 against `paired-default` at the end of **every phase from Phase 2 onward**, which `process_build.md` states as a working agreement. A phase that deleted v1 without a v2 adapter in place would leave the next phase unable to meet a cadence this roadmap has no authority to suspend. So the adapter is sequenced *before* the deletion, in the same phase. Relaxing that is an amendment to ADR 0025 and `process_build.md`, not a decision available here.
 
 MVP constraint:
 
@@ -881,7 +881,7 @@ Exit criteria:
 - Every step emits artifacts to the data plane with correct provenance (agent instance, epic, story).
 - The Epic dashboard shows live state for that Epic.
 - No v1 factory entrypoint remains, every `drop` disposition is complete, and the v2 path passes build, test, and integration verification.
-- Before the v1 factory path is removed, either a v2 target adapter exists and the golden suite has produced at least one green run against it, or the suite is **knowingly parked** with the gap and its intended recovery recorded. Silence is not an option here; the choice is which of the two, not whether to decide.
+- Before the v1 factory path is removed, a **v2 target adapter** exists and the phase-end conformance run ADR 0025 requires — `golden-all`, N = 1, `paired-default` — has completed against it. The deletion is sequenced after that run, not before it.
 
 ### Phase 4: Branch Hierarchy And Evidence Packages
 
