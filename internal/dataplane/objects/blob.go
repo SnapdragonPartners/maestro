@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -67,7 +68,12 @@ type Blob struct {
 }
 
 // Version is one stored version of a key, including delete markers.
+//
+// LastModified is the store's own record of when this version was written,
+// and it is here for the sweep's grace period: an unreferenced object has no
+// row anywhere, so its age is knowable only from the object store.
 type Version struct {
+	LastModified   time.Time
 	Key            string
 	VersionID      string
 	Size           int64
@@ -77,9 +83,14 @@ type Version struct {
 // Upload is one multipart upload that was started and never completed.
 // These are a third storage state: invisible to version listing, and
 // unreachable by version deletion.
+//
+// Initiated dates the upload for the same reason Version carries a
+// timestamp: a digest key whose only residue is an incomplete upload is a
+// sweep candidate, and the grace period has to be able to judge it too.
 type Upload struct {
-	Key      string
-	UploadID string
+	Initiated time.Time
+	Key       string
+	UploadID  string
 }
 
 // ErrNoSuchObject reports a key or version that is not present.
@@ -339,6 +350,7 @@ func (b *Blob) ListVersions(ctx context.Context, prefix string) ([]Version, erro
 			return nil, fmt.Errorf("list versions under %s: %w", prefix, info.Err)
 		}
 		versions = append(versions, Version{
+			LastModified:   info.LastModified,
 			Key:            info.Key,
 			VersionID:      info.VersionID,
 			Size:           info.Size,
@@ -434,8 +446,9 @@ func (b *Blob) listUploads(ctx context.Context, serverPrefix string, keep func(k
 				continue
 			}
 			uploads = append(uploads, Upload{
-				Key:      result.Uploads[i].Key,
-				UploadID: result.Uploads[i].UploadID,
+				Initiated: result.Uploads[i].Initiated,
+				Key:       result.Uploads[i].Key,
+				UploadID:  result.Uploads[i].UploadID,
 			})
 		}
 		if !result.IsTruncated {

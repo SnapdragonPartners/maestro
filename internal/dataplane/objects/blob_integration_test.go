@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 
@@ -685,6 +686,59 @@ func TestListVersionsSeesTheNullVersion(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Fatalf("the null version survived deletion: %v", remaining)
+	}
+}
+
+// TestBothStorageStatesCarryTheirOwnDate MEASURES that the server dates a
+// version and an incomplete upload, because the sweep's grace period has
+// nothing else to judge age by: an unreferenced object has no row anywhere,
+// so the object store is the only record of when it appeared.
+//
+// The zero time is asserted against explicitly, and it is the failure that
+// matters. A field the server left empty does not read as "unknown" — it
+// reads as January 1st year one, which is older than any grace period, so
+// every candidate would look ancient and the guard would silently pass
+// everything through. That is the direction a missing timestamp fails in,
+// and it is invisible to a test that only checks the object was reclaimed.
+func TestBothStorageStatesCarryTheirOwnDate(t *testing.T) {
+	blob := testBlob(t)
+	ctx := t.Context()
+
+	before := time.Now().Add(-time.Minute)
+	versionKey, uploadKey := "org/aa/bb/dated", "org/aa/bb/dated-upload"
+	put(t, blob, versionKey, []byte("dated"))
+	startAbandonedUpload(t, blob, uploadKey)
+
+	versions, err := blob.ListVersions(ctx, "org/")
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("ListVersions returned %d entries, want 1: %v", len(versions), versions)
+	}
+	if versions[0].LastModified.IsZero() {
+		t.Error("the stored version carries no LastModified, so every unreferenced object would " +
+			"read as older than any grace period and the guard would pass everything through")
+	}
+	if versions[0].LastModified.Before(before) {
+		t.Errorf("version written now reports LastModified %s, which precedes this test",
+			versions[0].LastModified)
+	}
+
+	uploads, err := blob.ListUploadsUnder(ctx, "org/")
+	if err != nil {
+		t.Fatalf("ListUploadsUnder: %v", err)
+	}
+	if len(uploads) != 1 {
+		t.Fatalf("ListUploadsUnder returned %d entries, want 1: %v", len(uploads), uploads)
+	}
+	if uploads[0].Initiated.IsZero() {
+		t.Error("the incomplete upload carries no Initiated date, so a digest key whose only " +
+			"residue is an upload would never be held back by the grace period")
+	}
+	if uploads[0].Initiated.Before(before) {
+		t.Errorf("upload started now reports Initiated %s, which precedes this test",
+			uploads[0].Initiated)
 	}
 }
 
