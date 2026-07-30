@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-07-29"
+edit_date = "2026-07-30"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -262,21 +262,10 @@ Not needed initially. Lightweight signatures and hashes are enough unless compli
 
 ### Paging Staging Orphan Discovery
 
-Deferred until there is traffic to size it against.
+Moved to [issue #296](https://github.com/SnapdragonPartners/maestro/issues/296),
+which is where work deferred during development belongs. The issue covers the
+unbounded prefix enumeration in **both** passes that have one — staging
+cleanup and the final-object sweep — rather than only the staging half
+recorded here.
 
-Phase 2 item 6's staging cleanup (design D6b) enumerates an organization's
-whole staging prefix on every pass. The destructive work is bounded and
-ownership costs one query, but discovery is not bounded: it is sized to
-local mode, where writers release their own keys and the prefix is
-near-empty, so a full enumeration costs almost nothing.
-
-Whether that holds in a hosted deployment depends on how heavily object
-storage is actually used, which nothing yet measures. Revisit before a
-high-use cloud instance:
-
-- page the enumeration, or carry a cursor between passes;
-- decide the shape against measured prefix sizes rather than a guess.
-
-Nothing is lost by deferring: an orphan is discovered by its own residue
-rather than by a record that can be lost, so a pass that defers the
-remainder is collected by the next.
+This document is for design ideas. Deferred work goes to GitHub Issues.
