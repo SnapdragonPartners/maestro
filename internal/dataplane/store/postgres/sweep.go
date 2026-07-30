@@ -412,10 +412,15 @@ func (s *Store) executeClaim(ctx context.Context, claim *gen.DeletionClaim) (int
 	organizationID := fromUUID(claim.OrganizationID)
 	key := objectKey(organizationID, claim.ObjectDigest)
 
+	// The adapter's errors already name the key and the id, so what is added
+	// here is the only thing missing from them: which claim was being
+	// executed, since that is the row an operator has to look at afterwards.
+	claimID := fromUUID(claim.DeletionClaimID)
+
 	var aborted int
 	for _, uploadID := range claim.UploadIds {
 		if err := s.blob.AbortUpload(ctx, key, uploadID); err != nil {
-			return 0, aborted, fmt.Errorf("abort upload %s on %s: %w", uploadID, key, err)
+			return 0, aborted, fmt.Errorf("executing deletion claim %s: %w", claimID, err)
 		}
 		aborted++
 	}
@@ -423,7 +428,7 @@ func (s *Store) executeClaim(ctx context.Context, claim *gen.DeletionClaim) (int
 	var deleted int
 	for _, versionID := range claim.VersionIds {
 		if err := s.blob.DeleteVersion(ctx, key, versionID); err != nil {
-			return deleted, aborted, fmt.Errorf("delete %s version %s: %w", key, versionID, err)
+			return deleted, aborted, fmt.Errorf("executing deletion claim %s: %w", claimID, err)
 		}
 		deleted++
 	}

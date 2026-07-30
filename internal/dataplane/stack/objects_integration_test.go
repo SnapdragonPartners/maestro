@@ -60,11 +60,11 @@ func TestEnsureBucketMakesThePlaneAbleToStoreAnObject(t *testing.T) {
 	cfg.Bucket = "maestro-stack-it-" + hex.EncodeToString(suffix)
 	t.Cleanup(func() { removeBucket(t, cfg) })
 
-	if err = ensureBucket(t.Context(), cfg, rootKey); err != nil {
+	if _, err = ensureBucket(t.Context(), cfg, rootKey); err != nil {
 		t.Fatalf("ensureBucket: %v", err)
 	}
 	// Twice: `up` is idempotent, and the second run is the normal case.
-	if err = ensureBucket(t.Context(), cfg, rootKey); err != nil {
+	if _, err = ensureBucket(t.Context(), cfg, rootKey); err != nil {
 		t.Fatalf("second ensureBucket: %v", err)
 	}
 
