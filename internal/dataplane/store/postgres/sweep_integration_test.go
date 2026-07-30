@@ -593,15 +593,28 @@ func TestSweepIgnoresAnotherOrganizationsStorage(t *testing.T) {
 	}
 }
 
-// TestSweepLeavesStagingAndUnrecognisedKeysAlone covers the two things under
-// an organization's prefix that are not the sweep's to touch.
+// TestSweepLeavesStagingAndUnrecognisedKeysAlone covers what lives under an
+// organization's prefix without being the sweep's to touch.
 //
 // Staging belongs to the lease-driven path, which locks a lease row and
 // rechecks expiry under it; the sweep does neither, and ADR 0027 forbids
-// removing another actor's in-progress work. A key this module would not
-// have written is worse: the sweep's next act is to delete every version of
-// what it identified, so a key it cannot account for is precisely the one it
-// must not delete. Parsing leniently is the dangerous direction.
+// removing another actor's in-progress work. The staging prefix is outside
+// the sweep's discovery prefix entirely, which is the mechanism -- asserted
+// here because the two prefixes only differ by a convention that a later edit
+// could collapse.
+//
+// A misfiled key is a different case, and mutation testing sharpened what is
+// actually worth asserting about it. The parse in noteCandidate refuses keys
+// this module would not have written, but loosening that rule changes
+// NOTHING observable: a spurious candidate's canonical key is empty and the
+// pass declines it. What protects a misfiled object is that every destructive
+// call is ADDRESSED -- the key is rebuilt from the digest, never taken from
+// the listing that discovered it.
+//
+// So the assertion below is built to see that: the same digest has residue at
+// its canonical address AND at a misfiled one, and the sweep must reclaim
+// exactly the first. A delete addressed from the discovered key, or by a
+// fan-out someone simplified away, takes the wrong one and fails here.
 func TestSweepLeavesStagingAndUnrecognisedKeysAlone(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -612,15 +625,16 @@ func TestSweepLeavesStagingAndUnrecognisedKeysAlone(t *testing.T) {
 		t.Fatalf("stage an object under a live lease: %v", err)
 	}
 
-	// Under this organization's prefix, and addressed by nothing: a wrong
-	// fan-out, and a name that is not a digest at all.
-	digest := digestOf([]byte("misfiled"))
-	strays := []string{
-		f.organizationID.String() + "/" + digest,
-		f.organizationID.String() + "/aa/bb/not-a-digest",
-	}
-	for _, stray := range strays {
-		if _, err := f.blob.PutStaged(ctx, stray, 3, bytes.NewReader([]byte("odd"))); err != nil {
+	// One digest, two addresses. The canonical one is a real sweep candidate;
+	// the other is the same bytes filed where nothing addresses them.
+	body := []byte("misfiled")
+	digest := f.unreferencedObject(t, body)
+	misfiled := f.organizationID.String() + "/" + digest
+	// And a key whose last segment is not a digest at all, which no amount of
+	// addressing would make sense of.
+	nonsense := f.organizationID.String() + "/aa/bb/not-a-digest"
+	for _, stray := range []string{misfiled, nonsense} {
+		if _, err := f.blob.PutStaged(ctx, stray, int64(len(body)), bytes.NewReader(body)); err != nil {
 			t.Fatalf("write %s: %v", stray, err)
 		}
 	}
@@ -629,16 +643,19 @@ func TestSweepLeavesStagingAndUnrecognisedKeysAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeleteUnpinned: %v", err)
 	}
-	if swept != (store.ObjectSweep{}) {
-		t.Fatalf("sweep reported %+v, want it to have left every one of these keys alone", swept)
+	if swept.DigestsReclaimed != 1 || swept.VersionsDeleted != 1 {
+		t.Fatalf("sweep reported %+v, want exactly the canonically addressed object reclaimed", swept)
 	}
-	for _, key := range append(strays, staged) {
+	if f.storedVersions(t, digest) != 0 {
+		t.Fatal("the object at the canonical digest key was not reclaimed")
+	}
+	for _, key := range []string{misfiled, nonsense, staged} {
 		versions, listErr := f.blob.ListVersions(ctx, key)
 		if listErr != nil {
 			t.Fatalf("ListVersions(%s): %v", key, listErr)
 		}
 		if len(versions) != 1 {
-			t.Fatalf("%s was swept; it is not this pass's to touch", key)
+			t.Fatalf("%s was swept; nothing here is addressed by that key", key)
 		}
 	}
 }

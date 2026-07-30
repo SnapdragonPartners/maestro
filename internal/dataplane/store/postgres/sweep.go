@@ -200,13 +200,19 @@ func (s *Store) sweepCandidates(ctx context.Context, organizationID uuid.UUID) (
 //
 // A key is a candidate only if this module would have written it: the digest
 // is taken from the last segment and the whole key is then REBUILT from it
-// and compared. Anything that does not match exactly -- a different fan-out,
-// an extra segment, a digest that is not 64 hex characters, a key some other
-// tool left in the bucket -- is left alone and reported.
+// and compared. Anything that does not match -- a different fan-out, an extra
+// segment, a digest that is not 64 hex characters, a key some other tool left
+// in the bucket -- is skipped and reported.
 //
-// Parsing leniently would be the dangerous direction. The sweep's next act
-// is to delete every version of what it identified, so a key it cannot
-// account for is precisely the key it must not touch.
+// What this check is NOT is the reason a foreign key survives the sweep, and
+// it is worth being exact about that. Nothing here is ever deleted by the key
+// it was discovered under: every destructive call downstream is addressed by
+// objectKey(), rebuilt from the digest. So a lenient parse would produce a
+// spurious CANDIDATE whose canonical key is empty, and the pass would decline
+// it -- which is why loosening this rule is invisible to a behavioural test.
+// The addressing is the guarantee; this is a diagnostic on top of it, and it
+// earns its place by naming keys nobody here wrote rather than by protecting
+// them.
 func (s *Store) noteCandidate(
 	ctx context.Context, digests map[string]struct{}, organizationID uuid.UUID, key string,
 ) {
@@ -342,8 +348,10 @@ func (s *Store) observeResidue(
 	for i := range versions {
 		// ListVersions takes a PREFIX, and this one is a whole key. No valid
 		// key can extend another -- they all end in a fixed-length digest --
-		// but the filter costs one comparison and the alternative is a delete
-		// aimed at whatever the server chose to include.
+		// so nothing this module wrote can reach here, and no behavioural test
+		// can make it fire. It stays because the alternative is condemning
+		// version ids that belong to whatever the server chose to include, and
+		// it costs one comparison to not have to reason about that.
 		if versions[i].Key != key {
 			continue
 		}
