@@ -309,35 +309,54 @@ func sweepOrphanTemps(dir string) error {
 	if err != nil {
 		return fmt.Errorf("scan for orphaned temporary key files in %s: %w", dir, err)
 	}
-	// The removal error is ACCUMULATED rather than returned where it happens.
-	// Returning early would skip the sync below — and by then earlier
-	// removals in this same loop have already succeeded, so the failure of
-	// one orphan would leave the deletion of the others undurable. A partial
-	// sweep still has to be a durable partial sweep.
+	// Removal errors are ACCUMULATED rather than returned where they happen,
+	// and EVERY one is kept. Returning early would skip the sync below — and
+	// by then earlier removals in this same loop have already succeeded, so
+	// the failure of one orphan would leave the deletion of the others
+	// undurable. A partial sweep still has to be a durable partial sweep.
+	//
+	// Keeping only the last failure would be the same defect one level down:
+	// each surviving orphan is its own second copy of the key, and a report
+	// naming one of them says nothing about the others. They are independent
+	// facts, so they are all reported.
 	var (
-		removed   int
-		removeErr error
+		removed    int
+		removeErrs []error
 	)
 	for _, name := range matches {
 		switch err := os.Remove(name); {
 		case err == nil:
 			removed++
 		case !errors.Is(err, fs.ErrNotExist):
-			removeErr = fmt.Errorf("remove orphaned temporary key file %s: %w", name, err)
+			removeErrs = append(removeErrs,
+				fmt.Errorf("remove orphaned temporary key file %s: %w", name, err))
 		}
 	}
 
+	var syncErr error
 	if removed > 0 {
 		if err := syncDir(dir); err != nil {
-			// Reported ahead of any removal failure: a removal that did not
-			// happen leaves a second copy of the key, while a removal that
-			// was not made durable leaves one that can come BACK, and the
-			// second is the harder state to reason about afterwards.
-			return fmt.Errorf("make the removal of %d orphaned temporary key file(s) durable: %w",
+			syncErr = fmt.Errorf("make the removal of %d orphaned temporary key file(s) durable: %w",
 				removed, err)
 		}
 	}
-	return removeErr
+
+	// The sync failure leads: a removal that did not happen leaves a second
+	// copy of the key, while a removal that was not made durable leaves one
+	// that can come BACK, and the second is the harder state to reason about
+	// afterwards. It leads the joined error rather than replacing the rest of
+	// it — an undurable deletion and a surviving orphan are different
+	// problems, and reporting either one alone hides work still to be done.
+	// NOT COVERED BY A TEST, and held by structure instead: there is no early
+	// return here, so no branch exists that could drop removeErrs. Making
+	// syncDir fail on demand would need a filesystem fault-injection seam this
+	// package does not have and does not otherwise want — fsync on a directory
+	// fd does not fail for any condition a test can arrange. Re-introducing an
+	// `if syncErr != nil { return syncErr }` above would restore the defect
+	// silently; the whole suite still passes with it in place.
+	//
+	//nolint:wrapcheck // Every operand is already wrapped; Join only combines them.
+	return errors.Join(append([]error{syncErr}, removeErrs...)...)
 }
 
 // syncDir flushes a directory's own entries, making a rename or link into
