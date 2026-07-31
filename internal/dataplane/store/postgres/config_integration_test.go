@@ -181,6 +181,26 @@ func TestConfigurationResolvesMostSpecificFirst(t *testing.T) {
 	}
 }
 
+// TestConfigurationIdentifiersAreUUIDv7 extends the identifier rule to this
+// family. uuid.New() returns v4, which is what this used to call: v7 is
+// time-ordered, so keys cluster by creation time instead of scattering
+// across the index.
+//
+// Asserted rather than assumed, because the two constructors differ by one
+// word at one call site and a v4 id is indistinguishable from a v7 in every
+// behavioural test — the whole suite passed with the wrong one.
+func TestConfigurationIdentifiersAreUUIDv7(t *testing.T) {
+	f := newFixture(t)
+	f.seedLineage(t)
+	s := configStore(t, f)
+
+	record := setConfig(t, s, f.organizationID, retriesKey,
+		store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID}, `{"n":1}`)
+	if got := record.ID.Version(); got != 7 {
+		t.Errorf("configuration record id is UUID version %d, want 7", got)
+	}
+}
+
 // TestConfigurationResolvesNothingWhenUnset keeps "no record" distinct from
 // "a record holding an empty value". A resolver returning a zero record for
 // both would make an unset key indistinguishable from one set to null.
@@ -398,6 +418,102 @@ func TestConfigurationUpdateIsConditional(t *testing.T) {
 	}
 	if !sameJSON(t, current.Value, `{"n":2}`) {
 		t.Errorf("value = %s, want the first writer's; the loser overwrote it", current.Value)
+	}
+}
+
+// TestStaleWriterIsToldTheVersionMoved pins the ORDER of the mutation's two
+// judgements, which is invisible to a test whose write fails only one rule.
+//
+// A stale caller proposing a value the schema forbids fails both: its
+// version has moved AND its value is invalid. Validating first answers the
+// question it did not ask. The value never mattered — the record it was
+// written against had already changed — and "your value is malformed" sends
+// the caller to fix a value it would then re-submit against the same stale
+// version, failing again for the reason it should have been given first.
+func TestStaleWriterIsToldTheVersionMoved(t *testing.T) {
+	f := newFixture(t)
+	f.seedLineage(t)
+	s := configStore(t, f)
+	ctx := context.Background()
+
+	record := setConfig(t, s, f.organizationID, retriesKey,
+		store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID}, `{"n":1}`)
+
+	// Somebody else moves the record on.
+	if _, err := s.UpdateConfigurationRecord(ctx, f.organizationID, record.ID, record.Version,
+		json.RawMessage(`{"n":2}`)); err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+
+	// The stale writer's value is ALSO invalid, so both rules refuse it.
+	_, err := s.UpdateConfigurationRecord(ctx, f.organizationID, record.ID, record.Version,
+		json.RawMessage(`"not an object"`))
+	if errors.Is(err, configkeys.ErrInvalidValue) {
+		t.Fatalf("stale update was refused for its VALUE (%v); existence and version are settled "+
+			"first, so the caller must be told its write did not apply", err)
+	}
+	if !errors.Is(err, store.ErrConfigurationConflict) {
+		t.Fatalf("stale update returned %v, want ErrConfigurationConflict", err)
+	}
+}
+
+// TestConfigurationMutationsClassifyUnderTheRowLock is the deletion half of
+// the same rule, and additionally pins that a delete at a stale version is a
+// conflict rather than a refusal derived from a second, unlocked read.
+func TestConfigurationMutationsClassifyUnderTheRowLock(t *testing.T) {
+	f := newFixture(t)
+	f.seedLineage(t)
+	s := configStore(t, f)
+	ctx := context.Background()
+
+	record := setConfig(t, s, f.organizationID, retriesKey,
+		store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID}, `{"n":1}`)
+
+	// A delete and an update race for the same record from the same read.
+	// Exactly one may apply, and the loser must be told so.
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		outcomes []error
+	)
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		mu.Lock()
+		defer mu.Unlock()
+		outcomes = append(outcomes,
+			s.DeleteConfigurationRecord(ctx, f.organizationID, record.ID, record.Version))
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_, err := s.UpdateConfigurationRecord(ctx, f.organizationID, record.ID, record.Version,
+			json.RawMessage(`{"n":2}`))
+		mu.Lock()
+		defer mu.Unlock()
+		outcomes = append(outcomes, err)
+	}()
+	close(start)
+	wg.Wait()
+
+	var won, lost int
+	for _, err := range outcomes {
+		switch {
+		case err == nil:
+			won++
+		case errors.Is(err, store.ErrConfigurationConflict), errors.Is(err, store.ErrNotFound):
+			lost++
+		default:
+			// An invariant failure here would mean the lock and the SQL
+			// guard disagreed, which is the state the lock exists to make
+			// impossible.
+			t.Fatalf("unexpected outcome: %v", err)
+		}
+	}
+	if won != 1 || lost != 1 {
+		t.Errorf("%d applied and %d refused, want exactly one of each", won, lost)
 	}
 }
 

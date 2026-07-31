@@ -321,6 +321,50 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 	return i, err
 }
 
+const lockConfigurationRecord = `-- name: LockConfigurationRecord :one
+SELECT configuration_record_id, organization_id, key, scope_type, scope_organization_id, scope_product_id, scope_repository_id, scope_id, value, version, created_at, updated_at FROM configuration_records
+WHERE organization_id         = $1
+  AND configuration_record_id = $2
+FOR UPDATE
+`
+
+type LockConfigurationRecordParams struct {
+	OrganizationID        pgtype.UUID
+	ConfigurationRecordID pgtype.UUID
+}
+
+// LockConfigurationRecord takes the row lock every mutation classifies under.
+//
+// GetConfigurationRecord is not enough for that job. The seam runs inside a
+// READ COMMITTED transaction, where each statement sees a fresh snapshot, so
+// a plain SELECT tells you what was true at the instant it ran and nothing
+// about what is true when the UPDATE lands. Between the two, a concurrent
+// writer can bump the version or delete the row, and the classification the
+// seam already made becomes a statement about the past: a missing record
+// reported as a conflict, or a conflict reported as a missing record.
+//
+// FOR UPDATE holds the row until the transaction ends, so the version the
+// seam classified against is the version the write applies to.
+func (q *Queries) LockConfigurationRecord(ctx context.Context, arg LockConfigurationRecordParams) (ConfigurationRecord, error) {
+	row := q.db.QueryRow(ctx, lockConfigurationRecord, arg.OrganizationID, arg.ConfigurationRecordID)
+	var i ConfigurationRecord
+	err := row.Scan(
+		&i.ConfigurationRecordID,
+		&i.OrganizationID,
+		&i.Key,
+		&i.ScopeType,
+		&i.ScopeOrganizationID,
+		&i.ScopeProductID,
+		&i.ScopeRepositoryID,
+		&i.ScopeID,
+		&i.Value,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const replaceSecret = `-- name: ReplaceSecret :one
 UPDATE secrets s
 SET scheme     = $1,
@@ -567,6 +611,11 @@ type UpdateConfigurationRecordParams struct {
 
 // UpdateConfigurationRecord replaces a value, conditional on the version the
 // caller read.
+//
+// The version predicate survives the lock-and-classify above as a BACKSTOP,
+// not as the primary check: once the row is locked and its version compared
+// in Go, zero rows here means the two disagree, which is an invariant
+// failure rather than a conflict to report to the caller.
 //
 // ADR 0027 names bare last-writer-wins on shared state as a defect, and a
 // configuration value is reachable from more than one agent lifecycle. Zero

@@ -139,8 +139,16 @@ func (t *tx) CreateConfigurationRecord(
 		return nil, err
 	}
 
+	// UUIDv7, like every other application-generated key in this schema.
+	// uuid.New() is a v4, which is random across its whole range and
+	// destroys the index locality the time-ordered form exists to give.
+	recordID, err := newIdentifier(uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+
 	row, err := t.queries.CreateConfigurationRecord(ctx, gen.CreateConfigurationRecordParams{
-		ConfigurationRecordID: toUUID(uuid.New()),
+		ConfigurationRecordID: toUUID(recordID),
 		OrganizationID:        toUUID(input.OrganizationID),
 		Key:                   string(input.Key),
 		ScopeType:             string(input.Scope.Type),
@@ -155,6 +163,48 @@ func (t *tx) CreateConfigurationRecord(
 	return configurationRecord(&row)
 }
 
+// lockConfigurationRecord takes the row lock and classifies what the caller
+// asked for against the LOCKED row.
+//
+// Both mutations share it because both make the same two decisions in the
+// same order, and the order carries a rule: existence and version are
+// settled BEFORE anything else is judged. A stale writer proposing an
+// invalid value is told its write did not apply, not that its value was
+// wrong — the value never mattered, because the record it was written
+// against had already moved.
+func (t *tx) lockConfigurationRecord(
+	ctx context.Context, organizationID, recordID uuid.UUID, expectedVersion int,
+) (*store.ConfigurationRecord, error) {
+	row, err := t.queries.LockConfigurationRecord(ctx, gen.LockConfigurationRecordParams{
+		OrganizationID:        toUUID(organizationID),
+		ConfigurationRecordID: toUUID(recordID),
+	})
+	if err != nil {
+		return nil, notFound(err, "configuration record", recordID)
+	}
+	locked, err := configurationRecord(&row)
+	if err != nil {
+		return nil, err
+	}
+	if locked.Version != expectedVersion {
+		return nil, fmt.Errorf("%w: record %s is at version %d, caller read %d",
+			store.ErrConfigurationConflict, recordID, locked.Version, expectedVersion)
+	}
+	return locked, nil
+}
+
+// configurationInvariant reports a conditional write that affected no rows
+// after the seam had already classified the locked row as writable.
+//
+// It is not a conflict. The row is held by this transaction's lock, so
+// nothing else could have moved it; the SQL backstop and the Go
+// classification disagreeing means one of them is wrong.
+func configurationInvariant(verb string, recordID uuid.UUID, expectedVersion int) error {
+	return fmt.Errorf("%w: %s of configuration record %s at version %d affected no rows while the "+
+		"row was locked and classified as writable; the SQL guard and the seam disagree",
+		store.ErrInvariant, verb, recordID, expectedVersion)
+}
+
 // UpdateConfigurationRecord replaces a value under its expected version.
 func (t *tx) UpdateConfigurationRecord(
 	ctx context.Context, organizationID, recordID uuid.UUID, expectedVersion int, value json.RawMessage,
@@ -164,16 +214,17 @@ func (t *tx) UpdateConfigurationRecord(
 		return nil, err
 	}
 
-	// The key is read from the STORED row, not taken from the caller. An
-	// update names a record, not a key, so a caller-supplied key would be a
-	// second claim about what this row is — and validating the new value
-	// against that claim rather than against the row's real key is how a
-	// value passes the wrong schema.
-	current, err := t.GetConfigurationRecord(ctx, organizationID, recordID)
+	locked, err := t.lockConfigurationRecord(ctx, organizationID, recordID, expectedVersion)
 	if err != nil {
 		return nil, err
 	}
-	if validateErr := t.keys.ValidateWrite(current.Key, current.Scope.Type, value); validateErr != nil {
+
+	// The key comes from the LOCKED row, not from the caller. An update
+	// names a record, not a key, so a caller-supplied key would be a second
+	// claim about what this row is — and validating the new value against
+	// that claim rather than against the row's real key is how a value
+	// passes the wrong schema.
+	if validateErr := t.keys.ValidateWrite(locked.Key, locked.Scope.Type, value); validateErr != nil {
 		return nil, fmt.Errorf("refuse configuration update of record %s: %w", recordID, validateErr)
 	}
 
@@ -185,12 +236,7 @@ func (t *tx) UpdateConfigurationRecord(
 	})
 	if err != nil {
 		if errors.Is(notFound(err, "configuration record", recordID), store.ErrNotFound) {
-			// The row was read a moment ago, so its absence now is not a
-			// missing record but a version that moved -- including the
-			// case where somebody deleted it. Both are "your write did not
-			// apply; re-read", which is what the conflict says.
-			return nil, fmt.Errorf("%w: record %s at version %d",
-				store.ErrConfigurationConflict, recordID, expectedVersion)
+			return nil, configurationInvariant("update", recordID, expectedVersion)
 		}
 		return nil, fmt.Errorf("update configuration record %s: %w", recordID, err)
 	}
@@ -206,6 +252,10 @@ func (t *tx) DeleteConfigurationRecord(
 		return err
 	}
 
+	if _, lockErr := t.lockConfigurationRecord(ctx, organizationID, recordID, expectedVersion); lockErr != nil {
+		return lockErr
+	}
+
 	affected, err := t.queries.DeleteConfigurationRecord(ctx, gen.DeleteConfigurationRecordParams{
 		OrganizationID:        toUUID(organizationID),
 		ConfigurationRecordID: toUUID(recordID),
@@ -215,13 +265,7 @@ func (t *tx) DeleteConfigurationRecord(
 		return fmt.Errorf("delete configuration record %s: %w", recordID, err)
 	}
 	if affected == 0 {
-		// A rowcount carries no reason, so the reason is established by
-		// reading the row rather than guessed from the zero.
-		if _, getErr := t.GetConfigurationRecord(ctx, organizationID, recordID); getErr != nil {
-			return getErr
-		}
-		return fmt.Errorf("%w: record %s at version %d",
-			store.ErrConfigurationConflict, recordID, expectedVersion)
+		return configurationInvariant("delete", recordID, expectedVersion)
 	}
 	return nil
 }
