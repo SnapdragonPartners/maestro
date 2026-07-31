@@ -195,6 +195,21 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 		return nil, err
 	}
 
+	// A non-provisioning operation against an empty root refuses HERE, before
+	// the key is even read, because the presence of a key does not mean a
+	// plane exists. An `up` that died after minting the key and before initdb
+	// leaves exactly that state: a key file beside an empty data root. Reading
+	// it and proceeding would let `migrate` run against a plane that was never
+	// created, and the error it eventually produced would be about the schema
+	// rather than about the missing plane.
+	//
+	// Only `up` may adopt such a key, which is the same rule as creating one:
+	// provisioning is its job alone.
+	if operation != lifecycleUp && fresh {
+		return nil, fmt.Errorf("%w in %s, so %s has nothing to act on. Run `dataplane-up` first, "+
+			"which is the only operation that provisions one", ErrNoPlane, c.Roots.Data, operation)
+	}
+
 	access := secret.LoadOnly
 	if operation == lifecycleUp && fresh {
 		access = secret.MayCreate
@@ -209,14 +224,8 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 		return nil, wrapped
 	}
 
-	// Which refusal depends on what the data root holds, because the two
-	// states need opposite actions and the wrong advice sends an operator
-	// looking for a key that never existed.
-	if fresh {
-		return nil, fmt.Errorf("%w in %s, so %s has nothing to act on. Run `dataplane-up` first, "+
-			"which is the only operation that provisions one: %w",
-			ErrNoPlane, c.Roots.Data, operation, wrapped)
-	}
+	// Only a populated root reaches here: an empty one refused above, and an
+	// empty one under `up` was allowed to create rather than to fail.
 	return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials are "+
 		"derived from the original key, so a new one would open neither. Restore the key file "+
 		"beside the backup, or run the new-key recovery path: %w",

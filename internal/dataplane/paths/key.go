@@ -287,11 +287,10 @@ func discardTemp(name string, cause error) error {
 	return cause
 }
 
-// sweepOrphanTemps removes temporary key files left behind by a creator
-// that died mid-protocol. It is only safe under the lock, where no live
-// creator can exist; the caller's directory sync makes the removals durable.
-// sweepOrphanTemps removes orphaned temporaries AND makes the removal
-// durable, as one operation.
+// sweepOrphanTemps removes temporary key files left behind by a creator that
+// died mid-protocol, AND makes the removals durable, as one operation.
+//
+// It is only safe under the lock, where no live creator can exist.
 //
 // The two halves cannot be separated, and separating them is the mistake
 // this comment exists to prevent. A removal that is not synced is a removal
@@ -310,22 +309,35 @@ func sweepOrphanTemps(dir string) error {
 	if err != nil {
 		return fmt.Errorf("scan for orphaned temporary key files in %s: %w", dir, err)
 	}
-	var removed int
+	// The removal error is ACCUMULATED rather than returned where it happens.
+	// Returning early would skip the sync below — and by then earlier
+	// removals in this same loop have already succeeded, so the failure of
+	// one orphan would leave the deletion of the others undurable. A partial
+	// sweep still has to be a durable partial sweep.
+	var (
+		removed   int
+		removeErr error
+	)
 	for _, name := range matches {
-		switch removeErr := os.Remove(name); {
-		case removeErr == nil:
+		switch err := os.Remove(name); {
+		case err == nil:
 			removed++
-		case !errors.Is(removeErr, fs.ErrNotExist):
-			return fmt.Errorf("remove orphaned temporary key file %s: %w", name, removeErr)
+		case !errors.Is(err, fs.ErrNotExist):
+			removeErr = fmt.Errorf("remove orphaned temporary key file %s: %w", name, err)
 		}
 	}
-	if removed == 0 {
-		return nil
+
+	if removed > 0 {
+		if err := syncDir(dir); err != nil {
+			// Reported ahead of any removal failure: a removal that did not
+			// happen leaves a second copy of the key, while a removal that
+			// was not made durable leaves one that can come BACK, and the
+			// second is the harder state to reason about afterwards.
+			return fmt.Errorf("make the removal of %d orphaned temporary key file(s) durable: %w",
+				removed, err)
+		}
 	}
-	if err := syncDir(dir); err != nil {
-		return fmt.Errorf("make the removal of %d orphaned temporary key file(s) durable: %w", removed, err)
-	}
-	return nil
+	return removeErr
 }
 
 // syncDir flushes a directory's own entries, making a rename or link into

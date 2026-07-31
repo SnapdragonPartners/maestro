@@ -147,13 +147,25 @@ func TestOnlyUpMayMintAKey(t *testing.T) {
 			t.Fatalf("%s created a key file", operation)
 		}
 
-		// And the same operation succeeds once a key exists, so the refusal
-		// is about CREATION rather than about the operation being locked out.
+		// A KEY does not make a plane. An `up` that died after minting the
+		// key and before initdb leaves exactly this state — a key file beside
+		// an empty data root — and the refusal must survive it, or migrate
+		// proceeds against a plane that was never created and fails later
+		// with an error about the schema instead.
 		if _, err := rootKeyFor(cfg, lifecycleUp); err != nil {
 			t.Fatalf("up could not create the key: %v", err)
 		}
+		if _, err := rootKeyFor(cfg, operation); !errors.Is(err, ErrNoPlane) {
+			t.Fatalf("%s proceeded against an empty root because a key existed (%v); the key is "+
+				"not the plane", operation, err)
+		}
+
+		// And once the root is actually provisioned, it loads normally —
+		// which is what keeps the rule about the PLANE rather than about
+		// locking these operations out.
+		populate(t, cfg, paths.ServicePostgres)
 		if _, err := rootKeyFor(cfg, operation); err != nil {
-			t.Fatalf("%s could not load an existing key: %v", operation, err)
+			t.Fatalf("%s could not load the key of a provisioned plane: %v", operation, err)
 		}
 	}
 }
