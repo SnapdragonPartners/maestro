@@ -72,7 +72,7 @@ func configKeys(t *testing.T) *configkeys.Registry {
 // state every other suite runs in.
 func configStore(t *testing.T, f *fixture) *postgres.Store {
 	t.Helper()
-	built, err := postgres.New(f.pool, testRegistry(t), f.blob, postgres.WithConfigKeys(configKeys(t)))
+	built, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey, postgres.WithConfigKeys(configKeys(t)))
 	if err != nil {
 		t.Fatalf("store with config keys: %v", err)
 	}
@@ -527,7 +527,7 @@ func TestDeleteWaitsForTheUpdatesRowLock(t *testing.T) {
 	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseNow)
 
-	blocking, err := postgres.New(f.pool, testRegistry(t), f.blob,
+	blocking, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey,
 		postgres.WithConfigKeys(blockingConfigKeys(t, entered, release)))
 	if err != nil {
 		t.Fatalf("store with blocking keys: %v", err)

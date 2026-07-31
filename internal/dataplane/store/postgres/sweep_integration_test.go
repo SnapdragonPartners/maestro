@@ -50,7 +50,7 @@ func pastGrace() time.Time { return time.Now().Add(24 * time.Hour) }
 // storeAfterGrace is the seam with its clock aged past the grace period.
 func (f *fixture) storeAfterGrace(t *testing.T) *postgres.Store {
 	t.Helper()
-	built, err := postgres.New(f.pool, testRegistry(t), f.blob, postgres.WithClock(pastGrace))
+	built, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey, postgres.WithClock(pastGrace))
 	if err != nil {
 		t.Fatalf("build a store whose clock is past the grace period: %v", err)
 	}
@@ -407,7 +407,7 @@ func (f *fixture) storeWithTransport(t *testing.T, transport http.RoundTripper) 
 	if err != nil {
 		t.Fatalf("build a blob over the injected transport: %v", err)
 	}
-	built, err := postgres.New(f.pool, testRegistry(t), blob)
+	built, err := postgres.New(f.pool, testRegistry(t), blob, f.rootKey)
 	if err != nil {
 		t.Fatalf("build the store: %v", err)
 	}

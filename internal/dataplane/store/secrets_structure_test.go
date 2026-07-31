@@ -33,11 +33,12 @@ var permittedCreateSecretFields = []string{
 	// WHO IS ACTING. Not who owns: the owner is derived from this, inside
 	// the seam, where the caller cannot reach it.
 	"ActingUserID",
-	// Shared asks for a credential held in common. This is the ONLY way to
-	// create a secret the acting user does not own, and it is a request for
-	// a different kind of secret rather than a value naming somebody else.
-	"Shared",
 }
+
+// There is deliberately no ownership field of ANY kind, boolean included.
+// Ownership is chosen by calling CreateIndividualSecret or
+// CreateSharedSecret, so it cannot be defaulted, omitted, or set from
+// deserialised input — a bool's zero value is a decision nobody wrote down.
 
 // TestCreateSecretInputDeclaresExactlyItsPermittedFields is the guard.
 //

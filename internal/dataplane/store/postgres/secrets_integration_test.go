@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -39,11 +40,11 @@ func newVault(t *testing.T) *vault {
 	f := newFixture(t)
 	f.seedLineage(t)
 
-	// A real key file in a temp root, not a constant: the provider is part
-	// of what is under test, and a stub one would prove the envelope works
-	// with key material nothing in production produces.
-	built, err := postgres.New(f.pool, testRegistry(t), f.blob,
-		postgres.WithRootKey(secret.KeyFile(t.TempDir(), secret.MayCreate)))
+	// The fixture's provider is a real key file over a temp root, not a
+	// stub: the provider is part of what is under test, and a fake one
+	// would prove the envelope works with key material nothing in
+	// production produces.
+	built, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey)
 	if err != nil {
 		t.Fatalf("store with root key: %v", err)
 	}
@@ -75,14 +76,21 @@ func (v *vault) put(
 	t *testing.T, actor uuid.UUID, scope store.ConfigScope, shared bool, plaintext string,
 ) *store.Secret {
 	t.Helper()
-	created, err := v.store.CreateSecret(context.Background(), store.CreateSecretInput{
+	input := store.CreateSecretInput{
 		OrganizationID: v.organizationID,
 		Name:           forgeToken,
 		Scope:          scope,
 		ActingUserID:   actor,
-		Shared:         shared,
-		Plaintext:      []byte(plaintext),
-	})
+		Plaintext:      secret.NewValue([]byte(plaintext)),
+	}
+	// Which VERB, not which field. The helper still takes a bool because a
+	// table-driven ladder needs one, but it turns into a call rather than
+	// into a value the seam reads.
+	create := v.store.CreateIndividualSecret
+	if shared {
+		create = v.store.CreateSharedSecret
+	}
+	created, err := create(context.Background(), input)
 	if err != nil {
 		t.Fatalf("create %s secret at %s: %v", ownershipWord(shared), scope.Type, err)
 	}
@@ -241,7 +249,7 @@ func TestReplaceRotatesAndUnaddressesTheOldValue(t *testing.T) {
 	oldNonce, oldCipher := v.storedEnvelope(t, created.ID)
 
 	replaced, err := v.store.ReplaceSecret(ctx, v.organizationID, created.ID, v.userID,
-		created.Version, []byte("new-token"))
+		created.Version, secret.NewValue([]byte("new-token")))
 	if err != nil {
 		t.Fatalf("replace: %v", err)
 	}
@@ -276,13 +284,13 @@ func TestSecretMutationsAreConditional(t *testing.T) {
 
 	created := v.put(t, v.userID, v.orgScope(), false, "v1")
 	if _, err := v.store.ReplaceSecret(ctx, v.organizationID, created.ID, v.userID,
-		created.Version, []byte("v2")); err != nil {
+		created.Version, secret.NewValue([]byte("v2"))); err != nil {
 		t.Fatalf("first replace: %v", err)
 	}
 
 	t.Run("stale replace", func(t *testing.T) {
 		_, err := v.store.ReplaceSecret(ctx, v.organizationID, created.ID, v.userID,
-			created.Version, []byte("v3"))
+			created.Version, secret.NewValue([]byte("v3")))
 		if !errors.Is(err, store.ErrSecretConflict) {
 			t.Fatalf("returned %v, want ErrSecretConflict", err)
 		}
@@ -321,7 +329,7 @@ func TestConcurrentReplacementsSerialize(t *testing.T) {
 			defer wg.Done()
 			<-start
 			_, err := v.store.ReplaceSecret(ctx, v.organizationID, created.ID, v.userID,
-				created.Version, fmt.Appendf(nil, "rotation-%d", i))
+				created.Version, secret.NewValue(fmt.Appendf(nil, "rotation-%d", i)))
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -366,7 +374,7 @@ func TestOneUserCannotTouchAnothersSecret(t *testing.T) {
 		}
 	})
 	t.Run("replace", func(t *testing.T) {
-		_, err := v.store.ReplaceSecret(ctx, v.organizationID, mine.ID, v.second, mine.Version, []byte("theirs"))
+		_, err := v.store.ReplaceSecret(ctx, v.organizationID, mine.ID, v.second, mine.Version, secret.NewValue([]byte("theirs")))
 		if !errors.Is(err, store.ErrSecretConflict) {
 			t.Errorf("returned %v, want ErrSecretConflict", err)
 		}
@@ -480,13 +488,12 @@ func TestTwoSharedSecretsAreRefused(t *testing.T) {
 
 	v.put(t, v.userID, v.orgScope(), true, "first-shared")
 
-	_, err := v.store.CreateSecret(context.Background(), store.CreateSecretInput{
+	_, err := v.store.CreateSharedSecret(context.Background(), store.CreateSecretInput{
 		OrganizationID: v.organizationID,
 		Name:           forgeToken,
 		Scope:          v.orgScope(),
 		ActingUserID:   v.second,
-		Shared:         true,
-		Plaintext:      []byte("second-shared"),
+		Plaintext:      secret.NewValue([]byte("second-shared")),
 	})
 	if err == nil {
 		t.Fatal("a second shared secret with the same name and scope was accepted; resolution " +
@@ -508,13 +515,16 @@ func TestSecretCreationRequiresMembership(t *testing.T) {
 
 	for _, shared := range []bool{true, false} {
 		t.Run(ownershipWord(shared), func(t *testing.T) {
-			_, err := v.store.CreateSecret(context.Background(), store.CreateSecretInput{
+			create := v.store.CreateIndividualSecret
+			if shared {
+				create = v.store.CreateSharedSecret
+			}
+			_, err := create(context.Background(), store.CreateSecretInput{
 				OrganizationID: v.organizationID,
 				Name:           forgeToken,
 				Scope:          v.orgScope(),
 				ActingUserID:   outsider,
-				Shared:         shared,
-				Plaintext:      []byte("smuggled"),
+				Plaintext:      secret.NewValue([]byte("smuggled")),
 			})
 			if err == nil {
 				t.Fatal("a non-member created a secret in this organization")
@@ -608,21 +618,49 @@ func TestTamperedRowsFailToOpen(t *testing.T) {
 	}
 }
 
-// TestVaultWithoutARootKeyRefuses pins the default. A store that answered
-// vault operations by encrypting under a zero key would be worse than one
-// that refuses.
-func TestVaultWithoutARootKeyRefuses(t *testing.T) {
+// TestStoreRefusesWithoutARootKeyProvider pins the dependency as REQUIRED.
+//
+// The earlier version of this defaulted to a provider that refused at use
+// time, which produced exactly the partial plane design D4 rejects: the
+// store came up, every other family worked, and the vault failed later, at
+// whichever call site first reached it. One failure at construction is the
+// whole point.
+//
+// The typed-nil case is here because `provider != nil` admits an interface
+// carrying a nil pointer, and that one would not refuse — it would panic on
+// the first seal.
+func TestStoreRefusesWithoutARootKeyProvider(t *testing.T) {
 	f := newFixture(t)
-	f.seedLineage(t)
 
-	_, err := f.store.CreateSecret(context.Background(), store.CreateSecretInput{
-		OrganizationID: f.organizationID,
-		Name:           forgeToken,
-		Scope:          store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID},
-		ActingUserID:   f.userID,
-		Plaintext:      []byte("nope"),
-	})
-	if !errors.Is(err, store.ErrInvariant) {
-		t.Fatalf("returned %v, want a refusal naming the missing provider", err)
+	tests := []struct {
+		name     string
+		provider secret.RootKeyProvider
+	}{
+		{name: "nil interface", provider: nil},
+		{name: "typed nil", provider: (*nilRootKeyProvider)(nil)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			built, err := postgres.New(f.pool, testRegistry(t), f.blob, tc.provider)
+			if err == nil {
+				built.Close()
+				t.Fatal("the store was built without a usable root-key provider; every non-vault " +
+					"family would work and the vault would fail later, which is the partial plane " +
+					"design D4 rejects")
+			}
+			if !strings.Contains(err.Error(), "root-key provider") {
+				t.Errorf("error %q does not name the missing dependency", err)
+			}
+		})
 	}
 }
+
+// nilRootKeyProvider's methods dereference their receiver, so a typed-nil one
+// panics rather than refusing — which is why construction must reject it
+// instead of storing it.
+type nilRootKeyProvider struct{ key []byte }
+
+func (p *nilRootKeyProvider) RootKey() ([]byte, error) { return p.key, nil }
+
+func (p *nilRootKeyProvider) Backend() secret.Backend { return secret.BackendKeyFile }

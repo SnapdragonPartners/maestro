@@ -87,26 +87,35 @@ type Secret struct {
 	Version int
 }
 
-// CreateSecretInput is the public creation input.
+// CreateSecretInput is the creation input for BOTH creation verbs.
 //
-// It carries NO owner, and that absence is the security property. An owner
-// the caller supplies is an owner the caller can lie about, and the damage
-// is not a mislabelled row: the partial unique index gives each user exactly
-// one slot per name and scope, so a secret created AS somebody else occupies
-// their slot — the victim's own creation then fails against a row they
-// cannot read, replace, or delete.
+// It carries no owner and no ownership FLAG, and both absences are the
+// security property.
 //
-// The owner is derived from ActingUserID, and a shared secret is asked for
-// explicitly with Shared rather than by passing a null owner. Those are
-// different requests, and making them different fields means neither can be
-// spelled as the other by accident.
+// An owner the caller supplies is an owner the caller can lie about, and the
+// damage is not a mislabelled row: the partial unique index gives each user
+// exactly one slot per name and scope, so a secret created AS somebody else
+// occupies their slot — the victim's own creation then fails against a row
+// they cannot read, replace, or delete. A poisoned slot is a denial of
+// service the victim cannot diagnose or clear.
+//
+// A boolean would be nearly as bad, which is why there is not one. Ownership
+// chosen by a field is ownership chosen by a field's DEFAULT: an input built
+// with the flag omitted picks a semantic silently, and the zero value of a
+// bool is a decision nobody wrote down. So the choice is the METHOD —
+// CreateIndividualSecret or CreateSharedSecret — and it cannot be defaulted,
+// forgotten, or set from deserialised input.
 //
 // A structural test asserts this type's EXACT field set, so adding one is a
 // change that fails the build and has to be argued for.
 type CreateSecretInput struct {
-	// Plaintext is sealed before it reaches the database and is never
-	// stored, logged, or returned.
-	Plaintext []byte
+	// Plaintext is a secret.Value rather than a []byte, so it is redacted
+	// on the way IN as well as on the way out. A raw slice on this surface
+	// would be leaked by ordinary formatting of the input struct — %+v on
+	// a request, an error body quoting its arguments — which is the exact
+	// leak secret.Value exists to prevent, reintroduced one field short of
+	// the boundary it guards.
+	Plaintext secret.Value
 
 	Name string
 
@@ -119,10 +128,6 @@ type CreateSecretInput struct {
 	// way — a shared secret has a NULL owner, so nothing else on the row
 	// would mention the caller at all.
 	ActingUserID uuid.UUID
-
-	// Shared asks for a credential held in common at this scope instead of
-	// one belonging to the acting user.
-	Shared bool
 }
 
 // SecretReader is the vault's read surface.
@@ -165,9 +170,18 @@ type SecretReader interface {
 // is the more damaging one, since a caller who cannot read a secret also
 // cannot tell what they destroyed.
 type SecretWriter interface {
-	// CreateSecret seals the plaintext and writes it, owned by the acting
-	// user unless a shared credential was asked for.
-	CreateSecret(ctx context.Context, input CreateSecretInput) (*Secret, error)
+	// CreateIndividualSecret writes a credential owned by the acting user.
+	CreateIndividualSecret(ctx context.Context, input CreateSecretInput) (*Secret, error)
+
+	// CreateSharedSecret writes a credential held in COMMON at its scope,
+	// readable by every member of the organization who resolves it.
+	//
+	// A separate call rather than a flag, because the two are different
+	// requests with different blast radii and the difference must be
+	// legible at the call site. "Did this create a personal token or a team
+	// one?" is answerable by reading the line, not by tracing where a
+	// struct field was last assigned.
+	CreateSharedSecret(ctx context.Context, input CreateSecretInput) (*Secret, error)
 
 	// ReplaceSecret rotates a credential in place, conditional on the
 	// version the caller read.
@@ -187,7 +201,7 @@ type SecretWriter interface {
 	// key, the secret id and the previous version because HKDF is
 	// deterministic. Anyone needing cryptographic erasure needs a different
 	// design; this item does not provide one.
-	ReplaceSecret(ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, expectedVersion int, plaintext []byte) (*Secret, error)
+	ReplaceSecret(ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, expectedVersion int, plaintext secret.Value) (*Secret, error)
 
 	// DeleteSecret removes a credential, conditional on its version.
 	//

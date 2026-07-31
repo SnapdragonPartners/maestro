@@ -309,6 +309,15 @@ var namedVersionedMutations = map[string]string{
 // while the envelope's authenticated data makes such a row fail to decrypt,
 // a defence that turns a working secret into an unreadable one is a
 // backstop, not a reason to allow the statement.
+// DEPENDENT CODE: postgres.ReplaceSecret reads its row WITHOUT a lock, and
+// that is only sound because this allow-list makes every field it uses to
+// rebuild the encryption binding — name, owner_user_id, scope_type and the
+// scope columns — impossible to assign. Adding any of them here would turn
+// that read into a time-of-check-to-time-of-use window silently: nothing in
+// the vault's own tests would fail, because the race needs a concurrent
+// writer doing something the schema does not currently permit.
+//
+// If one is ever added, ReplaceSecret must take a row lock first.
 var versionedSetColumns = map[string]bool{
 	"value": true, "scheme": true, "nonce": true, "ciphertext": true,
 	"version": true, "updated_at": true,

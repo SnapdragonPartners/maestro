@@ -87,10 +87,36 @@ func secretNotWritten(verb string, secretID uuid.UUID, expectedVersion int) erro
 		store.ErrSecretConflict, verb, secretID, expectedVersion)
 }
 
-// CreateSecret seals a plaintext and writes it.
+// CreateIndividualSecret writes a credential owned by the acting user.
 //
 //nolint:gocritic // hugeParam: by value, matching the seam interface
-func (t *tx) CreateSecret(ctx context.Context, input store.CreateSecretInput) (*store.Secret, error) {
+func (t *tx) CreateIndividualSecret(
+	ctx context.Context, input store.CreateSecretInput,
+) (*store.Secret, error) {
+	// The owner is the acting user, taken here and not from any input
+	// field. There is no field it could have come from.
+	owner := input.ActingUserID
+	return t.createSecret(ctx, input, &owner)
+}
+
+// CreateSharedSecret writes a credential held in common at its scope.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (t *tx) CreateSharedSecret(
+	ctx context.Context, input store.CreateSecretInput,
+) (*store.Secret, error) {
+	return t.createSecret(ctx, input, nil)
+}
+
+// createSecret is the shared implementation. Ownership reaches it as an
+// argument the two exported verbs supply, never as something read from the
+// caller's input — which is what makes "who owns this" a property of which
+// function was called.
+//
+//nolint:gocritic // hugeParam: by value, matching the exported verbs
+func (t *tx) createSecret(
+	ctx context.Context, input store.CreateSecretInput, owner *uuid.UUID,
+) (*store.Secret, error) {
 	arc, err := configScopeColumns(input.Scope)
 	if err != nil {
 		return nil, err
@@ -101,15 +127,6 @@ func (t *tx) CreateSecret(ctx context.Context, input store.CreateSecretInput) (*
 		return nil, err
 	}
 
-	// The owner is DERIVED, never accepted. A shared secret is asked for by
-	// setting Shared, which is a different request from naming a null
-	// owner, and the input type has no field that could carry one.
-	var owner *uuid.UUID
-	if !input.Shared {
-		acting := input.ActingUserID
-		owner = &acting
-	}
-
 	rootKey, err := t.rootKey.RootKey()
 	if err != nil {
 		return nil, fmt.Errorf("read the root key to seal secret %q: %w", input.Name, err)
@@ -118,6 +135,10 @@ func (t *tx) CreateSecret(ctx context.Context, input store.CreateSecretInput) (*
 	// Version 1 is what the INSERT will store, and it is part of the key
 	// derivation context — so the value sealed here is sealed for the row
 	// that is about to exist, not for the row as it is read back.
+	//
+	// Reveal is called HERE and nowhere earlier: this is the boundary where
+	// plaintext must become bytes, and keeping the call at the cipher's
+	// doorstep is what makes every escape from secret.Value greppable.
 	envelope, err := secret.Seal(rootKey, secret.Binding{
 		OrganizationID: input.OrganizationID,
 		SecretID:       secretID,
@@ -126,7 +147,7 @@ func (t *tx) CreateSecret(ctx context.Context, input store.CreateSecretInput) (*
 		ScopeType:      string(input.Scope.Type),
 		ScopeID:        input.Scope.ID,
 		Version:        1,
-	}, input.Plaintext)
+	}, input.Plaintext.Reveal())
 	if err != nil {
 		return nil, fmt.Errorf("seal secret %q: %w", input.Name, err)
 	}
@@ -236,7 +257,7 @@ func (t *tx) RevealSecret(
 // ReplaceSecret rotates a credential in place.
 func (t *tx) ReplaceSecret(
 	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
-	expectedVersion int, plaintext []byte,
+	expectedVersion int, plaintext secret.Value,
 ) (*store.Secret, error) {
 	version, err := toInt32(expectedVersion, "expected secret version")
 	if err != nil {
@@ -247,7 +268,8 @@ func (t *tx) ReplaceSecret(
 	// nothing read from it can go stale in a way that matters. Every field
 	// the new binding needs — name, scope, owner — is immutable: the
 	// permitted UPDATE assigns only the envelope columns and the version,
-	// which the queries structure test enforces as an allow-list. The one
+	// enforced as an allow-list by versionedSetColumns in the queries
+	// structure test, which carries a note pointing back here. The one
 	// field that does change is the version, and that comes from the
 	// CALLER, not from this read.
 	//
@@ -283,7 +305,7 @@ func (t *tx) ReplaceSecret(
 	// is no birthday budget to reason about and no counter to trust.
 	binding := bindingFor(&row)
 	binding.Version = expectedVersion + 1
-	envelope, err := secret.Seal(rootKey, binding, plaintext)
+	envelope, err := secret.Seal(rootKey, binding, plaintext.Reveal())
 	if err != nil {
 		return nil, fmt.Errorf("seal replacement for secret %s: %w", secretID, err)
 	}

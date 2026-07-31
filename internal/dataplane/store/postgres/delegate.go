@@ -361,18 +361,31 @@ func (s *Store) DeleteConfigurationRecord(
 
 // The secrets vault, reached through the seam (item 7, design D5).
 //
-// All five go DIRECT. Each is one statement plus in-process sealing or
-// opening, and the pattern configuration needed — lock, classify, write —
-// does not apply here: replacement's binding fields are immutable, so the
-// read that feeds it cannot go stale, and both mutations deliberately
-// collapse "moved" and "not yours" into one answer rather than classifying
-// between them.
+// All six go DIRECT. Five are one statement plus in-process sealing or
+// opening. Replacement is a read and then a conditional update, which would
+// normally argue for a transaction — but the configuration family's
+// lock-and-classify pattern does not apply here: every field replacement
+// reads is immutable, so the read cannot go stale, and both mutations
+// deliberately collapse "moved" and "not yours" into one answer rather than
+// classifying between them. See the note on ReplaceSecret for why the
+// immutability holds and what enforces it.
 
-// CreateSecret seals a plaintext and writes it, owned by the acting user.
+// CreateIndividualSecret writes a credential owned by the acting user.
 //
 //nolint:gocritic // hugeParam: by value, matching the seam interface
-func (s *Store) CreateSecret(ctx context.Context, input store.CreateSecretInput) (*store.Secret, error) {
-	return s.direct().CreateSecret(ctx, input)
+func (s *Store) CreateIndividualSecret(
+	ctx context.Context, input store.CreateSecretInput,
+) (*store.Secret, error) {
+	return s.direct().CreateIndividualSecret(ctx, input)
+}
+
+// CreateSharedSecret writes a credential held in common at its scope.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateSharedSecret(
+	ctx context.Context, input store.CreateSecretInput,
+) (*store.Secret, error) {
+	return s.direct().CreateSharedSecret(ctx, input)
 }
 
 // ResolveSecret walks the six-step ladder for a repository.
@@ -399,7 +412,7 @@ func (s *Store) RevealSecret(
 // ReplaceSecret rotates a credential in place.
 func (s *Store) ReplaceSecret(
 	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
-	expectedVersion int, plaintext []byte,
+	expectedVersion int, plaintext secret.Value,
 ) (*store.Secret, error) {
 	return s.direct().ReplaceSecret(ctx, organizationID, secretID, actingUserID, expectedVersion, plaintext)
 }

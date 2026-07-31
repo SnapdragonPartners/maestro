@@ -322,7 +322,12 @@ func reconcileClaims(ctx context.Context, c *Config, rootKey []byte, blob *objec
 	if err != nil {
 		return fmt.Errorf("build an empty artifact registry: %w", err)
 	}
-	seam, err := postgres.Open(ctx, dsn, types, blob)
+	// The key this function was HANDED, wrapped — not a second KeyFile.
+	// Constructing one here would make the create-versus-load decision a
+	// second time, outside rootKeyFor, which is the one place allowed to
+	// make it; a structure test enforces that and caught this exact
+	// mistake. The caller already resolved the key under the right rule.
+	seam, err := postgres.Open(ctx, dsn, types, blob, secret.ResolvedKey(rootKey))
 	if err != nil {
 		return fmt.Errorf("open the persistence seam: %w", err)
 	}

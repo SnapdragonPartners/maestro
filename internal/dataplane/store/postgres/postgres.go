@@ -20,6 +20,7 @@ import (
 
 	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/gen"
+	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
@@ -45,12 +46,14 @@ type Store struct {
 	// rootKey provides the key every secret's per-version key is derived
 	// from (item 7, design D3).
 	//
-	// Injected, and defaulting to a provider that REFUSES rather than to
-	// nil: a store without one can still serve every other family, and the
-	// vault operations report a typed refusal naming the missing backend
-	// instead of dereferencing nothing. The seam and the root-key boundary
-	// are deliberately separate — D3's whole point is that a cloud secrets
-	// store would have no root key to offer.
+	// REQUIRED, unlike the configuration key registry beside it, and the
+	// asymmetry is not an oversight. An empty key vocabulary is a real
+	// state — this package ships none, so a store with no registered keys
+	// is correctly configured and refuses writes by saying so. A missing
+	// root key is not a state, it is a broken plane: the store would come
+	// up, every other family would work, and the vault would fail later,
+	// which is exactly the partial-plane mode design D4 rejects. Refusing
+	// at construction turns that into one failure at one place.
 	rootKey secret.RootKeyProvider
 	// blob is the object module's Layer 1 adapter. It is required, not
 	// optional: ADR 0022 makes object storage part of the data plane, and a
@@ -103,36 +106,15 @@ func WithConfigKeys(keys *configkeys.Registry) Option {
 	}
 }
 
-// WithRootKey supplies the root-of-trust key provider the vault seals and
-// opens with.
-//
-// Absent it, every vault operation is refused by name. A store that answered
-// them by encrypting under a zero key would be worse than one that refuses.
-func WithRootKey(provider secret.RootKeyProvider) Option {
-	return func(s *Store) {
-		if provider != nil {
-			s.rootKey = provider
-		}
-	}
-}
-
-// unconfiguredRootKey is the default provider: it answers every request with
-// a refusal that says which dependency is missing.
-type unconfiguredRootKey struct{}
-
-func (unconfiguredRootKey) Backend() secret.Backend { return "unconfigured" }
-
-func (unconfiguredRootKey) RootKey() ([]byte, error) {
-	return nil, fmt.Errorf("%w: the store was built without a root-key provider, so the secrets "+
-		"vault cannot seal or open anything (pass postgres.WithRootKey)", store.ErrInvariant)
-}
-
 // New builds a Store over an existing pool.
 //
 // The registry is injected rather than read from a package-level default,
 // so a test can register the types it needs without mutating global state
 // that another test observes.
-func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts ...Option) (*Store, error) {
+func New(
+	pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob,
+	rootKey secret.RootKeyProvider, opts ...Option,
+) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("postgres store: pool is nil")
 	}
@@ -142,12 +124,20 @@ func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts 
 	if blob == nil {
 		return nil, errors.New("postgres store: object adapter is nil")
 	}
+	// nilcheck, not `rootKey == nil`: an interface holding a typed nil is
+	// not equal to nil, so the plain comparison admits one and the panic
+	// arrives on the first vault operation instead of here.
+	if nilcheck.IsNil(rootKey) {
+		return nil, errors.New("postgres store: root-key provider is nil; the secrets vault cannot " +
+			"seal or open without one, and a store that came up without it would fail only once " +
+			"somebody reached the vault")
+	}
 	built := &Store{
 		pool:     pool,
 		queries:  gen.New(pool),
 		registry: types,
 		keys:     configkeys.MustNew(nil),
-		rootKey:  unconfiguredRootKey{},
+		rootKey:  rootKey,
 		blob:     blob,
 		now:      time.Now,
 	}
@@ -158,12 +148,15 @@ func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts 
 }
 
 // Open builds a Store from a DSN.
-func Open(ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob, opts ...Option) (*Store, error) {
+func Open(
+	ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob,
+	rootKey secret.RootKeyProvider, opts ...Option,
+) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open data plane pool: %w", err)
 	}
-	built, err := New(pool, types, blob, opts...)
+	built, err := New(pool, types, blob, rootKey, opts...)
 	if err != nil {
 		pool.Close()
 		return nil, err

@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -127,4 +128,34 @@ func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProv
 	default:
 		return nil, fmt.Errorf("unknown root-key backend %q", backend)
 	}
+}
+
+// ResolvedKey wraps key material that has ALREADY been obtained, for callers
+// that must hand a provider to something else without making a second
+// create-versus-load decision.
+//
+// It exists because that decision is singular by design (item 7, D4): only
+// the code that knows the operation AND whether the data root is empty may
+// decide whether a key may be minted, and a second KeyFile constructed
+// downstream would make that decision again, somewhere nothing reviews. A
+// caller that already holds the key passes it through here instead.
+//
+// It carries a decision; it does not make one. There is deliberately no path
+// from this type to the filesystem.
+func ResolvedKey(key []byte) RootKeyProvider {
+	return resolvedKeyProvider{key: bytes.Clone(key)}
+}
+
+type resolvedKeyProvider struct{ key []byte }
+
+// Backend reports the source that actually produced the key. A resolved key
+// on this plane came from the key file, and saying otherwise would make
+// diagnostics name a backend nobody configured.
+func (resolvedKeyProvider) Backend() Backend { return BackendKeyFile }
+
+func (p resolvedKeyProvider) RootKey() ([]byte, error) {
+	if len(p.key) == 0 {
+		return nil, ErrNoRootKey
+	}
+	return bytes.Clone(p.key), nil
 }
