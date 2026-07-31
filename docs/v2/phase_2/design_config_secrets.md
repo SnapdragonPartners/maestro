@@ -323,7 +323,7 @@ revision stated this table as fact on the strength of neither.
 | Derived credential | Effect of a new key | Recovery needed |
 | --- | --- | --- |
 | Vault key material | Every stored ciphertext becomes undecryptable | Delete every secret row; the operator re-enters them |
-| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Restart with a trust-only `hba_file` override, `ALTER USER`, restart clean** — measured below, under the shipped uid |
+| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Restart socket-only under a local-trust `hba_file`, `ALTER USER` over the Unix socket, restart clean** — measured below, under the shipped uid |
 | Object-store credentials | `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` are passed as **environment**, not baked into the data directory | None; the store follows the new key — measured below |
 
 **MinIO, measured** (`minio/minio@sha256:14cea49…`): a bucket and object were
@@ -352,14 +352,31 @@ instead is not an escape — on native Linux that uid cannot write the 0700
 host-owned bind mount, which is the exact asymmetry item 2 found when a
 container running as the image user passed on macOS and failed on Linux.
 
-**So recovery runs the ordinary server with an overridden `hba_file`, and
-that is measured working under the shipped identity** (`postgres@sha256:3a82e1f5…`,
-18.4): start the container as `${MAESTRO_UID}:${MAESTRO_GID}` with
-`-c hba_file=` pointing at a mounted trust-only `pg_hba.conf`, issue
-`ALTER USER … PASSWORD …` over the network, stop, and restart with no
-override. Afterwards the **new** password authenticated and the pre-reset
-data was intact, and the **old** password was rejected. Nothing about the
-data directory's ownership changes, because the recovery container is the
+**So recovery runs the ordinary server with an overridden `hba_file` — and it
+must never be reachable over the network while it does.** Trust
+authentication means *anyone who can open a connection is the database
+owner*, so a recovery step that publishes a TCP listener hands the cluster to
+whatever else can route to it, during the one operation whose entire purpose
+is restoring data somebody cares about. An earlier revision issued the
+`ALTER USER` over a Docker network, which is exactly that hole.
+
+The recovery server is therefore **socket-only**:
+
+| Constraint | Why |
+| --- | --- |
+| `-c listen_addresses=''` | No TCP listener exists at all, so trust cannot be reached from off-host or from another container |
+| No published port, no network attachment | Defence in depth behind the same fact |
+| HBA carries `local all all trust` **only** | The `host` line is what an earlier revision needed and is now absent entirely |
+| `ALTER USER` issued through the container's **Unix socket** | `docker exec … psql`, which needs no listener |
+| Networking returns only **after** the clean restart | And only to verify the new credential authenticates |
+
+**Measured under the shipped identity** (`postgres@sha256:3a82e1f5…`, 18.4),
+running as `${MAESTRO_UID}:${MAESTRO_GID}` over a 0700 host-owned bind mount:
+the recovery container reported **no listener on 5432** and no published
+ports, `ALTER USER` succeeded over the socket, and after restarting with no
+overrides the **new** password authenticated over the network with the
+pre-reset data intact while the **old** password was rejected. Nothing about
+the data directory's ownership changes, because the recovery container is the
 same identity as the normal one.
 
 **Two traps recorded, because both were walked into while measuring this.**
@@ -559,7 +576,8 @@ Behavioural, against the real Postgres, as items 4-6:
 | Delete a repository override | The product or organization value is inherited again — the reason deletion exists |
 | Configuration delete racing an update | Typed conflict; neither silently wins |
 | One user **replacing or deleting** another's secret | No rows affected, reported as a conflict — asserted for both verbs, since a read-only ownership test passes with the write side wide open |
-| Creating an individual secret **owned by another user** | Not expressible: the owner comes from the acting user. Asserted by creating as one user and reading as the other, since the API shape is the guard and a test that only checks the happy path cannot see it |
+| The public creation input carries **no owner field** | A **structural** test over the seam's type, for the reason below |
+| The **stored** owner equals the authenticated acting user | Read the row back and compare against the caller's identity, not against what was passed |
 | A user creating their own secret where another user already has one of the same name and scope | Both succeed and resolve independently — the slot is per user, and this is the case a poisoned slot would break |
 | A secret owned by a user of **another organization** | Refused by the composite foreign key |
 | Tampered ciphertext | Decryption fails on GCM authentication |
@@ -587,6 +605,16 @@ supplied one of them by finding a test that could not have failed:
 - the **redaction verbs** — a partially-redacting implementation satisfies
   any single one;
 - the **cross-user filter** — invisible to a test with one user;
+- **creation's ownership**, which needs a structural test rather than a
+  behavioural one. "Create as A, read as B" exercises the read filter and
+  nothing else: it passes whether or not the creation API accepts an owner,
+  because a test that never supplies one cannot discover that supplying one is
+  possible. The guard is the **shape of the input type**, so the test parses
+  the seam and asserts the public creation input declares no owner field — the
+  same instrument item 6 used for its one-emptying-protocol rule, and used
+  here for the same reason: the property is about which code can be written,
+  not about a value any run produces. The behavioural half is separate and
+  compares the **stored** owner against the authenticated caller;
 - the **fresh-versus-existing data-root split** — a suite that only ever runs
   against a fresh root proves half the rule, and the half it skips is the one
   that refuses.
@@ -612,8 +640,9 @@ Round 1's four are **resolved**: the registry stays in this item with an empty
 vocabulary; per-version derivation stays; individual-first stays, with the
 full ladder now tabled and tested; `Reveal()` stays.
 
-Both remaining questions are now **resolved**, and both are recorded because
-each carries an obligation into item 8.
+Both remaining questions are now **resolved**. The first carries an
+obligation into item 8; the second is recorded only so the road not taken is
+legible.
 
 1. **Resolved: new-key recovery lands in item 8, and ADR 0022 stands.** The
    mechanism is measured and feasible (D4), so the ADR is not overpromising;
