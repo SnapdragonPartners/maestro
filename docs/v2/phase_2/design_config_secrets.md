@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 7 Design: Configuration Records And The Secrets Vault"
-edit_date = "2026-07-30"
+edit_date = "2026-07-31"
 status = "draft"
 summary = "Design for item 7: configuration records under a governed key registry validated before write and resolved most-specific-wins along the org/product/repo lineage, and a secrets vault whose per-version keys and canonically-encoded AAD bind a ciphertext to every field deciding who may read it, with individual credentials resolved over a six-step ladder where specificity outranks ownership, replacement and deletion under optimistic concurrency promising unaddressability rather than erasure, a local root-key provider distinct from the replaceable secrets store, and one create-versus-load rule that every lifecycle operation shares so only a fresh plane may mint a key."
 type = "design"
@@ -323,7 +323,7 @@ revision stated this table as fact on the strength of neither.
 | Derived credential | Effect of a new key | Recovery needed |
 | --- | --- | --- |
 | Vault key material | Every stored ciphertext becomes undecryptable | Delete every secret row; the operator re-enters them |
-| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Reset the role's password from single-user mode**, which needs no password — measured below |
+| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Restart with a trust-only `hba_file` override, `ALTER USER`, restart clean** — measured below, under the shipped uid |
 | Object-store credentials | `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` are passed as **environment**, not baked into the data directory | None; the store follows the new key — measured below |
 
 **MinIO, measured** (`minio/minio@sha256:14cea49…`): a bucket and object were
@@ -333,29 +333,60 @@ successfully under the **new** credentials while the old ones were rejected
 with `The Access Key Id you provided does not exist in our records`. The
 object store therefore needs no recovery step at all — it follows the key.
 
-**Postgres, measured** (`postgres@sha256:3a82e1f5…`, 18.4): a cluster was
-initialised under one password and seeded, then stopped, and the role's
-password was changed by piping `ALTER USER … PASSWORD …` into
-`postgres --single -D <PGDATA> <database>`. Single-user mode requires **no
-password** and no `pg_hba` edit, which is what makes the recovery feasible;
-it must run as the `postgres` user, since the server refuses to start as
-root. After restarting normally, the new password authenticated and the
-pre-reset data was intact, and the old password was **rejected**.
+**Postgres: single-user mode does not work here, which measuring under the
+shipped identity is what revealed.** The obvious recipe — pipe
+`ALTER USER … PASSWORD …` into `postgres --single -D <PGDATA>` — needs no
+password and no `pg_hba` edit, and it succeeds when the container runs as the
+image's own `postgres` user. But Compose runs Postgres as
+`${MAESTRO_UID}:${MAESTRO_GID}` over a host-owned directory (item 2, D2a), and
+that uid is not in the image's passwd file. Measured under it, the standalone
+backend refuses before doing anything:
 
-**That last check has a trap worth recording, because the first attempt fell
-into it.** Verifying the passwords from *inside* the container proves
-nothing: the image's `pg_hba` trusts in-container connections, so both the
-old and new passwords appeared to work. Both results were vacuous. The
-measurement above was redone over a Docker network by hostname — the same
+```
+postgres: could not look up effective user ID 501: user does not exist
+```
+
+The normal server entrypoint tolerates an arbitrary uid; the standalone
+backend calls `getpwuid` and does not. Running the recovery as `postgres`
+instead is not an escape — on native Linux that uid cannot write the 0700
+host-owned bind mount, which is the exact asymmetry item 2 found when a
+container running as the image user passed on macOS and failed on Linux.
+
+**So recovery runs the ordinary server with an overridden `hba_file`, and
+that is measured working under the shipped identity** (`postgres@sha256:3a82e1f5…`,
+18.4): start the container as `${MAESTRO_UID}:${MAESTRO_GID}` with
+`-c hba_file=` pointing at a mounted trust-only `pg_hba.conf`, issue
+`ALTER USER … PASSWORD …` over the network, stop, and restart with no
+override. Afterwards the **new** password authenticated and the pre-reset
+data was intact, and the **old** password was rejected. Nothing about the
+data directory's ownership changes, because the recovery container is the
+same identity as the normal one.
+
+**Two traps recorded, because both were walked into while measuring this.**
+Verifying the passwords from *inside* the container proves nothing — the
+image's `pg_hba` trusts in-container connections, so old and new passwords
+both appeared to work, and the first round of results was vacuous. The
+measurements above were redone over a Docker network by hostname, for the same
 reason item 2's healthcheck connects by service name rather than loopback.
+And a recovery step verified as the image's `postgres` user proves nothing
+about the runtime that ships, which is the second trap and the one that
+produced the wrong mechanism in an earlier revision.
 
-So new-key recovery is **feasible and bounded**, and the remaining decision
-is one of ownership rather than possibility: **item 8 defines it as an
-explicit, guarded destructive operation** — it deletes every secret and
-rewrites a database credential — or ADR 0022's "or re-entry of secrets" is
-unfulfilled. What item 7 owes that decision is the two things it has already
-built: a refusal that names the state precisely, and a vault whose rows can
-be dropped wholesale without disturbing any other family.
+**One limit stated rather than glossed:** all of this was measured on macOS,
+where Docker Desktop virtualises bind-mount ownership. The claim that matters
+on native Linux is that the recovery container runs as the *same* uid as the
+normal one and therefore has exactly the access the normal one has — but item
+2's own history is that this is the axis where the two platforms diverge, so
+item 8 must exercise the sequence in the **native-Linux CI job** rather than
+inheriting a developer-machine result.
+
+New-key recovery is therefore **feasible and bounded, and it belongs to item
+8** as an explicit, guarded destructive operation — it deletes every secret
+and rewrites a database credential. ADR 0022's "or re-entry of secrets"
+stands as written; nothing here needs amending. What item 7 owes item 8 is
+the two things it has already built: a refusal that names the state
+precisely, and a vault whose rows can be dropped wholesale without disturbing
+any other family.
 
 ## D5. Secrets belong to users, and are replaced rather than accumulated
 
@@ -408,6 +439,13 @@ cannot *see* another's credential but can freely replace or delete it — and
 the destructive half is the more damaging one, since a caller who cannot read
 a secret also cannot tell what they destroyed. So:
 
+- **creation derives the owner from the acting user; it is not a parameter.**
+  An owner the caller supplies is an owner the caller can lie about, and the
+  damage is not merely a mislabelled row: the partial unique index gives each
+  user exactly one slot per name and scope, so a secret created *as* somebody
+  else **occupies that slot** — the victim's own creation then fails against a
+  row they cannot read, replace or delete. A shared secret is created by
+  asking for one explicitly, which is a different call and not an owner value;
 - **replace and delete carry the acting-user predicate too**, matching the
   read: a statement affects a row only when it is the caller's own or shared.
   Zero rows affected is indistinguishable from a version conflict at the SQL
@@ -521,6 +559,8 @@ Behavioural, against the real Postgres, as items 4-6:
 | Delete a repository override | The product or organization value is inherited again — the reason deletion exists |
 | Configuration delete racing an update | Typed conflict; neither silently wins |
 | One user **replacing or deleting** another's secret | No rows affected, reported as a conflict — asserted for both verbs, since a read-only ownership test passes with the write side wide open |
+| Creating an individual secret **owned by another user** | Not expressible: the owner comes from the acting user. Asserted by creating as one user and reading as the other, since the API shape is the guard and a test that only checks the happy path cannot see it |
+| A user creating their own secret where another user already has one of the same name and scope | Both succeed and resolve independently — the slot is per user, and this is the case a poisoned slot would break |
 | A secret owned by a user of **another organization** | Refused by the composite foreign key |
 | Tampered ciphertext | Decryption fails on GCM authentication |
 | **`owner_user_id` changed** on a row, id and version untouched | Decryption fails on the AAD — the case that matters, since a moved ciphertext already fails on the key |
@@ -572,7 +612,8 @@ Round 1's four are **resolved**: the registry stays in this item with an empty
 vocabulary; per-version derivation stays; individual-first stays, with the
 full ladder now tabled and tested; `Reveal()` stays.
 
-One decision has been taken and one observation is recorded for item 8.
+Both remaining questions are now **resolved**, and both are recorded because
+each carries an obligation into item 8.
 
 1. **Resolved: new-key recovery lands in item 8, and ADR 0022 stands.** The
    mechanism is measured and feasible (D4), so the ADR is not overpromising;
@@ -581,6 +622,9 @@ One decision has been taken and one observation is recorded for item 8.
    secret and rewrites a database credential. Guarded in item 8's own terms:
    it destroys more than `reset` does in the only sense that matters, since
    the vault's contents cannot be recreated from anything in the backup.
+   **Item 8 also owes the native-Linux measurement**: everything in D4 was
+   measured on macOS, and the bind-mount ownership axis is precisely where
+   item 2 found the two platforms disagreeing.
 2. **Resolved: specificity stays the outer sort.** The ladder prefers a
    shared repository credential over the caller's own organization-wide one,
    on the grounds that a credential for the wrong resource does not work
