@@ -44,6 +44,50 @@ const (
 // investigate a possible key exposure, not to retry.
 var ErrKeyPermissions = errors.New("root-of-trust key file has unsafe permissions")
 
+// ErrNoKey reports a root-of-trust key that is not present where it was
+// expected.
+//
+// It is the state a data root restored without its key file arrives in, and
+// it has to be nameable: the alternative is what the plane did before, which
+// was to mint a fresh key, derive a Postgres password that does not match
+// the cluster, and fail three minutes later with "data plane did not become
+// ready" — a correct refusal reached by accident, diagnosing nothing.
+var ErrNoKey = errors.New("root-of-trust key file is not present")
+
+// LoadKey returns the key WITHOUT creating one.
+//
+// This is the reopening half of item 7's D4: setup may create a key, and
+// opening an existing plane may only load one. Which applies is decided by
+// the caller, because only the caller knows whether the data root already
+// holds a cluster — and getting it wrong in the permissive direction is the
+// failure above.
+//
+// It carries the same obligations as EnsureKey's fast path: the same lock,
+// so it cannot observe a half-linked key from a concurrent creator, and the
+// same directory sync before returning, because a caller that encrypts under
+// a key must not be handed one a crash could still erase.
+func LoadKey(configRoot string) (key []byte, err error) {
+	path := filepath.Join(configRoot, KeyFileName)
+
+	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName))
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer func() {
+		if relErr := release(); relErr != nil && err == nil {
+			key, err = nil, relErr
+		}
+	}()
+
+	if _, statErr := os.Stat(path); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("%w: %s", ErrNoKey, path)
+		}
+		return nil, fmt.Errorf("stat key file %s: %w", path, statErr)
+	}
+	return returnDurable(configRoot, path)
+}
+
 // EnsureKey returns the root-of-trust key from the config root, generating
 // it on first use.
 //

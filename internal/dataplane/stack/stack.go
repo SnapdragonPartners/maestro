@@ -87,9 +87,9 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 		return fmt.Errorf("prepare service data directories: %w", err)
 	}
 
-	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	rootKey, keyErr := rootKeyFor(c)
 	if keyErr != nil {
-		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+		return keyErr
 	}
 	if bootErr := paths.WriteBootstrap(c.Roots.Config, c.Bootstrap()); bootErr != nil {
 		return fmt.Errorf("write bootstrap pointer: %w", bootErr)
@@ -116,6 +116,75 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	// they apply, and before `up` reports a ready plane, because a surviving
 	// claim is unfinished destructive work.
 	return reconcileClaims(ctx, c, rootKey, blob)
+}
+
+// rootKeyFor is the ONE place that decides whether a lifecycle operation may
+// create key material (item 7, D4).
+//
+// The root key derives the Postgres password and the object-store
+// credentials as well as the vault's key material, so minting a new one over
+// an existing data root produces a password the cluster does not know. The
+// authenticated healthcheck then fails, waitReady times out, and `up`
+// reports "data plane did not become ready" three minutes later — a correct
+// refusal reached by accident, naming nothing an operator can act on.
+//
+// So the rule is centralized rather than repeated. There are three lifecycle
+// operations that need a key, and a guard placed in only one of them leaves
+// the others able to mint against an existing plane. `Migrate` is the
+// sharpest case: it is exactly what an operator runs after a restore, which
+// is when the key is most likely to be missing.
+//
+// Only a plane whose data root is EMPTY may create. Emptiness is judged
+// across every service data directory, not just Postgres: the object store's
+// credentials derive from the same key, so a plane holding objects and no
+// cluster is still a plane some earlier key provisioned.
+func rootKeyFor(c *Config) ([]byte, error) {
+	fresh, err := dataRootIsEmpty(c)
+	if err != nil {
+		return nil, err
+	}
+	access := secret.LoadOnly
+	if fresh {
+		access = secret.MayCreate
+	}
+
+	key, keyErr := secret.KeyFile(c.Roots.Config, access).RootKey()
+	if keyErr != nil {
+		err := fmt.Errorf("read root-of-trust key: %w", keyErr)
+		if errors.Is(err, paths.ErrNoKey) {
+			return nil, fmt.Errorf("%w. This data root already holds a plane, so its key cannot be "+
+				"regenerated: the Postgres password and object-store credentials are derived from "+
+				"the original, and a new one would not open either. Restore the key file, or run "+
+				"the new-key recovery path", err)
+		}
+		return nil, err
+	}
+	return key, nil
+}
+
+// dataRootIsEmpty reports whether NO service has been provisioned yet.
+//
+// initdb populates the Postgres directory and the object store populates its
+// own, so their contents are the honest signal that some earlier key already
+// provisioned this plane. A directory that does not exist yet counts as
+// empty, which is the first-run case.
+func dataRootIsEmpty(c *Config) (bool, error) {
+	for _, service := range []paths.Service{paths.ServicePostgres, paths.ServiceMinIO} {
+		dir, err := c.Roots.ServiceDataDir(service)
+		if err != nil {
+			return false, fmt.Errorf("resolve %s data directory: %w", service, err)
+		}
+		entries, readErr := os.ReadDir(dir)
+		switch {
+		case os.IsNotExist(readErr):
+			continue
+		case readErr != nil:
+			return false, fmt.Errorf("inspect %s data directory: %w", service, readErr)
+		case len(entries) > 0:
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ensureBucket provisions the object store the way migrateLocked
@@ -223,9 +292,9 @@ func Migrate(ctx context.Context, c *Config) (err error) {
 		}
 	}()
 
-	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	rootKey, keyErr := rootKeyFor(c)
 	if keyErr != nil {
-		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+		return keyErr
 	}
 	return migrateLocked(ctx, c, rootKey)
 }
@@ -273,9 +342,9 @@ func ForceVersion(c *Config, version int) (err error) {
 		}
 	}()
 
-	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	rootKey, keyErr := rootKeyFor(c)
 	if keyErr != nil {
-		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+		return keyErr
 	}
 	dsn, dsnErr := c.DSN(rootKey)
 	if dsnErr != nil {

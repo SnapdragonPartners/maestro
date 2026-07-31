@@ -75,6 +75,56 @@ func TestUpProvisionsBetweenReadinessAndMigration(t *testing.T) {
 	}
 }
 
+// TestOnlyRootKeyForDecidesKeyCreation is item 7's D4 as a source rule.
+//
+// paths.EnsureKey CREATES a key when none is present, which is right for
+// first-time setup and wrong for every other lifecycle operation: a data root
+// restored without its key would get a new one, hence a Postgres password
+// the existing cluster does not know, and `up` would fail three minutes later
+// with a readiness timeout that names nothing.
+//
+// rootKeyFor is the single place that decides. This rule exists because the
+// decision is invisible to behavioural tests — an operation that creates a
+// key when it should not still WORKS on a developer machine whose key is
+// present, which is every machine that has run `up` once.
+func TestOnlyRootKeyForDecidesKeyCreation(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "stack.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse stack.go: %v", err)
+	}
+
+	var offenders []string
+	for _, decl := range file.Decls {
+		function, isFunc := decl.(*ast.FuncDecl)
+		if !isFunc || function.Name.Name == "rootKeyFor" {
+			continue
+		}
+		ast.Inspect(function, func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			selector, isSelector := call.Fun.(*ast.SelectorExpr)
+			if !isSelector || selector.Sel.Name != "EnsureKey" {
+				return true
+			}
+			if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "paths" {
+				offenders = append(offenders, function.Name.Name)
+			}
+			return true
+		})
+	}
+
+	if len(offenders) > 0 {
+		t.Fatalf("%v call paths.EnsureKey directly. Only rootKeyFor decides whether a lifecycle "+
+			"operation may CREATE key material, and it decides by whether the data root is empty. "+
+			"A call outside it mints a key against an existing plane, producing credentials the "+
+			"cluster does not know — and it passes every test on a machine whose key is already "+
+			"there, which is every machine that has run `up` once.", offenders)
+	}
+}
+
 func findFunc(file *ast.File, name string) *ast.FuncDecl {
 	for _, decl := range file.Decls {
 		function, isFunc := decl.(*ast.FuncDecl)
