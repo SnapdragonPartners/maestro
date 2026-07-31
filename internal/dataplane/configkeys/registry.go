@@ -38,6 +38,8 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+
+	"orchestrator/internal/dataplane/nilcheck"
 )
 
 // Key is the canonical dotted name of a configuration key. It is the only
@@ -86,6 +88,14 @@ var (
 //
 // The value is the JSON encoding destined for the record's jsonb column,
 // so a validator sees exactly the bytes that would be stored.
+//
+// Implementations must be safe for concurrent use and must not retain or
+// modify the value they are given. The registry freezes its own
+// registrations, but it cannot freeze what is behind this interface: one
+// Validator is shared by every write of its key, and the seam calls it from
+// whatever goroutine is serving the request. A validator that mutated the
+// slice would be editing the bytes on their way to the column, which is a
+// write nobody asked for and nothing records.
 //
 // This is deliberately NOT registry.Validator, despite the identical shape.
 // That one checks artifact payloads against ADR 0028 schemas; this one
@@ -199,6 +209,11 @@ func checkEntry(key Key, entry Entry) error {
 	// concluding the key is writable under some condition the refusal
 	// does not cover.
 	if entry.Sensitive {
+		// A plain `!= nil` here, deliberately, and not nilcheck.IsNil: on this
+		// branch the question is whether the caller supplied a schema at
+		// all, and supplying a typed-nil one is still supplying one. The
+		// stricter test is the safe direction, since the outcome is a
+		// refusal either way.
 		if entry.Schema != nil {
 			return fmt.Errorf("configkeys: key %q is sensitive and also declares a schema; "+
 				"a sensitive key has no writable path for a schema to guard", key)
@@ -210,8 +225,14 @@ func checkEntry(key Key, entry Entry) error {
 		return nil
 	}
 
-	if entry.Schema == nil {
-		return fmt.Errorf("configkeys: key %q has no schema, so any value at all would be accepted", key)
+	// nilcheck.IsNil, not `entry.Schema == nil`. An interface holding a typed
+	// nil — ValidatorFunc(nil), or a nil pointer whose type has the method —
+	// is not equal to nil, so the plain comparison admits it, New reports
+	// success, and the panic arrives on the first write of that key rather
+	// than at startup. That inverts this function's entire purpose.
+	if nilcheck.IsNil(entry.Schema) {
+		return fmt.Errorf("configkeys: key %q has no usable schema, so any value at all would be "+
+			"accepted (a nil validator, or an interface holding a typed nil)", key)
 	}
 	if len(entry.PermittedScopes) == 0 {
 		return fmt.Errorf("configkeys: key %q permits no scopes, so it could never be set anywhere", key)

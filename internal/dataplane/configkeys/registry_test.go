@@ -73,7 +73,7 @@ func TestNewRefusesMalformedRegistrations(t *testing.T) {
 			name:    "no schema",
 			key:     "forge.retries",
 			entry:   Entry{PermittedScopes: []Scope{ScopeOrganization}},
-			wantMsg: "no schema",
+			wantMsg: "no usable schema",
 		},
 		{
 			name:    "no permitted scopes",
@@ -120,6 +120,82 @@ func TestNewRefusesMalformedRegistrations(t *testing.T) {
 				t.Errorf("error %q does not explain the problem (want it to mention %q)",
 					err, tc.wantMsg)
 			}
+		})
+	}
+}
+
+// derefValidator's method dereferences its receiver, so a typed-nil one
+// panics when called — the shape that makes a typed-nil validator a crash
+// at the seam rather than a curiosity.
+type derefValidator struct{ err error }
+
+func (v *derefValidator) Validate([]byte) error { return v.err }
+
+// TestNewRefusesTypedNilValidators is the case a plain `Schema == nil`
+// misses.
+//
+// An interface holding a typed nil is not equal to nil: the interface
+// carries a type, so the comparison is false and the registration is
+// admitted. New then reports success — contradicting its whole contract of
+// turning a malformed registration into a startup failure — and the nil
+// call arrives at the seam on the first write of that key.
+//
+// Both shapes are covered because they arrive differently: ValidatorFunc(nil)
+// is what a caller writes when a helper returned no validator, and a
+// typed-nil pointer is what they write when a constructor returned one.
+func TestNewRefusesTypedNilValidators(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema Validator
+	}{
+		{name: "nil interface", schema: nil},
+		{name: "nil ValidatorFunc", schema: ValidatorFunc(nil)},
+		{name: "typed-nil pointer", schema: (*derefValidator)(nil)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry, err := New(map[Key]Entry{
+				"forge.retries": {Schema: tc.schema, PermittedScopes: []Scope{ScopeProduct}},
+			})
+			if err == nil {
+				t.Fatalf("New accepted a nil validator; the first write of this key would panic "+
+					"at the seam (registry %v)", registry)
+			}
+			if !bytes.Contains([]byte(err.Error()), []byte("no usable schema")) {
+				t.Errorf("error %q does not name the problem", err)
+			}
+		})
+	}
+}
+
+// TestTypedNilValidatorsWouldPanicIfAdmitted proves the consequence the
+// guard above prevents, rather than asserting it in a comment.
+//
+// Without it the refusal could be justified by taste. With it, the cost of
+// removing the guard is a demonstrated panic on a path a caller reaches by
+// writing a perfectly ordinary configuration value.
+func TestTypedNilValidatorsWouldPanicIfAdmitted(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema Validator
+	}{
+		{name: "nil ValidatorFunc", schema: ValidatorFunc(nil)},
+		{name: "typed-nil pointer", schema: (*derefValidator)(nil)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.schema == nil {
+				t.Fatal("this case is meant to hold a TYPED nil, which is never == nil")
+			}
+			defer func() {
+				if recover() == nil {
+					t.Error("calling the typed-nil validator did not panic; " +
+						"this test no longer demonstrates why New refuses it")
+				}
+			}()
+			_ = tc.schema.Validate([]byte(`3`))
 		})
 	}
 }
