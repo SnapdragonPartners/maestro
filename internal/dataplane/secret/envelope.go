@@ -26,9 +26,14 @@ const SchemeAESGCMv1 = "aes-256-gcm/hkdf-sha256/v1"
 // own CHECK enforces.
 const nonceBytes = 12
 
-// ErrUnknownScheme reports a stored row this build cannot decrypt. It is
-// deliberately distinct from a decryption failure: one means the data is
-// newer than the code, the other means the data is wrong.
+// ErrUnknownScheme reports a scheme this build cannot decrypt.
+//
+// Distinct from a decryption failure because the two need different
+// responses, not because either has a single cause: this one means the
+// stored scheme is not one we implement — usually data written by a newer
+// build, but equally a scheme column that has been corrupted or edited. What
+// it never means is that the ciphertext was examined and rejected, which is
+// what ErrDecrypt reports.
 var ErrUnknownScheme = errors.New("unknown secret encryption scheme")
 
 // ErrDecrypt reports a ciphertext that did not authenticate — tampered,

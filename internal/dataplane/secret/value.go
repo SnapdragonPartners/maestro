@@ -1,6 +1,9 @@
 package secret
 
-import "fmt"
+import (
+	"bytes"
+	"fmt"
+)
 
 // redacted is what a secret renders as everywhere except Reveal.
 const redacted = "[redacted]"
@@ -41,7 +44,15 @@ func NewValue(plaintext []byte) Value {
 
 // Reveal returns the plaintext. Every call site is a decision to expose a
 // credential, which is why the name is what it is.
-func (v Value) Reveal() []byte { return v.plaintext }
+//
+// It returns a COPY, for the same reason NewValue takes one. A Value is
+// copied by assignment and by being passed around, and copying it copies
+// only the slice header — so handing out the backing array would let any
+// caller that mutates or zeroes what it revealed corrupt the secret held by
+// every other copy, including ones it has never seen. The aliasing is
+// invisible until something writes, and then the failure is a credential
+// that is quietly wrong rather than one that is obviously missing.
+func (v Value) Reveal() []byte { return bytes.Clone(v.plaintext) }
 
 // Len reports the plaintext's length without exposing it, so a caller can
 // check for emptiness without reaching for Reveal.

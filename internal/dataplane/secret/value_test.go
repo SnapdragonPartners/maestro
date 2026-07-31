@@ -86,3 +86,40 @@ func TestNewValueCopiesItsInput(t *testing.T) {
 		t.Fatalf("the stored secret changed with the caller's buffer: %q", got)
 	}
 }
+
+// TestRevealCopiesOnTheWayOut is the other end of the same aliasing, and the
+// more dangerous one.
+//
+// Copying a Value copies only the slice header, so every copy shares one
+// backing array. If Reveal returned that array, a caller zeroing or reusing
+// what it revealed would corrupt the secret held by copies it has never
+// seen — including ones already passed to somebody else. Nothing errors; the
+// credential is simply wrong from then on.
+func TestRevealCopiesOnTheWayOut(t *testing.T) {
+	const plaintext = "the credential itself"
+	value := NewValue([]byte(plaintext))
+
+	// The obvious case: mutate what one Reveal returned.
+	revealed := value.Reveal()
+	for i := range revealed {
+		revealed[i] = 'x'
+	}
+	if got := string(value.Reveal()); got != plaintext {
+		t.Fatalf("a later Reveal returned %q after the first was mutated", got)
+	}
+
+	// And through a COPY of the Value, which is how it would really happen:
+	// the secret is passed somewhere, that code clears its own buffer, and
+	// the original is silently destroyed.
+	duplicate := value
+	scratch := duplicate.Reveal()
+	for i := range scratch {
+		scratch[i] = 0
+	}
+	if got := string(value.Reveal()); got != plaintext {
+		t.Fatalf("clearing a copy's revealed bytes changed the original to %q", got)
+	}
+	if got := string(duplicate.Reveal()); got != plaintext {
+		t.Fatalf("the copy's own secret was destroyed by clearing what it revealed: %q", got)
+	}
+}
