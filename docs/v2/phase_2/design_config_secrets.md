@@ -2,7 +2,7 @@
 title = "Phase 2 Item 7 Design: Configuration Records And The Secrets Vault"
 edit_date = "2026-07-30"
 status = "draft"
-summary = "Design for item 7: configuration records under a governed key registry that validates before write and resolves most-specific-wins along the org/product/repo lineage, and a secrets vault whose per-version keys, stored nonces and identity-bound AAD are derived from raw root-key material, with individual credentials owned by users and falling back to shared ones, replacement under optimistic concurrency rather than immutable history, a local root-key provider kept distinct from the replaceable secrets store, and a plane that refuses to open an existing data root without its original key."
+summary = "Design for item 7: configuration records under a governed key registry validated before write and resolved most-specific-wins along the org/product/repo lineage, and a secrets vault whose per-version keys and canonically-encoded AAD bind a ciphertext to every field deciding who may read it, with individual credentials resolved over a six-step ladder where specificity outranks ownership, replacement and deletion under optimistic concurrency promising unaddressability rather than erasure, a local root-key provider distinct from the replaceable secrets store, and one create-versus-load rule that every lifecycle operation shares so only a fresh plane may mint a key."
 type = "design"
 +++
 
@@ -105,6 +105,22 @@ chain always terminates. Membership in further Products via
 three Products would otherwise have three competing parents with no defined
 precedence between them.
 
+### Identity and mutation
+
+**One row per (organization, key, scope).** Without that constraint,
+"most-specific-wins" is undefined the moment two rows exist at the same level
+— the query would return whichever the planner reached first, and the bug
+would appear as an intermittently wrong value rather than as an error. The
+scope is the exclusive arc, so uniqueness is over `(organization_id, key,
+scope_type, scope_id)`.
+
+**Updates are conditional, like the vault's.** A configuration value is
+shared mutable state reachable from more than one agent lifecycle, which is
+exactly what ADR 0027 forbids resolving by last-writer-wins. Every record
+carries a `version`; an update names the version the caller read, and zero
+rows affected is a typed conflict rather than a silent overwrite of somebody
+else's change.
+
 ## D2. The encryption envelope, stated completely
 
 Round 1 asserted AES-256-GCM with a per-secret derived key and left the rest
@@ -147,13 +163,32 @@ a length convention every reader must agree on, and a reader that takes the
 wrong prefix length fails as a decryption error rather than a parse error —
 the least diagnosable failure available.
 
-**Authenticated data binds the ciphertext to its identity.** The AAD is
-`organization_id || secret_id || version || scheme`. Without it, a ciphertext
-copied from one row to another decrypts successfully under its own key, so a
-row's value could be swapped for another's by anyone able to write the table.
-With it, a moved ciphertext fails authentication — and the per-version key
-means it usually cannot even be decrypted, so the AAD is the second of two
-independent barriers rather than the only one.
+**Authenticated data binds the ciphertext to everything that decides who may
+read it.** Round 2 used `organization_id || secret_id || version || scheme`,
+which protects against the wrong attack. Moving a ciphertext to a different
+row is already impossible — a different `secret_id` derives a different key,
+so it fails before the AAD is consulted, and a test of that proves nothing.
+
+The real exposure is **mutating the metadata on the row the ciphertext
+already belongs to**. The key depends only on id and version, so an
+`UPDATE secrets SET owner_user_id = <someone else>` leaves the ciphertext
+perfectly decryptable and silently hands one person's credential to another.
+The same is true of the name and the scope: changing either retargets a
+working secret at a resource it was never issued for.
+
+So the AAD covers **every field that determines access**:
+
+`organization_id`, `secret_id`, `version`, `scheme`, `owner_user_id`
+(including its absence), `name`, `scope_type`, `scope_id`.
+
+**Encoded canonically, not concatenated.** Joining variable-length fields
+end to end is ambiguous — a name of `ab` beside `c` produces the same bytes
+as `a` beside `bc` — so equal AADs could describe different rows. The plane
+already has an unambiguous encoder for exactly this problem:
+`internal/dataplane/canonical`, the JCS/RFC 8785 implementation ADR 0028 uses
+for digests. The AAD is the canonical JSON of those fields, which also gives
+the null owner a distinct representation from any user id rather than an
+empty string that a real value could collide with.
 
 **The scheme is recorded per row, so a later scheme coexists with this one.**
 Item 6's rule applies: the reader is the compatibility layer. Key rotation is
@@ -222,16 +257,30 @@ what the data root already contains:
 
 | Data root | Key handling |
 | --- | --- |
-| **Fresh / empty** — no cluster yet | `EnsureKey` **may create** the key. This is setup, and creating it silently is item 2's no-ceremony default |
-| **Existing / non-empty** — a cluster is present | **Load only.** If the key file is absent, fail immediately with `ErrPlaneLocked`, naming the expected path and what restores it |
+| **Fresh** — every service data directory empty | `EnsureKey` **may create** the key. This is setup, and creating it silently is item 2's no-ceremony default |
+| **Existing** — any service data directory populated | **Load only.** If the key file is absent, fail immediately with `ErrPlaneLocked`, naming the expected path and what restores it |
 
 The check runs **before Compose is invoked**, so the diagnosis arrives in
 seconds and names the actual cause instead of following a three-minute
 readiness timeout that names a symptom.
 
-"Non-empty" is read from the **Postgres service data directory**: `initdb`
-populates it, so its contents are the honest signal that a cluster exists
-carrying a password derived from some earlier key.
+**Emptiness is judged across every service data directory, not just
+Postgres.** Round 2 named the Postgres directory alone, which is the
+directory that proves the *password* problem — but the object-store
+credentials derive from the same root key, so a plane whose Postgres
+directory is empty while MinIO holds objects is equally an existing plane.
+Any populated service directory means a plane that some earlier key already
+provisioned.
+
+**The rule is one function, and every lifecycle operation goes through it.**
+There are three production call sites for `paths.EnsureKey` today — `up`,
+`Migrate` and `ForceVersion` — and a guard placed only in `up` leaves the
+other two able to mint a key against an existing plane. `Migrate` in
+particular is the operation an operator reaches for *after* a restore, which
+is exactly when the key is most likely to be missing. So create-versus-load
+is decided in a single helper that all three call, and **only a fresh `up`
+passes create**; `Migrate` and `ForceVersion` are always load-only, because
+neither is ever the operation that provisions a plane.
 
 **There is no partial-failure mode, and the design no longer claims one.**
 The plane opens or it refuses. Configuration remains **unencrypted**
@@ -244,6 +293,34 @@ credential in whichever family was easier.
 supply the original key, open successfully. That is exactly the two-part
 restore contract the backup's key-exclusion creates, and it is a sequence
 with observable states rather than an assertion.
+
+### The other restore path ADR 0022 promises, and what it costs
+
+ADR 0022 says restore on a new machine requires "the backup plus the key
+file, **or re-entry of secrets**". Everything above serves the first branch.
+The second one is not free, and this design does not deliver it — which is a
+gap to close deliberately rather than to leave implied.
+
+Re-entering secrets means accepting a **new** root key over an existing data
+root, and the new key changes three things at once:
+
+| Derived credential | Effect of a new key | Recovery needed |
+| --- | --- | --- |
+| Vault key material | Every stored ciphertext becomes undecryptable | Delete every secret row; the operator re-enters them |
+| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Reset the role's password inside the cluster** — which requires getting in without it |
+| Object-store credentials | The compose file passes `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` as **environment**, not baked into the data directory | None; the store follows the new key |
+
+The middle row is the hard one, and it is the reason this is not a small
+addition. Resetting a Postgres role password without knowing it means
+starting the cluster with local trust authentication, altering the role, and
+restarting — an invasive, carefully-ordered operation that belongs with the
+backup and restore work in **item 8**, not here.
+
+So this item's position is explicit: **item 8 either defines new-key recovery
+or ADR 0022's "or re-entry of secrets" is unfulfilled and the ADR needs
+amending.** What item 7 owes that decision is the two things it has already
+built — a refusal that names the state precisely, and a vault whose rows can
+be dropped wholesale without disturbing any other family.
 
 ## D5. Secrets belong to users, and are replaced rather than accumulated
 
@@ -258,16 +335,55 @@ and lineage-scoped as in D1; additionally it may name an owning user.
   user.
 - `owner_user_id` **null** — a shared credential for the scope.
 
-**Resolution prefers the individual, then the shared.** For a caller acting
-as user *U* seeking name *N* at repository *R*: *U*'s own secret at the most
-specific level, else a shared secret at the most specific level, else
-nothing. One query, as D1, returning the level **and** whether the hit was
-individual or shared — a caller that cannot tell which it got cannot report
-"you are using the team token" to anybody.
+**Resolution is a six-step ladder, and it is written out because "prefer the
+individual" does not determine it.** Two orderings are consistent with that
+phrase and they disagree: ownership as the outer sort (my org-wide token
+beats the team's repo token) or specificity as the outer sort (the team's
+repo token beats my org-wide one). The ladder is:
+
+| # | Level | Owner |
+| --- | --- | --- |
+| 1 | Repository | the caller |
+| 2 | Repository | shared |
+| 3 | Product | the caller |
+| 4 | Product | shared |
+| 5 | Organization | the caller |
+| 6 | Organization | shared |
+
+**Specificity is the outer sort; ownership breaks ties within a level.** The
+reason is what a credential is *for*: scope says which resource it works
+against, and a credential for the wrong resource does not function no matter
+whose it is, while a shared credential for the right resource does. Preferring
+ownership across levels would reach past a repository deploy key for a
+personal organization-wide token that may have no access to that repository
+at all.
+
+Attribution is preserved by **recording which secret answered**, not by
+preferring a credential that may not work — so the read returns the level
+**and** whether the hit was individual or shared. A caller that cannot tell
+which it got cannot report "you are using the team token" to anybody.
 
 **No user ever resolves another user's secret**, enforced in the query
 (`owner_user_id = @user_id OR owner_user_id IS NULL`) rather than by
 filtering after the read.
+
+**One row per (organization, name, owner, scope) — and the nullable owner
+needs two indexes, not one.** A plain `UNIQUE (organization_id, name,
+owner_user_id, scope_type, scope_id)` does not do what it appears to: in
+Postgres `NULL` is not equal to itself, so the constraint permits any number
+of **shared** secrets with the same name at the same scope — precisely the
+duplicates that make resolution non-deterministic, and precisely the case
+that is not exercised if every test seeds an owner. Two partial unique
+indexes state the rule honestly:
+
+- `WHERE owner_user_id IS NOT NULL` over the full tuple — one individual
+  secret per user, name and scope;
+- `WHERE owner_user_id IS NULL` over the tuple without the owner — one shared
+  secret per name and scope.
+
+The alternative, a sentinel UUID standing in for "nobody", makes one index
+work at the cost of a magic value that every query must remember to exclude
+and that a real user id could in principle collide with.
 
 **Replacement rewrites the row; it does not append.** Item 6's "accepted rows
 are never rewritten" is an *artifact* rule, and importing it here was a
@@ -277,9 +393,25 @@ every rotated-away token recoverable forever — turning rotation, whose whole
 purpose is to end a credential's usefulness, into an archive of credentials.
 
 So replacement is an **UPDATE in place** that bumps `version`, derives the new
-key from the new version, and writes a fresh nonce, ciphertext and AAD. The
-previous ciphertext is gone, and its key is unreachable because the context
-that derived it corresponds to no row.
+key from the new version, and writes a fresh nonce, ciphertext and AAD.
+
+**What that does and does not promise.** Round 2 said the previous ciphertext
+"is gone" and its key "unreachable". Both are false, and stating them would
+have been a security claim the system does not honour:
+
+- Postgres `UPDATE` writes a new tuple and leaves the old one dead until
+  vacuum; the old value also survives in the WAL and in every backup taken
+  before the rotation;
+- the old key is **derivable at any time** from the root key, the secret id
+  and the previous version, because HKDF is deterministic. Nothing about
+  bumping a version makes an earlier context uncomputable.
+
+The honest promise is narrower and still worth having: **a replaced secret is
+no longer addressable through the vault.** The seam will not return it, no
+resolution reaches it, and the live row holds only the current value. That is
+rotation of the *addressable* credential, not cryptographic erasure, and
+anyone who needs the latter needs a different design — one this item does not
+claim to provide.
 
 **Concurrent replacement is serialized, not last-writer-wins.** ADR 0027
 names bare last-writer-wins on shared state as a defect. Replacement is
@@ -287,10 +419,13 @@ conditional on the version the caller read (`WHERE version = @expected`);
 zero rows updated is a typed `ErrSecretConflict`, and the caller re-reads
 rather than overwriting a rotation it never saw.
 
-**Deletion is a plain delete of the row.** Nothing references secrets — the
-configuration family is separate and unencrypted by D4 — so there is no
-dependency to break, and a deleted secret's key context corresponds to no
-row.
+**Deletion is conditional too, for the same reason.** A plain delete races a
+concurrent replacement: an operator removing what they believe is a stale
+credential can erase a rotation committed a moment earlier, and the delete
+succeeds either way, so nothing reports it. `DELETE … WHERE version =
+@expected` makes that collision an `ErrSecretConflict` instead of a silent
+loss. Nothing references secrets — configuration is separate and unencrypted
+by D4 — so there is no dependency to break.
 
 ## D6. A secret value is a type that cannot be printed
 
@@ -327,11 +462,15 @@ Behavioural, against the real Postgres, as items 4-6:
 | Cross-tenant read of any config or secret | Not found, as everywhere on this seam |
 | Round-trip a secret | Plaintext returns; the stored column is neither the plaintext nor a prefix of it |
 | Two secrets with the **same plaintext** | Different ciphertexts |
-| Replace a secret | New version, new nonce, new ciphertext; the old plaintext is unrecoverable from the row |
+| Replace a secret | New version, new nonce, new ciphertext; the vault no longer returns the old value |
 | Two concurrent replacements | One succeeds; the loser gets `ErrSecretConflict`, not a silent overwrite |
+| Delete racing a replacement | `ErrSecretConflict`; the rotation is not silently erased |
+| Two concurrent configuration updates | One succeeds; the loser gets a typed conflict |
 | Tampered ciphertext | Decryption fails on GCM authentication |
-| Ciphertext **moved to another row** | Fails: the AAD binds it to its own identity |
-| An individual secret beside a shared one at the same scope | The caller's own wins; another user still resolves the shared one |
+| **`owner_user_id` changed** on a row, id and version untouched | Decryption fails on the AAD — the case that matters, since a moved ciphertext already fails on the key |
+| **`name` or scope changed** likewise | Fails the same way; a working secret cannot be retargeted |
+| The **full six-step ladder** | Each step asserted by seeding only the levels below it and confirming which row answers |
+| Two shared secrets, same name and scope | Refused by the partial unique index — asserted **without** an owner, since a seeded owner cannot reach this case |
 | Another user's individual secret | Not found — enforced in the query, asserted with two users |
 | Open an **existing** data root with no key file | `ErrPlaneLocked` before Compose runs, naming the path |
 | Open a **fresh** data root with no key file | Key created; the plane comes up |
@@ -339,12 +478,22 @@ Behavioural, against the real Postgres, as items 4-6:
 | A `secret.Value` through `%v`, `%s`, `%+v`, `%#v`, `json.Marshal` | `[redacted]` in every one |
 
 **Mutation-verified**, per this phase's standing lesson. The guards most
-likely to pass for the wrong reason are named in advance: the redaction verbs
-(a partially-redacting implementation satisfies any single one), the
-cross-user query filter (a test with one user cannot see it), the AAD (a test
-that never moves a ciphertext cannot), and the fresh-versus-existing
-data-root split (a test that only ever runs against a fresh root proves half
-the rule).
+likely to pass for the wrong reason are named in advance, and review round 2
+supplied one of them by finding a test that could not have failed:
+
+- the **AAD** — the round-2 case moved a ciphertext to another row, which
+  fails on the derived key before authentication is reached, so it would have
+  passed with no AAD at all. The replacement mutates metadata *on the same
+  id and version*;
+- the **partial unique index on shared secrets** — a test that seeds an owner
+  never reaches the `NULL`-owner branch, which is the branch that is wrong by
+  default;
+- the **redaction verbs** — a partially-redacting implementation satisfies
+  any single one;
+- the **cross-user filter** — invisible to a test with one user;
+- the **fresh-versus-existing data-root split** — a suite that only ever runs
+  against a fresh root proves half the rule, and the half it skips is the one
+  that refuses.
 
 ## D8. What this item does not do
 
@@ -363,19 +512,24 @@ the rule).
 
 ## Review questions
 
-1. **Does the key registry belong in this item, or in the item that first
-   registers a key?** Building it now is the same carve-out that builds the
-   families themselves, but the registry has strictly less justification: no
-   key is registered until Phase 3. The alternative is caller-declared types
-   until then, which round 1 showed is not a type system at all.
-2. **Is per-version key derivation worth it over a version-scoped nonce
-   counter?** It removes the nonce question entirely at the cost of one HKDF
-   per read; a counter would be cheaper and would have to be trusted.
-3. **Should the individual-versus-shared preference be configurable?** It is
-   fixed at individual-first here. A team wanting shared-first has no way to
-   say so, which may be right for MVP and is worth stating rather than
-   discovering.
-4. **Is `Reveal()` the right escape hatch shape?** It is greppable and
-   explicit. The alternative — no escape hatch, every consumer taking a
-   callback — is stricter and harder to use, and no consumer exists yet to
-   judge it against.
+Round 1's four are **resolved**: the registry stays in this item with an empty
+vocabulary; per-version derivation stays; individual-first stays, with the
+full ladder now tabled and tested; `Reveal()` stays.
+
+Two remain, and the first is the one that can change another item's size.
+
+1. **Does new-key recovery land in item 8, or does ADR 0022 get amended?**
+   ADR 0022 promises restore by "the backup plus the key file, **or** re-entry
+   of secrets", and only the first branch is designed. The second needs a
+   Postgres role-password reset performed without knowing the password —
+   trust authentication, alter, restart — which is real work and real risk in
+   an operation whose entire purpose is recovering data. Building it makes
+   item 8 materially larger than "quiesce, copy, restart". Not building it
+   means the ADR overpromises and should say so.
+2. **Is specificity-over-ownership the right outer sort?** The ladder prefers
+   a shared repository credential over the caller's own organization-wide one,
+   on the grounds that a credential for the wrong resource does not work
+   whoever owns it. The opposite order is defensible for attribution — always
+   act as yourself — and would swap steps 2 and 3. This is the decision most
+   likely to feel wrong in use, and it is cheap to reverse now and expensive
+   after a consumer depends on it.
