@@ -232,13 +232,34 @@ key material*. Three implementations, all local, all interchangeable:
 | OS keychain | **Refused** | Typed "not implemented" error naming the backend |
 | Passphrase | **Refused** | Likewise |
 
-**The secrets store — a seam on the persistence interface.** Answers *put and
-get a secret by name and scope*. The local implementation is this item's
-vault, which consumes a `RootKeyProvider`. A cloud implementation talks to a
-provider secret manager and consumes no root key at all. That is the seam ADR
-0022 means when it says cloud mode replaces this with the auth mini-app plus
-a provider secret manager — and the mini-app is a third thing again, an
-authentication surface for users rather than a key supplier.
+**The secrets store — a seam on the persistence interface.** The local
+implementation is this item's vault, which consumes a `RootKeyProvider`. A
+cloud implementation talks to a provider secret manager and consumes no root
+key at all. That is the seam ADR 0022 means when it says cloud mode replaces
+this with the auth mini-app plus a provider secret manager — and the mini-app
+is a third thing again, an authentication surface for users rather than a key
+supplier.
+
+**The contract is the whole of D5, not "put and get".** Describing it as a
+key-value store would let a cloud implementation satisfy the interface while
+silently dropping the semantics callers depend on — resolution order,
+ownership, and conflict detection are not local implementation details, they
+are the behaviour. Every implementation owes:
+
+| Operation | Contract |
+| --- | --- |
+| Create individual | Owner is the **acting user**, never a parameter (D5) |
+| Create shared | A **distinct call**, so "shared" is a deliberate act rather than an omitted field |
+| Resolve | The **six-step ladder**, returning the value, the level, and whether the hit was individual or shared |
+| Replace | Conditional on the **expected version**; conflict is typed, never last-writer-wins |
+| Delete | Likewise conditional and likewise typed |
+| Every operation | Carries the **acting user**, and enforces it on reads *and* writes |
+
+A provider that offers only unconditional put and get therefore needs an
+adapter that supplies the missing halves — versioning and the ladder — rather
+than an interface narrow enough to accept it as-is. Discovering that at the
+seam is the point of writing the contract down now, while the only
+implementation is one we control.
 
 **Refused, not stubbed, and the distinction is the point.** A stub returning
 *something* — an empty key, or a silent fall-through to the key file — would
@@ -576,7 +597,7 @@ Behavioural, against the real Postgres, as items 4-6:
 | Delete a repository override | The product or organization value is inherited again — the reason deletion exists |
 | Configuration delete racing an update | Typed conflict; neither silently wins |
 | One user **replacing or deleting** another's secret | No rows affected, reported as a conflict — asserted for both verbs, since a read-only ownership test passes with the write side wide open |
-| The public creation input carries **no owner field** | A **structural** test over the seam's type, for the reason below |
+| The public creation input declares **exactly** its permitted fields | A **structural** test over the seam's type, asserting the field set rather than the absence of one name — see below |
 | The **stored** owner equals the authenticated acting user | Read the row back and compare against the caller's identity, not against what was passed |
 | A user creating their own secret where another user already has one of the same name and scope | Both succeed and resolve independently — the slot is per user, and this is the case a poisoned slot would break |
 | A secret owned by a user of **another organization** | Refused by the composite foreign key |
@@ -610,11 +631,18 @@ supplied one of them by finding a test that could not have failed:
   nothing else: it passes whether or not the creation API accepts an owner,
   because a test that never supplies one cannot discover that supplying one is
   possible. The guard is the **shape of the input type**, so the test parses
-  the seam and asserts the public creation input declares no owner field — the
-  same instrument item 6 used for its one-emptying-protocol rule, and used
-  here for the same reason: the property is about which code can be written,
-  not about a value any run produces. The behavioural half is separate and
-  compares the **stored** owner against the authenticated caller;
+  the seam — the same instrument item 6 used for its one-emptying-protocol
+  rule, and for the same reason: the property is about which code can be
+  written, not about a value any run produces.
+
+  **It asserts the exact permitted field set, not the absence of a field
+  called `owner`.** A deny-list on one name is defeated by `user_id`,
+  `principal_id` or `on_behalf_of` — the same defeat the queries structure
+  test already documents, where a name-only allow-list was beaten by
+  rewriting an approved statement. Adding a field to the creation input is
+  then a change that fails the build and has to be argued for, which is the
+  reviewable act. The behavioural half is separate and compares the **stored**
+  owner against the authenticated caller;
 - the **fresh-versus-existing data-root split** — a suite that only ever runs
   against a fresh root proves half the rule, and the half it skips is the one
   that refuses.
@@ -637,8 +665,8 @@ supplied one of them by finding a test that could not have failed:
 ## Review questions
 
 Round 1's four are **resolved**: the registry stays in this item with an empty
-vocabulary; per-version derivation stays; individual-first stays, with the
-full ladder now tabled and tested; `Reveal()` stays.
+vocabulary; per-version derivation stays; individual-first **within each scope
+level** stays, with the full ladder now tabled and tested; `Reveal()` stays.
 
 Both remaining questions are now **resolved**. The first carries an
 obligation into item 8; the second is recorded only so the road not taken is
