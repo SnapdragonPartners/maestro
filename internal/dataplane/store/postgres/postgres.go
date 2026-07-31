@@ -22,6 +22,7 @@ import (
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
+	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -41,6 +42,16 @@ type Store struct {
 	// correct behaviour for a store nobody gave a vocabulary to. Answering
 	// a required capability with a shrug is a trap; refusing loudly is not.
 	keys *configkeys.Registry
+	// rootKey provides the key every secret's per-version key is derived
+	// from (item 7, design D3).
+	//
+	// Injected, and defaulting to a provider that REFUSES rather than to
+	// nil: a store without one can still serve every other family, and the
+	// vault operations report a typed refusal naming the missing backend
+	// instead of dereferencing nothing. The seam and the root-key boundary
+	// are deliberately separate — D3's whole point is that a cloud secrets
+	// store would have no root key to offer.
+	rootKey secret.RootKeyProvider
 	// blob is the object module's Layer 1 adapter. It is required, not
 	// optional: ADR 0022 makes object storage part of the data plane, and a
 	// store that satisfied the seam while answering every object operation
@@ -92,6 +103,30 @@ func WithConfigKeys(keys *configkeys.Registry) Option {
 	}
 }
 
+// WithRootKey supplies the root-of-trust key provider the vault seals and
+// opens with.
+//
+// Absent it, every vault operation is refused by name. A store that answered
+// them by encrypting under a zero key would be worse than one that refuses.
+func WithRootKey(provider secret.RootKeyProvider) Option {
+	return func(s *Store) {
+		if provider != nil {
+			s.rootKey = provider
+		}
+	}
+}
+
+// unconfiguredRootKey is the default provider: it answers every request with
+// a refusal that says which dependency is missing.
+type unconfiguredRootKey struct{}
+
+func (unconfiguredRootKey) Backend() secret.Backend { return "unconfigured" }
+
+func (unconfiguredRootKey) RootKey() ([]byte, error) {
+	return nil, fmt.Errorf("%w: the store was built without a root-key provider, so the secrets "+
+		"vault cannot seal or open anything (pass postgres.WithRootKey)", store.ErrInvariant)
+}
+
 // New builds a Store over an existing pool.
 //
 // The registry is injected rather than read from a package-level default,
@@ -112,6 +147,7 @@ func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts 
 		queries:  gen.New(pool),
 		registry: types,
 		keys:     configkeys.MustNew(nil),
+		rootKey:  unconfiguredRootKey{},
 		blob:     blob,
 		now:      time.Now,
 	}
@@ -144,6 +180,7 @@ type tx struct {
 	queries  *gen.Queries
 	registry *registry.Registry
 	keys     *configkeys.Registry
+	rootKey  secret.RootKeyProvider
 	// blob is here for one reason: acceptance must check that referenced
 	// objects EXIST, which is the single precondition reaching outside
 	// Postgres (design D5). It is safe in that order because the
@@ -164,7 +201,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Tx) error) error {
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, blob: s.blob}); err != nil {
+	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, rootKey: s.rootKey, blob: s.blob}); err != nil {
 		return err
 	}
 	if err := pgxTx.Commit(ctx); err != nil {

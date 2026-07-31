@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -107,7 +108,7 @@ func (s *Store) StopPrincipalInstance(ctx context.Context, organizationID, insta
 // direct returns a handle bound to the POOL rather than to a transaction.
 // Every statement it issues autocommits on its own.
 func (s *Store) direct() *tx {
-	return &tx{queries: s.queries, registry: s.registry, keys: s.keys}
+	return &tx{queries: s.queries, registry: s.registry, keys: s.keys, rootKey: s.rootKey}
 }
 
 // GetManagementArtifact reads one Management artifact.
@@ -356,4 +357,56 @@ func (s *Store) DeleteConfigurationRecord(
 		return struct{}{}, t.DeleteConfigurationRecord(ctx, organizationID, recordID, expectedVersion)
 	})
 	return err
+}
+
+// The secrets vault, reached through the seam (item 7, design D5).
+//
+// All five go DIRECT. Each is one statement plus in-process sealing or
+// opening, and the pattern configuration needed — lock, classify, write —
+// does not apply here: replacement's binding fields are immutable, so the
+// read that feeds it cannot go stale, and both mutations deliberately
+// collapse "moved" and "not yours" into one answer rather than classifying
+// between them.
+
+// CreateSecret seals a plaintext and writes it, owned by the acting user.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateSecret(ctx context.Context, input store.CreateSecretInput) (*store.Secret, error) {
+	return s.direct().CreateSecret(ctx, input)
+}
+
+// ResolveSecret walks the six-step ladder for a repository.
+func (s *Store) ResolveSecret(
+	ctx context.Context, organizationID, repositoryID, actingUserID uuid.UUID, name string,
+) (*store.Secret, error) {
+	return s.direct().ResolveSecret(ctx, organizationID, repositoryID, actingUserID, name)
+}
+
+// GetSecret reads one secret by identity.
+func (s *Store) GetSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
+) (*store.Secret, error) {
+	return s.direct().GetSecret(ctx, organizationID, secretID, actingUserID)
+}
+
+// RevealSecret decrypts one secret's plaintext.
+func (s *Store) RevealSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
+) (secret.Value, error) {
+	return s.direct().RevealSecret(ctx, organizationID, secretID, actingUserID)
+}
+
+// ReplaceSecret rotates a credential in place.
+func (s *Store) ReplaceSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
+	expectedVersion int, plaintext []byte,
+) (*store.Secret, error) {
+	return s.direct().ReplaceSecret(ctx, organizationID, secretID, actingUserID, expectedVersion, plaintext)
+}
+
+// DeleteSecret removes a credential under its expected version.
+func (s *Store) DeleteSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, expectedVersion int,
+) error {
+	return s.direct().DeleteSecret(ctx, organizationID, secretID, actingUserID, expectedVersion)
 }

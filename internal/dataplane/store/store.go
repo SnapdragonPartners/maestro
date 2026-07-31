@@ -396,6 +396,7 @@ type MPHQuery struct {
 type Reader interface {
 	CallReader
 	ConfigurationReader
+	SecretReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -424,6 +425,7 @@ type Reader interface {
 type Writer interface {
 	CallWriter
 	ConfigurationWriter
+	SecretWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)
