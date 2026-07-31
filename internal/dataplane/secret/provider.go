@@ -105,37 +105,25 @@ func (p keyFileProvider) RootKey() ([]byte, error) {
 	return key, nil
 }
 
-// Unimplemented returns a provider that refuses, naming the backend it would
-// have been.
+// ProviderFor selects a backend by name, and REFUSES an unimplemented one at
+// construction (design D3).
 //
-// Selecting one of these is only possible explicitly — nothing defaults onto
-// them, and the refusal happens where the key would have been read rather
-// than later, at a decryption that fails for reasons nobody can trace.
-func Unimplemented(backend Backend) RootKeyProvider {
-	return unimplementedProvider{backend: backend}
-}
-
-type unimplementedProvider struct{ backend Backend }
-
-func (p unimplementedProvider) Backend() Backend { return p.backend }
-
-func (p unimplementedProvider) RootKey() ([]byte, error) {
-	return nil, fmt.Errorf("%w: %s", ErrBackendNotImplemented, p.backend)
-}
-
-// ProviderFor selects a backend by name.
+// At construction, not at first use. An earlier revision returned a provider
+// whose RootKey refused later, which reads as equivalent and is not: a
+// deferred refusal is one a caller can hold, pass around, and discover only
+// at the moment it needs key material — by which point it may already have
+// decided the plane is usable. Failing here means selecting an unbuilt
+// backend cannot produce a usable-looking provider at all.
 //
-// The key file is the only one that resolves to something usable, and the
-// other two resolve to a refusal rather than to an error here: the caller
-// gets a provider whose failure names the backend at the moment the key is
-// needed, which is more useful than a construction error that a caller may
-// handle by falling back.
+// No provider is returned alongside the error, deliberately. A refusal that
+// also hands back something callable invites exactly the fall-through this
+// design exists to prevent.
 func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProvider, error) {
 	switch backend {
 	case BackendKeyFile:
 		return KeyFile(configRoot, access), nil
 	case BackendKeychain, BackendPassphrase:
-		return Unimplemented(backend), nil
+		return nil, fmt.Errorf("%w: %s", ErrBackendNotImplemented, backend)
 	default:
 		return nil, fmt.Errorf("unknown root-key backend %q", backend)
 	}

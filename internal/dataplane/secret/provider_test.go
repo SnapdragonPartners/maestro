@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"orchestrator/internal/dataplane/paths"
@@ -67,58 +68,44 @@ func TestMayCreateGeneratesThenLoadsTheSameKey(t *testing.T) {
 	}
 }
 
-// TestUnimplementedBackendsRefuseByName is D3's refusal, and the reason it is
-// a refusal rather than a stub.
+// TestUnimplementedBackendsRefuseAtConstruction is D3's refusal, and the
+// reason it happens HERE rather than at first use.
 //
 // A stub returning anything — an empty key, or a quiet fall-through to the
 // key file — would encrypt real secrets under a key the operator did not
 // choose and believes they did not use. That is silent when it happens and
 // unrecoverable afterwards, because the operator's model of which key
 // protects the vault is wrong.
-func TestUnimplementedBackendsRefuseByName(t *testing.T) {
+//
+// A provider that refuses LATER is a weaker version of the same problem: it
+// can be constructed, held and passed around, and a caller may have decided
+// the plane is usable long before it asks for key material. So no provider
+// comes back at all.
+func TestUnimplementedBackendsRefuseAtConstruction(t *testing.T) {
 	for _, backend := range []Backend{BackendKeychain, BackendPassphrase} {
-		provider, err := ProviderFor(backend, t.TempDir(), MayCreate)
-		if err != nil {
-			t.Fatalf("ProviderFor(%s): %v", backend, err)
-		}
-		if provider.Backend() != backend {
-			t.Fatalf("provider reports backend %q, want %q", provider.Backend(), backend)
-		}
+		root := t.TempDir()
 
-		key, err := provider.RootKey()
+		provider, err := ProviderFor(backend, root, MayCreate)
 		if !errors.Is(err, ErrBackendNotImplemented) {
-			t.Fatalf("%s returned %v, want ErrBackendNotImplemented", backend, err)
+			t.Fatalf("ProviderFor(%s) returned %v, want ErrBackendNotImplemented", backend, err)
 		}
-		if key != nil {
-			t.Fatalf("%s returned %d bytes of key material alongside its refusal", backend, len(key))
+		if provider != nil {
+			t.Fatalf("%s returned a usable provider alongside its refusal", backend)
 		}
 		// The failure names which backend, or an operator who selected one
 		// cannot tell it from the other.
-		if !bytes.Contains([]byte(err.Error()), []byte(backend)) {
+		if !strings.Contains(err.Error(), string(backend)) {
 			t.Fatalf("the refusal does not name the backend: %v", err)
 		}
-	}
-}
-
-// TestUnimplementedBackendsCreateNothing is the specific fall-through this
-// design refuses: selecting keychain must not quietly provision a key file.
-func TestUnimplementedBackendsCreateNothing(t *testing.T) {
-	root := t.TempDir()
-
-	provider, err := ProviderFor(BackendKeychain, root, MayCreate)
-	if err != nil {
-		t.Fatalf("ProviderFor: %v", err)
-	}
-	if _, keyErr := provider.RootKey(); keyErr == nil {
-		t.Fatal("the keychain backend returned a key")
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		t.Fatalf("read config root: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("selecting an unimplemented backend left %d files in the config root; a silent "+
-			"fall-through to the key file is exactly what refusing exists to prevent", len(entries))
+		// And nothing was provisioned on the way out: a silent fall-through
+		// to the key file is what refusing exists to prevent.
+		entries, readErr := os.ReadDir(root)
+		if readErr != nil {
+			t.Fatalf("read config root: %v", readErr)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("selecting %s left %d files in the config root", backend, len(entries))
+		}
 	}
 }
 

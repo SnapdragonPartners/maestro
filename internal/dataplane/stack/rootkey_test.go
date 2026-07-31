@@ -53,7 +53,7 @@ func populate(t *testing.T, cfg *Config, service paths.Service) {
 func TestFreshPlaneMintsAKey(t *testing.T) {
 	cfg := planeAt(t)
 
-	key, err := rootKeyFor(cfg)
+	key, err := rootKeyFor(cfg, lifecycleUp)
 	if err != nil {
 		t.Fatalf("a fresh plane refused to create a key: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestExistingPlaneRefusesToMintAKey(t *testing.T) {
 	cfg := planeAt(t)
 	populate(t, cfg, paths.ServicePostgres)
 
-	_, err := rootKeyFor(cfg)
+	_, err := rootKeyFor(cfg, lifecycleUp)
 	if !errors.Is(err, paths.ErrNoKey) {
 		t.Fatalf("an existing plane with no key returned %v, want ErrNoKey", err)
 	}
@@ -92,7 +92,7 @@ func TestObjectDataAloneMarksThePlaneExisting(t *testing.T) {
 	cfg := planeAt(t)
 	populate(t, cfg, paths.ServiceMinIO)
 
-	if _, err := rootKeyFor(cfg); !errors.Is(err, paths.ErrNoKey) {
+	if _, err := rootKeyFor(cfg, lifecycleUp); !errors.Is(err, paths.ErrNoKey) {
 		t.Fatalf("a plane holding objects but no cluster returned %v, want ErrNoKey: the "+
 			"object-store credentials derive from the same key", err)
 	}
@@ -103,18 +103,67 @@ func TestObjectDataAloneMarksThePlaneExisting(t *testing.T) {
 func TestExistingPlaneLoadsItsOwnKey(t *testing.T) {
 	cfg := planeAt(t)
 
-	created, err := rootKeyFor(cfg) // fresh: mints
+	created, err := rootKeyFor(cfg, lifecycleUp) // fresh: mints
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	populate(t, cfg, paths.ServicePostgres) // now provisioned
 
-	loaded, err := rootKeyFor(cfg)
+	loaded, err := rootKeyFor(cfg, lifecycleUp)
 	if err != nil {
 		t.Fatalf("an existing plane with its key refused to open: %v", err)
 	}
 	if string(loaded) != string(created) {
 		t.Fatal("the plane loaded a different key than the one it was provisioned with")
+	}
+}
+
+// TestOnlyUpMayMintAKey is the accepted D4 contract, and emptiness alone
+// does not express it.
+//
+// An empty data root means "no plane has been provisioned"; it does not mean
+// "this operation is the one that provisions it". Neither `migrate` nor
+// `force-version` creates a plane, so a key either of them generated would
+// belong to nothing — until the eventual `up` adopted it silently, which is
+// the state that makes the key's provenance unanswerable.
+func TestOnlyUpMayMintAKey(t *testing.T) {
+	for _, operation := range []lifecycle{lifecycleMigrate, lifecycleForceVersion} {
+		cfg := planeAt(t) // empty data root: `up` would be allowed to create
+
+		_, err := rootKeyFor(cfg, operation)
+		if !errors.Is(err, ErrPlaneLocked) {
+			t.Fatalf("%s against an empty root returned %v, want ErrPlaneLocked", operation, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(cfg.Roots.Config, paths.KeyFileName)); !os.IsNotExist(statErr) {
+			t.Fatalf("%s created a key file", operation)
+		}
+
+		// And the same operation succeeds once a key exists, so the refusal
+		// is about CREATION rather than about the operation being locked out.
+		if _, err := rootKeyFor(cfg, lifecycleUp); err != nil {
+			t.Fatalf("up could not create the key: %v", err)
+		}
+		if _, err := rootKeyFor(cfg, operation); err != nil {
+			t.Fatalf("%s could not load an existing key: %v", operation, err)
+		}
+	}
+}
+
+// TestRefusalIsTypedForItem8 pins the observable restore state the backup
+// operation builds its two-part sequence on: refuse, supply the key, open.
+// A bare "file not found" would not distinguish that from a first run.
+func TestRefusalIsTypedForItem8(t *testing.T) {
+	cfg := planeAt(t)
+	populate(t, cfg, paths.ServicePostgres)
+
+	_, err := rootKeyFor(cfg, lifecycleUp)
+	if !errors.Is(err, ErrPlaneLocked) {
+		t.Fatalf("returned %v, want ErrPlaneLocked", err)
+	}
+	// It still carries the underlying cause, so a caller debugging the file
+	// itself is not left guessing which path was checked.
+	if !errors.Is(err, paths.ErrNoKey) {
+		t.Fatalf("ErrPlaneLocked does not wrap ErrNoKey: %v", err)
 	}
 }
 
@@ -126,11 +175,11 @@ func TestRefusalNamesWhatToDo(t *testing.T) {
 	cfg := planeAt(t)
 	populate(t, cfg, paths.ServicePostgres)
 
-	_, err := rootKeyFor(cfg)
+	_, err := rootKeyFor(cfg, lifecycleUp)
 	if err == nil {
 		t.Fatal("no refusal")
 	}
-	for _, phrase := range []string{"already holds a plane", "Restore the key file", "recovery"} {
+	for _, phrase := range []string{"Restore the key file", "recovery", "locked"} {
 		if !strings.Contains(err.Error(), phrase) {
 			t.Errorf("the refusal does not mention %q: %v", phrase, err)
 		}

@@ -87,7 +87,7 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 		return fmt.Errorf("prepare service data directories: %w", err)
 	}
 
-	rootKey, keyErr := rootKeyFor(c)
+	rootKey, keyErr := rootKeyFor(c, lifecycleUp)
 	if keyErr != nil {
 		return keyErr
 	}
@@ -118,6 +118,46 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	return reconcileClaims(ctx, c, rootKey, blob)
 }
 
+// ErrPlaneLocked reports a data root that already holds a plane whose
+// root-of-trust key is absent.
+//
+// It is the observable restore state item 8 builds on: refuse, supply the
+// original key, open. A bare "file not found" would make that sequence
+// untestable as a sequence, because nothing would distinguish it from a
+// first run.
+var ErrPlaneLocked = errors.New("data plane is locked: its root-of-trust key is not present")
+
+// lifecycle names the operation asking for key material.
+//
+// It is part of the decision rather than derived from the filesystem, because
+// emptiness alone answers the wrong question. An empty data root means "no
+// plane has been provisioned"; it does not mean "this operation is the one
+// that provisions it". `migrate` against an empty root is not setup — it is
+// a migration of a plane that does not exist yet, and minting a key for it
+// leaves a key file that the eventual `up` will silently adopt.
+type lifecycle int
+
+const (
+	// lifecycleUp is the only operation that may create key material, and
+	// only then against an empty data root.
+	lifecycleUp lifecycle = iota
+	lifecycleMigrate
+	lifecycleForceVersion
+)
+
+func (l lifecycle) String() string {
+	switch l {
+	case lifecycleUp:
+		return "up"
+	case lifecycleMigrate:
+		return "migrate"
+	case lifecycleForceVersion:
+		return "force-version"
+	default:
+		return "unknown"
+	}
+}
+
 // rootKeyFor is the ONE place that decides whether a lifecycle operation may
 // create key material (item 7, D4).
 //
@@ -128,34 +168,37 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 // reports "data plane did not become ready" three minutes later — a correct
 // refusal reached by accident, naming nothing an operator can act on.
 //
-// So the rule is centralized rather than repeated. There are three lifecycle
-// operations that need a key, and a guard placed in only one of them leaves
-// the others able to mint against an existing plane. `Migrate` is the
-// sharpest case: it is exactly what an operator runs after a restore, which
-// is when the key is most likely to be missing.
+// TWO conditions, and both are necessary. The operation must be `up`, which
+// is the only one that provisions a plane; and the data root must be empty,
+// so `up` on an existing plane loads rather than replaces. Emptiness alone
+// would let `migrate` or `force-version` mint against a fresh root, which the
+// accepted design forbids for a reason worth stating: neither creates a
+// plane, so a key either of them generated would belong to nothing until an
+// `up` adopted it silently.
 //
-// Only a plane whose data root is EMPTY may create. Emptiness is judged
-// across every service data directory, not just Postgres: the object store's
-// credentials derive from the same key, so a plane holding objects and no
-// cluster is still a plane some earlier key provisioned.
-func rootKeyFor(c *Config) ([]byte, error) {
-	fresh, err := dataRootIsEmpty(c)
-	if err != nil {
-		return nil, err
-	}
+// Emptiness is judged across every service data directory, not just Postgres:
+// the object store's credentials derive from the same key, so a plane holding
+// objects and no cluster is still a plane some earlier key provisioned.
+func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 	access := secret.LoadOnly
-	if fresh {
-		access = secret.MayCreate
+	if operation == lifecycleUp {
+		fresh, err := dataRootIsEmpty(c)
+		if err != nil {
+			return nil, err
+		}
+		if fresh {
+			access = secret.MayCreate
+		}
 	}
 
 	key, keyErr := secret.KeyFile(c.Roots.Config, access).RootKey()
 	if keyErr != nil {
-		err := fmt.Errorf("read root-of-trust key: %w", keyErr)
+		err := fmt.Errorf("read root-of-trust key for %s: %w", operation, keyErr)
 		if errors.Is(err, paths.ErrNoKey) {
-			return nil, fmt.Errorf("%w. This data root already holds a plane, so its key cannot be "+
-				"regenerated: the Postgres password and object-store credentials are derived from "+
-				"the original, and a new one would not open either. Restore the key file, or run "+
-				"the new-key recovery path", err)
+			return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials "+
+				"are derived from the original key, so a new one would open neither. Restore the "+
+				"key file beside the backup, or run the new-key recovery path: %w",
+				ErrPlaneLocked, operation, err)
 		}
 		return nil, err
 	}
@@ -292,7 +335,7 @@ func Migrate(ctx context.Context, c *Config) (err error) {
 		}
 	}()
 
-	rootKey, keyErr := rootKeyFor(c)
+	rootKey, keyErr := rootKeyFor(c, lifecycleMigrate)
 	if keyErr != nil {
 		return keyErr
 	}
@@ -342,7 +385,7 @@ func ForceVersion(c *Config, version int) (err error) {
 		}
 	}()
 
-	rootKey, keyErr := rootKeyFor(c)
+	rootKey, keyErr := rootKeyFor(c, lifecycleForceVersion)
 	if keyErr != nil {
 		return keyErr
 	}

@@ -62,10 +62,24 @@ var ErrNoKey = errors.New("root-of-trust key file is not present")
 // holds a cluster — and getting it wrong in the permissive direction is the
 // failure above.
 //
-// It carries the same obligations as EnsureKey's fast path: the same lock,
-// so it cannot observe a half-linked key from a concurrent creator, and the
-// same directory sync before returning, because a caller that encrypts under
-// a key must not be handed one a crash could still erase.
+// It carries EVERY obligation EnsureKey's fast path carries, not merely the
+// convenient ones: the same lock, so it cannot observe a half-linked key from
+// a concurrent creator; the same orphan sweep, because a load is just as
+// capable of leaving a second copy of a secret on disk as a creation is; and
+// the same directory sync before returning, because a caller that encrypts
+// under a key must not be handed one a crash could still erase.
+//
+// The sweep is the obligation easiest to leave out and hardest to notice
+// missing. EnsureKey's protocol removes its own temporary AFTER linking, so a
+// creator that dies in between leaves an orphan — a complete second copy of
+// the key, at a predictable name. Once the final key exists, EnsureKey never
+// runs its creating path again, so on a plane that only ever LOADS, nothing
+// would ever clean it up: the orphan would survive for the life of the
+// installation, in a backup, and in every copy of the data root.
+//
+// The sweep is therefore made durable even when the key itself is absent and
+// this returns ErrNoKey. An unsynced removal is a removal a crash can undo,
+// which would resurrect exactly the copy this just deleted.
 func LoadKey(configRoot string) (key []byte, err error) {
 	path := filepath.Join(configRoot, KeyFileName)
 
@@ -79,8 +93,22 @@ func LoadKey(configRoot string) (key []byte, err error) {
 		}
 	}()
 
+	// Under the lock, any temporary is an orphan: no live creator can exist
+	// (ADR 0027 — destructive recovery runs under the resource's own lock, so
+	// it cannot truncate a concurrent writer's work).
+	if sweepErr := sweepOrphanTemps(configRoot); sweepErr != nil {
+		return nil, sweepErr
+	}
+
 	if _, statErr := os.Stat(path); statErr != nil {
 		if os.IsNotExist(statErr) {
+			// The sweep above may have removed something, and this path
+			// returns without reaching returnDurable's sync — so make the
+			// removal durable here rather than leaving it to a caller that
+			// has just been told there is no key.
+			if syncErr := syncDir(configRoot); syncErr != nil {
+				return nil, syncErr
+			}
 			return nil, fmt.Errorf("%w: %s", ErrNoKey, path)
 		}
 		return nil, fmt.Errorf("stat key file %s: %w", path, statErr)
