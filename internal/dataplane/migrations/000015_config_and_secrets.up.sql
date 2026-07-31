@@ -65,9 +65,15 @@ CREATE TABLE configuration_records (
     -- The scope columns and scope_type must agree. Without this a row could
     -- claim scope_type = 'product' while carrying a repository id, and every
     -- resolution query that trusts scope_type would read the wrong level.
+    -- The organization arm is an EQUALITY, not a presence check. The other
+    -- two arms are tenant-bound by their composite foreign keys, but
+    -- scope_organization_id references organizations directly, so a
+    -- presence check alone would let a row owned by organization A be
+    -- scoped to organization B -- a cross-tenant configuration that every
+    -- organization-scoped read would then resolve.
     CONSTRAINT configuration_records_scope_agrees_check
         CHECK (
-            (scope_type = 'organization' AND scope_organization_id IS NOT NULL)
+            (scope_type = 'organization' AND scope_organization_id = organization_id)
          OR (scope_type = 'product'      AND scope_product_id      IS NOT NULL)
          OR (scope_type = 'repository'   AND scope_repository_id   IS NOT NULL)
         ),
@@ -95,10 +101,14 @@ CREATE TABLE configuration_records (
         REFERENCES repositories (repository_id, organization_id) ON DELETE RESTRICT
 );
 
--- Resolution reads one key across the lineage at once (design D1), so the
--- index leads with the columns every such read fixes.
-CREATE INDEX configuration_records_lookup_idx
-    ON configuration_records (organization_id, key, scope_type, scope_id);
+-- No separate lookup index here. Resolution reads one key across the
+-- lineage, fixing (organization_id, key) and filtering by scope — which is
+-- exactly the leading edge of configuration_records_key_scope_key, and a
+-- UNIQUE constraint is backed by an index. A second one over the same
+-- columns would be maintained on every write and chosen by nothing.
+--
+-- The vault is not the same case, and does get one: its unique indexes are
+-- PARTIAL, so neither can serve a read that spans owned and shared rows.
 
 -- --- secrets vault ----------------------------------------------------
 --
@@ -152,9 +162,12 @@ CREATE TABLE secrets (
     CONSTRAINT secrets_one_scope_check
         CHECK (num_nonnulls(scope_organization_id, scope_product_id, scope_repository_id) = 1),
 
+    -- Equality on the organization arm, for the reason spelled out on
+    -- configuration_records: the other arms are tenant-bound by composite
+    -- foreign keys and this one is not.
     CONSTRAINT secrets_scope_agrees_check
         CHECK (
-            (scope_type = 'organization' AND scope_organization_id IS NOT NULL)
+            (scope_type = 'organization' AND scope_organization_id = organization_id)
          OR (scope_type = 'product'      AND scope_product_id      IS NOT NULL)
          OR (scope_type = 'repository'   AND scope_repository_id   IS NOT NULL)
         ),
@@ -168,14 +181,15 @@ CREATE TABLE secrets (
     CONSTRAINT secrets_version_check
         CHECK (version >= 1),
 
-    -- A zero-length nonce or ciphertext is not an empty secret, it is a
-    -- write that lost its payload: GCM always produces at least its
-    -- authentication tag, and the nonce is fixed-length by construction.
+    -- The nonce is fixed-length by construction, and the ciphertext is at
+    -- least GCM's 16-byte authentication tag even when the plaintext is
+    -- empty. A shorter value is not a small secret, it is an envelope that
+    -- cannot decrypt -- and `> 0` would admit exactly those.
     CONSTRAINT secrets_nonce_check
         CHECK (octet_length(nonce) = 12),
 
     CONSTRAINT secrets_ciphertext_check
-        CHECK (octet_length(ciphertext) > 0),
+        CHECK (octet_length(ciphertext) >= 16),
 
     -- Composite, so a secret cannot name a user from another organization
     -- (design D5). The single-column reference would let a cross-tenant id

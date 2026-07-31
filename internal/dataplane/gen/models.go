@@ -66,6 +66,21 @@ type BinaryAttachment struct {
 	CreatedAt      pgtype.Timestamptz
 }
 
+type ConfigurationRecord struct {
+	ConfigurationRecordID pgtype.UUID
+	OrganizationID        pgtype.UUID
+	Key                   string
+	ScopeType             string
+	ScopeOrganizationID   pgtype.UUID
+	ScopeProductID        pgtype.UUID
+	ScopeRepositoryID     pgtype.UUID
+	ScopeID               pgtype.UUID
+	Value                 []byte
+	Version               int32
+	CreatedAt             pgtype.Timestamptz
+	UpdatedAt             pgtype.Timestamptz
+}
+
 type DeletionClaim struct {
 	DeletionClaimID pgtype.UUID
 	OrganizationID  pgtype.UUID
@@ -238,6 +253,24 @@ type RetentionPin struct {
 	PinnedAttachmentID    pgtype.UUID
 	PinnedDigest          string
 	CreatedAt             pgtype.Timestamptz
+}
+
+type Secret struct {
+	SecretID            pgtype.UUID
+	OrganizationID      pgtype.UUID
+	Name                string
+	OwnerUserID         pgtype.UUID
+	ScopeType           string
+	ScopeOrganizationID pgtype.UUID
+	ScopeProductID      pgtype.UUID
+	ScopeRepositoryID   pgtype.UUID
+	ScopeID             pgtype.UUID
+	Scheme              string
+	Nonce               []byte
+	Ciphertext          []byte
+	Version             int32
+	CreatedAt           pgtype.Timestamptz
+	UpdatedAt           pgtype.Timestamptz
 }
 
 type StagingLease struct {
