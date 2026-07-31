@@ -393,26 +393,99 @@ func TestVersionedTablesAreMutatedOnlyUnderTheirGuards(t *testing.T) {
 	}
 }
 
-// TestSecretReadsCarryBothOwnershipGuards covers the read side of the same
-// hole. The ownership predicate admits shared rows by design, so on its own
-// it is satisfied by any acting id at all — the membership check is what
-// binds that id to the organization being read.
-func TestSecretReadsCarryBothOwnershipGuards(t *testing.T) {
-	var checked int
+// secretStatements is the EXACT set of statements permitted to touch the
+// vault, and which guards each owes.
+//
+// An allowlist rather than a filter, because the first version of this rule
+// selected statements BY the predicate it was checking for — it looked at
+// reads containing `owner_user_id = @acting_user_id` and asserted they also
+// carried membership. Deleting the ownership predicate from a query removed
+// that query from the test rather than failing it, and the other queries
+// kept the not-vacuous counter satisfied. The selector was the property.
+//
+// Named up front, the same deletion is a statement that touches secrets
+// without its required guards, and a rename is a listed statement that does
+// not exist.
+var secretStatements = map[string]struct {
+	ownership  bool // filters rows by the acting user
+	membership bool // correlates that user with the organization
+}{
+	// Creation has no ownership predicate to carry: the owner is a column it
+	// writes, not a row it selects. Membership is the whole guard, and the
+	// reason it exists — a shared secret's owner is NULL, so nothing else in
+	// the row mentions the caller.
+	"CreateSecret": {ownership: false, membership: true},
+
+	"ResolveSecretForRepository": {ownership: true, membership: true},
+	"GetSecret":                  {ownership: true, membership: true},
+	"ReplaceSecret":              {ownership: true, membership: true},
+	"DeleteSecret":               {ownership: true, membership: true},
+}
+
+// membershipCorrelations are both halves the EXISTS must carry. An
+// `EXISTS (SELECT 1 FROM users …)` that correlated only the user id would
+// pass a shape check while proving nothing about the tenant, and one that
+// correlated only the organization would prove nothing about the caller.
+var membershipCorrelations = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)u\.user_id\s*=\s*@acting_user_id`),
+	regexp.MustCompile(`(?i)u\.organization_id\s*=\s*@organization_id`),
+}
+
+// secretsTableReference matches a statement's use of the vault as a table,
+// in any of the four positions SQL puts one.
+var secretsTableReference = regexp.MustCompile(`(?is)\b(?:FROM|INTO|UPDATE|JOIN)\s+secrets\b`)
+
+// TestEverySecretStatementCarriesItsGuards enforces the vault's access model
+// at the only place it can be enforced statically: the SQL itself.
+//
+// Two directions, and both matter. Every statement touching secrets must be
+// listed — so a new query cannot arrive without guards — and every listed
+// statement must exist, so a rename cannot quietly retire a rule.
+func TestEverySecretStatementCarriesItsGuards(t *testing.T) {
+	seen := map[string]bool{}
+
 	for _, stmt := range loadStatements(t) {
-		upper := strings.ToUpper(stmt.sql)
-		if !strings.Contains(upper, "FROM SECRETS") || !ownershipGuard.MatchString(stmt.sql) {
+		if !secretsTableReference.MatchString(stmt.sql) {
 			continue
 		}
-		checked++
+		required, listed := secretStatements[stmt.name]
+		if !listed {
+			t.Errorf("%s: %q touches the secrets table but is not listed in secretStatements. "+
+				"Every statement against the vault carries an access model; add it there with the "+
+				"guards it owes rather than letting it inherit none.", stmt.file, stmt.name)
+			continue
+		}
+		seen[stmt.name] = true
+
+		if required.ownership && !ownershipGuard.MatchString(stmt.sql) {
+			t.Errorf("%s: %q selects secrets without `owner_user_id = @acting_user_id`. Without it "+
+				"a caller reaches every row in the organization, individual ones included.",
+				stmt.file, stmt.name)
+		}
+		if !required.membership {
+			continue
+		}
 		if !membershipGuard.MatchString(stmt.sql) {
-			t.Errorf("%s: %q filters secrets by acting user without checking that user's "+
-				"membership; `owner_user_id IS NULL` then matches for a caller from any "+
-				"organization", stmt.file, stmt.name)
+			t.Errorf("%s: %q has no `EXISTS (SELECT 1 FROM users …)` membership check. The "+
+				"ownership predicate admits shared rows, whose owner is NULL, so it is satisfied "+
+				"by ANY acting id — including a user of another organization.", stmt.file, stmt.name)
+			continue
+		}
+		for _, correlation := range membershipCorrelations {
+			if !correlation.MatchString(stmt.sql) {
+				t.Errorf("%s: %q has a membership check that does not correlate %s. Both halves "+
+					"are required: the user id alone proves nothing about the tenant, and the "+
+					"organization alone proves nothing about the caller.",
+					stmt.file, stmt.name, correlation)
+			}
 		}
 	}
-	if checked == 0 {
-		t.Fatal("no ownership-filtered read of secrets was found, so this test enforced nothing")
+
+	for name := range secretStatements {
+		if !seen[name] {
+			t.Errorf("secretStatements requires guards on %q, but no statement by that name touches "+
+				"secrets; a renamed or deleted query must not silently retire its rule", name)
+		}
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"orchestrator/internal/dataplane/gen"
@@ -27,6 +28,10 @@ import (
 // — including a user belonging to a different organization. The organization
 // is a separate parameter, so nothing in the predicate ties the two
 // together. The membership check is what does.
+
+// asUUID mirrors toPgUUID in the other direction: the test package cannot
+// reach the seam's unexported converter.
+func asUUID(id pgtype.UUID) uuid.UUID { return id.Bytes }
 
 // vaultFixture is two organizations, each with a user and a repository, so a
 // cross-tenant attempt has somewhere real to come from.
@@ -157,6 +162,107 @@ func TestSharedSecretDoesNotResolveForAnotherTenantsUser(t *testing.T) {
 		t.Fatalf("a user of another organization resolved A's shared secret (%v). A NULL owner "+
 			"matches any acting id, so the ownership predicate alone does not bind the caller to "+
 			"the organization being read.", err)
+	}
+}
+
+// TestIndividualSecretIsInvisibleToAnotherUserInTheSameOrganization pins the
+// OWNERSHIP half, which the tenancy cases cannot reach.
+//
+// Both users here are members of the same organization, so every membership
+// check passes and the only thing standing between them is
+// `owner_user_id = @acting_user_id`. That predicate is what the structural
+// rule asserts statically; this is what it does.
+//
+// The shared secret is present deliberately: A's individual credential must
+// be invisible to B while B still resolves the shared one, or the case could
+// pass because nothing resolves at all.
+func TestIndividualSecretIsInvisibleToAnotherUserInTheSameOrganization(t *testing.T) {
+	v := newVaultFixture(t)
+	ctx := context.Background()
+
+	colleague := uuid.New()
+	if _, err := v.pool.Exec(ctx,
+		`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'colleague','C')`,
+		colleague, v.orgA); err != nil {
+		t.Fatalf("seed a second user in the same organization: %v", err)
+	}
+
+	mine, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("allocate secret id: %v", err)
+	}
+	if _, err := v.queries.CreateSecret(ctx, gen.CreateSecretParams{
+		SecretID:            toPgUUID(mine),
+		OrganizationID:      toPgUUID(v.orgA),
+		Name:                "forge-token",
+		OwnerUserID:         toPgUUID(v.userA),
+		ScopeType:           "organization",
+		ScopeOrganizationID: toPgUUID(v.orgA),
+		Scheme:              "aes-256-gcm/hkdf-sha256/v1",
+		Nonce:               make([]byte, 12),
+		Ciphertext:          []byte("A's own ciphertext"),
+		ActingUserID:        toPgUUID(v.userA),
+	}); err != nil {
+		t.Fatalf("create A's individual secret: %v", err)
+	}
+
+	// A resolves its own.
+	own, err := v.queries.ResolveSecretForRepository(ctx, gen.ResolveSecretForRepositoryParams{
+		OrganizationID: toPgUUID(v.orgA),
+		Name:           "forge-token",
+		ActingUserID:   toPgUUID(v.userA),
+		RepositoryID:   toPgUUID(v.repoA),
+	})
+	if err != nil {
+		t.Fatalf("A could not resolve its own secret: %v", err)
+	}
+	if asUUID(own.SecretID) != mine {
+		t.Fatalf("A resolved %s, want its own %s", asUUID(own.SecretID), mine)
+	}
+
+	// The colleague finds nothing at all.
+	if _, err := v.queries.ResolveSecretForRepository(ctx, gen.ResolveSecretForRepositoryParams{
+		OrganizationID: toPgUUID(v.orgA),
+		Name:           "forge-token",
+		ActingUserID:   toPgUUID(colleague),
+		RepositoryID:   toPgUUID(v.repoA),
+	}); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("a colleague resolved another user's individual secret (%v)", err)
+	}
+
+	// And with a shared secret beside it, the colleague gets THAT one --
+	// which is what stops the assertion above passing for the wrong reason.
+	if err := v.createShared(t, v.userA, v.orgA, "forge-token"); err != nil {
+		t.Fatalf("create the shared secret: %v", err)
+	}
+	shared, err := v.queries.ResolveSecretForRepository(ctx, gen.ResolveSecretForRepositoryParams{
+		OrganizationID: toPgUUID(v.orgA),
+		Name:           "forge-token",
+		ActingUserID:   toPgUUID(colleague),
+		RepositoryID:   toPgUUID(v.repoA),
+	})
+	if err != nil {
+		t.Fatalf("the colleague could not resolve the shared secret: %v", err)
+	}
+	if asUUID(shared.SecretID) == mine {
+		t.Fatal("the colleague resolved A's individual secret rather than the shared one")
+	}
+	if shared.OwnerUserID.Valid {
+		t.Fatalf("the colleague resolved a secret owned by %s", asUUID(shared.OwnerUserID))
+	}
+
+	// A still prefers its own, which is the ladder's inner sort.
+	again, err := v.queries.ResolveSecretForRepository(ctx, gen.ResolveSecretForRepositoryParams{
+		OrganizationID: toPgUUID(v.orgA),
+		Name:           "forge-token",
+		ActingUserID:   toPgUUID(v.userA),
+		RepositoryID:   toPgUUID(v.repoA),
+	})
+	if err != nil {
+		t.Fatalf("A could not resolve with a shared secret present: %v", err)
+	}
+	if asUUID(again.SecretID) != mine {
+		t.Fatal("A resolved the shared secret over its own; ownership must break the tie within a level")
 	}
 }
 
