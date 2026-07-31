@@ -158,6 +158,9 @@ type fixture struct {
 	product uuid.UUID
 	feature uuid.UUID
 	epic    uuid.UUID
+	// repository is the leaf of ADR 0018's ownership chain, which the
+	// configuration and secret families resolve along.
+	repository uuid.UUID
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -297,7 +300,7 @@ func (f *fixture) seedLineage(t *testing.T) uuid.UUID {
 		t.Fatalf("commit lineage: %v", err)
 	}
 
-	f.product, f.feature, f.epic = product, feature, epic
+	f.product, f.feature, f.epic, f.repository = product, feature, epic, repository
 	return story
 }
 

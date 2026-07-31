@@ -395,6 +395,7 @@ type MPHQuery struct {
 // the compile-time assertions would prove nothing about it.
 type Reader interface {
 	CallReader
+	ConfigurationReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -422,6 +423,7 @@ type Reader interface {
 // Writer is the write and transition surface.
 type Writer interface {
 	CallWriter
+	ConfigurationWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)

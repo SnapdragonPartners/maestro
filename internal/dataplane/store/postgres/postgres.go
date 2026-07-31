@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
@@ -29,6 +30,17 @@ type Store struct {
 	pool     *pgxpool.Pool
 	queries  *gen.Queries
 	registry *registry.Registry
+	// keys is the configuration key registry (item 7, design D1).
+	//
+	// Injected like the artifact registry, and for the same reason: a test
+	// registers the keys it needs without mutating global state another
+	// test observes. It defaults to an EMPTY registry rather than to nil,
+	// which is not a nil trap of the kind the blob comment below warns
+	// about -- an empty registry refuses every configuration write with a
+	// typed error that names the registered vocabulary, which is the
+	// correct behaviour for a store nobody gave a vocabulary to. Answering
+	// a required capability with a shrug is a trap; refusing loudly is not.
+	keys *configkeys.Registry
 	// blob is the object module's Layer 1 adapter. It is required, not
 	// optional: ADR 0022 makes object storage part of the data plane, and a
 	// store that satisfied the seam while answering every object operation
@@ -66,6 +78,20 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+// WithConfigKeys replaces the configuration key registry.
+//
+// Absent it, every configuration write is refused as an unregistered key.
+// That is the correct default for a store nobody has given a vocabulary:
+// this package ships no seed keys, so an empty registry is the honest
+// starting state rather than a missing dependency.
+func WithConfigKeys(keys *configkeys.Registry) Option {
+	return func(s *Store) {
+		if keys != nil {
+			s.keys = keys
+		}
+	}
+}
+
 // New builds a Store over an existing pool.
 //
 // The registry is injected rather than read from a package-level default,
@@ -81,7 +107,14 @@ func New(pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob, opts 
 	if blob == nil {
 		return nil, errors.New("postgres store: object adapter is nil")
 	}
-	built := &Store{pool: pool, queries: gen.New(pool), registry: types, blob: blob, now: time.Now}
+	built := &Store{
+		pool:     pool,
+		queries:  gen.New(pool),
+		registry: types,
+		keys:     configkeys.MustNew(nil),
+		blob:     blob,
+		now:      time.Now,
+	}
 	for _, opt := range opts {
 		opt(built)
 	}
@@ -110,6 +143,7 @@ func (s *Store) Close() { s.pool.Close() }
 type tx struct {
 	queries  *gen.Queries
 	registry *registry.Registry
+	keys     *configkeys.Registry
 	// blob is here for one reason: acceptance must check that referenced
 	// objects EXIST, which is the single precondition reaching outside
 	// Postgres (design D5). It is safe in that order because the
@@ -130,7 +164,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Tx) error) error {
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, blob: s.blob}); err != nil {
+	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, blob: s.blob}); err != nil {
 		return err
 	}
 	if err := pgxTx.Commit(ctx); err != nil {
