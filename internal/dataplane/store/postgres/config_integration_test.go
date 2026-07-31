@@ -589,23 +589,45 @@ func TestDeleteWaitsForTheUpdatesRowLock(t *testing.T) {
 	}
 }
 
-// waitForBlockedBackend waits until some backend on this database is stuck
-// on a lock, so the test proceeds on an observed state rather than a sleep.
+// waitForBlockedBackend waits until a backend is stuck waiting for THIS
+// test's row lock, so the test proceeds on an observed state rather than a
+// sleep.
+//
+// Scoped three ways, because a bare `SELECT count(*) FROM pg_locks WHERE NOT
+// granted` is satisfied by any ungranted lock anywhere in the cluster —
+// including one belonging to another test's disposable database running at
+// the same time. A probe that can be satisfied by somebody else's contention
+// is a probe that reports "the delete is waiting" when nothing of the sort
+// is happening.
+//
+//   - datname pins it to this test's own database;
+//   - wait_event_type = 'Lock' is the wait itself. Note this is read from
+//     pg_stat_activity rather than pg_locks: a backend queued behind an
+//     uncommitted writer waits on a TRANSACTIONID lock, whose pg_locks row
+//     carries a NULL database, so filtering pg_locks by database would
+//     exclude the very wait being looked for;
+//   - the query text pins it to LockConfigurationRecord. sqlc keeps the
+//     `-- name:` header in the statement it sends, so the name is visible
+//     here and identifies the statement unambiguously.
 func waitForBlockedBackend(t *testing.T, f *fixture) {
 	t.Helper()
+	const probe = `SELECT count(*) FROM pg_stat_activity
+	               WHERE datname = current_database()
+	                 AND wait_event_type = 'Lock'
+	                 AND query LIKE '%LockConfigurationRecord%'`
+
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var blocked int
-		if err := f.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&blocked); err != nil {
-			t.Fatalf("read pg_locks: %v", err)
+		if err := f.pool.QueryRow(context.Background(), probe).Scan(&blocked); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
 		}
 		if blocked > 0 {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("no backend ever blocked on a lock; the delete was never made to contend for the row")
+	t.Fatal("no backend ever waited on this record's row lock; the delete was never made to contend for it")
 }
 
 // TestConcurrentConfigurationUpdatesSerialize runs the race rather than
