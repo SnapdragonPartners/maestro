@@ -106,8 +106,8 @@ FOR UPDATE;
 -- failure rather than a conflict to report to the caller.
 --
 -- ADR 0027 names bare last-writer-wins on shared state as a defect, and a
--- configuration value is reachable from more than one agent lifecycle. Zero
--- rows means somebody else moved first.
+-- configuration value is reachable from more than one agent lifecycle, which
+-- is why the predicate is here at all rather than trusted to the caller.
 --
 -- name: UpdateConfigurationRecord :one
 UPDATE configuration_records

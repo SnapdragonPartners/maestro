@@ -3,6 +3,7 @@
 package postgres_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -457,64 +459,153 @@ func TestStaleWriterIsToldTheVersionMoved(t *testing.T) {
 	}
 }
 
-// TestConfigurationMutationsClassifyUnderTheRowLock is the deletion half of
-// the same rule, and additionally pins that a delete at a stale version is a
-// conflict rather than a refusal derived from a second, unlocked read.
-func TestConfigurationMutationsClassifyUnderTheRowLock(t *testing.T) {
+// blockingConfigKeys builds a vocabulary whose schema PAUSES inside
+// validation when it sees a sentinel value.
+//
+// The pause is the barrier. Validation runs after the update has taken the
+// row lock and before it writes, so a test that blocks there holds the lock
+// open at exactly the instant another mutation must be made to contend with
+// it. Releasing two goroutines at once does not do that: they are free to
+// run one after the other, and a test built on that timing reports a winner
+// and a loser whether or not any lock was ever taken.
+func blockingConfigKeys(t *testing.T, entered chan<- struct{}, release <-chan struct{}) *configkeys.Registry {
+	t.Helper()
+	var once sync.Once
+	schema := configkeys.ValidatorFunc(func(value []byte) error {
+		if bytes.Contains(value, []byte(`"pause"`)) {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		return objectSchema.Validate(value)
+	})
+	built, err := configkeys.New(map[configkeys.Key]configkeys.Entry{
+		retriesKey: {
+			Schema: schema,
+			PermittedScopes: []configkeys.Scope{
+				configkeys.ScopeOrganization, configkeys.ScopeProduct, configkeys.ScopeRepository,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build blocking config key registry: %v", err)
+	}
+	return built
+}
+
+// TestDeleteWaitsForTheUpdatesRowLock forces the overlap the lock exists for,
+// and distinguishes the two outcomes by their ERROR rather than by timing.
+//
+// The update takes the row lock, then parks inside its validator. The delete
+// then arrives holding the same version the update read.
+//
+//   - WITH the lock, the delete blocks at its own SELECT ... FOR UPDATE. It
+//     wakes after the update commits, reads version 2, and reports a
+//     CONFLICT — the honest answer, since the value it meant to remove is
+//     not the value that is there.
+//   - WITHOUT it, the delete reads version 1 unimpeded and classifies itself
+//     as free to proceed. Its DELETE then blocks on the write lock anyway,
+//     wakes to find no row at version 1, and returns an INVARIANT failure:
+//     the seam said the row was deletable and the SQL guard disagreed.
+//
+// So the assertion is that the loser is refused for the reason it actually
+// lost, and specifically that the backstop was never the thing that caught
+// it. A test asserting only "one won and one lost" passes in both worlds.
+func TestDeleteWaitsForTheUpdatesRowLock(t *testing.T) {
 	f := newFixture(t)
 	f.seedLineage(t)
-	s := configStore(t, f)
 	ctx := context.Background()
 
-	record := setConfig(t, s, f.organizationID, retriesKey,
+	// releaseNow is idempotent and registered as a cleanup, because the
+	// parked goroutine holds a pooled CONNECTION. pgxpool.Close blocks until
+	// every connection is returned, and the fixture closes the pool in its
+	// own cleanup — so a test that fails before releasing the validator does
+	// not fail, it HANGS, and takes the rest of the package with it. Learned
+	// the hard way: the first mutation run of this test deadlocked instead
+	// of reporting.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseNow := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseNow)
+
+	blocking, err := postgres.New(f.pool, testRegistry(t), f.blob,
+		postgres.WithConfigKeys(blockingConfigKeys(t, entered, release)))
+	if err != nil {
+		t.Fatalf("store with blocking keys: %v", err)
+	}
+
+	record := setConfig(t, blocking, f.organizationID, retriesKey,
 		store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID}, `{"n":1}`)
 
-	// A delete and an update race for the same record from the same read.
-	// Exactly one may apply, and the loser must be told so.
-	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		outcomes []error
-	)
-	start := make(chan struct{})
-	wg.Add(2)
+	updated := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		<-start
-		mu.Lock()
-		defer mu.Unlock()
-		outcomes = append(outcomes,
-			s.DeleteConfigurationRecord(ctx, f.organizationID, record.ID, record.Version))
+		_, updateErr := blocking.UpdateConfigurationRecord(ctx, f.organizationID, record.ID,
+			record.Version, json.RawMessage(`{"n":2,"why":"pause"}`))
+		updated <- updateErr
 	}()
-	go func() {
-		defer wg.Done()
-		<-start
-		_, err := s.UpdateConfigurationRecord(ctx, f.organizationID, record.ID, record.Version,
-			json.RawMessage(`{"n":2}`))
-		mu.Lock()
-		defer mu.Unlock()
-		outcomes = append(outcomes, err)
-	}()
-	close(start)
-	wg.Wait()
 
-	var won, lost int
-	for _, err := range outcomes {
-		switch {
-		case err == nil:
-			won++
-		case errors.Is(err, store.ErrConfigurationConflict), errors.Is(err, store.ErrNotFound):
-			lost++
-		default:
-			// An invariant failure here would mean the lock and the SQL
-			// guard disagreed, which is the state the lock exists to make
-			// impossible.
-			t.Fatalf("unexpected outcome: %v", err)
+	// The update now holds the row lock and is parked in its validator.
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the update never reached its validator")
+	}
+
+	deleted := make(chan error, 1)
+	go func() {
+		deleted <- blocking.DeleteConfigurationRecord(ctx, f.organizationID, record.ID, record.Version)
+	}()
+
+	// The delete must be waiting on a lock rather than already finished.
+	// Asserted against Postgres, not inferred from a sleep.
+	waitForBlockedBackend(t, f)
+	select {
+	case err := <-deleted:
+		t.Fatalf("the delete completed while the update held the row lock (%v); nothing serialised them", err)
+	default:
+	}
+
+	releaseNow()
+
+	if updateErr := <-updated; updateErr != nil {
+		t.Fatalf("update: %v", updateErr)
+	}
+	deleteErr := <-deleted
+	if errors.Is(deleteErr, store.ErrInvariant) {
+		t.Fatalf("the delete classified itself as writable and was caught by the SQL backstop (%v); "+
+			"it read the row without waiting for the lock", deleteErr)
+	}
+	if !errors.Is(deleteErr, store.ErrConfigurationConflict) {
+		t.Fatalf("delete returned %v, want ErrConfigurationConflict", deleteErr)
+	}
+
+	// The update's value survived: the delete did not erase a write it
+	// never saw.
+	current, err := blocking.GetConfigurationRecord(ctx, f.organizationID, record.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !sameJSON(t, current.Value, `{"n":2,"why":"pause"}`) {
+		t.Errorf("value = %s, want the update's", current.Value)
+	}
+}
+
+// waitForBlockedBackend waits until some backend on this database is stuck
+// on a lock, so the test proceeds on an observed state rather than a sleep.
+func waitForBlockedBackend(t *testing.T, f *fixture) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var blocked int
+		if err := f.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_locks WHERE NOT granted`).Scan(&blocked); err != nil {
+			t.Fatalf("read pg_locks: %v", err)
 		}
+		if blocked > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if won != 1 || lost != 1 {
-		t.Errorf("%d applied and %d refused, want exactly one of each", won, lost)
-	}
+	t.Fatal("no backend ever blocked on a lock; the delete was never made to contend for the row")
 }
 
 // TestConcurrentConfigurationUpdatesSerialize runs the race rather than
