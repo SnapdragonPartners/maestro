@@ -43,15 +43,34 @@ var ErrNoRootKey = errors.New("root-of-trust key is empty")
 // possible. Output is raw-URL base64, which is safe in connection strings,
 // environment variables, and CLI arguments without escaping.
 func Derive(rootKey []byte, context string) (string, error) {
+	key, err := DeriveKey(rootKey, context)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(key), nil
+}
+
+// DeriveKey returns the RAW derived bytes, before any encoding.
+//
+// Derive's output is a printable credential -- raw-URL base64, so it can sit
+// in a connection string without escaping -- and that makes it the wrong
+// thing to hand a cipher: the encoded form of a 32-byte key is 43 bytes, so
+// a caller passing it as an AES-256 key would be using the wrong length and
+// the wrong bytes while everything still compiled.
+//
+// The vault needs the key material itself, so it takes it from here. Both
+// functions run the same derivation for the same context, which is what
+// keeps "one context, one secret" true across the encoded and raw forms.
+func DeriveKey(rootKey []byte, context string) ([]byte, error) {
 	if len(rootKey) == 0 {
-		return "", ErrNoRootKey
+		return nil, ErrNoRootKey
 	}
 	if context == "" {
-		return "", errors.New("derivation context is required")
+		return nil, errors.New("derivation context is required")
 	}
 	key, err := hkdf.Key(sha256.New, rootKey, nil, context, derivedBytes)
 	if err != nil {
-		return "", fmt.Errorf("derive %s: %w", context, err)
+		return nil, fmt.Errorf("derive %s: %w", context, err)
 	}
-	return base64.RawURLEncoding.EncodeToString(key), nil
+	return key, nil
 }
