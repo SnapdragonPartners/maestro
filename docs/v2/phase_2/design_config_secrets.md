@@ -1,17 +1,20 @@
 +++
 title = "Phase 2 Item 7 Design: Configuration Records And The Secrets Vault"
 edit_date = "2026-07-31"
-status = "draft"
+status = "live"
 summary = "Design for item 7: configuration records under a governed key registry validated before write and resolved most-specific-wins along the org/product/repo lineage, and a secrets vault whose per-version keys and canonically-encoded AAD bind a ciphertext to every field deciding who may read it, with individual credentials resolved over a six-step ladder where specificity outranks ownership, replacement and deletion under optimistic concurrency promising unaddressability rather than erasure, a local root-key provider distinct from the replaceable secrets store, and one create-versus-load rule that every lifecycle operation shares so only a fresh plane may mint a key."
 type = "design"
 +++
 
 # Phase 2 Item 7 Design: Configuration Records And The Secrets Vault
 
-Status: **draft** — awaiting review. Rewritten after review round 1, which
-found five P1s; the two that changed the design's shape rather than its
-wording were the impossible locked-plane model (D4) and the conflated
-provider boundaries (D3).
+Status: **live** — Accepted by Codex and DR (2026-07-31) after six review
+rounds (five P1s, then five, three, two, two and one; all upheld). Two of
+them changed the design's shape rather than its wording: the locked-plane
+model was impossible (D4) and the provider boundaries were conflated (D3).
+The new-key recovery procedure is **measured against the pinned images**, not
+argued (D4); its native-Linux confirmation is an explicit **item 8 gate**,
+not an item 7 blocker.
 
 Delivers the two families ADR 0022 names for Phase 2 that item 3 deliberately
 did not create: **configuration records** and the **secrets vault**. Both are
