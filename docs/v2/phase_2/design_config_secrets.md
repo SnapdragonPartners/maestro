@@ -121,6 +121,20 @@ carries a `version`; an update names the version the caller read, and zero
 rows affected is a typed conflict rather than a silent overwrite of somebody
 else's change.
 
+**Deletion is a first-class operation, not an omission.** A record at a
+specific level is an *override*, and the only way to restore inheritance from
+the level above is to remove it — so without a delete, an override set once
+at a repository can never be undone, only overwritten with a value that
+happens to match the parent's and then silently diverges when the parent
+changes. That is a worse state than having no override at all, because it
+looks intentional.
+
+Deletion carries the **same expected-version guard** as an update, for the
+same reason and one more: an operator removing what they believe is a stale
+override can otherwise erase a value somebody set a moment earlier, and an
+unconditional delete reports success either way. Zero rows affected is the
+same typed conflict.
+
 ## D2. The encryption envelope, stated completely
 
 Round 1 asserted AES-256-GCM with a per-secret derived key and left the rest
@@ -302,24 +316,45 @@ The second one is not free, and this design does not deliver it — which is a
 gap to close deliberately rather than to leave implied.
 
 Re-entering secrets means accepting a **new** root key over an existing data
-root, and the new key changes three things at once:
+root, and the new key changes three things at once. **Both mechanisms below
+are measured against the pinned images, not reasoned about** — an earlier
+revision stated this table as fact on the strength of neither.
 
 | Derived credential | Effect of a new key | Recovery needed |
 | --- | --- | --- |
 | Vault key material | Every stored ciphertext becomes undecryptable | Delete every secret row; the operator re-enters them |
-| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Reset the role's password inside the cluster** — which requires getting in without it |
-| Object-store credentials | The compose file passes `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` as **environment**, not baked into the data directory | None; the store follows the new key |
+| Postgres password | The cluster still holds the password `initdb` wrote from the **old** key | **Reset the role's password from single-user mode**, which needs no password — measured below |
+| Object-store credentials | `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` are passed as **environment**, not baked into the data directory | None; the store follows the new key — measured below |
 
-The middle row is the hard one, and it is the reason this is not a small
-addition. Resetting a Postgres role password without knowing it means
-starting the cluster with local trust authentication, altering the role, and
-restarting — an invasive, carefully-ordered operation that belongs with the
-backup and restore work in **item 8**, not here.
+**MinIO, measured** (`minio/minio@sha256:14cea49…`): a bucket and object were
+written under one root credential pair, the container was replaced with a
+second pair over the same data directory, and the object read back
+successfully under the **new** credentials while the old ones were rejected
+with `The Access Key Id you provided does not exist in our records`. The
+object store therefore needs no recovery step at all — it follows the key.
 
-So this item's position is explicit: **item 8 either defines new-key recovery
-or ADR 0022's "or re-entry of secrets" is unfulfilled and the ADR needs
-amending.** What item 7 owes that decision is the two things it has already
-built — a refusal that names the state precisely, and a vault whose rows can
+**Postgres, measured** (`postgres@sha256:3a82e1f5…`, 18.4): a cluster was
+initialised under one password and seeded, then stopped, and the role's
+password was changed by piping `ALTER USER … PASSWORD …` into
+`postgres --single -D <PGDATA> <database>`. Single-user mode requires **no
+password** and no `pg_hba` edit, which is what makes the recovery feasible;
+it must run as the `postgres` user, since the server refuses to start as
+root. After restarting normally, the new password authenticated and the
+pre-reset data was intact, and the old password was **rejected**.
+
+**That last check has a trap worth recording, because the first attempt fell
+into it.** Verifying the passwords from *inside* the container proves
+nothing: the image's `pg_hba` trusts in-container connections, so both the
+old and new passwords appeared to work. Both results were vacuous. The
+measurement above was redone over a Docker network by hostname — the same
+reason item 2's healthcheck connects by service name rather than loopback.
+
+So new-key recovery is **feasible and bounded**, and the remaining decision
+is one of ownership rather than possibility: **item 8 defines it as an
+explicit, guarded destructive operation** — it deletes every secret and
+rewrites a database credential — or ADR 0022's "or re-entry of secrets" is
+unfulfilled. What item 7 owes that decision is the two things it has already
+built: a refusal that names the state precisely, and a vault whose rows can
 be dropped wholesale without disturbing any other family.
 
 ## D5. Secrets belong to users, and are replaced rather than accumulated
@@ -366,6 +401,23 @@ which it got cannot report "you are using the team token" to anybody.
 **No user ever resolves another user's secret**, enforced in the query
 (`owner_user_id = @user_id OR owner_user_id IS NULL`) rather than by
 filtering after the read.
+
+**Ownership constrains writes as well as reads, which round 2 left out
+entirely.** A read predicate alone gives an access model where one user
+cannot *see* another's credential but can freely replace or delete it — and
+the destructive half is the more damaging one, since a caller who cannot read
+a secret also cannot tell what they destroyed. So:
+
+- **replace and delete carry the acting-user predicate too**, matching the
+  read: a statement affects a row only when it is the caller's own or shared.
+  Zero rows affected is indistinguishable from a version conflict at the SQL
+  level, which is correct — a caller learns that their write did not apply,
+  not whether somebody else's credential exists;
+- the owner is bound by a **composite foreign key** to
+  `(user_id, organization_id)`, so a secret cannot name a user from another
+  organization. The plain single-column reference would let a cross-tenant id
+  through, and the composite form is the pattern the schema already uses for
+  `repositories.primary_product_id` and for principals.
 
 **One row per (organization, name, owner, scope) — and the nullable owner
 needs two indexes, not one.** A plain `UNIQUE (organization_id, name,
@@ -466,6 +518,10 @@ Behavioural, against the real Postgres, as items 4-6:
 | Two concurrent replacements | One succeeds; the loser gets `ErrSecretConflict`, not a silent overwrite |
 | Delete racing a replacement | `ErrSecretConflict`; the rotation is not silently erased |
 | Two concurrent configuration updates | One succeeds; the loser gets a typed conflict |
+| Delete a repository override | The product or organization value is inherited again — the reason deletion exists |
+| Configuration delete racing an update | Typed conflict; neither silently wins |
+| One user **replacing or deleting** another's secret | No rows affected, reported as a conflict — asserted for both verbs, since a read-only ownership test passes with the write side wide open |
+| A secret owned by a user of **another organization** | Refused by the composite foreign key |
 | Tampered ciphertext | Decryption fails on GCM authentication |
 | **`owner_user_id` changed** on a row, id and version untouched | Decryption fails on the AAD — the case that matters, since a moved ciphertext already fails on the key |
 | **`name` or scope changed** likewise | Fails the same way; a working secret cannot be retargeted |
@@ -516,20 +572,20 @@ Round 1's four are **resolved**: the registry stays in this item with an empty
 vocabulary; per-version derivation stays; individual-first stays, with the
 full ladder now tabled and tested; `Reveal()` stays.
 
-Two remain, and the first is the one that can change another item's size.
+One decision has been taken and one observation is recorded for item 8.
 
-1. **Does new-key recovery land in item 8, or does ADR 0022 get amended?**
-   ADR 0022 promises restore by "the backup plus the key file, **or** re-entry
-   of secrets", and only the first branch is designed. The second needs a
-   Postgres role-password reset performed without knowing the password —
-   trust authentication, alter, restart — which is real work and real risk in
-   an operation whose entire purpose is recovering data. Building it makes
-   item 8 materially larger than "quiesce, copy, restart". Not building it
-   means the ADR overpromises and should say so.
-2. **Is specificity-over-ownership the right outer sort?** The ladder prefers
-   a shared repository credential over the caller's own organization-wide one,
+1. **Resolved: new-key recovery lands in item 8, and ADR 0022 stands.** The
+   mechanism is measured and feasible (D4), so the ADR is not overpromising;
+   what it costs is that item 8 grows beyond "quiesce, copy, restart" to
+   include an explicit, guarded destructive operation — one that deletes every
+   secret and rewrites a database credential. Guarded in item 8's own terms:
+   it destroys more than `reset` does in the only sense that matters, since
+   the vault's contents cannot be recreated from anything in the backup.
+2. **Resolved: specificity stays the outer sort.** The ladder prefers a
+   shared repository credential over the caller's own organization-wide one,
    on the grounds that a credential for the wrong resource does not work
-   whoever owns it. The opposite order is defensible for attribution — always
-   act as yourself — and would swap steps 2 and 3. This is the decision most
-   likely to feel wrong in use, and it is cheap to reverse now and expensive
-   after a consumer depends on it.
+   whoever owns it. Recorded here because the alternative is not a small
+   variation: making ownership the outer sort would reorder **steps 2 through
+   5** — every individual level ahead of every shared one — rather than
+   swapping a neighbouring pair, which is how an earlier revision described
+   it.
