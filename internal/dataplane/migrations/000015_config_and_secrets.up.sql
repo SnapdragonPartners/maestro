@@ -73,7 +73,8 @@ CREATE TABLE configuration_records (
     -- organization-scoped read would then resolve.
     CONSTRAINT configuration_records_scope_agrees_check
         CHECK (
-            (scope_type = 'organization' AND scope_organization_id = organization_id)
+            (scope_type = 'organization' AND scope_organization_id IS NOT NULL
+                                          AND scope_organization_id = organization_id)
          OR (scope_type = 'product'      AND scope_product_id      IS NOT NULL)
          OR (scope_type = 'repository'   AND scope_repository_id   IS NOT NULL)
         ),
@@ -167,7 +168,8 @@ CREATE TABLE secrets (
     -- foreign keys and this one is not.
     CONSTRAINT secrets_scope_agrees_check
         CHECK (
-            (scope_type = 'organization' AND scope_organization_id = organization_id)
+            (scope_type = 'organization' AND scope_organization_id IS NOT NULL
+                                          AND scope_organization_id = organization_id)
          OR (scope_type = 'product'      AND scope_product_id      IS NOT NULL)
          OR (scope_type = 'repository'   AND scope_repository_id   IS NOT NULL)
         ),

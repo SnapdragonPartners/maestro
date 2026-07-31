@@ -2,7 +2,43 @@
 
 package migrations_test
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// rejectsWith is rejects plus the identity of the rule that refused.
+//
+// Naming the constraint is what keeps a case about the rule it was written
+// for. Several of these rows break more than one thing at once — a scope
+// mismatch is also, often, a tenancy or arity problem — so "the insert
+// failed" can be satisfied by a constraint the test was not written to
+// exercise, and the intended rule can then be deleted with every test still
+// green.
+func (f *fixture) rejectsWith(t *testing.T, constraint, because, stmt string, args ...any) {
+	t.Helper()
+
+	if _, err := f.tx.Exec("SAVEPOINT reject_named_probe"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	_, err := f.tx.Exec(stmt, args...)
+	if err == nil {
+		t.Fatal(because)
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case !errors.As(err, &pgErr):
+		t.Fatalf("%s: wanted %s, got a non-Postgres error: %v", because, constraint, err)
+	case pgErr.ConstraintName != constraint:
+		t.Fatalf("%s: wanted %s, but %s refused it — the case is not exercising the rule it names",
+			because, constraint, pgErr.ConstraintName)
+	}
+	if _, rbErr := f.tx.Exec("ROLLBACK TO SAVEPOINT reject_named_probe"); rbErr != nil {
+		t.Fatalf("rollback to savepoint: %v", rbErr)
+	}
+}
 
 // Schema rules for the configuration and secrets families (item 7, D1/D5).
 //
@@ -48,8 +84,9 @@ func TestSharedSecretsAreUniquePerNameAndScope(t *testing.T) {
 	if err := f.insertSecret("70000000-0000-7000-8000-000000000001", "token", nil); err != nil {
 		t.Fatalf("first shared secret: %v", err)
 	}
-	f.rejects(t, "a second shared secret with the same name and scope was accepted, so resolution "+
-		"between them is whichever row the planner reaches first",
+	f.rejectsWith(t, "secrets_shared_key",
+		"a second shared secret with the same name and scope was accepted, so resolution "+
+			"between them is whichever row the planner reaches first",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, owner_user_id, scope_type,
 		    scope_organization_id, scheme, nonce, ciphertext)
@@ -79,7 +116,8 @@ func TestIndividualSecretsAreOnePerUser(t *testing.T) {
 	if err := f.insertSecret("70000000-0000-7000-8000-000000000012", "token", second); err != nil {
 		t.Fatalf("second user's secret with the same name and scope was refused: %v", err)
 	}
-	f.rejects(t, "one user held two secrets of the same name at the same scope",
+	f.rejectsWith(t, "secrets_individual_key",
+		"one user held two secrets of the same name at the same scope",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, owner_user_id, scope_type,
 		    scope_organization_id, scheme, nonce, ciphertext)
@@ -106,7 +144,7 @@ func TestSecretOwnerMustBelongToTheOrganization(t *testing.T) {
 		t.Fatalf("seed other user: %v", err)
 	}
 
-	f.rejects(t, "a secret took its owner from another organization",
+	f.rejectsWith(t, "secrets_owner_fkey", "a secret took its owner from another organization",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, owner_user_id, scope_type,
 		    scope_organization_id, scheme, nonce, ciphertext)
@@ -131,13 +169,15 @@ func TestOrganizationScopeIsTenantBound(t *testing.T) {
 		t.Fatalf("seed other org: %v", err)
 	}
 
-	f.rejects(t, "a configuration record owned by one organization was scoped to another",
+	f.rejectsWith(t, "configuration_records_scope_agrees_check",
+		"a configuration record owned by one organization was scoped to another",
 		`INSERT INTO configuration_records
 		   (configuration_record_id, organization_id, key, scope_type, scope_organization_id, value)
 		 VALUES ($1,$2,'k','organization',$3,'{}')`,
 		"70000000-0000-7000-8000-0000000000c2", f.org, otherOrg)
 
-	f.rejects(t, "a secret owned by one organization was scoped to another",
+	f.rejectsWith(t, "secrets_scope_agrees_check",
+		"a secret owned by one organization was scoped to another",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, scope_type, scope_organization_id, scheme, nonce, ciphertext)
 		 VALUES ($1,$2,'token','organization',$3,$4,$5,$6)`,
@@ -147,20 +187,64 @@ func TestOrganizationScopeIsTenantBound(t *testing.T) {
 // TestScopeTypeMustAgreeWithItsScopeColumn stops a row claiming one level
 // while carrying another's id. Every resolution query trusts scope_type, so
 // a disagreeing row is read at the wrong level rather than rejected.
+//
+// The organization-typed cases are the ones three-valued logic nearly let
+// through, and they are why these assert the constraint by NAME. Guarding
+// the tenancy equality without an IS NOT NULL first made the arm evaluate to
+// `NULL` when scope_organization_id was absent — and `NULL OR FALSE OR FALSE`
+// is `NULL`, which Postgres treats as a passing CHECK. The row was accepted
+// with an organization scope_type and a Product id. A bare "this was
+// rejected" assertion would not have caught it either, since these rows can
+// also trip the arity check.
 func TestScopeTypeMustAgreeWithItsScopeColumn(t *testing.T) {
 	f := seed(t, openPlane(t))
 
-	f.rejects(t, "a configuration record claimed product scope while carrying an organization id",
+	const configRule = "configuration_records_scope_agrees_check"
+	const secretRule = "secrets_scope_agrees_check"
+
+	f.rejectsWith(t, configRule,
+		"a configuration record claimed product scope while carrying an organization id",
 		`INSERT INTO configuration_records
 		   (configuration_record_id, organization_id, key, scope_type, scope_organization_id, value)
 		 VALUES ($1,$2,'k','product',$3,'{}')`,
 		"70000000-0000-7000-8000-0000000000d1", f.org, f.org)
 
-	f.rejects(t, "a secret claimed repository scope while carrying a product id",
+	f.rejectsWith(t, secretRule,
+		"a secret claimed repository scope while carrying a product id",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, scope_type, scope_product_id, scheme, nonce, ciphertext)
 		 VALUES ($1,$2,'token','repository',$3,$4,$5,$6)`,
 		"70000000-0000-7000-8000-0000000000d2", f.org, f.product, testScheme, validNonce, validCiphertext)
+
+	// scope_type = 'organization' with the organization column absent: the
+	// three-valued-logic case.
+	f.rejectsWith(t, configRule,
+		"a configuration record claimed organization scope while carrying a Product id",
+		`INSERT INTO configuration_records
+		   (configuration_record_id, organization_id, key, scope_type, scope_product_id, value)
+		 VALUES ($1,$2,'k','organization',$3,'{}')`,
+		"70000000-0000-7000-8000-0000000000d3", f.org, f.product)
+
+	f.rejectsWith(t, configRule,
+		"a configuration record claimed organization scope while carrying a repository id",
+		`INSERT INTO configuration_records
+		   (configuration_record_id, organization_id, key, scope_type, scope_repository_id, value)
+		 VALUES ($1,$2,'k','organization',$3,'{}')`,
+		"70000000-0000-7000-8000-0000000000d4", f.org, f.repo)
+
+	f.rejectsWith(t, secretRule,
+		"a secret claimed organization scope while carrying a Product id",
+		`INSERT INTO secrets
+		   (secret_id, organization_id, name, scope_type, scope_product_id, scheme, nonce, ciphertext)
+		 VALUES ($1,$2,'token','organization',$3,$4,$5,$6)`,
+		"70000000-0000-7000-8000-0000000000d5", f.org, f.product, testScheme, validNonce, validCiphertext)
+
+	f.rejectsWith(t, secretRule,
+		"a secret claimed organization scope while carrying a repository id",
+		`INSERT INTO secrets
+		   (secret_id, organization_id, name, scope_type, scope_repository_id, scheme, nonce, ciphertext)
+		 VALUES ($1,$2,'token','organization',$3,$4,$5,$6)`,
+		"70000000-0000-7000-8000-0000000000d6", f.org, f.repo, testScheme, validNonce, validCiphertext)
 }
 
 // TestEnvelopeRefusesAnUndecryptableShape covers the two length checks.
@@ -172,13 +256,14 @@ func TestScopeTypeMustAgreeWithItsScopeColumn(t *testing.T) {
 func TestEnvelopeRefusesAnUndecryptableShape(t *testing.T) {
 	f := seed(t, openPlane(t))
 
-	f.rejects(t, "a nonce that is not twelve bytes was accepted",
+	f.rejectsWith(t, "secrets_nonce_check", "a nonce that is not twelve bytes was accepted",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, scope_type, scope_organization_id, scheme, nonce, ciphertext)
 		 VALUES ($1,$2,'token','organization',$3,$4,'\x0001',$5)`,
 		"70000000-0000-7000-8000-0000000000e1", f.org, f.org, testScheme, validCiphertext)
 
-	f.rejects(t, "a ciphertext shorter than GCM's authentication tag was accepted",
+	f.rejectsWith(t, "secrets_ciphertext_check",
+		"a ciphertext shorter than GCM's authentication tag was accepted",
 		`INSERT INTO secrets
 		   (secret_id, organization_id, name, scope_type, scope_organization_id, scheme, nonce, ciphertext)
 		 VALUES ($1,$2,'token','organization',$3,$4,$5,'\x0011223344556677')`,
@@ -208,7 +293,8 @@ func TestConfigurationIsOneRowPerKeyAndScope(t *testing.T) {
 		t.Fatalf("the same key at another level was refused: %v", err)
 	}
 
-	f.rejects(t, "two configuration records shared one key at one scope",
+	f.rejectsWith(t, "configuration_records_key_scope_key",
+		"two configuration records shared one key at one scope",
 		`INSERT INTO configuration_records
 		   (configuration_record_id, organization_id, key, scope_type, scope_repository_id, value)
 		 VALUES ($1,$2,'model','repository',$3,'{"v":3}')`,
