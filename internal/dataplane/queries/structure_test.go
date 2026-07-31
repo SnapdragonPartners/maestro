@@ -316,9 +316,35 @@ var versionedSetColumns = map[string]bool{
 
 var (
 	expectedVersionGuard = regexp.MustCompile(`(?i)version\s*=\s*@expected_version`)
-	ownershipGuard       = regexp.MustCompile(`(?i)owner_user_id\s*=\s*@acting_user_id`)
 	membershipGuard      = regexp.MustCompile(`(?is)EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+users`)
 )
+
+// ownershipBranches are BOTH halves of the acting-user predicate, and the
+// test requires both because they fail in opposite directions.
+//
+// Without the individual branch a caller reaches every row in the
+// organization. Without the shared branch a shared credential -- whose owner
+// is NULL -- matches nobody, so the operation silently stops working for
+// exactly the secrets a team holds in common. The second is not a security
+// hole, which is why it would survive review: it is an availability defect
+// that reports itself as "no such secret".
+var ownershipBranches = []struct {
+	name    string
+	pattern *regexp.Regexp
+	why     string
+}{
+	{
+		name:    "the individual branch (owner_user_id = @acting_user_id)",
+		pattern: regexp.MustCompile(`(?i)owner_user_id\s*=\s*@acting_user_id`),
+		why:     "without it a caller reaches every row in the organization, individual ones included",
+	},
+	{
+		name:    "the shared branch (owner_user_id IS NULL)",
+		pattern: regexp.MustCompile(`(?i)owner_user_id\s+IS\s+NULL`),
+		why: "without it a shared credential matches nobody, and the operation stops working for " +
+			"every secret a team holds in common while reporting only 'no such secret'",
+	},
+}
 
 // TestVersionedTablesAreMutatedOnlyUnderTheirGuards is the rule that would
 // otherwise be a convention: every mutation of these tables is named, touches
@@ -364,10 +390,13 @@ func TestVersionedTablesAreMutatedOnlyUnderTheirGuards(t *testing.T) {
 		}
 
 		if table == "secrets" {
-			if !ownershipGuard.MatchString(where) {
-				t.Errorf("%s: %q mutates secrets without the acting-user predicate. Enforcing "+
-					"ownership on reads alone leaves an access model where one user cannot SEE "+
-					"another's credential but can freely destroy it.", stmt.file, stmt.name)
+			for _, branch := range ownershipBranches {
+				if !branch.pattern.MatchString(where) {
+					t.Errorf("%s: %q mutates secrets without %s — %s. Enforcing ownership on reads "+
+						"alone would leave an access model where one user cannot SEE another's "+
+						"credential but can freely destroy it.",
+						stmt.file, stmt.name, branch.name, branch.why)
+				}
 			}
 			if !membershipGuard.MatchString(where) {
 				t.Errorf("%s: %q mutates secrets without checking the acting user's membership. "+
@@ -457,10 +486,13 @@ func TestEverySecretStatementCarriesItsGuards(t *testing.T) {
 		}
 		seen[stmt.name] = true
 
-		if required.ownership && !ownershipGuard.MatchString(stmt.sql) {
-			t.Errorf("%s: %q selects secrets without `owner_user_id = @acting_user_id`. Without it "+
-				"a caller reaches every row in the organization, individual ones included.",
-				stmt.file, stmt.name)
+		if required.ownership {
+			for _, branch := range ownershipBranches {
+				if !branch.pattern.MatchString(stmt.sql) {
+					t.Errorf("%s: %q selects secrets without %s — %s.",
+						stmt.file, stmt.name, branch.name, branch.why)
+				}
+			}
 		}
 		if !required.membership {
 			continue
