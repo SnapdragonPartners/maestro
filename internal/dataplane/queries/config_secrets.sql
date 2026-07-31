@@ -121,15 +121,31 @@ WHERE organization_id         = @organization_id
 -- partial unique index means a secret created as somebody else occupies
 -- their slot.
 --
+-- The acting user's MEMBERSHIP is checked here too, and shared creation is
+-- why. An individual secret is tenant-bound already, because owner_user_id
+-- carries the composite foreign key to (user_id, organization_id) — but a
+-- shared secret has a NULL owner, so nothing about the row mentions the
+-- caller at all. Without this, a caller could create a shared secret in any
+-- organization whose id it could name.
+--
+-- INSERT ... SELECT rather than VALUES, so the check is part of the write:
+-- no rows inserted when the acting user is not a member, which the seam maps
+-- to a typed refusal.
+--
 -- name: CreateSecret :one
 INSERT INTO secrets (
     secret_id, organization_id, name, owner_user_id, scope_type,
     scope_organization_id, scope_product_id, scope_repository_id,
     scheme, nonce, ciphertext
-) VALUES (
+)
+SELECT
     @secret_id, @organization_id, @name, @owner_user_id, @scope_type,
     @scope_organization_id, @scope_product_id, @scope_repository_id,
     @scheme, @nonce, @ciphertext
+WHERE EXISTS (
+    SELECT 1 FROM users u
+    WHERE u.user_id = @acting_user_id
+      AND u.organization_id = @organization_id
 )
 RETURNING *;
 
@@ -165,6 +181,11 @@ FROM secrets s, lineage l
 WHERE s.organization_id = @organization_id
   AND s.name = @name
   AND (s.owner_user_id = @acting_user_id OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = @acting_user_id
+        AND u.organization_id = @organization_id
+  )
   AND (
        (s.scope_type = 'repository'   AND s.scope_repository_id   = l.repository_id)
     OR (s.scope_type = 'product'      AND s.scope_product_id      = l.primary_product_id)
@@ -187,10 +208,16 @@ LIMIT 1;
 -- caller learn the version of a credential they cannot use.
 --
 -- name: GetSecret :one
-SELECT * FROM secrets
-WHERE organization_id = @organization_id
-  AND secret_id       = @secret_id
-  AND (owner_user_id = @acting_user_id OR owner_user_id IS NULL);
+SELECT s.* FROM secrets s
+WHERE s.organization_id = @organization_id
+  AND s.secret_id       = @secret_id
+  AND (s.owner_user_id = @acting_user_id OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = @acting_user_id
+        AND u.organization_id = @organization_id
+  )
+;
 
 -- ReplaceSecret rewrites the envelope, conditional on version AND ownership.
 --
@@ -209,16 +236,21 @@ WHERE organization_id = @organization_id
 -- another user's credential exists.
 --
 -- name: ReplaceSecret :one
-UPDATE secrets
+UPDATE secrets s
 SET scheme     = @scheme,
     nonce      = @nonce,
     ciphertext = @ciphertext,
-    version    = version + 1,
+    version    = s.version + 1,
     updated_at = now()
-WHERE organization_id = @organization_id
-  AND secret_id       = @secret_id
-  AND version         = @expected_version
-  AND (owner_user_id = @acting_user_id OR owner_user_id IS NULL)
+WHERE s.organization_id = @organization_id
+  AND s.secret_id       = @secret_id
+  AND s.version         = @expected_version
+  AND (s.owner_user_id = @acting_user_id OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = @acting_user_id
+        AND u.organization_id = @organization_id
+  )
 RETURNING *;
 
 -- DeleteSecret removes one secret, under the same two conditions.
@@ -228,8 +260,14 @@ RETURNING *;
 -- the delete reports success either way.
 --
 -- name: DeleteSecret :execrows
-DELETE FROM secrets
-WHERE organization_id = @organization_id
-  AND secret_id       = @secret_id
-  AND version         = @expected_version
-  AND (owner_user_id = @acting_user_id OR owner_user_id IS NULL);
+DELETE FROM secrets s
+WHERE s.organization_id = @organization_id
+  AND s.secret_id       = @secret_id
+  AND s.version         = @expected_version
+  AND (s.owner_user_id = @acting_user_id OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = @acting_user_id
+        AND u.organization_id = @organization_id
+  )
+;

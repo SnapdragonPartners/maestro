@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -280,6 +281,139 @@ var namedTruncations = map[string]string{
 	"TruncateToolCalls":      "tool_calls",
 	"TruncateLLMCalls":       "llm_calls",
 	"TruncateAttachments":    "binary_attachments",
+}
+
+// versionedTables are mutable by design and carry optimistic concurrency
+// (item 7, D1 and D5). They belong to none of the categories above: they are
+// not born final, and they have no lifecycle status, so nothing else in this
+// file would have looked at them at all — a generic `UPDATE secrets SET …`
+// or an unguarded DELETE would have passed every rule here.
+var versionedTables = []string{"configuration_records", "secrets"}
+
+// namedVersionedMutations maps each permitted UPDATE or DELETE to the ONE
+// table it may touch, on the same reasoning as namedTruncations: the names
+// are not interchangeable, and a statement pointed at the other table would
+// apply the wrong ownership rules while passing a name-only check.
+var namedVersionedMutations = map[string]string{
+	"UpdateConfigurationRecord": "configuration_records",
+	"DeleteConfigurationRecord": "configuration_records",
+	"ReplaceSecret":             "secrets",
+	"DeleteSecret":              "secrets",
+}
+
+// versionedSetColumns are the ONLY columns these updates may assign.
+//
+// The exclusions carry the rule. `owner_user_id`, `name`, `scope_type` and
+// the scope columns decide WHO MAY READ a secret and what it is for, so a
+// statement that could rewrite them would retarget a live credential — and
+// while the envelope's authenticated data makes such a row fail to decrypt,
+// a defence that turns a working secret into an unreadable one is a
+// backstop, not a reason to allow the statement.
+var versionedSetColumns = map[string]bool{
+	"value": true, "scheme": true, "nonce": true, "ciphertext": true,
+	"version": true, "updated_at": true,
+}
+
+var (
+	expectedVersionGuard = regexp.MustCompile(`(?i)version\s*=\s*@expected_version`)
+	ownershipGuard       = regexp.MustCompile(`(?i)owner_user_id\s*=\s*@acting_user_id`)
+	membershipGuard      = regexp.MustCompile(`(?is)EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+users`)
+)
+
+// TestVersionedTablesAreMutatedOnlyUnderTheirGuards is the rule that would
+// otherwise be a convention: every mutation of these tables is named, touches
+// one table, assigns only its own columns, and carries the guards that make
+// it safe.
+//
+// Without it "the structural tests pass" says nothing about these families,
+// because no other rule in this file mentions them.
+func TestVersionedTablesAreMutatedOnlyUnderTheirGuards(t *testing.T) {
+	var checked int
+	for _, stmt := range loadStatements(t) {
+		table := writeTarget(stmt.sql)
+		if !slices.Contains(versionedTables, table) {
+			continue
+		}
+		upper := strings.ToUpper(stmt.sql)
+		isUpdate := strings.Contains(upper, "UPDATE ")
+		isDelete := deleteTarget(stmt.sql) == table
+		if !isUpdate && !isDelete {
+			continue // an INSERT, covered by its own rules below
+		}
+		checked++
+
+		target, permitted := namedVersionedMutations[stmt.name]
+		if !permitted {
+			t.Errorf("%s: %q mutates %s but is not a named mutation. These tables carry optimistic "+
+				"concurrency and, for secrets, ownership — a statement outside this list has neither "+
+				"unless somebody remembered, which is what this rule replaces.",
+				stmt.file, stmt.name, table)
+			continue
+		}
+		if target != table {
+			t.Errorf("%s: %q is the mutation for %s but touches %s; the names carry different "+
+				"ownership rules and are not interchangeable", stmt.file, stmt.name, target, table)
+		}
+
+		where := between(stmt.sql, upper, "WHERE", ";")
+		if !expectedVersionGuard.MatchString(where) {
+			t.Errorf("%s: %q mutates %s without `version = @expected_version` in its WHERE. "+
+				"ADR 0027 forbids resolving concurrent writes to shared state by last-writer-wins, "+
+				"and an unconditional delete erases a rotation committed a moment earlier while "+
+				"reporting success.", stmt.file, stmt.name, table)
+		}
+
+		if table == "secrets" {
+			if !ownershipGuard.MatchString(where) {
+				t.Errorf("%s: %q mutates secrets without the acting-user predicate. Enforcing "+
+					"ownership on reads alone leaves an access model where one user cannot SEE "+
+					"another's credential but can freely destroy it.", stmt.file, stmt.name)
+			}
+			if !membershipGuard.MatchString(where) {
+				t.Errorf("%s: %q mutates secrets without checking the acting user's membership. "+
+					"A shared secret has a NULL owner, so the ownership predicate alone is "+
+					"satisfied by ANY acting id — including a user of another organization.",
+					stmt.file, stmt.name)
+			}
+		}
+
+		if isUpdate {
+			for _, assigned := range assignedColumns(between(stmt.sql, upper, "SET", "WHERE")) {
+				if !versionedSetColumns[assigned] {
+					t.Errorf("%s: %q assigns %s on %s. Ownership, name and scope decide who may "+
+						"read a secret and what it is for; a statement able to rewrite them "+
+						"retargets a live credential.", stmt.file, stmt.name, assigned, table)
+				}
+			}
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no mutation of a versioned table was found, so this test enforced nothing")
+	}
+}
+
+// TestSecretReadsCarryBothOwnershipGuards covers the read side of the same
+// hole. The ownership predicate admits shared rows by design, so on its own
+// it is satisfied by any acting id at all — the membership check is what
+// binds that id to the organization being read.
+func TestSecretReadsCarryBothOwnershipGuards(t *testing.T) {
+	var checked int
+	for _, stmt := range loadStatements(t) {
+		upper := strings.ToUpper(stmt.sql)
+		if !strings.Contains(upper, "FROM SECRETS") || !ownershipGuard.MatchString(stmt.sql) {
+			continue
+		}
+		checked++
+		if !membershipGuard.MatchString(stmt.sql) {
+			t.Errorf("%s: %q filters secrets by acting user without checking that user's "+
+				"membership; `owner_user_id IS NULL` then matches for a caller from any "+
+				"organization", stmt.file, stmt.name)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no ownership-filtered read of secrets was found, so this test enforced nothing")
+	}
 }
 
 // TestCallsAreCreatedOpenAndCompletedOnce enforces the call family's

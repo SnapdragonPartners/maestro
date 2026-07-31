@@ -85,10 +85,15 @@ INSERT INTO secrets (
     secret_id, organization_id, name, owner_user_id, scope_type,
     scope_organization_id, scope_product_id, scope_repository_id,
     scheme, nonce, ciphertext
-) VALUES (
+)
+SELECT
     $1, $2, $3, $4, $5,
     $6, $7, $8,
     $9, $10, $11
+WHERE EXISTS (
+    SELECT 1 FROM users u
+    WHERE u.user_id = $12
+      AND u.organization_id = $2
 )
 RETURNING secret_id, organization_id, name, owner_user_id, scope_type, scope_organization_id, scope_product_id, scope_repository_id, scope_id, scheme, nonce, ciphertext, version, created_at, updated_at
 `
@@ -105,6 +110,7 @@ type CreateSecretParams struct {
 	Scheme              string
 	Nonce               []byte
 	Ciphertext          []byte
+	ActingUserID        pgtype.UUID
 }
 
 // --- secrets vault ----------------------------------------------------
@@ -115,6 +121,17 @@ type CreateSecretParams struct {
 // owner the caller supplies is an owner the caller can lie about, and the
 // partial unique index means a secret created as somebody else occupies
 // their slot.
+//
+// The acting user's MEMBERSHIP is checked here too, and shared creation is
+// why. An individual secret is tenant-bound already, because owner_user_id
+// carries the composite foreign key to (user_id, organization_id) — but a
+// shared secret has a NULL owner, so nothing about the row mentions the
+// caller at all. Without this, a caller could create a shared secret in any
+// organization whose id it could name.
+//
+// INSERT ... SELECT rather than VALUES, so the check is part of the write:
+// no rows inserted when the acting user is not a member, which the seam maps
+// to a typed refusal.
 func (q *Queries) CreateSecret(ctx context.Context, arg CreateSecretParams) (Secret, error) {
 	row := q.db.QueryRow(ctx, createSecret,
 		arg.SecretID,
@@ -128,6 +145,7 @@ func (q *Queries) CreateSecret(ctx context.Context, arg CreateSecretParams) (Sec
 		arg.Scheme,
 		arg.Nonce,
 		arg.Ciphertext,
+		arg.ActingUserID,
 	)
 	var i Secret
 	err := row.Scan(
@@ -181,11 +199,16 @@ func (q *Queries) DeleteConfigurationRecord(ctx context.Context, arg DeleteConfi
 }
 
 const deleteSecret = `-- name: DeleteSecret :execrows
-DELETE FROM secrets
-WHERE organization_id = $1
-  AND secret_id       = $2
-  AND version         = $3
-  AND (owner_user_id = $4 OR owner_user_id IS NULL)
+DELETE FROM secrets s
+WHERE s.organization_id = $1
+  AND s.secret_id       = $2
+  AND s.version         = $3
+  AND (s.owner_user_id = $4 OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = $4
+        AND u.organization_id = $1
+  )
 `
 
 type DeleteSecretParams struct {
@@ -251,10 +274,15 @@ func (q *Queries) GetConfigurationRecord(ctx context.Context, arg GetConfigurati
 }
 
 const getSecret = `-- name: GetSecret :one
-SELECT secret_id, organization_id, name, owner_user_id, scope_type, scope_organization_id, scope_product_id, scope_repository_id, scope_id, scheme, nonce, ciphertext, version, created_at, updated_at FROM secrets
-WHERE organization_id = $1
-  AND secret_id       = $2
-  AND (owner_user_id = $3 OR owner_user_id IS NULL)
+SELECT s.secret_id, s.organization_id, s.name, s.owner_user_id, s.scope_type, s.scope_organization_id, s.scope_product_id, s.scope_repository_id, s.scope_id, s.scheme, s.nonce, s.ciphertext, s.version, s.created_at, s.updated_at FROM secrets s
+WHERE s.organization_id = $1
+  AND s.secret_id       = $2
+  AND (s.owner_user_id = $3 OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = $3
+        AND u.organization_id = $1
+  )
 `
 
 type GetSecretParams struct {
@@ -294,16 +322,21 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 }
 
 const replaceSecret = `-- name: ReplaceSecret :one
-UPDATE secrets
+UPDATE secrets s
 SET scheme     = $1,
     nonce      = $2,
     ciphertext = $3,
-    version    = version + 1,
+    version    = s.version + 1,
     updated_at = now()
-WHERE organization_id = $4
-  AND secret_id       = $5
-  AND version         = $6
-  AND (owner_user_id = $7 OR owner_user_id IS NULL)
+WHERE s.organization_id = $4
+  AND s.secret_id       = $5
+  AND s.version         = $6
+  AND (s.owner_user_id = $7 OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = $7
+        AND u.organization_id = $4
+  )
 RETURNING secret_id, organization_id, name, owner_user_id, scope_type, scope_organization_id, scope_product_id, scope_repository_id, scope_id, scheme, nonce, ciphertext, version, created_at, updated_at
 `
 
@@ -441,6 +474,11 @@ FROM secrets s, lineage l
 WHERE s.organization_id = $1
   AND s.name = $2
   AND (s.owner_user_id = $3 OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = $3
+        AND u.organization_id = $1
+  )
   AND (
        (s.scope_type = 'repository'   AND s.scope_repository_id   = l.repository_id)
     OR (s.scope_type = 'product'      AND s.scope_product_id      = l.primary_product_id)
