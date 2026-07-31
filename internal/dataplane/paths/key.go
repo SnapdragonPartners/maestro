@@ -77,9 +77,9 @@ var ErrNoKey = errors.New("root-of-trust key file is not present")
 // would ever clean it up: the orphan would survive for the life of the
 // installation, in a backup, and in every copy of the data root.
 //
-// The sweep is therefore made durable even when the key itself is absent and
-// this returns ErrNoKey. An unsynced removal is a removal a crash can undo,
-// which would resurrect exactly the copy this just deleted.
+// The sweep makes its own removal durable, on every return path — see
+// sweepOrphanTemps. An unsynced removal is one a crash can undo, which would
+// resurrect exactly the copy it just deleted.
 func LoadKey(configRoot string) (key []byte, err error) {
 	path := filepath.Join(configRoot, KeyFileName)
 
@@ -102,13 +102,6 @@ func LoadKey(configRoot string) (key []byte, err error) {
 
 	if _, statErr := os.Stat(path); statErr != nil {
 		if os.IsNotExist(statErr) {
-			// The sweep above may have removed something, and this path
-			// returns without reaching returnDurable's sync — so make the
-			// removal durable here rather than leaving it to a caller that
-			// has just been told there is no key.
-			if syncErr := syncDir(configRoot); syncErr != nil {
-				return nil, syncErr
-			}
 			return nil, fmt.Errorf("%w: %s", ErrNoKey, path)
 		}
 		return nil, fmt.Errorf("stat key file %s: %w", path, statErr)
@@ -297,15 +290,40 @@ func discardTemp(name string, cause error) error {
 // sweepOrphanTemps removes temporary key files left behind by a creator
 // that died mid-protocol. It is only safe under the lock, where no live
 // creator can exist; the caller's directory sync makes the removals durable.
+// sweepOrphanTemps removes orphaned temporaries AND makes the removal
+// durable, as one operation.
+//
+// The two halves cannot be separated, and separating them is the mistake
+// this comment exists to prevent. A removal that is not synced is a removal
+// a crash can undo, so a caller that sweeps and then returns down any path
+// which does not sync has deleted a second copy of the key only until the
+// next power loss. Every later return path in both callers is such a path:
+// a stat that fails for a reason other than absence, a key file with the
+// wrong permissions, a malformed key.
+//
+// So the sync happens HERE, immediately, rather than being owed by whatever
+// the caller does next. It is skipped when nothing was removed, which is
+// every ordinary call — the cost falls only on the rare run that actually
+// found an orphan.
 func sweepOrphanTemps(dir string) error {
 	matches, err := filepath.Glob(filepath.Join(dir, tempPattern))
 	if err != nil {
 		return fmt.Errorf("scan for orphaned temporary key files in %s: %w", dir, err)
 	}
+	var removed int
 	for _, name := range matches {
-		if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove orphaned temporary key file %s: %w", name, err)
+		switch removeErr := os.Remove(name); {
+		case removeErr == nil:
+			removed++
+		case !errors.Is(removeErr, fs.ErrNotExist):
+			return fmt.Errorf("remove orphaned temporary key file %s: %w", name, removeErr)
 		}
+	}
+	if removed == 0 {
+		return nil
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("make the removal of %d orphaned temporary key file(s) durable: %w", removed, err)
 	}
 	return nil
 }

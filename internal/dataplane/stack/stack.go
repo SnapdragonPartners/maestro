@@ -127,6 +127,16 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 // first run.
 var ErrPlaneLocked = errors.New("data plane is locked: its root-of-trust key is not present")
 
+// ErrNoPlane reports an operation that needs a provisioned plane against a
+// data root where none exists.
+//
+// Distinct from ErrPlaneLocked because the two states need opposite actions.
+// A locked plane has data and is missing its key: the answer is to restore
+// the key, or run new-key recovery. An empty root has neither, and telling
+// its operator to "restore the original key" sends them looking for
+// something that was never created — the answer is to run `dataplane-up`.
+var ErrNoPlane = errors.New("no data plane has been provisioned")
+
 // lifecycle names the operation asking for key material.
 //
 // It is part of the decision rather than derived from the filesystem, because
@@ -180,29 +190,37 @@ func (l lifecycle) String() string {
 // the object store's credentials derive from the same key, so a plane holding
 // objects and no cluster is still a plane some earlier key provisioned.
 func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
+	fresh, err := dataRootIsEmpty(c)
+	if err != nil {
+		return nil, err
+	}
+
 	access := secret.LoadOnly
-	if operation == lifecycleUp {
-		fresh, err := dataRootIsEmpty(c)
-		if err != nil {
-			return nil, err
-		}
-		if fresh {
-			access = secret.MayCreate
-		}
+	if operation == lifecycleUp && fresh {
+		access = secret.MayCreate
 	}
 
 	key, keyErr := secret.KeyFile(c.Roots.Config, access).RootKey()
-	if keyErr != nil {
-		err := fmt.Errorf("read root-of-trust key for %s: %w", operation, keyErr)
-		if errors.Is(err, paths.ErrNoKey) {
-			return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials "+
-				"are derived from the original key, so a new one would open neither. Restore the "+
-				"key file beside the backup, or run the new-key recovery path: %w",
-				ErrPlaneLocked, operation, err)
-		}
-		return nil, err
+	if keyErr == nil {
+		return key, nil
 	}
-	return key, nil
+	wrapped := fmt.Errorf("read root-of-trust key for %s: %w", operation, keyErr)
+	if !errors.Is(wrapped, paths.ErrNoKey) {
+		return nil, wrapped
+	}
+
+	// Which refusal depends on what the data root holds, because the two
+	// states need opposite actions and the wrong advice sends an operator
+	// looking for a key that never existed.
+	if fresh {
+		return nil, fmt.Errorf("%w in %s, so %s has nothing to act on. Run `dataplane-up` first, "+
+			"which is the only operation that provisions one: %w",
+			ErrNoPlane, c.Roots.Data, operation, wrapped)
+	}
+	return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials are "+
+		"derived from the original key, so a new one would open neither. Restore the key file "+
+		"beside the backup, or run the new-key recovery path: %w",
+		ErrPlaneLocked, operation, wrapped)
 }
 
 // dataRootIsEmpty reports whether NO service has been provisioned yet.

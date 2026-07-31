@@ -131,8 +131,17 @@ func TestOnlyUpMayMintAKey(t *testing.T) {
 		cfg := planeAt(t) // empty data root: `up` would be allowed to create
 
 		_, err := rootKeyFor(cfg, operation)
-		if !errors.Is(err, ErrPlaneLocked) {
-			t.Fatalf("%s against an empty root returned %v, want ErrPlaneLocked", operation, err)
+		if !errors.Is(err, ErrNoPlane) {
+			t.Fatalf("%s against an empty root returned %v, want ErrNoPlane", operation, err)
+		}
+		// NOT a locked plane: there is no data and no original key, so
+		// advising a restore would send an operator after something that was
+		// never created.
+		if errors.Is(err, ErrPlaneLocked) {
+			t.Fatalf("%s reported an empty root as a locked plane: %v", operation, err)
+		}
+		if !strings.Contains(err.Error(), "dataplane-up") {
+			t.Fatalf("%s did not name the operation that would fix it: %v", operation, err)
 		}
 		if _, statErr := os.Stat(filepath.Join(cfg.Roots.Config, paths.KeyFileName)); !os.IsNotExist(statErr) {
 			t.Fatalf("%s created a key file", operation)
@@ -146,6 +155,25 @@ func TestOnlyUpMayMintAKey(t *testing.T) {
 		if _, err := rootKeyFor(cfg, operation); err != nil {
 			t.Fatalf("%s could not load an existing key: %v", operation, err)
 		}
+	}
+}
+
+// TestLockedPlaneIsNotAnEmptyOne is the other side: a populated root with no
+// key is recoverable, and its advice must be about the key rather than about
+// provisioning.
+func TestLockedPlaneIsNotAnEmptyOne(t *testing.T) {
+	cfg := planeAt(t)
+	populate(t, cfg, paths.ServicePostgres)
+
+	_, err := rootKeyFor(cfg, lifecycleMigrate)
+	if !errors.Is(err, ErrPlaneLocked) {
+		t.Fatalf("a populated root with no key returned %v, want ErrPlaneLocked", err)
+	}
+	if errors.Is(err, ErrNoPlane) {
+		t.Fatalf("a populated root was reported as unprovisioned: %v", err)
+	}
+	if strings.Contains(err.Error(), "dataplane-up") {
+		t.Fatalf("a locked plane was told to provision itself, which would not help: %v", err)
 	}
 }
 
