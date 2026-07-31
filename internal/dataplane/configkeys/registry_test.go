@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"testing"
 )
@@ -186,8 +187,19 @@ func TestTypedNilValidatorsWouldPanicIfAdmitted(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.schema == nil {
-				t.Fatal("this case is meant to hold a TYPED nil, which is never == nil")
+			// Asserted through reflect, not as `tc.schema == nil`. That
+			// comparison is the very thing under test: a typed nil is
+			// never equal to nil, so as a guard it can only ever pass.
+			// What matters is that the case holds a nil func or a nil
+			// pointer, and that is what is checked.
+			value := reflect.ValueOf(tc.schema)
+			switch value.Kind() {
+			case reflect.Func, reflect.Pointer:
+				if !value.IsNil() {
+					t.Fatalf("%T is not nil; this case no longer covers what it names", tc.schema)
+				}
+			default:
+				t.Fatalf("%T is not a typed nil; this case no longer covers what it names", tc.schema)
 			}
 			defer func() {
 				if recover() == nil {

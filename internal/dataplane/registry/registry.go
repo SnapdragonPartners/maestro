@@ -93,14 +93,14 @@ type Reference struct {
 // checked against itself. ADR 0028 binds the review digest over the whole
 // reviewable envelope including the payload, so a set derived from the
 // payload is a set the reviewer saw.
+//
+// Implementations carry the same obligations as Validator: safe for
+// concurrent use, and no retention or modification of the payload.
 type Extractor interface {
 	References(payload []byte) ([]Reference, error)
 }
 
 // ExtractorFunc adapts a function to Extractor.
-//
-// Implementations carry the same obligations as Validator: safe for
-// concurrent use, and no retention or modification of the payload.
 type ExtractorFunc func(payload []byte) ([]Reference, error)
 
 // References implements Extractor.
