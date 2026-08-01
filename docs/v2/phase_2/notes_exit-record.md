@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Exit Record (In Progress)"
-edit_date = "2026-07-27"
+edit_date = "2026-07-31"
 status = "draft"
 summary = "Running record of Phase 2: what each item delivered, exit-criteria status, decisions and what they cost, and the verification post-mortem behind CLAUDE.md's Verification Discipline. Accumulates as the phase runs; flips live at phase close."
 type = "notes"
@@ -21,7 +21,10 @@ The binding exit criteria live in the [Phase 2 plan](plan_scope.md). This record
 | 2 | `local-stack` | Merged `dcf4dd0` (#288) | Four-root path resolver, root-of-trust key, bootstrap pointer, per-service data directories, Compose stack (Postgres + MinIO), HKDF credentials, `dataplane-up/down/reset`, Linux CI job. |
 | 3 | `schema-core` | Merged (#289) | 10 migrations / 19 tables applied from empty, embedded migration runner, sqlc config with drift check, [table inventory](inventory_schema-tables.md). |
 | 4 | `queries-artifacts` | Merged `55ab7af` (#293) | The persistence seam and its Postgres module, JCS digests, RFC 7396 effective views, the code-resident type registry, and the artifact/review/principal query families. Design [`design_queries_artifacts.md`](design_queries_artifacts.md) live. |
-| 5–10 | — | Not started | Calls family, object module, config/secrets, backup, vertical slice, phase exit. |
+| 5 | `queries-calls` | Merged `6b66958` (#295) | The call family: per-table write invariants in SQL, the open-to-completed lifecycle behind a structurally enforced update surface, organization-scoped dependency-ordered truncation with a serialization-retry contract, bounded keyset reads, and an exact decimal type for cost. Design [`design_calls_family.md`](design_calls_family.md) live. |
+| 6 | `objects` | Merged `6d54487` (#297) | The object module: a blob adapter separated from the seam that owns pins, content proven by a local hash, the amended cross-store commit order with its expected evidence set extracted from the reviewed payload, pins mutable only while their holder is a draft, and reclamation. ADR 0022 amended. Design [`design_object_module.md`](design_object_module.md) live. |
+| 7 | `config-secrets` | Branch `v2/phase_2/config-secrets` | Configuration records under a governed key registry validated before write and resolved most-specific-wins along the org/product/repository lineage; the secrets vault with per-version keys, canonically-encoded AAD, the six-step ownership ladder, and a root-key provider distinct from the replaceable secrets store. Design [`design_config_secrets.md`](design_config_secrets.md) live. |
+| 8–10 | — | Not started | Backup, vertical slice, phase exit. |
 
 ## Exit criteria status
 
@@ -32,23 +35,20 @@ Nothing here is claimed complete that has not been demonstrated. Criteria not ye
 - **Artifact envelopes ADR Accepted before any DDL merged** — ADR 0028 merged in item 1; the first migration merges in item 3. Backlog candidate 1 moved to Resolved.
 - **Every table traces to an Accepted ADR and a Phase 2 consumer** — the [table inventory](inventory_schema-tables.md) is the checkable form: 19 tables with their ADR and consuming item, plus the eight families deliberately deferred and where they land.
 
-**Partially met**
-
-- **One command from a clean checkout** — `make dataplane-up` composes, health-gates, and migrates, proven on native Linux CI from cold. The criterion also names *typed queries*; the artifact, review and principal-instance families landed in item 4, and the **call family is item 5**, so this closes then rather than now.
-- **Migrations apply from empty** — done and CI-proven. The paired clause names typed queries with tests for the artifact, principal-instance **and call** families; the first two are item 4, the third is item 5.
-
-**Newly met**
-
-- **MinIO composed and bind-mounted; local durability invariant** — composed and bind-mounted under the data root since item 2, and now **demonstrated** rather than asserted. Evidence below.
+- **MinIO composed and bind-mounted; local durability invariant** — composed and bind-mounted under the data root since item 2, and **demonstrated** in item 5 rather than asserted. Evidence below.
+- **One command from a clean checkout** — `make dataplane-up` composes, health-gates, and migrates, proven on native Linux CI from cold. The criterion also names *typed queries*; the artifact, review and principal-instance families landed in item 4 and the call family in item 5, which closes it.
+- **Migrations apply from empty** — done and CI-proven, with typed queries and tests for the artifact, principal-instance and call families across items 4 and 5.
+- **Object module with its S3-compatible adapter** — item 6, behind the narrow interface, with the cross-store commit order enforced at the seam.
+- **Configuration and secrets families with typed queries, including the key-file root of trust** — item 7. Both families resolve along the lineage in one statement; the vault seals and opens at the seam under a required root-key provider, and the locked-plane path refuses before reading the key.
 
 **Not yet met (scheduled)**
 
-- Configuration and secrets families with typed queries → item 7.
 - Cold-backup operation and validated restore → item 8.
-- Object module with its S3-compatible adapter → item 6.
 - Vertical slice, including an object write with digest reference and retention pin exercising the commit-order invariant, and idempotent re-import → item 9.
 - Phase-end `golden-all` regression run, imported and distilled into the conformance log → item 10.
 - Backlog reconciliation, and confirming the Phase 3-blocking entries → item 10.
+
+Item 7's criterion is recorded as met on the strength of a branch that is reviewed but **not yet merged**; it converts to a merge reference when the PR lands, and if anything changes in review this entry moves back.
 
 ## Durability demonstration
 
@@ -109,6 +109,18 @@ The evidence behind [`CLAUDE.md`'s Verification Discipline](../../../CLAUDE.md).
 
 **The same rule applied in one place and not the adjacent one.** `Roots.Ensure` gained a permission check while `EnsureServiceDataDirs` did not. Organization lineage was added without user lineage. A foreign key was removed with nothing put in its place. Understanding that `git diff` ignores untracked files — and using that knowledge to fix the *test harness* — did not carry to the *assertion the harness was testing*.
 
+**Tests whose selector was the property they checked.** Item 7 produced five, and they share one cause: the guard and its test were written together, so the test inherited the guard's blind spot. An AAD test that moved a ciphertext to another row — which fails on the derived key before authentication is reached, so it would have passed with no AAD at all. A creation-ownership test that never supplied an owner, and so could not discover that supplying one was possible. A `validator == nil` guard in a test, asserting the very thing under test: a typed nil is never equal to nil, so as a guard it could only ever pass. `staticcheck` caught one instance of that (SA4023) and not its twin one file away, because the twin read from a table field it could not fold — so the linter's silence was about provability, not correctness. The rule that came out of it: **write the allow-list, not the filter, and mutation-verify by deleting the thing the test selects on.**
+
+**Coverage that stopped one statement short.** The vault's ownership filter exists in two separate SQL statements — the identity read and the ladder — and every ownership test went through the first. Weakening the *ladder's* individual-ownership branch to a tautology left the whole suite green, and the consequence is not subtle: a caller would resolve another user's personal token and use it, with the level and ownership reported back looking entirely ordinary. Found by mutation, not by review or by reading. A predicate duplicated across statements needs a test per statement; one test proves one statement.
+
+**A defect with no behavioural signature at all.** Configuration ids were UUIDv4 where the schema requires v7. Reverting the fix passed the entire integration suite, because a v4 id is indistinguishable from a v7 in every test that only checks what the seam returns. It reached review because nothing could have caught it. The response is the same as for the untestable guarantees below — assert the property directly, or accept that it is uncovered no matter how green the suite is.
+
+**Mutation harnesses that lied.** Four hollow results in one session: mutants that did not compile reported as kills, anchors counted with `grep -c` (which counts matching *lines*, not occurrences of a multi-line pattern) reported as "not applied", and — the expensive one — a harness killed by a timeout mid-restore, leaving the working tree mutated and a later green run meaningless. The rules that came out: **assert the anchor matched exactly once, assert the mutant compiled, and verify the restore against `HEAD` before believing anything that follows.**
+
+**A test that deadlocked instead of failing.** A row-lock test parked a goroutine inside a validator to hold a lock open; on the failure path that goroutine still held a pooled connection, and `pgxpool.Close` blocks until every connection is returned, so the fixture's cleanup hung and took the package with it. The mutation did not report — it stopped. Any test that blocks a real connection needs its release wired to `t.Cleanup` before it is ever run in anger.
+
+**A guard catching its own author.** Item 7 added a structure test forbidding any function but `rootKeyFor` from reaching `secret.KeyFile`, because only that function knows whether an operation may *create* key material. Later in the same item, making the root-key provider a required dependency broke ten call sites, and the fix for one of them constructed a second `KeyFile` — remaking that decision outside the one place allowed to make it. The test refused it. Worth recording because the defect it prevented is invisible locally: it passes on every machine whose key already exists, which is every machine that has run `up` once.
+
 **Guarantees that cannot be tested.** Three key-file durability defects were green the entire time, because `fsync` ordering and crash windows are not reproducible in a unit test. Review caught all three. The response is not more tests but stating the boundary beside the code, so adjacent passing tests stop implying coverage.
 
 **One P0.** A down-migration test ran against the canonical `maestro` database and dropped every table in it — written by copying a file through `/tmp` without asking which database it pointed at. Now behind a disposable-database harness, which itself leaked a database on first run because a deferred close ran before `t.Cleanup`.
@@ -118,6 +130,10 @@ The evidence behind [`CLAUDE.md`'s Verification Discipline](../../../CLAUDE.md).
 Across item 3 and item 4 the implementation converged quickly and the *evidence* took the rounds. There were real implementation defects — the scope model took three wrong shapes, a down-migration test dropped every table in the canonical database, several fixes introduced new defects. But those were found. The pattern that kept recurring, and kept surviving review until someone looked twice, was different:
 
 **The recurring meta-defect was evidence that failed to discriminate correct from incorrect behaviour.**
+
+Items 5 through 7 did not change that diagnosis; they sharpened it. The implementation defects that reached review in item 7 were real but ordinary — a validate-before-classify ordering, a read that classified against an unlocked row, two write verbs disagreeing about the same state. What kept surviving was again the evidence: a suite that was green against a v4 identifier, against a tautological ownership filter, and against a race test that forced no race. Every one of those was found by asking *what would this test do if the code were wrong* rather than by reading the code again.
+
+The practical consequence for later phases is that **mutation testing stopped being a finishing step and became the thing that finds the gaps.** Three of item 7's findings were coverage holes rather than code defects, and none of them would have been found any other way — which also means the harness doing the mutating is load-bearing, and a harness that reports a kill it did not earn is worse than none.
 
 Its forms, all seen in this phase: assertions that could not fail; a drift check blind to untracked files; a mutation check whose mutant did not compile, so the build failure was counted as "no surviving mutants"; a mutant that died for the wrong reason, certifying a test that was itself a false positive; and a backstop unreachable through any normal call path, so removing it left the suite green.
 

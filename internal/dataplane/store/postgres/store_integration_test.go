@@ -22,6 +22,7 @@ import (
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
+	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/stack"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
@@ -158,6 +159,24 @@ type fixture struct {
 	product uuid.UUID
 	feature uuid.UUID
 	epic    uuid.UUID
+	// repository is the leaf of ADR 0018's ownership chain, which the
+	// configuration and secret families resolve along.
+	repository uuid.UUID
+
+	// rootKey is a REAL file-backed provider over a temp config root, not a
+	// stub. It is required at construction now, and every suite gets one so
+	// that a store built here behaves like a store built in production.
+	rootKey secret.RootKeyProvider
+}
+
+// testRootKey builds a file-backed provider over a throwaway config root.
+//
+// MayCreate because the root is empty and this IS first-time setup for it;
+// the LoadOnly half of design D4's rule is exercised by the paths suite,
+// which owns that decision.
+func testRootKey(t *testing.T) secret.RootKeyProvider {
+	t.Helper()
+	return secret.KeyFile(t.TempDir(), secret.MayCreate)
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -172,13 +191,15 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(pool.Close)
 
 	blob, blobConfig := disposableBlob(t)
-	built, err := postgres.New(pool, testRegistry(t), blob)
+	rootKey := testRootKey(t)
+	built, err := postgres.New(pool, testRegistry(t), blob, rootKey)
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
 
 	f := &fixture{
 		store:          built,
+		rootKey:        rootKey,
 		blob:           blob,
 		blobConfig:     blobConfig,
 		pool:           pool,
@@ -297,7 +318,7 @@ func (f *fixture) seedLineage(t *testing.T) uuid.UUID {
 		t.Fatalf("commit lineage: %v", err)
 	}
 
-	f.product, f.feature, f.epic = product, feature, epic
+	f.product, f.feature, f.epic, f.repository = product, feature, epic, repository
 	return story
 }
 
@@ -796,7 +817,7 @@ func TestAmendmentInheritsVersionFromTheOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("advanced registry: %v", err)
 	}
-	advancedStore, err := postgres.New(f.pool, advanced, f.blob)
+	advancedStore, err := postgres.New(f.pool, advanced, f.blob, f.rootKey)
 	if err != nil {
 		t.Fatalf("advanced store: %v", err)
 	}

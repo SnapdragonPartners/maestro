@@ -3,11 +3,59 @@ package registry
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func passing() Validator { return ValidatorFunc(func([]byte) error { return nil }) }
+
+// derefValidator and derefExtractor dereference their receivers, so a
+// typed-nil one panics when called. They are what makes a typed-nil
+// registration a crash at the seam rather than a curiosity.
+type derefValidator struct{ err error }
+
+func (v *derefValidator) Validate([]byte) error { return v.err }
+
+type derefExtractor struct{ refs []Reference }
+
+func (e *derefExtractor) References([]byte) ([]Reference, error) { return e.refs, nil }
+
+// TestTypedNilRegistrationsWouldPanicIfAdmitted proves the consequence the
+// construction guards prevent, rather than asserting it in a comment.
+func TestTypedNilRegistrationsWouldPanicIfAdmitted(t *testing.T) {
+	var validator Validator = (*derefValidator)(nil)
+	var extractor Extractor = (*derefExtractor)(nil)
+
+	// Asserted through reflect rather than as `validator == nil`. That
+	// comparison is a tautology staticcheck can fold away (SA4023): it is
+	// never true, which is the very thing under test, so as a guard it
+	// proves nothing while looking like it does. What matters is that each
+	// interface holds a nil POINTER, and that is what is checked.
+	for _, held := range []any{validator, extractor} {
+		value := reflect.ValueOf(held)
+		if value.Kind() != reflect.Pointer || !value.IsNil() {
+			t.Fatalf("%T is not a typed-nil pointer; this test no longer covers the case it names", held)
+		}
+	}
+
+	t.Run("validator", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("calling the typed-nil validator did not panic")
+			}
+		}()
+		_ = validator.Validate(nil)
+	})
+	t.Run("extractor", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Error("calling the typed-nil extractor did not panic")
+			}
+		}()
+		_, _ = extractor.References(nil)
+	})
+}
 
 func validEntries() map[Type]Entry {
 	return map[Type]Entry{
@@ -54,6 +102,37 @@ func TestNewRejectsMalformedRegistrations(t *testing.T) {
 			name:    "nil validator",
 			entries: map[Type]Entry{"x": {Category: CategoryAudit, CurrentVersion: 1, Validators: map[int]Validator{1: nil}}},
 			want:    "nil validator",
+		},
+		{
+			// Not equal to nil -- the interface carries a type -- so a
+			// `== nil` guard admits it and the panic lands on the first
+			// artifact written at this version.
+			name:    "typed-nil ValidatorFunc",
+			entries: map[Type]Entry{"x": {Category: CategoryAudit, CurrentVersion: 1, Validators: map[int]Validator{1: ValidatorFunc(nil)}}},
+			want:    "nil validator",
+		},
+		{
+			name:    "typed-nil validator pointer",
+			entries: map[Type]Entry{"x": {Category: CategoryAudit, CurrentVersion: 1, Validators: map[int]Validator{1: (*derefValidator)(nil)}}},
+			want:    "nil validator",
+		},
+		{
+			name: "typed-nil ExtractorFunc",
+			entries: map[Type]Entry{"x": {
+				Category: CategoryAudit, CurrentVersion: 1,
+				Validators: map[int]Validator{1: passing()},
+				Extractors: map[int]Extractor{1: ExtractorFunc(nil)},
+			}},
+			want: "nil extractor",
+		},
+		{
+			name: "typed-nil extractor pointer",
+			entries: map[Type]Entry{"x": {
+				Category: CategoryAudit, CurrentVersion: 1,
+				Validators: map[int]Validator{1: passing()},
+				Extractors: map[int]Extractor{1: (*derefExtractor)(nil)},
+			}},
+			want: "nil extractor",
 		},
 		{
 			name:    "validator for version zero",

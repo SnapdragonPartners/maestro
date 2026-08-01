@@ -99,7 +99,7 @@ func (s *Store) truncateOnce(ctx context.Context, organizationID uuid.UUID, befo
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	handle := &tx{queries: s.queries.WithTx(pgxTx), registry: s.registry}
+	handle := &tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, rootKey: s.rootKey}
 	result, err := handle.TruncateAuditBefore(ctx, organizationID, before)
 	if err != nil {
 		return store.TruncationResult{}, err

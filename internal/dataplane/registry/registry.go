@@ -30,6 +30,8 @@ import (
 	"sort"
 
 	"github.com/google/uuid"
+
+	"orchestrator/internal/dataplane/nilcheck"
 )
 
 // Type is an artifact type drawn from ADR 0021's governed vocabulary.
@@ -58,6 +60,12 @@ var (
 
 // Validator checks that a payload is a valid instance of one version of one
 // artifact type's schema.
+//
+// Implementations must be safe for concurrent use and must not retain or
+// modify the payload they are given. New freezes the registrations, but it
+// cannot freeze what is behind this interface: one Validator is shared by
+// every artifact of its type and version, and the seam calls it from
+// whatever goroutine is serving the request.
 type Validator interface {
 	Validate(payload []byte) error
 }
@@ -85,6 +93,9 @@ type Reference struct {
 // checked against itself. ADR 0028 binds the review digest over the whole
 // reviewable envelope including the payload, so a set derived from the
 // payload is a set the reviewer saw.
+//
+// Implementations carry the same obligations as Validator: safe for
+// concurrent use, and no retention or modification of the payload.
 type Extractor interface {
 	References(payload []byte) ([]Reference, error)
 }
@@ -187,9 +198,14 @@ func checkEntry(artifactType Type, entry Entry) error {
 			return fmt.Errorf("registry: type %q has a validator for version %d, want 1..%d",
 				artifactType, version, math.MaxInt32)
 		}
-		if validator == nil {
-			return fmt.Errorf("registry: type %q has a nil validator for version %d",
-				artifactType, version)
+		// nilcheck.IsNil, not `validator == nil`: an interface holding a
+		// typed nil -- ValidatorFunc(nil), or a nil pointer whose type has
+		// the method -- is not equal to nil, so the plain comparison admits
+		// it and the panic lands on the first artifact written at that
+		// version instead of here at construction.
+		if nilcheck.IsNil(validator) {
+			return fmt.Errorf("registry: type %q has a nil validator for version %d "+
+				"(a nil value, or an interface holding a typed nil)", artifactType, version)
 		}
 	}
 	if err := checkExtractors(artifactType, entry); err != nil {
@@ -211,9 +227,9 @@ func checkEntry(artifactType Type, entry Entry) error {
 // type either registers them for all its readable versions or for none.
 func checkExtractors(artifactType Type, entry Entry) error {
 	for version, extractor := range entry.Extractors {
-		if extractor == nil {
-			return fmt.Errorf("registry: type %q has a nil extractor for version %d",
-				artifactType, version)
+		if nilcheck.IsNil(extractor) {
+			return fmt.Errorf("registry: type %q has a nil extractor for version %d "+
+				"(a nil value, or an interface holding a typed nil)", artifactType, version)
 		}
 		// An extractor for a version nothing can read is one that will
 		// never run, and its absence at the versions that ARE readable

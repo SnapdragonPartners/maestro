@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -105,7 +107,9 @@ func (s *Store) StopPrincipalInstance(ctx context.Context, organizationID, insta
 
 // direct returns a handle bound to the POOL rather than to a transaction.
 // Every statement it issues autocommits on its own.
-func (s *Store) direct() *tx { return &tx{queries: s.queries, registry: s.registry} }
+func (s *Store) direct() *tx {
+	return &tx{queries: s.queries, registry: s.registry, keys: s.keys, rootKey: s.rootKey}
+}
 
 // GetManagementArtifact reads one Management artifact.
 func (s *Store) GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*store.ManagementArtifact, error) {
@@ -298,4 +302,124 @@ func (s *Store) AggregateCost(ctx context.Context, organizationID uuid.UUID, pro
 	from, to time.Time,
 ) (store.CostAggregate, error) {
 	return s.direct().AggregateCost(ctx, organizationID, provider, model, from, to)
+}
+
+// The configuration family, reached through the seam (item 7, design D1).
+//
+// Resolution, the identity read and creation are single statements and go
+// DIRECT, matching the rule design D7 set for the call family: one
+// statement already has the guarantee a transaction would add, and wrapping
+// it buys two round trips and nothing else.
+//
+// Update and delete take one, because both are read-then-conditionally-write:
+// the update reads the row to learn the key its new value must validate
+// against, and the delete reads it to tell a version conflict from a missing
+// record. Split across two transactions, either could classify against a row
+// that no longer exists by the time the write runs.
+
+// ResolveConfiguration returns the most specific record for a repository.
+func (s *Store) ResolveConfiguration(
+	ctx context.Context, organizationID, repositoryID uuid.UUID, key configkeys.Key,
+) (*store.ConfigurationRecord, error) {
+	return s.direct().ResolveConfiguration(ctx, organizationID, repositoryID, key)
+}
+
+// GetConfigurationRecord reads one record by identity.
+func (s *Store) GetConfigurationRecord(
+	ctx context.Context, organizationID, recordID uuid.UUID,
+) (*store.ConfigurationRecord, error) {
+	return s.direct().GetConfigurationRecord(ctx, organizationID, recordID)
+}
+
+// CreateConfigurationRecord validates against the key registry, then writes.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateConfigurationRecord(
+	ctx context.Context, input store.CreateConfigurationRecordInput,
+) (*store.ConfigurationRecord, error) {
+	return s.direct().CreateConfigurationRecord(ctx, input)
+}
+
+// UpdateConfigurationRecord replaces a value under its expected version.
+func (s *Store) UpdateConfigurationRecord(
+	ctx context.Context, organizationID, recordID uuid.UUID, expectedVersion int, value json.RawMessage,
+) (*store.ConfigurationRecord, error) {
+	return inTx(ctx, s, func(t *tx) (*store.ConfigurationRecord, error) {
+		return t.UpdateConfigurationRecord(ctx, organizationID, recordID, expectedVersion, value)
+	})
+}
+
+// DeleteConfigurationRecord removes an override under its expected version.
+func (s *Store) DeleteConfigurationRecord(
+	ctx context.Context, organizationID, recordID uuid.UUID, expectedVersion int,
+) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.DeleteConfigurationRecord(ctx, organizationID, recordID, expectedVersion)
+	})
+	return err
+}
+
+// The secrets vault, reached through the seam (item 7, design D5).
+//
+// All six go DIRECT. Five are one statement plus in-process sealing or
+// opening. Replacement is a read and then a conditional update, which would
+// normally argue for a transaction — but the configuration family's
+// lock-and-classify pattern does not apply here: every field replacement
+// reads is immutable, so the read cannot go stale, and both mutations
+// deliberately collapse "moved" and "not yours" into one answer rather than
+// classifying between them. See the note on ReplaceSecret for why the
+// immutability holds and what enforces it.
+
+// CreateIndividualSecret writes a credential owned by the acting user.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateIndividualSecret(
+	ctx context.Context, input store.CreateSecretInput,
+) (*store.Secret, error) {
+	return s.direct().CreateIndividualSecret(ctx, input)
+}
+
+// CreateSharedSecret writes a credential held in common at its scope.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateSharedSecret(
+	ctx context.Context, input store.CreateSecretInput,
+) (*store.Secret, error) {
+	return s.direct().CreateSharedSecret(ctx, input)
+}
+
+// ResolveSecret walks the six-step ladder for a repository.
+func (s *Store) ResolveSecret(
+	ctx context.Context, organizationID, repositoryID, actingUserID uuid.UUID, name string,
+) (*store.Secret, error) {
+	return s.direct().ResolveSecret(ctx, organizationID, repositoryID, actingUserID, name)
+}
+
+// GetSecret reads one secret by identity.
+func (s *Store) GetSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
+) (*store.Secret, error) {
+	return s.direct().GetSecret(ctx, organizationID, secretID, actingUserID)
+}
+
+// RevealSecret decrypts one secret's plaintext.
+func (s *Store) RevealSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
+) (secret.Value, error) {
+	return s.direct().RevealSecret(ctx, organizationID, secretID, actingUserID)
+}
+
+// ReplaceSecret rotates a credential in place.
+func (s *Store) ReplaceSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,
+	expectedVersion int, plaintext secret.Value,
+) (*store.Secret, error) {
+	return s.direct().ReplaceSecret(ctx, organizationID, secretID, actingUserID, expectedVersion, plaintext)
+}
+
+// DeleteSecret removes a credential under its expected version.
+func (s *Store) DeleteSecret(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, expectedVersion int,
+) error {
+	return s.direct().DeleteSecret(ctx, organizationID, secretID, actingUserID, expectedVersion)
 }

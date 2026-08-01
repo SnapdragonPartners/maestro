@@ -87,9 +87,9 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 		return fmt.Errorf("prepare service data directories: %w", err)
 	}
 
-	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	rootKey, keyErr := rootKeyFor(c, lifecycleUp)
 	if keyErr != nil {
-		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+		return keyErr
 	}
 	if bootErr := paths.WriteBootstrap(c.Roots.Config, c.Bootstrap()); bootErr != nil {
 		return fmt.Errorf("write bootstrap pointer: %w", bootErr)
@@ -116,6 +116,145 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	// they apply, and before `up` reports a ready plane, because a surviving
 	// claim is unfinished destructive work.
 	return reconcileClaims(ctx, c, rootKey, blob)
+}
+
+// ErrPlaneLocked reports a data root that already holds a plane whose
+// root-of-trust key is absent.
+//
+// It is the observable restore state item 8 builds on: refuse, supply the
+// original key, open. A bare "file not found" would make that sequence
+// untestable as a sequence, because nothing would distinguish it from a
+// first run.
+var ErrPlaneLocked = errors.New("data plane is locked: its root-of-trust key is not present")
+
+// ErrNoPlane reports an operation that needs a provisioned plane against a
+// data root where none exists.
+//
+// Distinct from ErrPlaneLocked because the two states need opposite actions.
+// A locked plane has data and is missing its key: the answer is to restore
+// the key, or run new-key recovery. An empty root has neither, and telling
+// its operator to "restore the original key" sends them looking for
+// something that was never created — the answer is to run `dataplane-up`.
+var ErrNoPlane = errors.New("no data plane has been provisioned")
+
+// lifecycle names the operation asking for key material.
+//
+// It is part of the decision rather than derived from the filesystem, because
+// emptiness alone answers the wrong question. An empty data root means "no
+// plane has been provisioned"; it does not mean "this operation is the one
+// that provisions it". `migrate` against an empty root is not setup — it is
+// a migration of a plane that does not exist yet, and minting a key for it
+// leaves a key file that the eventual `up` will silently adopt.
+type lifecycle int
+
+const (
+	// lifecycleUp is the only operation that may create key material, and
+	// only then against an empty data root.
+	lifecycleUp lifecycle = iota
+	lifecycleMigrate
+	lifecycleForceVersion
+)
+
+func (l lifecycle) String() string {
+	switch l {
+	case lifecycleUp:
+		return "up"
+	case lifecycleMigrate:
+		return "migrate"
+	case lifecycleForceVersion:
+		return "force-version"
+	default:
+		return "unknown"
+	}
+}
+
+// rootKeyFor is the ONE place that decides whether a lifecycle operation may
+// create key material (item 7, D4).
+//
+// The root key derives the Postgres password and the object-store
+// credentials as well as the vault's key material, so minting a new one over
+// an existing data root produces a password the cluster does not know. The
+// authenticated healthcheck then fails, waitReady times out, and `up`
+// reports "data plane did not become ready" three minutes later — a correct
+// refusal reached by accident, naming nothing an operator can act on.
+//
+// TWO conditions, and both are necessary. The operation must be `up`, which
+// is the only one that provisions a plane; and the data root must be empty,
+// so `up` on an existing plane loads rather than replaces. Emptiness alone
+// would let `migrate` or `force-version` mint against a fresh root, which the
+// accepted design forbids for a reason worth stating: neither creates a
+// plane, so a key either of them generated would belong to nothing until an
+// `up` adopted it silently.
+//
+// Emptiness is judged across every service data directory, not just Postgres:
+// the object store's credentials derive from the same key, so a plane holding
+// objects and no cluster is still a plane some earlier key provisioned.
+func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
+	fresh, err := dataRootIsEmpty(c)
+	if err != nil {
+		return nil, err
+	}
+
+	// A non-provisioning operation against an empty root refuses HERE, before
+	// the key is even read, because the presence of a key does not mean a
+	// plane exists. An `up` that died after minting the key and before initdb
+	// leaves exactly that state: a key file beside an empty data root. Reading
+	// it and proceeding would let `migrate` run against a plane that was never
+	// created, and the error it eventually produced would be about the schema
+	// rather than about the missing plane.
+	//
+	// Only `up` may adopt such a key, which is the same rule as creating one:
+	// provisioning is its job alone.
+	if operation != lifecycleUp && fresh {
+		return nil, fmt.Errorf("%w in %s, so %s has nothing to act on. Run `dataplane-up` first, "+
+			"which is the only operation that provisions one", ErrNoPlane, c.Roots.Data, operation)
+	}
+
+	access := secret.LoadOnly
+	if operation == lifecycleUp && fresh {
+		access = secret.MayCreate
+	}
+
+	key, keyErr := secret.KeyFile(c.Roots.Config, access).RootKey()
+	if keyErr == nil {
+		return key, nil
+	}
+	wrapped := fmt.Errorf("read root-of-trust key for %s: %w", operation, keyErr)
+	if !errors.Is(wrapped, paths.ErrNoKey) {
+		return nil, wrapped
+	}
+
+	// Only a populated root reaches here: an empty one refused above, and an
+	// empty one under `up` was allowed to create rather than to fail.
+	return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials are "+
+		"derived from the original key, so a new one would open neither. Restore the key file "+
+		"beside the backup, or run the new-key recovery path: %w",
+		ErrPlaneLocked, operation, wrapped)
+}
+
+// dataRootIsEmpty reports whether NO service has been provisioned yet.
+//
+// initdb populates the Postgres directory and the object store populates its
+// own, so their contents are the honest signal that some earlier key already
+// provisioned this plane. A directory that does not exist yet counts as
+// empty, which is the first-run case.
+func dataRootIsEmpty(c *Config) (bool, error) {
+	for _, service := range []paths.Service{paths.ServicePostgres, paths.ServiceMinIO} {
+		dir, err := c.Roots.ServiceDataDir(service)
+		if err != nil {
+			return false, fmt.Errorf("resolve %s data directory: %w", service, err)
+		}
+		entries, readErr := os.ReadDir(dir)
+		switch {
+		case os.IsNotExist(readErr):
+			continue
+		case readErr != nil:
+			return false, fmt.Errorf("inspect %s data directory: %w", service, readErr)
+		case len(entries) > 0:
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ensureBucket provisions the object store the way migrateLocked
@@ -183,7 +322,12 @@ func reconcileClaims(ctx context.Context, c *Config, rootKey []byte, blob *objec
 	if err != nil {
 		return fmt.Errorf("build an empty artifact registry: %w", err)
 	}
-	seam, err := postgres.Open(ctx, dsn, types, blob)
+	// The key this function was HANDED, wrapped — not a second KeyFile.
+	// Constructing one here would make the create-versus-load decision a
+	// second time, outside rootKeyFor, which is the one place allowed to
+	// make it; a structure test enforces that and caught this exact
+	// mistake. The caller already resolved the key under the right rule.
+	seam, err := postgres.Open(ctx, dsn, types, blob, secret.ResolvedKey(rootKey))
 	if err != nil {
 		return fmt.Errorf("open the persistence seam: %w", err)
 	}
@@ -223,9 +367,9 @@ func Migrate(ctx context.Context, c *Config) (err error) {
 		}
 	}()
 
-	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	rootKey, keyErr := rootKeyFor(c, lifecycleMigrate)
 	if keyErr != nil {
-		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+		return keyErr
 	}
 	return migrateLocked(ctx, c, rootKey)
 }
@@ -273,9 +417,9 @@ func ForceVersion(c *Config, version int) (err error) {
 		}
 	}()
 
-	rootKey, keyErr := paths.EnsureKey(c.Roots.Config)
+	rootKey, keyErr := rootKeyFor(c, lifecycleForceVersion)
 	if keyErr != nil {
-		return fmt.Errorf("ensure root-of-trust key: %w", keyErr)
+		return keyErr
 	}
 	dsn, dsnErr := c.DSN(rootKey)
 	if dsnErr != nil {

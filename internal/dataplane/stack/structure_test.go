@@ -75,6 +75,94 @@ func TestUpProvisionsBetweenReadinessAndMigration(t *testing.T) {
 	}
 }
 
+// keyUsingOperations are the lifecycle operations that need root key
+// material. Every one of them must reach it through rootKeyFor.
+var keyUsingOperations = []string{"up", "Migrate", "ForceVersion"}
+
+// forbiddenKeySources are the ways to obtain a key while bypassing the
+// create-versus-load decision. paths.EnsureKey CREATES; paths.LoadKey and
+// secret.KeyFile each pick an access mode, which is precisely the choice
+// rootKeyFor exists to make in one place.
+var forbiddenKeySources = map[string]string{
+	"EnsureKey": "paths",
+	"LoadKey":   "paths",
+	"KeyFile":   "secret",
+}
+
+// TestOnlyRootKeyForDecidesKeyCreation is item 7's D4 as a source rule, in
+// both directions.
+//
+// Negative: nothing outside rootKeyFor may reach a key source directly.
+// Banning only EnsureKey would leave two other ways to make the same
+// decision somewhere else — LoadKey, and secret.KeyFile with an access mode
+// chosen on the spot.
+//
+// Positive: each key-using operation must actually CALL rootKeyFor. Without
+// this half, deleting the call from Migrate satisfies every ban and the rule
+// passes while the operation quietly stops asking.
+//
+// It is a source rule because the defect is invisible to behavioural tests:
+// an operation that creates a key when it should not still WORKS on any
+// machine whose key is present, which is every machine that has run `up`
+// once.
+func TestOnlyRootKeyForDecidesKeyCreation(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "stack.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse stack.go: %v", err)
+	}
+
+	reaches := map[string][]string{}
+	callsHelper := map[string]bool{}
+
+	for _, decl := range file.Decls {
+		function, isFunc := decl.(*ast.FuncDecl)
+		if !isFunc {
+			continue
+		}
+		name := function.Name.Name
+		ast.Inspect(function, func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			if ident, isIdent := call.Fun.(*ast.Ident); isIdent && ident.Name == "rootKeyFor" {
+				callsHelper[name] = true
+				return true
+			}
+			selector, isSelector := call.Fun.(*ast.SelectorExpr)
+			if !isSelector {
+				return true
+			}
+			pkg, isPkg := selector.X.(*ast.Ident)
+			if !isPkg {
+				return true
+			}
+			if wantPkg, forbidden := forbiddenKeySources[selector.Sel.Name]; forbidden &&
+				pkg.Name == wantPkg && name != "rootKeyFor" {
+				reaches[name] = append(reaches[name], pkg.Name+"."+selector.Sel.Name)
+			}
+			return true
+		})
+	}
+
+	for function, sources := range reaches {
+		t.Errorf("%s reaches %v directly. Only rootKeyFor decides whether a lifecycle operation "+
+			"may CREATE key material, and it decides from the operation AND whether the data root "+
+			"is empty. A call outside it makes that decision somewhere nothing reviews — and it "+
+			"passes every test on a machine whose key is already there, which is every machine "+
+			"that has run `up` once.", function, sources)
+	}
+
+	for _, operation := range keyUsingOperations {
+		if !callsHelper[operation] {
+			t.Errorf("%s does not call rootKeyFor. Every lifecycle operation that needs key "+
+				"material goes through the one decision; an operation that stops asking is not "+
+				"caught by the bans above, because it no longer reaches anything to ban.", operation)
+		}
+	}
+}
+
 func findFunc(file *ast.File, name string) *ast.FuncDecl {
 	for _, decl := range file.Decls {
 		function, isFunc := decl.(*ast.FuncDecl)

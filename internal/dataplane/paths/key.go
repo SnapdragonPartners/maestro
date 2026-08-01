@@ -44,6 +44,71 @@ const (
 // investigate a possible key exposure, not to retry.
 var ErrKeyPermissions = errors.New("root-of-trust key file has unsafe permissions")
 
+// ErrNoKey reports a root-of-trust key that is not present where it was
+// expected.
+//
+// It is the state a data root restored without its key file arrives in, and
+// it has to be nameable: the alternative is what the plane did before, which
+// was to mint a fresh key, derive a Postgres password that does not match
+// the cluster, and fail three minutes later with "data plane did not become
+// ready" — a correct refusal reached by accident, diagnosing nothing.
+var ErrNoKey = errors.New("root-of-trust key file is not present")
+
+// LoadKey returns the key WITHOUT creating one.
+//
+// This is the reopening half of item 7's D4: setup may create a key, and
+// opening an existing plane may only load one. Which applies is decided by
+// the caller, because only the caller knows whether the data root already
+// holds a cluster — and getting it wrong in the permissive direction is the
+// failure above.
+//
+// It carries EVERY obligation EnsureKey's fast path carries, not merely the
+// convenient ones: the same lock, so it cannot observe a half-linked key from
+// a concurrent creator; the same orphan sweep, because a load is just as
+// capable of leaving a second copy of a secret on disk as a creation is; and
+// the same directory sync before returning, because a caller that encrypts
+// under a key must not be handed one a crash could still erase.
+//
+// The sweep is the obligation easiest to leave out and hardest to notice
+// missing. EnsureKey's protocol removes its own temporary AFTER linking, so a
+// creator that dies in between leaves an orphan — a complete second copy of
+// the key, at a predictable name. Once the final key exists, EnsureKey never
+// runs its creating path again, so on a plane that only ever LOADS, nothing
+// would ever clean it up: the orphan would survive for the life of the
+// installation, in a backup, and in every copy of the data root.
+//
+// The sweep makes its own removal durable, on every return path — see
+// sweepOrphanTemps. An unsynced removal is one a crash can undo, which would
+// resurrect exactly the copy it just deleted.
+func LoadKey(configRoot string) (key []byte, err error) {
+	path := filepath.Join(configRoot, KeyFileName)
+
+	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName))
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer func() {
+		if relErr := release(); relErr != nil && err == nil {
+			key, err = nil, relErr
+		}
+	}()
+
+	// Under the lock, any temporary is an orphan: no live creator can exist
+	// (ADR 0027 — destructive recovery runs under the resource's own lock, so
+	// it cannot truncate a concurrent writer's work).
+	if sweepErr := sweepOrphanTemps(configRoot); sweepErr != nil {
+		return nil, sweepErr
+	}
+
+	if _, statErr := os.Stat(path); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("%w: %s", ErrNoKey, path)
+		}
+		return nil, fmt.Errorf("stat key file %s: %w", path, statErr)
+	}
+	return returnDurable(configRoot, path)
+}
+
 // EnsureKey returns the root-of-trust key from the config root, generating
 // it on first use.
 //
@@ -222,20 +287,76 @@ func discardTemp(name string, cause error) error {
 	return cause
 }
 
-// sweepOrphanTemps removes temporary key files left behind by a creator
-// that died mid-protocol. It is only safe under the lock, where no live
-// creator can exist; the caller's directory sync makes the removals durable.
+// sweepOrphanTemps removes temporary key files left behind by a creator that
+// died mid-protocol, AND makes the removals durable, as one operation.
+//
+// It is only safe under the lock, where no live creator can exist.
+//
+// The two halves cannot be separated, and separating them is the mistake
+// this comment exists to prevent. A removal that is not synced is a removal
+// a crash can undo, so a caller that sweeps and then returns down any path
+// which does not sync has deleted a second copy of the key only until the
+// next power loss. Every later return path in both callers is such a path:
+// a stat that fails for a reason other than absence, a key file with the
+// wrong permissions, a malformed key.
+//
+// So the sync happens HERE, immediately, rather than being owed by whatever
+// the caller does next. It is skipped when nothing was removed, which is
+// every ordinary call — the cost falls only on the rare run that actually
+// found an orphan.
 func sweepOrphanTemps(dir string) error {
 	matches, err := filepath.Glob(filepath.Join(dir, tempPattern))
 	if err != nil {
 		return fmt.Errorf("scan for orphaned temporary key files in %s: %w", dir, err)
 	}
+	// Removal errors are ACCUMULATED rather than returned where they happen,
+	// and EVERY one is kept. Returning early would skip the sync below — and
+	// by then earlier removals in this same loop have already succeeded, so
+	// the failure of one orphan would leave the deletion of the others
+	// undurable. A partial sweep still has to be a durable partial sweep.
+	//
+	// Keeping only the last failure would be the same defect one level down:
+	// each surviving orphan is its own second copy of the key, and a report
+	// naming one of them says nothing about the others. They are independent
+	// facts, so they are all reported.
+	var (
+		removed    int
+		removeErrs []error
+	)
 	for _, name := range matches {
-		if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove orphaned temporary key file %s: %w", name, err)
+		switch err := os.Remove(name); {
+		case err == nil:
+			removed++
+		case !errors.Is(err, fs.ErrNotExist):
+			removeErrs = append(removeErrs,
+				fmt.Errorf("remove orphaned temporary key file %s: %w", name, err))
 		}
 	}
-	return nil
+
+	var syncErr error
+	if removed > 0 {
+		if err := syncDir(dir); err != nil {
+			syncErr = fmt.Errorf("make the removal of %d orphaned temporary key file(s) durable: %w",
+				removed, err)
+		}
+	}
+
+	// The sync failure leads: a removal that did not happen leaves a second
+	// copy of the key, while a removal that was not made durable leaves one
+	// that can come BACK, and the second is the harder state to reason about
+	// afterwards. It leads the joined error rather than replacing the rest of
+	// it — an undurable deletion and a surviving orphan are different
+	// problems, and reporting either one alone hides work still to be done.
+	// NOT COVERED BY A TEST, and held by structure instead: there is no early
+	// return here, so no branch exists that could drop removeErrs. Making
+	// syncDir fail on demand would need a filesystem fault-injection seam this
+	// package does not have and does not otherwise want — fsync on a directory
+	// fd does not fail for any condition a test can arrange. Re-introducing an
+	// `if syncErr != nil { return syncErr }` above would restore the defect
+	// silently; the whole suite still passes with it in place.
+	//
+	//nolint:wrapcheck // Every operand is already wrapped; Join only combines them.
+	return errors.Join(append([]error{syncErr}, removeErrs...)...)
 }
 
 // syncDir flushes a directory's own entries, making a rename or link into

@@ -89,7 +89,7 @@ func evidenceRegistry(t *testing.T) *registry.Registry {
 func evidenceFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := newFixture(t)
-	built, err := postgres.New(f.pool, evidenceRegistry(t), f.blob)
+	built, err := postgres.New(f.pool, evidenceRegistry(t), f.blob, f.rootKey)
 	if err != nil {
 		t.Fatalf("store with an evidence registry: %v", err)
 	}
