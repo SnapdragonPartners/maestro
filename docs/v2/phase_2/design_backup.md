@@ -2,13 +2,13 @@
 title = "Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery"
 edit_date = "2026-07-31"
 status = "draft"
-summary = "Mini-plan for Phase 2 item 8: cold backup as a whole-root tree copy with no exclusion list, a keyless stop/start quiesce protocol measured against the pinned images, a file-based freshness rule that leaves the service registry only its directory-creation job, restore that preserves every bind-mount inode and the held lock file under one lock spanning stop through verification with a durable incomplete marker and a phase boundary deciding whether failure restarts or stays stopped, a hand-rolled copier because os.CopyFS widens modes rather than preserving them, digest revalidation across both artifact families under the seam's own snapshot and advisory locks, and resumable new-key recovery that installs its staged key last."
+summary = "Mini-plan for Phase 2 item 8: cold backup as a whole-root tree copy with no exclusion list, a keyless stop/start quiesce protocol measured against the pinned images, a whole-root freshness rule counting any non-directory entry, leaving the service registry only its directory-creation job, restore that preserves every bind-mount inode and the held lock file under one lock spanning stop through verification with a durable incomplete marker and a phase boundary deciding whether failure restarts or stays stopped, a hand-rolled copier because os.CopyFS widens modes rather than preserving them, digest revalidation across both artifact families under the seam's own snapshot and advisory locks, and resumable new-key recovery that installs its staged key last."
 type = "design"
 +++
 
 # Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery
 
-Status: **draft** — revised after Codex review rounds 1 (six P1s) and 2 (four P1s). Awaiting round 3.
+Status: **draft** — revised after Codex review rounds 1 (six P1s), 2 (four P1s) and 3 (five P1s). Awaiting round 4. Implementation is gated on acceptance, with a checkpoint before new-key recovery.
 
 Implements [Phase 2 plan](plan_scope.md) item 8 under [ADR 0022](../../adr/0022-v2-data-plane.md) (cold backup as the MVP baseline; restore from "the backup plus the key file, **or** re-entry of secrets") and the [project-folder spike](../phase_0/spike_project-folder.md) item 4 (backup copies only `data/` and excludes the root-of-trust key, under `MAESTRO_HOME` too). Builds on item 2's lifecycle machinery, item 6's object module and sweep, and item 7's key-access rule and measured recovery procedure.
 
@@ -21,7 +21,7 @@ With recovery included, item 8 is **M**: four lifecycle verbs, a guarded and res
 ## What item 8 owes
 
 1. **Backup**: quiesce every writer into the data root, copy it, restart.
-2. **The writer set derived from the composed stack**, not hardcoded, so Phase 3's airplane-mode local forge joins without reopening this work.
+2. **Completeness that does not depend on a hardcoded writer list**, so Phase 3's airplane-mode local forge joins without reopening this work — delivered structurally rather than by enumeration, per the plan amendment in D2.
 3. **Restore**, validated by the seam's digest checks.
 4. **The unlock key excluded by design**, with the two-part restore requirement documented *and tested as a failure path*.
 5. **New-key recovery** — ADR 0022's second restore branch, per item 7's measured procedure.
@@ -38,11 +38,13 @@ The lifecycle lock file (`.maestro-dataplane.lock`) is copied like everything el
 
 The plan originally required the writer set to be enumerated from the composed stack. That requirement bought three properties: a future forge cannot be omitted from the backup, it cannot be left running during the copy, and `dataRootIsEmpty` cannot ignore its data and let `up` mint a new key over a live plane.
 
-**D1 and D3 deliver the first two structurally** — the backup copies the whole root, and `compose stop` stops the whole project — so neither depends on any list being right. Only the third still needs a mechanism, and it does not need a service list either: **any file under the data root makes the plane non-fresh.** That is a stronger rule than enumeration, for D1's reason — it cannot be wrong about a writer nobody registered.
+**D1 and D3 deliver the first two structurally** — the backup copies the whole root, and `compose stop` stops the whole project — so neither depends on any list being right. Only the third still needs a mechanism, and it does not need a service list either: **any non-directory entry under the data root makes the plane non-fresh.** That is a stronger rule than enumeration, for D1's reason — it cannot be wrong about a writer nobody registered.
 
-The plan is [amended](plan_scope.md) accordingly (2026-07-31, Codex and DR). Round 1 of this document changed the mechanism silently, which a design document cannot do; the amendment is the correct instrument, and the record of the objection stands.
+The [plan amendment](plan_scope.md) carrying this is **Codex-approved and awaiting DR sign-off** — it is written into the plan as proposed, not as accepted, and this document does not claim otherwise. Round 1 changed the mechanism silently, which a design document cannot do; the amendment is the correct instrument, and the record of the objection stands.
 
-**Empty directories are not evidence, and the ordering is why.** `up` calls `EnsureServiceDataDirs` *before* `rootKeyFor` (`stack.go:86` and `:90`), so on a first run the data root already contains empty `postgres/` and `minio/` directories, plus the lock file that `lockLifecycle` just created, when freshness is judged. A rule counting any *content* would call a clean checkout non-fresh, refuse to mint a key, and fail `dataplane-up` from empty — the phase's headline exit criterion. The rule is therefore: walk the root, ignore the lock file, and treat **any regular file or symlink** as proof of an existing plane; directories holding none are not. No provisioned plane can be missed by this, because `initdb` writes files, MinIO writes `.minio.sys`, and a forge writes refs.
+**The rule is any non-directory entry except the lifecycle lock.** Restricting the evidence to regular files and symlinks — round 2's wording — would still call a root holding a FIFO, socket, device node, or unknown special entry fresh, and freshness is the judgement that authorizes minting a key over whatever is there. Anything that is not a directory counts. A traversal that cannot be read is an **error**, never a "fresh" answer: an unreadable root is precisely the case where nothing is known, and the safe reading of nothing-known is not "empty".
+
+**Empty directory trees stay ignorable, and the ordering is why.** `up` calls `EnsureServiceDataDirs` *before* `rootKeyFor` (`stack.go:86` and `:90`), so on a first run the data root already contains empty `postgres/` and `minio/` directories, plus the lock file that `lockLifecycle` just created, when freshness is judged. A rule counting any *content* would call a clean checkout non-fresh, refuse to mint a key, and fail `dataplane-up` from empty — the phase's headline exit criterion. No provisioned plane can hide behind this, because `initdb` writes files, MinIO writes `.minio.sys`, and a forge writes refs.
 
 **The refusal names what it found.** A stray file — a macOS `.DS_Store` from browsing the data directory is the realistic case — makes a genuinely fresh plane look provisioned. Refusing is still the right direction, since minting over a real plane costs every secret in it, but the error must list the offending paths so that case is self-diagnosing rather than a mysterious `ErrPlaneLocked` on a clean machine. An exclusion list for known junk is deliberately not the answer; naming the evidence is.
 
@@ -50,7 +52,7 @@ The plan is [amended](plan_scope.md) accordingly (2026-07-31, Codex and DR). Rou
 
 Deriving the set from resolved Compose configuration was considered and rejected as disproportionate. It would require re-parameterizing `compose.yaml` to a single `${MAESTRO_DATA_ROOT}` to break the circularity — `composeEnv` currently computes the very mount sources that would be parsed back — and would retire accepted item 2 surface. What it buys over the above is support for arbitrary user-supplied Compose files carrying unknown stateful services, which the closed `paths.Service` model does not offer today and no phase requires.
 
-*Optional, consistent with the above, offered rather than assumed:* `Reset` could clear every top-level directory's contents rather than the registry's members, so a forgotten service leaves no data behind a "reset" plane. Same fail-safe direction, and it costs one loop.
+**`Reset` must follow the same rule, and this is a consequence rather than a nicety.** Round 2 offered it as optional; under a freshness rule that reads the whole root, it is required. `Reset` clearing only the registry's service directories would leave any other top-level entry in place — a forgotten service's directory, a stray file, the restore-incomplete marker — and the next `up` would then judge the root non-fresh and refuse to provision a plane the operator just asked to be wiped. `Reset` therefore clears every top-level directory's contents in place (preserving inodes, per D5) and removes every non-directory entry **except the lifecycle lock**, which is never unlinked. Reset and freshness are two halves of one definition: reset returns the root to exactly the state freshness calls fresh, and a test asserts that composition directly rather than each half separately.
 
 ## D3. Quiescing is `compose stop`, not `down`
 
@@ -77,13 +79,28 @@ Both verbs hold `lockLifecycle` from before the stop until after verification, a
 
 | Verb | Phase | On failure |
 | --- | --- | --- |
-| Backup | Any — the authoritative plane is only ever *read* | Restart. The error is joined to the copy's rather than replacing it; the operator needs both facts. |
+| Backup | Any — the authoritative plane is only ever *read* | Restart, and leave no archive behind (below). The error is joined to the copy's rather than replacing it; the operator needs both facts. |
 | Restore | Pre-destructive: containment checks, source validation, stop, the populated-root refusal | Restart the original plane. Nothing has been touched. |
 | Restore | Destructive: from the first `CleanDirectoryContents` onward | Leave **stopped**. A partial Postgres/MinIO tree must not be started; restarting it would present a torn plane as a live one. |
 
 The boundary is a single point in the code, not a judgement call at each step: restore records that it has entered the destructive phase before clearing anything, and every failure after that point routes to stopped-and-reported.
 
-**The partial state is made durable, not just reported.** Restore writes a `.maestro-restore-incomplete` marker into the data root before clearing and removes it only on success. `up` refuses while it is present, naming it. Otherwise a crashed restore leaves a torn tree that looks exactly like a plane, and the only thing standing between it and a normal startup is an operator remembering an error message from a previous session. The marker is a file, so it also makes the plane non-fresh under D2 — which is correct: a torn plane is not a fresh one.
+**Backup publishes atomically, because a failed backup is more dangerous than no backup.** Round 2 left a failed copy's partial tree at the destination. Restore validates an archive by its directory *shape*, so a partial tree containing the service directories passes validation — and the operator reaching for it is by definition someone whose live plane is already in trouble. A truncated archive that presents itself as a completed backup and then replaces a good plane is the worst outcome this item can produce.
+
+Backup therefore requires the destination **not to exist**, copies into a temporary sibling in the destination's parent (same filesystem, so the publish is a rename rather than a second copy), `fsync`s the files and their directories, and only then renames into place. A failure at any point removes the temporary tree and leaves no path restore would accept.
+
+**The partial restore state is made durable, and it gates every unsafe operation.** Restore writes a `.maestro-restore-incomplete` marker into the data root and `fsync`s it — the marker and its parent directory both — **before the first deletion**, removing it only on success. Otherwise a crashed restore leaves a torn tree that looks exactly like a plane, with nothing between it and a normal startup but an operator's memory of an error message from a previous session.
+
+Guarding only `up` is not enough, since every other verb can act on a torn tree just as harmfully. The matrix is defined in one place and enforced structurally:
+
+| Operation | With the marker present |
+| --- | --- |
+| `up`, `migrate`, `force-version`, `backup`, `verify`, `recover-key` | **Refuse**, naming the marker and the two ways out. Backing up a torn plane is how a torn plane becomes an archive. |
+| `down` | Allowed — stopping something already stopped is harmless. |
+| `restore` | Allowed. Resuming is the intended repair. |
+| `reset` | Allowed, and removes the marker as part of returning the root to freshness (D2). |
+
+"Enforced structurally" means a test enumerating every lifecycle operation and asserting each one either refuses or appears in the allowlist above, so a verb added later cannot default into permitted by omission — the same shape as item 7's `rootKeyFor` structure test, which caught its own author.
 
 **Backup's restart runs on a fresh bounded context.** The operation context is cancelled by Ctrl-C, and a deferred restart inheriting it would be cancelled before it ran — turning an interrupted backup into a stopped plane, which is the exact outcome the deferred restart exists to prevent. The restart derives its own context with `context.WithoutCancel` plus a timeout.
 
@@ -129,11 +146,13 @@ This is the only step proving a copied Postgres cluster and a copied object stor
 
 **Verify runs concurrently with live writers, so it needs the seam's own concurrency vocabulary.** The lifecycle lock excludes `reset` and `down`; it does not exclude the in-process writers D3 deliberately allows to keep running. Between listing a `binary_attachments` row and draining its blob, attachment truncation can delete the row and the object sweep can then reclaim the object — and a verifier that read the row first would report corruption in a plane that is behaving exactly as designed. A verification tool whose failure mode is crying wolf about a healthy plane is worse than none, because the response to it is to distrust the tool.
 
-Verify therefore reuses the mechanisms item 5 and item 6 already established rather than inventing a protocol:
+Verify therefore reuses the mechanisms item 5 and item 6 already established rather than inventing a protocol — but the transaction boundary is load-bearing and round 2 got it wrong. Holding the listing's `REPEATABLE READ` transaction open across the reads makes the recheck useless: the recheck would run against the *listing's* snapshot, in which the row still exists, so it could never produce the skip it exists to produce. A recheck that cannot observe the deletion it is checking for is decoration.
 
-- The listing runs in one **`REPEATABLE READ`** transaction, so the row set is a stable snapshot — the same isolation truncation uses.
-- Each blob is read while holding the **per-`(organization, digest)` advisory lock** that writers and the sweep already serialize on. The sweep establishes "unreferenced" under that lock, so it cannot conclude and delete while verify holds it.
-- Under the lock, verify **rechecks that the row still exists** before treating a missing blob as corruption. A row that a concurrent truncation legitimately removed is reported as skipped, not as damage. This is the sweep's own reference-recheck-under-lock pattern, inverted.
+The listing is therefore **materialized and committed** before any blob is read, and each attachment is then processed in its own fresh transaction:
+
+- The listing runs in one **`REPEATABLE READ`** transaction — the same isolation truncation uses — and **commits**, yielding a stable list of candidates rather than a live view.
+- For each candidate, a new transaction acquires the **per-`(organization, digest)` advisory lock** that writers and the sweep already serialize on. The sweep establishes "unreferenced" under that lock, so it cannot conclude and delete while verify holds it.
+- Under that lock, in the **current** snapshot, verify rechecks that the row still exists, and drains the blob while still holding it. A row a concurrent truncation legitimately removed since the listing is reported as **skipped**, not as damage — the sweep's own reference-recheck-under-lock pattern, inverted.
 
 The pass is a full scan, right at Phase 2 scale and flagged in the exit record as needing bounds before the plane holds real volume. `verify` is its own verb, not only a step inside restore, so it can run against a plane whose provenance is in doubt.
 
@@ -145,22 +164,23 @@ ADR 0022 promises restore from the backup **plus the key**, *or* re-entry of sec
 
 The ordering is therefore staged, and the plane's real key is installed **last**:
 
-1. **Require the locked-plane state.** Recovery runs only where `rootKeyFor` reports `ErrPlaneLocked` — a populated root whose key is absent. That is the situation ADR 0022 describes, and requiring it keeps recovery from being a general-purpose key rotation nobody designed.
-2. **Stage, don't install.** Mint the new key to a staged path beside a durable recovery marker. The live key path stays absent, so an interrupted recovery leaves a plane that is still honestly locked rather than one holding a key that opens nothing. This is a new `lifecycle` value, so `rootKeyFor` remains the only decider of create-versus-load.
-3. **Start Postgres socket-only** — `-c listen_addresses=''`, no published port, no network attachment, an `hba_file` carrying `local all all trust` and nothing else — as `${MAESTRO_UID}:${MAESTRO_GID}`, the same identity the normal container runs as. Trust authentication means anyone who can open a connection owns the database, so the absence of a listener is the security boundary, not a convenience.
-4. **One transaction, before any network exposure**, issued through the container's Unix socket via `docker exec`: `ALTER USER` to the password derived from the staged key, **and** delete every row in the secrets family. Postgres makes both transactional, so the plane never exists in a state where the credential has moved but undecryptable ciphertext is still readable. Other families are untouched; item 7 built the vault so it drops wholesale.
-5. **Install the staged key atomically** (rename), then recreate the normal containers with the new environment.
-6. **Verify over the network by service name**, not from inside the container, whose `pg_hba` trusts local connections and would make the check vacuous. Item 7 walked into that trap and recorded it. Then remove the marker.
+1. **Establish exclusive control of the data directory first.** Acquire the lifecycle lock, then `compose stop` the project. The isolated server below opens the same `PGDATA` as the normal container, so starting it against a running plane is not merely untidy; every step after this assumes one postmaster.
+2. **Entry versus resume, which are different conditions.** *Initial* entry requires `rootKeyFor` to report `ErrPlaneLocked` — a populated root whose key is absent — which is the situation ADR 0022 describes and keeps recovery from becoming a general-purpose key rotation nobody designed. A *resume* is authorized by the recovery marker instead, and must proceed even when the final key is already installed and the plane therefore no longer reports locked. Requiring `ErrPlaneLocked` on resume would strand exactly the window that most needs finishing.
+3. **Stage, don't install.** Mint the new key to a staged path beside a durable, `fsync`ed recovery marker. The live key path stays absent, so an interrupted recovery leaves a plane that is still honestly locked rather than one holding a key that opens nothing. This is a new `lifecycle` value, so `rootKeyFor` remains the only decider of create-versus-load.
+4. **Determine whether the credential has already moved, with a probe that can actually fail.** The recovery server's `local all all trust` HBA accepts *any* password over the socket, so a probe through it authenticates whether or not `ALTER USER` ever ran — item 7's in-container authentication trap, in a new place. The probe therefore runs against a socket-only server started with `local all all scram-sha-256`: still no listener, still no published port, but real authentication. Success means the transaction below already committed.
+5. **If it has not: one transaction, before any network exposure.** Restart the isolated server with the trust HBA — `-c listen_addresses=''`, no published port, no network attachment, as `${MAESTRO_UID}:${MAESTRO_GID}`, the identity the normal container runs as — and issue through the container's Unix socket via `docker exec`: `ALTER USER` to the password derived from the staged key, **and** delete every row in the secrets family. Postgres makes both transactional, so the plane never exists in a state where the credential has moved but undecryptable ciphertext is still readable. Other families are untouched; item 7 built the vault so it drops wholesale. Trust authentication means anyone who can open a connection owns the database, so the absence of a listener is the security boundary, not a convenience.
+6. **Install the staged key atomically** (rename), then recreate the normal containers with the new environment.
+7. **Verify over the network by service name**, not from inside the container, whose `pg_hba` trusts local connections and would make the check vacuous — the same trap as step 4, at the other end of the sequence. Then remove the marker.
 
 MinIO needs no step: its credentials are environment, not baked into the data directory, so the store follows the new key. Item 7 measured this.
 
-**Retry semantics, one per window.** A rerun finds the marker and probes the cluster with the staged key's derived password — authentication is the durable evidence of whether step 4 committed, which is more reliable than any flag we could write.
+**Retry semantics, one per window.** A rerun is authorized by the marker and branches on step 4's SCRAM probe, which is durable evidence living in the cluster rather than a flag we would have to keep honest.
 
 | Crash point | State | Rerun does |
 | --- | --- | --- |
-| Before step 4 commits | Cluster unchanged, plane still locked | Repeats from step 3. The same staged key derives the same password, so this is idempotent rather than a second rotation. |
-| After commit, before key install | Cluster on the new password, live key still absent | Probe authenticates → skip to step 5. |
-| After key install, before marker removal | Plane fully recovered | Probe authenticates, key already present → verify and clear the marker. |
+| Before the step 5 transaction commits | Cluster unchanged, plane still locked | Probe fails → repeat from step 5. The same staged key derives the same password, so this is idempotent rather than a second rotation. |
+| After commit, before key install | Cluster on the new password, live key still absent | Probe succeeds → skip to step 6. |
+| After key install, before marker removal | Plane fully recovered, no longer reporting locked | Marker authorizes the resume, probe succeeds, key already present → verify and clear the marker. |
 
 **The native-Linux CI job is a requirement, not a nicety.** Item 7's measurements were taken on macOS, where Docker Desktop virtualises bind-mount ownership, and item 2's history is that uid handling over a `0700` host-owned mount is precisely where the two platforms diverge. Item 7 says item 8 must exercise the sequence in native-Linux CI rather than inherit a developer-machine result.
 
@@ -181,18 +201,20 @@ Behind the `integration` build tag where a real stack is needed, per the phase's
 2. **Clean shutdown**: the restored cluster's log shows no crash recovery, proving the `SIGINT` fast-shutdown path (D3) rather than assuming it — asserted with a client connection held open across the backup, which is the case `SIGTERM` would have broken.
 3. **Two-part restore**: restore without the key, assert `up` fails with `ErrPlaneLocked` and the plane is left stopped (D4's defined terminal state), place the key, assert `up` succeeds.
 4. **Key exclusion**: the key file's bytes appear nowhere under the archive.
-5. **Compose derivation**: adding a bind-mounted service to `compose.yaml` changes the derived set with no Go change; a service mounting outside the data root is refused. Both proven to fail when the guard is removed.
+5. **Registry conformance and freshness**: `paths.Services()` matches the shipped Compose file's bind-mounted services in **both** directions, proven to fail with either side changed alone. Freshness counts a regular file, a symlink, and a FIFO alike; empty directory trees stay fresh; an unreadable root errors rather than answering "fresh"; and `reset` followed by `up` provisions cleanly, which is the composition of the two halves rather than each separately.
 6. **Inode preservation**: the data root, every service directory, and the lock file retain their inodes across a restore. This is the round-1 defect, so it is asserted directly.
 7. **Lock coverage**: a concurrent `reset` blocks for the whole of a restore, including the restart, rather than only its copy.
 8. **Containment**: backup into the data root, restore from inside it, and both again through a symlinked parent — all refused before the stack stops.
-9. **Phased failure recovery**: an injected copy failure during *backup* leaves the plane running with both errors reported; an injected failure during *restore's destructive phase* leaves it stopped, with the incomplete marker present and `up` refusing while it is. The two assertions are opposite on purpose.
+9. **Phased failure recovery**: an injected copy failure during *backup* leaves the plane running with both errors reported **and no path at the destination**, asserted by pointing `restore` at it and requiring refusal; an injected failure during *restore's destructive phase* leaves the plane stopped with the marker present. The two assertions are opposite on purpose.
+9a. **The marker gates everything**: every lifecycle verb is exercised against a marked root and asserted to refuse except `down`, `restore`, and `reset`; the enumeration is structural, so a verb added later without a decision fails the test rather than defaulting to permitted. `reset` clears the marker.
 10. **Interrupted backup restarts anyway**: cancel the operation context mid-copy and assert the plane is running afterwards — the case a restart inheriting that context would fail.
 11. **Modes survive the round trip**: exact permissions asserted on the restored tree — `0700` roots, `0600` cluster files. Written to fail against `os.CopyFS`, and proven to do so.
 12. **Refusals**: restore onto a populated root without `-force`; restore from a source missing a service directory, asserted to leave the existing plane intact.
 13. **Torn-pair detection**: corrupt one restored object **through the S3 API**, not by editing MinIO's on-disk files — whose representation is not the object body — and assert `verify` fails and names it.
 14. **Verify under concurrent truncation**: run `verify` while attachment truncation and the object sweep delete rows it has already listed, and assert it reports skips rather than corruption. Without this, the false-positive path is untested and the tool's credibility rests on argument.
 15. **New-key recovery** (native-Linux CI): recovery over a plane with data and secrets; the data survives, secrets are gone, the new credential authenticates over the network by service name, the old one is rejected, and no listener exists during the recovery step.
-16. **Recovery resumability**: kill the process at each of the three windows in D8's table and rerun, asserting convergence to the same recovered state — and, for the pre-commit window, that the plane is still honestly locked rather than holding a key that opens nothing.
+16. **Recovery resumability**: kill the process at each of the three windows in D8's table and rerun, asserting convergence to the same recovered state — and, for the pre-commit window, that the plane is still honestly locked rather than holding a key that opens nothing. The post-install window is the one that proves marker-authorized resume works after the plane stops reporting locked.
+17. **The recovery probe can fail**: assert the SCRAM probe rejects a wrong password over the socket-only server. Without it the probe is the trust-HBA tautology item 7 recorded, and every branch in D8's table would take the same path regardless of what actually happened.
 
 ## Related documents
 
