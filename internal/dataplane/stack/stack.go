@@ -103,7 +103,7 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if envErr != nil {
 		return envErr
 	}
-	if err := compose(ctx, composeFile, env, "up", "-d", "--wait=false"); err != nil {
+	if err := compose(ctx, c.ProjectName, composeFile, env, "up", "-d", "--wait=false"); err != nil {
 		return err
 	}
 	if err := waitReady(ctx, c, composeFile, env); err != nil {
@@ -676,7 +676,7 @@ func down(ctx context.Context, c *Config, composeFile string) error {
 	if err != nil {
 		return err
 	}
-	return compose(ctx, composeFile, env, "down")
+	return compose(ctx, c.ProjectName, composeFile, env, "down")
 }
 
 // Reset stops the stack and deletes the contents of every service data
@@ -836,12 +836,12 @@ func loadImagePins(composeFile string) ([]string, error) {
 // output. Combined, because Compose reports the real cause (a port clash,
 // an unwritable mount) on stderr, and losing it turns a diagnosable
 // failure into "exit status 1".
-func composeOutput(ctx context.Context, composeFile string, env []string, args ...string) ([]byte, error) {
+func composeOutput(ctx context.Context, project, composeFile string, env []string, args ...string) ([]byte, error) {
 	pins, err := loadImagePins(composeFile)
 	if err != nil {
 		return nil, err
 	}
-	full := append([]string{"compose", "--project-name", ProjectName, "--file", composeFile}, args...)
+	full := append([]string{"compose", "--project-name", project, "--file", composeFile}, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
 	cmd.Env = append(append(os.Environ(), env...), pins...)
 
@@ -853,8 +853,8 @@ func composeOutput(ctx context.Context, composeFile string, env []string, args .
 }
 
 // compose runs a docker compose subcommand against the data-plane project.
-func compose(ctx context.Context, composeFile string, env []string, args ...string) error {
-	_, err := composeOutput(ctx, composeFile, env, args...)
+func compose(ctx context.Context, project, composeFile string, env []string, args ...string) error {
+	_, err := composeOutput(ctx, project, composeFile, env, args...)
 	return err
 }
 
@@ -873,7 +873,7 @@ func waitReady(ctx context.Context, c *Config, composeFile string, env []string)
 
 	var lastErr error
 	for {
-		pgErr := postgresHealthy(waitCtx, composeFile, env)
+		pgErr := postgresHealthy(waitCtx, c.ProjectName, composeFile, env)
 		minioErr := minioLive(waitCtx, c)
 		if pgErr == nil && minioErr == nil {
 			return nil
@@ -886,7 +886,7 @@ func waitReady(ctx context.Context, c *Config, composeFile string, env []string)
 			// ready" and a diagnosis: initdb failures, permission errors on
 			// the bind mount, and image problems all appear there.
 			return fmt.Errorf("%w within %s: %w\n%s",
-				ErrNotReady, readyTimeout, lastErr, recentLogs(ctx, composeFile, env))
+				ErrNotReady, readyTimeout, lastErr, recentLogs(ctx, c.ProjectName, composeFile, env))
 		case <-time.After(time.Second):
 		}
 	}
@@ -895,11 +895,11 @@ func waitReady(ctx context.Context, c *Config, composeFile string, env []string)
 // recentLogs returns the tail of the stack's logs for a failure message,
 // on a fresh short-lived context so it still works when the caller's has
 // already expired — which, at the point this is called, it has.
-func recentLogs(ctx context.Context, composeFile string, env []string) string {
+func recentLogs(ctx context.Context, project, composeFile string, env []string) string {
 	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
-	out, err := composeOutput(logCtx, composeFile, env, "logs", "--tail", "40")
+	out, err := composeOutput(logCtx, project, composeFile, env, "logs", "--tail", "40")
 	if err != nil {
 		return fmt.Sprintf("(could not collect compose logs: %v)", err)
 	}
@@ -924,13 +924,13 @@ type composePS struct {
 // speaks the protocol ships. A host-side TCP dial would report success as
 // soon as the port is bound, which during a cold initdb is long before the
 // database can answer.
-func postgresHealthy(ctx context.Context, composeFile string, env []string) error {
+func postgresHealthy(ctx context.Context, project, composeFile string, env []string) error {
 	// Per-probe bound: one wedged docker invocation must not consume the
 	// whole readiness budget.
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	out, err := composeOutput(probeCtx, composeFile, env, "ps", "--format", "json")
+	out, err := composeOutput(probeCtx, project, composeFile, env, "ps", "--format", "json")
 	if err != nil {
 		return fmt.Errorf("docker compose ps: %w", err)
 	}

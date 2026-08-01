@@ -115,7 +115,7 @@ func Backup(ctx context.Context, c *Config, composeFile, destination string) (er
 		return envErr
 	}
 
-	state, stateErr := readProjectState(ctx, composeFile, env)
+	state, stateErr := readProjectState(ctx, c.ProjectName, composeFile, env)
 	if stateErr != nil {
 		return stateErr
 	}
@@ -133,12 +133,12 @@ func Backup(ctx context.Context, c *Config, composeFile, destination string) (er
 	defer func() {
 		restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restartTimeout)
 		defer cancel()
-		if startErr := composeStart(restartCtx, composeFile, env, state); startErr != nil {
+		if startErr := composeStart(restartCtx, c.ProjectName, composeFile, env, state); startErr != nil {
 			err = errors.Join(err, fmt.Errorf("restart the data plane after backup: %w", startErr))
 		}
 	}()
 
-	if stopErr := composeStop(ctx, composeFile, env); stopErr != nil {
+	if stopErr := composeStop(ctx, c.ProjectName, composeFile, env); stopErr != nil {
 		return stopErr
 	}
 	return publishArchive(c, destination)
@@ -299,13 +299,13 @@ func ReadManifest(archive string) (Manifest, error) {
 // fail its promised restart. Backing up a stopped plane is the easiest case
 // to get right; refusing it would push operators into starting a plane they
 // did not want running.
-func readProjectState(ctx context.Context, composeFile string, env []string) (projectState, error) {
+func readProjectState(ctx context.Context, project, composeFile string, env []string) (projectState, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
 	// --all, so a stopped-but-existing container is seen rather than
 	// silently treated as absent.
-	out, err := composeOutput(probeCtx, composeFile, env, "ps", "--all", "--format", "json")
+	out, err := composeOutput(probeCtx, project, composeFile, env, "ps", "--all", "--format", "json")
 	if err != nil {
 		return projectState{}, fmt.Errorf("read project state: %w", err)
 	}
@@ -332,19 +332,19 @@ func readProjectState(ctx context.Context, composeFile string, env []string) (pr
 // Project-wide, so completeness does not depend on the service registry: a
 // service missing from paths.Services() is still stopped, because `compose
 // stop` acts on the project rather than on a list we supply.
-func composeStop(ctx context.Context, composeFile string, env []string) error {
+func composeStop(ctx context.Context, project, composeFile string, env []string) error {
 	stopCtx, cancel := context.WithTimeout(ctx, stopTimeout)
 	defer cancel()
 
 	timeout := fmt.Sprintf("%d", int(stopTimeout.Seconds()))
-	if err := compose(stopCtx, composeFile, env, "stop", "--timeout", timeout); err != nil {
+	if err := compose(stopCtx, project, composeFile, env, "stop", "--timeout", timeout); err != nil {
 		return fmt.Errorf("stop the data plane for backup: %w", err)
 	}
 	return nil
 }
 
 // composeStart restarts exactly the containers that were running before.
-func composeStart(ctx context.Context, composeFile string, env []string, state projectState) error {
+func composeStart(ctx context.Context, project, composeFile string, env []string, state projectState) error {
 	if len(state.running) == 0 {
 		// The plane was already down. Leaving it down is the correct
 		// restoration of state, and is also what keeps a backup of a
@@ -352,7 +352,7 @@ func composeStart(ctx context.Context, composeFile string, env []string, state p
 		return nil
 	}
 	args := append([]string{"start"}, state.running...)
-	if err := compose(ctx, composeFile, env, args...); err != nil {
+	if err := compose(ctx, project, composeFile, env, args...); err != nil {
 		return fmt.Errorf("start %s: %w", strings.Join(state.running, ", "), err)
 	}
 	return nil
