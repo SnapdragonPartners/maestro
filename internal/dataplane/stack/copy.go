@@ -52,6 +52,13 @@ const (
 // restore preserves ownership naturally. A cross-user restore is out of
 // scope and fails at the permission checks rather than being half-supported.
 func copyTree(src, dst string, sync syncMode) error {
+	// Directories are fsynced POST-ORDER, after the walk, rather than as
+	// they are created. Syncing a directory before its children exist
+	// flushes an entry that names nothing: the child files can then be
+	// durable while the directory entries pointing at them are not, which
+	// is precisely the state a crash turns into a silently short archive.
+	// Deepest-first is what makes each parent's sync see its children.
+	var created []string
 	err := filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walk %s: %w", path, err)
@@ -69,7 +76,8 @@ func copyTree(src, dst string, sync syncMode) error {
 
 		switch {
 		case entry.IsDir():
-			return copyDir(target, info.Mode().Perm(), sync)
+			created = append(created, target)
+			return copyDir(target, info.Mode().Perm())
 		case entry.Type()&fs.ModeSymlink != 0:
 			return copySymlink(path, target)
 		case entry.Type().IsRegular():
@@ -85,10 +93,18 @@ func copyTree(src, dst string, sync syncMode) error {
 	if err != nil {
 		return fmt.Errorf("copy %s to %s: %w", src, dst, err)
 	}
+
+	if sync == syncContents {
+		for i := len(created) - 1; i >= 0; i-- {
+			if syncErr := syncDir(created[i]); syncErr != nil {
+				return syncErr
+			}
+		}
+	}
 	return nil
 }
 
-func copyDir(target string, perm fs.FileMode, sync syncMode) error {
+func copyDir(target string, perm fs.FileMode) error {
 	if err := os.MkdirAll(target, perm); err != nil {
 		return fmt.Errorf("create %s: %w", target, err)
 	}
@@ -96,9 +112,6 @@ func copyDir(target string, perm fs.FileMode, sync syncMode) error {
 	// and MkdirAll is a no-op on a directory that already exists.
 	if err := os.Chmod(target, perm); err != nil {
 		return fmt.Errorf("set mode on %s: %w", target, err)
-	}
-	if sync == syncContents {
-		return syncDir(target)
 	}
 	return nil
 }

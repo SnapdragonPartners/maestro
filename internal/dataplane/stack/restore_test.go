@@ -142,9 +142,14 @@ func TestRestoreLeavesTheMarkerWhenItFailsMidway(t *testing.T) {
 	}
 }
 
-// A restore that completes clears the marker, so the plane is usable again
-// without an extra step.
-func TestRestoreClearsTheMarkerOnSuccess(t *testing.T) {
+// replaceTree leaves the marker in place, because a whole tree is not yet a
+// sound plane.
+//
+// This is the contract that makes verification part of the restore rather
+// than a courtesy after it: only verification, once the plane is up, can say
+// the copied cluster and object store still agree, so the caller clears the
+// marker and only when the report is healthy.
+func TestReplaceTreeLeavesTheMarkerForVerification(t *testing.T) {
 	source := planeAt(t)
 	populatePlane(t, source, "archived")
 	archive := archiveFrom(t, source)
@@ -155,8 +160,8 @@ func TestRestoreClearsTheMarkerOnSuccess(t *testing.T) {
 	if err := replaceTree(cfg, filepath.Join(archive, ArchiveDataDir)); err != nil {
 		t.Fatalf("replaceTree: %v", err)
 	}
-	if _, err := os.Stat(markerPath(cfg)); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("marker survived a completed restore (err = %v); every later verb would refuse the plane", err)
+	if _, err := os.Stat(markerPath(cfg)); err != nil {
+		t.Errorf("marker was cleared before verification could run: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(cfg.Roots.Data, "postgres", "CONTENT"))
 	if err != nil || string(body) != "archived" {
@@ -260,4 +265,80 @@ func TestRestoreRefusesASourceInsideTheDataRoot(t *testing.T) {
 // to make a copy fail after the clear has already happened.
 func mkfifo(path string) error {
 	return syscall.Mkfifo(path, 0o600)
+}
+
+// The manifest is compared against a RECOMPUTED inventory, not merely
+// checked for the presence of names.
+//
+// Names alone accept every case below, and each is a real way an archive
+// goes wrong after its manifest was honestly written: a file removed, a file
+// truncated, an entry added. The completion protocol cannot catch any of
+// them, because the manifest was correct when it was written.
+func TestRestoreRefusesAnArchiveThatDisagreesWithItsManifest(t *testing.T) {
+	build := func(t *testing.T, damage func(t *testing.T, data string)) string {
+		t.Helper()
+		source := planeAt(t)
+		populatePlane(t, source, "archived")
+		archive := archiveFrom(t, source)
+		damage(t, filepath.Join(archive, ArchiveDataDir))
+		return archive
+	}
+
+	tests := map[string]func(t *testing.T, data string){
+		"a file went missing": func(t *testing.T, data string) {
+			if err := os.Remove(filepath.Join(data, "postgres", "CONTENT")); err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+		},
+		"a file was truncated": func(t *testing.T, data string) {
+			mustWriteOver(t, filepath.Join(data, "postgres", "CONTENT"), []byte("x"))
+		},
+		"an entry nobody recorded appeared": func(t *testing.T, data string) {
+			mustMkdir(t, filepath.Join(data, "stowaway"))
+			mustWrite(t, filepath.Join(data, "stowaway", "FILE"), []byte("x"))
+		},
+	}
+
+	for name, damage := range tests {
+		t.Run(name, func(t *testing.T) {
+			cfg := planeAt(t)
+			populatePlane(t, cfg, "must survive")
+
+			err := Restore(t.Context(), cfg, DefaultComposeFile, build(t, damage), true)
+			if !errors.Is(err, ErrArchiveIncomplete) {
+				t.Fatalf("err = %v, want the archive refused", err)
+			}
+			body, readErr := os.ReadFile(filepath.Join(cfg.Roots.Data, "postgres", "CONTENT"))
+			if readErr != nil || string(body) != "must survive" {
+				t.Errorf("existing plane was damaged by a refused restore: %q (err %v)", body, readErr)
+			}
+		})
+	}
+}
+
+// A file where a service directory belongs would satisfy a bare existence
+// check and then be restored over a bind-mount source.
+func TestRestoreRefusesAServiceThatIsNotADirectory(t *testing.T) {
+	source := planeAt(t)
+	populatePlane(t, source, "archived")
+	archive := archiveFrom(t, source)
+
+	data := filepath.Join(archive, ArchiveDataDir)
+	if err := os.RemoveAll(filepath.Join(data, "postgres")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	mustWrite(t, filepath.Join(data, "postgres"), []byte("not a directory"))
+
+	cfg := planeAt(t)
+	err := Restore(t.Context(), cfg, DefaultComposeFile, archive, true)
+	if !errors.Is(err, ErrArchiveMissingService) {
+		t.Errorf("err = %v, want the archive refused", err)
+	}
+}
+
+func mustWriteOver(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("overwrite %s: %v", path, err)
+	}
 }

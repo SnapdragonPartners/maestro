@@ -120,14 +120,16 @@ func Backup(ctx context.Context, c *Config, composeFile, destination string) (er
 		return stateErr
 	}
 
-	if stopErr := composeStop(ctx, composeFile, env); stopErr != nil {
-		return stopErr
-	}
-	// The restart is attempted on EVERY outcome, and on a context that
-	// cannot be cancelled by the one that carried us here: Ctrl-C cancels
-	// the operation context, and a deferred restart inheriting it would be
-	// cancelled before it ran — turning an interrupted backup into a
-	// stopped plane, the precise outcome this defer exists to prevent.
+	// Recovery is armed BEFORE the stop, not after it. `compose stop` is not
+	// atomic: a cancelled or partly failed stop can leave some containers
+	// stopped and still return an error, and a restart registered only on
+	// the success path would never run for exactly that case — the operator
+	// would be left with a half-stopped plane and a message about a backup.
+	//
+	// The restart runs on a context that cannot be cancelled by the one that
+	// carried us here: Ctrl-C cancels the operation context, and a deferred
+	// restart inheriting it would be cancelled before it ran, turning an
+	// interrupted backup into a stopped plane.
 	defer func() {
 		restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restartTimeout)
 		defer cancel()
@@ -136,6 +138,9 @@ func Backup(ctx context.Context, c *Config, composeFile, destination string) (er
 		}
 	}()
 
+	if stopErr := composeStop(ctx, composeFile, env); stopErr != nil {
+		return stopErr
+	}
 	return publishArchive(c, destination)
 }
 

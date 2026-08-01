@@ -18,6 +18,10 @@ var ErrPopulatedRoot = errors.New("data root already holds a plane")
 // service the running build expects.
 var ErrArchiveMissingService = errors.New("archive is missing a service directory")
 
+// ErrRestoreUnverified reports a restored plane whose digests do not check
+// out. The incomplete marker is deliberately left in place for it.
+var ErrRestoreUnverified = errors.New("restored plane failed verification")
+
 // Restore replaces the data root with an archive's contents.
 //
 // The whole operation runs under one lifecycle lock — stop, validate,
@@ -65,6 +69,27 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 		return populatedErr
 	}
 
+	// Pre-destructive recovery, armed before the stop and disarmed the
+	// moment the first deletion becomes possible.
+	//
+	// Everything up to the marker leaves the ORIGINAL plane intact, so a
+	// failure there must put it back rather than leave it down — a partial
+	// `down`, or a marker that could not be written, would otherwise strand
+	// a perfectly good plane stopped. After the marker, the opposite rule
+	// applies and the plane must STAY stopped, so this defer disarms itself
+	// at exactly that point.
+	destructive := false
+	defer func() {
+		if destructive || err == nil {
+			return
+		}
+		restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restartTimeout)
+		defer cancel()
+		if upErr := up(restartCtx, c, composeFile); upErr != nil {
+			err = errors.Join(err, fmt.Errorf("restart the untouched plane after a failed restore: %w", upErr))
+		}
+	}()
+
 	// down, not stop: the restored cluster's password derives from the key
 	// that produced the ARCHIVE, so the containers have to be recreated
 	// with credentials rendered from it. Stopped containers would keep the
@@ -74,7 +99,7 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 		return downErr
 	}
 
-	return replaceDataRoot(ctx, c, composeFile, archiveData)
+	return replaceDataRoot(ctx, c, composeFile, archiveData, &destructive)
 }
 
 // replaceDataRoot performs the destructive half and everything after it.
@@ -86,21 +111,46 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 // than the failure that produced it. That is the opposite of backup's
 // rule, where the authoritative plane is only ever read and a restart is
 // always right.
-func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData string) error {
+func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData string, destructive *bool) error {
+	*destructive = true
 	if err := replaceTree(c, archiveData); err != nil {
 		return err
 	}
 
 	if err := up(ctx, c, composeFile); err != nil {
 		if errors.Is(err, ErrPlaneLocked) {
-			// The documented two-part restore. The files are in place and
-			// the next `dataplane-up` with the key present finishes the
-			// sequence; the plane stays stopped until then.
+			// The documented two-part restore, and the ONE case where the
+			// marker is cleared without a healthy verification: the tree is
+			// whole and the plane simply cannot be opened without its key.
+			// Leaving the marker would make every later verb refuse a plane
+			// that is merely locked, including the `up` that finishes the
+			// sequence once the key is in place.
+			if clearErr := clearRestoreMarker(c); clearErr != nil {
+				return fmt.Errorf("restore completed but the marker could not be cleared: %w",
+					errors.Join(err, clearErr))
+			}
 			return fmt.Errorf("restore completed, but the plane cannot be opened: %w", err)
 		}
 		return err
 	}
-	return nil
+
+	// Verification is part of the restore, not a separate courtesy. A
+	// restore that copied a torn Postgres/object-store pair starts cleanly
+	// and reports success, and the corruption surfaces later as a digest
+	// mismatch nobody connects to this operation. The marker therefore
+	// survives until the report is healthy: an unverified plane is still a
+	// plane nobody should build on.
+	report, err := verifyLocked(ctx, c)
+	if err != nil {
+		return fmt.Errorf("verify the restored plane: %w", err)
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("%w: the restored plane failed verification with %d problem(s); "+
+			"the incomplete marker is left in place. First problem: %s",
+			ErrRestoreUnverified, len(report.Problems), report.Problems[0].Detail)
+	}
+
+	return clearRestoreMarker(c)
 }
 
 // replaceTree is the destructive half: everything between the marker going
@@ -128,13 +178,10 @@ func replaceTree(c *Config, archiveData string) error {
 		return fmt.Errorf("copy the archive into %s: %w", c.Roots.Data, err)
 	}
 
-	// The tree is whole again, so the plane is no longer torn. Clearing the
-	// marker here rather than after `up` is deliberate: a plane that is
-	// completely restored but cannot be opened for want of its key is a
-	// SUCCESSFUL restore awaiting its second part, and leaving the marker
-	// would make every later operation refuse a plane that is merely
-	// locked.
-	return clearRestoreMarker(c)
+	// The marker is NOT cleared here. The tree being whole is not the same
+	// as the plane being sound: only verification, after `up`, can say the
+	// copied cluster and object store still agree. The caller clears it.
+	return nil
 }
 
 // validateArchiveTree checks the archive's shape before anything is
@@ -155,27 +202,46 @@ func validateArchiveTree(archiveData string, manifest Manifest) error {
 	// that starts and is quietly missing a store.
 	for _, service := range paths.Services() {
 		path := filepath.Join(archiveData, string(service))
-		if _, statErr := os.Stat(path); statErr != nil {
+		// A DIRECTORY, not merely something at that path: a file named
+		// `postgres` would satisfy a bare existence check and then be
+		// restored over a bind-mount source, which cannot work.
+		serviceInfo, statErr := os.Stat(path)
+		if statErr != nil || !serviceInfo.IsDir() {
 			return fmt.Errorf("%w: %s has no %s directory", ErrArchiveMissingService, archiveData, service)
 		}
 	}
 
-	// The manifest's inventory is checked against the tree, so an archive
-	// truncated after its manifest was written — which the completion
-	// protocol alone cannot catch — is still refused.
-	present := map[string]bool{}
-	entries, err := os.ReadDir(archiveData)
+	// The inventory is RECOMPUTED and compared exactly, not merely checked
+	// for the presence of names. Names alone would accept a tree truncated
+	// after its manifest was written, an entry replaced by a shorter one, or
+	// an extra entry nobody recorded — and the completion protocol cannot
+	// catch any of those, because the manifest was written honestly at the
+	// time.
+	actual, err := inventory(archiveData, "")
 	if err != nil {
-		return fmt.Errorf("read %s: %w", archiveData, err)
+		return fmt.Errorf("%w: %s could not be inventoried: %w", ErrArchiveIncomplete, archiveData, err)
 	}
-	for _, entry := range entries {
-		present[entry.Name()] = true
-	}
+
+	recorded := make(map[string]ManifestEntry, len(manifest.Entries))
 	for i := range manifest.Entries {
-		if name := manifest.Entries[i].Name; !present[name] {
-			return fmt.Errorf("%w: the manifest lists %q but the tree does not contain it",
-				ErrArchiveIncomplete, name)
+		recorded[manifest.Entries[i].Name] = manifest.Entries[i]
+	}
+	for i := range actual.Entries {
+		found := actual.Entries[i]
+		want, listed := recorded[found.Name]
+		switch {
+		case !listed:
+			return fmt.Errorf("%w: %s holds %q, which the manifest does not list",
+				ErrArchiveIncomplete, archiveData, found.Name)
+		case want.Files != found.Files || want.Bytes != found.Bytes:
+			return fmt.Errorf("%w: %q holds %d files / %d bytes, the manifest records %d / %d",
+				ErrArchiveIncomplete, found.Name, found.Files, found.Bytes, want.Files, want.Bytes)
 		}
+		delete(recorded, found.Name)
+	}
+	for name := range recorded {
+		return fmt.Errorf("%w: the manifest lists %q but the tree does not contain it",
+			ErrArchiveIncomplete, name)
 	}
 	return nil
 }
@@ -224,7 +290,12 @@ func copyArchiveInto(c *Config, archiveData string) error {
 		}
 		source := filepath.Join(archiveData, entry.Name())
 		target := filepath.Join(c.Roots.Data, entry.Name())
-		if err := copyTree(source, target, noSync); err != nil {
+		// syncContents, not noSync. The marker's removal is a metadata write
+		// that can reach the disk while the copied files have not, so a power
+		// loss just after a "successful" restore could leave a torn tree with
+		// nothing recording that it is torn — the exact state the marker
+		// exists to prevent.
+		if err := copyTree(source, target, syncContents); err != nil {
 			return err
 		}
 	}

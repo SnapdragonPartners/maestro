@@ -17,7 +17,7 @@ import (
 // plane — verification against a live plane is the useful case, and the
 // concurrency that implies is handled at the seam, under the snapshot and
 // advisory-lock protocol rather than by excluding writers here.
-func Verify(ctx context.Context, c *Config) (report store.VerifyReport, err error) {
+func Verify(ctx context.Context, c *Config) (_ store.VerifyReport, err error) {
 	release, lockErr := lockLifecycle(c)
 	if lockErr != nil {
 		return store.VerifyReport{}, lockErr
@@ -31,7 +31,17 @@ func Verify(ctx context.Context, c *Config) (report store.VerifyReport, err erro
 	if guardErr := guardRestoreMarker(c, lifecycleVerify); guardErr != nil {
 		return store.VerifyReport{}, guardErr
 	}
+	return verifyLocked(ctx, c)
+}
 
+// verifyLocked is Verify assuming the caller already holds the lifecycle
+// lock, and having already decided the marker policy.
+//
+// Restore needs it: flock is not re-entrant, so calling the exported form
+// from inside a restore would deadlock against the caller — and restore
+// must verify while its own marker is still present, which the exported
+// form would refuse.
+func verifyLocked(ctx context.Context, c *Config) (store.VerifyReport, error) {
 	rootKey, keyErr := rootKeyFor(c, lifecycleVerify)
 	if keyErr != nil {
 		return store.VerifyReport{}, keyErr
@@ -61,9 +71,9 @@ func Verify(ctx context.Context, c *Config) (report store.VerifyReport, err erro
 	}
 	defer seam.Close()
 
-	report, err = seam.Verify(ctx)
-	if err != nil {
-		return store.VerifyReport{}, fmt.Errorf("verify the data plane: %w", err)
+	report, verifyErr := seam.Verify(ctx)
+	if verifyErr != nil {
+		return store.VerifyReport{}, fmt.Errorf("verify the data plane: %w", verifyErr)
 	}
 	return report, nil
 }
