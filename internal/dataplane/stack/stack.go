@@ -707,6 +707,21 @@ func Reset(ctx context.Context, c *Config, composeFile string) (err error) {
 // held lock file lets a second caller lock a fresh inode at the same path,
 // producing two "exclusive" holders).
 func clearDataRoot(c *Config) error {
+	return clearDataRootKeeping(c, LifecycleLockFile)
+}
+
+// clearDataRootKeeping is clearDataRoot with additional top-level entries
+// left alone.
+//
+// Restore needs it: the restore-incomplete marker is written BEFORE the
+// first deletion and must survive the deletion it describes, or a crash
+// mid-clear would leave a torn tree with nothing saying so.
+func clearDataRootKeeping(c *Config, keep ...string) error {
+	preserved := make(map[string]bool, len(keep))
+	for _, name := range keep {
+		preserved[name] = true
+	}
+
 	entries, err := os.ReadDir(c.Roots.Data)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -718,7 +733,7 @@ func clearDataRoot(c *Config) error {
 	for _, entry := range entries {
 		target := filepath.Join(c.Roots.Data, entry.Name())
 		switch {
-		case entry.Name() == LifecycleLockFile:
+		case preserved[entry.Name()]:
 			continue
 		case entry.IsDir():
 			if err := clearDirectoryContents(target); err != nil {
