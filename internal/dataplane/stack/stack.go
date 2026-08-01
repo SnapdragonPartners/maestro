@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -76,6 +77,9 @@ func Up(ctx context.Context, c *Config, composeFile string) (err error) {
 			err = relErr
 		}
 	}()
+	if err := guardRestoreMarker(c, lifecycleUp); err != nil {
+		return err
+	}
 	return up(ctx, c, composeFile)
 }
 
@@ -83,7 +87,7 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if err := c.Roots.Ensure(); err != nil {
 		return fmt.Errorf("prepare storage roots: %w", err)
 	}
-	if err := c.Roots.EnsureServiceDataDirs(paths.ServicePostgres, paths.ServiceMinIO); err != nil {
+	if err := c.Roots.EnsureServiceDataDirs(paths.Services()...); err != nil {
 		return fmt.Errorf("prepare service data directories: %w", err)
 	}
 
@@ -153,7 +157,21 @@ const (
 	lifecycleUp lifecycle = iota
 	lifecycleMigrate
 	lifecycleForceVersion
+	lifecycleDown
+	lifecycleBackup
+	lifecycleRestore
+	lifecycleVerify
+	lifecycleReset
 )
+
+// lifecycles is every operation, in one place, so the marker matrix below
+// can be checked for completeness rather than trusted.
+//
+//nolint:gochecknoglobals // Immutable enumeration of a closed constant set.
+var lifecycles = []lifecycle{
+	lifecycleUp, lifecycleMigrate, lifecycleForceVersion,
+	lifecycleDown, lifecycleBackup, lifecycleRestore, lifecycleVerify, lifecycleReset,
+}
 
 func (l lifecycle) String() string {
 	switch l {
@@ -163,9 +181,135 @@ func (l lifecycle) String() string {
 		return "migrate"
 	case lifecycleForceVersion:
 		return "force-version"
+	case lifecycleDown:
+		return "down"
+	case lifecycleBackup:
+		return "backup"
+	case lifecycleRestore:
+		return "restore"
+	case lifecycleVerify:
+		return "verify"
+	case lifecycleReset:
+		return "reset"
 	default:
 		return "unknown"
 	}
+}
+
+// RestoreIncompleteMarker names a restore that began deleting and did not
+// finish. It lives at the data root, beside the resource it describes.
+const RestoreIncompleteMarker = ".maestro-restore-incomplete"
+
+// ErrRestoreIncomplete reports a data root holding a torn restore.
+var ErrRestoreIncomplete = errors.New("data plane holds an incomplete restore")
+
+// markerPermits records, for EVERY lifecycle operation, whether it may run
+// against a data root holding a torn restore.
+//
+// A torn tree looks exactly like a plane — service directories in place,
+// files inside them — so nothing about it is self-announcing. Guarding only
+// `up` would leave every other verb able to act on it, and the harmful ones
+// are not hypothetical: `backup` is how a torn plane becomes an archive
+// somebody later restores from, and `migrate` would apply schema changes to
+// half a database.
+//
+// The two permitted verbs are the two ways out. `restore` resumes, which is
+// the intended repair; `reset` discards, and clears the marker as part of
+// returning the root to freshness. `down` is permitted because stopping
+// something already stopped cannot make a torn tree worse.
+//
+// Completeness is enforced by a test over `lifecycles` rather than by
+// review, so an operation added later cannot default into permitted by
+// being forgotten here.
+//
+//nolint:gochecknoglobals // Immutable policy table.
+var markerPermits = map[lifecycle]bool{
+	lifecycleUp:           false,
+	lifecycleMigrate:      false,
+	lifecycleForceVersion: false,
+	lifecycleBackup:       false,
+	lifecycleVerify:       false,
+	lifecycleDown:         true,
+	lifecycleRestore:      true,
+	lifecycleReset:        true,
+}
+
+// markerPath is where the restore-incomplete marker lives.
+func markerPath(c *Config) string {
+	return filepath.Join(c.Roots.Data, RestoreIncompleteMarker)
+}
+
+// guardRestoreMarker refuses an operation that must not touch a torn tree.
+func guardRestoreMarker(c *Config, operation lifecycle) error {
+	permitted, known := markerPermits[operation]
+	if !known {
+		// Unreachable while the completeness test passes. Refusing rather
+		// than permitting is the safe reading of an operation whose policy
+		// nobody wrote down.
+		return fmt.Errorf("%w: no marker policy is defined for %s", ErrRestoreIncomplete, operation)
+	}
+	if permitted {
+		return nil
+	}
+	if _, err := os.Stat(markerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("check for %s: %w", RestoreIncompleteMarker, err)
+	}
+	return fmt.Errorf("%w, so %s must not run against it (%s). Re-run `dataplane-restore` from a good "+
+		"archive to finish it, or `dataplane-reset` to discard the plane",
+		ErrRestoreIncomplete, operation, markerPath(c))
+}
+
+// writeRestoreMarker durably records that a restore is about to delete.
+//
+// Both the file and its parent directory are fsynced BEFORE the first
+// deletion. A marker that is still in the page cache when the machine loses
+// power describes a restore that did happen, which is the one crash where
+// it matters most.
+func writeRestoreMarker(c *Config) (err error) {
+	file, err := os.OpenFile(markerPath(c), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("write %s: %w", RestoreIncompleteMarker, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s: %w", RestoreIncompleteMarker, closeErr)
+		}
+	}()
+
+	if _, err := file.WriteString("a restore began deleting into this data root and did not finish\n"); err != nil {
+		return fmt.Errorf("write %s: %w", RestoreIncompleteMarker, err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", RestoreIncompleteMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// clearRestoreMarker removes the marker once the restore has completed.
+func clearRestoreMarker(c *Config) error {
+	if err := os.Remove(markerPath(c)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", RestoreIncompleteMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// syncDir flushes a directory entry so a create or rename inside it
+// survives a power loss.
+func syncDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	// Sync below is what makes the entry durable; closing a read-only
+	// directory handle afterwards has nothing left to report.
+	defer func() { _ = handle.Close() }()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	return nil
 }
 
 // rootKeyFor is the ONE place that decides whether a lifecycle operation may
@@ -190,10 +334,11 @@ func (l lifecycle) String() string {
 // the object store's credentials derive from the same key, so a plane holding
 // objects and no cluster is still a plane some earlier key provisioned.
 func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
-	fresh, err := dataRootIsEmpty(c)
+	evidence, err := planeEvidence(c)
 	if err != nil {
 		return nil, err
 	}
+	fresh := len(evidence) == 0
 
 	// A non-provisioning operation against an empty root refuses HERE, before
 	// the key is even read, because the presence of a key does not mean a
@@ -226,35 +371,85 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 
 	// Only a populated root reaches here: an empty one refused above, and an
 	// empty one under `up` was allowed to create rather than to fail.
+	//
+	// The evidence is NAMED rather than merely asserted. Freshness reads the
+	// whole data root, so an incidental file — a macOS .DS_Store from opening
+	// the directory in Finder is the realistic one — makes a genuinely fresh
+	// plane look provisioned. Refusing is still right, since minting over a
+	// real plane costs every secret in it, but an operator who can see WHAT
+	// was found can tell the two cases apart in seconds. Naming the evidence
+	// is the alternative to an exclusion list for known junk, which would be
+	// a place for a future writer's data to be silently ignored.
 	return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials are "+
 		"derived from the original key, so a new one would open neither. Restore the key file "+
-		"beside the backup, or run the new-key recovery path: %w",
-		ErrPlaneLocked, operation, wrapped)
+		"beside the backup, or run the new-key recovery path. The data root is judged non-fresh "+
+		"because of: %s: %w",
+		ErrPlaneLocked, operation, strings.Join(evidence, ", "), wrapped)
 }
 
-// dataRootIsEmpty reports whether NO service has been provisioned yet.
+// maxEvidencePaths bounds how many offending paths an error names. A
+// provisioned cluster holds thousands; a handful identifies the state.
+const maxEvidencePaths = 5
+
+// planeEvidence walks the data root and returns the paths proving a plane
+// already exists there. An empty result means the root is fresh.
 //
-// initdb populates the Postgres directory and the object store populates its
-// own, so their contents are the honest signal that some earlier key already
-// provisioned this plane. A directory that does not exist yet counts as
-// empty, which is the first-run case.
-func dataRootIsEmpty(c *Config) (bool, error) {
-	for _, service := range []paths.Service{paths.ServicePostgres, paths.ServiceMinIO} {
-		dir, err := c.Roots.ServiceDataDir(service)
-		if err != nil {
-			return false, fmt.Errorf("resolve %s data directory: %w", service, err)
-		}
-		entries, readErr := os.ReadDir(dir)
+// The rule is ANY NON-DIRECTORY ENTRY except the lifecycle lock. Not "any
+// entry", and not "any regular file":
+//
+//   - Not any entry, because `up` creates the service directories before it
+//     asks whether the root is fresh, so on a first run this walk already
+//     sees empty postgres/ and minio/. Counting them would refuse to mint a
+//     key on a clean checkout and fail `dataplane-up` from empty.
+//   - Not any regular file, because a FIFO, socket, device node, or anything
+//     else unrecognised would then read as "fresh" — and freshness is the
+//     judgement that authorises minting a key over whatever is there. The
+//     safe reading of an entry we do not understand is that it is somebody's
+//     data.
+//
+// A traversal that cannot be read is an error rather than a "fresh" answer,
+// for the same reason: an unreadable root is the case where nothing is
+// known, and nothing-known is not emptiness.
+//
+// This replaces a per-service check. Enumerating services could only ever be
+// as complete as the list, and the failure it produced would be silent — a
+// plane holding an unlisted service's data judged fresh, and its root key
+// replaced. Reading the root cannot be wrong about a writer nobody
+// registered.
+func planeEvidence(c *Config) ([]string, error) {
+	var evidence []string
+	err := filepath.WalkDir(c.Roots.Data, func(path string, entry fs.DirEntry, err error) error {
 		switch {
-		case os.IsNotExist(readErr):
-			continue
-		case readErr != nil:
-			return false, fmt.Errorf("inspect %s data directory: %w", service, readErr)
-		case len(entries) > 0:
-			return false, nil
+		case err != nil:
+			if errors.Is(err, os.ErrNotExist) && path == c.Roots.Data {
+				return filepath.SkipAll // A root that does not exist yet is the first-run case.
+			}
+			return fmt.Errorf("inspect %s: %w", path, err)
+		case entry.IsDir():
+			return nil
+		case path == filepath.Join(c.Roots.Data, LifecycleLockFile):
+			// Never evidence: `up` itself creates it before judging freshness,
+			// and it is deliberately never unlinked (ADR 0027).
+			return nil
 		}
+		if len(evidence) < maxEvidencePaths {
+			evidence = append(evidence, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inspect data root %s: %w", c.Roots.Data, err)
 	}
-	return true, nil
+	return evidence, nil
+}
+
+// dataRootIsEmpty reports whether NO plane has been provisioned yet.
+func dataRootIsEmpty(c *Config) (bool, error) {
+	evidence, err := planeEvidence(c)
+	if err != nil {
+		return false, err
+	}
+	return len(evidence) == 0, nil
 }
 
 // ensureBucket provisions the object store the way migrateLocked
@@ -367,6 +562,9 @@ func Migrate(ctx context.Context, c *Config) (err error) {
 		}
 	}()
 
+	if err := guardRestoreMarker(c, lifecycleMigrate); err != nil {
+		return err
+	}
 	rootKey, keyErr := rootKeyFor(c, lifecycleMigrate)
 	if keyErr != nil {
 		return keyErr
@@ -417,6 +615,9 @@ func ForceVersion(c *Config, version int) (err error) {
 		}
 	}()
 
+	if err := guardRestoreMarker(c, lifecycleForceVersion); err != nil {
+		return err
+	}
 	rootKey, keyErr := rootKeyFor(c, lifecycleForceVersion)
 	if keyErr != nil {
 		return keyErr
@@ -483,23 +684,68 @@ func Reset(ctx context.Context, c *Config, composeFile string) (err error) {
 	if err := down(ctx, c, composeFile); err != nil {
 		return err
 	}
-	for _, service := range []paths.Service{paths.ServicePostgres, paths.ServiceMinIO} {
-		dir, err := c.Roots.ServiceDataDir(service)
-		if err != nil {
-			return fmt.Errorf("locate %s data directory: %w", service, err)
+	return clearDataRoot(c)
+}
+
+// clearDataRoot returns the data root to exactly the state planeEvidence
+// calls fresh.
+//
+// It sweeps the WHOLE root rather than the registry's service directories,
+// and that is a consequence of the freshness rule rather than thoroughness
+// for its own sake. Freshness reads every entry under the root, so a reset
+// that cleared only registered services would leave anything else in place
+// — an unregistered service's directory, a stray file, a restore-incomplete
+// marker — and the next `up` would then refuse to provision the plane the
+// operator just asked to be wiped. Reset and freshness are two halves of
+// one definition and have to agree by construction.
+//
+// Top-level DIRECTORIES are emptied in place, never removed: they are
+// bind-mount sources, and on macOS a recreated directory has a new inode
+// while any existing mount keeps pointing at the old one. Everything else
+// is removed, except the lifecycle lock, which this operation is currently
+// holding and which is deliberately never unlinked (ADR 0027 — unlinking a
+// held lock file lets a second caller lock a fresh inode at the same path,
+// producing two "exclusive" holders).
+func clearDataRoot(c *Config) error {
+	entries, err := os.ReadDir(c.Roots.Data)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
+		return fmt.Errorf("read data root %s: %w", c.Roots.Data, err)
+	}
+
+	for _, entry := range entries {
+		target := filepath.Join(c.Roots.Data, entry.Name())
+		switch {
+		case entry.Name() == LifecycleLockFile:
+			continue
+		case entry.IsDir():
+			if err := clearDirectoryContents(target); err != nil {
+				return err
 			}
-			return fmt.Errorf("read %s: %w", dir, err)
-		}
-		for _, entry := range entries {
-			target := filepath.Join(dir, entry.Name())
-			if err := os.RemoveAll(target); err != nil {
+		default:
+			if err := os.Remove(target); err != nil {
 				return fmt.Errorf("remove %s: %w", target, err)
 			}
+		}
+	}
+	return nil
+}
+
+// clearDirectoryContents empties a directory while preserving its inode.
+func clearDirectoryContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		target := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("remove %s: %w", target, err)
 		}
 	}
 	return nil
