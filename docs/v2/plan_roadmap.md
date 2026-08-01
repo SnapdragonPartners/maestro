@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-07-22"
+edit_date = "2026-07-30"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -865,6 +865,13 @@ Outputs:
 - Epic-scoped workspace.
 - Epic dashboard skeleton.
 - Epic-level plan workflow.
+- **V1 retirement:** after the v2 Orchestrator becomes the sole factory path, remove the superseded v1 runtime and every package classified `drop` in the Phase 0 port inventory. Reconcile the inventory against the final import graph and remove dependencies retained only by deleted code.
+
+V1 retirement belongs here rather than to a phase or a standing cleanup track of its own, because this is the phase that replaces the runtime and `cmd/maestro`. Leaving v1 beside its replacement creates two competing factory paths, and a cleanup track with no phase to force it has no completion condition — which is how the port inventory's `drop` dispositions came to be unscheduled in the first place ([issue #298](https://github.com/SnapdragonPartners/maestro/issues/298)). The Phase 2 plan already anticipates this: `pkg/persistence` is deleted rather than edited "during Phase 3's Orchestrator rework".
+
+**The measuring instrument has to survive the transition, and that is not optional.** The benchmark target is v1-as-patched, so removing the v1 factory path removes the only target the runner can currently drive — and ADR 0025's cadence table requires `golden-all` at N = 1 against `paired-default` at the end of **every phase from Phase 2 onward**, which `process_build.md` states as a working agreement. A phase that deleted v1 without a v2 adapter in place could not meet its own phase-end cadence, which this roadmap has no authority to suspend.
+
+The two halves are sequenced separately and the order is the point. The **adapter** comes before the deletion, so removing v1 never strands the runner. The **conformance run** comes after it, because a run performed while v1 is still present measures a tree that the deletion then changes — it would attest to something other than what Phase 3 ships. Relaxing any of this is an amendment to ADR 0025 and `process_build.md`, not a decision available here.
 
 MVP constraint:
 
@@ -875,6 +882,8 @@ Exit criteria:
 - One Epic can go from intake through Story execution to merged Story branches, driven by a single Work Group, on a fixture repo.
 - Every step emits artifacts to the data plane with correct provenance (agent instance, epic, story).
 - The Epic dashboard shows live state for that Epic.
+- No v1 factory entrypoint remains, every `drop` disposition is complete, and the v2 path passes build, test, and integration verification.
+- Before the v1 factory path is removed, a **v2 target adapter** exists. After removal, the phase-end conformance run required by ADR 0025 — `golden-all`, N = 1, `paired-default` — completes against that adapter. Phase 3 does not exit until it does.
 
 ### Phase 4: Branch Hierarchy And Evidence Packages
 
