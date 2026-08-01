@@ -192,13 +192,26 @@ func TestRestoreArmsShutdownBeforeStartingThePlane(t *testing.T) {
 		t.Fatal("replaceDataRoot is gone: this guard is enforcing nothing")
 	}
 
-	// The ARMING is the assignment of true, not the declaration. Checking
-	// only where the identifier first appears would pass for `started :=
-	// false` before `up` with `started = true` after it — which is exactly
-	// the defect, and exactly what a first version of this guard let
-	// through.
-	armedAt, upAt := -1, -1
+	// THREE things have to line up, and checking fewer of them leaves the
+	// defect reachable:
+	//
+	//   - the shutdown defer must EXIST — deleting it restores the original
+	//     bug outright;
+	//   - it must be registered BEFORE `up`, since a defer registered after
+	//     a call cannot run for a failure inside that call;
+	//   - and the flag it consults must be armed with `true` before `up`
+	//     too, or the defer runs and does nothing.
+	//
+	// An earlier version of this guard checked only the third. It passed
+	// while the defer was deleted, and passed while the defer was moved
+	// after `up` — so it certified exactly the arrangement it exists to
+	// forbid. The lesson is the same one this package keeps relearning:
+	// assert the mechanism, not a token near it.
+	deferAt, armedAt, upAt := -1, -1, -1
 	for i, statement := range body.List {
+		if deferred, isDefer := statement.(*ast.DeferStmt); isDefer && deferAt < 0 && callsFunc(deferred, "down") {
+			deferAt = i
+		}
 		ast.Inspect(statement, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.AssignStmt:
@@ -215,14 +228,38 @@ func TestRestoreArmsShutdownBeforeStartingThePlane(t *testing.T) {
 	}
 
 	switch {
-	case armedAt < 0:
-		t.Fatal("replaceDataRoot never arms shutdown with true: a failed up would leave the plane running")
 	case upAt < 0:
 		t.Fatal("replaceDataRoot never calls up: this guard is enforcing nothing")
+	case deferAt < 0:
+		t.Fatal("replaceDataRoot has no deferred call to down: a failure after the plane starts " +
+			"would leave an unverified plane running for connected writers")
+	case deferAt > upAt:
+		t.Errorf("the shutdown defer is registered at statement %d but up runs at %d: a defer registered "+
+			"after a call cannot run for a failure inside it", deferAt, upAt)
+	case armedAt < 0:
+		t.Fatal("replaceDataRoot never arms shutdown with true: the defer would run and do nothing")
 	case armedAt > upAt:
 		t.Errorf("shutdown is armed at statement %d but up runs at %d: a failure inside up — readiness, "+
 			"migrations, bucket setup, reconciliation — would leave an unverified plane running", armedAt, upAt)
 	}
+}
+
+// callsFunc reports whether a deferred statement's body calls the named
+// function.
+func callsFunc(deferred *ast.DeferStmt, target string) bool {
+	found := false
+	ast.Inspect(deferred, func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		if name, isIdent := call.Fun.(*ast.Ident); isIdent && name.Name == target {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // assignsTrue reports whether a statement sets the named variable to the
