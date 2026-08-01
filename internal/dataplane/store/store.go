@@ -486,3 +486,33 @@ type Store interface {
 
 	Close()
 }
+
+// VerifyReport is what one integrity pass observed.
+//
+// Counts as well as problems, because "no problems" is only meaningful
+// beside how much was actually checked: a pass that walked nothing reports
+// the same empty problem list as a healthy plane.
+type VerifyReport struct {
+	Problems []VerifyProblem
+
+	Organizations       int
+	ManagementArtifacts int
+	AuditArtifacts      int
+	Attachments         int
+	// Skipped counts rows a concurrent truncation legitimately removed
+	// between the listing and the read. They are NOT problems: reporting
+	// them as damage would make the tool cry wolf about a healthy plane,
+	// and the response to that is to stop believing the tool.
+	Skipped int
+}
+
+// VerifyProblem is one thing that did not check out.
+type VerifyProblem struct {
+	Kind           string
+	Detail         string
+	OrganizationID uuid.UUID
+	ID             uuid.UUID
+}
+
+// Healthy reports whether the pass found nothing wrong.
+func (r VerifyReport) Healthy() bool { return len(r.Problems) == 0 }
