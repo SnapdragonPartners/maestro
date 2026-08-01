@@ -120,7 +120,8 @@ func TestRestoreLeavesTheMarkerWhenItFailsMidway(t *testing.T) {
 		t.Skipf("mkfifo unsupported here: %v", err)
 	}
 
-	err := replaceTree(cfg, archiveData)
+	destructive := false
+	err := replaceTree(cfg, archiveData, &destructive)
 	if !errors.Is(err, ErrUnsupportedFileType) {
 		t.Fatalf("err = %v, want the copy to fail", err)
 	}
@@ -157,7 +158,8 @@ func TestReplaceTreeLeavesTheMarkerForVerification(t *testing.T) {
 	cfg := planeAt(t)
 	populatePlane(t, cfg, "live")
 
-	if err := replaceTree(cfg, filepath.Join(archive, ArchiveDataDir)); err != nil {
+	destructive := false
+	if err := replaceTree(cfg, filepath.Join(archive, ArchiveDataDir), &destructive); err != nil {
 		t.Fatalf("replaceTree: %v", err)
 	}
 	if _, err := os.Stat(markerPath(cfg)); err != nil {
@@ -341,4 +343,65 @@ func mustWriteOver(t *testing.T, path string, data []byte) {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("overwrite %s: %v", path, err)
 	}
+}
+
+// The destructive flag must flip with the MARKER, not with entry into the
+// destructive function — and a resume must start out destructive.
+//
+// Both halves classify the wrong way round if the flag simply starts false
+// at the top of the destructive phase, and both mistakes are silent: one
+// strands an untouched plane stopped, the other restarts a torn one.
+func TestDestructivePhaseTracksTheMarker(t *testing.T) {
+	t.Run("flips only once the marker is down", func(t *testing.T) {
+		source := planeAt(t)
+		populatePlane(t, source, "archived")
+		archive := archiveFrom(t, source)
+
+		cfg := planeAt(t)
+		destructive := false
+		if err := replaceTree(cfg, filepath.Join(archive, ArchiveDataDir), &destructive); err != nil {
+			t.Fatalf("replaceTree: %v", err)
+		}
+		if !destructive {
+			t.Error("the phase never became destructive, so a later failure would restart a torn plane")
+		}
+	})
+
+	t.Run("a marker that cannot be written leaves the phase non-destructive", func(t *testing.T) {
+		cfg := planeAt(t)
+		populatePlane(t, cfg, "must survive")
+
+		// Make the marker impossible to create: a directory at its path.
+		mustMkdir(t, markerPath(cfg))
+
+		destructive := false
+		err := replaceTree(cfg, t.TempDir(), &destructive)
+		if err == nil {
+			t.Fatal("want the marker write to fail")
+		}
+		if destructive {
+			t.Error("a failed marker write was classified as destructive: recovery would be suppressed " +
+				"for the pre-destructive failure most likely to happen, stranding an untouched plane stopped")
+		}
+		// And nothing was deleted, which is what makes restarting correct.
+		body, readErr := os.ReadFile(filepath.Join(cfg.Roots.Data, "postgres", "CONTENT"))
+		if readErr != nil || string(body) != "must survive" {
+			t.Errorf("content = %q (err %v): a failed marker write deleted data", body, readErr)
+		}
+	})
+
+	t.Run("an existing marker means the plane is already torn", func(t *testing.T) {
+		cfg := planeAt(t)
+		torn, err := restoreIsIncomplete(cfg)
+		if err != nil || torn {
+			t.Fatalf("clean root: torn = %v, err = %v", torn, err)
+		}
+		if writeErr := writeRestoreMarker(cfg); writeErr != nil {
+			t.Fatalf("writeRestoreMarker: %v", writeErr)
+		}
+		torn, err = restoreIsIncomplete(cfg)
+		if err != nil || !torn {
+			t.Fatalf("marked root: torn = %v, err = %v; a resume would restart an already-torn plane", torn, err)
+		}
+	})
 }

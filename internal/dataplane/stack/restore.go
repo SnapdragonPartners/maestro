@@ -22,6 +22,18 @@ var ErrArchiveMissingService = errors.New("archive is missing a service director
 // out. The incomplete marker is deliberately left in place for it.
 var ErrRestoreUnverified = errors.New("restored plane failed verification")
 
+// restoreIsIncomplete reports whether the data root already carries a torn
+// restore.
+func restoreIsIncomplete(c *Config) (bool, error) {
+	if _, err := os.Stat(markerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check for %s: %w", RestoreIncompleteMarker, err)
+	}
+	return true, nil
+}
+
 // Restore replaces the data root with an archive's contents.
 //
 // The whole operation runs under one lifecycle lock — stop, validate,
@@ -74,11 +86,28 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 	//
 	// Everything up to the marker leaves the ORIGINAL plane intact, so a
 	// failure there must put it back rather than leave it down — a partial
-	// `down`, or a marker that could not be written, would otherwise strand
-	// a perfectly good plane stopped. After the marker, the opposite rule
-	// applies and the plane must STAY stopped, so this defer disarms itself
-	// at exactly that point.
-	destructive := false
+	// `down` would otherwise strand a perfectly good plane stopped. After
+	// the marker, the opposite rule applies and the plane must STAY
+	// stopped.
+	//
+	// TWO ways the phase can already be destructive on entry, and both
+	// classify the wrong way round if this simply starts false:
+	//
+	//   - A RESUME. A marker already at the data root means an earlier
+	//     restore tore this plane, so there is no pristine plane to put
+	//     back. Restarting one on a `down` failure would present a torn
+	//     tree as a live plane, which is the exact outcome the marker
+	//     exists to prevent.
+	//   - Marker creation. The flag flips only AFTER writeRestoreMarker
+	//     succeeds, because a marker that could not be written has deleted
+	//     nothing — the plane is still whole and must be restarted. Setting
+	//     it before was inverted: it suppressed recovery for the one
+	//     pre-destructive failure most likely to happen.
+	torn, tornErr := restoreIsIncomplete(c)
+	if tornErr != nil {
+		return tornErr
+	}
+	destructive := torn
 	defer func() {
 		if destructive || err == nil {
 			return
@@ -111,14 +140,30 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 // than the failure that produced it. That is the opposite of backup's
 // rule, where the authoritative plane is only ever read and a restart is
 // always right.
-func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData string, destructive *bool) error {
-	*destructive = true
-	if err := replaceTree(c, archiveData); err != nil {
-		return err
+func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData string, destructive *bool) (err error) {
+	if treeErr := replaceTree(c, archiveData, destructive); treeErr != nil {
+		return treeErr
 	}
 
-	if err := up(ctx, c, composeFile); err != nil {
-		if errors.Is(err, ErrPlaneLocked) {
+	// From here the plane has been started, so every remaining failure must
+	// put it back down. A verification failure that left containers running
+	// would leave connected writers free to use a plane nothing has vouched
+	// for — and the marker, which is what stops the LIFECYCLE verbs, does
+	// not stop a client with a connection string.
+	started := false
+	defer func() {
+		if !started || err == nil {
+			return
+		}
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restartTimeout)
+		defer cancel()
+		if downErr := down(stopCtx, c, composeFile); downErr != nil {
+			err = errors.Join(err, fmt.Errorf("stop the unverified plane: %w", downErr))
+		}
+	}()
+
+	if upErr := up(ctx, c, composeFile); upErr != nil {
+		if errors.Is(upErr, ErrPlaneLocked) {
 			// The documented two-part restore, and the ONE case where the
 			// marker is cleared without a healthy verification: the tree is
 			// whole and the plane simply cannot be opened without its key.
@@ -127,12 +172,13 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 			// sequence once the key is in place.
 			if clearErr := clearRestoreMarker(c); clearErr != nil {
 				return fmt.Errorf("restore completed but the marker could not be cleared: %w",
-					errors.Join(err, clearErr))
+					errors.Join(upErr, clearErr))
 			}
-			return fmt.Errorf("restore completed, but the plane cannot be opened: %w", err)
+			return fmt.Errorf("restore completed, but the plane cannot be opened: %w", upErr)
 		}
-		return err
+		return upErr
 	}
+	started = true
 
 	// Verification is part of the restore, not a separate courtesy. A
 	// restore that copied a torn Postgres/object-store pair starts cleanly
@@ -140,9 +186,9 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 	// mismatch nobody connects to this operation. The marker therefore
 	// survives until the report is healthy: an unverified plane is still a
 	// plane nobody should build on.
-	report, err := verifyLocked(ctx, c)
-	if err != nil {
-		return fmt.Errorf("verify the restored plane: %w", err)
+	report, verifyErr := verifyLocked(ctx, c)
+	if verifyErr != nil {
+		return fmt.Errorf("verify the restored plane: %w", verifyErr)
 	}
 	if !report.Healthy() {
 		return fmt.Errorf("%w: the restored plane failed verification with %d problem(s); "+
@@ -162,10 +208,15 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 // do, not what restore does with them — and would therefore stay green if
 // restore called the wrong clear. It did stay green, when exactly that
 // mutation was tried.
-func replaceTree(c *Config, archiveData string) error {
+func replaceTree(c *Config, archiveData string, destructive *bool) error {
 	if err := writeRestoreMarker(c); err != nil {
 		return err
 	}
+	// The marker is down, so a deletion may now happen at any moment: from
+	// here the plane must stay stopped whatever goes wrong. The flag flips
+	// HERE rather than at the caller, so the boundary and the thing that
+	// defines it cannot drift apart.
+	*destructive = true
 
 	// The marker-preserving clear, not the reset sweep: the marker is
 	// written before the first deletion precisely so it survives the

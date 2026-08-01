@@ -28,6 +28,20 @@ var guardedVerbs = map[string]string{
 	"Verify":       "lifecycleVerify",
 }
 
+// unguardedVerbs are the entry points deliberately NOT guarded, each with
+// the reason it is safe against a torn restore.
+//
+// Being listed here is a decision, not an omission. That distinction is the
+// whole point: an entry point missing from BOTH tables fails the test, so a
+// verb added later — new-key recovery is the next one — cannot become
+// unguarded by nobody noticing it.
+//
+//nolint:gochecknoglobals // Immutable expectation table for the test below.
+var unguardedVerbs = map[string]string{
+	"Down":  "stopping an already-stopped torn plane cannot make it worse",
+	"Reset": "discarding the plane is one of the two ways out of a torn restore",
+}
+
 // The marker policy is worthless if nothing consults it, and testing the
 // policy helper cannot tell the difference.
 //
@@ -48,6 +62,10 @@ func TestEveryLifecycleVerbGuardsOnTheMarker(t *testing.T) {
 		t.Fatalf("read package directory: %v", err)
 	}
 
+	// Entry points are DISCOVERED from the package rather than read off the
+	// table. A table-driven parser only inspects what the table already
+	// names, so deleting a verb from it would make the test ignore that verb
+	// and pass — the failure this whole test exists to prevent, one level up.
 	found := map[string]string{}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -63,28 +81,67 @@ func TestEveryLifecycleVerbGuardsOnTheMarker(t *testing.T) {
 			if !isFunc || fn.Recv != nil {
 				continue
 			}
-			if _, watched := guardedVerbs[fn.Name.Name]; !watched {
+			if !isLifecycleEntryPoint(fn) {
 				continue
 			}
-			if argument, guarded := guardArgument(fn); guarded {
-				found[fn.Name.Name] = argument
-			} else {
-				found[fn.Name.Name] = ""
-			}
+			argument, _ := guardArgument(fn)
+			found[fn.Name.Name] = argument
 		}
 	}
 
-	for verb, want := range guardedVerbs {
-		got, present := found[verb]
+	// Every DISCOVERED entry point must have been classified.
+	for verb, got := range found {
+		want, guarded := guardedVerbs[verb]
+		reason, exempt := unguardedVerbs[verb]
 		switch {
-		case !present:
-			t.Errorf("%s is in the guard table but not in this package: the table is enforcing nothing for it", verb)
-		case got == "":
+		case !guarded && !exempt:
+			t.Errorf("%s is a lifecycle entry point in neither guardedVerbs nor unguardedVerbs: "+
+				"decide whether it may run against a torn restore", verb)
+		case exempt && got != "":
+			t.Errorf("%s is listed as unguarded (%s) but calls guardRestoreMarker: the tables disagree with the code",
+				verb, reason)
+		case guarded && got == "":
 			t.Errorf("%s does not call guardRestoreMarker: it would act on a torn restore", verb)
-		case got != want:
-			t.Errorf("%s guards on %s, want %s: guarding under the wrong operation reads the wrong policy row", verb, got, want)
+		case guarded && got != want:
+			t.Errorf("%s guards on %s, want %s: guarding under the wrong operation reads the wrong policy row",
+				verb, got, want)
 		}
 	}
+
+	// And every classified verb must still exist, so a table entry cannot
+	// outlive the function it describes and quietly enforce nothing.
+	for verb := range guardedVerbs {
+		if _, present := found[verb]; !present {
+			t.Errorf("guardedVerbs names %s, which is not a lifecycle entry point in this package", verb)
+		}
+	}
+	for verb := range unguardedVerbs {
+		if _, present := found[verb]; !present {
+			t.Errorf("unguardedVerbs names %s, which is not a lifecycle entry point in this package", verb)
+		}
+	}
+}
+
+// isLifecycleEntryPoint reports whether a function is an exported operation
+// against a plane.
+//
+// The structural definition is "exported, and takes a *Config" — which is
+// what every lifecycle verb has in common and what a new one will have too.
+// Deriving it beats listing it: a list is exactly the thing that goes stale.
+func isLifecycleEntryPoint(fn *ast.FuncDecl) bool {
+	if !fn.Name.IsExported() || fn.Type.Params == nil {
+		return false
+	}
+	for _, field := range fn.Type.Params.List {
+		pointer, isPointer := field.Type.(*ast.StarExpr)
+		if !isPointer {
+			continue
+		}
+		if named, isNamed := pointer.X.(*ast.Ident); isNamed && named.Name == "Config" {
+			return true
+		}
+	}
+	return false
 }
 
 // guardArgument reports the lifecycle constant a function passes to
