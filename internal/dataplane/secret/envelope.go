@@ -84,10 +84,13 @@ type Envelope struct {
 // cross-store commit order. An id assigned by the INSERT would be an id the
 // encryption could not have used.
 //
-// its own copy, and a pointer would edit the caller's binding as a side effect
-// of encrypting with it.
+// The binding is taken BY VALUE deliberately, despite its size. Seal fixes the
+// scheme on its own copy; a pointer would edit the caller's binding as a side
+// effect of encrypting with it, so a caller that sealed and then compared its
+// binding against a stored row would be comparing against something Seal had
+// quietly rewritten.
 //
-//nolint:gocritic // hugeParam: BY VALUE deliberately. Seal fixes the scheme on
+//nolint:gocritic // hugeParam: by value, for the reason given above.
 func Seal(rootKey []byte, binding Binding, plaintext []byte) (Envelope, error) {
 	binding.Scheme = SchemeAESGCMv1
 
@@ -119,9 +122,11 @@ func Seal(rootKey []byte, binding Binding, plaintext []byte) (Envelope, error) {
 // answer. It is then bound into the authenticated data, so a row whose
 // scheme column was edited fails rather than being read under the wrong one.
 //
-// from the envelope and writes it to its own copy.
+// The binding is taken by value, matching Seal and for the same reason: Open
+// takes the scheme from the envelope and writes it to its own copy, so a
+// pointer would leave the caller's binding carrying a scheme it never set.
 //
-//nolint:gocritic // hugeParam: by value, matching Seal — Open takes the scheme
+//nolint:gocritic // hugeParam: by value, for the reason given above.
 func Open(rootKey []byte, binding Binding, envelope Envelope) (Value, error) {
 	if envelope.Scheme != SchemeAESGCMv1 {
 		return Value{}, fmt.Errorf("%w: %q", ErrUnknownScheme, envelope.Scheme)
