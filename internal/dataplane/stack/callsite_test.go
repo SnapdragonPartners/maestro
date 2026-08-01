@@ -164,3 +164,78 @@ func guardArgument(fn *ast.FuncDecl) (string, bool) {
 	})
 	return argument, argument != ""
 }
+
+// Shutdown must be armed BEFORE `up` is called, not after it returns.
+//
+// `up` starts containers and then does four more things — readiness,
+// bucket setup, migrations, claim reconciliation — any of which can fail
+// with the plane already running. Arming afterwards covers none of them,
+// and the difference is invisible in review: both spellings are one
+// assignment beside one call.
+//
+// Checked structurally because the behavioural test needs Docker, and this
+// property is about statement ORDER, which a parser can see exactly.
+func TestRestoreArmsShutdownBeforeStartingThePlane(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "restore.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse restore.go: %v", err)
+	}
+
+	var body *ast.BlockStmt
+	for _, decl := range file.Decls {
+		if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Name.Name == "replaceDataRoot" {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("replaceDataRoot is gone: this guard is enforcing nothing")
+	}
+
+	// The ARMING is the assignment of true, not the declaration. Checking
+	// only where the identifier first appears would pass for `started :=
+	// false` before `up` with `started = true` after it — which is exactly
+	// the defect, and exactly what a first version of this guard let
+	// through.
+	armedAt, upAt := -1, -1
+	for i, statement := range body.List {
+		ast.Inspect(statement, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.AssignStmt:
+				if armedAt < 0 && assignsTrue(typed, "started") {
+					armedAt = i
+				}
+			case *ast.CallExpr:
+				if name, isIdent := typed.Fun.(*ast.Ident); isIdent && name.Name == "up" && upAt < 0 {
+					upAt = i
+				}
+			}
+			return true
+		})
+	}
+
+	switch {
+	case armedAt < 0:
+		t.Fatal("replaceDataRoot never arms shutdown with true: a failed up would leave the plane running")
+	case upAt < 0:
+		t.Fatal("replaceDataRoot never calls up: this guard is enforcing nothing")
+	case armedAt > upAt:
+		t.Errorf("shutdown is armed at statement %d but up runs at %d: a failure inside up — readiness, "+
+			"migrations, bucket setup, reconciliation — would leave an unverified plane running", armedAt, upAt)
+	}
+}
+
+// assignsTrue reports whether a statement sets the named variable to the
+// literal true.
+func assignsTrue(assignment *ast.AssignStmt, target string) bool {
+	for i, left := range assignment.Lhs {
+		name, isIdent := left.(*ast.Ident)
+		if !isIdent || name.Name != target || i >= len(assignment.Rhs) {
+			continue
+		}
+		if value, isIdent := assignment.Rhs[i].(*ast.Ident); isIdent && value.Name == "true" {
+			return true
+		}
+	}
+	return false
+}

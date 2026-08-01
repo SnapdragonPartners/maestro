@@ -277,6 +277,26 @@ func writeRestoreMarker(c *Config) (err error) {
 		if closeErr := file.Close(); closeErr != nil && err == nil {
 			err = fmt.Errorf("close %s: %w", RestoreIncompleteMarker, closeErr)
 		}
+		// A marker that was created and then failed to be written, synced,
+		// or published describes nothing, and leaving it would forbid every
+		// lifecycle verb — including the recovery that has deleted nothing
+		// and should simply restart the plane.
+		//
+		// This removal is an ERGONOMIC improvement, not the safety
+		// mechanism. Safety comes from replaceTree deriving the destructive
+		// phase from what is actually on disk: with the file left behind,
+		// the phase reads destructive, the plane stays stopped, and the
+		// operator gets a marker they can act on. With it removed, they get
+		// a running plane and an error. Both are safe; one is kinder.
+		//
+		// UNCOVERED, stated rather than implied: no test forces a marker
+		// write to fail AFTER the file is created — doing so needs an
+		// injected failure in the write, fsync or directory-sync step, and
+		// deleting this line leaves every test green. What IS tested is the
+		// derivation that makes either outcome safe.
+		if err != nil {
+			_ = os.Remove(markerPath(c))
+		}
 	}()
 
 	if _, err := file.WriteString("a restore began deleting into this data root and did not finish\n"); err != nil {

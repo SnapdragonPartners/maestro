@@ -145,12 +145,17 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 		return treeErr
 	}
 
-	// From here the plane has been started, so every remaining failure must
-	// put it back down. A verification failure that left containers running
-	// would leave connected writers free to use a plane nothing has vouched
-	// for — and the marker, which is what stops the LIFECYCLE verbs, does
-	// not stop a client with a connection string.
-	started := false
+	// Shutdown is armed BEFORE `up`, not after it succeeds. `up` starts the
+	// containers and then does four more things — readiness, bucket setup,
+	// migrations, claim reconciliation — any of which can fail with the
+	// plane already running. Arming afterwards covered none of those: the
+	// containers would be left up on exactly the failures most likely to
+	// happen on a freshly restored tree.
+	//
+	// Which matters because the marker stops the LIFECYCLE verbs and does
+	// nothing to a client holding a connection string. An unverified plane
+	// that is running is one connected writers can use.
+	started := true
 	defer func() {
 		if !started || err == nil {
 			return
@@ -164,6 +169,9 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 
 	if upErr := up(ctx, c, composeFile); upErr != nil {
 		if errors.Is(upErr, ErrPlaneLocked) {
+			// The one exemption. rootKeyFor refuses before Compose is
+			// invoked, so nothing was started and there is nothing to stop.
+			started = false
 			// The documented two-part restore, and the ONE case where the
 			// marker is cleared without a healthy verification: the tree is
 			// whole and the plane simply cannot be opened without its key.
@@ -178,7 +186,6 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 		}
 		return upErr
 	}
-	started = true
 
 	// Verification is part of the restore, not a separate courtesy. A
 	// restore that copied a torn Postgres/object-store pair starts cleanly
@@ -210,6 +217,22 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 // mutation was tried.
 func replaceTree(c *Config, archiveData string, destructive *bool) error {
 	if err := writeRestoreMarker(c); err != nil {
+		// A marker write is not atomic: it can create the file and then fail
+		// on the write, the fsync, or the directory sync. Reporting
+		// non-destructive there would send recovery off to restart the
+		// original plane, and the leftover marker would then block the very
+		// `up` doing the restarting — an operator left with a stopped plane
+		// AND a file forbidding every way out of it.
+		//
+		// So the phase is derived from what is ACTUALLY on disk rather than
+		// inferred from the error. writeRestoreMarker removes its own
+		// partial file, so the ordinary case is genuinely non-destructive;
+		// if removal also failed, the marker is really there and the plane
+		// must stay stopped.
+		torn, checkErr := restoreIsIncomplete(c)
+		if checkErr != nil || torn {
+			*destructive = true
+		}
 		return err
 	}
 	// The marker is down, so a deletion may now happen at any moment: from

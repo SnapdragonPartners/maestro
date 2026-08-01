@@ -367,26 +367,51 @@ func TestDestructivePhaseTracksTheMarker(t *testing.T) {
 		}
 	})
 
-	t.Run("a marker that cannot be written leaves the phase non-destructive", func(t *testing.T) {
+	t.Run("a marker that was never created leaves the phase non-destructive", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root writes into unwritable directories")
+		}
 		cfg := planeAt(t)
 		populatePlane(t, cfg, "must survive")
 
-		// Make the marker impossible to create: a directory at its path.
-		mustMkdir(t, markerPath(cfg))
+		// An unwritable data root: the marker cannot be created at all, so
+		// nothing was deleted and the original plane must be restarted.
+		if err := os.Chmod(cfg.Roots.Data, 0o500); err != nil {
+			t.Fatalf("chmod: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cfg.Roots.Data, 0o700) })
 
 		destructive := false
-		err := replaceTree(cfg, t.TempDir(), &destructive)
-		if err == nil {
+		if err := replaceTree(cfg, t.TempDir(), &destructive); err == nil {
 			t.Fatal("want the marker write to fail")
 		}
 		if destructive {
-			t.Error("a failed marker write was classified as destructive: recovery would be suppressed " +
-				"for the pre-destructive failure most likely to happen, stranding an untouched plane stopped")
+			t.Error("a marker that was never created was classified as destructive: recovery would be " +
+				"suppressed for the pre-destructive failure most likely to happen")
 		}
-		// And nothing was deleted, which is what makes restarting correct.
-		body, readErr := os.ReadFile(filepath.Join(cfg.Roots.Data, "postgres", "CONTENT"))
-		if readErr != nil || string(body) != "must survive" {
-			t.Errorf("content = %q (err %v): a failed marker write deleted data", body, readErr)
+		if _, err := os.Stat(markerPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a failed marker write left something behind (err = %v); it would block every way out", err)
+		}
+	})
+
+	t.Run("a marker left behind by a failed write is destructive", func(t *testing.T) {
+		cfg := planeAt(t)
+		populatePlane(t, cfg, "live")
+
+		// The state a partially published marker leaves: something at the
+		// marker's path that removal could not clear. Restarting the plane
+		// here would fail anyway, since every lifecycle verb refuses while
+		// it is present — so the phase must be destructive and the plane
+		// must stay stopped for an operator.
+		mustMkdir(t, markerPath(cfg))
+
+		destructive := false
+		if err := replaceTree(cfg, t.TempDir(), &destructive); err == nil {
+			t.Fatal("want the marker write to fail")
+		}
+		if !destructive {
+			t.Error("a leftover marker was classified as non-destructive: recovery would try to restart a " +
+				"plane the marker forbids every verb from touching")
 		}
 	})
 
