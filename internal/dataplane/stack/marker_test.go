@@ -104,6 +104,124 @@ func TestResetClearsTheMarker(t *testing.T) {
 	}
 }
 
+// The pending-verification marker is a SECOND state with a second policy
+// table, and it needs the same structural completeness guarantee. An
+// operation added later that nobody adds here would silently become
+// permitted to act on a plane nothing has ever checked.
+func TestEveryLifecycleHasAnUnverifiedPolicy(t *testing.T) {
+	for _, operation := range lifecycles {
+		if _, defined := unverifiedPermits[operation]; !defined {
+			t.Errorf("%s has no entry in unverifiedPermits: decide whether it may run against a plane "+
+				"that owes a verification pass", operation)
+		}
+	}
+	if len(unverifiedPermits) != len(lifecycles) {
+		t.Errorf("unverifiedPermits has %d entries for %d operations: one of them names something that "+
+			"is not an operation", len(unverifiedPermits), len(lifecycles))
+	}
+}
+
+// The two tables answer differently, and this is the assertion that says so.
+//
+// A single table would have been simpler and wrong: `up` must refuse a torn
+// tree and must PROCEED against an unverified one, because proceeding is how
+// the verification happens at all. If the two states ever collapsed into one
+// policy, the two-part restore could never be completed -- the plane would
+// refuse the only operation that can settle its debt.
+func TestUnverifiedMarkerGatesEveryOperation(t *testing.T) {
+	permitted := map[lifecycle]bool{
+		lifecycleUp: true, lifecycleVerify: true,
+		lifecycleDown: true, lifecycleRestore: true, lifecycleReset: true,
+	}
+
+	for _, operation := range lifecycles {
+		t.Run(operation.String(), func(t *testing.T) {
+			cfg := planeAt(t)
+			if err := markRestoreUnverified(cfg); err != nil {
+				t.Fatalf("markRestoreUnverified: %v", err)
+			}
+
+			err := guardRestoreState(cfg, operation)
+			switch {
+			case permitted[operation] && err != nil:
+				t.Errorf("%s refused against a plane owing verification, but it is one of the "+
+					"operations that must proceed: %v", operation, err)
+			case !permitted[operation] && !errors.Is(err, ErrRestoreUnverifiedPending):
+				t.Errorf("%s was allowed to act on a plane nothing has ever checked (err = %v)",
+					operation, err)
+			}
+		})
+	}
+}
+
+// Without the marker every operation proceeds, so the guard is not passing
+// for the trivial reason that it refuses everything.
+func TestUnverifiedMarkerAbsentPermitsEveryOperation(t *testing.T) {
+	cfg := planeAt(t)
+	for _, operation := range lifecycles {
+		if err := guardRestoreState(cfg, operation); err != nil {
+			t.Errorf("%s refused on a plane owing nothing: %v", operation, err)
+		}
+	}
+}
+
+// An operation with no pending-verification policy refuses rather than
+// proceeds. Unreachable while the completeness test passes, which is the
+// point.
+func TestUnknownLifecycleIsRefusedByTheUnverifiedGuard(t *testing.T) {
+	cfg := planeAt(t)
+	if err := markRestoreUnverified(cfg); err != nil {
+		t.Fatalf("markRestoreUnverified: %v", err)
+	}
+
+	err := guardUnverifiedMarker(cfg, lifecycle(len(lifecycles)+1))
+	if !errors.Is(err, ErrRestoreUnverifiedPending) {
+		t.Errorf("err = %v, want a refusal for an operation with no policy", err)
+	}
+}
+
+// The refusal names the marker and a way out, like the torn one does. An
+// operator meeting it has a plane that will not back up and needs to be told
+// what will make it.
+func TestUnverifiedRefusalIsActionable(t *testing.T) {
+	cfg := planeAt(t)
+	if err := markRestoreUnverified(cfg); err != nil {
+		t.Fatalf("markRestoreUnverified: %v", err)
+	}
+
+	err := guardRestoreState(cfg, lifecycleBackup)
+	if err == nil {
+		t.Fatal("want a refusal")
+	}
+	for _, want := range []string{RestoreUnverifiedMarker, "dataplane-up", "dataplane-reset"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q: %v", want, err)
+		}
+	}
+}
+
+// Reset clears the debt along with the plane it was about. It is swept by
+// the ordinary whole-root clear rather than by a special case, and this is
+// what says so -- a plane that has been discarded owes nothing about
+// contents that are gone.
+func TestResetClearsTheVerificationDebt(t *testing.T) {
+	cfg := planeAt(t)
+	if err := markRestoreUnverified(cfg); err != nil {
+		t.Fatalf("markRestoreUnverified: %v", err)
+	}
+
+	if err := clearDataRoot(cfg); err != nil {
+		t.Fatalf("clearDataRoot: %v", err)
+	}
+	owed, err := restoreOwesVerification(cfg)
+	if err != nil {
+		t.Fatalf("restoreOwesVerification: %v", err)
+	}
+	if owed {
+		t.Error("the debt survived reset; the next backup would refuse a plane just wiped")
+	}
+}
+
 // The marker is fsynced before the first deletion, so the state survives
 // the crash it exists to describe. Durability itself cannot be asserted
 // without pulling power; what is asserted here is that the marker exists

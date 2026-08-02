@@ -74,7 +74,7 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 		}
 	}()
 
-	if guardErr := guardRestoreMarker(c, lifecycleRestore); guardErr != nil {
+	if guardErr := guardRestoreState(c, lifecycleRestore); guardErr != nil {
 		return guardErr
 	}
 	if populatedErr := refusePopulatedRoot(c, force); populatedErr != nil {

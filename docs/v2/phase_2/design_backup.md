@@ -2,13 +2,13 @@
 title = "Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery"
 edit_date = "2026-08-01"
 status = "live"
-summary = "Mini-plan for Phase 2 item 8: cold backup as a whole-root tree copy with no exclusion list, a keyless stop/start quiesce protocol measured against the pinned images, a whole-root freshness rule counting any non-directory entry, leaving the service registry only its directory-creation job, restore that preserves every bind-mount inode and the held lock file under one lock spanning stop through verification with a durable incomplete marker and a phase boundary deciding whether failure restarts or stays stopped, archives validated by a completion manifest written last rather than by directory shape, a backup that returns the project to the state it found, a hand-rolled copier because os.CopyFS widens modes rather than preserving them, digest revalidation across both artifact families under the seam's own snapshot and advisory locks, and resumable new-key recovery that installs its staged key last."
+summary = "Mini-plan for Phase 2 item 8: cold backup as a whole-root tree copy with no exclusion list, a keyless stop/start quiesce protocol measured against the pinned images, a whole-root freshness rule counting any non-directory entry, leaving the service registry only its directory-creation job, restore that preserves every bind-mount inode and the held lock file under one lock spanning stop through verification with a durable incomplete marker and a phase boundary deciding whether failure restarts or stays stopped, archives validated by a completion manifest written last rather than by directory shape, a backup that returns the project to the state it found, a hand-rolled copier because os.CopyFS widens modes rather than preserving them, digest revalidation across both artifact families under the seam's own snapshot and advisory locks, a verification debt carried in its own marker across the two-part restore and settled by the next up on pain of the plane being stopped, and resumable new-key recovery that installs its staged key last."
 type = "design"
 +++
 
 # Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery
 
-Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery.
+Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. Amended during implementation with **D4a**, the verification debt carried across the two-part restore and its own marker policy: the accepted D4 cleared the incomplete marker on a branch that had verified nothing, which was a hole in D7 rather than the clean exception it read as.
 
 Implements [Phase 2 plan](plan_scope.md) item 8 under [ADR 0022](../../adr/0022-v2-data-plane.md) (cold backup as the MVP baseline; restore from "the backup plus the key file, **or** re-entry of secrets") and the [project-folder spike](../phase_0/spike_project-folder.md) item 4 (backup copies only `data/` and excludes the root-of-trust key, under `MAESTRO_HOME` too). Builds on item 2's lifecycle machinery, item 6's object module and sweep, and item 7's key-access rule and measured recovery procedure.
 
@@ -117,7 +117,42 @@ Guarding only `up` is not enough, since every other verb can act on a torn tree 
 
 **Backup's restart runs on a fresh bounded context.** The operation context is cancelled by Ctrl-C, and a deferred restart inheriting it would be cancelled before it ran — turning an interrupted backup into a stopped plane, which is the exact outcome the deferred restart exists to prevent. The restart derives its own context with `context.WithoutCancel` plus a timeout.
 
-**One deliberate exception, defined rather than implied.** A restore that completes its copy but cannot open the plane because the root key is absent terminates **stopped**, with `ErrPlaneLocked` and a nonzero exit, and *with the marker removed* — it is a complete restore awaiting its second part, not a torn one. The files are in place and the next `dataplane-up` with the key present completes the sequence. The lock is released by process exit, as `flock` always is; the durable state is "restored and stopped", which the operator can act on.
+**One deliberate exception, defined rather than implied.** A restore that completes its copy but cannot open the plane because the root key is absent terminates **stopped**, with `ErrPlaneLocked` and a nonzero exit, and *with the incomplete marker removed* — it is a complete restore awaiting its second part, not a torn one. The files are in place and the next `dataplane-up` with the key present completes the sequence. The lock is released by process exit, as `flock` always is; the durable state is "restored and stopped", which the operator can act on.
+
+### D4a. The verification debt, and its own marker (amendment)
+
+*Accepted as an amendment during implementation. The original text above stopped at "restored and stopped", and that was not enough: it clears the incomplete marker on a branch that has verified nothing, so the exception it defines is also a hole in D7.*
+
+The two-part restore is the one branch that completes a copy and **cannot verify it**. Verification needs an open plane, and the plane cannot be opened without its key. Clearing the incomplete marker and stopping there lets a torn pair go live by the intended route: the operator supplies the key, `dataplane-up` starts the plane, and nothing ever recomputes a digest. The state that made verification skippable — a locked plane — is gone by then, and nothing records that the skip happened.
+
+The debt is therefore **handed forward rather than dropped**, in a second marker at the data root, `.maestro-restore-unverified`.
+
+**Two markers and not one, because the states need opposite treatment.** A torn tree must not be started at all; an unverified one **must** be started, because starting it is the only way it gets verified. Folding them into one flag would make the two-part restore uncompletable — the plane would refuse the single operation that can settle its debt.
+
+**Write order.** The unverified marker is written and `fsync`ed **before** the incomplete marker is cleared, so no instant exists in which the plane looks whole and owing nothing. The reverse order has a crash window that produces exactly the state this exists to prevent.
+
+**Settlement belongs to `up`,** after readiness, migrations and claim reconciliation — the first moment the plane is open. A healthy pass clears the marker; anything else does not:
+
+| Settlement outcome | What `up` does |
+| --- | --- |
+| Verification healthy | Clear the marker. The plane is open and checked. |
+| Verification finds problems | **Stop the plane** on a fresh bounded context, return `ErrRestoreUnverifiedPending`, and **retain the marker**. |
+| Verification could not run | Same: stop, report the underlying error, retain the marker. |
+
+Stopping is the load-bearing half. Reporting a torn pair while leaving the plane serving is the worst available outcome — the operator sees an error while clients keep using the plane it condemns — and the marker gates lifecycle verbs, not a client holding a connection string. Retaining the marker matters for the same reason the incomplete one is retained: a debt cleared by a *failed* settlement would let the next `up` start a plane nothing has ever checked, the tear laundered by one failed attempt. The stop runs on `context.WithoutCancel` plus a timeout, for D4's reason — a Ctrl-C'd `up` must still stop the plane it condemned.
+
+**The marker gates verbs, on its own policy table.** `markerPermits` answers the torn question; `unverifiedPermits` answers this one, and the two disagree where the states do:
+
+| Operation | With a verification debt outstanding |
+| --- | --- |
+| `up` | **Allowed** — it *is* the settlement. Refusing it strands the plane the debt exists to rescue. |
+| `verify` | **Allowed** — it is the check itself; a gate refusing it would be refusing the answer. This is the row that differs from D4's table, where `verify` is refused: there is no point verifying a tree known to be partial, and every point verifying one whose only fault is that nobody has looked. |
+| `down`, `reset`, `restore` | Allowed. Stop, discard, replace. |
+| `backup`, `migrate`, `force-version`, `recover-key` | **Refuse.** Backing up an unchecked plane is how an unchecked plane becomes an archive somebody later restores from — and the two-part restore leaves the plane *stopped and owing*, which is a state `backup` is otherwise perfectly happy to copy. `migrate` and `force-version` would apply schema changes to contents nothing has vouched for. |
+
+Both tables are enforced by the same structural completeness test over `lifecycles`, and every verb consults them through **one** combined guard rather than two calls, so a verb cannot be guarded against the failure its author remembered and open to the other.
+
+**Neither `reset` nor `restore` clears this marker specially.** Both sweep the data root — D2's whole-root freshness rule and D5's marker-preserving clear respectively — and a plane that has been discarded or replaced owes nothing about contents that are gone. Only a healthy verification pass clears it in place.
 
 ## D5. Restore preserves every inode, including the lock's
 
@@ -212,6 +247,10 @@ MinIO needs no step: its credentials are environment, not baked into the data di
 
 Behind the `integration` build tag where a real stack is needed, per the phase's testing rule.
 
+**Placement follows where the behaviour lives.** Cases about a lifecycle verb's composition — that restore verifies, that `up` settles a debt, that a refusal leaves the plane stopped — belong to the launcher's suite and need a real isolated Compose project. Cases about what verification *itself* concludes belong to the seam's suite, where a disposable database and bucket make the state cheap and deterministic to produce. Case 16 is split accordingly: the detection is the seam's, and restore's refusal to complete on it is the launcher's.
+
+**Every plane populated for a case below carries the cross-store fixture** — an artifact, an attachment whose bytes live in the object store, and the pin that holds it. A plane holding only relational rows makes each of these pass vacuously: verification recomputes nothing across the object store and reports the same empty problem list as a healthy plane, so a backup that copied the cluster and forgot the bucket would satisfy every assertion. Coverage counts are asserted alongside outcomes for the same reason.
+
 1. **Round trip**: populate a plane (artifact with attachment and pin), back up, `reset`, restore, verify, read the artifact back.
 2. **Clean shutdown**: the restored cluster's log shows no crash recovery, proving the `SIGINT` fast-shutdown path (D3) rather than assuming it — asserted with a client connection held open across the backup, which is the case `SIGTERM` would have broken.
 3. **Two-part restore**: restore without the key, assert `up` fails with `ErrPlaneLocked` and the plane is left stopped (D4's defined terminal state), place the key, assert `up` succeeds.
@@ -227,8 +266,9 @@ Behind the `integration` build tag where a real stack is needed, per the phase's
 13. **Interrupted backup restarts anyway**: cancel the operation context mid-copy and assert the plane is running afterwards — the case a restart inheriting that context would fail.
 14. **Modes survive the round trip**: exact permissions asserted on the restored tree — `0700` roots, `0600` cluster files. Written to fail against `os.CopyFS`, and proven to do so.
 15. **Refusals**: restore onto a populated root without `-force`; restore from a source missing a service directory, asserted to leave the existing plane intact.
-16. **Torn-pair detection**: corrupt one restored object **through the S3 API**, not by editing MinIO's on-disk files — whose representation is not the object body — and assert `verify` fails and names it.
-17. **Verify under concurrent truncation**: run `verify` while attachment truncation and the object sweep delete rows it has already listed, and assert it reports skips rather than corruption. Without this, the false-positive path is untested and the tool's credibility rests on argument.
+16. **Torn-pair detection**: corrupt one object **through the S3 API**, not by editing MinIO's on-disk files — whose representation is not the object body — and assert `verify` fails and names it. Then the same tear carried through a *restore*: back up the torn plane, `reset`, restore, and assert the restore refuses with the plane left **stopped** and the incomplete marker left in place. Existence is not the check — the row, the object and the size all agree, and only the content disagrees with the digest addressing it.
+17. **Verify under concurrent truncation**: run `verify` while attachment truncation and the object sweep delete rows it has already listed, and assert it reports skips rather than corruption. Without this, the false-positive path is untested and the tool's credibility rests on argument. **Made deterministic by holding the per-`(organization, digest)` advisory lock verify itself takes**, which stops the pass exactly between its committed listing and its recheck — the interval the deletions must land in. Two goroutines and a hope would leave the interesting case untested on most runs, and passing.
+17a. **The verification debt, both halves** (D4a). A two-part restore of a *torn* archive: part one completes and records the debt, the key is supplied, and `up` fails the settlement — asserting `ErrRestoreUnverifiedPending`, the plane **stopped**, the marker **retained**, and `backup` refusing the plane afterwards. Plus the policy table itself, enforced structurally like D4's: every lifecycle operation has an entry, the permitted set is exercised against a marked root, and the call sites are parsed to prove each verb reaches the *combined* guard rather than the torn half alone.
 18. **New-key recovery** (native-Linux CI): recovery over a plane with data and secrets; the data survives, secrets are gone, the new credential authenticates over the network by service name, the old one is rejected, and no listener exists during the recovery step.
 19. **Recovery resumability**: **kill the CLI process** at each of the three windows in D8's table — not an injected error return, which leaves neither the surviving container nor the staged artifacts behind and would therefore test none of what resume exists to handle — then rerun and assert convergence to the same recovered state. For the pre-commit window, that the plane is still honestly locked rather than holding a key that opens nothing; for the post-install window, that marker-authorized resume works after the plane stops reporting locked.
 20. **Recovery owns its residues**: after a killed run, assert the surviving recovery container is stopped and removed before the probe, and that a staged key written without its marker is cleaned rather than adopted.

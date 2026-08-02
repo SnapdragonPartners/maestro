@@ -28,7 +28,7 @@ func Verify(ctx context.Context, c *Config) (_ store.VerifyReport, err error) {
 		}
 	}()
 
-	if guardErr := guardRestoreMarker(c, lifecycleVerify); guardErr != nil {
+	if guardErr := guardRestoreState(c, lifecycleVerify); guardErr != nil {
 		return store.VerifyReport{}, guardErr
 	}
 	return verifyLocked(ctx, c)

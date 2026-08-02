@@ -151,4 +151,14 @@ func TestTwoPartRestoreOfATornArchiveStopsThePlane(t *testing.T) {
 		t.Errorf("the verification debt was cleared by a settlement that FAILED (owed = %v, err = %v): "+
 			"the next `up` would start this plane owing nothing", stillOwed, stillErr)
 	}
+
+	// And the debt is worth something: it stops the verb that would turn this
+	// plane into an archive. `backup` works perfectly well on a stopped
+	// plane -- that is a tested case -- so nothing else stands between a
+	// stopped, owing, torn plane and a copy of itself that a later operator
+	// restores from in an emergency.
+	backupErr := Backup(t.Context(), cfg, testComposeFile(), filepath.Join(t.TempDir(), "archive"))
+	if !errors.Is(backupErr, ErrRestoreUnverifiedPending) {
+		t.Errorf("Backup = %v, want a refusal against a plane that owes verification", backupErr)
+	}
 }

@@ -29,7 +29,7 @@ var guardedVerbs = map[string]string{
 }
 
 // unguardedVerbs are the entry points deliberately NOT guarded, each with
-// the reason it is safe against a torn restore.
+// the reason it is safe against both marked states.
 //
 // Being listed here is a decision, not an omission. That distinction is the
 // whole point: an entry point missing from BOTH tables fails the test, so a
@@ -38,8 +38,8 @@ var guardedVerbs = map[string]string{
 //
 //nolint:gochecknoglobals // Immutable expectation table for the test below.
 var unguardedVerbs = map[string]string{
-	"Down":  "stopping an already-stopped torn plane cannot make it worse",
-	"Reset": "discarding the plane is one of the two ways out of a torn restore",
+	"Down":  "stopping an already-stopped torn or unverified plane cannot make it worse",
+	"Reset": "discarding the plane is a way out of both states, and sweeps both markers",
 }
 
 // The marker policy is worthless if nothing consults it, and testing the
@@ -47,7 +47,7 @@ var unguardedVerbs = map[string]string{
 //
 // This is the same defect, one layer up, that mutation testing found in the
 // restore tests: asserting a helper's behaviour proves nothing about whether
-// its callers use it. Deleting the guardRestoreMarker call from Migrate
+// its callers use it. Deleting the guardRestoreState call from Migrate
 // leaves every table-driven test in marker_test.go green, because none of
 // them calls Migrate. So the call sites are checked structurally, by parsing
 // this package.
@@ -98,10 +98,11 @@ func TestEveryLifecycleVerbGuardsOnTheMarker(t *testing.T) {
 			t.Errorf("%s is a lifecycle entry point in neither guardedVerbs nor unguardedVerbs: "+
 				"decide whether it may run against a torn restore", verb)
 		case exempt && got != "":
-			t.Errorf("%s is listed as unguarded (%s) but calls guardRestoreMarker: the tables disagree with the code",
+			t.Errorf("%s is listed as unguarded (%s) but calls guardRestoreState: the tables disagree with the code",
 				verb, reason)
 		case guarded && got == "":
-			t.Errorf("%s does not call guardRestoreMarker: it would act on a torn restore", verb)
+			t.Errorf("%s does not call guardRestoreState: it would act on a torn restore, or on a "+
+				"plane nothing has ever verified", verb)
 		case guarded && got != want:
 			t.Errorf("%s guards on %s, want %s: guarding under the wrong operation reads the wrong policy row",
 				verb, got, want)
@@ -145,7 +146,12 @@ func isLifecycleEntryPoint(fn *ast.FuncDecl) bool {
 }
 
 // guardArgument reports the lifecycle constant a function passes to
-// guardRestoreMarker, if it calls it at all.
+// guardRestoreState, if it calls it at all.
+//
+// guardRestoreState and not guardRestoreMarker: the combined guard is what
+// applies BOTH marker policies, and a verb that reached past it to the torn
+// half alone would be guarded against the failure it remembered and open to
+// the other.
 func guardArgument(fn *ast.FuncDecl) (string, bool) {
 	var argument string
 	ast.Inspect(fn, func(node ast.Node) bool {
@@ -154,7 +160,7 @@ func guardArgument(fn *ast.FuncDecl) (string, bool) {
 			return true
 		}
 		name, isIdent := call.Fun.(*ast.Ident)
-		if !isIdent || name.Name != "guardRestoreMarker" || len(call.Args) != 2 {
+		if !isIdent || name.Name != "guardRestoreState" || len(call.Args) != 2 {
 			return true
 		}
 		if operation, ok := call.Args[1].(*ast.Ident); ok {

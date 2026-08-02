@@ -77,7 +77,7 @@ func Up(ctx context.Context, c *Config, composeFile string) (err error) {
 			err = relErr
 		}
 	}()
-	if err := guardRestoreMarker(c, lifecycleUp); err != nil {
+	if err := guardRestoreState(c, lifecycleUp); err != nil {
 		return err
 	}
 	return up(ctx, c, composeFile)
@@ -353,6 +353,77 @@ func guardRestoreMarker(c *Config, operation lifecycle) error {
 	return fmt.Errorf("%w, so %s must not run against it (%s). Re-run `dataplane-restore` from a good "+
 		"archive to finish it, or `dataplane-reset` to discard the plane",
 		ErrRestoreIncomplete, operation, markerPath(c))
+}
+
+// unverifiedPermits is the same policy question for the OTHER marker: may
+// this operation run against a plane whose tree is whole and whose contents
+// nothing has ever checked?
+//
+// The two tables answer differently for `up` and `verify`, which is the
+// whole reason the states are recorded separately. A torn tree must not be
+// started at all; an unverified one must be started, because starting it is
+// the only way it gets verified — `up` is the settlement, and refusing it
+// would strand exactly the plane the debt exists to rescue. `verify` is the
+// check itself, and a gate that refused it would be refusing the answer.
+//
+// The refusals are the same three, for the same reasons the torn table gives
+// them. `backup` is how an unchecked plane becomes an archive somebody later
+// restores from — and a two-part restore leaves the plane STOPPED and owing,
+// which is a state `backup` is otherwise perfectly happy to copy. `migrate`
+// and `force-version` would apply schema changes to contents nothing has
+// vouched for.
+//
+// Neither `reset` nor `restore` clears this marker specially: both sweep the
+// data root, and a plane that has been discarded or replaced owes nothing
+// about contents that are gone. Only a HEALTHY verification pass clears it
+// in place.
+//
+//nolint:gochecknoglobals // Immutable policy table.
+var unverifiedPermits = map[lifecycle]bool{
+	lifecycleUp:           true,
+	lifecycleVerify:       true,
+	lifecycleDown:         true,
+	lifecycleRestore:      true,
+	lifecycleReset:        true,
+	lifecycleMigrate:      false,
+	lifecycleForceVersion: false,
+	lifecycleBackup:       false,
+}
+
+// guardUnverifiedMarker refuses an operation that must not act on a plane
+// owing a verification pass.
+func guardUnverifiedMarker(c *Config, operation lifecycle) error {
+	permitted, known := unverifiedPermits[operation]
+	if !known {
+		// Unreachable while the completeness test passes, and refusing is the
+		// safe reading of an operation whose policy nobody wrote down.
+		return fmt.Errorf("%w: no pending-verification policy is defined for %s",
+			ErrRestoreUnverifiedPending, operation)
+	}
+	if permitted {
+		return nil
+	}
+	owed, err := restoreOwesVerification(c)
+	if err != nil || !owed {
+		return err
+	}
+	return fmt.Errorf("%w, so %s must not run against it (%s). Run `dataplane-up`, which verifies the "+
+		"plane and clears this, or `dataplane-reset` to discard it",
+		ErrRestoreUnverifiedPending, operation, unverifiedMarkerPath(c))
+}
+
+// guardRestoreState applies BOTH marker policies, and is what every
+// lifecycle verb calls.
+//
+// One entry point rather than two calls per verb: the two markers describe
+// different states with different tables, and a caller that consulted one
+// and forgot the other would be guarded against the failure it remembered.
+// A verb cannot opt into half of this by omission.
+func guardRestoreState(c *Config, operation lifecycle) error {
+	if err := guardRestoreMarker(c, operation); err != nil {
+		return err
+	}
+	return guardUnverifiedMarker(c, operation)
 }
 
 // writeRestoreMarker durably records that a restore is about to delete.
@@ -675,7 +746,7 @@ func Migrate(ctx context.Context, c *Config) (err error) {
 		}
 	}()
 
-	if err := guardRestoreMarker(c, lifecycleMigrate); err != nil {
+	if err := guardRestoreState(c, lifecycleMigrate); err != nil {
 		return err
 	}
 	rootKey, keyErr := rootKeyFor(c, lifecycleMigrate)
@@ -728,7 +799,7 @@ func ForceVersion(c *Config, version int) (err error) {
 		}
 	}()
 
-	if err := guardRestoreMarker(c, lifecycleForceVersion); err != nil {
+	if err := guardRestoreState(c, lifecycleForceVersion); err != nil {
 		return err
 	}
 	rootKey, keyErr := rootKeyFor(c, lifecycleForceVersion)

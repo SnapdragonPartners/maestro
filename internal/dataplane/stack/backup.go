@@ -106,7 +106,7 @@ func Backup(ctx context.Context, c *Config, composeFile, destination string) (er
 		}
 	}()
 
-	if guardErr := guardRestoreMarker(c, lifecycleBackup); guardErr != nil {
+	if guardErr := guardRestoreState(c, lifecycleBackup); guardErr != nil {
 		return guardErr
 	}
 
