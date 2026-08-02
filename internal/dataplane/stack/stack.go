@@ -125,7 +125,22 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	// Last, because it needs an open plane: a restore that could not verify
 	// itself — the two-part path, where the key was absent — recorded the
 	// debt, and this is the first moment it can be paid.
-	return settleOutstandingVerification(ctx, c)
+	//
+	// A failure here must STOP the plane, not merely report. Detecting a
+	// torn pair and leaving it serving is the worst of both outcomes: the
+	// operator sees an error while clients keep using the plane it
+	// condemns. The marker is deliberately retained, so the debt survives
+	// for the next attempt and every guarded verb keeps refusing.
+	if err := settleOutstandingVerification(ctx, c); err != nil {
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readyTimeout)
+		defer cancel()
+		if downErr := down(stopCtx, c, composeFile); downErr != nil {
+			return fmt.Errorf("verification failed and the plane could not be stopped: %w",
+				errors.Join(err, downErr))
+		}
+		return err
+	}
+	return nil
 }
 
 // ErrPlaneLocked reports a data root that already holds a plane whose
