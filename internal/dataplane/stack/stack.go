@@ -119,7 +119,13 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	// AFTER the migrations, because the claims table is part of the schema
 	// they apply, and before `up` reports a ready plane, because a surviving
 	// claim is unfinished destructive work.
-	return reconcileClaims(ctx, c, rootKey, blob)
+	if err := reconcileClaims(ctx, c, rootKey, blob); err != nil {
+		return err
+	}
+	// Last, because it needs an open plane: a restore that could not verify
+	// itself — the two-part path, where the key was absent — recorded the
+	// debt, and this is the first moment it can be paid.
+	return settleOutstandingVerification(ctx, c)
 }
 
 // ErrPlaneLocked reports a data root that already holds a plane whose
@@ -202,6 +208,78 @@ const RestoreIncompleteMarker = ".maestro-restore-incomplete"
 
 // ErrRestoreIncomplete reports a data root holding a torn restore.
 var ErrRestoreIncomplete = errors.New("data plane holds an incomplete restore")
+
+// RestoreUnverifiedMarker records a restore whose tree is whole but whose
+// contents have never been checked.
+//
+// It exists for ADR 0022's two-part restore. That branch completes the copy
+// and then CANNOT verify, because verification needs an open plane and the
+// plane cannot be opened without its key. Clearing the incomplete marker
+// there and stopping — which is what an earlier version did — let a torn
+// pair go live: the operator supplies the key, `up` starts the plane, and
+// nothing ever recomputes a digest.
+//
+// So the state is handed forward rather than dropped. It is deliberately a
+// SEPARATE marker from RestoreIncompleteMarker, because the two states need
+// opposite treatment: a torn tree must not be started at all, while an
+// unverified one must be started, since starting it is how it gets
+// verified.
+const RestoreUnverifiedMarker = ".maestro-restore-unverified"
+
+// ErrRestoreUnverifiedPending reports a plane that started but failed the
+// verification it owed from an earlier restore.
+var ErrRestoreUnverifiedPending = errors.New("restored plane has not passed verification")
+
+// unverifiedMarkerPath is where the pending-verification marker lives.
+func unverifiedMarkerPath(c *Config) string {
+	return filepath.Join(c.Roots.Data, RestoreUnverifiedMarker)
+}
+
+// markRestoreUnverified records that a completed restore still owes a
+// verification pass.
+func markRestoreUnverified(c *Config) error {
+	if err := os.WriteFile(unverifiedMarkerPath(c), []byte(
+		"a restore completed here but could not be verified; the next `up` owes it a verification pass\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", RestoreUnverifiedMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// restoreOwesVerification reports whether a pending pass is recorded.
+func restoreOwesVerification(c *Config) (bool, error) {
+	if _, err := os.Stat(unverifiedMarkerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check for %s: %w", RestoreUnverifiedMarker, err)
+	}
+	return true, nil
+}
+
+// settleOutstandingVerification runs the pass a previous restore could not,
+// and clears the debt only when the plane checks out.
+//
+// Called at the end of `up`, which is the first moment the plane is open —
+// and is exactly the moment the two-part restore hands control back.
+func settleOutstandingVerification(ctx context.Context, c *Config) error {
+	owed, err := restoreOwesVerification(c)
+	if err != nil || !owed {
+		return err
+	}
+
+	report, verifyErr := verifyLocked(ctx, c)
+	if verifyErr != nil {
+		return fmt.Errorf("verify a restored plane that had not been checked: %w", verifyErr)
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("%w: %d problem(s) found on a plane restored earlier without verification. "+
+			"First problem: %s", ErrRestoreUnverifiedPending, len(report.Problems), report.Problems[0].Detail)
+	}
+	if err := os.Remove(unverifiedMarkerPath(c)); err != nil {
+		return fmt.Errorf("clear %s: %w", RestoreUnverifiedMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
 
 // markerPermits records, for EVERY lifecycle operation, whether it may run
 // against a data root holding a torn restore.

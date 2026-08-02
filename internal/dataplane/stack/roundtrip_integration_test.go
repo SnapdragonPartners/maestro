@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -71,15 +72,22 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
+	// The EXACT set, captured before. "Something is running" would pass for
+	// a backup that restarted Postgres and left MinIO down — a plane that
+	// answers connections and has no object store.
+	before := runningServices(t, cfg)
+	if len(before) == 0 {
+		t.Fatal("nothing is running before the backup; this test cannot show a restart")
+	}
+
 	archive := filepath.Join(t.TempDir(), "archive")
 	if err := Backup(t.Context(), cfg, testComposeFile(), archive); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 
-	// Backup restores the project to the state it found, so a plane that
-	// was running is running again.
-	if got := runningServices(t, cfg); len(got) == 0 {
-		t.Errorf("backup left the plane stopped; it was running when the backup began")
+	if after := runningServices(t, cfg); !slices.Equal(before, after) {
+		t.Errorf("running services = %v, want exactly %v: backup must return the project to the state it found",
+			after, before)
 	}
 	if _, err := ReadManifest(archive); err != nil {
 		t.Fatalf("archive has no valid manifest: %v", err)
@@ -194,8 +202,23 @@ func TestTwoPartRestoreNeedsTheKey(t *testing.T) {
 	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
 		t.Fatalf("restore the key: %v", err)
 	}
+	// The restore could not verify itself, so it recorded the debt; this is
+	// the first moment it can be paid.
+	owed, owedErr := restoreOwesVerification(cfg)
+	if owedErr != nil || !owed {
+		t.Fatalf("a restore that skipped verification recorded no debt (owed = %v, err = %v): "+
+			"a torn pair would go live through this branch", owed, owedErr)
+	}
+
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
 		t.Fatalf("Up after supplying the key: %v", err)
+	}
+
+	// And `up` paid it. A plane that still owes verification has not been
+	// checked by anything.
+	stillOwed, stillErr := restoreOwesVerification(cfg)
+	if stillErr != nil || stillOwed {
+		t.Errorf("up did not settle the outstanding verification (owed = %v, err = %v)", stillOwed, stillErr)
 	}
 
 	reopened := openPlane(t, cfg)

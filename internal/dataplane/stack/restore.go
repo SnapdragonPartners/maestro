@@ -178,11 +178,19 @@ func replaceDataRoot(ctx context.Context, c *Config, composeFile, archiveData st
 			// Leaving the marker would make every later verb refuse a plane
 			// that is merely locked, including the `up` that finishes the
 			// sequence once the key is in place.
+			// The tree is whole but unchecked, and this branch cannot check
+			// it. Record the debt BEFORE clearing the incomplete marker, so
+			// no instant exists where the plane looks both whole and owing
+			// nothing.
+			if markErr := markRestoreUnverified(c); markErr != nil {
+				return fmt.Errorf("record the outstanding verification: %w", errors.Join(upErr, markErr))
+			}
 			if clearErr := clearRestoreMarker(c); clearErr != nil {
 				return fmt.Errorf("restore completed but the marker could not be cleared: %w",
 					errors.Join(upErr, clearErr))
 			}
-			return fmt.Errorf("restore completed, but the plane cannot be opened: %w", upErr)
+			return fmt.Errorf("restore completed, but the plane cannot be opened: %w. "+
+				"Supply the key and run `dataplane-up`, which will verify it", upErr)
 		}
 		return upErr
 	}
