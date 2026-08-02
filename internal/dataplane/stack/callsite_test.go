@@ -171,6 +171,102 @@ func guardArgument(fn *ast.FuncDecl) (string, bool) {
 	return argument, argument != ""
 }
 
+// The same property one level down: `up`'s own debt-bearing shutdown must be
+// armed before Compose starts anything.
+//
+// This is the defect the test below covers, rediscovered inside the function
+// that test's subject calls. `up` invokes Compose and then does four more
+// things — readiness, bucket setup, migrations, claim reconciliation — any
+// of which can fail with the containers already running. When the only
+// shutdown lived beside the settlement step, every one of those returned a
+// live plane carrying unsettled verification debt, which is exactly what
+// D4a forbids.
+//
+// So the arming point is asserted to precede the FIRST thing that starts
+// anything, and the disarm to follow the settlement. Checked structurally
+// for the reason the next test is: this is a property of statement ORDER,
+// which a parser sees exactly and which review demonstrably does not.
+func TestUpArmsItsDebtShutdownBeforeStartingAnything(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "stack.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse stack.go: %v", err)
+	}
+
+	var body *ast.BlockStmt
+	for _, decl := range file.Decls {
+		if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Name.Name == "up" && fn.Recv == nil {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("up is gone: this guard is enforcing nothing")
+	}
+
+	deferAt, armedAt, composeAt, disarmedAt := -1, -1, -1, -1
+	for i, statement := range body.List {
+		if deferred, isDefer := statement.(*ast.DeferStmt); isDefer && deferAt < 0 && callsFunc(deferred, "down") {
+			deferAt = i
+			// The arming assignment is the declaration of the flag that
+			// defer consults, which must exist before it.
+			continue
+		}
+		ast.Inspect(statement, func(node ast.Node) bool {
+			switch typed := node.(type) {
+			case *ast.AssignStmt:
+				if assignsIdent(typed, "settled") {
+					if armedAt < 0 {
+						armedAt = i
+					}
+					if assignsTrue(typed, "settled") && disarmedAt < 0 {
+						disarmedAt = i
+					}
+				}
+			case *ast.CallExpr:
+				if name, isIdent := typed.Fun.(*ast.Ident); isIdent && name.Name == "compose" && composeAt < 0 {
+					composeAt = i
+				}
+			}
+			return true
+		})
+	}
+
+	switch {
+	case composeAt < 0:
+		t.Fatal("up never calls compose: this guard is enforcing nothing")
+	case deferAt < 0:
+		t.Fatal("up has no deferred call to down: a failure after Compose starts the containers would " +
+			"leave a plane carrying verification debt running for connected writers")
+	case armedAt < 0:
+		t.Fatal("up never assigns the settled flag: the defer would consult nothing")
+	case armedAt > composeAt:
+		t.Errorf("the debt flag is set at statement %d but compose runs at %d: readiness, bucket setup, "+
+			"migrations and claim reconciliation would each leave an unverified plane running",
+			armedAt, composeAt)
+	case deferAt > composeAt:
+		t.Errorf("the shutdown defer is registered at statement %d but compose runs at %d: a defer "+
+			"registered after a call cannot run for a failure inside it", deferAt, composeAt)
+	case disarmedAt < 0:
+		t.Fatal("up never disarms the debt shutdown: a healthy settlement would stop the plane it just " +
+			"vouched for")
+	case disarmedAt < composeAt:
+		t.Errorf("the debt shutdown is disarmed at statement %d, before compose at %d: it would cover "+
+			"nothing at all", disarmedAt, composeAt)
+	}
+}
+
+// assignsIdent reports whether a statement assigns the named variable at
+// all, whatever the value. The arming assignment is `settled := !owed`,
+// which assignsTrue cannot see.
+func assignsIdent(assignment *ast.AssignStmt, target string) bool {
+	for _, left := range assignment.Lhs {
+		if name, isIdent := left.(*ast.Ident); isIdent && name.Name == target {
+			return true
+		}
+	}
+	return false
+}
+
 // Shutdown must be armed BEFORE `up` is called, not after it returns.
 //
 // `up` starts containers and then does four more things — readiness,

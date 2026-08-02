@@ -162,3 +162,70 @@ func TestTwoPartRestoreOfATornArchiveStopsThePlane(t *testing.T) {
 		t.Errorf("Backup = %v, want a refusal against a plane that owes verification", backupErr)
 	}
 }
+
+// TestUpStopsAnOwingPlaneWhenItFailsBEFORESettlement is the invariant at its
+// weakest point.
+//
+// D4a says a plane carrying verification debt is never left running, and the
+// natural implementation delivers something narrower: stop it when
+// VERIFICATION fails. But settlement is the last thing `up` does. Everything
+// between `compose up` and it -- readiness, bucket provisioning, migration,
+// claim reconciliation -- can fail with the containers already started, and
+// each of those returns having never reached the step that would condemn the
+// plane. The result is a live, unverified plane, and the marker gates
+// lifecycle verbs rather than a client holding a connection string.
+//
+// The failure injected here is a DIRTY MIGRATION, which is a real state
+// rather than a contrived one: golang-migrate records its target version
+// before executing, so a migration killed midway leaves exactly this, and
+// every later migration refuses until it is forced. It also lands in the
+// middle of the exposed region -- after readiness and the bucket, before
+// reconciliation -- so it exercises the gap rather than its edge.
+func TestUpStopsAnOwingPlaneWhenItFailsBeforeSettlement(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	// Dirty the schema version through the running plane, then stop it. The
+	// next `up` will start the containers and fail at the migration step.
+	database := openPlane(t, cfg)
+	if _, err := database.ExecContext(t.Context(), `UPDATE schema_migrations SET dirty = true`); err != nil {
+		t.Fatalf("dirty the schema version: %v", err)
+	}
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	if got := runningServices(t, cfg); len(got) != 0 {
+		t.Fatalf("services %v are running before the plane is started: this test cannot show that `up` "+
+			"stopped what it started", got)
+	}
+
+	// The debt, recorded as a two-part restore would have left it.
+	if err := markRestoreUnverified(cfg); err != nil {
+		t.Fatalf("markRestoreUnverified: %v", err)
+	}
+
+	upErr := Up(t.Context(), cfg, testComposeFile())
+	if upErr == nil {
+		t.Fatal("Up succeeded against a dirty schema version: the injected failure did not happen, so " +
+			"this test proves nothing about what `up` does when it fails")
+	}
+	// Deliberately NOT asserted to be ErrRestoreUnverifiedPending: the whole
+	// point is that this failure happens before verification is ever
+	// attempted, so the error is the migration's.
+	if errors.Is(upErr, ErrRestoreUnverifiedPending) {
+		t.Fatalf("Up failed at verification (%v), not before it: the injected failure landed in the "+
+			"wrong place and the pre-settlement region is still untested", upErr)
+	}
+
+	if got := runningServices(t, cfg); len(got) != 0 {
+		t.Errorf("services %v are still running after an `up` that failed before it could verify a "+
+			"plane owing verification: the debt-bearing shutdown covers only the settlement step", got)
+	}
+	owed, owedErr := restoreOwesVerification(cfg)
+	if owedErr != nil || !owed {
+		t.Errorf("the verification debt is gone after a failed `up` (owed = %v, err = %v): nothing "+
+			"verified this plane, and the next verb would find it owing nothing", owed, owedErr)
+	}
+}

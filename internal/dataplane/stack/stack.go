@@ -83,12 +83,12 @@ func Up(ctx context.Context, c *Config, composeFile string) (err error) {
 	return up(ctx, c, composeFile)
 }
 
-func up(ctx context.Context, c *Config, composeFile string) error {
-	if err := c.Roots.Ensure(); err != nil {
-		return fmt.Errorf("prepare storage roots: %w", err)
+func up(ctx context.Context, c *Config, composeFile string) (err error) {
+	if rootsErr := c.Roots.Ensure(); rootsErr != nil {
+		return fmt.Errorf("prepare storage roots: %w", rootsErr)
 	}
-	if err := c.Roots.EnsureServiceDataDirs(paths.Services()...); err != nil {
-		return fmt.Errorf("prepare service data directories: %w", err)
+	if dirsErr := c.Roots.EnsureServiceDataDirs(paths.Services()...); dirsErr != nil {
+		return fmt.Errorf("prepare service data directories: %w", dirsErr)
 	}
 
 	rootKey, keyErr := rootKeyFor(c, lifecycleUp)
@@ -103,24 +103,66 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if envErr != nil {
 		return envErr
 	}
-	if err := compose(ctx, c.ProjectName, composeFile, env, "up", "-d", "--wait=false"); err != nil {
-		return err
+
+	// Read ONCE, before anything starts, and act on it through a single
+	// deferred stop armed before Compose is invoked.
+	//
+	// D4a's invariant is that a plane carrying verification debt is never
+	// left running, and the obvious implementation — stop it when
+	// settlement fails — does not deliver that. Everything between `compose
+	// up` and settlement can fail with the containers already started:
+	// readiness times out, the bucket cannot be provisioned, a migration is
+	// dirty, a deletion claim will not reconcile. Each of those returned
+	// directly, leaving a live, unverified plane that never reached the
+	// step that would have condemned it — and the marker only gates
+	// lifecycle verbs, not a client holding a connection string.
+	//
+	// This is the defect replaceDataRoot already had and already fixed, one
+	// level down, and it is worth naming as a repeat: arming recovery next
+	// to the failure you were thinking about covers that failure and no
+	// other. The arming point belongs at the START of the region the
+	// invariant covers, which here is every statement after Compose.
+	owed, owedErr := restoreOwesVerification(c)
+	if owedErr != nil {
+		return owedErr
 	}
-	if err := waitReady(ctx, c, composeFile, env); err != nil {
-		return err
+	// A plane owing nothing is not this defer's business: an ordinary `up`
+	// that fails readiness deliberately leaves its containers for the
+	// operator to inspect.
+	settled := !owed
+	defer func() {
+		if settled {
+			return
+		}
+		// A fresh bounded context, for D4's reason: a Ctrl-C'd `up` must
+		// still stop the plane it could not vouch for, and a stop
+		// inheriting the cancelled context would be cancelled before it
+		// ran.
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readyTimeout)
+		defer cancel()
+		if downErr := down(stopCtx, c, composeFile); downErr != nil {
+			err = errors.Join(err, fmt.Errorf("stop a plane that still owes verification: %w", downErr))
+		}
+	}()
+
+	if composeErr := compose(ctx, c.ProjectName, composeFile, env, "up", "-d", "--wait=false"); composeErr != nil {
+		return composeErr
 	}
-	blob, err := ensureBucket(ctx, c, rootKey)
-	if err != nil {
-		return err
+	if readyErr := waitReady(ctx, c, composeFile, env); readyErr != nil {
+		return readyErr
 	}
-	if err := migrateLocked(ctx, c, rootKey); err != nil {
-		return err
+	blob, bucketErr := ensureBucket(ctx, c, rootKey)
+	if bucketErr != nil {
+		return bucketErr
+	}
+	if migrateErr := migrateLocked(ctx, c, rootKey); migrateErr != nil {
+		return migrateErr
 	}
 	// AFTER the migrations, because the claims table is part of the schema
 	// they apply, and before `up` reports a ready plane, because a surviving
 	// claim is unfinished destructive work.
-	if err := reconcileClaims(ctx, c, rootKey, blob); err != nil {
-		return err
+	if claimErr := reconcileClaims(ctx, c, rootKey, blob); claimErr != nil {
+		return claimErr
 	}
 	// Last, because it needs an open plane: a restore that could not verify
 	// itself — the two-part path, where the key was absent — recorded the
@@ -131,15 +173,19 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	// operator sees an error while clients keep using the plane it
 	// condemns. The marker is deliberately retained, so the debt survives
 	// for the next attempt and every guarded verb keeps refusing.
-	if err := settleOutstandingVerification(ctx, c); err != nil {
-		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readyTimeout)
-		defer cancel()
-		if downErr := down(stopCtx, c, composeFile); downErr != nil {
-			return fmt.Errorf("verification failed and the plane could not be stopped: %w",
-				errors.Join(err, downErr))
-		}
-		return err
+	//
+	// The stop is the deferred one armed before Compose rather than a second
+	// one written here. Two mechanisms for one invariant is how the gap
+	// above came to exist: the one beside the failure somebody pictured got
+	// written, and the region it did not cover got nothing.
+	if settleErr := settleOutstandingVerification(ctx, c); settleErr != nil {
+		return settleErr
 	}
+	// The ONLY disarming point, and it is after a healthy settlement rather
+	// than after the pass merely running: `settleOutstandingVerification`
+	// clears the marker itself when the plane checks out, so reaching here
+	// means the debt is gone.
+	settled = true
 	return nil
 }
 
