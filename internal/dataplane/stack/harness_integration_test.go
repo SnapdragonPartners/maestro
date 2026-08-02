@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,35 +54,56 @@ func isolatedPlane(t *testing.T) *Config {
 	}
 	project := "maestro-it-" + hex.EncodeToString(suffix)
 
-	home := t.TempDir()
-	roots := paths.Roots{
-		Config: filepath.Join(home, "config"),
-		Cache:  filepath.Join(home, "cache"),
-		State:  filepath.Join(home, "state"),
-		Data:   filepath.Join(home, "data"),
-	}
+	// EVERY part of the isolation goes through the environment, and the
+	// roots are resolved rather than constructed.
+	//
+	// An earlier version set the project and ports through the environment
+	// — which subprocesses inherit — and built the roots as a struct
+	// literal, which they do not. A child `dataplanectl` therefore
+	// inherited the isolated project and ports and then called
+	// paths.Resolve(), landing on the DEVELOPER's roots: a child `reset`
+	// would have deleted their data, and a child `up` would have mounted
+	// their live PGDATA into a second Postgres container. The comment
+	// beside it explained why struct assignment leaves subprocesses behind,
+	// two lines above the struct assignment that did.
+	//
+	// Deriving the roots through paths.Resolve() under MAESTRO_HOME is what
+	// makes parent and child agree by construction rather than by two
+	// copies of the same intent.
+	// The developer's roots are captured BEFORE the override, or the
+	// comparison below resolves under MAESTRO_HOME and compares the
+	// isolated root against itself — an assertion that can only ever fire
+	// on the safe case and never on the dangerous one.
+	developer, developerErr := paths.Resolve()
 
-	// Set through the environment rather than assigned to the struct: the
-	// killed-process cases run `dataplanectl` as a child, and only an
-	// environment override reaches it. Assigning the field would isolate
-	// this process and quietly leave subprocesses on the developer's plane.
+	home := t.TempDir()
+	t.Setenv(paths.HomeEnv, home)
 	t.Setenv(EnvProjectName, project)
 	t.Setenv(EnvPGPort, freePort(t))
 	t.Setenv(EnvMinIOPort, freePort(t))
 	t.Setenv(EnvMinIOConsolePort, freePort(t))
 
+	roots, err := paths.Resolve()
+	if err != nil {
+		t.Fatalf("resolve isolated roots: %v", err)
+	}
 	cfg, err := NewConfig(roots)
 	if err != nil {
 		t.Fatalf("NewConfig: %v", err)
+	}
+
+	if !strings.HasPrefix(cfg.Roots.Data, home) {
+		t.Fatalf("harness data root %s is outside its MAESTRO_HOME %s: a subprocess would resolve "+
+			"somewhere this test does not control", cfg.Roots.Data, home)
 	}
 
 	if cfg.ProjectName == DefaultProjectName {
 		t.Fatalf("harness resolved the DEFAULT compose project (%s): every operation would act on the "+
 			"developer's running containers", DefaultProjectName)
 	}
-	if real, resolveErr := paths.Resolve(); resolveErr == nil && cfg.Roots.Data == real.Data {
+	if developerErr == nil && cfg.Roots.Data == developer.Data {
 		t.Fatalf("harness resolved the developer's real data root (%s): a unique project name does not "+
-			"stop a reset from deleting what is bind-mounted there", real.Data)
+			"stop a reset from deleting what is bind-mounted there", developer.Data)
 	}
 
 	// Best-effort teardown on a context of its own, so a cancelled or
@@ -90,8 +112,12 @@ func isolatedPlane(t *testing.T) *Config {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), teardownTimeout)
 		defer cancel()
+		// Errorf, not Logf. A test that passes while leaving a destructive
+		// stack running has not finished, and the next run would meet
+		// containers it did not create — on ports and a project it believes
+		// are its own.
 		if err := Down(ctx, cfg, testComposeFile()); err != nil {
-			t.Logf("teardown of %s did not complete: %v", cfg.ProjectName, err)
+			t.Errorf("teardown of %s did not complete, leaving an orphaned stack: %v", cfg.ProjectName, err)
 		}
 	})
 
