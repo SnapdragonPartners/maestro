@@ -128,9 +128,15 @@ func TestEveryLifecycleHasAnUnverifiedPolicy(t *testing.T) {
 // the verification happens at all. If the two states ever collapsed into one
 // policy, the two-part restore could never be completed -- the plane would
 // refuse the only operation that can settle its debt.
+//
+// `verify` is on the refused side here, which is the correction Codex's
+// review forced. Settlement is a pass plus its consequences, the exported
+// Verify delivers neither, and a verb that reported "healthy" while leaving
+// the debt outstanding would be the most convincing possible way to tell an
+// operator the problem is gone.
 func TestUnverifiedMarkerGatesEveryOperation(t *testing.T) {
 	permitted := map[lifecycle]bool{
-		lifecycleUp: true, lifecycleVerify: true,
+		lifecycleUp:   true,
 		lifecycleDown: true, lifecycleRestore: true, lifecycleReset: true,
 	}
 

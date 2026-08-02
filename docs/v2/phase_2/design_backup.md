@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery"
-edit_date = "2026-08-01"
+edit_date = "2026-08-02"
 status = "live"
 summary = "Mini-plan for Phase 2 item 8: cold backup as a whole-root tree copy with no exclusion list, a keyless stop/start quiesce protocol measured against the pinned images, a whole-root freshness rule counting any non-directory entry, leaving the service registry only its directory-creation job, restore that preserves every bind-mount inode and the held lock file under one lock spanning stop through verification with a durable incomplete marker and a phase boundary deciding whether failure restarts or stays stopped, archives validated by a completion manifest written last rather than by directory shape, a backup that returns the project to the state it found, a hand-rolled copier because os.CopyFS widens modes rather than preserving them, digest revalidation across both artifact families under the seam's own snapshot and advisory locks, a verification debt carried in its own marker across the two-part restore and settled by the next up on pain of the plane being stopped, and resumable new-key recovery that installs its staged key last."
 type = "design"
@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery
 
-Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. Amended during implementation with **D4a**, the verification debt carried across the two-part restore and its own marker policy: the accepted D4 cleared the incomplete marker on a branch that had verified nothing, which was a hole in D7 rather than the clean exception it read as.
+Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. **D4a is proposed and awaiting review** — the verification debt carried across the two-part restore and its own marker policy, written during implementation because the accepted D4 cleared the incomplete marker on a branch that had verified nothing, which was a hole in D7 rather than the clean exception it read as. Everything else here is Accepted; D4a and the code implementing it are not.
 
 Implements [Phase 2 plan](plan_scope.md) item 8 under [ADR 0022](../../adr/0022-v2-data-plane.md) (cold backup as the MVP baseline; restore from "the backup plus the key file, **or** re-entry of secrets") and the [project-folder spike](../phase_0/spike_project-folder.md) item 4 (backup copies only `data/` and excludes the root-of-trust key, under `MAESTRO_HOME` too). Builds on item 2's lifecycle machinery, item 6's object module and sweep, and item 7's key-access rule and measured recovery procedure.
 
@@ -121,7 +121,9 @@ Guarding only `up` is not enough, since every other verb can act on a torn tree 
 
 ### D4a. The verification debt, and its own marker (amendment)
 
-*Accepted as an amendment during implementation. The original text above stopped at "restored and stopped", and that was not enough: it clears the incomplete marker on a branch that has verified nothing, so the exception it defines is also a hole in D7.*
+*Status: **awaiting review** — proposed during implementation, not yet approved by Codex or DR. The rest of this document is Accepted; this section is not, and the code implementing it is on the branch under the same condition.*
+
+*The original text above stopped at "restored and stopped", and that was not enough: it clears the incomplete marker on a branch that has verified nothing, so the exception it defines is also a hole in D7.*
 
 The two-part restore is the one branch that completes a copy and **cannot verify it**. Verification needs an open plane, and the plane cannot be opened without its key. Clearing the incomplete marker and stopping there lets a torn pair go live by the intended route: the operator supplies the key, `dataplane-up` starts the plane, and nothing ever recomputes a digest. The state that made verification skippable — a locked plane — is gone by then, and nothing records that the skip happened.
 
@@ -131,7 +133,9 @@ The debt is therefore **handed forward rather than dropped**, in a second marker
 
 **Write order.** The unverified marker is written and `fsync`ed **before** the incomplete marker is cleared, so no instant exists in which the plane looks whole and owing nothing. The reverse order has a crash window that produces exactly the state this exists to prevent.
 
-**Settlement belongs to `up`,** after readiness, migrations and claim reconciliation — the first moment the plane is open. A healthy pass clears the marker; anything else does not:
+**Settlement is a pass PLUS its consequences,** and that distinction decides the policy table below. A verification pass answers a question; settling the debt means acting on the answer — clearing the marker when the plane is healthy, and stopping the plane when it is not. A verb that runs the pass and does neither has not settled anything.
+
+**Settlement belongs to `up`,** after readiness, migrations and claim reconciliation — the first moment the plane is open. It is the **only** settlement path. A healthy pass clears the marker; anything else does not:
 
 | Settlement outcome | What `up` does |
 | --- | --- |
@@ -141,18 +145,20 @@ The debt is therefore **handed forward rather than dropped**, in a second marker
 
 Stopping is the load-bearing half. Reporting a torn pair while leaving the plane serving is the worst available outcome — the operator sees an error while clients keep using the plane it condemns — and the marker gates lifecycle verbs, not a client holding a connection string. Retaining the marker matters for the same reason the incomplete one is retained: a debt cleared by a *failed* settlement would let the next `up` start a plane nothing has ever checked, the tear laundered by one failed attempt. The stop runs on `context.WithoutCancel` plus a timeout, for D4's reason — a Ctrl-C'd `up` must still stop the plane it condemned.
 
-**The marker gates verbs, on its own policy table.** `markerPermits` answers the torn question; `unverifiedPermits` answers this one, and the two disagree where the states do:
+**The marker gates verbs, on its own policy table.** `markerPermits` answers the torn question; `unverifiedPermits` answers this one, and they differ on exactly one operation:
 
 | Operation | With a verification debt outstanding |
 | --- | --- |
 | `up` | **Allowed** — it *is* the settlement. Refusing it strands the plane the debt exists to rescue. |
-| `verify` | **Allowed** — it is the check itself; a gate refusing it would be refusing the answer. This is the row that differs from D4's table, where `verify` is refused: there is no point verifying a tree known to be partial, and every point verifying one whose only fault is that nobody has looked. |
+| `verify` | **Refuse.** This is the answer round five corrected: the obvious reading is that verification should be allowed against a plane owing verification, and it is wrong. The exported `Verify` runs a pass and settles nothing — it neither clears a healthy plane's marker nor stops an unhealthy one, and it cannot sensibly do the second, since it takes no Compose file and a read-shaped verb that stops a running plane as a side effect is a trap. Permitting it would leave a verb that reports "healthy" against an owing plane while the debt survives, which is the most convincing possible way to tell an operator the problem is gone. Nothing is lost: an owing plane is a *stopped* plane, so `verify` against one could only have failed to connect. |
 | `down`, `reset`, `restore` | Allowed. Stop, discard, replace. |
 | `backup`, `migrate`, `force-version`, `recover-key` | **Refuse.** Backing up an unchecked plane is how an unchecked plane becomes an archive somebody later restores from — and the two-part restore leaves the plane *stopped and owing*, which is a state `backup` is otherwise perfectly happy to copy. `migrate` and `force-version` would apply schema changes to contents nothing has vouched for. |
 
+So the tables agree on every refusal and differ only on `up` — which is the honest shape of the thing. The two states share one hazard, *acting on contents nobody has vouched for*, and diverge on one point only: the operation that makes the vouching possible.
+
 Both tables are enforced by the same structural completeness test over `lifecycles`, and every verb consults them through **one** combined guard rather than two calls, so a verb cannot be guarded against the failure its author remembered and open to the other.
 
-**Neither `reset` nor `restore` clears this marker specially.** Both sweep the data root — D2's whole-root freshness rule and D5's marker-preserving clear respectively — and a plane that has been discarded or replaced owes nothing about contents that are gone. Only a healthy verification pass clears it in place.
+**Neither `reset` nor `restore` clears this marker specially.** Both sweep the data root — D2's whole-root freshness rule and D5's marker-preserving clear respectively — and a plane that has been discarded or replaced owes nothing about contents that are gone. Only a healthy settlement clears it in place.
 
 ## D5. Restore preserves every inode, including the lock's
 

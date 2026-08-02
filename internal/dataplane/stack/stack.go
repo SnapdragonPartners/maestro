@@ -359,32 +359,47 @@ func guardRestoreMarker(c *Config, operation lifecycle) error {
 // this operation run against a plane whose tree is whole and whose contents
 // nothing has ever checked?
 //
-// The two tables answer differently for `up` and `verify`, which is the
-// whole reason the states are recorded separately. A torn tree must not be
-// started at all; an unverified one must be started, because starting it is
-// the only way it gets verified — `up` is the settlement, and refusing it
-// would strand exactly the plane the debt exists to rescue. `verify` is the
-// check itself, and a gate that refused it would be refusing the answer.
+// The two tables answer differently for exactly ONE operation, `up`, and
+// that difference is the whole reason the states are recorded separately. A
+// torn tree must not be started at all; an unverified one must be started,
+// because starting it is the only way it gets verified. `up` is the
+// settlement, and refusing it would strand exactly the plane the debt exists
+// to rescue.
 //
-// The refusals are the same three, for the same reasons the torn table gives
-// them. `backup` is how an unchecked plane becomes an archive somebody later
-// restores from — and a two-part restore leaves the plane STOPPED and owing,
-// which is a state `backup` is otherwise perfectly happy to copy. `migrate`
-// and `force-version` would apply schema changes to contents nothing has
-// vouched for.
+// `verify` is refused, which is not the obvious answer and is the right one.
+// Settlement is not a verification pass — it is a pass PLUS its consequences:
+// clear the marker when the plane is healthy, and stop the plane when it is
+// not. The exported Verify does neither, and it cannot sensibly do the
+// second: it takes no Compose file, and a read-shaped verb that stops a
+// running plane as a side effect is a trap. Permitting it would leave a verb
+// that reports "healthy" against an owing plane and settles nothing, so the
+// debt would survive a green report — the one outcome most likely to
+// convince an operator it is gone. There is exactly one settlement path, and
+// it is `up`.
+//
+// Nothing is lost by this. An owing plane is a STOPPED plane: `up` either
+// settles the debt or stops what it started, so `verify` against one could
+// only have failed to connect anyway. The refusal replaces a confusing
+// connection error with a message naming the way out.
+//
+// The other three refusals are the torn table's, for its reasons. `backup`
+// is how an unchecked plane becomes an archive somebody later restores from
+// — and a two-part restore leaves the plane stopped and owing, which is a
+// state `backup` is otherwise perfectly happy to copy. `migrate` and
+// `force-version` would apply schema changes to contents nothing has vouched
+// for.
 //
 // Neither `reset` nor `restore` clears this marker specially: both sweep the
 // data root, and a plane that has been discarded or replaced owes nothing
-// about contents that are gone. Only a HEALTHY verification pass clears it
-// in place.
+// about contents that are gone. Only a HEALTHY settlement clears it in place.
 //
 //nolint:gochecknoglobals // Immutable policy table.
 var unverifiedPermits = map[lifecycle]bool{
 	lifecycleUp:           true,
-	lifecycleVerify:       true,
 	lifecycleDown:         true,
 	lifecycleRestore:      true,
 	lifecycleReset:        true,
+	lifecycleVerify:       false,
 	lifecycleMigrate:      false,
 	lifecycleForceVersion: false,
 	lifecycleBackup:       false,
