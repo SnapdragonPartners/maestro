@@ -58,19 +58,20 @@ func runningServices(t *testing.T, cfg *Config) []string {
 // what a backup owes is not "the bytes were copied" but "the plane still
 // holds what it held". A tree-comparison test would pass for an archive of
 // a cluster that no longer starts.
+//
+// The contents span BOTH stores — an artifact, the attachment whose bytes
+// live in the object store, and the pin that holds it — because that is
+// what this operation actually copies. An earlier version of this test wrote
+// a single Postgres table, and it would have passed for a backup that copied
+// the cluster and skipped the bucket entirely, with the verification step it
+// runs having recomputed nothing.
 func TestBackupRestoreRoundTrip(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
-	db := openPlane(t, cfg)
-	if _, err := db.ExecContext(t.Context(), `CREATE TABLE roundtrip (value text)`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
-	if _, err := db.ExecContext(t.Context(), `INSERT INTO roundtrip VALUES ('survives the round trip')`); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
+	seed := seedCrossStore(t, cfg)
 
 	// The EXACT set, captured before. "Something is running" would pass for
 	// a backup that restarted Postgres and left MinIO down — a plane that
@@ -104,14 +105,18 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("Restore: %v", err)
 	}
 
-	restored := openPlane(t, cfg)
-	var value string
-	if err := restored.QueryRowContext(t.Context(), `SELECT value FROM roundtrip`).Scan(&value); err != nil {
-		t.Fatalf("read back: %v", err)
+	assertCrossStoreIntact(t, cfg, seed)
+
+	// And the verification restore ran was not vacuous. Restore's internal
+	// pass is the gate, but it reports nothing to a caller: a plane holding
+	// nothing passes it exactly as a healthy one does. This pass runs
+	// verifyLocked over the same restored plane and asserts what it covered,
+	// which is the only way to distinguish the two.
+	report, err := Verify(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
-	if value != "survives the round trip" {
-		t.Errorf("value = %q, want the row written before the backup", value)
-	}
+	assertVerifyWalkedTheSeed(t, report)
 
 	// A completed restore leaves no marker, or every later verb would
 	// refuse the plane.
