@@ -203,7 +203,7 @@ func TestUpArmsItsDebtShutdownBeforeStartingAnything(t *testing.T) {
 		t.Fatal("up is gone: this guard is enforcing nothing")
 	}
 
-	deferAt, armedAt, composeAt, disarmedAt := -1, -1, -1, -1
+	deferAt, armedAt, composeAt, settleAt, disarmedAt := -1, -1, -1, -1, -1
 	for i, statement := range body.List {
 		if deferred, isDefer := statement.(*ast.DeferStmt); isDefer && deferAt < 0 && callsFunc(deferred, "down") {
 			deferAt = i
@@ -223,8 +223,15 @@ func TestUpArmsItsDebtShutdownBeforeStartingAnything(t *testing.T) {
 					}
 				}
 			case *ast.CallExpr:
-				if name, isIdent := typed.Fun.(*ast.Ident); isIdent && name.Name == "compose" && composeAt < 0 {
+				name, isIdent := typed.Fun.(*ast.Ident)
+				if !isIdent {
+					return true
+				}
+				if name.Name == "compose" && composeAt < 0 {
 					composeAt = i
+				}
+				if name.Name == "settleOutstandingVerification" && settleAt < 0 {
+					settleAt = i
 				}
 			}
 			return true
@@ -246,12 +253,26 @@ func TestUpArmsItsDebtShutdownBeforeStartingAnything(t *testing.T) {
 	case deferAt > composeAt:
 		t.Errorf("the shutdown defer is registered at statement %d but compose runs at %d: a defer "+
 			"registered after a call cannot run for a failure inside it", deferAt, composeAt)
+	case settleAt < 0:
+		t.Fatal("up never calls settleOutstandingVerification: there is no settlement for the debt " +
+			"shutdown to be disarmed by, so this guard is enforcing nothing")
 	case disarmedAt < 0:
 		t.Fatal("up never disarms the debt shutdown: a healthy settlement would stop the plane it just " +
 			"vouched for")
-	case disarmedAt < composeAt:
-		t.Errorf("the debt shutdown is disarmed at statement %d, before compose at %d: it would cover "+
-			"nothing at all", disarmedAt, composeAt)
+	case disarmedAt < settleAt:
+		// Compared against SETTLEMENT, not against compose. The rule is
+		// "disarm only once the debt is actually paid", and compose is
+		// merely something that happens earlier -- a disarm anywhere between
+		// compose and settlement would satisfy a compose comparison while
+		// leaving the whole exposed region uncovered, which is this
+		// package's recurring defect wearing its third hat.
+		//
+		// Strictly less-than, so a disarm nested INSIDE the settlement
+		// statement -- `if err := settle(...); err == nil { settled = true }`
+		// -- is accepted. That spelling is correct, and a guard that
+		// rejected it would be forbidding a refactor rather than a defect.
+		t.Errorf("the debt shutdown is disarmed at statement %d but settlement runs at %d: the plane "+
+			"would be vouched for before anything verified it", disarmedAt, settleAt)
 	}
 }
 
