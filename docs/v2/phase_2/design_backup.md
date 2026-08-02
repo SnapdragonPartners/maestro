@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery
 
-Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. **D4a is proposed and awaiting review** — the verification debt carried across the two-part restore and its own marker policy, written during implementation because the accepted D4 cleared the incomplete marker on a branch that had verified nothing, which was a hole in D7 rather than the clean exception it read as. Everything else here is Accepted; D4a and the code implementing it are not.
+Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. **D4a is approved by Codex and awaiting DR** — the verification debt carried across the two-part restore and its own marker policy, written during implementation because the accepted D4 cleared the incomplete marker on a branch that had verified nothing, which was a hole in D7 rather than the clean exception it read as.
 
 Implements [Phase 2 plan](plan_scope.md) item 8 under [ADR 0022](../../adr/0022-v2-data-plane.md) (cold backup as the MVP baseline; restore from "the backup plus the key file, **or** re-entry of secrets") and the [project-folder spike](../phase_0/spike_project-folder.md) item 4 (backup copies only `data/` and excludes the root-of-trust key, under `MAESTRO_HOME` too). Builds on item 2's lifecycle machinery, item 6's object module and sweep, and item 7's key-access rule and measured recovery procedure.
 
@@ -121,7 +121,7 @@ Guarding only `up` is not enough, since every other verb can act on a torn tree 
 
 ### D4a. The verification debt, and its own marker (amendment)
 
-*Status: **awaiting review** — proposed during implementation, not yet approved by Codex or DR. The rest of this document is Accepted; this section is not, and the code implementing it is on the branch under the same condition.*
+*Status: **approved by Codex 2026-08-02, awaiting DR** — proposed during implementation and reviewed over three rounds (the `verify` permission, which was wrong; the debt-bearing shutdown's coverage, which reached only the settlement step; and the disarming point's structural check). Accepted once DR approves; until then this section and the code implementing it carry Codex's approval alone.*
 
 *The original text above stopped at "restored and stopped", and that was not enough: it clears the incomplete marker on a branch that has verified nothing, so the exception it defines is also a hole in D7.*
 
