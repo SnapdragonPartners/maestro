@@ -165,10 +165,7 @@ func TestTwoPartRestoreNeedsTheKey(t *testing.T) {
 		t.Fatalf("Up: %v", err)
 	}
 
-	db := openPlane(t, cfg)
-	if _, err := db.ExecContext(t.Context(), `CREATE TABLE two_part (value text)`); err != nil {
-		t.Fatalf("create table: %v", err)
-	}
+	seed := seedCrossStore(t, cfg)
 
 	archive := filepath.Join(t.TempDir(), "archive")
 	if err := Backup(t.Context(), cfg, testComposeFile(), archive); err != nil {
@@ -226,15 +223,10 @@ func TestTwoPartRestoreNeedsTheKey(t *testing.T) {
 		t.Errorf("up did not settle the outstanding verification (owed = %v, err = %v)", stillOwed, stillErr)
 	}
 
-	reopened := openPlane(t, cfg)
-	var exists bool
-	if err := reopened.QueryRowContext(t.Context(),
-		`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'two_part')`).Scan(&exists); err != nil {
-		t.Fatalf("query the reopened plane: %v", err)
-	}
-	if !exists {
-		t.Error("the table written before the backup is gone: the second part opened a different plane")
-	}
+	// And the plane the second part opened is the one that was backed up,
+	// across both stores. A table-existence check would pass for a plane
+	// whose object store came up empty.
+	assertCrossStoreIntact(t, cfg, seed)
 }
 
 // A restore must not be startable while a torn tree is on disk, and the

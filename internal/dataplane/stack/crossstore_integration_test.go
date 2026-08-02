@@ -373,31 +373,42 @@ func assertVerifyWalkedTheSeed(t *testing.T, report store.VerifyReport) {
 	}
 }
 
-// TestCrossStoreSeedIsWhereTheSeamPutIt pins the object-key layout the
-// fixture reproduces to the one the seam actually uses.
+// tearTheSeededPair makes one half of the plane disagree with the other.
 //
-// The torn-pair tests corrupt an object through the S3 API, which means
-// naming its key themselves. If the seam's layout changed, those tests would
-// corrupt nothing, verify would pass, and they would report success for the
-// detection they exist to prove.
-func TestCrossStoreSeedIsWhereTheSeamPutIt(t *testing.T) {
-	cfg := isolatedPlane(t)
-	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
-		t.Fatalf("Up: %v", err)
-	}
-	seed := seedCrossStore(t, cfg)
-
+// A torn pair is the characteristic failure of a whole-root copy: a Postgres
+// cluster and an object store captured at moments that disagree. It is
+// produced here by writing different bytes at the object's digest key
+// THROUGH THE S3 API — a second version, which is what a read returns —
+// rather than by editing MinIO's on-disk files, whose representation is
+// erasure-coded metadata and not the object body.
+//
+// The row is untouched, so nothing structural is wrong: the attachment
+// exists, the object exists, and only the content disagrees with the digest
+// addressing it. Recomputing the hash over the whole stream is the only
+// thing that observes it.
+func tearTheSeededPair(t *testing.T, cfg *Config, seed crossStoreSeed) {
+	t.Helper()
 	blob, err := ensureBucket(t.Context(), cfg, planeRootKey(t, cfg))
 	if err != nil {
 		t.Fatalf("reach the object store: %v", err)
 	}
+
+	// The key is pinned before it is used. If the fixture's idea of the
+	// layout no longer matched the seam's, the corruption would land
+	// somewhere nothing reads, verification would pass, and every test below
+	// would report a detection that never happened.
 	versions, err := blob.ListVersions(t.Context(), seed.ObjectKey())
 	if err != nil {
 		t.Fatalf("list versions at %s: %v", seed.ObjectKey(), err)
 	}
 	if len(versions) == 0 {
 		t.Fatalf("nothing is stored at %s: the fixture's idea of the object key no longer matches "+
-			"the seam's, so every test that reaches the object store by this key touches nothing",
-			seed.ObjectKey())
+			"the seam's, so this would corrupt nothing", seed.ObjectKey())
+	}
+
+	corrupt := []byte("these bytes do not hash to the digest that addresses them")
+	if _, err := blob.PutStaged(t.Context(), seed.ObjectKey(), int64(len(corrupt)),
+		bytes.NewReader(corrupt)); err != nil {
+		t.Fatalf("write the corrupt version at %s: %v", seed.ObjectKey(), err)
 	}
 }
