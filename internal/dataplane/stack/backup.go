@@ -349,7 +349,6 @@ func composeStop(ctx context.Context, project, composeFile string, env []string)
 	return nil
 }
 
-// composeStart restarts exactly the containers that were running before.
 // composeStart restarts the services that were running, and waits until
 // they are USABLE again.
 //
