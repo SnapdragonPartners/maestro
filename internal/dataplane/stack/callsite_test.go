@@ -413,7 +413,11 @@ func assignsTrue(assignment *ast.AssignStmt, target string) bool {
 // platform item 7 specifically assigned it to. The suite stays green and the
 // coverage it reports is a platform short.
 //
-// So the pattern is checked against the tests that exist.
+// So the pattern is checked against the tests that exist — and the suite
+// keeps a NAMING CONVENTION (`TestRecover…`) so the pattern stays one token
+// rather than an alternation that grows with every test. The growing
+// alternation was itself the smell: it needed widening twice in two rounds,
+// and each widening was a chance to forget.
 func TestEveryRecoveryTestIsSelectedByTheLinuxCIJob(t *testing.T) {
 	workflow, err := os.ReadFile(filepath.Join("..", "..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
@@ -464,4 +468,107 @@ func recoveryRunPattern(t *testing.T, workflow string) string {
 		t.Fatal("the CI workflow's -run pattern is not closed")
 	}
 	return rest[:end]
+}
+
+// Restore's destructive recovery-state clear must sit INSIDE D4's phase
+// boundary — after the incomplete marker is written, never before it.
+//
+// D4's rule is that every deletion is preceded by a durable record that a
+// destructive operation began, so a crash leaves a torn tree that announces
+// itself. An earlier version cleared the recovery marker and staged key in
+// Restore, before replaceTree wrote anything: a kill in that window deleted
+// recovery state with nothing on disk saying so, reopening the exact window
+// the marker exists to close, one call above it.
+//
+// Checked structurally because the defect is only observable through a crash
+// in a window of a few milliseconds. A behavioural test cannot reach it, and
+// both spellings look equally careful in review — which is how it got
+// written.
+func TestRestoreClearsRecoveryStateOnlyAfterItsMarker(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "restore.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse restore.go: %v", err)
+	}
+
+	bodies := map[string]*ast.BlockStmt{}
+	for _, decl := range file.Decls {
+		if fn, isFunc := decl.(*ast.FuncDecl); isFunc && fn.Recv == nil {
+			bodies[fn.Name.Name] = fn.Body
+		}
+	}
+
+	// The DESTRUCTIVE clear must not appear in Restore at all: everything
+	// there runs before replaceTree writes the marker.
+	restore, ok := bodies["Restore"]
+	if !ok {
+		t.Fatal("Restore is gone: this guard is enforcing nothing")
+	}
+	for _, banned := range []string{"clearRecoveryState", "clearRecoveryResidue"} {
+		if callsNamed(restore, banned) {
+			t.Errorf("Restore calls %s, which deletes durable recovery state, before replaceTree "+
+				"writes RestoreIncompleteMarker: a crash there destroys state with nothing on disk "+
+				"recording that a destructive operation began", banned)
+		}
+	}
+	// It must stop the container, though — that has to happen before the
+	// data root is cleared, and destroys nothing that cannot be rebuilt.
+	if !callsNamed(restore, "stopRecoveryContainer") {
+		t.Error("Restore never stops the recovery container: it would clear the data root while an " +
+			"orphaned postmaster still held it open")
+	}
+
+	// And inside replaceTree, the clear must follow the marker write.
+	replaceTree, ok := bodies["replaceTree"]
+	if !ok {
+		t.Fatal("replaceTree is gone: this guard is enforcing nothing")
+	}
+	markerAt, clearAt := -1, -1
+	for i, statement := range replaceTree.List {
+		ast.Inspect(statement, func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			name, isIdent := call.Fun.(*ast.Ident)
+			if !isIdent {
+				return true
+			}
+			if name.Name == "writeRestoreMarker" && markerAt < 0 {
+				markerAt = i
+			}
+			if name.Name == "clearRecoveryState" && clearAt < 0 {
+				clearAt = i
+			}
+			return true
+		})
+	}
+	switch {
+	case markerAt < 0:
+		t.Fatal("replaceTree never writes the restore marker: this guard is enforcing nothing")
+	case clearAt < 0:
+		t.Error("replaceTree never clears recovery state: an interrupted recovery's marker and " +
+			"staged key would survive a restore, gating every later verb on a plane that was " +
+			"just replaced")
+	case clearAt < markerAt:
+		t.Errorf("recovery state is cleared at statement %d but the restore marker is written at "+
+			"%d: the deletion precedes the record that a destructive operation began", clearAt, markerAt)
+	}
+}
+
+// callsNamed reports whether a block calls a named package-level function.
+func callsNamed(body *ast.BlockStmt, target string) bool {
+	found := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		call, isCall := node.(*ast.CallExpr)
+		if !isCall {
+			return true
+		}
+		if name, isIdent := call.Fun.(*ast.Ident); isIdent && name.Name == target {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }

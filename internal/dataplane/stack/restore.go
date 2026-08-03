@@ -127,11 +127,23 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 	if downErr := down(ctx, c, composeFile); downErr != nil {
 		return downErr
 	}
+	// The CONTAINER only, and deliberately not the marker or the staged key.
+	//
 	// The recovery container is outside the Compose project, so `down` does
-	// not touch it. Clearing the data root under a live postmaster is the
-	// same hazard reset guards against, and restore clears more of it.
-	if residueErr := clearRecoveryResidue(ctx, c); residueErr != nil {
-		return residueErr
+	// not touch it, and it must be gone before anything clears the data root
+	// it holds open. Removing it destroys no durable state — a resume
+	// rebuilds it from the marker — so it is safe on this side of the phase
+	// boundary.
+	//
+	// The recovery MARKER and STAGED KEY are durable state, and deleting
+	// them is destructive. They are cleared inside replaceTree, after the
+	// incomplete marker is written: an earlier version cleared them here,
+	// which put a destructive step before the record that a destructive
+	// operation had begun. A crash in that window deleted recovery state
+	// with nothing on disk saying so — the exact window D4's marker exists
+	// to close, reopened one line above it.
+	if stopErr := stopRecoveryContainer(ctx, c); stopErr != nil {
+		return stopErr
 	}
 
 	return replaceDataRoot(ctx, c, composeFile, archiveData, &destructive)
@@ -255,6 +267,14 @@ func replaceTree(c *Config, archiveData string, destructive *bool) error {
 	// defines it cannot drift apart.
 	*destructive = true
 
+	// Now inside the destructive phase, so the recovery artifacts may go.
+	// Their removal is durable — see clearRecoveryState — because a restore
+	// that reported success and then resurrected a staged key on the next
+	// boot would leave key material beside a plane it does not belong to.
+	if err := clearRecoveryState(c); err != nil {
+		return err
+	}
+
 	// The marker-preserving clear, not the reset sweep: the marker is
 	// written before the first deletion precisely so it survives the
 	// deletion, and clearing it here would leave a torn tree announcing
@@ -272,10 +292,60 @@ func replaceTree(c *Config, archiveData string, destructive *bool) error {
 	return nil
 }
 
+// ErrArchiveCarriesLifecycleState reports an archive containing one of the
+// data root's lifecycle markers.
+var ErrArchiveCarriesLifecycleState = errors.New("archive carries lifecycle state from the plane it was taken from")
+
+// archivedLifecycleMarkers are the marker files that must never appear
+// inside an archive.
+//
+// None can be present in an archive this code produced: `backup` is refused
+// against a torn tree, against an outstanding verification debt, and against
+// an interrupted recovery, so a plane carrying any of them cannot be copied
+// in the first place. An archive holding one therefore came from somewhere
+// else — a hand-assembled tree, or a copy taken by other means — and what it
+// carries is another plane's in-flight state.
+//
+// Restoring one is not a cosmetic problem. The markers are restored into the
+// data root as ordinary files, and the internal `up` that follows does not
+// re-run the guard, so the restore reports success and hands back a plane
+// every later verb refuses — gated by a recovery that never happened here,
+// or owing a verification for a restore it never performed.
+//
+//nolint:gochecknoglobals // Immutable set.
+var archivedLifecycleMarkers = []string{
+	RestoreIncompleteMarker,
+	RestoreUnverifiedMarker,
+	RecoveryMarkerFile,
+}
+
+// refuseArchivedLifecycleState rejects an archive carrying marker files.
+//
+// Checked BEFORE the lock is taken and before the plane is stopped, with the
+// rest of the source validation, so a bad archive costs nothing: every check
+// that can be made without touching the plane is made without touching it.
+func refuseArchivedLifecycleState(archiveData string) error {
+	for _, marker := range archivedLifecycleMarkers {
+		path := filepath.Join(archiveData, marker)
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("%w: %s holds %s. A plane carrying that marker cannot be backed up, "+
+				"so this archive was not produced by `dataplane-backup`; restoring it would "+
+				"install another plane's in-flight state and leave every later verb refusing",
+				ErrArchiveCarriesLifecycleState, archiveData, marker)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("check %s for %s: %w", archiveData, marker, err)
+		}
+	}
+	return nil
+}
+
 // validateArchiveTree checks the archive's shape before anything is
 // deleted, so a mistyped path or a foreign directory cannot destroy a
 // plane.
 func validateArchiveTree(archiveData string, manifest Manifest) error {
+	if err := refuseArchivedLifecycleState(archiveData); err != nil {
+		return err
+	}
 	info, err := os.Stat(archiveData)
 	if err != nil {
 		return fmt.Errorf("%w: cannot read %s: %w", ErrArchiveIncomplete, archiveData, err)

@@ -996,7 +996,25 @@ func down(ctx context.Context, c *Config, composeFile string) error {
 	if err != nil {
 		return err
 	}
-	return compose(ctx, c.ProjectName, composeFile, env, "down")
+	if composeErr := compose(ctx, c.ProjectName, composeFile, env, "down"); composeErr != nil {
+		return composeErr
+	}
+	// The recovery container too, which `compose down` cannot reach: it is
+	// outside the project by design, so nothing about the Compose lifecycle
+	// touches it.
+	//
+	// Without this, `down` was a hollow escape from an interrupted recovery.
+	// D4b permits it as the way an operator quiesces the plane before
+	// dealing with the orphan — and it returned having stopped everything
+	// EXCEPT the postmaster that owns the cluster, leaving the one process
+	// that makes the state hazardous still running while reporting the plane
+	// stopped.
+	//
+	// The marker and the staged key are deliberately NOT touched. `down` is
+	// not a discard: the recovery must still be resumable afterwards, and
+	// the container is rebuilt from exactly those two artifacts. This is the
+	// difference between `down` and the escapes that clear everything.
+	return stopRecoveryContainer(ctx, c)
 }
 
 // Reset stops the stack and deletes the contents of every service data

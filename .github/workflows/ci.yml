@@ -310,7 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -tags=integration -count=1 -timeout=40m \
-            -run 'TestRecoverKey|TestRecovery|TestInterruptedRecovery|TestRestoreWithoutTheKeyThenRecoverKey|TestResetClearsRecoveryResidue' \
+            -run 'TestRecover' \
             ./internal/dataplane/stack/
 
       # The suite isolates per test and tears its own planes down, so a

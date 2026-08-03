@@ -439,44 +439,59 @@ func installStagedKey(c *Config, marker *recoveryMarker) error {
 	return syncDir(c.Roots.Config)
 }
 
-// clearRecoveryResidue removes everything an interrupted recovery left
-// behind: the isolated postmaster, the staged key, and the marker.
+// stopRecoveryContainer removes the isolated postmaster, if one survives.
 //
-// It is the OBLIGATION that comes with `reset` and `restore` being permitted
-// against an interrupted recovery. Both claim to discard or replace the
-// plane, and neither claim is true while a container nobody tracks still
-// holds the Postgres data directory open — a `reset` that emptied the
-// directory under a live postmaster would produce exactly the shared-state
-// corruption ADR 0027 exists to prevent, and would report success.
+// SAFE, in D4's sense: it destroys no durable state. A recovery container is
+// recreated from the marker and the staged key on the next resume, so
+// removing it costs nothing that cannot be rebuilt — which is what lets it
+// run BEFORE a restore's incomplete marker is written, where it has to run,
+// because the thing after it deletes the directory the container holds open.
 //
-// The container goes FIRST. Removing the marker first would leave the
-// orphan running with nothing recording that it exists, which is strictly
-// worse than the state being repaired.
-func clearRecoveryResidue(ctx context.Context, c *Config) error {
-	marker, err := readRecoveryMarker(c)
-	if err != nil {
-		// A foreign or unparseable marker still means SOMETHING interrupted
-		// here, and the container name is derivable without it. Repairing
-		// on the derived name is right: it is the only container this
-		// configuration could have started.
-		if rmErr := removeRecoveryContainer(ctx, recoveryContainerName(c)); rmErr != nil {
-			return rmErr
-		}
-		marker = nil
-	}
-	if marker != nil {
-		if rmErr := removeRecoveryContainer(ctx, marker.Container); rmErr != nil {
-			return rmErr
-		}
-	}
+// The name is DERIVED rather than read from the marker. A marker that is
+// foreign or unparseable still means something interrupted here, and the
+// container this configuration could have started is the one to remove.
+func stopRecoveryContainer(ctx context.Context, c *Config) error {
+	return removeRecoveryContainer(ctx, recoveryContainerName(c))
+}
 
-	if rmErr := os.Remove(stagedKeyPath(c)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-		return fmt.Errorf("remove the staged recovery key: %w", rmErr)
+// clearRecoveryState deletes an interrupted recovery's durable artifacts:
+// the staged key and the marker.
+//
+// DESTRUCTIVE, and therefore never called before a caller has written
+// whatever durable record its own phase boundary requires. Restore learned
+// that the hard way — an earlier version cleared this before writing
+// RestoreIncompleteMarker, so a crash in between deleted recovery state with
+// nothing on disk recording that a destructive operation had begun, which is
+// precisely the window D4's marker exists to close.
+//
+// Both removals are DIRECTORY-SYNCED. An unlink is a metadata write, and one
+// still in the page cache when the machine loses power leaves the entry
+// there on the next boot. The staged key is the dangerous half: resurrected
+// beside a freshly provisioned plane it is key material with no marker
+// explaining it, which the recovery path would then treat as debris and
+// delete — correct, but only because that rule exists, and only after
+// somebody wondered what it was.
+func clearRecoveryState(c *Config) error {
+	if err := os.Remove(stagedKeyPath(c)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove the staged recovery key: %w", err)
 	}
-	if rmErr := os.Remove(recoveryMarkerPath(c)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", RecoveryMarkerFile, rmErr)
+	if err := syncDir(c.Roots.Config); err != nil {
+		return err
 	}
-	return nil
+	if err := os.Remove(recoveryMarkerPath(c)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", RecoveryMarkerFile, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// clearRecoveryResidue is both halves, for callers whose own phase boundary
+// is already established — `reset`, which has no pre-deletion marker because
+// discarding the plane IS the operation.
+func clearRecoveryResidue(ctx context.Context, c *Config) error {
+	if err := stopRecoveryContainer(ctx, c); err != nil {
+		return err
+	}
+	return clearRecoveryState(c)
 }
 
 // applyRecovery performs the credential change, or establishes that an

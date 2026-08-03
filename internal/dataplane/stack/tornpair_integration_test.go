@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -228,4 +229,75 @@ func TestUpStopsAnOwingPlaneWhenItFailsBeforeSettlement(t *testing.T) {
 		t.Errorf("the verification debt is gone after a failed `up` (owed = %v, err = %v): nothing "+
 			"verified this plane, and the next verb would find it owing nothing", owed, owedErr)
 	}
+}
+
+// TestRestoreRefusesAnArchiveCarryingLifecycleState is blocker 3.
+//
+// The markers are ordinary files in the data root, so a hand-assembled
+// archive can contain one. Restore would copy it in, and the internal `up`
+// does not re-run the guard — so the restore reports success and hands back
+// a plane every later verb refuses, gated by a recovery that never happened
+// here or owing a verification for a restore it never performed.
+//
+// The refusal must also arrive BEFORE the plane is touched, which is
+// asserted rather than assumed: a refusal that stopped the plane first would
+// satisfy the error check and have caused an outage for a bad argument.
+func TestRestoreRefusesAnArchiveCarryingLifecycleState(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	seed := seedCrossStore(t, cfg)
+
+	for _, marker := range []string{RestoreIncompleteMarker, RestoreUnverifiedMarker, RecoveryMarkerFile} {
+		t.Run(marker, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), "archive")
+			if err := Backup(t.Context(), cfg, testComposeFile(), archive); err != nil {
+				t.Fatalf("Backup: %v", err)
+			}
+			// Planted and then the manifest REGENERATED over it, so the
+			// archive is structurally perfect: the inventory lists the
+			// marker, the counts agree, every service directory is present.
+			//
+			// Planting it after the manifest was written would be caught by
+			// the inventory comparison instead -- as a first version of this
+			// test was, which made it pass against a build with the
+			// lifecycle check removed. What the check exists for is an
+			// archive that was not produced by `dataplane-backup` at all,
+			// and such an archive has an honest manifest of whatever it
+			// contains.
+			if err := os.WriteFile(filepath.Join(archive, ArchiveDataDir, marker),
+				[]byte("from another plane\n"), 0o600); err != nil {
+				t.Fatalf("plant %s: %v", marker, err)
+			}
+			if err := os.Remove(filepath.Join(archive, ArchiveManifest)); err != nil {
+				t.Fatalf("drop the old manifest: %v", err)
+			}
+			regenerated, err := inventory(filepath.Join(archive, ArchiveDataDir), cfg.Roots.Data)
+			if err != nil {
+				t.Fatalf("re-inventory: %v", err)
+			}
+			if err := writeManifest(archive, regenerated); err != nil {
+				t.Fatalf("rewrite the manifest: %v", err)
+			}
+			// The archive is now structurally valid, which is the premise.
+			if _, err := ReadManifest(archive); err != nil {
+				t.Fatalf("the rebuilt archive is not valid (%v), so this test would pass on the "+
+					"structural check rather than the lifecycle one", err)
+			}
+
+			before := runningServices(t, cfg)
+			restoreErr := Restore(t.Context(), cfg, testComposeFile(), archive, true)
+			if !errors.Is(restoreErr, ErrArchiveCarriesLifecycleState) {
+				t.Fatalf("Restore = %v, want a refusal for an archive carrying %s", restoreErr, marker)
+			}
+			if after := runningServices(t, cfg); !slices.Equal(before, after) {
+				t.Errorf("running services = %v, want %v: the refusal stopped the plane before "+
+					"deciding, so a bad archive caused an outage", after, before)
+			}
+		})
+	}
+
+	// The plane is untouched by any of it.
+	assertCrossStoreIntact(t, cfg, seed)
 }

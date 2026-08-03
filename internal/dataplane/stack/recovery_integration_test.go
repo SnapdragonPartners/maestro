@@ -742,7 +742,7 @@ func waitForRecoveryContainer(t *testing.T, cfg *Config) {
 	t.Fatal("the child never started a recovery container")
 }
 
-// TestRestoreWithoutTheKeyThenRecoverKey is ADR 0022's second restore branch
+// TestRecoveryAfterAKeylessRestore is ADR 0022's second restore branch
 // END TO END, and it did not work until Codex found why.
 //
 // The ADR promises restore from "the backup plus the key file, OR re-entry
@@ -758,7 +758,7 @@ func waitForRecoveryContainer(t *testing.T, cfg *Config) {
 // Recovery is safe there for the same reason `up` is, by the same mechanism
 // rather than a parallel one -- it ends by calling `up` internally, so the
 // debt reaches the identical settlement.
-func TestRestoreWithoutTheKeyThenRecoverKey(t *testing.T) {
+func TestRecoveryAfterAKeylessRestore(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -812,7 +812,7 @@ func TestRestoreWithoutTheKeyThenRecoverKey(t *testing.T) {
 	assertNoRecoveryContainer(t, cfg)
 }
 
-// TestResetClearsRecoveryResidue is the obligation that comes with `reset`
+// TestRecoveryResidueIsClearedByReset is the obligation that comes with `reset`
 // being permitted against an interrupted recovery.
 //
 // `down` stops the Compose project and knows nothing about the recovery
@@ -820,7 +820,7 @@ func TestRestoreWithoutTheKeyThenRecoverKey(t *testing.T) {
 // `reset` would empty the Postgres directory while an isolated postmaster
 // still had it open -- the shared-state corruption ADR 0027 exists to
 // prevent -- and would report success.
-func TestResetClearsRecoveryResidue(t *testing.T) {
+func TestRecoveryResidueIsClearedByReset(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -853,13 +853,13 @@ func TestResetClearsRecoveryResidue(t *testing.T) {
 	}
 }
 
-// TestInterruptedRecoveryRefusesUp is the gate itself, behaviourally.
+// TestRecoveryInterruptedRefusesUp is the gate itself, behaviourally.
 //
 // A killed recovery releases its flock, so the lifecycle lock offers no
 // protection: the next `up` acquires it, believes itself exclusive, and
 // starts a second Postgres over a cluster the orphaned postmaster still
 // holds. The marker is the only thing that can refuse across that boundary.
-func TestInterruptedRecoveryRefusesUp(t *testing.T) {
+func TestRecoveryInterruptedRefusesUp(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -913,4 +913,85 @@ func TestRecoveryMarkerFromAnotherPlaneIsRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRecoveryResidueIsClearedByRestore is the obligation D4b puts on `restore`,
+// which until now only `reset` proved.
+//
+// The two escapes are not interchangeable. `reset` discards and has no
+// pre-deletion marker because discarding IS the operation; `restore`
+// replaces, and everything it deletes sits behind D4's phase boundary. Both
+// must leave no recovery residue, and only a test per escape shows it.
+func TestRecoveryResidueIsClearedByRestore(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	seed := seedCrossStore(t, cfg)
+
+	archive := filepath.Join(t.TempDir(), "archive")
+	if err := Backup(t.Context(), cfg, testComposeFile(), archive); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+
+	// An interrupted recovery on top of the plane being restored over.
+	stageAsAKillWould(t, cfg)
+	if !recoveryContainerExists(t, cfg) {
+		t.Fatal("no recovery container to clean: this test proves nothing")
+	}
+
+	if err := Restore(t.Context(), cfg, testComposeFile(), archive, true); err != nil {
+		t.Fatalf("Restore over an interrupted recovery: %v", err)
+	}
+
+	assertNoRecoveryContainer(t, cfg)
+	if _, err := os.Stat(stagedKeyPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staged key survived the restore (%v): key material would sit beside a plane "+
+			"it does not belong to", err)
+	}
+	if _, err := os.Stat(recoveryMarkerPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the recovery marker survived the restore (%v): every guarded verb would keep "+
+			"refusing a plane that was just replaced", err)
+	}
+	assertCrossStoreIntact(t, cfg, seed)
+}
+
+// TestRecoveryDownStopsTheOrphanAndStaysResumable is blocker 1, and both
+// halves are the assertion.
+//
+// D4b permits `down` as the way an operator quiesces a plane before dealing
+// with an interrupted recovery. It reached only the Compose project, so it
+// returned having stopped everything EXCEPT the postmaster that makes the
+// state hazardous — reporting the plane stopped while the one process that
+// owns the cluster kept running.
+//
+// And it must stop there. `down` is not a discard: clearing the marker or
+// the staged key would leave a recovery that cannot be resumed, which is a
+// worse outcome than the orphan.
+func TestRecoveryDownStopsTheOrphanAndStaysResumable(t *testing.T) {
+	cfg, seed := lockedPlaneWithSecret(t)
+	staged := stageAsAKillWould(t, cfg)
+
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down over an interrupted recovery: %v", err)
+	}
+
+	assertNoRecoveryContainer(t, cfg)
+	// The resume artifacts survive, or the recovery is stranded.
+	if _, err := os.Stat(stagedKeyPath(cfg)); err != nil {
+		t.Fatalf("`down` removed the staged key (%v): the recovery can no longer be resumed, and "+
+			"the plane's credential may already derive from it", err)
+	}
+	if _, err := os.Stat(recoveryMarkerPath(cfg)); err != nil {
+		t.Fatalf("`down` removed the recovery marker (%v): nothing authorizes the resume", err)
+	}
+
+	// The composition that matters: quiesce, then finish.
+	if err := RecoverKey(t.Context(), cfg, testComposeFile(), true); err != nil {
+		t.Fatalf("resume after `down`: %v", err)
+	}
+	assertRecovered(t, cfg, seed, staged)
 }
