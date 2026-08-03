@@ -94,6 +94,24 @@ var knownServices = map[Service]bool{
 	ServiceMinIO:    true,
 }
 
+// Services returns the stateful services in a stable order.
+//
+// It is the one place the set is written down. It was previously spelled
+// out at each call site, which is the shape that makes adding a service a
+// multi-site edit with one site forgotten — and the dangerous site is the
+// freshness check, where a missed service means a populated plane is
+// judged fresh and `up` mints a new root key over it.
+//
+// What this list is NOT is the mechanism that keeps backup complete. The
+// backup copies the whole data root and quiesces the whole Compose
+// project, so neither depends on this being right (Phase 2 plan, amended
+// 2026-08-01). Its remaining job is creating bind-mount sources, which
+// genuinely needs names. A conformance test holds it to the shipped
+// Compose file in both directions.
+func Services() []Service {
+	return []Service{ServicePostgres, ServiceMinIO}
+}
+
 // ErrInvalidService reports a service name that is not one of the known
 // services, or whose value is not a safe single path segment.
 var ErrInvalidService = errors.New("invalid data-plane service name")

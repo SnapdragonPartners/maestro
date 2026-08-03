@@ -8,10 +8,12 @@
 package stack
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 
 	"orchestrator/internal/dataplane/paths"
@@ -31,9 +33,15 @@ const (
 	DefaultUser     = "maestro"
 	DefaultBucket   = "maestro"
 
-	// ProjectName isolates this stack from v1's containers, so a
+	// DefaultProjectName isolates this stack from v1's containers, so a
 	// `docker compose down` in one context can never reach the other.
-	ProjectName = "maestro-dataplane"
+	//
+	// It is a DEFAULT rather than a constant because Compose selects
+	// containers by project identity alone: a second config pointed at
+	// different roots and different ports still reaches these containers
+	// unless its project name differs too. Integration tests for the
+	// destructive verbs are only isolated when they override it.
+	DefaultProjectName = "maestro-dataplane"
 
 	// ComponentLabel marks every data-plane container. It is deliberately
 	// NOT a `com.maestro.session` label: the benchmark adapter sweeps by
@@ -47,11 +55,31 @@ const (
 	EnvPGPort           = "MAESTRO_PG_PORT"
 	EnvMinIOPort        = "MAESTRO_MINIO_PORT"
 	EnvMinIOConsolePort = "MAESTRO_MINIO_CONSOLE_PORT"
+
+	// EnvProjectName overrides the Compose project.
+	//
+	// It exists for the destructive integration tests, which must act on a
+	// stack of their own, and it is an ENVIRONMENT override specifically so
+	// a subprocess inherits it — the killed-process cases run
+	// `dataplanectl` as a child and would otherwise operate on the
+	// developer's plane.
+	EnvProjectName = "MAESTRO_PROJECT_NAME"
 )
+
+// ErrInvalidProjectName reports a project override Compose would reject or
+// that could escape the argument it is substituted into.
+var ErrInvalidProjectName = errors.New("invalid compose project name")
+
+// projectNamePattern is Compose's own rule: lowercase letters, digits,
+// dashes and underscores, starting with a letter or digit.
+//
+//nolint:gochecknoglobals // Immutable compiled pattern.
+var projectNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // Config is the resolved description of a local data plane.
 type Config struct {
 	Roots            paths.Roots
+	ProjectName      string
 	Database         string
 	User             string
 	Bucket           string
@@ -65,6 +93,7 @@ type Config struct {
 func NewConfig(roots paths.Roots) (*Config, error) {
 	c := &Config{
 		Roots:            roots,
+		ProjectName:      DefaultProjectName,
 		Database:         DefaultDatabase,
 		User:             DefaultUser,
 		Bucket:           DefaultBucket,
@@ -86,10 +115,33 @@ func NewConfig(roots paths.Roots) (*Config, error) {
 		}
 	}
 
+	if err := applyProjectOverride(&c.ProjectName); err != nil {
+		return nil, err
+	}
 	if err := c.validatePorts(); err != nil {
 		return nil, err
 	}
 	return c, nil
+}
+
+// applyProjectOverride reads the project-name override, validating it
+// against Compose's own naming rule.
+//
+// Validated rather than trusted because this value becomes a command-line
+// argument selecting which containers an operation destroys. An
+// unvalidated one could carry a leading dash and be read as a flag, or
+// characters Compose silently mangles into a project the caller did not
+// mean — and the operation reaching for it is `down`.
+func applyProjectOverride(name *string) error {
+	raw, set := os.LookupEnv(EnvProjectName)
+	if !set {
+		return nil
+	}
+	if !projectNamePattern.MatchString(raw) {
+		return fmt.Errorf("%w: %s=%q must match %s", ErrInvalidProjectName, EnvProjectName, raw, projectNamePattern)
+	}
+	*name = raw
+	return nil
 }
 
 func applyPortOverride(env string, port *int) error {

@@ -192,7 +192,7 @@ ui-dev: build build-css
 # the same command serves first-time setup and the everyday inner loop.
 # Deliberately separate from the agent-container and benchmark-Gitea
 # machinery, so a data-plane restart cannot disturb a benchmark run.
-.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate dataplane-force-version
+.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate dataplane-force-version dataplane-backup dataplane-restore dataplane-verify dataplane-recover-key
 
 dataplane-up:
 	go run ./cmd/dataplanectl up
@@ -256,6 +256,38 @@ dataplane-reset:
 dataplane-force-version:
 	@test -n "$(VERSION)" || { echo "usage: make dataplane-force-version VERSION=<n> [FORCE=1]"; exit 1; }
 	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) -version $(VERSION) force-version
+
+# Cold backup: stop the plane, copy the data root to DEST, restart whatever
+# was running. DEST must NOT already exist -- an archive is identified by the
+# manifest written last inside it, so a pre-existing directory could not be
+# told apart from a completed one.
+#
+# The archive deliberately EXCLUDES the root-of-trust key, so restoring it on
+# another machine needs the key file as well (or new-key recovery). Backup
+# never reads the key, which is what makes that exclusion structural.
+dataplane-backup:
+	@test -n "$(DEST)" || { echo "usage: make dataplane-backup DEST=<directory>"; exit 1; }
+	go run ./cmd/dataplanectl -to $(DEST) backup
+
+# Destructive: replaces the data root with SRC's contents. Same `filter 1`
+# rule as reset -- only the exact value 1 suppresses the refusal, so FORCE=0
+# still refuses a populated root.
+dataplane-restore:
+	@test -n "$(SRC)" || { echo "usage: make dataplane-restore SRC=<directory> [FORCE=1]"; exit 1; }
+	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) -from $(SRC) restore
+
+# Recompute every stored digest and read every attachment. This is what
+# validates a restore: a torn Postgres/object-store pair is invisible to
+# either store alone.
+dataplane-verify:
+	go run ./cmd/dataplanectl verify
+
+# DESTRUCTIVE, and unlike reset there is no archive that undoes it: every
+# stored secret is deleted, because the ciphertext was written under a key
+# nobody has any more. Same `filter 1` rule -- only the exact value 1
+# suppresses the prompt.
+dataplane-recover-key:
+	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) recover-key
 
 # Clean build artifacts
 clean:

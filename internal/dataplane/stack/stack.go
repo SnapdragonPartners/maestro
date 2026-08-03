@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -76,15 +78,18 @@ func Up(ctx context.Context, c *Config, composeFile string) (err error) {
 			err = relErr
 		}
 	}()
+	if err := guardRestoreState(c, lifecycleUp); err != nil {
+		return err
+	}
 	return up(ctx, c, composeFile)
 }
 
-func up(ctx context.Context, c *Config, composeFile string) error {
-	if err := c.Roots.Ensure(); err != nil {
-		return fmt.Errorf("prepare storage roots: %w", err)
+func up(ctx context.Context, c *Config, composeFile string) (err error) {
+	if rootsErr := c.Roots.Ensure(); rootsErr != nil {
+		return fmt.Errorf("prepare storage roots: %w", rootsErr)
 	}
-	if err := c.Roots.EnsureServiceDataDirs(paths.ServicePostgres, paths.ServiceMinIO); err != nil {
-		return fmt.Errorf("prepare service data directories: %w", err)
+	if dirsErr := c.Roots.EnsureServiceDataDirs(paths.Services()...); dirsErr != nil {
+		return fmt.Errorf("prepare service data directories: %w", dirsErr)
 	}
 
 	rootKey, keyErr := rootKeyFor(c, lifecycleUp)
@@ -99,23 +104,90 @@ func up(ctx context.Context, c *Config, composeFile string) error {
 	if envErr != nil {
 		return envErr
 	}
-	if err := compose(ctx, composeFile, env, "up", "-d", "--wait=false"); err != nil {
-		return err
+
+	// Read ONCE, before anything starts, and act on it through a single
+	// deferred stop armed before Compose is invoked.
+	//
+	// D4a's invariant is that a plane carrying verification debt is never
+	// left running, and the obvious implementation — stop it when
+	// settlement fails — does not deliver that. Everything between `compose
+	// up` and settlement can fail with the containers already started:
+	// readiness times out, the bucket cannot be provisioned, a migration is
+	// dirty, a deletion claim will not reconcile. Each of those returned
+	// directly, leaving a live, unverified plane that never reached the
+	// step that would have condemned it — and the marker only gates
+	// lifecycle verbs, not a client holding a connection string.
+	//
+	// This is the defect replaceDataRoot already had and already fixed, one
+	// level down, and it is worth naming as a repeat: arming recovery next
+	// to the failure you were thinking about covers that failure and no
+	// other. The arming point belongs at the START of the region the
+	// invariant covers, which here is every statement after Compose.
+	owed, owedErr := restoreOwesVerification(c)
+	if owedErr != nil {
+		return owedErr
 	}
-	if err := waitReady(ctx, c, composeFile, env); err != nil {
-		return err
+	// A plane owing nothing is not this defer's business: an ordinary `up`
+	// that fails readiness deliberately leaves its containers for the
+	// operator to inspect.
+	settled := !owed
+	defer func() {
+		if settled {
+			return
+		}
+		// A fresh bounded context, for D4's reason: a Ctrl-C'd `up` must
+		// still stop the plane it could not vouch for, and a stop
+		// inheriting the cancelled context would be cancelled before it
+		// ran.
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readyTimeout)
+		defer cancel()
+		if downErr := down(stopCtx, c, composeFile); downErr != nil {
+			err = errors.Join(err, fmt.Errorf("stop a plane that still owes verification: %w", downErr))
+		}
+	}()
+
+	if composeErr := compose(ctx, c.ProjectName, composeFile, env, "up", "-d", "--wait=false"); composeErr != nil {
+		return composeErr
 	}
-	blob, err := ensureBucket(ctx, c, rootKey)
-	if err != nil {
-		return err
+	if readyErr := waitReady(ctx, c, composeFile, env); readyErr != nil {
+		return readyErr
 	}
-	if err := migrateLocked(ctx, c, rootKey); err != nil {
-		return err
+	blob, bucketErr := ensureBucket(ctx, c, rootKey)
+	if bucketErr != nil {
+		return bucketErr
+	}
+	if migrateErr := migrateLocked(ctx, c, rootKey); migrateErr != nil {
+		return migrateErr
 	}
 	// AFTER the migrations, because the claims table is part of the schema
 	// they apply, and before `up` reports a ready plane, because a surviving
 	// claim is unfinished destructive work.
-	return reconcileClaims(ctx, c, rootKey, blob)
+	if claimErr := reconcileClaims(ctx, c, rootKey, blob); claimErr != nil {
+		return claimErr
+	}
+	// Last, because it needs an open plane: a restore that could not verify
+	// itself — the two-part path, where the key was absent — recorded the
+	// debt, and this is the first moment it can be paid.
+	//
+	// A failure here must STOP the plane, not merely report. Detecting a
+	// torn pair and leaving it serving is the worst of both outcomes: the
+	// operator sees an error while clients keep using the plane it
+	// condemns. The marker is deliberately retained, so the debt survives
+	// for the next attempt and every guarded verb keeps refusing.
+	//
+	// The stop is the deferred one armed before Compose rather than a second
+	// one written here. Two mechanisms for one invariant is how the gap
+	// above came to exist: the one beside the failure somebody pictured got
+	// written, and the region it did not cover got nothing.
+	if settleErr := settleOutstandingVerification(ctx, c); settleErr != nil {
+		return settleErr
+	}
+	// The ONLY disarming point, and it is after a healthy settlement rather
+	// than after the pass merely running: `settleOutstandingVerification`
+	// clears the marker itself when the plane checks out, so reaching here
+	// means the debt is gone.
+	settled = true
+	return nil
 }
 
 // ErrPlaneLocked reports a data root that already holds a plane whose
@@ -153,7 +225,23 @@ const (
 	lifecycleUp lifecycle = iota
 	lifecycleMigrate
 	lifecycleForceVersion
+	lifecycleDown
+	lifecycleBackup
+	lifecycleRestore
+	lifecycleVerify
+	lifecycleReset
+	lifecycleRecoverKey
 )
+
+// lifecycles is every operation, in one place, so the marker matrix below
+// can be checked for completeness rather than trusted.
+//
+//nolint:gochecknoglobals // Immutable enumeration of a closed constant set.
+var lifecycles = []lifecycle{
+	lifecycleUp, lifecycleMigrate, lifecycleForceVersion,
+	lifecycleDown, lifecycleBackup, lifecycleRestore, lifecycleVerify, lifecycleReset,
+	lifecycleRecoverKey,
+}
 
 func (l lifecycle) String() string {
 	switch l {
@@ -163,9 +251,405 @@ func (l lifecycle) String() string {
 		return "migrate"
 	case lifecycleForceVersion:
 		return "force-version"
+	case lifecycleDown:
+		return "down"
+	case lifecycleBackup:
+		return "backup"
+	case lifecycleRestore:
+		return "restore"
+	case lifecycleVerify:
+		return "verify"
+	case lifecycleReset:
+		return "reset"
+	case lifecycleRecoverKey:
+		return "recover-key"
 	default:
 		return "unknown"
 	}
+}
+
+// RestoreIncompleteMarker names a restore that began deleting and did not
+// finish. It lives at the data root, beside the resource it describes.
+const RestoreIncompleteMarker = ".maestro-restore-incomplete"
+
+// ErrRestoreIncomplete reports a data root holding a torn restore.
+var ErrRestoreIncomplete = errors.New("data plane holds an incomplete restore")
+
+// RestoreUnverifiedMarker records a restore whose tree is whole but whose
+// contents have never been checked.
+//
+// It exists for ADR 0022's two-part restore. That branch completes the copy
+// and then CANNOT verify, because verification needs an open plane and the
+// plane cannot be opened without its key. Clearing the incomplete marker
+// there and stopping — which is what an earlier version did — let a torn
+// pair go live: the operator supplies the key, `up` starts the plane, and
+// nothing ever recomputes a digest.
+//
+// So the state is handed forward rather than dropped. It is deliberately a
+// SEPARATE marker from RestoreIncompleteMarker, because the two states need
+// opposite treatment: a torn tree must not be started at all, while an
+// unverified one must be started, since starting it is how it gets
+// verified.
+const RestoreUnverifiedMarker = ".maestro-restore-unverified"
+
+// ErrRestoreUnverifiedPending reports a plane that started but failed the
+// verification it owed from an earlier restore.
+var ErrRestoreUnverifiedPending = errors.New("restored plane has not passed verification")
+
+// ErrRecoveryInterrupted reports a plane whose new-key recovery did not
+// finish, and whose isolated postmaster may still hold PGDATA open.
+var ErrRecoveryInterrupted = errors.New("data plane holds an interrupted new-key recovery")
+
+// unverifiedMarkerPath is where the pending-verification marker lives.
+func unverifiedMarkerPath(c *Config) string {
+	return filepath.Join(c.Roots.Data, RestoreUnverifiedMarker)
+}
+
+// markRestoreUnverified records that a completed restore still owes a
+// verification pass.
+func markRestoreUnverified(c *Config) error {
+	if err := os.WriteFile(unverifiedMarkerPath(c), []byte(
+		"a restore completed here but could not be verified; the next `up` owes it a verification pass\n"), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", RestoreUnverifiedMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// restoreOwesVerification reports whether a pending pass is recorded.
+func restoreOwesVerification(c *Config) (bool, error) {
+	if _, err := os.Stat(unverifiedMarkerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check for %s: %w", RestoreUnverifiedMarker, err)
+	}
+	return true, nil
+}
+
+// settleOutstandingVerification runs the pass a previous restore could not,
+// and clears the debt only when the plane checks out.
+//
+// Called at the end of `up`, which is the first moment the plane is open —
+// and is exactly the moment the two-part restore hands control back.
+func settleOutstandingVerification(ctx context.Context, c *Config) error {
+	owed, err := restoreOwesVerification(c)
+	if err != nil || !owed {
+		return err
+	}
+
+	report, verifyErr := verifyLocked(ctx, c)
+	if verifyErr != nil {
+		return fmt.Errorf("verify a restored plane that had not been checked: %w", verifyErr)
+	}
+	if !report.Healthy() {
+		return fmt.Errorf("%w: %d problem(s) found on a plane restored earlier without verification. "+
+			"First problem: %s", ErrRestoreUnverifiedPending, len(report.Problems), report.Problems[0].Detail)
+	}
+	if err := os.Remove(unverifiedMarkerPath(c)); err != nil {
+		return fmt.Errorf("clear %s: %w", RestoreUnverifiedMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// markerPermits records, for EVERY lifecycle operation, whether it may run
+// against a data root holding a torn restore.
+//
+// A torn tree looks exactly like a plane — service directories in place,
+// files inside them — so nothing about it is self-announcing. Guarding only
+// `up` would leave every other verb able to act on it, and the harmful ones
+// are not hypothetical: `backup` is how a torn plane becomes an archive
+// somebody later restores from, and `migrate` would apply schema changes to
+// half a database.
+//
+// The two permitted verbs are the two ways out. `restore` resumes, which is
+// the intended repair; `reset` discards, and clears the marker as part of
+// returning the root to freshness. `down` is permitted because stopping
+// something already stopped cannot make a torn tree worse.
+//
+// Completeness is enforced by a test over `lifecycles` rather than by
+// review, so an operation added later cannot default into permitted by
+// being forgotten here.
+//
+//nolint:gochecknoglobals // Immutable policy table.
+var markerPermits = map[lifecycle]bool{
+	lifecycleUp:           false,
+	lifecycleMigrate:      false,
+	lifecycleForceVersion: false,
+	lifecycleBackup:       false,
+	lifecycleVerify:       false,
+	lifecycleRecoverKey:   false,
+	lifecycleDown:         true,
+	lifecycleRestore:      true,
+	lifecycleReset:        true,
+}
+
+// markerPath is where the restore-incomplete marker lives.
+func markerPath(c *Config) string {
+	return filepath.Join(c.Roots.Data, RestoreIncompleteMarker)
+}
+
+// guardRestoreMarker refuses an operation that must not touch a torn tree.
+func guardRestoreMarker(c *Config, operation lifecycle) error {
+	permitted, known := markerPermits[operation]
+	if !known {
+		// Unreachable while the completeness test passes. Refusing rather
+		// than permitting is the safe reading of an operation whose policy
+		// nobody wrote down.
+		return fmt.Errorf("%w: no marker policy is defined for %s", ErrRestoreIncomplete, operation)
+	}
+	if permitted {
+		return nil
+	}
+	if _, err := os.Stat(markerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("check for %s: %w", RestoreIncompleteMarker, err)
+	}
+	return fmt.Errorf("%w, so %s must not run against it (%s). Re-run `dataplane-restore` from a good "+
+		"archive to finish it, or `dataplane-reset` to discard the plane",
+		ErrRestoreIncomplete, operation, markerPath(c))
+}
+
+// unverifiedPermits is the same policy question for the OTHER marker: may
+// this operation run against a plane whose tree is whole and whose contents
+// nothing has ever checked?
+//
+// The two tables answer differently for exactly ONE operation, `up`, and
+// that difference is the whole reason the states are recorded separately. A
+// torn tree must not be started at all; an unverified one must be started,
+// because starting it is the only way it gets verified. `up` is the
+// settlement, and refusing it would strand exactly the plane the debt exists
+// to rescue.
+//
+// `verify` is refused, which is not the obvious answer and is the right one.
+// Settlement is not a verification pass — it is a pass PLUS its consequences:
+// clear the marker when the plane is healthy, and stop the plane when it is
+// not. The exported Verify does neither, and it cannot sensibly do the
+// second: it takes no Compose file, and a read-shaped verb that stops a
+// running plane as a side effect is a trap. Permitting it would leave a verb
+// that reports "healthy" against an owing plane and settles nothing, so the
+// debt would survive a green report — the one outcome most likely to
+// convince an operator it is gone. There is exactly one settlement path, and
+// it is `up`.
+//
+// Nothing is lost by this. An owing plane is a STOPPED plane: `up` either
+// settles the debt or stops what it started, so `verify` against one could
+// only have failed to connect anyway. The refusal replaces a confusing
+// connection error with a message naming the way out.
+//
+// `recover-key` is permitted, and refusing it was a defect rather than a
+// conservative choice. ADR 0022 promises restore from the backup PLUS the
+// key, OR re-entry of secrets — and the second branch is reached exactly by
+// restoring an archive WITHOUT its key, which is the path that records this
+// debt in the first place. Refusing recovery here made that branch
+// unreachable from the situation it was written for: it would have worked
+// only for a live plane that lost its key, never for the restore ADR 0022
+// describes.
+//
+// It is safe for the same reason `up` is, and by the same mechanism rather
+// than a parallel one: recovery ends by calling `up` internally, so it
+// reaches the identical settlement — the debt is verified and cleared, or
+// the plane is stopped and the debt retained. It is a COMPOUND settlement
+// path, not an exemption from settling.
+//
+// The other three refusals are the torn table's, for its reasons. `backup`
+// is how an unchecked plane becomes an archive somebody later restores from
+// — and a two-part restore leaves the plane stopped and owing, which is a
+// state `backup` is otherwise perfectly happy to copy. `migrate` and
+// `force-version` would apply schema changes to contents nothing has vouched
+// for.
+//
+// Neither `reset` nor `restore` clears this marker specially: both sweep the
+// data root, and a plane that has been discarded or replaced owes nothing
+// about contents that are gone. Only a HEALTHY settlement clears it in place.
+//
+//nolint:gochecknoglobals // Immutable policy table.
+var unverifiedPermits = map[lifecycle]bool{
+	lifecycleUp:           true,
+	lifecycleDown:         true,
+	lifecycleRestore:      true,
+	lifecycleReset:        true,
+	lifecycleRecoverKey:   true,
+	lifecycleVerify:       false,
+	lifecycleMigrate:      false,
+	lifecycleForceVersion: false,
+	lifecycleBackup:       false,
+}
+
+// guardUnverifiedMarker refuses an operation that must not act on a plane
+// owing a verification pass.
+func guardUnverifiedMarker(c *Config, operation lifecycle) error {
+	permitted, known := unverifiedPermits[operation]
+	if !known {
+		// Unreachable while the completeness test passes, and refusing is the
+		// safe reading of an operation whose policy nobody wrote down.
+		return fmt.Errorf("%w: no pending-verification policy is defined for %s",
+			ErrRestoreUnverifiedPending, operation)
+	}
+	if permitted {
+		return nil
+	}
+	owed, err := restoreOwesVerification(c)
+	if err != nil || !owed {
+		return err
+	}
+	return fmt.Errorf("%w, so %s must not run against it (%s). Run `dataplane-up`, which verifies the "+
+		"plane and clears this, or `dataplane-reset` to discard it",
+		ErrRestoreUnverifiedPending, operation, unverifiedMarkerPath(c))
+}
+
+// recoveryPermits is the third policy: may this operation run against a
+// plane whose recovery was interrupted?
+//
+// The hazard is specific and worse than the other two. A killed recovery
+// releases its flock — the process is gone — while the isolated postmaster
+// it started KEEPS RUNNING and keeps owning PGDATA, because Docker does not
+// stop a container when the process that created it dies. Every other verb
+// would then acquire the lifecycle lock, believe itself exclusive, and act
+// on a data directory another postmaster holds open. `up` would start a
+// second Postgres over the same cluster; `backup` would copy a cluster
+// being written by a server nobody is tracking; `migrate` would apply
+// schema changes through one postmaster while another has the files.
+//
+// The lifecycle lock cannot cover this, which is the whole reason the
+// marker exists: flock lives in the process, and the process is what died.
+//
+// The escapes are the same three as the other tables, and here they carry
+// an OBLIGATION rather than merely permission — `reset` and `restore` must
+// remove the container and the staged key, because discarding or replacing
+// the plane while a postmaster still holds its directory is not a discard
+// at all. That obligation is discharged in clearRecoveryResidue, called by
+// both.
+//
+//nolint:gochecknoglobals // Immutable policy table.
+var recoveryPermits = map[lifecycle]bool{
+	// The resume itself. It removes the survivor before doing anything.
+	lifecycleRecoverKey: true,
+	// Stopping is harmless, and `down` is how an operator quiesces the
+	// Compose project before dealing with the orphan.
+	lifecycleDown: true,
+	// The two escapes, both of which must clear the residue.
+	lifecycleReset:   true,
+	lifecycleRestore: true,
+
+	lifecycleUp:           false,
+	lifecycleBackup:       false,
+	lifecycleMigrate:      false,
+	lifecycleForceVersion: false,
+	lifecycleVerify:       false,
+}
+
+// guardRecoveryMarker refuses an operation that must not act on a plane
+// whose recovery was interrupted.
+func guardRecoveryMarker(c *Config, operation lifecycle) error {
+	permitted, known := recoveryPermits[operation]
+	if !known {
+		return fmt.Errorf("%w: no interrupted-recovery policy is defined for %s",
+			ErrRecoveryInterrupted, operation)
+	}
+	if permitted {
+		return nil
+	}
+	if _, err := os.Stat(recoveryMarkerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("check for %s: %w", RecoveryMarkerFile, err)
+	}
+	return fmt.Errorf("%w, so %s must not run against it (%s). A recovery container may still hold "+
+		"the Postgres data directory open. Re-run `dataplane-recover-key` to finish it, or "+
+		"`dataplane-reset` to discard the plane",
+		ErrRecoveryInterrupted, operation, recoveryMarkerPath(c))
+}
+
+// guardRestoreState applies BOTH marker policies, and is what every
+// lifecycle verb calls.
+//
+// One entry point rather than three calls per verb: the markers describe
+// different states with different tables, and a caller that consulted one
+// and forgot another would be guarded against the failure it remembered.
+// A verb cannot opt into part of this by omission — which is exactly how
+// the recovery marker came to gate nothing at all for a while, having been
+// written as a resume token and never added here.
+func guardRestoreState(c *Config, operation lifecycle) error {
+	if err := guardRestoreMarker(c, operation); err != nil {
+		return err
+	}
+	if err := guardUnverifiedMarker(c, operation); err != nil {
+		return err
+	}
+	return guardRecoveryMarker(c, operation)
+}
+
+// writeRestoreMarker durably records that a restore is about to delete.
+//
+// Both the file and its parent directory are fsynced BEFORE the first
+// deletion. A marker that is still in the page cache when the machine loses
+// power describes a restore that did happen, which is the one crash where
+// it matters most.
+func writeRestoreMarker(c *Config) (err error) {
+	file, err := os.OpenFile(markerPath(c), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("write %s: %w", RestoreIncompleteMarker, err)
+	}
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s: %w", RestoreIncompleteMarker, closeErr)
+		}
+		// A marker that was created and then failed to be written, synced,
+		// or published describes nothing, and leaving it would forbid every
+		// lifecycle verb — including the recovery that has deleted nothing
+		// and should simply restart the plane.
+		//
+		// This removal is an ERGONOMIC improvement, not the safety
+		// mechanism. Safety comes from replaceTree deriving the destructive
+		// phase from what is actually on disk: with the file left behind,
+		// the phase reads destructive, the plane stays stopped, and the
+		// operator gets a marker they can act on. With it removed, they get
+		// a running plane and an error. Both are safe; one is kinder.
+		//
+		// UNCOVERED, stated rather than implied: no test forces a marker
+		// write to fail AFTER the file is created — doing so needs an
+		// injected failure in the write, fsync or directory-sync step, and
+		// deleting this line leaves every test green. What IS tested is the
+		// derivation that makes either outcome safe.
+		if err != nil {
+			_ = os.Remove(markerPath(c))
+		}
+	}()
+
+	if _, err := file.WriteString("a restore began deleting into this data root and did not finish\n"); err != nil {
+		return fmt.Errorf("write %s: %w", RestoreIncompleteMarker, err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", RestoreIncompleteMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// clearRestoreMarker removes the marker once the restore has completed.
+func clearRestoreMarker(c *Config) error {
+	if err := os.Remove(markerPath(c)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", RestoreIncompleteMarker, err)
+	}
+	return syncDir(c.Roots.Data)
+}
+
+// syncDir flushes a directory entry so a create or rename inside it
+// survives a power loss.
+func syncDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", dir, err)
+	}
+	// Sync below is what makes the entry durable; closing a read-only
+	// directory handle afterwards has nothing left to report.
+	defer func() { _ = handle.Close() }()
+	if err := handle.Sync(); err != nil {
+		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	return nil
 }
 
 // rootKeyFor is the ONE place that decides whether a lifecycle operation may
@@ -190,10 +674,11 @@ func (l lifecycle) String() string {
 // the object store's credentials derive from the same key, so a plane holding
 // objects and no cluster is still a plane some earlier key provisioned.
 func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
-	fresh, err := dataRootIsEmpty(c)
+	evidence, err := planeEvidence(c)
 	if err != nil {
 		return nil, err
 	}
+	fresh := len(evidence) == 0
 
 	// A non-provisioning operation against an empty root refuses HERE, before
 	// the key is even read, because the presence of a key does not mean a
@@ -226,35 +711,85 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 
 	// Only a populated root reaches here: an empty one refused above, and an
 	// empty one under `up` was allowed to create rather than to fail.
+	//
+	// The evidence is NAMED rather than merely asserted. Freshness reads the
+	// whole data root, so an incidental file — a macOS .DS_Store from opening
+	// the directory in Finder is the realistic one — makes a genuinely fresh
+	// plane look provisioned. Refusing is still right, since minting over a
+	// real plane costs every secret in it, but an operator who can see WHAT
+	// was found can tell the two cases apart in seconds. Naming the evidence
+	// is the alternative to an exclusion list for known junk, which would be
+	// a place for a future writer's data to be silently ignored.
 	return nil, fmt.Errorf("%w (%s). Its Postgres password and object-store credentials are "+
 		"derived from the original key, so a new one would open neither. Restore the key file "+
-		"beside the backup, or run the new-key recovery path: %w",
-		ErrPlaneLocked, operation, wrapped)
+		"beside the backup, or run the new-key recovery path. The data root is judged non-fresh "+
+		"because of: %s: %w",
+		ErrPlaneLocked, operation, strings.Join(evidence, ", "), wrapped)
 }
 
-// dataRootIsEmpty reports whether NO service has been provisioned yet.
+// maxEvidencePaths bounds how many offending paths an error names. A
+// provisioned cluster holds thousands; a handful identifies the state.
+const maxEvidencePaths = 5
+
+// planeEvidence walks the data root and returns the paths proving a plane
+// already exists there. An empty result means the root is fresh.
 //
-// initdb populates the Postgres directory and the object store populates its
-// own, so their contents are the honest signal that some earlier key already
-// provisioned this plane. A directory that does not exist yet counts as
-// empty, which is the first-run case.
-func dataRootIsEmpty(c *Config) (bool, error) {
-	for _, service := range []paths.Service{paths.ServicePostgres, paths.ServiceMinIO} {
-		dir, err := c.Roots.ServiceDataDir(service)
-		if err != nil {
-			return false, fmt.Errorf("resolve %s data directory: %w", service, err)
-		}
-		entries, readErr := os.ReadDir(dir)
+// The rule is ANY NON-DIRECTORY ENTRY except the lifecycle lock. Not "any
+// entry", and not "any regular file":
+//
+//   - Not any entry, because `up` creates the service directories before it
+//     asks whether the root is fresh, so on a first run this walk already
+//     sees empty postgres/ and minio/. Counting them would refuse to mint a
+//     key on a clean checkout and fail `dataplane-up` from empty.
+//   - Not any regular file, because a FIFO, socket, device node, or anything
+//     else unrecognised would then read as "fresh" — and freshness is the
+//     judgement that authorises minting a key over whatever is there. The
+//     safe reading of an entry we do not understand is that it is somebody's
+//     data.
+//
+// A traversal that cannot be read is an error rather than a "fresh" answer,
+// for the same reason: an unreadable root is the case where nothing is
+// known, and nothing-known is not emptiness.
+//
+// This replaces a per-service check. Enumerating services could only ever be
+// as complete as the list, and the failure it produced would be silent — a
+// plane holding an unlisted service's data judged fresh, and its root key
+// replaced. Reading the root cannot be wrong about a writer nobody
+// registered.
+func planeEvidence(c *Config) ([]string, error) {
+	var evidence []string
+	err := filepath.WalkDir(c.Roots.Data, func(path string, entry fs.DirEntry, err error) error {
 		switch {
-		case os.IsNotExist(readErr):
-			continue
-		case readErr != nil:
-			return false, fmt.Errorf("inspect %s data directory: %w", service, readErr)
-		case len(entries) > 0:
-			return false, nil
+		case err != nil:
+			if errors.Is(err, os.ErrNotExist) && path == c.Roots.Data {
+				return filepath.SkipAll // A root that does not exist yet is the first-run case.
+			}
+			return fmt.Errorf("inspect %s: %w", path, err)
+		case entry.IsDir():
+			return nil
+		case path == filepath.Join(c.Roots.Data, LifecycleLockFile):
+			// Never evidence: `up` itself creates it before judging freshness,
+			// and it is deliberately never unlinked (ADR 0027).
+			return nil
 		}
+		if len(evidence) < maxEvidencePaths {
+			evidence = append(evidence, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("inspect data root %s: %w", c.Roots.Data, err)
 	}
-	return true, nil
+	return evidence, nil
+}
+
+// dataRootIsEmpty reports whether NO plane has been provisioned yet.
+func dataRootIsEmpty(c *Config) (bool, error) {
+	evidence, err := planeEvidence(c)
+	if err != nil {
+		return false, err
+	}
+	return len(evidence) == 0, nil
 }
 
 // ensureBucket provisions the object store the way migrateLocked
@@ -367,6 +902,9 @@ func Migrate(ctx context.Context, c *Config) (err error) {
 		}
 	}()
 
+	if err := guardRestoreState(c, lifecycleMigrate); err != nil {
+		return err
+	}
 	rootKey, keyErr := rootKeyFor(c, lifecycleMigrate)
 	if keyErr != nil {
 		return keyErr
@@ -417,6 +955,9 @@ func ForceVersion(c *Config, version int) (err error) {
 		}
 	}()
 
+	if err := guardRestoreState(c, lifecycleForceVersion); err != nil {
+		return err
+	}
 	rootKey, keyErr := rootKeyFor(c, lifecycleForceVersion)
 	if keyErr != nil {
 		return keyErr
@@ -455,7 +996,25 @@ func down(ctx context.Context, c *Config, composeFile string) error {
 	if err != nil {
 		return err
 	}
-	return compose(ctx, composeFile, env, "down")
+	if composeErr := compose(ctx, c.ProjectName, composeFile, env, "down"); composeErr != nil {
+		return composeErr
+	}
+	// The recovery container too, which `compose down` cannot reach: it is
+	// outside the project by design, so nothing about the Compose lifecycle
+	// touches it.
+	//
+	// Without this, `down` was a hollow escape from an interrupted recovery.
+	// D4b permits it as the way an operator quiesces the plane before
+	// dealing with the orphan — and it returned having stopped everything
+	// EXCEPT the postmaster that owns the cluster, leaving the one process
+	// that makes the state hazardous still running while reporting the plane
+	// stopped.
+	//
+	// The marker and the staged key are deliberately NOT touched. `down` is
+	// not a discard: the recovery must still be resumable afterwards, and
+	// the container is rebuilt from exactly those two artifacts. This is the
+	// difference between `down` and the escapes that clear everything.
+	return stopRecoveryContainer(ctx, c)
 }
 
 // Reset stops the stack and deletes the contents of every service data
@@ -483,23 +1042,91 @@ func Reset(ctx context.Context, c *Config, composeFile string) (err error) {
 	if err := down(ctx, c, composeFile); err != nil {
 		return err
 	}
-	for _, service := range []paths.Service{paths.ServicePostgres, paths.ServiceMinIO} {
-		dir, err := c.Roots.ServiceDataDir(service)
-		if err != nil {
-			return fmt.Errorf("locate %s data directory: %w", service, err)
+	// BEFORE the sweep, not after. `down` stops the Compose project and
+	// knows nothing about the recovery container, which is outside it by
+	// design — so without this, clearDataRoot would empty the Postgres
+	// directory while an isolated postmaster still had it open, and report
+	// success.
+	if err := clearRecoveryResidue(ctx, c); err != nil {
+		return err
+	}
+	return clearDataRoot(c)
+}
+
+// clearDataRoot returns the data root to exactly the state planeEvidence
+// calls fresh.
+//
+// It sweeps the WHOLE root rather than the registry's service directories,
+// and that is a consequence of the freshness rule rather than thoroughness
+// for its own sake. Freshness reads every entry under the root, so a reset
+// that cleared only registered services would leave anything else in place
+// — an unregistered service's directory, a stray file, a restore-incomplete
+// marker — and the next `up` would then refuse to provision the plane the
+// operator just asked to be wiped. Reset and freshness are two halves of
+// one definition and have to agree by construction.
+//
+// Top-level DIRECTORIES are emptied in place, never removed: they are
+// bind-mount sources, and on macOS a recreated directory has a new inode
+// while any existing mount keeps pointing at the old one. Everything else
+// is removed, except the lifecycle lock, which this operation is currently
+// holding and which is deliberately never unlinked (ADR 0027 — unlinking a
+// held lock file lets a second caller lock a fresh inode at the same path,
+// producing two "exclusive" holders).
+func clearDataRoot(c *Config) error {
+	return clearDataRootKeeping(c, LifecycleLockFile)
+}
+
+// clearDataRootKeeping is clearDataRoot with additional top-level entries
+// left alone.
+//
+// Restore needs it: the restore-incomplete marker is written BEFORE the
+// first deletion and must survive the deletion it describes, or a crash
+// mid-clear would leave a torn tree with nothing saying so.
+func clearDataRootKeeping(c *Config, keep ...string) error {
+	preserved := make(map[string]bool, len(keep))
+	for _, name := range keep {
+		preserved[name] = true
+	}
+
+	entries, err := os.ReadDir(c.Roots.Data)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
+		return fmt.Errorf("read data root %s: %w", c.Roots.Data, err)
+	}
+
+	for _, entry := range entries {
+		target := filepath.Join(c.Roots.Data, entry.Name())
+		switch {
+		case preserved[entry.Name()]:
+			continue
+		case entry.IsDir():
+			if err := clearDirectoryContents(target); err != nil {
+				return err
 			}
-			return fmt.Errorf("read %s: %w", dir, err)
-		}
-		for _, entry := range entries {
-			target := filepath.Join(dir, entry.Name())
-			if err := os.RemoveAll(target); err != nil {
+		default:
+			if err := os.Remove(target); err != nil {
 				return fmt.Errorf("remove %s: %w", target, err)
 			}
+		}
+	}
+	return nil
+}
+
+// clearDirectoryContents empties a directory while preserving its inode.
+func clearDirectoryContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		target := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(target); err != nil {
+			return fmt.Errorf("remove %s: %w", target, err)
 		}
 	}
 	return nil
@@ -551,16 +1178,37 @@ func loadImagePins(composeFile string) ([]string, error) {
 	return pins, nil
 }
 
+// pinnedImage resolves one image reference from the same pins file Compose
+// is given.
+//
+// Recovery needs it because its isolated server runs OUTSIDE the Compose
+// project -- deliberately, so ordinary lifecycle commands never touch it --
+// and must still run the exact digest-pinned image the plane runs (ADR
+// 0026). Reading the same file is what keeps the two from drifting.
+func pinnedImage(composeFile, key string) (string, error) {
+	pins, err := loadImagePins(composeFile)
+	if err != nil {
+		return "", err
+	}
+	for _, pin := range pins {
+		name, value, _ := strings.Cut(pin, "=")
+		if name == key {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("no %s in the image pins beside %s", key, composeFile)
+}
+
 // composeOutput runs a docker compose subcommand and returns its combined
 // output. Combined, because Compose reports the real cause (a port clash,
 // an unwritable mount) on stderr, and losing it turns a diagnosable
 // failure into "exit status 1".
-func composeOutput(ctx context.Context, composeFile string, env []string, args ...string) ([]byte, error) {
+func composeOutput(ctx context.Context, project, composeFile string, env []string, args ...string) ([]byte, error) {
 	pins, err := loadImagePins(composeFile)
 	if err != nil {
 		return nil, err
 	}
-	full := append([]string{"compose", "--project-name", ProjectName, "--file", composeFile}, args...)
+	full := append([]string{"compose", "--project-name", project, "--file", composeFile}, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
 	cmd.Env = append(append(os.Environ(), env...), pins...)
 
@@ -572,8 +1220,8 @@ func composeOutput(ctx context.Context, composeFile string, env []string, args .
 }
 
 // compose runs a docker compose subcommand against the data-plane project.
-func compose(ctx context.Context, composeFile string, env []string, args ...string) error {
-	_, err := composeOutput(ctx, composeFile, env, args...)
+func compose(ctx context.Context, project, composeFile string, env []string, args ...string) error {
+	_, err := composeOutput(ctx, project, composeFile, env, args...)
 	return err
 }
 
@@ -587,13 +1235,51 @@ func compose(ctx context.Context, composeFile string, env []string, args ...stri
 // caller's context while the deadline passed unnoticed. Every probe gets
 // its own bounded context derived from that one.
 func waitReady(ctx context.Context, c *Config, composeFile string, env []string) error {
+	return waitReadyFor(ctx, c, composeFile, env, allServiceNames())
+}
+
+// allServiceNames is every service the registry knows, as Compose names
+// them. Derived from paths.Services() rather than written out, so a service
+// added there is waited for here without a second edit.
+func allServiceNames() []string {
+	services := paths.Services()
+	names := make([]string, 0, len(services))
+	for _, service := range services {
+		names = append(names, string(service))
+	}
+	return names
+}
+
+// waitReadyFor blocks until every NAMED service is usable.
+//
+// A subset rather than always both, because `backup` restarts exactly what
+// it stopped. A backup of a project with one service deliberately down must
+// not wait for that service — it would time out against a service nobody
+// asked to be running, turning a correct partial-project backup into a
+// three-minute failure. Waiting for the originally-running subset is the
+// only rule that serves both cases.
+//
+// An empty set returns immediately: a plane that was fully stopped is
+// restored by starting nothing, and there is nothing to become ready.
+func waitReadyFor(ctx context.Context, c *Config, composeFile string, env, services []string) error {
+	if len(services) == 0 {
+		return nil
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 
+	wantPostgres := slices.Contains(services, string(paths.ServicePostgres))
+	wantMinIO := slices.Contains(services, string(paths.ServiceMinIO))
+
 	var lastErr error
 	for {
-		pgErr := postgresHealthy(waitCtx, composeFile, env)
-		minioErr := minioLive(waitCtx, c)
+		var pgErr, minioErr error
+		if wantPostgres {
+			pgErr = postgresHealthy(waitCtx, c.ProjectName, composeFile, env)
+		}
+		if wantMinIO {
+			minioErr = minioLive(waitCtx, c)
+		}
 		if pgErr == nil && minioErr == nil {
 			return nil
 		}
@@ -605,7 +1291,7 @@ func waitReady(ctx context.Context, c *Config, composeFile string, env []string)
 			// ready" and a diagnosis: initdb failures, permission errors on
 			// the bind mount, and image problems all appear there.
 			return fmt.Errorf("%w within %s: %w\n%s",
-				ErrNotReady, readyTimeout, lastErr, recentLogs(ctx, composeFile, env))
+				ErrNotReady, readyTimeout, lastErr, recentLogs(ctx, c.ProjectName, composeFile, env))
 		case <-time.After(time.Second):
 		}
 	}
@@ -614,11 +1300,11 @@ func waitReady(ctx context.Context, c *Config, composeFile string, env []string)
 // recentLogs returns the tail of the stack's logs for a failure message,
 // on a fresh short-lived context so it still works when the caller's has
 // already expired — which, at the point this is called, it has.
-func recentLogs(ctx context.Context, composeFile string, env []string) string {
+func recentLogs(ctx context.Context, project, composeFile string, env []string) string {
 	logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
 
-	out, err := composeOutput(logCtx, composeFile, env, "logs", "--tail", "40")
+	out, err := composeOutput(logCtx, project, composeFile, env, "logs", "--tail", "40")
 	if err != nil {
 		return fmt.Sprintf("(could not collect compose logs: %v)", err)
 	}
@@ -643,13 +1329,13 @@ type composePS struct {
 // speaks the protocol ships. A host-side TCP dial would report success as
 // soon as the port is bound, which during a cold initdb is long before the
 // database can answer.
-func postgresHealthy(ctx context.Context, composeFile string, env []string) error {
+func postgresHealthy(ctx context.Context, project, composeFile string, env []string) error {
 	// Per-probe bound: one wedged docker invocation must not consume the
 	// whole readiness budget.
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	out, err := composeOutput(probeCtx, composeFile, env, "ps", "--format", "json")
+	out, err := composeOutput(probeCtx, project, composeFile, env, "ps", "--format", "json")
 	if err != nil {
 		return fmt.Errorf("docker compose ps: %w", err)
 	}

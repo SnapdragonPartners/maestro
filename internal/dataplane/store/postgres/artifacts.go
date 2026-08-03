@@ -195,6 +195,36 @@ func buildReviewableProjection(artifactID uuid.UUID, artifactType registry.Type,
 	}
 }
 
+// reviewableProjectionOf rebuilds the review projection from a STORED
+// artifact, which is what lets verification recompute review_digest.
+//
+// It mirrors buildReviewableProjection field for field, and the mirroring is
+// the risk: a field added there and forgotten here would make every stored
+// digest fail to reproduce. A test builds both from one input and requires
+// identical digests, so the two cannot drift apart silently.
+func reviewableProjectionOf(a *store.ManagementArtifact) reviewableProjection {
+	return reviewableProjection{
+		ProductID:            optionalID(a.Lineage.ProductID),
+		FeatureID:            optionalID(a.Lineage.FeatureID),
+		EpicID:               optionalID(a.Lineage.EpicID),
+		StoryID:              optionalID(a.Lineage.StoryID),
+		AmendsArtifactID:     optionalID(a.AmendsArtifactID),
+		SupersedesArtifactID: optionalID(a.SupersedesArtifactID),
+		ReplacesArtifactID:   optionalID(a.ReplacesArtifactID),
+
+		ArtifactID:       a.ArtifactID.String(),
+		ArtifactType:     string(a.Type),
+		ArtifactCategory: string(a.Category),
+		Summary:          a.Summary,
+		ScopeType:        string(a.Scope.Type),
+		ScopeID:          a.Scope.ID.String(),
+		AuthorInstanceID: a.AuthorInstanceID.String(),
+
+		Payload:       a.Payload,
+		SchemaVersion: a.SchemaVersion,
+	}
+}
+
 // optionalID renders an optional identifier for the projection.
 func optionalID(id *uuid.UUID) *string {
 	if id == nil {

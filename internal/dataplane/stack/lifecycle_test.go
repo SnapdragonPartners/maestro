@@ -2,7 +2,13 @@ package stack
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,32 +43,92 @@ func testConfig(t *testing.T) *Config {
 // lockLifecycle call from any of them makes its case return immediately,
 // and the case fails.
 //
-// The list must cover EVERY lifecycle operation, and enumerating it by hand
-// is the weak point: Migrate and ForceVersion were added later and were
-// absent here, so removing either lock left this suite green. The adapters
-// below exist so operations with different signatures are still covered
-// rather than quietly omitted.
+// THE ENUMERATION IS DISCOVERED, NOT LISTED. An earlier version listed the
+// operations by hand and its own comment named that as the weak point:
+// Migrate and ForceVersion were added later, were absent, and removing
+// either lock left this suite green. The comment was right and the fix was
+// not applied — Backup, Restore and Verify were then added to the package
+// and were missing here too, so three of the four verbs item 8 introduced
+// had no lock coverage at all while a test named "every lifecycle
+// operation" passed.
+//
+// So the verbs come from the same AST discovery the marker call-site test
+// uses, and a verb without a case here fails rather than being skipped.
 func TestLifecycleOperationsTakeTheLock(t *testing.T) {
-	operations := map[string]func(context.Context, *Config, string) error{
-		"Up":    Up,
-		"Down":  Down,
-		"Reset": Reset,
-		"Migrate": func(ctx context.Context, c *Config, _ string) error {
-			return Migrate(ctx, c)
+	// Each case builds its invocation BEFORE the lock is taken, because some
+	// verbs validate their arguments before reaching for it: Restore reads
+	// and inventories its archive first, and would fail on a bogus path
+	// without ever blocking.
+	operations := map[string]func(*testing.T, *Config) func(context.Context) error{
+		"Up": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			return func(ctx context.Context) error { return Up(ctx, cfg, bogusComposeFile) }
 		},
-		"ForceVersion": func(_ context.Context, c *Config, _ string) error {
-			return ForceVersion(c, 1)
+		"Down": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			return func(ctx context.Context) error { return Down(ctx, cfg, bogusComposeFile) }
+		},
+		"Reset": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			return func(ctx context.Context) error { return Reset(ctx, cfg, bogusComposeFile) }
+		},
+		"Migrate": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			return func(ctx context.Context) error { return Migrate(ctx, cfg) }
+		},
+		"ForceVersion": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			return func(_ context.Context) error { return ForceVersion(cfg, 1) }
+		},
+		"Backup": func(t *testing.T, cfg *Config) func(context.Context) error {
+			t.Helper()
+			// A destination that does not exist, which is what Backup
+			// requires, and outside the data root, which it also requires.
+			destination := filepath.Join(t.TempDir(), "archive")
+			return func(ctx context.Context) error { return Backup(ctx, cfg, bogusComposeFile, destination) }
+		},
+		"RecoverKey": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			// force: true, or it refuses before reaching for the lock and
+			// the case would pass for the wrong reason.
+			return func(ctx context.Context) error {
+				return RecoverKey(ctx, cfg, bogusComposeFile, true)
+			}
+		},
+		"Verify": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := Verify(ctx, cfg)
+				return err
+			}
+		},
+		"Restore": func(t *testing.T, cfg *Config) func(context.Context) error {
+			t.Helper()
+			// A REAL archive, built before the lock is held. Restore
+			// validates the source before locking, so an invalid one would
+			// make this case pass for the wrong reason.
+			populatePlane(t, cfg, "for the lock test")
+			archive := archiveFrom(t, cfg)
+			return func(ctx context.Context) error {
+				return Restore(ctx, cfg, bogusComposeFile, archive, true)
+			}
 		},
 	}
 
-	for name, operate := range operations {
+	for _, verb := range exportedLifecycleVerbs(t) {
+		if _, covered := operations[verb]; !covered {
+			t.Errorf("%s is an exported lifecycle verb with no case here: it may be acting on a data "+
+				"root while another process holds the lifecycle lock", verb)
+		}
+	}
+	for verb := range operations {
+		if !slices.Contains(exportedLifecycleVerbs(t), verb) {
+			t.Errorf("this test covers %s, which is no longer an exported lifecycle verb", verb)
+		}
+	}
+
+	for name, build := range operations {
 		t.Run(name, func(t *testing.T) {
 			cfg := testConfig(t)
-
-			// Hold the lock the way a concurrent process would.
 			if err := cfg.Roots.Ensure(); err != nil {
 				t.Fatalf("Ensure: %v", err)
 			}
+			invoke := build(t, cfg)
+
+			// Hold the lock the way a concurrent process would.
 			release, err := paths.AcquireLock(filepath.Join(cfg.Roots.Data, LifecycleLockFile))
 			if err != nil {
 				t.Fatalf("AcquireLock: %v", err)
@@ -70,9 +136,7 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() {
-				// A path that cannot resolve, so the operation fails fast
-				// once it does get the lock. We never inspect the error.
-				done <- operate(context.Background(), cfg, "testdata/does-not-exist.yaml")
+				done <- invoke(context.Background())
 			}()
 
 			select {
@@ -93,4 +157,41 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bogusComposeFile is a path that cannot resolve, so an operation fails fast
+// once it does get the lock. No test here inspects the resulting error.
+const bogusComposeFile = "testdata/does-not-exist.yaml"
+
+// exportedLifecycleVerbs discovers the package's lifecycle entry points,
+// using the same structural definition the marker call-site test uses:
+// exported, and taking a *Config.
+func exportedLifecycleVerbs(t *testing.T) []string {
+	t.Helper()
+	fileSet := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+
+	var verbs []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, parseErr := parser.ParseFile(fileSet, filepath.Join(".", name), nil, 0)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", name, parseErr)
+		}
+		for _, decl := range file.Decls {
+			fn, isFunc := decl.(*ast.FuncDecl)
+			if !isFunc || fn.Recv != nil || !isLifecycleEntryPoint(fn) {
+				continue
+			}
+			verbs = append(verbs, fn.Name.Name)
+		}
+	}
+	slices.Sort(verbs)
+	return verbs
 }

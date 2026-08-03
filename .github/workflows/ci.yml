@@ -271,6 +271,64 @@ jobs:
           MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
         run: make dataplane-down
 
+  # New-key recovery on NATIVE LINUX, which item 7 assigned to item 8 by name
+  # rather than as a nicety.
+  #
+  # Every measurement behind design D8 was taken on macOS, where Docker
+  # Desktop virtualises bind-mount ownership. The claim that has to hold on
+  # Linux is that the recovery container runs as the SAME uid as the normal
+  # one and therefore has exactly the access the normal one has — and item
+  # 2's own history is that uid handling over a 0700 host-owned mount is
+  # precisely where the two platforms diverge. A recovery verified only on
+  # macOS is a recovery verified on the platform that cannot fail the way
+  # this one can.
+  #
+  # It runs the package's own recovery suite rather than a hand-written
+  # sequence of shell assertions, because those tests already encode what
+  # recovery owes: the data survives, the secrets are gone, the new
+  # credential authenticates over the network by service name, the probe can
+  # fail, all three resume windows converge, and no orphaned container
+  # survives. A second copy of that in YAML would drift from the first.
+  dataplane-recover-key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # An isolated MAESTRO_HOME, as the job above uses: these tests build
+      # their own throwaway planes, and the default root would put them on a
+      # plane the runner might share with another step.
+      - name: Recovery, resumability, residues and the SCRAM probe
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-recovery
+        run: |
+          set -euo pipefail
+          go test -tags=integration -count=1 -timeout=40m \
+            -run 'TestRecover' \
+            ./internal/dataplane/stack/
+
+      # The suite isolates per test and tears its own planes down, so a
+      # leftover container here means a test leaked one — worth failing on
+      # rather than cleaning up silently, since the recovery container is
+      # outside every Compose project and nothing else would remove it.
+      - name: No recovery container survived the suite
+        if: always()
+        run: |
+          set -euo pipefail
+          survivors=$(docker ps --all --filter 'name=keyrecovery' --format '{{.Names}}')
+          if [ -n "$survivors" ]; then
+            echo "recovery containers survived the suite:"
+            echo "$survivors"
+            echo "$survivors" | xargs -r docker rm --force
+            exit 1
+          fi
+
   # Template for when e2e/integration tests move into CI (today they run only
   # in the pre-push hook). Real API-key secrets go on this job — keeping them
   # off the unit-test job above is deliberate, so unit tests can never make
