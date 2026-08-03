@@ -131,9 +131,15 @@ func Backup(ctx context.Context, c *Config, composeFile, destination string) (er
 	// restart inheriting it would be cancelled before it ran, turning an
 	// interrupted backup into a stopped plane.
 	defer func() {
-		restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restartTimeout)
+		// The budget covers starting the containers AND waiting for them to
+		// be usable, which is why it is not restartTimeout alone: the
+		// readiness wait has its own timeout, and an outer bound smaller
+		// than it would cut off a slow-but-healthy start before its own
+		// deadline could be reached.
+		restartCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), restartTimeout+readyTimeout)
 		defer cancel()
-		if startErr := composeStart(restartCtx, c.ProjectName, composeFile, env, state); startErr != nil {
+		if startErr := composeStart(restartCtx, c, composeFile, env, state); startErr != nil {
 			err = errors.Join(err, fmt.Errorf("restart the data plane after backup: %w", startErr))
 		}
 	}()
@@ -344,7 +350,26 @@ func composeStop(ctx context.Context, project, composeFile string, env []string)
 }
 
 // composeStart restarts exactly the containers that were running before.
-func composeStart(ctx context.Context, project, composeFile string, env []string, state projectState) error {
+// composeStart restarts the services that were running, and waits until
+// they are USABLE again.
+//
+// The wait is part of the restart rather than a courtesy on top of it.
+// `compose start` returns as soon as the containers are started, which is
+// not the same as Postgres accepting connections or MinIO answering: a
+// backup that returned there reported success while an outage it caused was
+// still in progress, and a caller that reached for the plane immediately
+// afterwards got a connection error out of a maintenance operation that
+// said it had finished. The plane was usable before; it must be usable
+// after.
+//
+// It waits for the ORIGINALLY RUNNING SUBSET, never for both services.
+// Waiting for both would hang for the full readiness timeout against a
+// service the operator had deliberately stopped, turning a correct
+// partial-project backup into a three-minute failure — and starting it to
+// satisfy the wait would break the promise this function exists to keep.
+func composeStart(
+	ctx context.Context, c *Config, composeFile string, env []string, state projectState,
+) error {
 	if len(state.running) == 0 {
 		// The plane was already down. Leaving it down is the correct
 		// restoration of state, and is also what keeps a backup of a
@@ -352,8 +377,12 @@ func composeStart(ctx context.Context, project, composeFile string, env []string
 		return nil
 	}
 	args := append([]string{"start"}, state.running...)
-	if err := compose(ctx, project, composeFile, env, args...); err != nil {
+	if err := compose(ctx, c.ProjectName, composeFile, env, args...); err != nil {
 		return fmt.Errorf("start %s: %w", strings.Join(state.running, ", "), err)
+	}
+	if err := waitReadyFor(ctx, c, composeFile, env, state.running); err != nil {
+		return fmt.Errorf("wait for %s to be usable again after backup: %w",
+			strings.Join(state.running, ", "), err)
 	}
 	return nil
 }

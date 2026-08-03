@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -1093,13 +1094,51 @@ func compose(ctx context.Context, project, composeFile string, env []string, arg
 // caller's context while the deadline passed unnoticed. Every probe gets
 // its own bounded context derived from that one.
 func waitReady(ctx context.Context, c *Config, composeFile string, env []string) error {
+	return waitReadyFor(ctx, c, composeFile, env, allServiceNames())
+}
+
+// allServiceNames is every service the registry knows, as Compose names
+// them. Derived from paths.Services() rather than written out, so a service
+// added there is waited for here without a second edit.
+func allServiceNames() []string {
+	services := paths.Services()
+	names := make([]string, 0, len(services))
+	for _, service := range services {
+		names = append(names, string(service))
+	}
+	return names
+}
+
+// waitReadyFor blocks until every NAMED service is usable.
+//
+// A subset rather than always both, because `backup` restarts exactly what
+// it stopped. A backup of a project with one service deliberately down must
+// not wait for that service — it would time out against a service nobody
+// asked to be running, turning a correct partial-project backup into a
+// three-minute failure. Waiting for the originally-running subset is the
+// only rule that serves both cases.
+//
+// An empty set returns immediately: a plane that was fully stopped is
+// restored by starting nothing, and there is nothing to become ready.
+func waitReadyFor(ctx context.Context, c *Config, composeFile string, env, services []string) error {
+	if len(services) == 0 {
+		return nil
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, readyTimeout)
 	defer cancel()
 
+	wantPostgres := slices.Contains(services, string(paths.ServicePostgres))
+	wantMinIO := slices.Contains(services, string(paths.ServiceMinIO))
+
 	var lastErr error
 	for {
-		pgErr := postgresHealthy(waitCtx, c.ProjectName, composeFile, env)
-		minioErr := minioLive(waitCtx, c)
+		var pgErr, minioErr error
+		if wantPostgres {
+			pgErr = postgresHealthy(waitCtx, c.ProjectName, composeFile, env)
+		}
+		if wantMinIO {
+			minioErr = minioLive(waitCtx, c)
+		}
 		if pgErr == nil && minioErr == nil {
 			return nil
 		}

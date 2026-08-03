@@ -219,6 +219,52 @@ func TestBackupOfAPartlyRunningPlaneRestoresThatExactState(t *testing.T) {
 	if _, err := ReadManifest(archive); err != nil {
 		t.Fatalf("archive has no valid manifest: %v", err)
 	}
+
+	// The readiness wait must cover the running subset and NOT the stopped
+	// one. A wait for both services would hang here for the full readiness
+	// timeout against a service the operator deliberately stopped, and this
+	// test would fail on the clock rather than on behaviour -- which is the
+	// second half of why the wait takes a subset rather than always both.
+	// Reaching Postgres with no retry is what shows the wait happened.
+	database := openPlane(t, cfg)
+	if err := database.PingContext(t.Context()); err != nil {
+		t.Errorf("the service that was left running does not answer after the backup: %v", err)
+	}
+}
+
+// TestBackupLeavesThePlaneUSABLENotMerelyStarted is the readiness defect
+// Codex found, asserted as a caller experiences it.
+//
+// Every other test in this suite checks that the right CONTAINERS are
+// running after a backup, and a container that is running is not the same
+// as a service that answers. `compose start` returns as soon as the
+// containers are started; Postgres still has to reach a state where it
+// accepts connections, and MinIO has to start answering. A backup that
+// returned in that window reported success while the outage it caused was
+// still in progress — the caller reaching for the plane straight afterwards
+// got a connection error out of a maintenance operation that said it had
+// finished.
+//
+// The assertion therefore uses the plane IMMEDIATELY, with no retry and no
+// sleep. A retry loop here would restate the defect as the test's own
+// workaround and pass against the broken version.
+func TestBackupLeavesThePlaneUsableNotMerelyStarted(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	seed := seedCrossStore(t, cfg)
+
+	archive := filepath.Join(t.TempDir(), "archive")
+	if err := Backup(t.Context(), cfg, testComposeFile(), archive); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	// No wait, no retry: Backup has returned, so the plane it stopped must
+	// already serve. This reaches BOTH stores, because either can be the
+	// one still starting -- and MinIO was the one that actually failed when
+	// this defect was live.
+	assertCrossStoreIntact(t, cfg, seed)
 }
 
 // TestCancelledBackupStillRestartsThePlane is test-plan item 13.
