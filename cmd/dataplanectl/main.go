@@ -142,7 +142,20 @@ func run(ctx context.Context, command string, opts runOptions) error {
 // confirmationWord is what a destructive verb requires the operator to type.
 // One word for all of them, so a caller cannot learn a different answer per
 // command.
+//
+// Every prompt below renders it through confirmationPrompt rather than
+// spelling it out. It was spelled out in all three, which made the constant
+// govern only the COMPARISON: changing it here would have left each prompt
+// asking for a word the code no longer accepts, and the operator staring at
+// a destructive confirmation that silently could not be satisfied. Two
+// copies of one intent, and the copy that lies is the one a human reads.
 const confirmationWord = "yes"
+
+// confirmationPrompt is the trailing instruction every destructive verb
+// ends with.
+func confirmationPrompt() string {
+	return "\nType '" + confirmationWord + "' to continue: "
+}
 
 // runReset discards the plane, after confirmation.
 //
@@ -190,7 +203,7 @@ func runForceVersion(cfg *stack.Config, force bool, version int) error {
 func confirmForceVersion(version int) bool {
 	fmt.Printf("Record schema version %d WITHOUT running migrations?\n"+
 		"This changes metadata only. If the schema is not really at %d, nothing will detect the "+
-		"disagreement.\nType 'yes' to continue: ", version, version)
+		"disagreement."+confirmationPrompt(), version, version)
 
 	var answer string
 	if _, err := fmt.Scanln(&answer); err != nil {
@@ -204,7 +217,8 @@ func confirmForceVersion(version int) bool {
 // contents. ADR 0022 spent an amendment making that data durable, so it
 // does not get deleted on a typo.
 func confirmReset(cfg *stack.Config) bool {
-	fmt.Printf("This deletes ALL data under %s (Postgres cluster and object store).\nType 'yes' to continue: ", cfg.Roots.Data)
+	fmt.Printf("This deletes ALL data under %s (Postgres cluster and object store)."+
+		confirmationPrompt(), cfg.Roots.Data)
 
 	var answer string
 	if _, err := fmt.Scanln(&answer); err != nil {
@@ -239,9 +253,16 @@ func runRecoverKey(ctx context.Context, cfg *stack.Config, opts runOptions) erro
 
 // confirmRecoverKey prompts before the secrets are dropped.
 func confirmRecoverKey(cfg *stack.Config) bool {
-	fmt.Printf("This mints a NEW root-of-trust key for the plane at %s.\n"+
+	// BOTH paths, because they are different things and the operator needs
+	// each: the data root says WHICH plane is about to be re-keyed, and the
+	// key path says what is about to be written. Naming only the data root
+	// described the subject of the sentence and not its object, in the last
+	// interactive guard before an irreversible operation.
+	fmt.Printf("This mints a NEW root-of-trust key for the plane at %s,\n"+
+		"and installs it at %s.\n"+
 		"Every stored secret will be DELETED -- they cannot be decrypted without the old key --\n"+
-		"and the database credential will be rewritten.\nType 'yes' to continue: ", cfg.Roots.Data)
+		"and the database credential will be rewritten."+confirmationPrompt(),
+		cfg.Roots.Data, cfg.Roots.KeyPath())
 
 	var answer string
 	if _, err := fmt.Scanln(&answer); err != nil {
