@@ -302,16 +302,31 @@ func authorizeRecovery(c *Config, marker *recoveryMarker) error {
 func stageRecovery(c *Config, existing *recoveryMarker) ([]byte, *recoveryMarker, error) {
 	if existing != nil {
 		staged, err := paths.LoadKeyFile(existing.StagedKey)
-		if err != nil {
-			// The incoherent case: a marker whose key is gone. Refusing is
-			// the only safe answer, because the recovery may already have
-			// applied a key this process cannot reproduce.
-			return nil, nil, fmt.Errorf("%w (%s): %w. The plane's credential may already have been "+
-				"changed to a key that no longer exists; restore %s from wherever it was kept, or "+
-				"restore the plane from a backup",
-				ErrRecoveryIncoherent, existing.StagedKey, err, existing.StagedKey)
+		if err == nil {
+			return staged, existing, nil
 		}
-		return staged, existing, nil
+
+		// The staged key is gone, and that is TWO different states.
+		//
+		// D8's third window installs the key by RENAMING the staged file
+		// into place, so a recovery killed after that step leaves a marker
+		// whose staged key is legitimately absent — it is the live key now.
+		// Treating that as incoherent refuses to finish exactly the window
+		// the marker exists to authorize, and leaves an operator with a
+		// recovered plane carrying a marker nothing will ever clear.
+		//
+		// So the live key decides. Present: this is the post-install window,
+		// and the live key IS the staged one under its final name. Absent:
+		// nothing accounts for the missing file, the credential may already
+		// have moved to a key nobody has, and refusing is the only safe
+		// answer.
+		if installed, liveErr := paths.LoadKeyFile(c.Roots.KeyPath()); liveErr == nil {
+			return installed, existing, nil
+		}
+		return nil, nil, fmt.Errorf("%w (%s): %w, and no key is installed at %s either. The plane's "+
+			"credential may already have been changed to a key that no longer exists; restore %s "+
+			"from wherever it was kept, or restore the plane from a backup",
+			ErrRecoveryIncoherent, existing.StagedKey, err, c.Roots.KeyPath(), existing.StagedKey)
 	}
 
 	// A staged key with NO marker is debris from an attempt that died
@@ -414,7 +429,7 @@ func probeRecoveredPassword(
 	// an error -- but a failure to REACH the server at all would look the
 	// same, which is why startRecoveryServer waits for readiness first.
 	out, err := dockerExec(stepCtx, marker.Container, []string{"PGPASSWORD=" + password},
-		"psql", "-U", c.User, "-d", c.Database, "-tAc", "select 1")
+		"psql", "-h", "/var/run/postgresql", "-U", c.User, "-d", c.Database, "-tAc", "select 1")
 	if err == nil {
 		return true, nil
 	}
@@ -454,7 +469,8 @@ func changeCredentialAndDropSecrets(
 		quoteIdentifier(c.User), password)
 
 	out, err := dockerExec(stepCtx, marker.Container, nil,
-		"psql", "-v", "ON_ERROR_STOP=1", "-U", c.User, "-d", c.Database, "-c", statement)
+		"psql", "-h", "/var/run/postgresql", "-v", "ON_ERROR_STOP=1",
+		"-U", c.User, "-d", c.Database, "-c", statement)
 	if err != nil {
 		return fmt.Errorf("rewrite the database credential and drop every secret: %w\n%s", err, out)
 	}
@@ -532,7 +548,7 @@ func startRecoveryServer(
 		return fmt.Errorf("start the recovery server: %w\n%s", err, out)
 	}
 
-	return waitRecoveryServerReady(runCtx, marker.Container)
+	return waitRecoveryServerReady(runCtx, c, marker.Container)
 }
 
 // waitRecoveryServerReady blocks until the isolated server answers on its
@@ -541,11 +557,22 @@ func startRecoveryServer(
 // Without it, the probe's failure would be ambiguous: a server that has not
 // finished starting refuses connections exactly as a wrong password does,
 // and the probe would report "not yet applied" for a plane where it had.
-func waitRecoveryServerReady(ctx context.Context, container string) error {
+func waitRecoveryServerReady(ctx context.Context, c *Config, container string) error {
 	var lastOut []byte
 	var lastErr error
 	for {
-		out, err := dockerExec(ctx, container, nil, "pg_isready", "-q")
+		// -U and -d are EXPLICIT, and the reason is item 7's getpwuid trap
+		// in a third place. pg_isready derives a default username by calling
+		// getpwuid, which fails for the arbitrary uid Compose runs as -- the
+		// same reason `postgres --single` is unusable here -- and it exits 3
+		// ("no attempt was made") against a server that is perfectly ready.
+		// The failure is silent about its cause: the log shows the database
+		// accepting connections while the probe reports it unreachable.
+		//
+		// -h is the socket directory, so the check cannot fall back to a TCP
+		// attempt against a server that deliberately has no listener.
+		out, err := dockerExec(ctx, container, nil,
+			"pg_isready", "-q", "-h", "/var/run/postgresql", "-U", c.User, "-d", c.Database)
 		if err == nil {
 			return nil
 		}
@@ -553,11 +580,26 @@ func waitRecoveryServerReady(ctx context.Context, container string) error {
 
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("the recovery server never accepted socket connections: %w\n%s",
-				lastErr, lastOut)
+			// The container's own log, because "never accepted connections"
+			// is not a diagnosis: a refused bind mount, a PGDATA the server
+			// will not open, and an HBA it cannot parse all look identical
+			// from out here.
+			return fmt.Errorf("the recovery server never accepted socket connections: %w\n%s\n%s",
+				lastErr, lastOut, recoveryContainerLogs(context.WithoutCancel(ctx), container))
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// recoveryContainerLogs returns the recovery container's log, best-effort.
+func recoveryContainerLogs(ctx context.Context, container string) string {
+	logCtx, cancel := context.WithTimeout(ctx, recoveryStepTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(logCtx, "docker", "logs", "--tail", "40", container).CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("(could not read %s logs: %v)", container, err)
+	}
+	return string(out)
 }
 
 // dockerExec runs a command inside a container, with optional environment.
