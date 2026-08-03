@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery
 
-Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. **D4a is approved by Codex and awaiting DR** — the verification debt carried across the two-part restore and its own marker policy, written during implementation because the accepted D4 cleared the incomplete marker on a branch that had verified nothing, which was a hole in D7 rather than the clean exception it read as.
+Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. Amended during implementation and **Accepted by Codex and DR, 2026-08-03**: **D3a** (a backup returns services usable, not merely started), **D4a** (the verification debt carried across the two-part restore, and its marker policy), **D4b** (an interrupted recovery is a third gated state), **D8a** (a missing staged key is two states), and **D8b** (recovery probes name their user, database and socket).
 
 Implements [Phase 2 plan](plan_scope.md) item 8 under [ADR 0022](../../adr/0022-v2-data-plane.md) (cold backup as the MVP baseline; restore from "the backup plus the key file, **or** re-entry of secrets") and the [project-folder spike](../phase_0/spike_project-folder.md) item 4 (backup copies only `data/` and excludes the root-of-trust key, under `MAESTRO_HOME` too). Builds on item 2's lifecycle machinery, item 6's object module and sweep, and item 7's key-access rule and measured recovery procedure.
 
@@ -66,7 +66,7 @@ Backup therefore **snapshots the project state before touching it** (`compose ps
 
 ### D3a. "The state it found" means usable, not merely started (clarification)
 
-*Status: **approved by Codex 2026-08-03, awaiting DR**, alongside D4a. Not a new decision — a statement of what the existing promise entails, and a defect fixed against it.*
+*Status: **Accepted** — Codex and DR, 2026-08-03. Not a new decision — a statement of what the existing promise entails, and a defect fixed against it.*
 
 `compose start` returns as soon as the containers are started, which is **not** the same as Postgres accepting connections or MinIO answering requests. Backup restarted the project and returned inside that window, so a successful maintenance operation was reporting completion while the outage it had itself caused was still in progress; the first caller to reach for the plane got a connection error out of an operation that said it had finished. A plane that was usable before a backup must be usable after it.
 
@@ -131,7 +131,7 @@ Guarding only `up` is not enough, since every other verb can act on a torn tree 
 
 ### D4a. The verification debt, and its own marker (amendment)
 
-*Status: **approved by Codex 2026-08-02, awaiting DR** — proposed during implementation and reviewed over three rounds (the `verify` permission, which was wrong; the debt-bearing shutdown's coverage, which reached only the settlement step; and the disarming point's structural check). Accepted once DR approves; until then this section and the code implementing it carry Codex's approval alone.*
+*Status: **Accepted** — Codex and DR, 2026-08-03, after four rounds: the `verify` permission, which was wrong; the debt-bearing shutdown's coverage, which reached only the settlement step; the disarming point's structural check; and the `recover-key` refusal that made ADR 0022's second restore branch unreachable.*
 
 *The original text above stopped at "restored and stopped", and that was not enough: it clears the incomplete marker on a branch that has verified nothing, so the exception it defines is also a hole in D7.*
 
@@ -177,7 +177,7 @@ Both tables are enforced by the same structural completeness test over `lifecycl
 
 ### D4b. The recovery marker is a third gated state (amendment)
 
-*Status: **proposed, awaiting Codex and DR**. Found in round seven: the marker existed as a resume token and gated nothing.*
+*Status: **Accepted** — Codex and DR, 2026-08-03, after two rounds. Found in round seven: the marker existed as a resume token and gated nothing. Round eight closed four more — `down` left the orphan running, `restore` deleted recovery state outside D4's boundary, archives could carry lifecycle markers, and the residue unlinks were not durable.*
 
 A killed `recover-key` releases its `flock` — the process is gone — while the isolated postmaster it started **keeps running and keeps owning `PGDATA`**, because Docker does not stop a container when its creator dies. Every other verb would then take the lifecycle lock, believe itself exclusive, and act on a data directory another postmaster holds: `up` starting a second Postgres over one cluster, `backup` copying a cluster being actively written, `migrate` applying schema changes through one postmaster while another has the files. **The lifecycle lock cannot cover this, which is the whole reason the marker exists** — `flock` lives in the process, and the process is what died.
 
@@ -278,9 +278,9 @@ MinIO needs no step: its credentials are environment, not baked into the data di
 | After commit, before key install | Cluster on the new password, live key still absent | Probe succeeds → skip to step 7. |
 | After key install, before marker removal | Plane fully recovered, no longer reporting locked | Marker authorizes the resume, probe succeeds, key already present → verify and clear the marker. |
 
-**D8a. A missing staged key is two states, not one (amendment).** *Approved by Codex — pending; found in implementation.* Step 7 installs the key by **renaming** the staged file into place, so the third window above legitimately has a marker whose staged key is absent. Treating that as the incoherent state of step 3 refuses exactly the window the marker exists to authorize, and strands an operator with a fully recovered plane carrying a marker nothing will ever clear. **The live key decides:** present means this is the post-install window and the live key *is* the staged one under its final name; absent means nothing accounts for the missing file, the credential may already have moved to a key nobody has, and refusing remains correct.
+**D8a. A missing staged key is two states, not one (amendment).** *Accepted — Codex and DR, 2026-08-03; found in implementation.* Step 7 installs the key by **renaming** the staged file into place, so the third window above legitimately has a marker whose staged key is absent. Treating that as the incoherent state of step 3 refuses exactly the window the marker exists to authorize, and strands an operator with a fully recovered plane carrying a marker nothing will ever clear. **The live key decides:** present means this is the post-install window and the live key *is* the staged one under its final name; absent means nothing accounts for the missing file, the credential may already have moved to a key nobody has, and refusing remains correct.
 
-**D8b. `pg_isready` and `psql` must be told the user and the socket (amendment).** *Approved by Codex — pending; found in implementation.* Both derive a default username through `getpwuid`, which fails for the arbitrary uid Compose runs as — **the same trap that makes `postgres --single` unusable here**, in a third place. `pg_isready` exits 3 ("no attempt was made") against a server whose own log shows it accepting connections, so the readiness wait times out with a diagnosis that points nowhere. Every in-container invocation therefore passes `-U`, `-d`, and `-h /var/run/postgresql` explicitly; the socket path additionally prevents any fallback to a TCP attempt against a server that deliberately has no listener. The readiness failure now carries the container's log, because "never accepted socket connections" is not a diagnosis: a refused bind mount, an unopenable PGDATA, and an unparseable HBA all look identical from outside.
+**D8b. `pg_isready` and `psql` must be told the user and the socket (amendment).** *Accepted — Codex and DR, 2026-08-03; found in implementation.* Both derive a default username through `getpwuid`, which fails for the arbitrary uid Compose runs as — **the same trap that makes `postgres --single` unusable here**, in a third place. `pg_isready` exits 3 ("no attempt was made") against a server whose own log shows it accepting connections, so the readiness wait times out with a diagnosis that points nowhere. Every in-container invocation therefore passes `-U`, `-d`, and `-h /var/run/postgresql` explicitly; the socket path additionally prevents any fallback to a TCP attempt against a server that deliberately has no listener. The readiness failure now carries the container's log, because "never accepted socket connections" is not a diagnosis: a refused bind mount, an unopenable PGDATA, and an unparseable HBA all look identical from outside.
 
 **The native-Linux CI job is a requirement, not a nicety.** Item 7's measurements were taken on macOS, where Docker Desktop virtualises bind-mount ownership, and item 2's history is that uid handling over a `0700` host-owned mount is precisely where the two platforms diverge. Item 7 says item 8 must exercise the sequence in native-Linux CI rather than inherit a developer-machine result.
 
