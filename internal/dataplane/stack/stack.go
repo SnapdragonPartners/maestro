@@ -296,6 +296,10 @@ const RestoreUnverifiedMarker = ".maestro-restore-unverified"
 // verification it owed from an earlier restore.
 var ErrRestoreUnverifiedPending = errors.New("restored plane has not passed verification")
 
+// ErrRecoveryInterrupted reports a plane whose new-key recovery did not
+// finish, and whose isolated postmaster may still hold PGDATA open.
+var ErrRecoveryInterrupted = errors.New("data plane holds an interrupted new-key recovery")
+
 // unverifiedMarkerPath is where the pending-verification marker lives.
 func unverifiedMarkerPath(c *Config) string {
 	return filepath.Join(c.Roots.Data, RestoreUnverifiedMarker)
@@ -434,6 +438,21 @@ func guardRestoreMarker(c *Config, operation lifecycle) error {
 // only have failed to connect anyway. The refusal replaces a confusing
 // connection error with a message naming the way out.
 //
+// `recover-key` is permitted, and refusing it was a defect rather than a
+// conservative choice. ADR 0022 promises restore from the backup PLUS the
+// key, OR re-entry of secrets — and the second branch is reached exactly by
+// restoring an archive WITHOUT its key, which is the path that records this
+// debt in the first place. Refusing recovery here made that branch
+// unreachable from the situation it was written for: it would have worked
+// only for a live plane that lost its key, never for the restore ADR 0022
+// describes.
+//
+// It is safe for the same reason `up` is, and by the same mechanism rather
+// than a parallel one: recovery ends by calling `up` internally, so it
+// reaches the identical settlement — the debt is verified and cleared, or
+// the plane is stopped and the debt retained. It is a COMPOUND settlement
+// path, not an exemption from settling.
+//
 // The other three refusals are the torn table's, for its reasons. `backup`
 // is how an unchecked plane becomes an archive somebody later restores from
 // — and a two-part restore leaves the plane stopped and owing, which is a
@@ -451,11 +470,11 @@ var unverifiedPermits = map[lifecycle]bool{
 	lifecycleDown:         true,
 	lifecycleRestore:      true,
 	lifecycleReset:        true,
+	lifecycleRecoverKey:   true,
 	lifecycleVerify:       false,
 	lifecycleMigrate:      false,
 	lifecycleForceVersion: false,
 	lifecycleBackup:       false,
-	lifecycleRecoverKey:   false,
 }
 
 // guardUnverifiedMarker refuses an operation that must not act on a plane
@@ -480,18 +499,87 @@ func guardUnverifiedMarker(c *Config, operation lifecycle) error {
 		ErrRestoreUnverifiedPending, operation, unverifiedMarkerPath(c))
 }
 
+// recoveryPermits is the third policy: may this operation run against a
+// plane whose recovery was interrupted?
+//
+// The hazard is specific and worse than the other two. A killed recovery
+// releases its flock — the process is gone — while the isolated postmaster
+// it started KEEPS RUNNING and keeps owning PGDATA, because Docker does not
+// stop a container when the process that created it dies. Every other verb
+// would then acquire the lifecycle lock, believe itself exclusive, and act
+// on a data directory another postmaster holds open. `up` would start a
+// second Postgres over the same cluster; `backup` would copy a cluster
+// being written by a server nobody is tracking; `migrate` would apply
+// schema changes through one postmaster while another has the files.
+//
+// The lifecycle lock cannot cover this, which is the whole reason the
+// marker exists: flock lives in the process, and the process is what died.
+//
+// The escapes are the same three as the other tables, and here they carry
+// an OBLIGATION rather than merely permission — `reset` and `restore` must
+// remove the container and the staged key, because discarding or replacing
+// the plane while a postmaster still holds its directory is not a discard
+// at all. That obligation is discharged in clearRecoveryResidue, called by
+// both.
+//
+//nolint:gochecknoglobals // Immutable policy table.
+var recoveryPermits = map[lifecycle]bool{
+	// The resume itself. It removes the survivor before doing anything.
+	lifecycleRecoverKey: true,
+	// Stopping is harmless, and `down` is how an operator quiesces the
+	// Compose project before dealing with the orphan.
+	lifecycleDown: true,
+	// The two escapes, both of which must clear the residue.
+	lifecycleReset:   true,
+	lifecycleRestore: true,
+
+	lifecycleUp:           false,
+	lifecycleBackup:       false,
+	lifecycleMigrate:      false,
+	lifecycleForceVersion: false,
+	lifecycleVerify:       false,
+}
+
+// guardRecoveryMarker refuses an operation that must not act on a plane
+// whose recovery was interrupted.
+func guardRecoveryMarker(c *Config, operation lifecycle) error {
+	permitted, known := recoveryPermits[operation]
+	if !known {
+		return fmt.Errorf("%w: no interrupted-recovery policy is defined for %s",
+			ErrRecoveryInterrupted, operation)
+	}
+	if permitted {
+		return nil
+	}
+	if _, err := os.Stat(recoveryMarkerPath(c)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("check for %s: %w", RecoveryMarkerFile, err)
+	}
+	return fmt.Errorf("%w, so %s must not run against it (%s). A recovery container may still hold "+
+		"the Postgres data directory open. Re-run `dataplane-recover-key` to finish it, or "+
+		"`dataplane-reset` to discard the plane",
+		ErrRecoveryInterrupted, operation, recoveryMarkerPath(c))
+}
+
 // guardRestoreState applies BOTH marker policies, and is what every
 // lifecycle verb calls.
 //
-// One entry point rather than two calls per verb: the two markers describe
+// One entry point rather than three calls per verb: the markers describe
 // different states with different tables, and a caller that consulted one
-// and forgot the other would be guarded against the failure it remembered.
-// A verb cannot opt into half of this by omission.
+// and forgot another would be guarded against the failure it remembered.
+// A verb cannot opt into part of this by omission — which is exactly how
+// the recovery marker came to gate nothing at all for a while, having been
+// written as a resume token and never added here.
 func guardRestoreState(c *Config, operation lifecycle) error {
 	if err := guardRestoreMarker(c, operation); err != nil {
 		return err
 	}
-	return guardUnverifiedMarker(c, operation)
+	if err := guardUnverifiedMarker(c, operation); err != nil {
+		return err
+	}
+	return guardRecoveryMarker(c, operation)
 }
 
 // writeRestoreMarker durably records that a restore is about to delete.
@@ -934,6 +1022,14 @@ func Reset(ctx context.Context, c *Config, composeFile string) (err error) {
 	// re-entrant, so calling the exported form would deadlock against
 	// this very goroutine.
 	if err := down(ctx, c, composeFile); err != nil {
+		return err
+	}
+	// BEFORE the sweep, not after. `down` stops the Compose project and
+	// knows nothing about the recovery container, which is outside it by
+	// design — so without this, clearDataRoot would empty the Postgres
+	// directory while an isolated postmaster still had it open, and report
+	// success.
+	if err := clearRecoveryResidue(ctx, c); err != nil {
 		return err
 	}
 	return clearDataRoot(c)

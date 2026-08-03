@@ -76,6 +76,16 @@ var ErrRecoveryNotAuthorized = errors.New("new-key recovery is not authorized fo
 // process cannot reproduce — so it refuses rather than guesses.
 var ErrRecoveryIncoherent = errors.New("recovery marker names a staged key that is not present")
 
+// ErrRecoveryForeignMarker reports a marker whose fields do not match what
+// this configuration would have written.
+//
+// It is separate from the incoherent case because the operator response
+// differs: an incoherent marker describes an interrupted recovery of THIS
+// plane, while a foreign one describes something that was never this
+// plane's recovery at all -- most plausibly a marker that travelled inside
+// a restored archive.
+var ErrRecoveryForeignMarker = errors.New("recovery marker does not belong to this data plane")
+
 // recoveryMarker is the marker's content.
 // Field order is chosen for struct alignment, not reading order.
 type recoveryMarker struct {
@@ -129,6 +139,35 @@ func readRecoveryMarker(c *Config) (*recoveryMarker, error) {
 	var marker recoveryMarker
 	if err := json.Unmarshal(body, &marker); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", RecoveryMarkerFile, err)
+	}
+
+	// VALIDATED against what this configuration would itself have written,
+	// before either field is used.
+	//
+	// The marker authorizes a destructive resume, and its two fields become
+	// a filesystem path this code reads and renames, and an argument to
+	// `docker rm --force`. Trusting them means a marker that arrives by any
+	// route other than this code writing it -- restored from an archive
+	// taken on another machine, hand-edited, or corrupted -- can name a key
+	// file somewhere else entirely, or a container belonging to a different
+	// project or to something that is not ours at all.
+	//
+	// Both values are DERIVABLE, so nothing is lost by deriving them: the
+	// marker records them for legibility and for the crash windows, not
+	// because they could be anything else. A mismatch is refused rather than
+	// repaired, because a marker this configuration did not write describes
+	// a recovery this configuration did not start.
+	if want := recoveryContainerName(c); marker.Container != want {
+		return nil, fmt.Errorf("%w: %s names container %q, but this configuration's recovery "+
+			"container is %q. A marker naming another project's container would have this "+
+			"operation destroy it",
+			ErrRecoveryForeignMarker, RecoveryMarkerFile, marker.Container, want)
+	}
+	if want := stagedKeyPath(c); marker.StagedKey != want {
+		return nil, fmt.Errorf("%w: %s names staged key %q, but this configuration stages at %q. "+
+			"A marker naming another path would have this operation install key material from "+
+			"somewhere it did not put it",
+			ErrRecoveryForeignMarker, RecoveryMarkerFile, marker.StagedKey, want)
 	}
 	return &marker, nil
 }
@@ -234,6 +273,28 @@ func RecoverKey(ctx context.Context, c *Config, composeFile string, force bool) 
 
 	if applyErr := applyRecovery(ctx, c, composeFile, staged, marker); applyErr != nil {
 		return applyErr
+	}
+
+	// Checked, not assumed. The deferred removals above propagate their own
+	// failures, but this is the precondition finishRecovery actually needs
+	// — it starts the normal Compose Postgres over the same PGDATA — and a
+	// precondition that matters is worth establishing where it is needed
+	// rather than inferring it from the absence of an error somewhere else.
+	//
+	// UNCOVERED, stated rather than implied: no test drives this branch to
+	// its refusal. Reaching it needs `docker rm --force` to fail while the
+	// daemon stays healthy enough for the run to continue, which nothing
+	// here can stage honestly — stubbing the removal instead makes the NEXT
+	// `docker run` fail on the name conflict, which is a different failure
+	// arriving first. What IS covered is that a survivor is fatal to the
+	// sequence one way or another, and that the removals no longer discard
+	// their errors.
+	if gone, err := recoveryContainerGone(ctx, marker.Container); err != nil {
+		return err
+	} else if !gone {
+		return fmt.Errorf("the recovery server %s is still running: starting the normal plane now "+
+			"would put two postmasters over one cluster. Remove it and re-run; the recovery is "+
+			"resumable", marker.Container)
 	}
 	return finishRecovery(ctx, c, composeFile, marker)
 }
@@ -378,6 +439,46 @@ func installStagedKey(c *Config, marker *recoveryMarker) error {
 	return syncDir(c.Roots.Config)
 }
 
+// clearRecoveryResidue removes everything an interrupted recovery left
+// behind: the isolated postmaster, the staged key, and the marker.
+//
+// It is the OBLIGATION that comes with `reset` and `restore` being permitted
+// against an interrupted recovery. Both claim to discard or replace the
+// plane, and neither claim is true while a container nobody tracks still
+// holds the Postgres data directory open — a `reset` that emptied the
+// directory under a live postmaster would produce exactly the shared-state
+// corruption ADR 0027 exists to prevent, and would report success.
+//
+// The container goes FIRST. Removing the marker first would leave the
+// orphan running with nothing recording that it exists, which is strictly
+// worse than the state being repaired.
+func clearRecoveryResidue(ctx context.Context, c *Config) error {
+	marker, err := readRecoveryMarker(c)
+	if err != nil {
+		// A foreign or unparseable marker still means SOMETHING interrupted
+		// here, and the container name is derivable without it. Repairing
+		// on the derived name is right: it is the only container this
+		// configuration could have started.
+		if rmErr := removeRecoveryContainer(ctx, recoveryContainerName(c)); rmErr != nil {
+			return rmErr
+		}
+		marker = nil
+	}
+	if marker != nil {
+		if rmErr := removeRecoveryContainer(ctx, marker.Container); rmErr != nil {
+			return rmErr
+		}
+	}
+
+	if rmErr := os.Remove(stagedKeyPath(c)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		return fmt.Errorf("remove the staged recovery key: %w", rmErr)
+	}
+	if rmErr := os.Remove(recoveryMarkerPath(c)); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", RecoveryMarkerFile, rmErr)
+	}
+	return nil
+}
+
 // applyRecovery performs the credential change, or establishes that an
 // earlier attempt already did.
 //
@@ -415,11 +516,22 @@ func applyRecovery(
 // authenticates, using a socket-only server with REAL authentication.
 func probeRecoveredPassword(
 	ctx context.Context, c *Config, composeFile string, marker *recoveryMarker, password string,
-) (bool, error) {
-	if err := startRecoveryServer(ctx, c, composeFile, marker, hbaScram); err != nil {
-		return false, err
+) (applied bool, err error) {
+	if startErr := startRecoveryServer(ctx, c, composeFile, marker, hbaScram); startErr != nil {
+		return false, startErr
 	}
-	defer func() { _ = removeRecoveryContainer(context.WithoutCancel(ctx), marker.Container) }()
+	// The removal's error is PROPAGATED, not discarded. A surviving
+	// isolated postmaster owns PGDATA, and the next thing this sequence does
+	// is start the normal Compose Postgres against the same directory —
+	// two postmasters over one cluster, which is the failure every other
+	// lock in this package exists to prevent. Reporting the probe's answer
+	// while the server that answered it is still running would be handing
+	// back a result whose preconditions no longer hold.
+	defer func() {
+		if rmErr := removeRecoveryContainer(context.WithoutCancel(ctx), marker.Container); rmErr != nil {
+			err = errors.Join(err, rmErr)
+		}
+	}()
 
 	stepCtx, cancel := context.WithTimeout(ctx, recoveryStepTimeout)
 	defer cancel()
@@ -452,11 +564,18 @@ func probeRecoveredPassword(
 // end of it.
 func changeCredentialAndDropSecrets(
 	ctx context.Context, c *Config, composeFile string, marker *recoveryMarker, password string,
-) error {
-	if err := startRecoveryServer(ctx, c, composeFile, marker, hbaTrust); err != nil {
-		return err
+) (err error) {
+	if startErr := startRecoveryServer(ctx, c, composeFile, marker, hbaTrust); startErr != nil {
+		return startErr
 	}
-	defer func() { _ = removeRecoveryContainer(context.WithoutCancel(ctx), marker.Container) }()
+	// Propagated for the reason the probe's is, and more urgently: this
+	// server's HBA TRUSTS whoever reaches it, so one left running is both a
+	// second postmaster over the cluster and an unauthenticated database.
+	defer func() {
+		if rmErr := removeRecoveryContainer(context.WithoutCancel(ctx), marker.Container); rmErr != nil {
+			err = errors.Join(err, rmErr)
+		}
+	}()
 
 	stepCtx, cancel := context.WithTimeout(ctx, recoveryStepTimeout)
 	defer cancel()
@@ -636,6 +755,18 @@ func removeRecoveryContainer(ctx context.Context, container string) error {
 		return nil
 	}
 	return fmt.Errorf("remove the recovery container %s: %w\n%s", container, err, out)
+}
+
+// recoveryContainerGone reports whether no container by that name exists.
+func recoveryContainerGone(ctx context.Context, container string) (bool, error) {
+	checkCtx, cancel := context.WithTimeout(ctx, recoveryStepTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(checkCtx, "docker", "ps", "--all",
+		"--filter", "name=^"+container+"$", "--format", "{{.Names}}").Output()
+	if err != nil {
+		return false, fmt.Errorf("check for the recovery container %s: %w", container, err)
+	}
+	return strings.TrimSpace(string(out)) == "", nil
 }
 
 // verifyNewCredential proves the recovered plane authenticates OVER THE

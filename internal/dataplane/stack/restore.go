@@ -127,6 +127,12 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 	if downErr := down(ctx, c, composeFile); downErr != nil {
 		return downErr
 	}
+	// The recovery container is outside the Compose project, so `down` does
+	// not touch it. Clearing the data root under a live postmaster is the
+	// same hazard reset guards against, and restore clears more of it.
+	if residueErr := clearRecoveryResidue(ctx, c); residueErr != nil {
+		return residueErr
+	}
 
 	return replaceDataRoot(ctx, c, composeFile, archiveData, &destructive)
 }

@@ -138,6 +138,12 @@ func TestUnverifiedMarkerGatesEveryOperation(t *testing.T) {
 	permitted := map[lifecycle]bool{
 		lifecycleUp:   true,
 		lifecycleDown: true, lifecycleRestore: true, lifecycleReset: true,
+		// recover-key is a COMPOUND settlement path, not an exemption: it
+		// ends by calling `up` internally and so reaches the identical
+		// verification. Refusing it made ADR 0022's second restore branch
+		// unreachable from the situation it exists for -- a keyless restore
+		// records this debt, and recovery is how such a plane is opened.
+		lifecycleRecoverKey: true,
 	}
 
 	for _, operation := range lifecycles {
@@ -225,6 +231,83 @@ func TestResetClearsTheVerificationDebt(t *testing.T) {
 	}
 	if owed {
 		t.Error("the debt survived reset; the next backup would refuse a plane just wiped")
+	}
+}
+
+// The interrupted-recovery marker is a THIRD state with a third policy
+// table, and it needs the same structural completeness guarantee as the
+// other two.
+func TestEveryLifecycleHasARecoveryPolicy(t *testing.T) {
+	for _, operation := range lifecycles {
+		if _, defined := recoveryPermits[operation]; !defined {
+			t.Errorf("%s has no entry in recoveryPermits: decide whether it may run against a plane "+
+				"whose recovery was interrupted, and whose isolated postmaster may still hold "+
+				"PGDATA open", operation)
+		}
+	}
+	if len(recoveryPermits) != len(lifecycles) {
+		t.Errorf("recoveryPermits has %d entries for %d operations: one of them names something "+
+			"that is not an operation", len(recoveryPermits), len(lifecycles))
+	}
+}
+
+// The gate itself. `up` is on the REFUSED side here and permitted by the
+// other two tables, which is the asymmetry worth asserting: an unverified
+// plane must be started because starting it is how it gets verified, while a
+// plane with an orphaned postmaster must not be started at all, because
+// starting it puts a second postmaster over the same cluster.
+func TestRecoveryMarkerGatesEveryOperation(t *testing.T) {
+	permitted := map[lifecycle]bool{
+		lifecycleRecoverKey: true, lifecycleDown: true,
+		lifecycleReset: true, lifecycleRestore: true,
+	}
+
+	for _, operation := range lifecycles {
+		t.Run(operation.String(), func(t *testing.T) {
+			cfg := planeAt(t)
+			if err := writeRecoveryMarker(cfg, recoveryMarker{
+				Container: recoveryContainerName(cfg),
+				StagedKey: stagedKeyPath(cfg),
+			}); err != nil {
+				t.Fatalf("writeRecoveryMarker: %v", err)
+			}
+
+			err := guardRestoreState(cfg, operation)
+			switch {
+			case permitted[operation] && err != nil:
+				t.Errorf("%s refused against an interrupted recovery, but it is one of the ways "+
+					"out of one: %v", operation, err)
+			case !permitted[operation] && !errors.Is(err, ErrRecoveryInterrupted):
+				t.Errorf("%s was allowed to act on a plane whose recovery container may still own "+
+					"PGDATA (err = %v)", operation, err)
+			}
+		})
+	}
+}
+
+// Without the marker every operation proceeds, so this guard is not passing
+// for the trivial reason that it refuses everything.
+func TestRecoveryMarkerAbsentPermitsEveryOperation(t *testing.T) {
+	cfg := planeAt(t)
+	for _, operation := range lifecycles {
+		if err := guardRestoreState(cfg, operation); err != nil {
+			t.Errorf("%s refused on a plane with no interrupted recovery: %v", operation, err)
+		}
+	}
+}
+
+// An operation with no interrupted-recovery policy refuses rather than
+// proceeds.
+func TestUnknownLifecycleIsRefusedByTheRecoveryGuard(t *testing.T) {
+	cfg := planeAt(t)
+	if err := writeRecoveryMarker(cfg, recoveryMarker{
+		Container: recoveryContainerName(cfg),
+		StagedKey: stagedKeyPath(cfg),
+	}); err != nil {
+		t.Fatalf("writeRecoveryMarker: %v", err)
+	}
+	if err := guardRecoveryMarker(cfg, lifecycle(len(lifecycles)+1)); !errors.Is(err, ErrRecoveryInterrupted) {
+		t.Errorf("err = %v, want a refusal for an operation with no policy", err)
 	}
 }
 

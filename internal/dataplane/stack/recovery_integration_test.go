@@ -5,8 +5,10 @@ package stack
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -142,6 +144,76 @@ func TestRecoverKeyReKeysAPlaneWhoseKeyIsGone(t *testing.T) {
 	}
 	// And no recovery container is left running against PGDATA.
 	assertNoRecoveryContainer(t, cfg)
+
+	// The OLD credential must be REJECTED. Nothing above proves that: a
+	// recovery that added a new password without removing the old one --
+	// or that never issued ALTER USER at all, while the new key happened to
+	// derive the same password -- passes every assertion so far. This is
+	// the half that makes "re-keyed" mean the old key no longer opens it.
+	//
+	// Checked over the NETWORK by service name, because the image's own
+	// pg_hba trusts in-container connections and would accept anything.
+	oldKeyMaterial, err := paths.LoadKeyFile(writeTempKeyFile(t, oldKey))
+	if err != nil {
+		t.Fatalf("decode the original key: %v", err)
+	}
+	oldPassword, err := secret.Derive(oldKeyMaterial, secret.ContextPostgresPassword)
+	if err != nil {
+		t.Fatalf("derive the old password: %v", err)
+	}
+	newPassword, err := secret.Derive(planeRootKey(t, cfg), secret.ContextPostgresPassword)
+	if err != nil {
+		t.Fatalf("derive the new password: %v", err)
+	}
+	if oldPassword == newPassword {
+		t.Fatal("the old and new keys derive the SAME database password, so rejecting the old one " +
+			"would prove nothing")
+	}
+	if err := authenticateOverNetwork(t, cfg, oldPassword); err == nil {
+		t.Error("the ORIGINAL password still authenticates after recovery: the credential was " +
+			"never actually moved, or the old one was left in place beside the new")
+	}
+	// And the new one is accepted, so the rejection above is not a server
+	// that rejects everything.
+	if err := authenticateOverNetwork(t, cfg, newPassword); err != nil {
+		t.Errorf("the recovered password does not authenticate: %v", err)
+	}
+}
+
+// writeTempKeyFile puts encoded key bytes at a 0600 path, so LoadKeyFile's
+// own permission and format checks apply to them.
+func writeTempKeyFile(t *testing.T, encoded []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "old.key")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatalf("write a temporary key: %v", err)
+	}
+	return path
+}
+
+// authenticateOverNetwork attempts a real authenticated connection to the
+// plane's Postgres by SERVICE NAME, the way the healthcheck does.
+//
+// By service name and not loopback, for the reason item 2's healthcheck
+// gives and item 7 recorded twice: this image's generated pg_hba trusts
+// loopback inside the container, so a loopback check accepts ANY password
+// and would report success for a credential that never changed.
+func authenticateOverNetwork(t *testing.T, cfg *Config, password string) error {
+	t.Helper()
+	env, err := cfg.composeEnv(placeholderKey())
+	if err != nil {
+		t.Fatalf("compose env: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), probeTimeout)
+	defer cancel()
+
+	out, err := composeOutput(ctx, cfg.ProjectName, testComposeFile(), env,
+		"exec", "-T", "--env", "PGPASSWORD="+password, "postgres",
+		"psql", "-h", "postgres", "-U", cfg.User, "-d", cfg.Database, "-tAc", "select 1")
+	if err != nil {
+		return fmt.Errorf("authenticate: %w\n%s", err, out)
+	}
+	return nil
 }
 
 // TestRecoverKeyRefusesAPlaneThatIsNotLocked is the guard that keeps this
@@ -255,6 +327,23 @@ func TestRecoveryServerPublishesNoListener(t *testing.T) {
 	if err == nil && len(strings.TrimSpace(string(ports))) != 0 {
 		t.Errorf("the recovery container publishes %q: its HBA trusts anyone who connects",
 			strings.TrimSpace(string(ports)))
+	}
+
+	// The SETTING itself, asked of the running server. Ports and networks
+	// are how the container is wired; `listen_addresses` is whether the
+	// server binds a TCP socket at all, and it is the one D8 names. A
+	// container with no published port would still be reachable from a
+	// sibling container if the server were listening, so the two checks
+	// cover different failures and neither implies the other.
+	out, err := dockerExec(t.Context(), marker.Container, nil,
+		"psql", "-h", "/var/run/postgresql", "-U", cfg.User, "-d", cfg.Database,
+		"-tAc", "show listen_addresses")
+	if err != nil {
+		t.Fatalf("read listen_addresses: %v\n%s", err, out)
+	}
+	if listening := strings.TrimSpace(string(out)); listening != "" {
+		t.Errorf("the recovery server has listen_addresses=%q, want empty: it is binding a TCP "+
+			"socket, and its HBA trusts whoever reaches it", listening)
 	}
 
 	// And no network attachment to reach it through.
@@ -651,4 +740,177 @@ func waitForRecoveryContainer(t *testing.T, cfg *Config) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatal("the child never started a recovery container")
+}
+
+// TestRestoreWithoutTheKeyThenRecoverKey is ADR 0022's second restore branch
+// END TO END, and it did not work until Codex found why.
+//
+// The ADR promises restore from "the backup plus the key file, OR re-entry
+// of secrets". The second branch is reached by restoring an archive WITHOUT
+// its key -- an archive never contains one -- which leaves the plane locked
+// and owing a verification pass it could not run. Recovery is how such a
+// plane is opened.
+//
+// D4a's first version refused `recover-key` against that outstanding debt.
+// The refusal looked conservative and made the whole branch unreachable from
+// the only situation it exists for: it would have worked for a live plane
+// that lost its key, and never for the restore the ADR actually describes.
+// Recovery is safe there for the same reason `up` is, by the same mechanism
+// rather than a parallel one -- it ends by calling `up` internally, so the
+// debt reaches the identical settlement.
+func TestRestoreWithoutTheKeyThenRecoverKey(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	seed := seedCrossStore(t, cfg)
+	seedSecret(t, cfg, seed)
+
+	archive := filepath.Join(t.TempDir(), "archive")
+	if err := Backup(t.Context(), cfg, testComposeFile(), archive); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	// The operator has the archive and not the key. This is the whole
+	// premise of the branch.
+	if err := Reset(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if err := os.Remove(cfg.Roots.KeyPath()); err != nil {
+		t.Fatalf("remove the key: %v", err)
+	}
+
+	restoreErr := Restore(t.Context(), cfg, testComposeFile(), archive, true)
+	if !errors.Is(restoreErr, ErrPlaneLocked) {
+		t.Fatalf("Restore = %v, want the restored plane to report itself locked", restoreErr)
+	}
+	// The state that made recovery unreachable: a debt nothing but `up` can
+	// settle, on a plane `up` cannot open.
+	owed, owedErr := restoreOwesVerification(cfg)
+	if owedErr != nil || !owed {
+		t.Fatalf("the keyless restore recorded no verification debt (owed = %v, err = %v): this "+
+			"test is not exercising the state the P1 was about", owed, owedErr)
+	}
+
+	// The branch the ADR promises, which is now reachable.
+	if err := RecoverKey(t.Context(), cfg, testComposeFile(), true); err != nil {
+		t.Fatalf("recover a plane restored without its key: %v", err)
+	}
+
+	// Recovery settled the debt rather than bypassing it, which is what
+	// makes permitting it safe rather than merely convenient.
+	stillOwed, stillErr := restoreOwesVerification(cfg)
+	if stillErr != nil || stillOwed {
+		t.Errorf("the verification debt survived recovery (owed = %v, err = %v): recovery is "+
+			"permitted BECAUSE it reaches `up`'s settlement, so a debt it left outstanding would "+
+			"mean it was permitted on a promise it does not keep", stillOwed, stillErr)
+	}
+	if count := countSecrets(t, cfg); count != 0 {
+		t.Errorf("the vault holds %d secrets, want 0", count)
+	}
+	assertCrossStoreIntact(t, cfg, seed)
+	assertNoRecoveryContainer(t, cfg)
+}
+
+// TestResetClearsRecoveryResidue is the obligation that comes with `reset`
+// being permitted against an interrupted recovery.
+//
+// `down` stops the Compose project and knows nothing about the recovery
+// container, which is outside it by design. Without an explicit sweep,
+// `reset` would empty the Postgres directory while an isolated postmaster
+// still had it open -- the shared-state corruption ADR 0027 exists to
+// prevent -- and would report success.
+func TestResetClearsRecoveryResidue(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	stageAsAKillWould(t, cfg)
+
+	if !recoveryContainerExists(t, cfg) {
+		t.Fatal("no recovery container to clean: this test proves nothing")
+	}
+
+	if err := Reset(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Reset over an interrupted recovery: %v", err)
+	}
+
+	assertNoRecoveryContainer(t, cfg)
+	if _, err := os.Stat(stagedKeyPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the staged key survived reset (%v): the next recovery would adopt key material "+
+			"belonging to a plane that no longer exists", err)
+	}
+	if _, err := os.Stat(recoveryMarkerPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the recovery marker survived reset (%v): every guarded verb would keep refusing "+
+			"a plane that was just wiped", err)
+	}
+	// And the composition that matters: the wiped plane provisions cleanly.
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up after reset: %v", err)
+	}
+}
+
+// TestInterruptedRecoveryRefusesUp is the gate itself, behaviourally.
+//
+// A killed recovery releases its flock, so the lifecycle lock offers no
+// protection: the next `up` acquires it, believes itself exclusive, and
+// starts a second Postgres over a cluster the orphaned postmaster still
+// holds. The marker is the only thing that can refuse across that boundary.
+func TestInterruptedRecoveryRefusesUp(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	stageAsAKillWould(t, cfg)
+
+	if err := Up(t.Context(), cfg, testComposeFile()); !errors.Is(err, ErrRecoveryInterrupted) {
+		t.Errorf("Up = %v, want a refusal: an orphaned postmaster may still own PGDATA", err)
+	}
+	if err := Backup(t.Context(), cfg, testComposeFile(),
+		filepath.Join(t.TempDir(), "archive")); !errors.Is(err, ErrRecoveryInterrupted) {
+		t.Errorf("Backup = %v, want a refusal: copying a cluster a live postmaster is writing "+
+			"produces an archive of a torn cluster", err)
+	}
+}
+
+// TestRecoveryMarkerFromAnotherPlaneIsRefused is the validation half.
+//
+// The marker authorizes a destructive resume and supplies both a filesystem
+// path this code renames and an argument to `docker rm --force`. A marker
+// that arrives by any route other than this code writing it -- restored
+// inside an archive taken on another machine is the realistic one -- could
+// name another project's container, or key material from somewhere this
+// configuration never put it.
+func TestRecoveryMarkerFromAnotherPlaneIsRefused(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := cfg.Roots.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	for _, foreign := range []struct {
+		what   string
+		marker recoveryMarker
+	}{
+		{"a container belonging to another project", recoveryMarker{
+			Container: "someone-elses-postgres", StagedKey: stagedKeyPath(cfg),
+		}},
+		{"key material from outside the config root", recoveryMarker{
+			Container: recoveryContainerName(cfg), StagedKey: "/tmp/not-our-key",
+		}},
+	} {
+		t.Run(foreign.what, func(t *testing.T) {
+			if err := writeRecoveryMarker(cfg, foreign.marker); err != nil {
+				t.Fatalf("write the foreign marker: %v", err)
+			}
+			if _, err := readRecoveryMarker(cfg); !errors.Is(err, ErrRecoveryForeignMarker) {
+				t.Errorf("readRecoveryMarker = %v, want a refusal for %s", err, foreign.what)
+			}
+		})
+	}
 }
