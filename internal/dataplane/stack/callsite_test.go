@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -399,4 +400,68 @@ func assignsTrue(assignment *ast.AssignStmt, target string) bool {
 		}
 	}
 	return false
+}
+
+// The native-Linux CI job selects recovery tests by NAME PATTERN, and a
+// pattern is exactly the kind of enumeration that goes stale silently.
+//
+// This package has already been bitten twice by hand-maintained lists of
+// what to cover: the lock table that omitted three verbs, and the marker
+// table that would have. Here the list lives in a YAML file nobody edits
+// while writing Go, and its failure mode is the quietest yet — a new
+// recovery test is written, passes locally on macOS, and is never run on the
+// platform item 7 specifically assigned it to. The suite stays green and the
+// coverage it reports is a platform short.
+//
+// So the pattern is checked against the tests that exist.
+func TestEveryRecoveryTestIsSelectedByTheLinuxCIJob(t *testing.T) {
+	workflow, err := os.ReadFile(filepath.Join("..", "..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read the CI workflow: %v", err)
+	}
+	pattern := recoveryRunPattern(t, string(workflow))
+	selector, err := regexp.Compile(pattern)
+	if err != nil {
+		t.Fatalf("the CI job's -run pattern %q does not compile: %v", pattern, err)
+	}
+
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "recovery_integration_test.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse the recovery suite: %v", err)
+	}
+
+	found := 0
+	for _, decl := range file.Decls {
+		fn, isFunc := decl.(*ast.FuncDecl)
+		if !isFunc || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") {
+			continue
+		}
+		found++
+		// Unanchored, because that is how `go test -run` matches.
+		if !selector.MatchString(fn.Name.Name) {
+			t.Errorf("%s is not selected by the Linux CI job's pattern %q: it would never run on "+
+				"the platform item 7 assigned recovery to", fn.Name.Name, pattern)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no tests found in recovery_integration_test.go: this guard is enforcing nothing")
+	}
+}
+
+// recoveryRunPattern extracts the -run pattern from the recovery CI job.
+func recoveryRunPattern(t *testing.T, workflow string) string {
+	t.Helper()
+	const marker = "-run '"
+	index := strings.Index(workflow, marker)
+	if index < 0 {
+		t.Fatal("the CI workflow has no -run pattern: the recovery job is gone, or it now selects " +
+			"tests some other way and this guard is enforcing nothing")
+	}
+	rest := workflow[index+len(marker):]
+	end := strings.Index(rest, "'")
+	if end < 0 {
+		t.Fatal("the CI workflow's -run pattern is not closed")
+	}
+	return rest[:end]
 }
