@@ -82,6 +82,13 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 			destination := filepath.Join(t.TempDir(), "archive")
 			return func(ctx context.Context) error { return Backup(ctx, cfg, bogusComposeFile, destination) }
 		},
+		"RecoverKey": func(_ *testing.T, cfg *Config) func(context.Context) error {
+			// force: true, or it refuses before reaching for the lock and
+			// the case would pass for the wrong reason.
+			return func(ctx context.Context) error {
+				return RecoverKey(ctx, cfg, bogusComposeFile, true)
+			}
+		},
 		"Verify": func(_ *testing.T, cfg *Config) func(context.Context) error {
 			return func(ctx context.Context) error {
 				_, err := Verify(ctx, cfg)

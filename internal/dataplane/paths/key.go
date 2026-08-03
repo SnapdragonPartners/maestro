@@ -377,6 +377,39 @@ func syncDir(dir string) error {
 	return nil
 }
 
+// NewKeyMaterial mints raw key material of the one length this package
+// accepts.
+//
+// Exported for item 8's new-key recovery, which mints a key to a STAGED
+// path rather than to the key file: recovery installs it last, so the plane
+// stays honestly locked until the moment it is genuinely recovered.
+// EnsureKey cannot serve that — it writes the real key file by definition.
+func NewKeyMaterial() ([]byte, error) {
+	key := make([]byte, keyLen)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("generate root-of-trust key: %w", err)
+	}
+	return key, nil
+}
+
+// EncodeKey renders key material in the on-disk form LoadKeyFile reads.
+//
+// One encoder for both writers, so a staged key and an installed key cannot
+// disagree about their format -- a difference that would surface only when
+// the staged one was promoted and could not be read back.
+func EncodeKey(key []byte) []byte {
+	return []byte(hex.EncodeToString(key) + "\n")
+}
+
+// LoadKeyFile reads key material from an explicit path, with the same
+// permission and length checks LoadKey applies to the canonical one.
+//
+// Recovery needs it for the staged key, which by design does not live at
+// the canonical path.
+func LoadKeyFile(path string) ([]byte, error) {
+	return readKey(path)
+}
+
 // readKey loads an existing key file, refusing it if the permissions are
 // wider than 0600 or the contents are not a well-formed key.
 func readKey(path string) ([]byte, error) {

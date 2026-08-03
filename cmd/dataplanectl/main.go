@@ -53,7 +53,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify>
+	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key>
 
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
@@ -73,6 +73,12 @@ func usage() {
            when the data root already holds a plane.
   verify   recompute every stored digest and read every attachment, which is
            what proves a restored cluster and object store still agree
+  recover-key
+           re-key a plane whose root-of-trust key is GONE: mint a new key,
+           rewrite the database credential, and DELETE every stored secret,
+           which must then be re-entered. Requires -force to skip the prompt.
+           This is the second of ADR 0022's two restore branches; the first
+           is simply restoring the original key file.
 
 flags:
 `)
@@ -113,16 +119,7 @@ func run(ctx context.Context, command string, opts runOptions) error {
 		return runForceVersion(cfg, opts.force, opts.forceVersion)
 
 	case "reset":
-		if !opts.force {
-			if !confirmReset(cfg) {
-				fmt.Println("reset cancelled")
-				return nil
-			}
-		}
-		if err := stack.Reset(ctx, cfg, opts.composeFile); err != nil {
-			return fmt.Errorf("reset the data plane: %w", err)
-		}
-		return nil
+		return runReset(ctx, cfg, opts)
 
 	case "backup":
 		return runBackup(ctx, cfg, opts)
@@ -133,10 +130,34 @@ func run(ctx context.Context, command string, opts runOptions) error {
 	case "verify":
 		return runVerify(ctx, cfg, opts)
 
+	case "recover-key":
+		return runRecoverKey(ctx, cfg, opts)
+
 	default:
 		usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+// confirmationWord is what a destructive verb requires the operator to type.
+// One word for all of them, so a caller cannot learn a different answer per
+// command.
+const confirmationWord = "yes"
+
+// runReset discards the plane, after confirmation.
+//
+// Extracted from the dispatch for the same reason the other verbs are: a
+// switch that carries one verb's logic inline invites the next one to do the
+// same, and the dispatch stops being a table of what exists.
+func runReset(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+	if !opts.force && !confirmReset(cfg) {
+		fmt.Println("reset cancelled")
+		return nil
+	}
+	if err := stack.Reset(ctx, cfg, opts.composeFile); err != nil {
+		return fmt.Errorf("reset the data plane: %w", err)
+	}
+	return nil
 }
 
 // runForceVersion repairs a dirty schema version.
@@ -176,7 +197,7 @@ func confirmForceVersion(version int) bool {
 		// Unreadable stdin is a "no", for the same reason as reset.
 		return false
 	}
-	return answer == "yes"
+	return answer == confirmationWord
 }
 
 // confirmReset requires an explicit yes before destroying the data root's
@@ -193,7 +214,42 @@ func confirmReset(cfg *stack.Config) bool {
 		// Scripted callers pass -force.
 		return false
 	}
-	return answer == "yes"
+	return answer == confirmationWord
+}
+
+// runRecoverKey re-keys a plane whose root-of-trust key is gone.
+//
+// The most destructive verb here, and the one whose confirmation matters
+// most: it deletes every stored secret, and unlike reset there is no archive
+// that brings them back -- the ciphertext was written under a key nobody
+// has. The operator re-enters them.
+func runRecoverKey(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+	if !opts.force && !confirmRecoverKey(cfg) {
+		return errors.New("new-key recovery declined")
+	}
+	if err := stack.RecoverKey(ctx, cfg, opts.composeFile, true); err != nil {
+		return fmt.Errorf("recover the data plane onto a new key: %w", err)
+	}
+	fmt.Printf("the data plane now opens with a new key at %s\n"+
+		"  every stored secret was deleted and must be re-entered:\n"+
+		"  their ciphertext was written under the old key and nothing can decrypt it\n",
+		cfg.Roots.KeyPath())
+	return nil
+}
+
+// confirmRecoverKey prompts before the secrets are dropped.
+func confirmRecoverKey(cfg *stack.Config) bool {
+	fmt.Printf("This mints a NEW root-of-trust key for the plane at %s.\n"+
+		"Every stored secret will be DELETED -- they cannot be decrypted without the old key --\n"+
+		"and the database credential will be rewritten.\nType 'yes' to continue: ", cfg.Roots.Data)
+
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		// Declining is the safe outcome for an unreadable or empty stdin,
+		// exactly as it is for reset. Scripted callers pass -force.
+		return false
+	}
+	return answer == confirmationWord
 }
 
 // runBackup copies the data root to a new archive directory.

@@ -192,7 +192,7 @@ ui-dev: build build-css
 # the same command serves first-time setup and the everyday inner loop.
 # Deliberately separate from the agent-container and benchmark-Gitea
 # machinery, so a data-plane restart cannot disturb a benchmark run.
-.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate dataplane-force-version dataplane-backup dataplane-restore dataplane-verify
+.PHONY: dataplane-up dataplane-down dataplane-reset dataplane-migrate dataplane-force-version dataplane-backup dataplane-restore dataplane-verify dataplane-recover-key
 
 dataplane-up:
 	go run ./cmd/dataplanectl up
@@ -281,6 +281,13 @@ dataplane-restore:
 # either store alone.
 dataplane-verify:
 	go run ./cmd/dataplanectl verify
+
+# DESTRUCTIVE, and unlike reset there is no archive that undoes it: every
+# stored secret is deleted, because the ciphertext was written under a key
+# nobody has any more. Same `filter 1` rule -- only the exact value 1
+# suppresses the prompt.
+dataplane-recover-key:
+	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) recover-key
 
 # Clean build artifacts
 clean:

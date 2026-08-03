@@ -230,6 +230,7 @@ const (
 	lifecycleRestore
 	lifecycleVerify
 	lifecycleReset
+	lifecycleRecoverKey
 )
 
 // lifecycles is every operation, in one place, so the marker matrix below
@@ -239,6 +240,7 @@ const (
 var lifecycles = []lifecycle{
 	lifecycleUp, lifecycleMigrate, lifecycleForceVersion,
 	lifecycleDown, lifecycleBackup, lifecycleRestore, lifecycleVerify, lifecycleReset,
+	lifecycleRecoverKey,
 }
 
 func (l lifecycle) String() string {
@@ -259,6 +261,8 @@ func (l lifecycle) String() string {
 		return "verify"
 	case lifecycleReset:
 		return "reset"
+	case lifecycleRecoverKey:
+		return "recover-key"
 	default:
 		return "unknown"
 	}
@@ -369,6 +373,7 @@ var markerPermits = map[lifecycle]bool{
 	lifecycleForceVersion: false,
 	lifecycleBackup:       false,
 	lifecycleVerify:       false,
+	lifecycleRecoverKey:   false,
 	lifecycleDown:         true,
 	lifecycleRestore:      true,
 	lifecycleReset:        true,
@@ -450,6 +455,7 @@ var unverifiedPermits = map[lifecycle]bool{
 	lifecycleMigrate:      false,
 	lifecycleForceVersion: false,
 	lifecycleBackup:       false,
+	lifecycleRecoverKey:   false,
 }
 
 // guardUnverifiedMarker refuses an operation that must not act on a plane
@@ -1056,6 +1062,27 @@ func loadImagePins(composeFile string) ([]string, error) {
 		}
 	}
 	return pins, nil
+}
+
+// pinnedImage resolves one image reference from the same pins file Compose
+// is given.
+//
+// Recovery needs it because its isolated server runs OUTSIDE the Compose
+// project -- deliberately, so ordinary lifecycle commands never touch it --
+// and must still run the exact digest-pinned image the plane runs (ADR
+// 0026). Reading the same file is what keeps the two from drifting.
+func pinnedImage(composeFile, key string) (string, error) {
+	pins, err := loadImagePins(composeFile)
+	if err != nil {
+		return "", err
+	}
+	for _, pin := range pins {
+		name, value, _ := strings.Cut(pin, "=")
+		if name == key {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("no %s in the image pins beside %s", key, composeFile)
 }
 
 // composeOutput runs a docker compose subcommand and returns its combined
