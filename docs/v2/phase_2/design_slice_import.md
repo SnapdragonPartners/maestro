@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 9 Design: Importing Golden Runner Records
 
-Status: **draft** — revised after four Codex review rounds (2026-08-03). Round 1
+Status: **draft** — revised after five Codex review rounds. Round 1
 approved the central shape and D5, required D10 with explicit conflict semantics,
 **rejected** D2's null `scope_id`, and **rejected** D9's provider sentinel in
 favour of recording it at its source. Round 2 found four further blockers,
@@ -19,8 +19,11 @@ fields to one instant plus an exact duration, and carried the cached-token split
 through the aggregate. Round 4 stopped failed calls fabricating zero token
 measurements, deferred evidence upload to terminal assembly so a partial import
 cannot lose it, closed a path-traversal hole in `run_id`, and added the cross-file
-coherence the two-sided fixture cannot supply. Resolutions are inline; all four
-dispositions are recorded at the end.
+coherence the two-sided fixture cannot supply. Round 5 replaced a claim of
+inherited per-record validation — unreachable code, run at write time — with a
+two-sided conformance corpus, and added value validity to a surface that had only
+defined presence. Resolutions are inline; all five dispositions are recorded at the
+end.
 
 Delivers the [Phase 2 plan](plan_scope.md)'s item 9: golden story runner records
 from `benchmark/runs/` imported into the main Postgres plane through the
@@ -125,12 +128,38 @@ authored report is a claim about a real suite — so the importer validates the
 input as a whole before any of it becomes an artifact, and refuses the suite rather
 than importing part of it.
 
-**Inherited per record, not restated here:** `results.ReadSuite` runs
-`RunRecord.Validate` on every line, which already enforces verdict pairing
-(accepted records cannot carry a failure kind or a failed check), timestamp
-ordering, metric completeness against the registry, capability coherence, and the
-40-hex shape of `solution_commit`. Re-implementing those in the importer would be
-two rules to keep in step.
+**Nothing is inherited, and the previous revision was wrong to say otherwise.** It
+claimed `results.ReadSuite` runs `RunRecord.Validate` on every line so the
+importer need not. Two things are wrong with that in one sentence. D1 forbids the
+importer from importing that package, so it cannot call any of it — and even if it
+could, that validation ran when the runner *wrote* the file. It is a fact about a
+past process, not about the bytes on disk now. Anything that happened to the file
+afterwards — truncation, a hand edit, a partial write, deliberate tampering —
+happened after the only check that revision was relying on.
+
+So the importer implements the **equivalent per-record semantics itself**: verdict
+pairing (an accepted record cannot carry a failure kind, a failed validator or
+check, or a missing terminal state), invalid records carrying a reason and no
+failure kind, timestamp presence and ordering, the 40-hex shape of
+`solution_commit`, metric completeness against its own copy of the registry,
+capability coherence, and the isolation rule that unverified cleanup forces
+`invalid`.
+
+That is duplication, and duplication is what D1 spent its length avoiding — so it
+gets the same treatment the record shape got, one level up. **The corpus is
+two-sided and covers rejection as well as acceptance:**
+`benchmark/testdata/import_corpus/` holds cases, each a record plus an expected
+outcome — `accept`, or `reject` naming the rule. Both validators run every case
+and **must agree on every one**. A rule tightened on one side and not the other
+turns a corpus case red immediately, which is the property the single-file fixture
+could not give: that fixture proves the two sides read the same *shape*, and this
+proves they hold the same *judgment*.
+
+Coverage is derived, not listed. The importer's rejection reasons are declared as
+constants in one block, a test AST-walks that block, and every constant must be
+exercised by at least one `reject` case. Hand-maintained enumerations have failed
+this repository three times; a coverage list somebody has to remember to extend
+would be the fourth.
 
 **Added, because they are the ones no single record can see:**
 
@@ -324,8 +353,8 @@ no usage for them at all. ADR 0025 says failed-attempt costs count, and today th
 cannot be counted, so budget enforcement under-counts a failed call. That is
 pre-existing v1 behaviour and v2 does not change it; what v2 stops doing is
 *claiming a measurement of zero* where there was no measurement. The real fix is
-upstream in `maestro-llms`, alongside the per-attempt latency gap, and both belong
-in the same issue. The budget-total equality of D9 is unaffected: v1 added zeros
+upstream in `maestro-llms`, alongside the per-attempt latency gap; both are filed
+as [issue 311](https://github.com/SnapdragonPartners/maestro/issues/311). The budget-total equality of D9 is unaffected: v1 added zeros
 for failed calls and v2 adds nothing, which is the same total.
 
 **The cached-token split runs all the way through the aggregate, not just the row.**
@@ -629,6 +658,44 @@ writer's guarantee is not evidence to a reader parsing a file written by some
 other build. Unknown keys and missing required ones fail rather than being guessed
 past, which is what the header version is for.
 
+**Presence is not validity, and every reader checks values.** A key being present
+says nothing about what is in it, and both readers of this surface — the budget
+tail and the importer — act on the numbers. Each rejects:
+
+| Rule | Why it is not paranoia |
+| --- | --- |
+| `provider`, `model` non-blank after trimming | blank `provider` is what D9 exists to prevent, arriving by a different door |
+| every token axis `>= 0` | see below; this is the one with teeth |
+| `latency_ns >= 0` | a negative duration makes `started_at` later than `finished_at`, which the row's own ordering then refuses at the far end of the import |
+| `cost_usd >= 0`, finite | NaN or ±Inf propagates through every sum it touches and `numeric` cannot store it |
+| the token sum does not overflow int64 | a wrapped sum is a small positive number that looks ordinary |
+| `finished_at` present, parseable, non-zero | the zero time silently backdates a call to year 1, where it sorts before every window |
+
+**The negative-axis case is a live accounting bypass, not a hypothetical.**
+`usageTail` computes `tokens := entry.PromptTokens + entry.CompletionTokens` and
+reports that sum; `usageTracker.report` guards `delta.Tokens < 0`
+([`attempt.go`](../../../benchmark/engine/attempt.go)) — but it sees only the sum.
+A line carrying `{input: 1000000, output: -999999}` yields a delta of 1, passes the
+guard, and under-accounts the attempt by two million tokens. The cap is not
+enforced; the record's canonical totals are wrong; nothing reports anything. The
+guard is not weak, it is simply downstream of the arithmetic that destroys the
+evidence, so **the axes must be checked individually, before they are summed**.
+
+Two further gaps in the same function, fixed with it: the tail's own totals —
+which its header comment calls "the canonical tokens/cost/llm_calls" — accumulate
+with no overflow guard and no NaN/Inf guard, though `usageTracker` carefully
+saturates both for its copy. A malformed cost the tracker rejects still lands in
+the record.
+
+**And the tail returns an error rather than discarding.** `usageTracker.report`
+handles a malformed delta with a bare `return`: correct for it, since a budget
+guard's job is to not be walked backwards. It is the wrong response one layer up.
+A malformed usage line means the accounting is no longer trustworthy, which is
+exactly the condition the `usage.error` sentinel and its process-abort escalation
+exist to make loud. `advance` already returns an error for a bad header and a
+bad JSON line; a line that parses into impossible numbers gets the same treatment,
+and the attempt fails rather than completing with quietly wrong totals.
+
 - `metrics.UsageEntry` is rewritten to that shape; `cost_usd` becomes `*float64`,
   omitted when `CalculateCost` fails, so absent means unpriced rather than free.
 - `metrics.Recorder` takes an **`Observation` struct** rather than growing
@@ -699,7 +766,8 @@ recoverable from this surface at all. A mid-call clock adjustment moves
 
 Extending the toolkit event to carry a real start instant, and to distinguish
 logical from per-attempt latency, is the better long-term answer and belongs
-upstream in `maestro-llms` — not in a v1 patch.
+upstream in `maestro-llms` — not in a v1 patch. Filed as
+[issue 311](https://github.com/SnapdragonPartners/maestro/issues/311).
 - **The streamed budget totals must not move.** `usageTail` feeds the engine's
   cap enforcement, so this is not only an accounting format: v2's tail must
   compute `tokens` as `input + output + reasoning`, which is exactly what v1's
@@ -906,6 +974,15 @@ plan's testing rule for this phase requires.
   legitimate evidence directory — including one pointing outside the results root —
   is skipped, named, and never read. Proven by planting both and asserting the
   file outside the root is never uploaded.
+- **The conformance corpus.** Every case run by both validators with agreement
+  asserted, and the AST-derived coverage check proven by adding a rejection reason
+  with no corpus case and watching it fail.
+- **Value validity.** Each row of D9's table broken independently at both readers.
+  The negative-axis case is the one to write first and by hand:
+  `{input: 1000000, output: -999999}` must fail the tail with an error — asserted
+  against today's code first, where it passes the tracker's guard as a delta of 1
+  and under-accounts by two million tokens. A test that cannot fail for that
+  defect is not a regression test for it.
 - **Cross-file coherence.** Each row of the table in D1 broken independently:
   mismatched suite ids across the three places, a duplicate `run_id`, an unknown
   manifest status, a `completed` entry with no record, a record with no entry, and
@@ -1007,6 +1084,39 @@ P1 2 is the one to carry forward. Two skip rules were folded into one sentence �
 append-only and correctly skipped, while its evidence has no holder yet and must
 not be. Both P1 2 and round 2's blocker 1 have that shape, a single condition
 standing in for two distinct questions.
+
+## Review round 5 disposition
+
+Codex, 2026-08-04. Two blockers, both accepted:
+
+| # | Blocker | Resolution |
+| --- | --- | --- |
+| 1 | D1 claimed per-record validation as inherited from code the importer is forbidden to call — and which ran when the file was *written*, not when it is read | the importer implements the equivalent semantics itself, with a two-sided accept/reject conformance corpus and AST-derived coverage (D1) |
+| 2 | Surface v2 defined presence but never value validity | a value-validity table enforced at every reader, and three defects in `usageTail` fixed with it (D9) |
+
+Blocker 1 is the worse of the two and it is the same mistake twice. Round 4 added
+the cross-file checks *because* the fixture proves contract shape and not input
+validity; then the per-record half was left leaning on a validation that had
+already been argued unreachable four decisions earlier, in the same document. The
+argument for the corpus is the argument round 4 already made, applied one level
+down.
+
+Blocker 2 turned out to have a live bypass under it. `usageTail` sums the token
+axes before reporting, and `usageTracker.report`'s non-negative guard sees only the
+sum — so `{input: 1000000, output: -999999}` reports a delta of 1, passes the
+guard, and under-accounts an attempt by two million tokens with the cap
+unenforced and nothing logged. The guard is not weak; it is downstream of the
+arithmetic that destroyed the evidence. Two more in the same function: the tail's
+canonical totals accumulate without the overflow and NaN/Inf saturation
+`usageTracker` applies to its own copy, so a malformed cost the tracker rejects
+still reaches the record. All three are fixed in the surface-v2 commit, since that
+commit is already rewriting the parser.
+
+**Upstream issue filed:**
+[#311](https://github.com/SnapdragonPartners/maestro/issues/311), covering both
+acknowledged gaps — usage invisible for failed logical calls, and per-attempt
+latency unrecoverable now that metrics sits outermost — per the build process's
+rule that discovered deferred work gets an owner before the item closes.
 
 ## Related documents
 
