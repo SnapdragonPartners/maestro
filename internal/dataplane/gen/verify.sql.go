@@ -12,7 +12,7 @@ import (
 )
 
 const listAuditArtifactsForVerify = `-- name: ListAuditArtifactsForVerify :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at FROM audit_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at, scope_benchmark_run_id FROM audit_artifacts
 WHERE organization_id = $1
 ORDER BY artifact_id
 `
@@ -53,6 +53,7 @@ func (q *Queries) ListAuditArtifactsForVerify(ctx context.Context, organizationI
 			&i.Payload,
 			&i.PayloadDigest,
 			&i.CreatedAt,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -105,7 +106,7 @@ func (q *Queries) ListBinaryAttachmentsForVerify(ctx context.Context, organizati
 }
 
 const listManagementArtifactsForVerify = `-- name: ListManagementArtifactsForVerify :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE organization_id = $1
 ORDER BY artifact_id
 `
@@ -160,6 +161,7 @@ func (q *Queries) ListManagementArtifactsForVerify(ctx context.Context, organiza
 			&i.CreatedAt,
 			&i.IsAmendment,
 			&i.AmendsTargetIsAmendment,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}

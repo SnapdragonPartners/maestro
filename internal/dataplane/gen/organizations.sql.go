@@ -61,3 +61,61 @@ func (q *Queries) GetUserByHandle(ctx context.Context, arg GetUserByHandleParams
 	)
 	return i, err
 }
+
+const insertOrganizationIfAbsent = `-- name: InsertOrganizationIfAbsent :execrows
+
+INSERT INTO organizations (organization_id, slug, display_name)
+VALUES ($1, $2, $3)
+ON CONFLICT ON CONSTRAINT organizations_slug_key DO NOTHING
+`
+
+type InsertOrganizationIfAbsentParams struct {
+	OrganizationID pgtype.UUID
+	Slug           string
+	DisplayName    string
+}
+
+// Provisioning. Item 9 adds it because nothing else could: an importer goes
+// through the seam, and until now the seam could resolve an organization and
+// a user but never create one, so every integration test wrote its own with
+// raw SQL and the importer had no supported path at all.
+//
+// INSERT ... ON CONFLICT DO NOTHING, then READ, rather than a
+// check-then-insert. Two operators running bootstrap at once would both see
+// no row and both insert, and one of them would receive a raw uniqueness
+// violation -- which is neither "created" nor "already existed" and leaks a
+// driver error through the seam. Here the unique constraint is the arbiter
+// and the read that follows is what both callers compare against.
+func (q *Queries) InsertOrganizationIfAbsent(ctx context.Context, arg InsertOrganizationIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertOrganizationIfAbsent, arg.OrganizationID, arg.Slug, arg.DisplayName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertUserIfAbsent = `-- name: InsertUserIfAbsent :execrows
+INSERT INTO users (user_id, organization_id, handle, display_name)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT ON CONSTRAINT users_org_handle_key DO NOTHING
+`
+
+type InsertUserIfAbsentParams struct {
+	UserID         pgtype.UUID
+	OrganizationID pgtype.UUID
+	Handle         string
+	DisplayName    string
+}
+
+func (q *Queries) InsertUserIfAbsent(ctx context.Context, arg InsertUserIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertUserIfAbsent,
+		arg.UserID,
+		arg.OrganizationID,
+		arg.Handle,
+		arg.DisplayName,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

@@ -265,7 +265,15 @@ var completionSetColumns = map[string]bool{
 // lifecycle. Its absence from an earlier version of this list meant a
 // generic UPDATE or DELETE against the one pinnable family in scope would
 // have passed every check here.
-var bornFinalTables = []string{"metric_events", "audit_events", "audit_artifacts"}
+// benchmark_runs and benchmark_attempts join in item 9 for the same reason
+// and a sharper one: the import contract is that re-importing is a NO-OP.
+// An update statement against either would make a second import a write, and
+// the ledger row is the record that the first import happened -- rewriting it
+// is how a conflicting payload would come to overwrite a good one silently.
+var bornFinalTables = []string{
+	"metric_events", "audit_events", "audit_artifacts",
+	"benchmark_runs", "benchmark_attempts",
+}
 
 // namedTruncations maps each permitted DELETE to the ONE table it may
 // delete from. Deletion here is retention policy (design D6), with a

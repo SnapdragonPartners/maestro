@@ -45,6 +45,7 @@ type AuditArtifact struct {
 	Payload              []byte
 	PayloadDigest        string
 	CreatedAt            pgtype.Timestamptz
+	ScopeBenchmarkRunID  pgtype.UUID
 }
 
 type AuditEvent struct {
@@ -55,6 +56,23 @@ type AuditEvent struct {
 	EventType           string
 	Detail              []byte
 	OccurredAt          pgtype.Timestamptz
+}
+
+type BenchmarkAttempt struct {
+	BenchmarkAttemptID pgtype.UUID
+	OrganizationID     pgtype.UUID
+	BenchmarkRunID     pgtype.UUID
+	RunID              string
+	RecordDigest       string
+	AuditArtifactID    pgtype.UUID
+	ImportedAt         pgtype.Timestamptz
+}
+
+type BenchmarkRun struct {
+	BenchmarkRunID  pgtype.UUID
+	OrganizationID  pgtype.UUID
+	SuiteRunID      string
+	FirstImportedAt pgtype.Timestamptz
 }
 
 type BinaryAttachment struct {
@@ -169,6 +187,7 @@ type ManagementArtifact struct {
 	CreatedAt               pgtype.Timestamptz
 	IsAmendment             bool
 	AmendsTargetIsAmendment *bool
+	ScopeBenchmarkRunID     pgtype.UUID
 }
 
 type MetricEvent struct {

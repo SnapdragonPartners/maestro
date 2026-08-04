@@ -423,3 +423,102 @@ func (s *Store) DeleteSecret(
 ) error {
 	return s.direct().DeleteSecret(ctx, organizationID, secretID, actingUserID, expectedVersion)
 }
+
+// The benchmark family (item 9). Each of these is a read-then-compare over a
+// row an insert-or-nothing may have just created, so each runs inside one
+// transaction for the same reason the acceptance path does: outside one, the
+// insert and the read that interprets it are two statements another writer
+// can act between.
+
+// GetOrganizationBySlug resolves a tenant by its slug.
+func (s *Store) GetOrganizationBySlug(ctx context.Context, slug string) (*store.Organization, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Organization, error) {
+		return t.GetOrganizationBySlug(ctx, slug)
+	})
+}
+
+// GetUserByHandle resolves an accountable human within one tenant.
+func (s *Store) GetUserByHandle(ctx context.Context, organizationID uuid.UUID, handle string) (*store.User, error) {
+	return inTx(ctx, s, func(t *tx) (*store.User, error) {
+		return t.GetUserByHandle(ctx, organizationID, handle)
+	})
+}
+
+// GetBenchmarkRunBySuite resolves a suite run by the runner's own identity.
+func (s *Store) GetBenchmarkRunBySuite(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (*store.BenchmarkRun, error) {
+	return inTx(ctx, s, func(t *tx) (*store.BenchmarkRun, error) {
+		return t.GetBenchmarkRunBySuite(ctx, organizationID, suiteRunID)
+	})
+}
+
+// GetBenchmarkAttempt resolves one ledgered attempt.
+func (s *Store) GetBenchmarkAttempt(ctx context.Context, organizationID, benchmarkRunID uuid.UUID, runID string) (*store.BenchmarkAttempt, error) {
+	return inTx(ctx, s, func(t *tx) (*store.BenchmarkAttempt, error) {
+		return t.GetBenchmarkAttempt(ctx, organizationID, benchmarkRunID, runID)
+	})
+}
+
+// ListBenchmarkAttempts returns every ledgered attempt of one suite run.
+func (s *Store) ListBenchmarkAttempts(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) ([]store.BenchmarkAttempt, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.BenchmarkAttempt, error) {
+		return t.ListBenchmarkAttempts(ctx, organizationID, benchmarkRunID)
+	})
+}
+
+// BootstrapOrganization provisions a tenant, idempotently.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) BootstrapOrganization(ctx context.Context, input store.BootstrapOrganizationInput) (store.Bootstrapped[store.Organization], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Organization], error) {
+		outcome, txErr := t.BootstrapOrganization(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Organization]{}, err
+	}
+	return *result, nil
+}
+
+// BootstrapUser provisions an accountable human, idempotently.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) BootstrapUser(ctx context.Context, input store.BootstrapUserInput) (store.Bootstrapped[store.User], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.User], error) {
+		outcome, txErr := t.BootstrapUser(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.User]{}, err
+	}
+	return *result, nil
+}
+
+// EnsureBenchmarkRun returns the suite's row, creating it if absent.
+func (s *Store) EnsureBenchmarkRun(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (store.Bootstrapped[store.BenchmarkRun], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.BenchmarkRun], error) {
+		outcome, txErr := t.EnsureBenchmarkRun(ctx, organizationID, suiteRunID)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.BenchmarkRun]{}, err
+	}
+	return *result, nil
+}
+
+// RecordBenchmarkAttempt ledgers an attempt, or reports what is already there.
+//
+// Reachable on Store as well as Tx, but the importer uses the Tx form: the
+// ledger row and the Audit artifact it names must commit together, and this
+// entry point opens a transaction of its own.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) RecordBenchmarkAttempt(ctx context.Context, input store.RecordBenchmarkAttemptInput) (store.Bootstrapped[store.BenchmarkAttempt], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.BenchmarkAttempt], error) {
+		outcome, txErr := t.RecordBenchmarkAttempt(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.BenchmarkAttempt]{}, err
+	}
+	return *result, nil
+}
