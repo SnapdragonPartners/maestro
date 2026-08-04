@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
-edit_date = "2026-08-03"
+edit_date = "2026-08-04"
 status = "draft"
 summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
@@ -8,7 +8,7 @@ type = "design"
 
 # Phase 2 Item 9 Design: Importing Golden Runner Records
 
-Status: **draft** — revised after three Codex review rounds (2026-08-03). Round 1
+Status: **draft** — revised after four Codex review rounds (2026-08-03). Round 1
 approved the central shape and D5, required D10 with explicit conflict semantics,
 **rejected** D2's null `scope_id`, and **rejected** D9's provider sentinel in
 favour of recording it at its source. Round 2 found four further blockers,
@@ -16,8 +16,11 @@ including a self-review hole in the seam that D5's whole argument rested on, and
 reversed the deferral of `cache_write_tokens`. Round 3 corrected the latency
 contract, closed a mixed-version hole in the usage-log writer, reduced the timing
 fields to one instant plus an exact duration, and carried the cached-token split
-through the aggregate. Resolutions are inline; all three dispositions are recorded
-at the end.
+through the aggregate. Round 4 stopped failed calls fabricating zero token
+measurements, deferred evidence upload to terminal assembly so a partial import
+cannot lose it, closed a path-traversal hole in `run_id`, and added the cross-file
+coherence the two-sided fixture cannot supply. Resolutions are inline; all four
+dispositions are recorded at the end.
 
 Delivers the [Phase 2 plan](plan_scope.md)'s item 9: golden story runner records
 from `benchmark/runs/` imported into the main Postgres plane through the
@@ -113,6 +116,36 @@ enumerations failed three times in item 8 alone:
 
 Neither test can pass while the two sides disagree, and neither is a list
 somebody has to remember to extend.
+
+### Shape is not validity
+
+The fixture proves the importer and the runner agree about the *contract*. It says
+nothing about whether a particular file on disk is coherent, and the operator-
+authored report is a claim about a real suite — so the importer validates the
+input as a whole before any of it becomes an artifact, and refuses the suite rather
+than importing part of it.
+
+**Inherited per record, not restated here:** `results.ReadSuite` runs
+`RunRecord.Validate` on every line, which already enforces verdict pairing
+(accepted records cannot carry a failure kind or a failed check), timestamp
+ordering, metric completeness against the registry, capability coherence, and the
+40-hex shape of `solution_commit`. Re-implementing those in the importer would be
+two rules to keep in step.
+
+**Added, because they are the ones no single record can see:**
+
+| Check | Why it cannot be a per-record rule |
+| --- | --- |
+| filename, manifest `suite_run_id` and every record's `suite_run_id` are one value | a record knows its own suite id, not the file it was found in |
+| `run_id` is unique across the suite | duplicates are how one attempt becomes two ledger rows, or one rejected import |
+| every manifest `status` is `planned`, `completed` or `skipped` | the manifest has no validator at all today |
+| the set of `completed` manifest entries equals the set of records, exactly | a completed entry with no record is a lost attempt; a record with no entry is a suite the manifest does not describe |
+| a manifest attempt's `run_id` matches the record it names | otherwise the manifest's account of the matrix is fiction |
+
+A suite that fails any of these is refused whole, with the specific disagreement
+named. This is the difference between "the bytes parse" and "the evidence is
+internally consistent", and the report is signed by an operator on the strength of
+the second.
 
 ## D2. Two tables, because a suite run and an attempt are different identities
 
@@ -210,7 +243,7 @@ than a value the importer reconstructs.
 | --- | --- | --- |
 | `provider` | `provider` | `ev.Provider`, available today and dropped on the floor |
 | `model` | `model` | unchanged from v1 |
-| `input_tokens` | `input_tokens` | `Usage.InputTokens` |
+| `input_tokens` | `input_tokens` | `Usage.InputTokens`, **nullable** |
 | `output_tokens` | `output_tokens` | `Usage.OutputTokens` — **visible output only** |
 | `reasoning_tokens` | `reasoning_tokens` | `Usage.ReasoningTokens` |
 | `cache_read_tokens` | `cache_read_tokens` | renamed from `cached_tokens`, see below |
@@ -221,7 +254,15 @@ than a value the importer reconstructs.
 | `succeeded` | `success` | unchanged |
 | `error_message` | `error` | absent on success |
 
-Three of these are corrections, not additions:
+Four of these are corrections, not additions:
+
+- **A failed call has no token counts, and v1 records five zeros.** `Event.Usage`
+  is populated only when `Err == nil`; on failure the toolkit hands over the zero
+  value, explicitly because "a partial response returned with an error is not
+  trusted". Writing those zeros into `NOT NULL DEFAULT 0` counters asserts a
+  measurement nobody made, and every aggregate then sums them as though they were
+  real. It is the same "unknown versus zero" confusion as `cost_usd`, one column
+  over, and it needs the same answer.
 
 - **v1 folds reasoning into `completion_tokens`.** `Observe` sets it from
   `Usage.BillableOutputTokens`, which per maestro-llms ADR-0016 is visible output
@@ -259,7 +300,35 @@ match. The blast radius is item 5's — the query file, the generated output, th
 seam struct, the converter and three test files — and it shrinks every week this
 is deferred.
 
-**The split runs all the way through the aggregate, not just the row.**
+**Token availability, carried through all four layers.** Nullability is the
+plane's existing idiom for "not knowable" and it is what the token axes get:
+
+- **Surface.** The five token fields are required iff `success` and omitted
+  otherwise, so a failed line does not carry numbers the toolkit never produced.
+- **Row.** Migration `000016` drops `NOT NULL DEFAULT 0` from all five columns and
+  adds `CHECK (num_nonnulls(input_tokens, output_tokens, reasoning_tokens,
+  cache_read_tokens, cache_write_tokens) IN (0, 5))` — availability is a property
+  of the observation, so four axes present and one missing describes nothing.
+- **Seam.** `CompleteLLMCallInput.Tokens` and `LLMCall.Tokens` become
+  `*TokenCounts`; nil is unmeasured. A pointer rather than a bool beside a struct,
+  because a struct that must not be read is one somebody eventually reads.
+- **Aggregate.** The token sums filter on availability, and `CostAggregate` gains
+  `TokensMeasuredCalls` and `TokensUnmeasuredCalls` beside the existing cost pair.
+  They are genuinely two axes and not one: a `paired-local` success has measured
+  tokens and unknowable cost, a failed call has neither, and one pair of counters
+  cannot say that.
+
+**What this does not fix, stated plainly.** Tokens spent on the provider attempts
+*inside* a failed logical call are invisible to this surface — the toolkit reports
+no usage for them at all. ADR 0025 says failed-attempt costs count, and today they
+cannot be counted, so budget enforcement under-counts a failed call. That is
+pre-existing v1 behaviour and v2 does not change it; what v2 stops doing is
+*claiming a measurement of zero* where there was no measurement. The real fix is
+upstream in `maestro-llms`, alongside the per-attempt latency gap, and both belong
+in the same issue. The budget-total equality of D9 is unaffected: v1 added zeros
+for failed calls and v2 adds nothing, which is the same total.
+
+**The cached-token split runs all the way through the aggregate, not just the row.**
 `AggregateLLMCost` sums one `total_cached_tokens`
 ([`llm_calls.sql`](../../../internal/dataplane/queries/llm_calls.sql)) into a
 `CostAggregate` that embeds `TokenCounts`
@@ -428,6 +497,27 @@ An interrupted or budget-exhausted suite *is* terminal and does get a report.
 "Deliberately partial" is a real outcome the manifest is designed to express, and
 refusing to report it would discard exactly the distinction it exists to make.
 
+**Evidence upload waits for terminal assembly, and the rescan covers every
+attempt.** The first revision had the partial import upload attachments as it went.
+That loses evidence, and the loss is silent: an attachment written during a partial
+import is held by no artifact, because the only artifact that pins anything is the
+report and the report does not exist yet. Attachment truncation may remove the row
+and the sweep may then reclaim the object — legitimately, since nothing
+authoritative referenced it — and the terminal import will not put it back,
+because the attempt is already ledgered and gets skipped. The gap between the two
+imports is exactly as long as the suite takes to finish.
+
+So attachments are written **only** during terminal report assembly, and that
+assembly walks the evidence directory of **every attempt in the suite, ledgered or
+newly imported**. A ledgered attempt is skipped for its *artifact and call rows*,
+which are append-only and already correct; it is never skipped for its evidence,
+which has no holder until now. The two skip rules are separate for a reason and
+conflating them is what caused this.
+
+This also simplifies the failure story: a partial import writes no objects at all,
+so the unreferenced-attachment residue D6 describes can only arise from a failed
+*terminal* import, in one place, on one path.
+
 ## D8. Evidence bytes are found by walking the store, not by trusting the record
 
 `EvidencePointer.Location` is an **absolute filesystem path recorded on the
@@ -439,6 +529,34 @@ durable layout, which `results.EvidenceDir` defines — and uploads every regula
 file it finds, recursively, with the pointers carried in the payload verbatim as
 provenance. Media type is by extension against a small explicit table, defaulting
 to `application/octet-stream`; unknown is not a failure.
+
+**`run_id` is untrusted input used as a path component.** `validateIdentity`
+requires only that it be non-empty, so a record carrying `../../../etc` makes
+`evidence/<run-id>` resolve outside the results root — and the importer reads
+whatever is there and uploads it into the plane. The exposure is not only the
+importer's: the engine joins the same value into `WorkspaceDir` and passes it to
+`EvidenceDir`. Three defences, because one of them is a string check and string
+checks are where this class of bug lives:
+
+1. **Shape.** The importer requires `run_id` to be a single path component
+   matching `[a-z0-9][a-z0-9_-]*`, which every id the engine generates already
+   satisfies (`app-healthz-endpoint--paired-default--r1--1e29828c`). `.` and `..`
+   are excluded by construction rather than by being listed.
+2. **Containment after joining.** The resolved directory is compared against the
+   resolved results root and must be a proper descendant, separator included, so
+   `evidence-other` cannot pass a prefix test for `evidence`. This is checked
+   *after* symlink resolution, not before, so the check sees what the filesystem
+   will actually open.
+3. **No symlink following during the walk.** Entries are examined with `Lstat`;
+   a symlink is skipped and named in the summary, never followed and never
+   uploaded. A containment check on the directory says nothing about a link
+   pointing out of it three levels down.
+
+The runner's own `validateIdentity` gains rule 1 as well. It is not the security
+boundary — the runner generates these ids and never reads a hostile record — but
+it is one line, it makes the fixture prove the rule on both sides, and it closes
+the `WorkspaceDir` join at its source. Existing records on disk already comply, so
+nothing in `benchmark/runs/` becomes unreadable.
 
 Two bounds, both **reported rather than silently applied**, because a cap that
 drops work quietly reads as "there was nothing more to import":
@@ -483,11 +601,11 @@ instant and one duration** and derives the rest at import:
 | `latency_ns` | int64 | always | `ev.Latency.Nanoseconds()` |
 | `provider` | string | always | `ev.Provider` |
 | `model` | string | always | `ev.Model` |
-| `input_tokens` | int64 | always | `Usage.InputTokens` |
-| `output_tokens` | int64 | always | `Usage.OutputTokens` |
-| `reasoning_tokens` | int64 | always | `Usage.ReasoningTokens` |
-| `cache_read_tokens` | int64 | always | `Usage.CacheReadTokens` |
-| `cache_write_tokens` | int64 | always | `Usage.CacheWriteTokens` |
+| `input_tokens` | int64 | **iff `success`** | `Usage.InputTokens` |
+| `output_tokens` | int64 | **iff `success`** | `Usage.OutputTokens` |
+| `reasoning_tokens` | int64 | **iff `success`** | `Usage.ReasoningTokens` |
+| `cache_read_tokens` | int64 | **iff `success`** | `Usage.CacheReadTokens` |
+| `cache_write_tokens` | int64 | **iff `success`** | `Usage.CacheWriteTokens` |
 | `success` | bool | always | `ev.Err == nil` |
 | `cost_usd` | float64 | omitted when unpriced | `config.CalculateCost` |
 | `error` | string | required iff `!success` | `ev.Err.Error()` |
@@ -499,14 +617,17 @@ would round and `started_at` could not be recovered from what was written.
 Nanoseconds are exact, and `started_at` is computed at import rather than stored,
 so there is no second copy to disagree with the first.
 
-**The coherence rule, enforced on write and on read:** `success` true requires
-`error` absent; `success` false requires `error` present and non-blank. A line
-that says a call failed and does not say how is not a record of a failure, and a
-line that says it succeeded while carrying an error text is two claims. The writer
-refuses to emit either and the importer refuses to accept either — the same rule
-in both places, since the writer's guarantee is not evidence to a reader parsing a
-file written by some other build. Unknown keys and missing required ones fail
-rather than being guessed past, which is what the header version is for.
+**The coherence rule, enforced on write and on read.** `success` true requires
+`error` absent **and all five token fields present**; `success` false requires
+`error` present and non-blank **and all five token fields absent**. A line that
+says a call failed and does not say how is not a record of a failure; a line that
+says it succeeded while carrying an error text is two claims; and a failed line
+carrying token counts is the fabricated measurement D3 exists to prevent — the
+toolkit gave it nothing to report. The writer refuses to emit any of them and the
+importer refuses to accept any of them, the same rule in both places, since the
+writer's guarantee is not evidence to a reader parsing a file written by some
+other build. Unknown keys and missing required ones fail rather than being guessed
+past, which is what the header version is for.
 
 - `metrics.UsageEntry` is rewritten to that shape; `cost_usd` becomes `*float64`,
   omitted when `CalculateCost` fails, so absent means unpriced rather than free.
@@ -537,9 +658,17 @@ rather than being guessed past, which is what the header version is for.
   inode, so its calls vanish from the log the adapter is tailing — undercounting
   again, now caused by the mitigation, and precisely ADR 0027's rule that
   destructive recovery must never remove another actor's in-progress work. A
-  refusal is loud, costs the operator one `rm`, and the benchmark path never meets
-  it because every attempt gets a fresh project directory. A malformed or
-  unparseable first line is treated the same way as a mismatched one.
+  refusal is loud, and the benchmark path never meets it because every attempt
+  gets a fresh project directory. A malformed or unparseable first line is treated
+  the same way as a mismatched one.
+
+  The operator's remedy is to move the stale file aside, and the error says so —
+  but it says it with the condition attached, because the remedy has the same
+  hazard as the rotation just rejected: **removing the log is safe only once every
+  writer on that project directory has stopped.** Doing it under a running target
+  leaves that target appending to an unlinked inode and losing exactly the calls
+  the refusal was protecting. "Costs one `rm`" was the wrong summary of a two-step
+  operation whose first step is quiescing.
 - **The v1 adapter's own version goes from `0.1.0` to `0.2.0`.** Its parsing and
   its normalized output both change, and `adapterVersion` is a comparison key in
   every run record's `TargetDescriptor`. It moves independently of the target's
@@ -761,6 +890,27 @@ plan's testing rule for this phase requires.
   adding a field to the fixture on one side only.
 - **Caps.** A file over the cap is skipped, named in the summary, and named in the
   report payload.
+- **Failed calls carry no token measurement.** A failed line with token fields is
+  refused at the writer and at the importer; a failed call's row has all five
+  columns null and the `IN (0, 5)` check refuses four-of-five; `AggregateLLMCost`
+  counts it in `TokensUnmeasuredCalls` and excludes it from every sum. Proven by
+  first writing zeros and asserting the aggregate then reports it as measured —
+  the wrong answer this whole change exists to stop.
+- **Evidence survives a partial import.** Import a running suite, run attachment
+  truncation and the object sweep, then import the now-terminal suite and assert
+  every evidence file is present and pinned. Against the deferred-upload rule this
+  passes; against the first revision's upload-as-you-go it does not, which is what
+  makes it the regression test for P1 2 rather than a restatement of D8.
+- **Path containment.** A record whose `run_id` is `../../etc`, `.`, `..`, or
+  contains a separator is refused before any filesystem access; a symlink inside a
+  legitimate evidence directory — including one pointing outside the results root —
+  is skipped, named, and never read. Proven by planting both and asserting the
+  file outside the root is never uploaded.
+- **Cross-file coherence.** Each row of the table in D1 broken independently:
+  mismatched suite ids across the three places, a duplicate `run_id`, an unknown
+  manifest status, a `completed` entry with no record, a record with no entry, and
+  a manifest entry naming the wrong `run_id`. Each refuses the suite whole and
+  names the disagreement, and none of them leaves a partial import behind.
 
 ## Review round 1 disposition
 
@@ -835,6 +985,28 @@ it. Reading the dependency's documentation instead of the calling code produced 
 confident, specific, wrong statement about our own system — the same failure mode
 CLAUDE.md's verification discipline names for dependency claims, arriving from the
 opposite direction.
+
+## Review round 4 disposition
+
+Codex, 2026-08-03. Four P1s, all accepted:
+
+| # | P1 | Resolution |
+| --- | --- | --- |
+| 1 | Failed calls would write fabricated zero tokens into non-null counters, and aggregates would sum them as measured | availability carried through surface, row, seam and aggregate; nullable columns with an all-or-nothing check (D3) |
+| 2 | A partial import's attachments are held by no artifact, so truncation can reclaim them and the terminal import skips the ledgered attempt | evidence upload deferred to terminal assembly, which rescans **every** attempt; the artifact skip and the evidence skip are separated (D7) |
+| 3 | `run_id` is an unvalidated path component, so a crafted record escapes the results root | single-component shape, containment after symlink resolution, no symlink following, and the same shape rule added to the runner's own validator (D8) |
+| 4 | Contract-shape agreement is not input validity | cross-file coherence table, with what `RunRecord.Validate` already covers named rather than restated (D1) |
+
+Wording fixed as noted: removing a mismatched usage log is safe only after every
+writer on that project directory has quiesced, which the error message now says.
+"Costs one `rm`" described a two-step operation as one and understated the same
+unlinked-inode hazard the paragraph above it warns about.
+
+P1 2 is the one to carry forward. Two skip rules were folded into one sentence —
+"a ledgered attempt is skipped" — and they are not the same rule: its rows are
+append-only and correctly skipped, while its evidence has no holder yet and must
+not be. Both P1 2 and round 2's blocker 1 have that shape, a single condition
+standing in for two distinct questions.
 
 ## Related documents
 
