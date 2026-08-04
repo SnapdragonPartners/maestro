@@ -8,11 +8,13 @@ type = "design"
 
 # Phase 2 Item 9 Design: Importing Golden Runner Records
 
-Status: **draft** — revised after Codex review round 1 (2026-08-03), which
-approved the central shape, approved D5, required D10 with explicit conflict
-semantics, **rejected** D2's null `scope_id`, and **rejected** D9's sentinel in
-favour of recording the provider at its source. Resolutions are inline; round 1's
-disposition is recorded at the end.
+Status: **draft** — revised after two Codex review rounds (2026-08-03). Round 1
+approved the central shape and D5, required D10 with explicit conflict semantics,
+**rejected** D2's null `scope_id`, and **rejected** D9's provider sentinel in
+favour of recording it at its source. Round 2 found four further blockers,
+including a self-review hole in the seam that D5's whole argument rested on, and
+reversed the deferral of `cache_write_tokens`. Resolutions are inline; both
+dispositions are recorded at the end.
 
 Delivers the [Phase 2 plan](plan_scope.md)'s item 9: golden story runner records
 from `benchmark/runs/` imported into the main Postgres plane through the
@@ -208,10 +210,11 @@ than a value the importer reconstructs.
 | `input_tokens` | `input_tokens` | `Usage.InputTokens` |
 | `output_tokens` | `output_tokens` | `Usage.OutputTokens` — **visible output only** |
 | `reasoning_tokens` | `reasoning_tokens` | `Usage.ReasoningTokens` |
-| `cached_tokens` | `cache_read_tokens` | see the cache-write note below |
+| `cache_read_tokens` | `cache_read_tokens` | renamed from `cached_tokens`, see below |
+| `cache_write_tokens` | `cache_write_tokens` | new column, see below |
 | `cost_usd` | `cost_usd`, **nullable** | absent means not knowable, never zero |
-| `started_at` | `started_at` | recorded, not derived from `ts` minus latency |
-| `finished_at` | `finished_at` | |
+| `started_at` | `started_at` | **derived**: `finished_at - latency_ms`, see D9 |
+| `finished_at` | `finished_at` | the observation instant |
 | `succeeded` | `success` | unchanged |
 | `error_message` | `error` | absent on success |
 
@@ -233,14 +236,25 @@ Three of these are corrections, not additions:
   reconstructed; and a failed call's error text never reaches the log at all,
   though `llm_calls.error_message` is exactly where it belongs.
 
-**Cache-write tokens have nowhere to go.** `Usage` carries `CacheReadTokens` and
-`CacheWriteTokens` separately and they are billed differently; the plane has one
-`cached_tokens` column. v2 records both, the importer maps read and **reports
-write as unmapped rather than folding it in**. Whether to add the column is left
-to a measurement — if the golden configs' providers report non-zero cache writes,
-it is a real loss and worth a migration; if they report none, adding a column for
-it is speculation. That measurement is item 9's to take and report, not to
-predict here.
+**Cache reads and writes get a column each, now.** `Usage` carries
+`CacheReadTokens` and `CacheWriteTokens` separately and they are billed
+differently; the plane had one `cached_tokens` column whose name did not say
+which. The first revision proposed deferring the second column to a measurement
+against today's golden configs. Review rejected the reasoning and it is worth
+recording why, because it is a trap this repository has fallen into before: an
+all-zero result would not show the dimension is irrelevant, only that **this
+sample never exercised it**. That is the same shape as a green suite standing in
+for a property nobody asserted.
+
+So migration `000016` renames `cached_tokens` to `cache_read_tokens` and adds
+`cache_write_tokens bigint NOT NULL DEFAULT 0` with the same non-negative check.
+Renaming rather than documenting the old name: the ambiguity is in the name
+itself, there is no deployed data to protect, and a column called `cached_tokens`
+sitting beside `cache_write_tokens` would invite exactly the wrong reading
+forever. `store.TokenCounts.Cached` becomes `CacheRead` and `CacheWrite` to
+match. The blast radius is item 5's — the query file, the generated output, the
+seam struct, the converter and three test files — and it shrinks every week this
+is deferred.
 
 ## D4. Three principals, and only one of them is the importer
 
@@ -293,6 +307,50 @@ with the reviewer a *different* human principal, which is the review invariant
 biting on real data rather than in a unit test. If item 9 shipped acceptance as
 an automatic step it would have had to manufacture a reviewer, and a manufactured
 reviewer is the precise thing ADR 0020 exists to prevent.
+
+### The seam lets a human self-review, and this item closes it
+
+D5 leans the whole review invariant on the seam's author-versus-reviewer check,
+so the check had better hold. It does not. `classifyAcceptance` compares
+**principal instance ids only**
+([`artifacts.go`](../../../internal/dataplane/store/postgres/artifacts.go)), and a
+principal instance is one *lifetime*: the same human running the importer twice
+has two instances, and can therefore author with one and accept with the other.
+The invariant reads as enforced and is not.
+
+ADR 0020 is explicit about the identity that matters — "every user account gets a
+principal instance record whose `model` is `human-<user_id>` … even the human
+operator does not self-review — a human may be an artifact's author or its
+approver, never both". Migration `000004` already encodes it. So the fix is to
+compare the identity the ADR names, not the row id:
+
+**Reject when the reviewer instance is the author instance, or when author and
+reviewer are both `human` principals with the same `user_id`.** A new rejection
+reason, `ReasonReviewerIsAuthorUser`, because the operator response differs —
+"use a different instance" is wrong advice and "find another human" is right.
+
+Two boundaries drawn deliberately:
+
+- **It does not extend to agents sharing a model.** ADR 0020 makes distinct
+  reviewer model routing a preference — "*where practical*", an M lever and a
+  Phase 5 deliverable — not the invariant. Refusing two `claude-opus-5` instances
+  here would over-enforce a Phase 5 policy in a Phase 2 constraint.
+- **It compares the author *principal's* user, not the artifact's `user_id`.**
+  Those are different facts: `management_artifacts.user_id` is the accountable
+  human behind the work, so an agent-authored artifact legitimately carries the
+  operator there and the operator must still be able to review it. Comparing
+  against that column instead would forbid the single-operator workflow ADR 0020
+  explicitly endorses.
+
+Mechanically, `GetArtifactReviewWithReviewer` gains the author principal's kind
+and user id alongside the reviewer's, so both are read under the same lock as the
+artifact — a separate lookup could observe a different instant. The condition is
+repeated in the `UPDATE` as a backstop, as item 4's design already does for every
+other acceptance rule.
+
+This is an item 4 defect and it is fixed here rather than filed, because item 9 is
+the first caller whose correctness depends on it, and a filed issue would leave
+D5's acceptance step demonstrably bypassable in the meantime.
 
 **What the report pins:** every evidence attachment, and every `benchmark.run_record`
 Audit artifact of the suite. The second is the point of pins targeting Audit
@@ -388,10 +446,25 @@ every later provider-partitioned query quietly wrong.
 
 Concretely:
 
-- `metrics.UsageEntry` gains `provider`, `input_tokens`, `output_tokens`,
-  `reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens`, `started_at`,
-  `finished_at` and `error`; `cost_usd` becomes `*float64`, omitted when
-  `CalculateCost` fails, so absent means unpriced.
+**v2 is an exact replacement schema, not v1 plus fields.** The first revision
+called it "additive apart from `cost_usd`", which left it ambiguous whether
+`prompt_tokens` and `completion_tokens` survive beside their replacements. They do
+not: `completion_tokens` is the folded value the plane cannot use, and keeping it
+would leave two answers to one question in the same line. The v2 entry is exactly:
+
+```json
+{"ts","story_id","agent_id","provider","model",
+ "input_tokens","output_tokens","reasoning_tokens",
+ "cache_read_tokens","cache_write_tokens",
+ "cost_usd","started_at","finished_at","latency_ms","success","error"}
+```
+
+with `story_id`, `agent_id`, `cost_usd` and `error` omitted when empty and every
+other key always present. A reader that finds an unknown key or a missing
+required one fails rather than guessing, which is what the header version is for.
+
+- `metrics.UsageEntry` is rewritten to that shape; `cost_usd` becomes `*float64`,
+  omitted when `CalculateCost` fails, so absent means unpriced rather than free.
 - `metrics.Recorder` takes an **`Observation` struct** rather than growing
   `ObserveRequest` from seven parameters to thirteen. Three non-test
   implementations exist (`InternalRecorder`, `NoopRecorder`, `UsageLogRecorder`),
@@ -402,6 +475,24 @@ Concretely:
   header, and the v1 adapter validates it in both places
   (`benchmark/target/v1target/usagetail.go`), so the handshake fails loudly
   against a mismatched target instead of mis-parsing.
+- **The v1 adapter's own version goes from `0.1.0` to `0.2.0`.** Its parsing and
+  its normalized output both change, and `adapterVersion` is a comparison key in
+  every run record's `TargetDescriptor`. It moves independently of the target's
+  binary identity — the adapter can change while the target does not, and this is
+  one of those times — so leaving it at `0.1.0` would make records produced by two
+  different adapters compare as though one instrument had produced them.
+
+**Timestamps are derived, and say so.** `middleware.Event` carries `Latency`, not
+instants; the observer is called after the call returns and cannot see its start.
+So `finished_at` is the observation instant and `started_at` is
+`finished_at - latency`, recorded as such. `latency_ms` is written verbatim beside
+them so the derivation is auditable and reversible rather than a subtraction
+nobody can check. Two limits stated rather than glossed: `MetricsChat` is the
+innermost middleware, so the interval is the **provider attempt** after retry,
+timeout, circuit and rate-limit reservation — not the caller's wait — and a clock
+adjustment mid-call moves `started_at` with it. Extending the toolkit event to
+carry a real start instant is the better long-term answer and belongs upstream in
+`maestro-llms`, not in a v1 patch.
 - **The streamed budget totals must not move.** `usageTail` feeds the engine's
   cap enforcement, so this is not only an accounting format: v2's tail must
   compute `tokens` as `input + output + reasoning`, which is exactly what v1's
@@ -420,10 +511,15 @@ and **not** `pkg/persistence`, so the plan's hard constraint on v1's SQLite path
 is untouched.
 
 It does, however, touch the measuring instrument during the phase whose top risk
-is breaking it. Three things bound that: the log format change is additive apart
-from `cost_usd`'s nullability; the adapter requires v2 and fails the handshake
-rather than degrading; and item 10's `golden-all` run is the regression proof the
-plan already schedules.
+is breaking it, and v2 being a replacement schema rather than an additive one
+raises that rather than lowering it. Three things bound it: the version handshake
+is checked in both places, so a v1 adapter meeting a v2 target fails loudly
+instead of parsing a line that no longer means what it did; the streamed budget
+totals are pinned identical across the change by test; and item 10's `golden-all`
+run is the regression proof the plan already schedules. **This is also the review
+checkpoint** — the surface-v2 commit is reviewed before the importer is built on
+top of it, which is the isolation a separate branch would have bought without the
+dependent-branch cost.
 
 **Historical suites import without call records.** `benchmark/runs/` holds
 evidence from surface-v1 runs, including Phase 1a's. Their records and artifacts
@@ -473,6 +569,27 @@ something needs it; it is not a side effect of a provisioning command. The
 importer's own lookups are strictly `Get*`, so this path is reachable only from
 `bootstrap`.
 
+**Concurrency, because the table above is a read-then-write and two operators can
+run it at once.** The check-then-insert would race: both see no row, both insert,
+one gets a raw uniqueness violation from the driver — which is neither of the
+three outcomes and leaks a `23505` at the seam. So the write is
+`INSERT ... ON CONFLICT (slug) DO NOTHING`, followed by a read of the row that is
+now certainly there, and the comparison happens against **that** row. Two
+simultaneous matching creates converge on one row and both report
+`Created: false` for the loser; two differing creates converge on whichever
+committed first and the loser gets `ErrBootstrapConflict` naming both values —
+never a driver error. The uniqueness constraint is the arbiter and the seam
+translates it, which is ADR 0027's rule for shared state: serialize on a key
+matching the resource, and never last-writer-wins.
+
+**Input is validated before SQL, not by it.** Blank or whitespace-only slug,
+handle, or display name is refused with a typed error; the slug and handle are
+additionally held to the same lowercase `[a-z0-9_-]+` shape the runner already
+requires of a suite id, since both become identifiers in URLs and filenames later.
+Letting the database refuse a blank via a CHECK would work and would report the
+failure in the vocabulary of a constraint rather than of the flag the operator
+typed.
+
 ## D11. Surface
 
 ```
@@ -518,6 +635,13 @@ plan's testing rule for this phase requires.
   suite report (the schema refuses it), that acceptance by the author is refused
   with `ReasonReviewerIsAuthor`, and that acceptance by a distinct human succeeds
   and pins verify. A mutation that removes the reviewer check must make this fail.
+- **Self-review through two instances.** One user, two human principal instances,
+  author with the first and accept with the second: refused with
+  `ReasonReviewerIsAuthorUser`. This test fails against the seam as it stands
+  today, which is what makes it a regression test rather than a restatement. Its
+  companions: two *agent* instances sharing a model still accept, and an
+  agent-authored artifact accepted by the human named in its `user_id` still
+  accepts — the two boundaries D5 draws, each asserted rather than assumed.
 - **Pin completeness.** Remove one reference from the reviewed payload and assert
   acceptance refuses the extra pin; add an unreferenced attachment and assert the
   same.
@@ -539,7 +663,13 @@ plan's testing rule for this phase requires.
   land, no `llm_calls` rows are written, and the unavailability is named in both
   the summary and the report payload.
 - **Bootstrap conflict.** All three rows of D10's table, with the differing-display
-  case asserted to leave the stored row untouched.
+  case asserted to leave the stored row untouched; concurrent matching creates
+  from N goroutines converging on one row with exactly one `Created: true`;
+  concurrent differing creates yielding `ErrBootstrapConflict` and never a driver
+  error; and blank and malformed inputs refused before any statement is issued.
+- **Token axes.** A call reporting cache reads and cache writes lands both in
+  their own columns — the assertion that would have been impossible to write under
+  the deferred-column proposal, and the reason it was not deferred.
 - **Contract drift.** The two-sided fixture tests of D1, each proven to fail by
   adding a field to the fixture on one side only.
 - **Caps.** A file over the cap is skipped, named in the summary, and named in the
@@ -573,8 +703,28 @@ providers, so a single provider on `TargetDescriptor` would be wrong. Per-call
 recording is the only correct answer. Provider-bearing MPH routes are a separate
 question and are not opened here.
 
-Still open, and deliberately left to measurement rather than argued now: whether
-`cache_write_tokens` earns a column (D3).
+## Review round 2 disposition
+
+Codex, 2026-08-03. The usage-surface upgrade **stays in item 9 on this branch**,
+with a review checkpoint after the surface-v2 commit — better isolation than a
+dependent branch. Four blockers, all accepted and fixed above:
+
+| # | Blocker | Resolution |
+| --- | --- | --- |
+| 1 | D5 permitted human self-review through a second principal instance | seam fix, new `ReasonReviewerIsAuthorUser`, with both boundaries tested (D5) |
+| 2 | D9's timestamps claimed to be recorded when the source has only latency | documented as derived, `latency_ms` written verbatim beside them (D9) |
+| 3 | v2 left ambiguous whether the folded token fields survive | v2 stated as an exact replacement schema; adapter version `0.1.0` → `0.2.0` (D9) |
+| 4 | Bootstrap lacked concurrency and input semantics | `ON CONFLICT DO NOTHING` then read-and-compare; validation before SQL (D10) |
+
+And one reversal: **`cache_write_tokens` gets its column now.** The deferred
+measurement was wrong-headed and the reason generalises — an all-zero result from
+today's configuration would not show the dimension is irrelevant, only that this
+sample never exercised it. `cached_tokens` is renamed `cache_read_tokens` in the
+same migration so neither column's meaning depends on a comment (D3).
+
+Blocker 1 is the one worth remembering: D5 rested its entire argument on a check
+that did not hold, and nothing in the existing suite could have caught it, because
+every test that exercises the rule uses one instance per principal.
 
 ## Related documents
 
