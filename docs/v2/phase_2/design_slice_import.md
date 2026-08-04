@@ -179,7 +179,12 @@ the second.
 ## D2. Two tables, because a suite run and an attempt are different identities
 
 Item 9 is the item that adds `scope_benchmark_run_id`, as migration `000006`
-already says it will. It adds two tables in migration `000016`.
+already says it will. It adds two tables in migration `000017`.
+
+The migration number moved: `000016` became the token-axis work D3 needs, which
+is independent of the benchmark tables and landed at the surface-v2 checkpoint,
+so the benchmark schema follows it rather than sharing it. Splitting them keeps
+each migration reversible on its own, which a combined one would not have been.
 
 **`benchmark_runs` — one row per suite run.** This is the scope target: every
 artifact imported from one suite scopes to the same row, which is what
@@ -206,7 +211,7 @@ the system for one caller's benefit.
 
 The scope column lands on **both** artifact families, since both carry
 `scope_type = 'benchmark'` in their existing CHECKs. For each of
-`management_artifacts` and `audit_artifacts`, migration `000016`:
+`management_artifacts` and `audit_artifacts`, migration `000017`:
 
 - adds `scope_benchmark_run_id uuid` with an organization-aware FK to
   `benchmark_runs`;

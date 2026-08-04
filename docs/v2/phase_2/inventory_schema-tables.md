@@ -1,6 +1,6 @@
 +++
 title = "Schema Table Inventory: ADR And Consumer"
-edit_date = "2026-07-31"
+edit_date = "2026-08-04"
 status = "live"
 summary = "Every table the Phase 2 schema creates, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead."
 type = "inventory"
@@ -65,20 +65,33 @@ decision 1 carves them out explicitly.
 
 Twenty-three tables.
 
+## Created by item 9
+
+The vertical slice's own two, plus the `scope_benchmark_run_id` column the
+`benchmark` artifact scope has been waiting for. They arrive together because
+neither is usable alone: the column has nothing to reference without the
+table, and the table has no consumer without the import.
+
+| Table | Required by | Consumed by |
+| --- | --- | --- |
+| `benchmark_runs` | [0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (golden runner records); [0021](../../adr/0021-artifacts-and-principal-instances.md) (the `benchmark` artifact scope) | Item 9: one row per **suite run**, and the entity every imported artifact scopes to; created once and never updated, which is what keeps re-import a no-op rather than a write |
+| `benchmark_attempts` | [0022](../../adr/0022-v2-data-plane.md) Phase 2 scope — the import is append-only and idempotent by stable run/attempt identity | Item 9: the import ledger, where the unique key over (organization, run, `run_id`) **is** the idempotency; written in the same transaction as the Audit artifact it names, since an artifact committed without its ledger row would be imported again |
+
+Twenty-five tables, plus golang-migrate's own `schema_migrations`.
+
 ## Not created by item 3
 
 Each has an Accepted ADR behind it and no Phase 2 consumer *yet*, so each waits for the item that first needs it. Listing them is the other half of the rule: a reviewer expecting ADR 0022's full family list should see these as scheduled rather than forgotten.
 
 | Family | Required by | Created by |
 | --- | --- | --- |
-| Benchmark runs | [0025](../../adr/0025-golden-stories-and-benchmark-runner.md); the `benchmark` artifact scope | **Item 9**, with the import that first needs it |
 | Work Groups and runs | [0018](../../adr/0018-v2-work-taxonomy.md), [0022](../../adr/0022-v2-data-plane.md) | Phase 3 (Work Group runtime) |
 | Prompt packs | [0022](../../adr/0022-v2-data-plane.md); [backlog candidate 5](../notes_adr-backlog.md) | Phase 3 |
 | Gates | [0022](../../adr/0022-v2-data-plane.md); roadmap pillar 8 | Phase 5 |
 | Knowledge items | [0022](../../adr/0022-v2-data-plane.md) ("Phase 6 fills this out") | Phase 6 |
 | Skills / patterns | [0022](../../adr/0022-v2-data-plane.md); roadmap pillar 10 | Phase 5/6 |
 
-**The `benchmark` scope is self-enforcing in the meantime.** There is no `scope_benchmark_run_id` column until item 9 adds it alongside the table, so an artifact claiming that scope cannot satisfy the exactly-one-scope constraint and is refused by the schema — no seam rule to write, remember, or test.
+**The `benchmark` scope was self-enforcing until item 9.** There was no `scope_benchmark_run_id` column, so an artifact claiming that scope could not satisfy the exactly-one-scope constraint and was refused by the schema — no seam rule to write, remember, or test. Migration `000017` adds the column, rebuilds `scope_id` to include it, and extends both families' scope constraints, so the rule is now carried by the constraints rather than by the column's absence.
 
 ## How to keep this honest
 
