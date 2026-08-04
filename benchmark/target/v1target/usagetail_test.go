@@ -126,6 +126,15 @@ func TestUsageTailRejectsInvalidValues(t *testing.T) {
 		// Strict decoding: a key this build does not know means the header
 		// version lied about what wrote the file.
 		"unknown key": v2Line(valid + `,"prompt_tokens":42`),
+		// Trailing content, in all three forms. The two CLOSING delimiters
+		// are the discriminating cases: Decoder.More() answers "is there
+		// another element in the container I am inside?", and at the top
+		// level there is none — so it peeks, sees `]` or `}`, and reports
+		// nothing further. A check written to catch trailing garbage let
+		// through the only trailing garbage that looks like an ending.
+		"trailing object":       v2Line(valid) + `{"provider":"p"}`,
+		"trailing close-array":  v2Line(valid) + `]`,
+		"trailing close-object": v2Line(valid) + `}`,
 	}
 	for name, line := range cases {
 		t.Run(name, func(t *testing.T) {

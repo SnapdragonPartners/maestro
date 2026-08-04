@@ -8,7 +8,9 @@ package v1target
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strings"
@@ -94,7 +96,18 @@ func decodeUsageLine(trimmed string) (usageLine, error) {
 	if err := decoder.Decode(&entry); err != nil {
 		return entry, fmt.Errorf("usage log line: %w", err)
 	}
-	if decoder.More() {
+	// Exhaustion is proven by DECODING again and requiring io.EOF, not by
+	// asking Decoder.More().
+	//
+	// More() answers "is there another element in the array or object I am
+	// currently inside?", and at the top level there is no such container: it
+	// peeks, sees a closing `]` or `}`, and answers false. So a line like
+	// `{...}]` reported no trailing content and was accepted -- the one form
+	// of trailing garbage that a check written to catch trailing garbage let
+	// through. A second Decode has no such blind spot: anything other than a
+	// clean EOF is content this line should not contain.
+	var rest json.RawMessage
+	if err := decoder.Decode(&rest); !errors.Is(err, io.EOF) {
 		return entry, fmt.Errorf("usage log line: trailing content after the entry object")
 	}
 	return entry, nil
