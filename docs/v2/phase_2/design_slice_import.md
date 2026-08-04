@@ -8,13 +8,16 @@ type = "design"
 
 # Phase 2 Item 9 Design: Importing Golden Runner Records
 
-Status: **draft** — revised after two Codex review rounds (2026-08-03). Round 1
+Status: **draft** — revised after three Codex review rounds (2026-08-03). Round 1
 approved the central shape and D5, required D10 with explicit conflict semantics,
 **rejected** D2's null `scope_id`, and **rejected** D9's provider sentinel in
 favour of recording it at its source. Round 2 found four further blockers,
 including a self-review hole in the seam that D5's whole argument rested on, and
-reversed the deferral of `cache_write_tokens`. Resolutions are inline; both
-dispositions are recorded at the end.
+reversed the deferral of `cache_write_tokens`. Round 3 corrected the latency
+contract, closed a mixed-version hole in the usage-log writer, reduced the timing
+fields to one instant plus an exact duration, and carried the cached-token split
+through the aggregate. Resolutions are inline; all three dispositions are recorded
+at the end.
 
 Delivers the [Phase 2 plan](plan_scope.md)'s item 9: golden story runner records
 from `benchmark/runs/` imported into the main Postgres plane through the
@@ -213,7 +216,7 @@ than a value the importer reconstructs.
 | `cache_read_tokens` | `cache_read_tokens` | renamed from `cached_tokens`, see below |
 | `cache_write_tokens` | `cache_write_tokens` | new column, see below |
 | `cost_usd` | `cost_usd`, **nullable** | absent means not knowable, never zero |
-| `started_at` | `started_at` | **derived**: `finished_at - latency_ms`, see D9 |
+| `started_at` | **derived** at import: `finished_at - latency_ns` | the whole logical call, retries included — see D9 |
 | `finished_at` | `finished_at` | the observation instant |
 | `succeeded` | `success` | unchanged |
 | `error_message` | `error` | absent on success |
@@ -255,6 +258,20 @@ forever. `store.TokenCounts.Cached` becomes `CacheRead` and `CacheWrite` to
 match. The blast radius is item 5's — the query file, the generated output, the
 seam struct, the converter and three test files — and it shrinks every week this
 is deferred.
+
+**The split runs all the way through the aggregate, not just the row.**
+`AggregateLLMCost` sums one `total_cached_tokens`
+([`llm_calls.sql`](../../../internal/dataplane/queries/llm_calls.sql)) into a
+`CostAggregate` that embeds `TokenCounts`
+([`calls.go`](../../../internal/dataplane/store/calls.go)), so splitting the column
+while leaving the rollup alone would produce a per-call answer the totals
+contradict — and the totals are what anyone actually reads. So the change is
+required at every layer explicitly: the SQL gains
+`total_cache_read_tokens` and `total_cache_write_tokens`, the generated row and
+the converter carry both, `CostAggregate.Tokens` is the renamed `TokenCounts`, and
+a test asserts each total equals the sum of its own axis over a fixture whose two
+axes carry **different** values — identical values would let a mapping that reads
+the wrong column pass.
 
 ## D4. Three principals, and only one of them is the importer
 
@@ -343,10 +360,15 @@ Two boundaries drawn deliberately:
   explicitly endorses.
 
 Mechanically, `GetArtifactReviewWithReviewer` gains the author principal's kind
-and user id alongside the reviewer's, so both are read under the same lock as the
-artifact — a separate lookup could observe a different instant. The condition is
-repeated in the `UPDATE` as a backstop, as item 4's design already does for every
-other acceptance rule.
+and user id alongside the reviewer's, so one statement answers the whole question.
+**Not because the row lock protects them** — it does not; the lock is on the
+artifact row, and a joined `principal_instances` row is outside it. They are safe
+for a different reason: a principal's `kind` and its `user_id` ownership are
+immutable for the instance's life, so there is no later value for a second read to
+observe. Only mutable facts need the lock, and these are not among them. Folding
+them into the existing statement is about having one round trip and one obvious
+place to look, not about atomicity. The condition is repeated in the `UPDATE` as a
+backstop, as item 4's design already does for every other acceptance rule.
 
 This is an item 4 defect and it is fixed here rather than filed, because item 9 is
 the first caller whose correctness depends on it, and a filed issue would leave
@@ -450,18 +472,41 @@ Concretely:
 called it "additive apart from `cost_usd`", which left it ambiguous whether
 `prompt_tokens` and `completion_tokens` survive beside their replacements. They do
 not: `completion_tokens` is the folded value the plane cannot use, and keeping it
-would leave two answers to one question in the same line. The v2 entry is exactly:
+would leave two answers to one question in the same line. Round 2's key list had
+the same fault in a subtler place — it carried `ts`, `finished_at`, *and*
+`started_at` plus `latency_ms`, which is three answers to "when". v2 records **one
+instant and one duration** and derives the rest at import:
 
-```json
-{"ts","story_id","agent_id","provider","model",
- "input_tokens","output_tokens","reasoning_tokens",
- "cache_read_tokens","cache_write_tokens",
- "cost_usd","started_at","finished_at","latency_ms","success","error"}
-```
+| Field | Type | Presence | Source |
+| --- | --- | --- | --- |
+| `finished_at` | RFC 3339 UTC, nanoseconds | always | the observation instant |
+| `latency_ns` | int64 | always | `ev.Latency.Nanoseconds()` |
+| `provider` | string | always | `ev.Provider` |
+| `model` | string | always | `ev.Model` |
+| `input_tokens` | int64 | always | `Usage.InputTokens` |
+| `output_tokens` | int64 | always | `Usage.OutputTokens` |
+| `reasoning_tokens` | int64 | always | `Usage.ReasoningTokens` |
+| `cache_read_tokens` | int64 | always | `Usage.CacheReadTokens` |
+| `cache_write_tokens` | int64 | always | `Usage.CacheWriteTokens` |
+| `success` | bool | always | `ev.Err == nil` |
+| `cost_usd` | float64 | omitted when unpriced | `config.CalculateCost` |
+| `error` | string | required iff `!success` | `ev.Err.Error()` |
+| `story_id` | string | omitted when empty | state provider |
+| `agent_id` | string | omitted when empty | state provider |
 
-with `story_id`, `agent_id`, `cost_usd` and `error` omitted when empty and every
-other key always present. A reader that finds an unknown key or a missing
-required one fails rather than guessing, which is what the header version is for.
+`latency_ns`, not `latency_ms`: `ev.Latency` is a `time.Duration`, so milliseconds
+would round and `started_at` could not be recovered from what was written.
+Nanoseconds are exact, and `started_at` is computed at import rather than stored,
+so there is no second copy to disagree with the first.
+
+**The coherence rule, enforced on write and on read:** `success` true requires
+`error` absent; `success` false requires `error` present and non-blank. A line
+that says a call failed and does not say how is not a record of a failure, and a
+line that says it succeeded while carrying an error text is two claims. The writer
+refuses to emit either and the importer refuses to accept either — the same rule
+in both places, since the writer's guarantee is not evidence to a reader parsing a
+file written by some other build. Unknown keys and missing required ones fail
+rather than being guessed past, which is what the header version is for.
 
 - `metrics.UsageEntry` is rewritten to that shape; `cost_usd` becomes `*float64`,
   omitted when `CalculateCost` fails, so absent means unpriced rather than free.
@@ -475,6 +520,26 @@ required one fails rather than guessing, which is what the header version is for
   header, and the v1 adapter validates it in both places
   (`benchmark/target/v1target/usagetail.go`), so the handshake fails loudly
   against a mismatched target instead of mis-parsing.
+- **The writer validates the header it is about to append beneath.**
+  `NewUsageLogRecorder` writes a header only when the file is empty and otherwise
+  appends blind
+  ([`usagelog.go`](../../../pkg/agent/middleware/metrics/usagelog.go)), so the
+  moment `UsageSurfaceVersion` changes, a stale `.maestro/usage.jsonl` receives v2
+  lines under a v1 header. Every reader would then trust the header, parse v2
+  lines as v1, and silently mis-total — the exact undercounting the `usage.error`
+  sentinel exists to make impossible. A version bump turns a latent hole into a
+  live one, so it is closed in the same commit: on a non-empty file the first line
+  is read and its version checked, and a mismatch **refuses to open**, naming the
+  path and both versions.
+
+  Refuse rather than rotate. Rotation looks kinder and is not: renaming a file a
+  concurrent writer already holds open leaves that writer appending to an unlinked
+  inode, so its calls vanish from the log the adapter is tailing — undercounting
+  again, now caused by the mitigation, and precisely ADR 0027's rule that
+  destructive recovery must never remove another actor's in-progress work. A
+  refusal is loud, costs the operator one `rm`, and the benchmark path never meets
+  it because every attempt gets a fresh project directory. A malformed or
+  unparseable first line is treated the same way as a mismatched one.
 - **The v1 adapter's own version goes from `0.1.0` to `0.2.0`.** Its parsing and
   its normalized output both change, and `adapterVersion` is a comparison key in
   every run record's `TargetDescriptor`. It moves independently of the target's
@@ -482,17 +547,30 @@ required one fails rather than guessing, which is what the header version is for
   one of those times — so leaving it at `0.1.0` would make records produced by two
   different adapters compare as though one instrument had produced them.
 
-**Timestamps are derived, and say so.** `middleware.Event` carries `Latency`, not
-instants; the observer is called after the call returns and cannot see its start.
-So `finished_at` is the observation instant and `started_at` is
-`finished_at - latency`, recorded as such. `latency_ms` is written verbatim beside
-them so the derivation is auditable and reversible rather than a subtraction
-nobody can check. Two limits stated rather than glossed: `MetricsChat` is the
-innermost middleware, so the interval is the **provider attempt** after retry,
-timeout, circuit and rate-limit reservation — not the caller's wait — and a clock
-adjustment mid-call moves `started_at` with it. Extending the toolkit event to
-carry a real start instant is the better long-term answer and belongs upstream in
-`maestro-llms`, not in a v1 patch.
+**What the interval actually measures, corrected.** Round 2 called it the provider
+attempt "after retry, timeout, circuit and rate-limit reservation". That is the
+toolkit's *recommended* placement, and **Maestro deliberately does the opposite**:
+`buildMaestroLLMsClient` composes `metrics → validation → retry → timeout →
+circuit → rate limit → provider`, metrics **outermost**, so one aggregate Event
+still observes outer rejections
+([`factory_llms.go`](../../../pkg/agent/factory_llms.go)). Its own comment names
+the tradeoff — "latency now folds in retry backoff and per-attempt granularity is
+lost".
+
+So `latency_ns` is the **whole logical call**: validation, every retry and its
+backoff, the per-attempt timeouts, circuit behaviour and rate-limit waiting,
+through to the final outcome. Which makes `started_at = finished_at - latency_ns`
+the instant the orchestrator *began asking* — and that is the better fact for
+`llm_calls.started_at` anyway, since a row that spans a call's real duration is
+what cost-over-time and concurrency questions need. Two consequences to state
+rather than discover: an `llm_calls` interval covers retries and can therefore be
+far longer than any single provider round trip, and per-attempt latency is not
+recoverable from this surface at all. A mid-call clock adjustment moves
+`started_at` with it.
+
+Extending the toolkit event to carry a real start instant, and to distinguish
+logical from per-attempt latency, is the better long-term answer and belongs
+upstream in `maestro-llms` — not in a v1 patch.
 - **The streamed budget totals must not move.** `usageTail` feeds the engine's
   cap enforcement, so this is not only an accounting format: v2's tail must
   compute `tokens` as `input + output + reasoning`, which is exactly what v1's
@@ -659,6 +737,13 @@ plan's testing rule for this phase requires.
   count cache reads and watching it fail. The header handshake refusing a v1 log
   to a v2-requiring adapter and vice versa. An unpriced model producing an absent
   `cost_usd` rather than a zero, and a failed call carrying its error text.
+  The coherence rule refused in both directions, at the writer and at the importer.
+  `latency_ns` round-tripping a duration that milliseconds would have rounded, so
+  `finished_at - latency_ns` recovers the start exactly.
+- **The writer refuses a mismatched header.** Open a v1 log with a v2 build and
+  assert `NewUsageLogRecorder` fails, naming both versions, **and that the file is
+  left byte-for-byte unchanged** — a refusal that truncated or rotated would be
+  the failure this test exists to prevent. Same for a malformed first line.
 - **Legacy suites.** Import a surface-v1 suite; assert artifacts and attempts
   land, no `llm_calls` rows are written, and the unavailability is named in both
   the summary and the report payload.
@@ -669,7 +754,9 @@ plan's testing rule for this phase requires.
   error; and blank and malformed inputs refused before any statement is issued.
 - **Token axes.** A call reporting cache reads and cache writes lands both in
   their own columns — the assertion that would have been impossible to write under
-  the deferred-column proposal, and the reason it was not deferred.
+  the deferred-column proposal, and the reason it was not deferred. And
+  `AggregateLLMCost` totalling each axis separately over a fixture whose two axes
+  differ, so a rollup reading the wrong column cannot pass.
 - **Contract drift.** The two-sided fixture tests of D1, each proven to fail by
   adding a field to the fixture on one side only.
 - **Caps.** A file over the cap is skipped, named in the summary, and named in the
@@ -725,6 +812,29 @@ same migration so neither column's meaning depends on a comment (D3).
 Blocker 1 is the one worth remembering: D5 rested its entire argument on a check
 that did not hold, and nothing in the existing suite could have caught it, because
 every test that exercises the rule uses one instance per principal.
+
+## Review round 3 disposition
+
+Codex, 2026-08-03. Four P1s, all accepted:
+
+| # | P1 | Resolution |
+| --- | --- | --- |
+| 1 | D9 had the middleware order backwards — Maestro places `MetricsChat` **outermost** | latency is the whole logical call, retries and backoff included; consequences stated (D9) |
+| 2 | The writer appends to any non-empty log without checking its header | validate before append and **refuse**, not rotate; test asserts the file is left unchanged (D9) |
+| 3 | v2 still carried three answers for timing, and `latency_ms` is not reversible from a `Duration` | one instant plus `latency_ns`; typed field table with a stated coherence rule (D9) |
+| 4 | The cached-token split stopped at the row and left `CostAggregate` and its SQL folded | split required through SQL, generated row, converter, seam type and tests, over a fixture whose axes differ (D3) |
+
+Plus the wording fix: the joined principal identity fields are **not** protected by
+the artifact row lock. They are safe because a principal's kind and user ownership
+are immutable for the instance's life, and the doc now says that instead.
+
+P1 1 is the instructive one. The claim came from the *toolkit's* comment about its
+recommended placement rather than from Maestro's actual chain, which relocates
+metrics deliberately and documents the tradeoff in the very function that builds
+it. Reading the dependency's documentation instead of the calling code produced a
+confident, specific, wrong statement about our own system — the same failure mode
+CLAUDE.md's verification discipline names for dependency claims, arriving from the
+opposite direction.
 
 ## Related documents
 
