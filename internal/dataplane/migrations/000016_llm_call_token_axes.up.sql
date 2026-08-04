@@ -46,22 +46,32 @@ ALTER TABLE llm_calls
     ALTER COLUMN reasoning_tokens  DROP NOT NULL,
     ALTER COLUMN cache_read_tokens DROP NOT NULL;
 
--- Existing rows were written under the old contract, where a completed call
--- always carried counters and an OPEN call carried zeros it had not measured
--- yet. Open calls become null, which is what they always meant.
+-- EVERY existing row loses its counters, including completed successful
+-- ones. This looks harsh and is the only honest option.
+--
+-- Availability is all-or-none, so a legacy row can keep its measurement only
+-- if all five axes are provable. The fifth is not: no row in this table was
+-- written by a surface that could report cache writes, so any value for it
+-- would be invented -- and defaulting it to zero would assert "this call
+-- wrote nothing to cache", which is a measurement, not an absence. Backfilling
+-- the axis that never existed is the same fabrication this migration removes
+-- from failed calls, arriving through the migration instead of the writer.
+--
+-- Legacy failed rows are worse still: they carry four zeros the old surface
+-- wrote precisely because it could not tell "no usage reported" from "no
+-- usage", which is exactly what D3 exists to stop. Keeping them would leave
+-- the defect in the history while forbidding it in new data.
+--
+-- The cost of nulling everything is bounded and known: there is no deployed
+-- installation, and these rows exist only in development planes. The cost of
+-- the alternative is a permanent stratum of rows whose totals cannot be
+-- trusted and whose age is the only clue.
 UPDATE llm_calls
-SET input_tokens      = NULL,
-    output_tokens     = NULL,
-    reasoning_tokens  = NULL,
-    cache_read_tokens = NULL
-WHERE finished_at IS NULL;
-
--- Completed rows keep their counters and gain an explicit zero for the axis
--- that did not exist when they were written -- a real measurement of no cache
--- writes, since the old surface could not report any.
-UPDATE llm_calls
-SET cache_write_tokens = 0
-WHERE finished_at IS NOT NULL;
+SET input_tokens       = NULL,
+    output_tokens      = NULL,
+    reasoning_tokens   = NULL,
+    cache_read_tokens  = NULL,
+    cache_write_tokens = NULL;
 
 -- The single non-negative check becomes one per axis. It has to be
 -- recreated anyway to cover the new column, and per-axis constraints make a

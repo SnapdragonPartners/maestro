@@ -190,10 +190,20 @@ func checkExistingHeader(file *os.File, path string) error {
 	}
 	reader := bufio.NewReader(file)
 	line, err := reader.ReadString('\n')
-	// A file with content but no newline yet is a partial first line; it is
-	// as unreadable as a malformed one and gets the same answer.
 	if err != nil && !errors.Is(err, io.EOF) {
 		return fmt.Errorf("read usage log header %s: %w", path, err)
+	}
+	// EOF before the delimiter means the header line was never terminated,
+	// and that must be refused even when what is there parses perfectly.
+	// Appending after an unterminated line concatenates the next entry onto
+	// it, producing one line holding two JSON objects -- so a header that is
+	// valid but unfinished is the most dangerous case, not the safest: the
+	// version check would pass and the corruption would land on the line
+	// after it.
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: %s ends without a newline after its header line, so appending "+
+			"would concatenate the next entry onto it. Move the file aside once every writer on "+
+			"this directory has stopped", ErrSurfaceVersionMismatch, path)
 	}
 	var header UsageHeader
 	if unmarshalErr := json.Unmarshal([]byte(strings.TrimSpace(line)), &header); unmarshalErr != nil {
@@ -220,12 +230,17 @@ func checkExistingHeader(file *os.File, path string) error {
 // which is the whole reason the sentinel and its escalation exist. Dropping an
 // invalid observation quietly would be the one outcome neither a reader nor an
 // operator could detect.
+// Validation happens BEFORE the fan-out, not after. The wrapped recorder is
+// a consumer like the log is: a negative axis, an overflowing tuple or a
+// non-finite cost would otherwise be folded into the internal aggregates and
+// stay there, corrupting story totals that no sentinel describes, while only
+// the durable path reported the problem.
 func (u *UsageLogRecorder) ObserveCall(observation *Observation) {
-	u.inner.ObserveCall(observation)
 	if err := observation.Validate(); err != nil {
 		u.recordWriteErr(err)
 		return
 	}
+	u.inner.ObserveCall(observation)
 	if err := u.writeLine(entryFor(observation)); err != nil {
 		u.recordWriteErr(err)
 	}

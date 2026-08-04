@@ -245,6 +245,48 @@ func TestObservationValidateRejects(t *testing.T) {
 	}
 }
 
+// An invalid observation must not reach the WRAPPED recorder either.
+//
+// The internal aggregator is a consumer like the log is, and its story totals
+// are not covered by the sentinel: a negative axis folded into them would
+// corrupt figures nothing describes as suspect, while only the durable path
+// reported a problem. Validation therefore precedes the fan-out.
+func TestInvalidObservationNeverReachesTheInnerRecorder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	spy := &fanoutSpy{}
+	recorder, err := NewUsageLogRecorder(path, spy)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	for name, build := range map[string]func() *Observation{
+		"negative axis":   func() *Observation { o := validObservation(); o.Tokens.Output = -5; return o },
+		"non-finite cost": func() *Observation { o := validObservation(); nan := math.NaN(); o.Cost = &nan; return o },
+		"overflowing tuple": func() *Observation {
+			o := validObservation()
+			o.Tokens = &TokenAxes{Input: math.MaxInt64, Output: 1}
+			return o
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := spy.calls
+			recorder.ObserveCall(build())
+			if spy.calls != before {
+				t.Fatalf("an invalid observation reached the wrapped recorder and mutated its aggregates")
+			}
+		})
+	}
+	// The control: a valid observation still fans out, so the assertions
+	// above are not passing because nothing ever reaches the inner recorder.
+	before := spy.calls
+	recorder.ObserveCall(validObservation())
+	if spy.calls != before+1 {
+		t.Fatal("a valid observation must still reach the wrapped recorder")
+	}
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+}
+
 // An observation that cannot be recorded takes the same path as a failed
 // write: sticky error plus the machine-observable sentinel. Dropping it
 // quietly is the one outcome nothing downstream could detect.
@@ -309,13 +351,19 @@ func TestUsageLogRecorderRefusesForeignHeader(t *testing.T) {
 		{"older version", `{"usage_surface_version":1}`},
 		{"newer version", `{"usage_surface_version":99}`},
 		{"unreadable header", `not json at all`},
-		{"partial first line", `{"usage_surface_version":1`}, // no newline, no closing brace
+		{"truncated header", `{"usage_surface_version":1`}, // no newline, no closing brace
+		// The discriminating case: a header that is syntactically perfect AND
+		// carries the CURRENT version, but was never terminated. The version
+		// check passes, so only the missing newline can refuse it — and it
+		// must, because appending here concatenates the next entry onto the
+		// header line and corrupts the log from the second line onward.
+		{"valid current header with no newline", `{"usage_surface_version":2}`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "usage.jsonl")
 			original := testCase.first + "\n{\"model\":\"m\"}\n"
-			if strings.HasPrefix(testCase.name, "partial") {
-				original = testCase.first
+			if !strings.HasSuffix(testCase.first, "}") || testCase.name == "valid current header with no newline" {
+				original = testCase.first // deliberately unterminated
 			}
 			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
 				t.Fatalf("seed: %v", err)

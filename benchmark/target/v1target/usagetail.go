@@ -56,6 +56,13 @@ type usageHeader struct {
 // reports none), and an unpriced model carries no cost. Decoding either into
 // a bare zero would turn "not measured" into "measured as nothing", which is
 // the confusion this surface version exists to end.
+// Every field is a pointer, including the ones that are always written.
+//
+// Presence and value are different questions, and a plain value type can only
+// answer the second. A missing `success` would decode as false and be read as
+// a failure that happened; a missing `latency_ns` would decode as zero and be
+// read as an instantaneous call. Both are lines this reader must refuse, and
+// neither is distinguishable after the zero value has been substituted.
 type usageLine struct {
 	FinishedAt       *time.Time `json:"finished_at"`
 	InputTokens      *int64     `json:"input_tokens"`
@@ -64,11 +71,74 @@ type usageLine struct {
 	CacheReadTokens  *int64     `json:"cache_read_tokens"`
 	CacheWriteTokens *int64     `json:"cache_write_tokens"`
 	CostUSD          *float64   `json:"cost_usd"`
-	Provider         string     `json:"provider"`
-	Model            string     `json:"model"`
-	Error            string     `json:"error"`
-	LatencyNS        int64      `json:"latency_ns"`
-	Success          bool       `json:"success"`
+	Provider         *string    `json:"provider"`
+	Model            *string    `json:"model"`
+	StoryID          *string    `json:"story_id"`
+	AgentID          *string    `json:"agent_id"`
+	Error            *string    `json:"error"`
+	LatencyNS        *int64     `json:"latency_ns"`
+	Success          *bool      `json:"success"`
+}
+
+// decodeUsageLine parses one entry STRICTLY.
+//
+// Unknown keys are refused rather than ignored. A line carrying a field this
+// build does not know is a line written by a surface this build does not
+// speak, and the header version is supposed to be what catches that -- so a
+// disagreement here means the header lied, which is not a condition to read
+// past. Trailing content after the object is refused for the same reason.
+func decodeUsageLine(trimmed string) (usageLine, error) {
+	var entry usageLine
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&entry); err != nil {
+		return entry, fmt.Errorf("usage log line: %w", err)
+	}
+	if decoder.More() {
+		return entry, fmt.Errorf("usage log line: trailing content after the entry object")
+	}
+	return entry, nil
+}
+
+// tokenAxes returns the line's five axes in a fixed order, for the rules that
+// treat availability as a property of the whole measurement.
+func (l *usageLine) tokenAxes() [5]struct {
+	value *int64
+	name  string
+} {
+	return [5]struct {
+		value *int64
+		name  string
+	}{
+		{l.InputTokens, "input_tokens"}, {l.OutputTokens, "output_tokens"},
+		{l.ReasoningTokens, "reasoning_tokens"}, {l.CacheReadTokens, "cache_read_tokens"},
+		{l.CacheWriteTokens, "cache_write_tokens"},
+	}
+}
+
+// measured reports whether the line carries a complete token measurement, and
+// refuses a partial one.
+//
+// Testing InputTokens alone was not enough: a line carrying only
+// output_tokens read as "no measurement" and its stray axis was never
+// examined. Availability is a property of the observation, so all five decide
+// it together.
+func (l *usageLine) measured() (bool, error) {
+	present := 0
+	for _, axis := range l.tokenAxes() {
+		if axis.value != nil {
+			present++
+		}
+	}
+	switch present {
+	case 0:
+		return false, nil
+	case len(l.tokenAxes()):
+		return true, nil
+	default:
+		return false, fmt.Errorf("%d of %d token axes are present; availability is all-or-nothing, "+
+			"and a missing axis would read as zero in every total", present, len(l.tokenAxes()))
+	}
 }
 
 // budgetTokens is the cap-relevant total for one line: input plus visible
@@ -83,21 +153,15 @@ type usageLine struct {
 // million tokens with the cap unenforced and nothing logged. The guard is not
 // weak; it is downstream of the arithmetic that destroys the evidence.
 func (l *usageLine) budgetTokens() (int64, error) {
-	if l.InputTokens == nil {
+	measured, err := l.measured()
+	if err != nil {
+		return 0, err
+	}
+	if !measured {
 		return 0, nil // failed call: no measurement, contributes nothing
 	}
 	var total int64
-	for _, axis := range [...]struct {
-		value *int64
-		name  string
-	}{
-		{l.InputTokens, "input_tokens"}, {l.OutputTokens, "output_tokens"},
-		{l.ReasoningTokens, "reasoning_tokens"}, {l.CacheReadTokens, "cache_read_tokens"},
-		{l.CacheWriteTokens, "cache_write_tokens"},
-	} {
-		if axis.value == nil {
-			return 0, fmt.Errorf("%s is missing from a measured call: availability is all-or-nothing", axis.name)
-		}
+	for _, axis := range l.tokenAxes() {
 		if *axis.value < 0 {
 			return 0, fmt.Errorf("%s is %d: a negative axis can hide inside a nonnegative total", axis.name, *axis.value)
 		}
@@ -131,34 +195,63 @@ func (l *usageLine) validate() error {
 }
 
 // validateIdentity checks the fields every line carries whatever happened.
+//
+// Presence is checked before value throughout: an absent required field is a
+// different fault from a bad one, and reporting it as a bad value would name
+// a zero the writer never wrote.
 func (l *usageLine) validateIdentity() error {
 	switch {
-	case strings.TrimSpace(l.Provider) == "":
+	case l.Provider == nil:
+		return fmt.Errorf("provider is missing")
+	case strings.TrimSpace(*l.Provider) == "":
 		return fmt.Errorf("provider is blank")
-	case strings.TrimSpace(l.Model) == "":
+	case l.Model == nil:
+		return fmt.Errorf("model is missing")
+	case strings.TrimSpace(*l.Model) == "":
 		return fmt.Errorf("model is blank")
-	case l.FinishedAt == nil || l.FinishedAt.IsZero():
+	case l.FinishedAt == nil:
+		return fmt.Errorf("finished_at is missing")
+	case l.FinishedAt.IsZero():
 		// The zero time is year 1, so it would sort before every window a
 		// query could ask about rather than failing visibly.
-		return fmt.Errorf("finished_at is missing or the zero time")
-	case l.LatencyNS < 0:
+		return fmt.Errorf("finished_at is the zero time")
+	case l.LatencyNS == nil:
+		// Absent would decode as zero and read as an instantaneous call.
+		return fmt.Errorf("latency_ns is missing")
+	case *l.LatencyNS < 0:
 		// started_at is derived by subtracting this, so a negative duration
 		// describes a call that ended before it began.
-		return fmt.Errorf("latency_ns is %d", l.LatencyNS)
+		return fmt.Errorf("latency_ns is %d", *l.LatencyNS)
 	}
 	return nil
 }
 
 // validateOutcome checks the success/error/measurement triangle.
 func (l *usageLine) validateOutcome() error {
+	if l.Success == nil {
+		// Absent would decode as false: a line that never said how it ended
+		// would be read as a failure that did.
+		return fmt.Errorf("success is missing")
+	}
+	measured, err := l.measured()
+	if err != nil {
+		return err
+	}
+	success := *l.Success
+	// An empty error string is a THIRD state, distinct from absent and from
+	// present-and-meaningful, and it must not read as either. A failure
+	// carrying "" says nothing about what went wrong; a success carrying ""
+	// wrote a field the schema says a success does not have.
 	switch {
-	case l.Success && l.Error != "":
-		return fmt.Errorf("a successful call carries error %q", l.Error)
-	case !l.Success && strings.TrimSpace(l.Error) == "":
+	case success && l.Error != nil:
+		return fmt.Errorf("a successful call carries an error field (%q)", *l.Error)
+	case !success && l.Error == nil:
 		return fmt.Errorf("a failed call carries no error text")
-	case l.Success && l.InputTokens == nil:
+	case !success && strings.TrimSpace(*l.Error) == "":
+		return fmt.Errorf("a failed call carries a blank error text")
+	case success && !measured:
 		return fmt.Errorf("a successful call carries no token measurement")
-	case !l.Success && l.InputTokens != nil:
+	case !success && measured:
 		return fmt.Errorf("a failed call carries token counts the provider never reported")
 	}
 	return nil
@@ -239,9 +332,9 @@ func (u *usageTail) advance() error {
 // figures. Fail the attempt rather than complete it with quietly wrong
 // numbers, and report nothing from a line that did not validate.
 func (u *usageTail) consume(trimmed string) error {
-	var entry usageLine
-	if err := json.Unmarshal([]byte(trimmed), &entry); err != nil {
-		return fmt.Errorf("usage log line: %w", err)
+	entry, decodeErr := decodeUsageLine(trimmed)
+	if decodeErr != nil {
+		return decodeErr
 	}
 	if err := entry.validate(); err != nil {
 		return fmt.Errorf("usage log line %d: %w", u.calls+1, err)
@@ -250,10 +343,19 @@ func (u *usageTail) consume(trimmed string) error {
 	if err != nil {
 		return fmt.Errorf("usage log line %d: %w", u.calls+1, err)
 	}
-	u.calls++
-	if err := u.accumulate(tokens, entry.CostUSD); err != nil {
-		return fmt.Errorf("usage log line %d: %w", u.calls, err)
+	// Every proposed total is computed and proven BEFORE any of them is
+	// committed. Incrementing calls and tokens first left a rejected line
+	// half-applied: two individually finite costs can overflow cumulatively,
+	// so the cost check could fail after the token total had already absorbed
+	// the line it was rejecting. A line is either wholly accounted or wholly
+	// refused.
+	nextTokens, nextCost, err := u.proposedTotals(tokens, entry.CostUSD)
+	if err != nil {
+		return fmt.Errorf("usage log line %d: %w", u.calls+1, err)
 	}
+	u.calls++
+	u.tokens = nextTokens
+	u.costUSD = nextCost
 	if u.report != nil {
 		var cost float64
 		if entry.CostUSD != nil {
@@ -264,27 +366,30 @@ func (u *usageTail) consume(trimmed string) error {
 	return nil
 }
 
-// accumulate adds one validated line to the running totals.
+// proposedTotals computes what the running totals WOULD become, without
+// changing them.
 //
-// The totals this maintains are, per this file's own header, "the canonical
+// The totals it feeds are, per this file's own header, "the canonical
 // tokens/cost/llm_calls" for the run record. The engine's usageTracker
 // carefully saturates its copy against overflow and non-finite sums; these
 // had no such guard, so a total the tracker refused could still reach the
-// record. Same protection, same reason.
-func (u *usageTail) accumulate(tokens int64, cost *float64) error {
+// record. Same protection, same reason -- and computed rather than applied,
+// so a rejection leaves nothing behind.
+func (u *usageTail) proposedTotals(tokens int64, cost *float64) (int64, float64, error) {
 	if tokens > math.MaxInt64-u.tokens {
-		return fmt.Errorf("accumulated token total overflows int64")
+		return 0, 0, fmt.Errorf("accumulated token total overflows int64")
 	}
-	u.tokens += tokens
+	nextTokens := u.tokens + tokens
 	if cost == nil {
-		return nil // unpriced call: real tokens, no cost to add
+		return nextTokens, u.costUSD, nil // unpriced call: real tokens, no cost to add
 	}
-	sum := u.costUSD + *cost
-	if math.IsNaN(sum) || math.IsInf(sum, 0) {
-		return fmt.Errorf("accumulated cost is no longer finite")
+	// Finite addends can still sum to an infinity, which is why this checks
+	// the SUM and not the addend the line carried.
+	nextCost := u.costUSD + *cost
+	if math.IsNaN(nextCost) || math.IsInf(nextCost, 0) {
+		return 0, 0, fmt.Errorf("accumulated cost is no longer finite")
 	}
-	u.costUSD = sum
-	return nil
+	return nextTokens, nextCost, nil
 }
 
 // verifyAdvertisedSurface is the pre-run half of the handshake: the target

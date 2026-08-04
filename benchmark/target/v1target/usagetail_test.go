@@ -115,6 +115,17 @@ func TestUsageTailRejectsInvalidValues(t *testing.T) {
 		"failure with no error":     v2Line(`"success":false`),
 		"failure carrying tokens":   v2Line(`"input_tokens":1,"output_tokens":0,"reasoning_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"success":false,"error":"x"`),
 		"measured but axis missing": v2Line(`"input_tokens":10,"output_tokens":5,"success":true`),
+		// Presence is not value. Each of these decodes into a plausible zero
+		// value and would be read as a fact the writer never stated.
+		"success missing entirely": v2Line(`"error":"provider down"`),
+		"latency_ns missing":       `{"provider":"p","model":"m","finished_at":"2026-08-04T00:00:00Z",` + valid + `}`,
+		"success with empty error": v2Line(valid + `,"error":""`),
+		// A stray axis with input_tokens absent: checking only input_tokens
+		// read this as "no measurement" and never looked at the rest.
+		"only output_tokens present": v2Line(`"output_tokens":5,"success":false,"error":"x"`),
+		// Strict decoding: a key this build does not know means the header
+		// version lied about what wrote the file.
+		"unknown key": v2Line(valid + `,"prompt_tokens":42`),
 	}
 	for name, line := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -140,6 +151,38 @@ func TestUsageTailRejectsInvalidValues(t *testing.T) {
 	}
 	if tail.tokens != 15 {
 		t.Fatalf("control totals wrong: %d", tail.tokens)
+	}
+}
+
+// A rejected line must leave the totals exactly as it found them.
+//
+// Two individually finite costs can sum to +Inf, so the cost check can only
+// fail AFTER the token total has been computed — and if the totals are
+// committed as they are computed, the refused line has already been counted
+// in calls and tokens by the time the refusal happens.
+func TestUsageTailRejectedLineLeavesTotalsUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	measured := `"input_tokens":10,"output_tokens":5,"reasoning_tokens":0,` +
+		`"cache_read_tokens":0,"cache_write_tokens":0,"success":true`
+	// Two finite costs whose SUM overflows float64.
+	huge := v2Line(measured + `,"cost_usd":1e308`)
+	if err := os.WriteFile(path, []byte(v2Header+"\n"+huge+"\n"+huge+"\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tail := &usageTail{path: path}
+	if err := tail.advance(); err == nil {
+		t.Fatal("a cumulative cost overflow must fail the attempt")
+	}
+	// The first line was accepted; the second was refused and must have
+	// contributed nothing at all — not its call, not its tokens, not its cost.
+	if tail.calls != 1 {
+		t.Errorf("calls = %d, want 1: the refused line was counted", tail.calls)
+	}
+	if tail.tokens != 15 {
+		t.Errorf("tokens = %d, want 15: the refused line's tokens were absorbed", tail.tokens)
+	}
+	if tail.costUSD != 1e308 {
+		t.Errorf("cost = %v, want 1e308: the refused line moved the cost total", tail.costUSD)
 	}
 }
 
