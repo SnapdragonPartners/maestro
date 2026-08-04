@@ -46,8 +46,10 @@ const (
 	ScopeFeature      ScopeType = "feature"
 	ScopeEpic         ScopeType = "epic"
 	ScopeStory        ScopeType = "story"
-	// ScopeBenchmark has no column until item 9 adds the benchmark runs
-	// table, so the schema's exactly-one-scope check refuses it today.
+	// ScopeBenchmark scopes an artifact to one imported benchmark suite run.
+	// Its column and table arrived with item 9 (migration 000017), which also
+	// rebuilt scope_id to include it — so a benchmark-scoped artifact is
+	// listed by the ordinary scope queries rather than being invisible to them.
 	ScopeBenchmark ScopeType = "benchmark"
 )
 
@@ -459,9 +461,14 @@ type Writer interface {
 }
 
 // Tx is the surface available inside a transaction.
+//
+// It carries BenchmarkTxWriter, which Store deliberately does not: the ledger
+// row and the Audit artifact it names must commit together, and every Store
+// method opens a transaction of its own.
 type Tx interface {
 	Reader
 	Writer
+	BenchmarkTxWriter
 }
 
 // Store is the persistence seam.

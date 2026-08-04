@@ -177,12 +177,32 @@ type BenchmarkWriter interface {
 	// Idempotent by (organization, suite run id) and carrying nothing a
 	// second call would change, so re-import reads rather than writes.
 	EnsureBenchmarkRun(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (Bootstrapped[BenchmarkRun], error)
+}
 
+// BenchmarkTxWriter is the part of the benchmark family that exists ONLY
+// inside a caller's transaction.
+//
+// It is separate from BenchmarkWriter, and not embedded by Writer, because
+// Writer is embedded by Store — and a Store method opens a transaction of its
+// own. Offering this there would put the forbidden operation on the public
+// seam: the ledger row committed by itself, in its own transaction, apart
+// from the artifact it names. The contract is that the two commit TOGETHER,
+// and an interface that lets a caller do otherwise is not a contract.
+//
+// The same reasoning Maintenance uses to sit on Store alone, pointed the
+// other way: there, an operation could not be honoured inside a caller's
+// transaction; here, it must not be reachable outside one.
+type BenchmarkTxWriter interface {
 	// RecordBenchmarkAttempt ledgers an attempt, or reports what is already
 	// there.
 	//
 	// Created=false with no error is the no-op: the same identity carrying
 	// the same digest. A different digest is *ImportConflict, and nothing is
 	// written.
+	//
+	// The caller MUST write the Audit artifact this names in the same
+	// transaction. An artifact committed without its ledger row is imported
+	// again on the next run and silently duplicated, which is the whole
+	// failure the ledger exists to prevent.
 	RecordBenchmarkAttempt(ctx context.Context, input RecordBenchmarkAttemptInput) (Bootstrapped[BenchmarkAttempt], error)
 }

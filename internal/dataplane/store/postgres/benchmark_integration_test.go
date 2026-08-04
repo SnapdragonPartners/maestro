@@ -13,7 +13,83 @@ import (
 	"orchestrator/internal/dataplane/store"
 )
 
-// TestBootstrapConflictSemantics drives all three outcomes of D10's table.
+// provisioner abstracts the two bootstrap paths so D10's outcomes are driven
+// against BOTH.
+//
+// They are not one path with two names: separate SQL, separate uniqueness
+// (a slug is global, a handle is per-organization), separate comparison and
+// separate tenancy. A suite that exercised only organizations stayed green
+// with the user display-data comparison deleted.
+type provisioner struct {
+	name string
+	// bootstrap provisions with the given natural key and display name.
+	bootstrap func(t *testing.T, f *fixture, key, display string) (bool, error)
+	// storedDisplay reads back the display name for the key.
+	storedDisplay func(t *testing.T, f *fixture, key string) string
+	// identity returns the row's own id, so a re-bootstrap can be shown to
+	// return the SAME row rather than a second one.
+	identity func(t *testing.T, f *fixture, key string) uuid.UUID
+}
+
+func provisioners() []provisioner {
+	return []provisioner{
+		{
+			name: "organization",
+			bootstrap: func(t *testing.T, f *fixture, key, display string) (bool, error) {
+				t.Helper()
+				out, err := f.store.BootstrapOrganization(context.Background(),
+					store.BootstrapOrganizationInput{Slug: key, DisplayName: display})
+				return out.Created, err
+			},
+			storedDisplay: func(t *testing.T, f *fixture, key string) string {
+				t.Helper()
+				row, err := f.store.GetOrganizationBySlug(context.Background(), key)
+				if err != nil {
+					t.Fatalf("read organization %q: %v", key, err)
+				}
+				return row.DisplayName
+			},
+			identity: func(t *testing.T, f *fixture, key string) uuid.UUID {
+				t.Helper()
+				row, err := f.store.GetOrganizationBySlug(context.Background(), key)
+				if err != nil {
+					t.Fatalf("read organization %q: %v", key, err)
+				}
+				return row.OrganizationID
+			},
+		},
+		{
+			name: "user",
+			bootstrap: func(t *testing.T, f *fixture, key, display string) (bool, error) {
+				t.Helper()
+				out, err := f.store.BootstrapUser(context.Background(),
+					store.BootstrapUserInput{
+						Handle: key, DisplayName: display, OrganizationID: f.organizationID,
+					})
+				return out.Created, err
+			},
+			storedDisplay: func(t *testing.T, f *fixture, key string) string {
+				t.Helper()
+				row, err := f.store.GetUserByHandle(context.Background(), f.organizationID, key)
+				if err != nil {
+					t.Fatalf("read user %q: %v", key, err)
+				}
+				return row.DisplayName
+			},
+			identity: func(t *testing.T, f *fixture, key string) uuid.UUID {
+				t.Helper()
+				row, err := f.store.GetUserByHandle(context.Background(), f.organizationID, key)
+				if err != nil {
+					t.Fatalf("read user %q: %v", key, err)
+				}
+				return row.UserID
+			},
+		},
+	}
+}
+
+// TestBootstrapConflictSemantics drives all three outcomes of D10's table,
+// for both provisioning paths.
 //
 // "Idempotent" alone would have been satisfied by silently ignoring differing
 // display data, and that is the failure to design out: it makes
@@ -21,67 +97,84 @@ import (
 // plane still says "Acme Inc", and the operator finds out from a report
 // months later.
 func TestBootstrapConflictSemantics(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
+	for _, provision := range provisioners() {
+		t.Run(provision.name, func(t *testing.T) {
+			f := newFixture(t)
 
-	created, err := f.store.BootstrapOrganization(ctx, store.BootstrapOrganizationInput{
-		Slug: "acme", DisplayName: "Acme Inc",
-	})
-	if err != nil {
-		t.Fatalf("first bootstrap: %v", err)
-	}
-	if !created.Created {
-		t.Error("the first bootstrap must report Created")
-	}
+			created, err := provision.bootstrap(t, f, "acme", "Acme Inc")
+			if err != nil {
+				t.Fatalf("first bootstrap: %v", err)
+			}
+			if !created {
+				t.Error("the first bootstrap must report Created")
+			}
+			firstID := provision.identity(t, f, "acme")
 
-	// Matching display data: the no-op, distinguishable from the creation.
-	again, err := f.store.BootstrapOrganization(ctx, store.BootstrapOrganizationInput{
-		Slug: "acme", DisplayName: "Acme Inc",
-	})
-	if err != nil {
-		t.Fatalf("matching re-bootstrap must be a no-op, got: %v", err)
-	}
-	if again.Created {
-		t.Error("a re-bootstrap must report Created=false")
-	}
-	if again.Record.OrganizationID != created.Record.OrganizationID {
-		t.Error("a re-bootstrap must return the SAME row, not a second one")
-	}
+			// Matching display data: the no-op, distinguishable from creation.
+			again, err := provision.bootstrap(t, f, "acme", "Acme Inc")
+			if err != nil {
+				t.Fatalf("matching re-bootstrap must be a no-op, got: %v", err)
+			}
+			if again {
+				t.Error("a re-bootstrap must report Created=false")
+			}
+			if provision.identity(t, f, "acme") != firstID {
+				t.Error("a re-bootstrap must return the SAME row, not a second one")
+			}
 
-	// Differing display data: a typed conflict, and nothing changes.
-	_, err = f.store.BootstrapOrganization(ctx, store.BootstrapOrganizationInput{
-		Slug: "acme", DisplayName: "Acme Ltd",
-	})
-	if !errors.Is(err, store.ErrBootstrapConflict) {
-		t.Fatalf("differing display data must be a typed conflict, got: %v", err)
-	}
-	stored, err := f.store.GetOrganizationBySlug(ctx, "acme")
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if stored.DisplayName != "Acme Inc" {
-		t.Errorf("the refused bootstrap renamed the organization to %q", stored.DisplayName)
+			// Differing display data: a typed conflict, and nothing changes.
+			if _, err := provision.bootstrap(t, f, "acme", "Acme Ltd"); !errors.Is(err, store.ErrBootstrapConflict) {
+				t.Fatalf("differing display data must be a typed conflict, got: %v", err)
+			}
+			if stored := provision.storedDisplay(t, f, "acme"); stored != "Acme Inc" {
+				t.Errorf("the refused bootstrap renamed the record to %q", stored)
+			}
+		})
 	}
 }
 
 // TestBootstrapRejectsMalformedInput asserts the validation happens before
 // SQL, so an operator's mistake is reported in the vocabulary of the flag
 // they typed rather than as a constraint name.
+//
+// The accepted cases matter as much as the refused ones: the identifier rule
+// is the runner's own suite-id shape, so a leading `_` or `-` is VALID, and
+// an earlier stricter pattern here refused suite ids the schema admits.
 func TestBootstrapRejectsMalformedInput(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-
-	for name, input := range map[string]store.BootstrapOrganizationInput{
-		"blank slug":            {Slug: "", DisplayName: "X"},
-		"whitespace slug":       {Slug: "   ", DisplayName: "X"},
-		"uppercase slug":        {Slug: "Acme", DisplayName: "X"},
-		"slug with a separator": {Slug: "acme/inc", DisplayName: "X"},
-		"slug with a dot":       {Slug: "..", DisplayName: "X"},
-		"blank display name":    {Slug: "acme", DisplayName: "  "},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := f.store.BootstrapOrganization(ctx, input); err == nil {
-				t.Fatal("malformed input must be refused")
+	for _, provision := range provisioners() {
+		t.Run(provision.name, func(t *testing.T) {
+			for name, key := range map[string]string{
+				"blank":            "",
+				"whitespace":       "   ",
+				"uppercase":        "Acme",
+				"with a separator": "acme/inc",
+				"dot":              "..",
+				"with a space":     "acme inc",
+			} {
+				t.Run("refuses "+name, func(t *testing.T) {
+					f := newFixture(t)
+					if _, err := provision.bootstrap(t, f, key, "X"); err == nil {
+						t.Fatal("malformed input must be refused")
+					}
+				})
+			}
+			t.Run("refuses a blank display name", func(t *testing.T) {
+				f := newFixture(t)
+				if _, err := provision.bootstrap(t, f, "acme", "  "); err == nil {
+					t.Fatal("a blank display name must be refused")
+				}
+			})
+			for name, key := range map[string]string{
+				"leading underscore": "_acme",
+				"leading hyphen":     "-acme",
+				"digits and dashes":  "golden-all-2026-08-04",
+			} {
+				t.Run("accepts "+name, func(t *testing.T) {
+					f := newFixture(t)
+					if _, err := provision.bootstrap(t, f, key, "X"); err != nil {
+						t.Fatalf("%q is valid under the runner's own identifier rule: %v", key, err)
+					}
+				})
 			}
 		})
 	}
@@ -95,37 +188,39 @@ func TestBootstrapRejectsMalformedInput(t *testing.T) {
 // leaks a driver error through the seam. Exactly one caller must report
 // Created, every caller must see the same row, and none may fail.
 func TestConcurrentBootstrapConverges(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
+	for _, provision := range provisioners() {
+		t.Run(provision.name, func(t *testing.T) {
+			f := newFixture(t)
+			const racers = 8
+			var wait sync.WaitGroup
+			created := make([]bool, racers)
+			failures := make([]error, racers)
+			wait.Add(racers)
+			for i := range racers {
+				go func() {
+					defer wait.Done()
+					created[i], failures[i] = provision.bootstrap(t, f, "racer", "Racer")
+				}()
+			}
+			wait.Wait()
 
-	const racers = 8
-	var wait sync.WaitGroup
-	results := make([]store.Bootstrapped[store.Organization], racers)
-	failures := make([]error, racers)
-	wait.Add(racers)
-	for i := range racers {
-		go func() {
-			defer wait.Done()
-			results[i], failures[i] = f.store.BootstrapOrganization(ctx,
-				store.BootstrapOrganizationInput{Slug: "racer", DisplayName: "Racer"})
-		}()
-	}
-	wait.Wait()
-
-	createdCount := 0
-	for i := range racers {
-		if failures[i] != nil {
-			t.Fatalf("racer %d failed; matching creates must converge, not error: %v", i, failures[i])
-		}
-		if results[i].Created {
-			createdCount++
-		}
-		if results[i].Record.OrganizationID != results[0].Record.OrganizationID {
-			t.Errorf("racer %d saw a different row; the racers did not converge", i)
-		}
-	}
-	if createdCount != 1 {
-		t.Errorf("%d racers reported Created, want exactly 1", createdCount)
+			createdCount := 0
+			for i := range racers {
+				if failures[i] != nil {
+					t.Fatalf("racer %d failed; matching creates must converge, not error: %v", i, failures[i])
+				}
+				if created[i] {
+					createdCount++
+				}
+			}
+			if createdCount != 1 {
+				t.Errorf("%d racers reported Created, want exactly 1", createdCount)
+			}
+			// One row, whichever racer wrote it.
+			if provision.identity(t, f, "racer") == uuid.Nil {
+				t.Error("the racers did not converge on a readable row")
+			}
+		})
 	}
 }
 
@@ -133,40 +228,86 @@ func TestConcurrentBootstrapConverges(t *testing.T) {
 // supplying DIFFERENT display data. Whoever commits first wins, and the
 // losers must receive the typed conflict rather than a driver error.
 func TestConcurrentBootstrapConflictIsTyped(t *testing.T) {
+	for _, provision := range provisioners() {
+		t.Run(provision.name, func(t *testing.T) {
+			f := newFixture(t)
+			const racers = 8
+			var wait sync.WaitGroup
+			failures := make([]error, racers)
+			wait.Add(racers)
+			for i := range racers {
+				go func() {
+					defer wait.Done()
+					name := "Name A"
+					if i%2 == 1 {
+						name = "Name B"
+					}
+					_, failures[i] = provision.bootstrap(t, f, "contested", name)
+				}()
+			}
+			wait.Wait()
+
+			conflicts := 0
+			for i := range racers {
+				switch {
+				case failures[i] == nil:
+					continue // agreed with whoever won
+				case errors.Is(failures[i], store.ErrBootstrapConflict):
+					conflicts++
+				default:
+					t.Fatalf("racer %d got a raw error rather than a typed conflict: %v", i, failures[i])
+				}
+			}
+			if conflicts == 0 {
+				t.Error("no racer saw a conflict; the fixture is not exercising contention")
+			}
+		})
+	}
+}
+
+// TestBootstrapUserIsTenantScoped: a handle is unique PER ORGANIZATION, not
+// globally, so the same handle in two tenants is two users. The organization
+// path has no equivalent case — a slug is global — which is one of the
+// reasons the two are not interchangeable.
+func TestBootstrapUserIsTenantScoped(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	const racers = 8
-	var wait sync.WaitGroup
-	failures := make([]error, racers)
-	wait.Add(racers)
-	for i := range racers {
-		go func() {
-			defer wait.Done()
-			name := "Name A"
-			if i%2 == 1 {
-				name = "Name B"
-			}
-			_, failures[i] = f.store.BootstrapOrganization(ctx,
-				store.BootstrapOrganizationInput{Slug: "contested", DisplayName: name})
-		}()
+	first, err := f.store.BootstrapUser(ctx, store.BootstrapUserInput{
+		Handle: "dan", DisplayName: "Dan", OrganizationID: f.organizationID,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap in the first tenant: %v", err)
 	}
-	wait.Wait()
+	second, err := f.store.BootstrapUser(ctx, store.BootstrapUserInput{
+		Handle: "dan", DisplayName: "Dan", OrganizationID: f.otherOrgID,
+	})
+	if err != nil {
+		t.Fatalf("the same handle in another tenant must be allowed: %v", err)
+	}
+	if !second.Created {
+		t.Error("the second tenant's user must be created, not resolved to the first's")
+	}
+	if second.Record.UserID == first.Record.UserID {
+		t.Error("two tenants' users collapsed onto one row")
+	}
+}
 
-	conflicts := 0
-	for i := range racers {
-		switch {
-		case failures[i] == nil:
-			continue // agreed with whoever won
-		case errors.Is(failures[i], store.ErrBootstrapConflict):
-			conflicts++
-		default:
-			t.Fatalf("racer %d got a raw error rather than a typed conflict: %v", i, failures[i])
-		}
-	}
-	if conflicts == 0 {
-		t.Error("no racer saw a conflict; the fixture is not exercising contention")
-	}
+// recordAttempt ledgers through WithTx, which is the only way to reach it.
+//
+// That is the contract made structural: RecordBenchmarkAttempt lives on Tx
+// alone, so a caller CANNOT commit the ledger row apart from the Audit
+// artifact it names. This helper is what the importer's own call looks like,
+// minus the artifact write that shares the transaction.
+func recordAttempt(t *testing.T, f *fixture, input store.RecordBenchmarkAttemptInput) (store.Bootstrapped[store.BenchmarkAttempt], error) {
+	t.Helper()
+	var outcome store.Bootstrapped[store.BenchmarkAttempt]
+	err := f.store.WithTx(context.Background(), func(tx store.Tx) error {
+		var txErr error
+		outcome, txErr = tx.RecordBenchmarkAttempt(context.Background(), input)
+		return txErr
+	})
+	return outcome, err
 }
 
 // TestBenchmarkAttemptIdempotency covers the ledger's three outcomes: the
@@ -207,7 +348,7 @@ func TestBenchmarkAttemptIdempotency(t *testing.T) {
 		AuditArtifactID: artifact,
 	}
 
-	first, err := f.store.RecordBenchmarkAttempt(ctx, input)
+	first, err := recordAttempt(t, f, input)
 	if err != nil {
 		t.Fatalf("record attempt: %v", err)
 	}
@@ -215,7 +356,7 @@ func TestBenchmarkAttemptIdempotency(t *testing.T) {
 		t.Error("the first record must report Created")
 	}
 
-	repeat, err := f.store.RecordBenchmarkAttempt(ctx, input)
+	repeat, err := recordAttempt(t, f, input)
 	if err != nil {
 		t.Fatalf("an identical re-offer must be a no-op, got: %v", err)
 	}
@@ -228,7 +369,7 @@ func TestBenchmarkAttemptIdempotency(t *testing.T) {
 
 	conflicting := input
 	conflicting.RecordDigest = "2222222222222222222222222222222222222222222222222222222222222222"
-	_, err = f.store.RecordBenchmarkAttempt(ctx, conflicting)
+	_, err = recordAttempt(t, f, conflicting)
 	if !errors.Is(err, store.ErrImportConflict) {
 		t.Fatalf("a differing payload must be refused, got: %v", err)
 	}

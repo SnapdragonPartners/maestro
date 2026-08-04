@@ -14,26 +14,61 @@ import (
 	"orchestrator/internal/dataplane/store"
 )
 
-// identifierPattern is the shape a slug, handle or suite id must take.
+// Two patterns, because they answer to two different accepted contracts and
+// collapsing them into one made this layer reject values the schema accepts.
 //
-// Enforced in Go so an operator's mistake is reported in the vocabulary of
-// the flag they typed rather than as a constraint name, and enforced again in
-// the schema so a caller that skips this path cannot write a value the rest
-// of the system assumes is safe. These become URL and filename components
-// later, which is why the rule is narrow now rather than after something has
-// depended on it.
-//
-//nolint:gochecknoglobals // Package-level compiled regex for performance.
-var identifierPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+//nolint:gochecknoglobals // Package-level compiled regexes for performance.
+var (
+	// identifierPattern governs organization slugs, user handles and suite
+	// run ids. It is the runner's own suite-id rule verbatim
+	// (benchmark/results.validSuiteRunID) and what design D10 adopted for
+	// slugs and handles, so a suite id the runner produced is a suite id this
+	// accepts. An earlier version required an alphanumeric first character
+	// and therefore refused valid suite ids beginning with `_` or `-` —
+	// values migration 000017's own CHECK admits.
+	//
+	// Lowercase only, because these become filename and URL components and a
+	// case-insensitive filesystem would collide two that differ only by case.
+	identifierPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
-// checkIdentifier validates a natural key before any statement is issued.
+	// runIDPattern is stricter by ONE character class: a run id may not begin
+	// with `-` or `_`. It matches migration 000017's
+	// benchmark_attempts_run_id_check exactly, and the reason for the extra
+	// restriction is that a run id is passed as a command-line argument by
+	// the tooling around the importer, where a leading `-` is read as a flag.
+	// Path escape is already impossible for both patterns: neither admits `.`
+	// or a separator, so `..` and `../x` cannot be spelled.
+	runIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+)
+
+// Where each rule is enforced, stated precisely because it differs:
+//
+//   - suite run id and run id: HERE and in the schema (migration 000017's
+//     CHECK constraints), so a caller bypassing this path still cannot write
+//     a value the importer's path resolution assumes is safe.
+//   - organization slug and user handle: HERE ONLY. Those tables carry no
+//     format CHECK, so this layer is the whole of the rule for them.
+//
+// Validated in Go regardless so an operator's mistake is reported in the
+// vocabulary of the flag they typed rather than as a constraint name.
+
+// checkIdentifier validates a slug, handle or suite id before any statement.
 func checkIdentifier(kind, value string) error {
+	return checkAgainst(kind, value, identifierPattern)
+}
+
+// checkRunID validates an attempt identity, which is additionally used as a
+// path component and a command-line argument.
+func checkRunID(value string) error {
+	return checkAgainst("run id", value, runIDPattern)
+}
+
+func checkAgainst(kind, value string, pattern *regexp.Regexp) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%s is blank", kind)
 	}
-	if !identifierPattern.MatchString(value) {
-		return fmt.Errorf("%s %q must match %s: it becomes a URL and filename component",
-			kind, value, identifierPattern)
+	if !pattern.MatchString(value) {
+		return fmt.Errorf("%s %q must match %s", kind, value, pattern)
 	}
 	return nil
 }
@@ -274,7 +309,7 @@ func (t *tx) ListBenchmarkAttempts(ctx context.Context, organizationID, benchmar
 //nolint:gocritic // hugeParam: by value, matching the seam interface (see artifacts.go)
 func (t *tx) RecordBenchmarkAttempt(ctx context.Context, input store.RecordBenchmarkAttemptInput) (store.Bootstrapped[store.BenchmarkAttempt], error) {
 	var empty store.Bootstrapped[store.BenchmarkAttempt]
-	if err := checkIdentifier("run id", input.RunID); err != nil {
+	if err := checkRunID(input.RunID); err != nil {
 		return empty, err
 	}
 	if !digestPattern.MatchString(input.RecordDigest) {

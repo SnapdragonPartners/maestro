@@ -505,20 +505,8 @@ func (s *Store) EnsureBenchmarkRun(ctx context.Context, organizationID uuid.UUID
 	return *result, nil
 }
 
-// RecordBenchmarkAttempt ledgers an attempt, or reports what is already there.
-//
-// Reachable on Store as well as Tx, but the importer uses the Tx form: the
-// ledger row and the Audit artifact it names must commit together, and this
-// entry point opens a transaction of its own.
-//
-//nolint:gocritic // hugeParam: by value, matching the seam interface
-func (s *Store) RecordBenchmarkAttempt(ctx context.Context, input store.RecordBenchmarkAttemptInput) (store.Bootstrapped[store.BenchmarkAttempt], error) {
-	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.BenchmarkAttempt], error) {
-		outcome, txErr := t.RecordBenchmarkAttempt(ctx, input)
-		return &outcome, txErr
-	})
-	if err != nil {
-		return store.Bootstrapped[store.BenchmarkAttempt]{}, err
-	}
-	return *result, nil
-}
+// RecordBenchmarkAttempt has NO Store delegate, deliberately. It is on Tx
+// alone (store.BenchmarkTxWriter): a Store method would open a transaction of
+// its own and commit the ledger row apart from the Audit artifact it names,
+// which is the one thing the ledger exists to prevent. structure_test asserts
+// the absence, so a future delegate cannot be added by habit.
