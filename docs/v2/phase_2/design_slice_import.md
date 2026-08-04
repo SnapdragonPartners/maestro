@@ -2,13 +2,17 @@
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
 edit_date = "2026-08-03"
 status = "draft"
-summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, and the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency."
+summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
 +++
 
 # Phase 2 Item 9 Design: Importing Golden Runner Records
 
-Status: **draft** — authored for review by Codex and DR.
+Status: **draft** — revised after Codex review round 1 (2026-08-03), which
+approved the central shape, approved D5, required D10 with explicit conflict
+semantics, **rejected** D2's null `scope_id`, and **rejected** D9's sentinel in
+favour of recording the provider at its source. Resolutions are inline; round 1's
+disposition is recorded at the end.
 
 Delivers the [Phase 2 plan](plan_scope.md)'s item 9: golden story runner records
 from `benchmark/runs/` imported into the main Postgres plane through the
@@ -49,8 +53,14 @@ to route around — it is ADR 0020's review invariant doing its job on the first
 real data to meet it, and D4 and D5 below take it as the design's spine rather
 than as a special case.
 
-The second finding is smaller and sharper: **the plane requires a `provider` the
-runner never records.** See D9.
+The second finding turned out to be sharper than first written. The plane
+requires per-call facts the usage log does not carry — `provider` above all — and
+the first draft proposed a sentinel. Review rejected that, correctly: **the
+runtime already knows the provider.** `metricsObserver.Observe` receives it as
+`ev.Provider` and records only `ev.Model`
+([`pkg/agent/factory_llms.go`](../../../pkg/agent/factory_llms.go)). It is an
+instrumentation omission, not an unknowable fact, and a sentinel would have
+frozen an omission into the contract. D9 upgrades the usage surface instead.
 
 ## What the runner produces
 
@@ -109,7 +119,10 @@ artifact imported from one suite scopes to the same row, which is what
 `ListManagementArtifactsByScope`/`ListAuditArtifactsByScope` then answer. Columns:
 `benchmark_run_id uuid` (UUIDv7, app-generated), `organization_id`,
 `suite_run_id text`, `first_imported_at`, and nothing that a later import would
-have to update. `UNIQUE (organization_id, suite_run_id)`.
+have to update. `UNIQUE (organization_id, suite_run_id)`, and
+`UNIQUE (benchmark_run_id, organization_id)` — the second is not redundant, it is
+what the organization-aware scope foreign keys below reference, the same
+`*_id_org_key` shape every other table in this schema carries.
 
 **`benchmark_attempts` — one row per `RunRecord`.** The import ledger, and the
 reason idempotency is a database property rather than a convention in the
@@ -133,15 +146,31 @@ The scope column lands on **both** artifact families, since both carry
 - drops and recreates `*_one_scope_check` and `*_scope_agrees_check` to include
   it. Migrations are append-only after merge (plan decision 4), so this is a new
   migration, never an edit to `000006`/`000007`;
-- leaves `scope_id`'s generated `COALESCE` **unchanged**. It cannot be altered in
-  place, and it does not need to be: `scope_id` exists for the scope index, and
-  benchmark-scoped rows are served by their own index on
-  `(scope_type, scope_benchmark_run_id)`. This is a real asymmetry and it is
-  recorded here rather than discovered later — a benchmark-scoped artifact has a
-  null `scope_id`.
+- **rebuilds `scope_id`'s generated expression to include it.** The first draft
+  proposed leaving it alone and letting benchmark rows carry a null `scope_id`.
+  Review rejected that and was right: `scope_id` is not merely an index input.
+  `toManagementArtifact` reads it as the domain scope id
+  ([`artifacts.go`](../../../internal/dataplane/store/postgres/artifacts.go)), so a
+  null would surface as `uuid.Nil` in `Scope.ID`, and
+  `ListManagementArtifactsByScope` filters on `scope_id = @scope_id`
+  ([`management_artifacts.sql`](../../../internal/dataplane/queries/management_artifacts.sql)),
+  so benchmark rows would never be listed by the very query the scope exists to
+  serve. A design that leaves the item's own artifacts unreadable through the
+  seam's own reader is not an asymmetry to document, it is a defect.
 - The `*_lineage_check` needs no change: its `ELSE` branch already requires all
   four work-lineage columns null, and the comment in `000006` already names
   benchmark alongside organization as the scopes with no work hierarchy.
+
+The rebuild is `ALTER TABLE ... ALTER COLUMN scope_id SET EXPRESSION AS
+(COALESCE(..., scope_benchmark_run_id))`, which PostgreSQL 17 added and the
+pinned `postgres:18` image therefore has. **Measured, not assumed**, against the
+pinned image digest: it rewrites the table so pre-existing rows are recomputed
+under the new expression, and it preserves the dependent
+`management_artifacts_scope_idx` rather than dropping it with the column, which a
+`DROP COLUMN`/`ADD COLUMN` pair would have done silently. The migration's `down`
+restores the five-column expression, and applying `up` then `down` then `up`
+against a populated table is part of the migration test rather than an assertion
+here.
 
 ## D3. What each record becomes
 
@@ -164,6 +193,54 @@ which is the registry's rule (a type is registered by the item that first writes
 it). `benchmark.suite_report` registers an **extractor**, since it names evidence;
 `benchmark.run_record` registers none, which is the registry's way of saying it
 carries no evidence of its own and must therefore hold zero pins.
+
+### The per-call mapping, stated column by column
+
+An `llm_calls` row is not a subset of a usage line; it asks for facts the v1
+surface does not record. The mapping below is what D9's surface v2 exists to make
+honest, and every left-hand column is a field v2 records at the source rather
+than a value the importer reconstructs.
+
+| `llm_calls` column | Source in usage-surface v2 | Note |
+| --- | --- | --- |
+| `provider` | `provider` | `ev.Provider`, available today and dropped on the floor |
+| `model` | `model` | unchanged from v1 |
+| `input_tokens` | `input_tokens` | `Usage.InputTokens` |
+| `output_tokens` | `output_tokens` | `Usage.OutputTokens` — **visible output only** |
+| `reasoning_tokens` | `reasoning_tokens` | `Usage.ReasoningTokens` |
+| `cached_tokens` | `cache_read_tokens` | see the cache-write note below |
+| `cost_usd` | `cost_usd`, **nullable** | absent means not knowable, never zero |
+| `started_at` | `started_at` | recorded, not derived from `ts` minus latency |
+| `finished_at` | `finished_at` | |
+| `succeeded` | `success` | unchanged |
+| `error_message` | `error` | absent on success |
+
+Three of these are corrections, not additions:
+
+- **v1 folds reasoning into `completion_tokens`.** `Observe` sets it from
+  `Usage.BillableOutputTokens`, which per maestro-llms ADR-0016 is visible output
+  *plus* reasoning. The plane stores the two separately, so importing v1 lines
+  would have to either double-count or invent a split. v2 records all three axes
+  and the fold disappears.
+- **v1 records unknown cost as `0`.** When `config.CalculateCost` fails — an
+  unpriced or local model — `Observe` logs a warning and leaves `cost` at its zero
+  value, so a `paired-local` call is indistinguishable from a free one. This is
+  precisely the "unknown versus free" confusion `llm_calls.cost_usd` is nullable
+  to prevent, and item 5.1 already made the same distinction at the *record*
+  level (`cost_usd: unavailable`); v2 carries it down to the call.
+- **v1 records no start time and no failure diagnostic.** `ts` is the observation
+  instant and `Latency` is discarded, so `started_at` would have to be
+  reconstructed; and a failed call's error text never reaches the log at all,
+  though `llm_calls.error_message` is exactly where it belongs.
+
+**Cache-write tokens have nowhere to go.** `Usage` carries `CacheReadTokens` and
+`CacheWriteTokens` separately and they are billed differently; the plane has one
+`cached_tokens` column. v2 records both, the importer maps read and **reports
+write as unmapped rather than folding it in**. Whether to add the column is left
+to a measurement — if the golden configs' providers report non-zero cache writes,
+it is a real loss and worth a migration; if they report none, adding a column for
+it is speculation. That measurement is item 9's to take and report, not to
+predict here.
 
 ## D4. Three principals, and only one of them is the importer
 
@@ -297,24 +374,65 @@ An attempt with no evidence directory is imported without attachments. The item
 requires *at least one* object write per import, which every real suite satisfies;
 an import that would produce none is reported as such rather than failing.
 
-## D9. The plane requires a provider the runner does not record
+## D9. Usage surface v2: record the facts at their source
 
-`llm_calls.provider` is `NOT NULL`. The usage line
-(`{model, prompt_tokens, completion_tokens, cost_usd, success}`) has no provider,
-the `TargetDescriptor` has none, and the MPH bundle has none — it has `local`,
-which is a budget dimension, not a provider.
+The v1 usage line is `{ts, story_id, agent_id, model, prompt_tokens,
+completion_tokens, cost_usd, success}`. Everything D3's table needs beyond that is
+available in `middleware.Event` at the moment of observation and is discarded:
+`ev.Provider`, the four token axes on `llms.Usage`, `ev.Latency`, and `ev.Err`.
 
-Inferring one from the model string is exactly what ADR 0019 forbids the
-Orchestrator from doing. So the importer writes a named constant,
-`ProviderUnrecorded = "unrecorded"`, and a test asserts it is the only value the
-import path can produce for a record that carries no provider — so a future
-adapter that *does* record one cannot be silently folded into the sentinel.
+So item 9 raises the usage surface to **v2** rather than defaulting at the seam.
+The rejected alternative was a `ProviderUnrecorded` sentinel, which would have
+written an instrumentation omission into the plane's permanent record and made
+every later provider-partitioned query quietly wrong.
 
-This is a finding, not a workaround: the v2 adapter's usage surface should carry
-the provider, and that belongs in an Issue on the runner rather than in this
-item. `cost_usd` needs no such treatment — it is nullable precisely so that
-"not knowable" and "zero" stay different facts, and `paired-local` records import
-as null cost with real tokens.
+Concretely:
+
+- `metrics.UsageEntry` gains `provider`, `input_tokens`, `output_tokens`,
+  `reasoning_tokens`, `cache_read_tokens`, `cache_write_tokens`, `started_at`,
+  `finished_at` and `error`; `cost_usd` becomes `*float64`, omitted when
+  `CalculateCost` fails, so absent means unpriced.
+- `metrics.Recorder` takes an **`Observation` struct** rather than growing
+  `ObserveRequest` from seven parameters to thirteen. Three non-test
+  implementations exist (`InternalRecorder`, `NoopRecorder`, `UsageLogRecorder`),
+  and `InternalRecorder`'s aggregates are computed from the struct so its
+  existing consumers are unchanged.
+- `metrics.UsageSurfaceVersion` becomes 2. It is advertised by `maestro -version`
+  ([`cmd/maestro/main.go`](../../../cmd/maestro/main.go)) and written as the log
+  header, and the v1 adapter validates it in both places
+  (`benchmark/target/v1target/usagetail.go`), so the handshake fails loudly
+  against a mismatched target instead of mis-parsing.
+- **The streamed budget totals must not move.** `usageTail` feeds the engine's
+  cap enforcement, so this is not only an accounting format: v2's tail must
+  compute `tokens` as `input + output + reasoning`, which is exactly what v1's
+  `prompt + completion` came to given that `completion = BillableOutputTokens`.
+  Cache-read tokens are recorded and **not** added, because adding them would
+  change what a declared cap means. A test pins v1 and v2 to identical totals over
+  the same call sequence; that equality is the invariant, and it is proven by
+  breaking it first.
+
+**This is a v1 patch, and it is in scope for the reason the freeze allows.**
+CLAUDE.md freezes v1 except where a defect blocks v2 work, and this one blocks
+item 9's central promise — the call family cannot be honestly populated without
+it. It is also the same surface Phase 1's P-1 patch created, extended for the
+same reason. It touches `pkg/agent/middleware/metrics` and `pkg/agent/factory_llms.go`
+and **not** `pkg/persistence`, so the plan's hard constraint on v1's SQLite path
+is untouched.
+
+It does, however, touch the measuring instrument during the phase whose top risk
+is breaking it. Three things bound that: the log format change is additive apart
+from `cost_usd`'s nullability; the adapter requires v2 and fails the handshake
+rather than degrading; and item 10's `golden-all` run is the regression proof the
+plan already schedules.
+
+**Historical suites import without call records.** `benchmark/runs/` holds
+evidence from surface-v1 runs, including Phase 1a's. Their records and artifacts
+import normally; their `usage.jsonl` does **not** become `llm_calls`, because the
+axes cannot be honestly split. The attempt is imported with call records marked
+unavailable in the import summary and in the suite report's payload — a recorded
+absence in the one place that is honest, rather than a sentinel in every row. The
+legacy path is gated on the log's own header version, so it cannot silently
+capture a v2 log.
 
 ## D10. Organizations and users have no creation path, and the slice needs one
 
@@ -331,12 +449,29 @@ their natural keys (slug, handle), exposed as
 dataplanectl bootstrap --org <slug> --org-name <text> --user <handle> --user-name <text>
 ```
 
-This is scope the plan did not name, and it is flagged as such for review. Two
-things argue for taking it here rather than deferring: the alternative is an
-import that cannot run without hand-written SQL, which is not a vertical slice
-through the seam; and Phase 3 needs it on the first day regardless. The importer
-itself **resolves and never creates** — an import that silently provisions a
-tenant is a defect waiting for team mode.
+This is scope the plan did not name; review confirmed taking it here, because the
+alternative is an import that cannot run without hand-written SQL, which is not a
+vertical slice through the seam. The importer itself **resolves and never
+creates** — an import that silently provisions a tenant is a defect waiting for
+team mode.
+
+**"Idempotent" is not enough, so the conflict semantics are exact.** Bootstrap
+takes a natural key (slug, handle) and display data (display name). Three cases,
+and the third is the one a loose reading gets wrong:
+
+| Existing row | Display data | Outcome |
+| --- | --- | --- |
+| none | — | created; returned with `Created: true` |
+| present | matches | existing row returned, `Created: false` — the no-op |
+| present | differs | **`ErrBootstrapConflict`**, naming the key, the stored value and the supplied one |
+
+Silently ignoring differing display data is the failure mode to design out: it
+makes `bootstrap --org acme --org-name "Acme Ltd"` appear to succeed while the
+plane still says "Acme Inc", and the operator learns otherwise from a report
+months later. Renaming is a real operation and it will get an explicit verb when
+something needs it; it is not a side effect of a provisioning command. The
+importer's own lookups are strictly `Get*`, so this path is reachable only from
+`bootstrap`.
 
 ## D11. Surface
 
@@ -390,24 +525,56 @@ plan's testing rule for this phase requires.
   column set is refused, and that `scope_type = 'benchmark'` with a null
   `scope_benchmark_run_id` is refused — the constraint item 9 is adding, tested by
   breaking it.
+- **`scope_id` after the rebuild.** Assert a benchmark-scoped artifact comes back
+  from `ListManagementArtifactsByScope` and carries a non-nil `Scope.ID`, and
+  that pre-existing rows of every other scope type keep the `scope_id` they had
+  across `up`/`down`/`up` on a populated table. This is the test the first draft
+  would have failed.
+- **Usage surface v2.** The budget-total equality of D9 — v1 and v2 tails
+  computing identical `tokens` over one call sequence — proven by first making v2
+  count cache reads and watching it fail. The header handshake refusing a v1 log
+  to a v2-requiring adapter and vice versa. An unpriced model producing an absent
+  `cost_usd` rather than a zero, and a failed call carrying its error text.
+- **Legacy suites.** Import a surface-v1 suite; assert artifacts and attempts
+  land, no `llm_calls` rows are written, and the unavailability is named in both
+  the summary and the report payload.
+- **Bootstrap conflict.** All three rows of D10's table, with the differing-display
+  case asserted to leave the stored row untouched.
 - **Contract drift.** The two-sided fixture tests of D1, each proven to fail by
   adding a field to the fixture on one side only.
 - **Caps.** A file over the cap is skipped, named in the summary, and named in the
   report payload.
 
-## Open questions for review
+## Review round 1 disposition
 
-1. **D5's operator-authored report.** The alternative is to leave every imported
-   artifact in the Audit family and drop the pin requirement from item 9, which
-   would need a plan amendment. Recommended as written: the requirement is the
-   plan's, and the schema's refusal to let machinery author a claim is a feature.
-2. **D10's bootstrap verb.** Scope the plan did not name. Take it here, or file it
-   and hand-provision for item 9?
-3. **D2's null `scope_id` for benchmark rows.** The alternative is a new generated
-   column and an index change on the two largest tables. Recommended as written,
-   with the asymmetry documented.
-4. **D9's `provider` sentinel.** Confirm the constant, and confirm the runner-side
-   fix belongs in an Issue rather than in this item.
+Codex, 2026-08-03. The central shape — Audit run records, an operator-authored
+draft Management report, complete pins, terminal-only report creation,
+ledger-backed idempotency — was approved unchanged.
+
+| Question | Disposition | Where |
+| --- | --- | --- |
+| D5, operator-authored report | **Approved** | unchanged |
+| D10, bootstrap verb | **Include now**, with exact conflict semantics | D10 rewritten |
+| D2, null `scope_id` | **Rejected** — rebuild the generated column, add the composite unique key | D2 rewritten |
+| D9, `provider` sentinel | **Rejected** — record it at the source; upgrade the usage surface in this item | D9 rewritten |
+
+Two blockers found in review beyond those four, both accepted:
+
+1. The surface upgrade needs to be fuller than provider alone — failure
+   diagnostic, start/finish timing, and the four token axes, since
+   `completion_tokens` folds billable output and reasoning together while the
+   plane stores them apart. D3's mapping table and D9 now cover all of it.
+2. `scope_id` is read as the domain scope id and compared directly by the scope
+   queries, so null benchmark rows would never be listed. D2 covers it.
+
+One point of Codex's was checked and stands: MPH's `M` carries the model-routing
+structure, but production bundles hold bare model names and role routing may span
+providers, so a single provider on `TargetDescriptor` would be wrong. Per-call
+recording is the only correct answer. Provider-bearing MPH routes are a separate
+question and are not opened here.
+
+Still open, and deliberately left to measurement rather than argued now: whether
+`cache_write_tokens` earns a column (D3).
 
 ## Related documents
 
