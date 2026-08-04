@@ -35,7 +35,7 @@ import (
 // Adapter identity.
 const (
 	adapterName     = "v1-as-patched"
-	adapterVersion  = "0.1.0"
+	adapterVersion  = "0.2.0"
 	solutionLeaf    = "/solution"
 	defaultPoll     = 5 * time.Second
 	stopGrace       = 20 * time.Second

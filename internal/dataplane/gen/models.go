@@ -123,15 +123,16 @@ type LlmCall struct {
 	LineageKey          string
 	Provider            string
 	Model               string
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
+	InputTokens         *int64
+	OutputTokens        *int64
+	ReasoningTokens     *int64
+	CacheReadTokens     *int64
 	CostUsd             pgtype.Numeric
 	StartedAt           pgtype.Timestamptz
 	FinishedAt          pgtype.Timestamptz
 	Succeeded           *bool
 	ErrorMessage        *string
+	CacheWriteTokens    *int64
 }
 
 type ManagementArtifact struct {

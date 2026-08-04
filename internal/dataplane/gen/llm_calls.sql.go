@@ -13,16 +13,19 @@ import (
 
 const aggregateLLMCost = `-- name: AggregateLLMCost :one
 SELECT
-    COALESCE(SUM(cost_usd)         FILTER (WHERE finished_at IS NOT NULL), 0)::numeric AS total_cost_usd,
-    COALESCE(SUM(input_tokens)     FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_input_tokens,
-    COALESCE(SUM(output_tokens)    FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_output_tokens,
-    COALESCE(SUM(reasoning_tokens) FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_reasoning_tokens,
-    COALESCE(SUM(cached_tokens)    FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_cached_tokens,
-    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NOT NULL)::bigint   AS measured_calls,
-    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NULL)::bigint       AS unmeasured_calls,
-    count(*) FILTER (WHERE finished_at IS NULL)::bigint                                AS open_calls,
-    count(*) FILTER (WHERE succeeded IS TRUE)::bigint                                  AS succeeded_calls,
-    count(*) FILTER (WHERE succeeded IS FALSE)::bigint                                 AS failed_calls
+    COALESCE(SUM(cost_usd)           FILTER (WHERE finished_at IS NOT NULL), 0)::numeric AS total_cost_usd,
+    COALESCE(SUM(input_tokens)       FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_input_tokens,
+    COALESCE(SUM(output_tokens)      FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_output_tokens,
+    COALESCE(SUM(reasoning_tokens)   FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_reasoning_tokens,
+    COALESCE(SUM(cache_read_tokens)  FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_cache_read_tokens,
+    COALESCE(SUM(cache_write_tokens) FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_cache_write_tokens,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NOT NULL)::bigint     AS measured_calls,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NULL)::bigint         AS unmeasured_calls,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND input_tokens IS NOT NULL)::bigint AS tokens_measured_calls,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND input_tokens IS NULL)::bigint     AS tokens_unmeasured_calls,
+    count(*) FILTER (WHERE finished_at IS NULL)::bigint                                  AS open_calls,
+    count(*) FILTER (WHERE succeeded IS TRUE)::bigint                                    AS succeeded_calls,
+    count(*) FILTER (WHERE succeeded IS FALSE)::bigint                                   AS failed_calls
 FROM llm_calls
 WHERE organization_id = $1
   AND provider        = $2
@@ -40,16 +43,19 @@ type AggregateLLMCostParams struct {
 }
 
 type AggregateLLMCostRow struct {
-	TotalCostUsd         pgtype.Numeric
-	TotalInputTokens     int64
-	TotalOutputTokens    int64
-	TotalReasoningTokens int64
-	TotalCachedTokens    int64
-	MeasuredCalls        int64
-	UnmeasuredCalls      int64
-	OpenCalls            int64
-	SucceededCalls       int64
-	FailedCalls          int64
+	TotalCostUsd          pgtype.Numeric
+	TotalInputTokens      int64
+	TotalOutputTokens     int64
+	TotalReasoningTokens  int64
+	TotalCacheReadTokens  int64
+	TotalCacheWriteTokens int64
+	MeasuredCalls         int64
+	UnmeasuredCalls       int64
+	TokensMeasuredCalls   int64
+	TokensUnmeasuredCalls int64
+	OpenCalls             int64
+	SucceededCalls        int64
+	FailedCalls           int64
 }
 
 // Cost and token aggregate over one cohort in one window.
@@ -63,6 +69,12 @@ type AggregateLLMCostRow struct {
 // The totals cover completed calls only. open_calls is reported beside them
 // so a campaign cannot under-report its own cost while still running and
 // never correct itself.
+//
+// TOKEN availability is a second axis, not the same one as cost. A local
+// model's successful call has measured tokens and unknowable cost; a FAILED
+// call has neither, because the toolkit reports no usage for it at all. One
+// measured/unmeasured pair cannot express both, so there are two -- and the
+// token sums filter on their own availability rather than on cost's.
 func (q *Queries) AggregateLLMCost(ctx context.Context, arg AggregateLLMCostParams) (AggregateLLMCostRow, error) {
 	row := q.db.QueryRow(ctx, aggregateLLMCost,
 		arg.OrganizationID,
@@ -77,9 +89,12 @@ func (q *Queries) AggregateLLMCost(ctx context.Context, arg AggregateLLMCostPara
 		&i.TotalInputTokens,
 		&i.TotalOutputTokens,
 		&i.TotalReasoningTokens,
-		&i.TotalCachedTokens,
+		&i.TotalCacheReadTokens,
+		&i.TotalCacheWriteTokens,
 		&i.MeasuredCalls,
 		&i.UnmeasuredCalls,
+		&i.TokensMeasuredCalls,
+		&i.TokensUnmeasuredCalls,
 		&i.OpenCalls,
 		&i.SucceededCalls,
 		&i.FailedCalls,
@@ -92,27 +107,33 @@ UPDATE llm_calls
 SET finished_at      = COALESCE($1::timestamptz, now()),
     succeeded        = $2,
     error_message    = $3,
-    input_tokens     = $4,
-    output_tokens    = $5,
-    reasoning_tokens = $6,
-    cached_tokens    = $7,
-    cost_usd         = $8
-WHERE llm_call_id     = $9
-  AND organization_id = $10
+    -- All five nullable together: a FAILED call has no token measurement at
+    -- all (the toolkit reports usage only on success), and writing zeros
+    -- would assert a measurement nobody made. The schema's availability
+    -- check refuses any partial combination.
+    input_tokens       = $4,
+    output_tokens      = $5,
+    reasoning_tokens   = $6,
+    cache_read_tokens  = $7,
+    cache_write_tokens = $8,
+    cost_usd           = $9
+WHERE llm_call_id     = $10
+  AND organization_id = $11
   AND finished_at IS NULL
 `
 
 type CompleteLLMCallParams struct {
-	FinishedAt      pgtype.Timestamptz
-	Succeeded       *bool
-	ErrorMessage    *string
-	InputTokens     int64
-	OutputTokens    int64
-	ReasoningTokens int64
-	CachedTokens    int64
-	CostUsd         pgtype.Numeric
-	LlmCallID       pgtype.UUID
-	OrganizationID  pgtype.UUID
+	FinishedAt       pgtype.Timestamptz
+	Succeeded        *bool
+	ErrorMessage     *string
+	InputTokens      *int64
+	OutputTokens     *int64
+	ReasoningTokens  *int64
+	CacheReadTokens  *int64
+	CacheWriteTokens *int64
+	CostUsd          pgtype.Numeric
+	LlmCallID        pgtype.UUID
+	OrganizationID   pgtype.UUID
 }
 
 // The one permitted update. `WHERE finished_at IS NULL` is the once-only
@@ -130,7 +151,8 @@ func (q *Queries) CompleteLLMCall(ctx context.Context, arg CompleteLLMCallParams
 		arg.InputTokens,
 		arg.OutputTokens,
 		arg.ReasoningTokens,
-		arg.CachedTokens,
+		arg.CacheReadTokens,
+		arg.CacheWriteTokens,
 		arg.CostUsd,
 		arg.LlmCallID,
 		arg.OrganizationID,
@@ -152,7 +174,7 @@ INSERT INTO llm_calls (
     $5, $6, $7, $8,
     $9, $10, COALESCE($11::timestamptz, now())
 )
-RETURNING llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd, started_at, finished_at, succeeded, error_message
+RETURNING llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cost_usd, started_at, finished_at, succeeded, error_message, cache_write_tokens
 `
 
 type CreateLLMCallParams struct {
@@ -212,18 +234,19 @@ func (q *Queries) CreateLLMCall(ctx context.Context, arg CreateLLMCallParams) (L
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.ReasoningTokens,
-		&i.CachedTokens,
+		&i.CacheReadTokens,
 		&i.CostUsd,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.Succeeded,
 		&i.ErrorMessage,
+		&i.CacheWriteTokens,
 	)
 	return i, err
 }
 
 const getLLMCall = `-- name: GetLLMCall :one
-SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd, started_at, finished_at, succeeded, error_message FROM llm_calls
+SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cost_usd, started_at, finished_at, succeeded, error_message, cache_write_tokens FROM llm_calls
 WHERE llm_call_id     = $1
   AND organization_id = $2
 `
@@ -251,18 +274,19 @@ func (q *Queries) GetLLMCall(ctx context.Context, arg GetLLMCallParams) (LlmCall
 		&i.InputTokens,
 		&i.OutputTokens,
 		&i.ReasoningTokens,
-		&i.CachedTokens,
+		&i.CacheReadTokens,
 		&i.CostUsd,
 		&i.StartedAt,
 		&i.FinishedAt,
 		&i.Succeeded,
 		&i.ErrorMessage,
+		&i.CacheWriteTokens,
 	)
 	return i, err
 }
 
 const listLLMCallsByPrincipal = `-- name: ListLLMCallsByPrincipal :many
-SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd, started_at, finished_at, succeeded, error_message FROM llm_calls
+SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cost_usd, started_at, finished_at, succeeded, error_message, cache_write_tokens FROM llm_calls
 WHERE organization_id       = $1
   AND principal_instance_id = $2
   AND ($3::timestamptz IS NULL
@@ -309,12 +333,13 @@ func (q *Queries) ListLLMCallsByPrincipal(ctx context.Context, arg ListLLMCallsB
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.ReasoningTokens,
-			&i.CachedTokens,
+			&i.CacheReadTokens,
 			&i.CostUsd,
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.Succeeded,
 			&i.ErrorMessage,
+			&i.CacheWriteTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -328,7 +353,7 @@ func (q *Queries) ListLLMCallsByPrincipal(ctx context.Context, arg ListLLMCallsB
 
 const listLLMCallsByStory = `-- name: ListLLMCallsByStory :many
 
-SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd, started_at, finished_at, succeeded, error_message FROM llm_calls
+SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cost_usd, started_at, finished_at, succeeded, error_message, cache_write_tokens FROM llm_calls
 WHERE organization_id = $1
   AND story_id        = $2
   AND ($3::timestamptz IS NULL
@@ -387,12 +412,13 @@ func (q *Queries) ListLLMCallsByStory(ctx context.Context, arg ListLLMCallsBySto
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.ReasoningTokens,
-			&i.CachedTokens,
+			&i.CacheReadTokens,
 			&i.CostUsd,
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.Succeeded,
 			&i.ErrorMessage,
+			&i.CacheWriteTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -405,7 +431,7 @@ func (q *Queries) ListLLMCallsByStory(ctx context.Context, arg ListLLMCallsBySto
 }
 
 const listLLMCallsInWindow = `-- name: ListLLMCallsInWindow :many
-SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cost_usd, started_at, finished_at, succeeded, error_message FROM llm_calls
+SELECT llm_call_id, organization_id, user_id, principal_instance_id, product_id, feature_id, epic_id, story_id, lineage_key, provider, model, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cost_usd, started_at, finished_at, succeeded, error_message, cache_write_tokens FROM llm_calls
 WHERE organization_id = $1
   AND started_at     >= $2
   AND started_at      < $3
@@ -455,12 +481,13 @@ func (q *Queries) ListLLMCallsInWindow(ctx context.Context, arg ListLLMCallsInWi
 			&i.InputTokens,
 			&i.OutputTokens,
 			&i.ReasoningTokens,
-			&i.CachedTokens,
+			&i.CacheReadTokens,
 			&i.CostUsd,
 			&i.StartedAt,
 			&i.FinishedAt,
 			&i.Succeeded,
 			&i.ErrorMessage,
+			&i.CacheWriteTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -473,7 +500,7 @@ func (q *Queries) ListLLMCallsInWindow(ctx context.Context, arg ListLLMCallsInWi
 }
 
 const lockLLMCall = `-- name: LockLLMCall :one
-SELECT llm_calls.llm_call_id, llm_calls.organization_id, llm_calls.user_id, llm_calls.principal_instance_id, llm_calls.product_id, llm_calls.feature_id, llm_calls.epic_id, llm_calls.story_id, llm_calls.lineage_key, llm_calls.provider, llm_calls.model, llm_calls.input_tokens, llm_calls.output_tokens, llm_calls.reasoning_tokens, llm_calls.cached_tokens, llm_calls.cost_usd, llm_calls.started_at, llm_calls.finished_at, llm_calls.succeeded, llm_calls.error_message, now()::timestamptz AS locked_at
+SELECT llm_calls.llm_call_id, llm_calls.organization_id, llm_calls.user_id, llm_calls.principal_instance_id, llm_calls.product_id, llm_calls.feature_id, llm_calls.epic_id, llm_calls.story_id, llm_calls.lineage_key, llm_calls.provider, llm_calls.model, llm_calls.input_tokens, llm_calls.output_tokens, llm_calls.reasoning_tokens, llm_calls.cache_read_tokens, llm_calls.cost_usd, llm_calls.started_at, llm_calls.finished_at, llm_calls.succeeded, llm_calls.error_message, llm_calls.cache_write_tokens, now()::timestamptz AS locked_at
 FROM llm_calls
 WHERE llm_call_id     = $1
   AND organization_id = $2
@@ -520,12 +547,13 @@ func (q *Queries) LockLLMCall(ctx context.Context, arg LockLLMCallParams) (LockL
 		&i.LlmCall.InputTokens,
 		&i.LlmCall.OutputTokens,
 		&i.LlmCall.ReasoningTokens,
-		&i.LlmCall.CachedTokens,
+		&i.LlmCall.CacheReadTokens,
 		&i.LlmCall.CostUsd,
 		&i.LlmCall.StartedAt,
 		&i.LlmCall.FinishedAt,
 		&i.LlmCall.Succeeded,
 		&i.LlmCall.ErrorMessage,
+		&i.LlmCall.CacheWriteTokens,
 		&i.LockedAt,
 	)
 	return i, err

@@ -14,6 +14,7 @@ import (
 	"orchestrator/pkg/agent/internal/llmadapter"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/agent/llmerrors"
+	"orchestrator/pkg/agent/middleware/metrics"
 )
 
 // TestMapSuspend covers the §5 M4 boundary: toolkit terminal errors must map
@@ -94,17 +95,14 @@ func TestMapSuspend(t *testing.T) {
 	}
 }
 
-// recordingRecorder captures the last ObserveRequest call.
+// recordingRecorder captures the last ObserveCall.
 type recordingRecorder struct {
-	storyID                    string
-	promptTokens, completionTk int
-	cost                       float64
-	success                    bool
-	calls                      int
+	last  *metrics.Observation
+	calls int
 }
 
-func (r *recordingRecorder) ObserveRequest(storyID, _, _ string, p, c int, cost float64, success bool) {
-	r.storyID, r.promptTokens, r.completionTk, r.cost, r.success = storyID, p, c, cost, success
+func (r *recordingRecorder) ObserveCall(observation *metrics.Observation) {
+	r.last = observation
 	r.calls++
 }
 
@@ -115,17 +113,70 @@ func TestMetricsObserver_RecordsUsage(t *testing.T) {
 	obs := &metricsObserver{recorder: rec} // nil stateProvider + logger: must not panic
 
 	obs.Observe(mmw.Event{
-		Model:   "claude-haiku-4-5-20251001",
-		Latency: 50 * time.Millisecond,
-		Usage:   mllms.Usage{InputTokens: 100, OutputTokens: 20},
+		Provider: "anthropic",
+		Model:    "claude-haiku-4-5-20251001",
+		Latency:  50 * time.Millisecond,
+		Usage: mllms.Usage{
+			InputTokens: 100, OutputTokens: 20, ReasoningTokens: 5,
+			CacheReadTokens: 7, CacheWriteTokens: 3,
+		},
 	})
-	if rec.calls != 1 || !rec.success || rec.promptTokens != 100 || rec.completionTk != 20 {
-		t.Fatalf("unexpected recorder state after success: %+v", rec)
+	if rec.calls != 1 || !rec.last.Success {
+		t.Fatalf("unexpected recorder state after success: %+v", rec.last)
+	}
+	if rec.last.Provider != "anthropic" {
+		t.Fatalf("provider must be carried from the event, not defaulted: %q", rec.last.Provider)
+	}
+	axes := rec.last.Tokens
+	if axes == nil {
+		t.Fatal("a successful call must carry a token measurement")
+	}
+	// Each axis kept apart: reasoning is NOT folded into output, and cache
+	// read is not folded into cache write.
+	if axes.Input != 100 || axes.Output != 20 || axes.Reasoning != 5 ||
+		axes.CacheRead != 7 || axes.CacheWrite != 3 {
+		t.Fatalf("token axes must be recorded separately: %+v", axes)
+	}
+	if err := rec.last.Validate(); err != nil {
+		t.Fatalf("the observer must emit observations the surface accepts: %v", err)
 	}
 
-	obs.Observe(mmw.Event{Model: "m", Err: errors.New("provider down")})
-	if rec.calls != 2 || rec.success {
-		t.Fatalf("failure event not recorded as failure: %+v", rec)
+	obs.Observe(mmw.Event{Provider: "anthropic", Model: "m", Err: errors.New("provider down")})
+	if rec.calls != 2 || rec.last.Success {
+		t.Fatalf("failure event not recorded as failure: %+v", rec.last)
+	}
+	// The heart of it: a failed event's Usage is the zero value, and zero is
+	// not a measurement. Recording five zeros would have every aggregate
+	// downstream treat them as measured.
+	if rec.last.Tokens != nil {
+		t.Fatalf("a failed call must carry NO token measurement, got %+v", rec.last.Tokens)
+	}
+	if rec.last.Error == "" {
+		t.Fatal("a failed call must carry its error text")
+	}
+	if err := rec.last.Validate(); err != nil {
+		t.Fatalf("the failure shape must also be valid: %v", err)
+	}
+}
+
+// An unpriced model records no cost at all. Zero would say the call was free,
+// which is what made a paired-local run indistinguishable from one that spent
+// nothing.
+func TestMetricsObserver_UnpricedModelRecordsNoCost(t *testing.T) {
+	rec := &recordingRecorder{}
+	obs := &metricsObserver{recorder: rec}
+
+	obs.Observe(mmw.Event{
+		Provider: "ollama",
+		Model:    "definitely-not-a-priced-model",
+		Latency:  time.Second,
+		Usage:    mllms.Usage{InputTokens: 100, OutputTokens: 20},
+	})
+	if rec.calls != 1 {
+		t.Fatalf("want 1 observation, got %d", rec.calls)
+	}
+	if rec.last.Cost != nil {
+		t.Fatalf("an unpriced model must record no cost, got %v", *rec.last.Cost)
 	}
 }
 

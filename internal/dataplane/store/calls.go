@@ -46,25 +46,35 @@ type LLMCall struct {
 	Cost         *USD
 	UserID       *uuid.UUID
 
+	// Tokens is nil when the call has no measurement: an OPEN call has not
+	// produced one yet, and a FAILED call never will -- the provider layer
+	// reports usage only on success, so its counts do not exist rather than
+	// being zero. A pointer, not a bool beside a struct, because a struct
+	// that must not be read is one somebody eventually reads.
+	Tokens *TokenCounts
+
 	Lineage   Lineage
 	StartedAt time.Time
 
 	Provider string
 	Model    string
 
-	Tokens TokenCounts
-
 	LLMCallID           uuid.UUID
 	OrganizationID      uuid.UUID
 	PrincipalInstanceID uuid.UUID
 }
 
-// TokenCounts is the four counters a completed call reports.
+// TokenCounts is the five counters a measured call reports.
+//
+// Cache reads and writes are separate axes because they are separate prices.
+// The single `Cached` counter this replaced could hold only one of them and
+// its name did not say which.
 type TokenCounts struct {
-	Input     int64
-	Output    int64
-	Reasoning int64
-	Cached    int64
+	Input      int64
+	Output     int64
+	Reasoning  int64
+	CacheRead  int64
+	CacheWrite int64
 }
 
 // ToolCall is ADR 0022's atomic Audit action unit.
@@ -161,7 +171,11 @@ type CompleteLLMCallInput struct {
 	ErrorMessage *string
 	FinishedAt   *time.Time
 
-	Tokens TokenCounts
+	// Tokens is nil when the call produced no measurement. Required for a
+	// successful call and forbidden for a failed one: the seam refuses the
+	// combinations, because zeros recorded for a failed call are summed by
+	// every aggregate as though they had been measured.
+	Tokens *TokenCounts
 
 	OrganizationID uuid.UUID
 	LLMCallID      uuid.UUID
@@ -219,11 +233,25 @@ type ToolCompletion struct {
 // itself.
 type CostAggregate struct {
 	TotalCost USDTotal
-	Tokens    TokenCounts
 
+	// Tokens sums only the calls that HAVE a measurement, which is why the
+	// two counters below exist beside it.
+	Tokens TokenCounts
+
+	// Cost availability: completed calls whose cost is known, and completed
+	// calls whose cost is not knowable (a local model has no modelled price).
 	MeasuredCalls   int64
 	UnmeasuredCalls int64
-	OpenCalls       int64
+
+	// Token availability, a SEPARATE axis from cost. A local model's
+	// successful call has measured tokens and unknowable cost; a failed call
+	// has neither, because usage is reported only on success. One pair of
+	// counters cannot express both, and folding them would make a run of
+	// failures look like a run of free successes.
+	TokensMeasuredCalls   int64
+	TokensUnmeasuredCalls int64
+
+	OpenCalls int64
 
 	SucceededCalls int64
 	FailedCalls    int64

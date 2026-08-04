@@ -1,10 +1,14 @@
 package metrics
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,7 +20,15 @@ import (
 // The benchmark runner validates this version pre-run (advertised via
 // maestro -version) and against the log header at run time; bump it on any
 // format change.
-const UsageSurfaceVersion = 1
+//
+// v2 (docs/v2/phase_2/design_slice_import.md, D9) is a REPLACEMENT schema,
+// not v1 plus fields: it records the provider, the five token axes apart
+// rather than folding reasoning into a completion count, one instant plus an
+// exact duration rather than three overlapping timestamps, a nullable cost so
+// unpriced and free stay distinct, and the failure text. The v1 fields
+// prompt_tokens and completion_tokens are gone rather than kept beside their
+// replacements.
+const UsageSurfaceVersion = 2
 
 // UsageLogFileName is the log's location under the project .maestro dir.
 const UsageLogFileName = "usage.jsonl"
@@ -32,17 +44,64 @@ type UsageHeader struct {
 	UsageSurfaceVersion int `json:"usage_surface_version"`
 }
 
-// UsageEntry is one LLM call. Failed calls are recorded too: their tokens
-// were spent, and failed-attempt costs count (ADR 0025).
+// UsageEntry is one LLM call, surface v2.
+//
+// Failed calls are recorded, because the call happened and its failure is a
+// fact worth keeping. What a failed call does NOT carry is a token
+// measurement: maestro-llms populates usage only when the error is nil, so
+// the five axes are absent rather than zero. ADR 0025 says failed-attempt
+// costs count, and they cannot be counted from this surface -- see issue #311.
+//
+// The token pointers are what make "absent" expressible. A non-nil pointer to
+// zero is a real measurement of nothing; nil is no measurement.
 type UsageEntry struct {
-	Timestamp        time.Time `json:"ts"`
-	StoryID          string    `json:"story_id,omitempty"`
-	AgentID          string    `json:"agent_id,omitempty"`
-	Model            string    `json:"model"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	CostUSD          float64   `json:"cost_usd"`
-	Success          bool      `json:"success"`
+	FinishedAt time.Time `json:"finished_at"`
+
+	InputTokens      *int64   `json:"input_tokens,omitempty"`
+	OutputTokens     *int64   `json:"output_tokens,omitempty"`
+	ReasoningTokens  *int64   `json:"reasoning_tokens,omitempty"`
+	CacheReadTokens  *int64   `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int64   `json:"cache_write_tokens,omitempty"`
+	CostUSD          *float64 `json:"cost_usd,omitempty"`
+
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	StoryID  string `json:"story_id,omitempty"`
+	AgentID  string `json:"agent_id,omitempty"`
+	Error    string `json:"error,omitempty"`
+
+	// LatencyNS is nanoseconds, not milliseconds: the source is a
+	// time.Duration, and milliseconds would round it so that started_at could
+	// not be recovered from what was written.
+	LatencyNS int64 `json:"latency_ns"`
+
+	Success bool `json:"success"`
+}
+
+// entryFor renders an observation as a log entry. The observation is assumed
+// valid; ObserveCall validates before calling this.
+func entryFor(observation *Observation) UsageEntry {
+	entry := UsageEntry{
+		FinishedAt: observation.FinishedAt.UTC(),
+		Provider:   observation.Provider,
+		Model:      observation.Model,
+		StoryID:    observation.StoryID,
+		AgentID:    observation.AgentID,
+		Error:      observation.Error,
+		CostUSD:    observation.Cost,
+		LatencyNS:  observation.Latency.Nanoseconds(),
+		Success:    observation.Success,
+	}
+	if axes := observation.Tokens; axes != nil {
+		input, output, reasoning := axes.Input, axes.Output, axes.Reasoning
+		cacheRead, cacheWrite := axes.CacheRead, axes.CacheWrite
+		entry.InputTokens = &input
+		entry.OutputTokens = &output
+		entry.ReasoningTokens = &reasoning
+		entry.CacheReadTokens = &cacheRead
+		entry.CacheWriteTokens = &cacheWrite
+	}
+	return entry
 }
 
 // UsageLogRecorder is a fan-out Recorder: every observation goes to the
@@ -68,14 +127,23 @@ func fatalUsageAbort(err error) {
 	os.Exit(1)
 }
 
+// ErrSurfaceVersionMismatch reports an existing usage log written by a
+// different surface version. Distinguished because the operator response is
+// specific and is not "retry": see checkExistingHeader.
+var ErrSurfaceVersionMismatch = errors.New("usage log was written by a different usage-surface version")
+
 // NewUsageLogRecorder opens (creating if needed) the usage log at path and
 // returns the fan-out recorder. A header line is written when the file is
-// new or empty.
+// new or empty; an existing file's header is VALIDATED before anything is
+// appended beneath it.
 func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("usage log dir: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// O_RDWR rather than O_WRONLY so the header can be read back. O_APPEND
+	// still governs writes -- they go to the end regardless of where reading
+	// left the offset -- so reading the header cannot displace an append.
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open usage log: %w", err)
 	}
@@ -85,36 +153,80 @@ func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error)
 		return nil, fmt.Errorf("stat usage log: %w", err)
 	}
 	recorder := &UsageLogRecorder{inner: inner, file: file, path: path, onFatal: fatalUsageAbort}
-	if info.Size() == 0 {
-		if writeErr := recorder.writeLine(UsageHeader{UsageSurfaceVersion: UsageSurfaceVersion}); writeErr != nil {
+	if info.Size() > 0 {
+		if err := checkExistingHeader(file, path); err != nil {
 			_ = file.Close() //nolint:errcheck // error path
-			return nil, writeErr
+			return nil, err
 		}
+		return recorder, nil
+	}
+	if writeErr := recorder.writeLine(UsageHeader{UsageSurfaceVersion: UsageSurfaceVersion}); writeErr != nil {
+		_ = file.Close() //nolint:errcheck // error path
+		return nil, writeErr
 	}
 	return recorder, nil
 }
 
-// ObserveRequest implements Recorder: fan out to the wrapped recorder and
+// checkExistingHeader refuses to append beneath a header this build did not
+// write.
+//
+// Without it, a surface version bump silently produces a file whose header
+// says v1 and whose later lines are v2. Every reader trusts the header, parses
+// the new lines as the old shape, and mis-totals -- which is exactly the
+// undercounting UsageErrorFileName exists to make impossible, arriving by a
+// route that never touches the sentinel.
+//
+// It REFUSES rather than rotating. Renaming a file that another process
+// already holds open leaves that process appending to an unlinked inode, so
+// its calls vanish from the log the benchmark adapter is tailing: the
+// mitigation would cause the loss it was meant to prevent, and ADR 0027
+// forbids recovery that removes another actor's in-progress work. The file is
+// left untouched, and the remedy is to move it aside AFTER every writer on
+// this project directory has stopped -- doing it under a running target
+// reproduces the same unlinked-inode loss.
+func checkExistingHeader(file *os.File, path string) error {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek usage log %s: %w", path, err)
+	}
+	reader := bufio.NewReader(file)
+	line, err := reader.ReadString('\n')
+	// A file with content but no newline yet is a partial first line; it is
+	// as unreadable as a malformed one and gets the same answer.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("read usage log header %s: %w", path, err)
+	}
+	var header UsageHeader
+	if unmarshalErr := json.Unmarshal([]byte(strings.TrimSpace(line)), &header); unmarshalErr != nil {
+		return fmt.Errorf("%w: %s has an unreadable header line; this build writes v%d. "+
+			"Move the file aside once every writer on this directory has stopped",
+			ErrSurfaceVersionMismatch, path, UsageSurfaceVersion)
+	}
+	if header.UsageSurfaceVersion != UsageSurfaceVersion {
+		return fmt.Errorf("%w: %s is v%d and this build writes v%d. "+
+			"Move the file aside once every writer on this directory has stopped",
+			ErrSurfaceVersionMismatch, path, header.UsageSurfaceVersion, UsageSurfaceVersion)
+	}
+	return nil
+}
+
+// ObserveCall implements Recorder: fan out to the wrapped recorder and
 // append one usage line. Log write failures never disturb the wrapped
 // recorder or the calling agent, but they are surfaced: logged at ERROR on
 // first occurrence and retained (sticky) for Err().
-func (u *UsageLogRecorder) ObserveRequest(
-	storyID, agentID, model string,
-	promptTokens, completionTokens int,
-	cost float64,
-	success bool,
-) {
-	u.inner.ObserveRequest(storyID, agentID, model, promptTokens, completionTokens, cost, success)
-	if err := u.writeLine(UsageEntry{
-		Timestamp:        time.Now().UTC(),
-		StoryID:          storyID,
-		AgentID:          agentID,
-		Model:            model,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		CostUSD:          cost,
-		Success:          success,
-	}); err != nil {
+//
+// An observation that fails validation takes the SAME path as a failed write,
+// and deliberately so. Both mean the durable account of this call is missing,
+// and a run whose accounting is incomplete must not be silently accepted --
+// which is the whole reason the sentinel and its escalation exist. Dropping an
+// invalid observation quietly would be the one outcome neither a reader nor an
+// operator could detect.
+func (u *UsageLogRecorder) ObserveCall(observation *Observation) {
+	u.inner.ObserveCall(observation)
+	if err := observation.Validate(); err != nil {
+		u.recordWriteErr(err)
+		return
+	}
+	if err := u.writeLine(entryFor(observation)); err != nil {
 		u.recordWriteErr(err)
 	}
 }

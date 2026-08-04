@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	mllms "github.com/SnapdragonPartners/maestro-llms/llms"
 	mmw "github.com/SnapdragonPartners/maestro-llms/llms/middleware"
@@ -49,26 +50,29 @@ type metricsObserver struct {
 //nolint:gocritic // hugeParam: signature is fixed by the middleware.Observer interface.
 func (o *metricsObserver) Observe(ev mmw.Event) {
 	success := ev.Err == nil
-	// X4: usage is now reliably populated by the toolkit; the old middleware
-	// could only estimate via tokenizer counting.
-	promptTokens := ev.Usage.InputTokens
-	// Per maestro-llms ADR-0016 (v0.7.1), OutputTokens is visible output only;
-	// billing math must read BillableOutputTokens or reasoning tokens are
-	// undercounted. Fall back for paths that only populate OutputTokens
-	// (e.g. pre-call estimates).
-	completionTokens := ev.Usage.BillableOutputTokens
-	if completionTokens == 0 {
-		completionTokens = ev.Usage.OutputTokens + ev.Usage.ReasoningTokens
-	}
 
-	var cost float64
-	if success && (promptTokens > 0 || completionTokens > 0) {
-		if c, err := config.CalculateCost(ev.Model, promptTokens, completionTokens); err == nil {
-			cost = c
-		} else if o.logger != nil {
-			o.logger.Warn("Failed to calculate cost for model %s: %v", ev.Model, err)
+	// Usage is populated ONLY when Err is nil -- the toolkit does not trust a
+	// partial response returned with an error -- so a failed call carries no
+	// measurement rather than a measurement of zero. Recording five zeros here
+	// would have every aggregate downstream sum them as though they were real
+	// (design_slice_import.md, D3). What that costs is visible and filed:
+	// tokens spent by the provider attempts inside a failed logical call are
+	// unrecoverable from this event, so budget enforcement under-counts a
+	// failed call (issue #311).
+	var axes *metrics.TokenAxes
+	if success {
+		// X4: usage is now reliably populated by the toolkit; the old
+		// middleware could only estimate via tokenizer counting.
+		axes = &metrics.TokenAxes{
+			Input:      int64(ev.Usage.InputTokens),
+			Output:     int64(ev.Usage.OutputTokens),
+			Reasoning:  int64(ev.Usage.ReasoningTokens),
+			CacheRead:  int64(ev.Usage.CacheReadTokens),
+			CacheWrite: int64(ev.Usage.CacheWriteTokens),
 		}
 	}
+
+	cost := o.calculateCost(&ev, success)
 
 	var storyID, agentID, state string
 	if o.stateProvider != nil {
@@ -77,18 +81,87 @@ func (o *metricsObserver) Observe(ev mmw.Event) {
 		state = string(o.stateProvider.GetCurrentState())
 	}
 
-	o.recorder.ObserveRequest(storyID, agentID, ev.Model, promptTokens, completionTokens, cost, success)
+	var errText string
+	if !success {
+		errText = ev.Err.Error()
+	}
+
+	o.recorder.ObserveCall(&metrics.Observation{
+		// The observation instant. ev.Latency is the WHOLE logical call --
+		// this middleware sits outermost (see buildMaestroLLMsClient), so it
+		// folds in retry backoff -- and a consumer derives started_at from
+		// the pair rather than this code storing a third timestamp.
+		FinishedAt: time.Now().UTC(),
+		Tokens:     axes,
+		Cost:       cost,
+		Provider:   ev.Provider,
+		Model:      ev.Model,
+		StoryID:    storyID,
+		AgentID:    agentID,
+		Error:      errText,
+		Latency:    ev.Latency,
+		Success:    success,
+	})
 
 	if o.logger == nil {
 		return
 	}
 	if success {
-		o.logger.Info("LLM call to model '%s': latency %.3gs, request tokens: %d, response tokens: %d, total tokens: %d, cost $%.6f (agent: %s, story: %s, state: %s)",
-			ev.Model, ev.Latency.Seconds(), promptTokens, completionTokens, promptTokens+completionTokens, cost, agentID, storyID, state)
+		total, _ := axes.Total() //nolint:errcheck // logging only; the recorder validates and escalates
+		o.logger.Info("LLM call to model '%s': latency %.3gs, request tokens: %d, response tokens: %d, reasoning tokens: %d, total tokens: %d, cost %s (agent: %s, story: %s, state: %s)",
+			ev.Model, ev.Latency.Seconds(), axes.Input, axes.Output, axes.Reasoning, total, formatCost(cost), agentID, storyID, state)
 	} else {
 		o.logger.Error("LLM call to model '%s' failed: latency %.3gs, error: %s (agent: %s, story: %s, state: %s)",
-			ev.Model, ev.Latency.Seconds(), ev.Err.Error(), agentID, storyID, state)
+			ev.Model, ev.Latency.Seconds(), errText, agentID, storyID, state)
 	}
+}
+
+// calculateCost prices a successful call, returning nil when the model has no
+// modelled price.
+//
+// Nil rather than zero: a local model's calls are unpriced, not free, and
+// collapsing the two made a `paired-local` run indistinguishable from a run
+// that cost nothing. The plane's cost column is nullable for exactly this
+// distinction, and it can only carry it if this function stops flattening it.
+//
+//nolint:gocritic // hugeParam: ev is already a value copy from the caller's fixed signature.
+func (o *metricsObserver) calculateCost(ev *mmw.Event, success bool) *float64 {
+	if !success {
+		return nil
+	}
+	// Billing reads visible output PLUS reasoning: per maestro-llms ADR-0016
+	// (v0.7.1) OutputTokens alone undercounts. BillableOutputTokens is that
+	// sum, with a fallback for paths that populate only the components.
+	billable := ev.Usage.BillableOutputTokens
+	if billable == 0 {
+		billable = ev.Usage.OutputTokens + ev.Usage.ReasoningTokens
+	}
+	// Asked BEFORE the calculation, not after: CalculateCost returns (0, nil)
+	// for an unpriced model by design, so an error check here would never
+	// fire and every local call would be recorded as costing zero.
+	if !config.ModelPricingKnown(ev.Model) {
+		if o.logger != nil {
+			o.logger.Warn("No modelled pricing for model %s; recording the call as unpriced rather than free", ev.Model)
+		}
+		return nil
+	}
+	value, err := config.CalculateCost(ev.Model, ev.Usage.InputTokens, billable)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("Failed to calculate cost for model %s: %v", ev.Model, err)
+		}
+		return nil
+	}
+	return &value
+}
+
+// formatCost renders an optional cost for the human log line, keeping
+// "unpriced" distinct from "$0.000000" there too.
+func formatCost(cost *float64) string {
+	if cost == nil {
+		return "unpriced"
+	}
+	return fmt.Sprintf("$%.6f", *cost)
 }
 
 // suspendBoundary maps the toolkit's typed terminal errors back onto Maestro's

@@ -46,10 +46,10 @@ func seedLLMCallWithTokens(t *testing.T, f *fixture, org uuid.UUID, at time.Time
 	if _, err := f.pool.Exec(context.Background(), `
 		INSERT INTO llm_calls (llm_call_id, organization_id, principal_instance_id, provider, model,
 			started_at, finished_at, succeeded, error_message, cost_usd,
-			input_tokens, output_tokens, reasoning_tokens, cached_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			input_tokens, output_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		id, org, f.principalFor(org), provider, model, at, finishedAt, outcome, errorMessage, costValue,
-		tokens.input, tokens.output, tokens.reasoning, tokens.cached); err != nil {
+		tokens.input, tokens.output, tokens.reasoning, tokens.cached, 0); err != nil {
 		t.Fatalf("seed call: %v", err)
 	}
 	return id
@@ -433,7 +433,8 @@ func TestAggregateReportsCompletenessAndOutcome(t *testing.T) {
 		{"input", got.TotalInputTokens, 300},
 		{"output", got.TotalOutputTokens, 50},
 		{"reasoning", got.TotalReasoningTokens, 8},
-		{"cached", got.TotalCachedTokens, 10000},
+		{"cache read", got.TotalCacheReadTokens, 10000},
+		{"cache write", got.TotalCacheWriteTokens, 0},
 	} {
 		if total.got != total.want {
 			t.Errorf("%s tokens = %d, want %d", total.name, total.got, total.want)

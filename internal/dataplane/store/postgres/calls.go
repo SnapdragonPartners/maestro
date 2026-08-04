@@ -15,6 +15,30 @@ import (
 	"orchestrator/internal/dataplane/store"
 )
 
+// tokenCountsFrom reads a row's token measurement, or reports its absence.
+//
+// The schema guarantees all five axes are null together, so testing one is
+// enough — but the assembly reads all five explicitly rather than defaulting
+// four of them, because a future column added without its check would then
+// surface as a zero rather than as a compile error here.
+func tokenCountsFrom(row *gen.LlmCall) *store.TokenCounts {
+	if row.InputTokens == nil {
+		return nil
+	}
+	counts := store.TokenCounts{Input: *row.InputTokens}
+	for target, value := range map[*int64]*int64{
+		&counts.Output:     row.OutputTokens,
+		&counts.Reasoning:  row.ReasoningTokens,
+		&counts.CacheRead:  row.CacheReadTokens,
+		&counts.CacheWrite: row.CacheWriteTokens,
+	} {
+		if value != nil {
+			*target = *value
+		}
+	}
+	return &counts
+}
+
 func llmCallFromRow(row *gen.LlmCall) (store.LLMCall, error) {
 	cost, err := fromNumeric(row.CostUsd)
 	if err != nil {
@@ -38,12 +62,10 @@ func llmCallFromRow(row *gen.LlmCall) (store.LLMCall, error) {
 		Provider: row.Provider,
 		Model:    row.Model,
 
-		Tokens: store.TokenCounts{
-			Input:     row.InputTokens,
-			Output:    row.OutputTokens,
-			Reasoning: row.ReasoningTokens,
-			Cached:    row.CachedTokens,
-		},
+		// All five are null together (the schema's availability check), so
+		// one of them decides. Reading a partial set as zeros is the failure
+		// this pointer exists to make impossible.
+		Tokens: tokenCountsFrom(row),
 
 		LLMCallID:           fromUUID(row.LlmCallID),
 		OrganizationID:      fromUUID(row.OrganizationID),
@@ -126,7 +148,7 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 	if outcomeErr := checkOutcomeCoherence(input.Succeeded, input.ErrorMessage); outcomeErr != nil {
 		return store.LLMCompletion{}, outcomeErr
 	}
-	if tokenErr := checkTokenCounts(input.Tokens); tokenErr != nil {
+	if tokenErr := checkTokenCounts(input.Succeeded, input.Tokens); tokenErr != nil {
 		return store.LLMCompletion{}, tokenErr
 	}
 	finishedAt := completionInstant(input.FinishedAt, locked.LockedAt)
@@ -139,18 +161,24 @@ func (t *tx) CompleteLLMCall(ctx context.Context, input store.CompleteLLMCallInp
 	if err != nil {
 		return store.LLMCompletion{}, err
 	}
-	affected, err := t.queries.CompleteLLMCall(ctx, gen.CompleteLLMCallParams{
-		FinishedAt:      toTimestamptz(finishedAt),
-		Succeeded:       &input.Succeeded,
-		ErrorMessage:    input.ErrorMessage,
-		InputTokens:     input.Tokens.Input,
-		OutputTokens:    input.Tokens.Output,
-		ReasoningTokens: input.Tokens.Reasoning,
-		CachedTokens:    input.Tokens.Cached,
-		CostUsd:         cost,
-		LlmCallID:       toUUID(input.LLMCallID),
-		OrganizationID:  toUUID(input.OrganizationID),
-	})
+	params := gen.CompleteLLMCallParams{
+		FinishedAt:     toTimestamptz(finishedAt),
+		Succeeded:      &input.Succeeded,
+		ErrorMessage:   input.ErrorMessage,
+		CostUsd:        cost,
+		LlmCallID:      toUUID(input.LLMCallID),
+		OrganizationID: toUUID(input.OrganizationID),
+	}
+	// Left null together when there is no measurement, which the schema's
+	// availability check requires and checkTokenCounts has already agreed to.
+	if tokens := input.Tokens; tokens != nil {
+		params.InputTokens = &tokens.Input
+		params.OutputTokens = &tokens.Output
+		params.ReasoningTokens = &tokens.Reasoning
+		params.CacheReadTokens = &tokens.CacheRead
+		params.CacheWriteTokens = &tokens.CacheWrite
+	}
+	affected, err := t.queries.CompleteLLMCall(ctx, params)
 	if err != nil {
 		return store.LLMCompletion{}, fmt.Errorf("complete llm call %s: %w", input.LLMCallID, err)
 	}
@@ -228,16 +256,19 @@ func (t *tx) AggregateCost(ctx context.Context, organizationID uuid.UUID, provid
 	return store.CostAggregate{
 		TotalCost: total,
 		Tokens: store.TokenCounts{
-			Input:     row.TotalInputTokens,
-			Output:    row.TotalOutputTokens,
-			Reasoning: row.TotalReasoningTokens,
-			Cached:    row.TotalCachedTokens,
+			Input:      row.TotalInputTokens,
+			Output:     row.TotalOutputTokens,
+			Reasoning:  row.TotalReasoningTokens,
+			CacheRead:  row.TotalCacheReadTokens,
+			CacheWrite: row.TotalCacheWriteTokens,
 		},
-		MeasuredCalls:   row.MeasuredCalls,
-		UnmeasuredCalls: row.UnmeasuredCalls,
-		OpenCalls:       row.OpenCalls,
-		SucceededCalls:  row.SucceededCalls,
-		FailedCalls:     row.FailedCalls,
+		MeasuredCalls:         row.MeasuredCalls,
+		UnmeasuredCalls:       row.UnmeasuredCalls,
+		TokensMeasuredCalls:   row.TokensMeasuredCalls,
+		TokensUnmeasuredCalls: row.TokensUnmeasuredCalls,
+		OpenCalls:             row.OpenCalls,
+		SucceededCalls:        row.SucceededCalls,
+		FailedCalls:           row.FailedCalls,
 	}, nil
 }
 
@@ -302,7 +333,22 @@ func requireName(value, field string) error {
 // The schema's check refuses the row as a whole; this one says which
 // counter was wrong. A caller reading `llm_calls_tokens_nonnegative_check`
 // off a failed write has to go and read the migration to learn that much.
-func checkTokenCounts(tokens store.TokenCounts) error {
+func checkTokenCounts(succeeded bool, tokens *store.TokenCounts) error {
+	// Availability is decided by the outcome, not by the caller's
+	// convenience. A failed call has no measurement -- the provider layer
+	// reports usage only on success -- so counts supplied for one were
+	// invented, and their absence on a successful call means the caller
+	// dropped a measurement it had.
+	switch {
+	case succeeded && tokens == nil:
+		return errors.New("a successful call requires a token measurement; " +
+			"absent means the provider reported none, which cannot be true of a success")
+	case !succeeded && tokens != nil:
+		return errors.New("a failed call must not carry token counts: usage is reported only on " +
+			"success, so any counts here were invented and every aggregate would sum them as measured")
+	case tokens == nil:
+		return nil
+	}
 	for _, counter := range []struct {
 		field string
 		value int64
@@ -310,7 +356,8 @@ func checkTokenCounts(tokens store.TokenCounts) error {
 		{"input_tokens", tokens.Input},
 		{"output_tokens", tokens.Output},
 		{"reasoning_tokens", tokens.Reasoning},
-		{"cached_tokens", tokens.Cached},
+		{"cache_read_tokens", tokens.CacheRead},
+		{"cache_write_tokens", tokens.CacheWrite},
 	} {
 		if counter.value < 0 {
 			return fmt.Errorf("%s is %d; a token counter is a count and cannot be negative",

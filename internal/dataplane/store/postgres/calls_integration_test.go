@@ -71,7 +71,7 @@ func TestCallIsCreatedOpenThenCompletedExactlyOnce(t *testing.T) {
 		OrganizationID: f.organizationID,
 		LLMCallID:      call.LLMCallID,
 		Succeeded:      true,
-		Tokens:         store.TokenCounts{Input: 11, Output: 22, Reasoning: 33, Cached: 44},
+		Tokens:         &store.TokenCounts{Input: 11, Output: 22, Reasoning: 33, CacheRead: 44, CacheWrite: 7},
 		Cost:           &cost,
 	})
 	if err != nil {
@@ -94,8 +94,8 @@ func TestCallIsCreatedOpenThenCompletedExactlyOnce(t *testing.T) {
 	loser, err := f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
 		OrganizationID: f.organizationID,
 		LLMCallID:      call.LLMCallID,
-		Succeeded:      false,
-		Tokens:         store.TokenCounts{Input: 1, Output: 2},
+		Succeeded:      true,
+		Tokens:         &store.TokenCounts{Input: 1, Output: 2},
 		Cost:           &loserCost,
 	})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestCallIsCreatedOpenThenCompletedExactlyOnce(t *testing.T) {
 	}
 	// The whole outcome, not just the flags: tokens and cost are what a
 	// losing caller needs to know were not its own.
-	if loser.Call.Tokens != (store.TokenCounts{Input: 11, Output: 22, Reasoning: 33, Cached: 44}) {
+	if loser.Call.Tokens == nil || *loser.Call.Tokens != (store.TokenCounts{Input: 11, Output: 22, Reasoning: 33, CacheRead: 44, CacheWrite: 7}) {
 		t.Errorf("repeat returned tokens %+v, want the winner's", loser.Call.Tokens)
 	}
 	if loser.Call.Cost == nil || loser.Call.Cost.String() != "1.23456789" {
@@ -179,7 +179,7 @@ func TestUnmeasuredCostStaysNull(t *testing.T) {
 		OrganizationID: f.organizationID,
 		LLMCallID:      call.LLMCallID,
 		Succeeded:      true,
-		Tokens:         store.TokenCounts{Input: 5},
+		Tokens:         &store.TokenCounts{Input: 5},
 	})
 	if err != nil {
 		t.Fatalf("complete without cost: %v", err)
@@ -241,13 +241,36 @@ func TestCompletionRejections(t *testing.T) {
 			want:  "must carry a non-blank diagnostic",
 		},
 		{
+			// A failed call has NO measurement: the provider layer reports
+			// usage only on success, so counts here were invented, and every
+			// aggregate downstream would sum them as though measured.
+			name: "failure carrying token counts",
+			input: store.CompleteLLMCallInput{
+				Succeeded: false, ErrorMessage: &message,
+				Tokens: &store.TokenCounts{Input: 10},
+			},
+			want: "must not carry token counts",
+		},
+		{
+			// And the other direction: a success without a measurement is a
+			// caller dropping one it had.
+			name:  "success with no measurement",
+			input: store.CompleteLLMCallInput{Succeeded: true},
+			want:  "requires a token measurement",
+		},
+		{
 			name:  "negative token counter",
-			input: store.CompleteLLMCallInput{Succeeded: true, Tokens: store.TokenCounts{Reasoning: -1}},
+			input: store.CompleteLLMCallInput{Succeeded: true, Tokens: &store.TokenCounts{Reasoning: -1}},
 			want:  "reasoning_tokens is -1",
 		},
 		{
+			name:  "negative cache write counter",
+			input: store.CompleteLLMCallInput{Succeeded: true, Tokens: &store.TokenCounts{CacheWrite: -1}},
+			want:  "cache_write_tokens is -1",
+		},
+		{
 			name:  "finishing before it started",
-			input: store.CompleteLLMCallInput{Succeeded: true, FinishedAt: &past},
+			input: store.CompleteLLMCallInput{Succeeded: true, Tokens: &store.TokenCounts{}, FinishedAt: &past},
 			want:  "not an interval",
 		},
 	} {
@@ -422,9 +445,12 @@ func TestDefaultCompletionInstantIsValidated(t *testing.T) {
 		t.Fatalf("create call started in the future: %v", err)
 	}
 
-	// No FinishedAt: the default applies, and it precedes started_at.
+	// No FinishedAt: the default applies, and it precedes started_at. The
+	// measurement is supplied so the rejection under test is the interval
+	// one, not the availability rule that runs before it.
 	_, err = f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
 		OrganizationID: f.organizationID, LLMCallID: call.LLMCallID, Succeeded: true,
+		Tokens: &store.TokenCounts{},
 	})
 	requireRejection(t, err, "not an interval")
 	if strings.Contains(err.Error(), "interval_check") {
@@ -436,6 +462,7 @@ func TestDefaultCompletionInstantIsValidated(t *testing.T) {
 	ordinary := openLLMCall(t, f)
 	outcome, err := f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
 		OrganizationID: f.organizationID, LLMCallID: ordinary.LLMCallID, Succeeded: true,
+		Tokens: &store.TokenCounts{},
 	})
 	if err != nil {
 		t.Fatalf("ordinary completion: %v", err)
@@ -596,14 +623,17 @@ func TestAggregateReportsExactCostAndCompleteness(t *testing.T) {
 		if _, err := f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
 			OrganizationID: f.organizationID, LLMCallID: call.LLMCallID,
 			Succeeded: true, Cost: &cost,
-			Tokens: store.TokenCounts{Input: 10, Output: 20, Reasoning: 30, Cached: 40},
+			Tokens: &store.TokenCounts{Input: 10, Output: 20, Reasoning: 30, CacheRead: 40, CacheWrite: 5},
 		}); err != nil {
 			t.Fatalf("complete %s: %v", text, err)
 		}
 	}
+	// Cost-unmeasured but TOKEN-measured: the paired-local shape, and the
+	// case that proves the two availability axes are not the same axis.
 	unmeasured := openLLMCall(t, f)
 	if _, err := f.store.CompleteLLMCall(ctx, store.CompleteLLMCallInput{
 		OrganizationID: f.organizationID, LLMCallID: unmeasured.LLMCallID, Succeeded: true,
+		Tokens: &store.TokenCounts{Input: 1, Output: 1, Reasoning: 1, CacheRead: 1, CacheWrite: 1},
 	}); err != nil {
 		t.Fatalf("complete unmeasured: %v", err)
 	}
@@ -635,8 +665,24 @@ func TestAggregateReportsExactCostAndCompleteness(t *testing.T) {
 	if aggregate.SucceededCalls+aggregate.FailedCalls != aggregate.MeasuredCalls+aggregate.UnmeasuredCalls {
 		t.Error("outcome counts and cost-availability counts describe different populations")
 	}
-	if aggregate.Tokens != (store.TokenCounts{Input: 20, Output: 40, Reasoning: 60, Cached: 80}) {
-		t.Errorf("token totals are %+v, want 20/40/60/80", aggregate.Tokens)
+	// Each axis totalled from its OWN column: the two cache axes carry
+	// different values on purpose, so a rollup reading the wrong one cannot
+	// pass this.
+	if aggregate.Tokens != (store.TokenCounts{Input: 21, Output: 41, Reasoning: 61, CacheRead: 81, CacheWrite: 11}) {
+		t.Errorf("token totals are %+v, want 21/41/61/81/11", aggregate.Tokens)
+	}
+	// Token availability is a SEPARATE axis from cost availability. Three
+	// completed calls carry a measurement (two priced, one unpriced); the
+	// failed one carries none, because usage is reported only on success.
+	if aggregate.TokensMeasuredCalls != 3 || aggregate.TokensUnmeasuredCalls != 1 {
+		t.Errorf("token completeness is measured=%d unmeasured=%d, want 3/1",
+			aggregate.TokensMeasuredCalls, aggregate.TokensUnmeasuredCalls)
+	}
+	// And the axes genuinely differ on this population: folding them into
+	// one pair would have to lose one of these two facts.
+	if aggregate.MeasuredCalls == aggregate.TokensMeasuredCalls {
+		t.Error("cost and token availability agree here by accident; the fixture no longer " +
+			"distinguishes the two axes, so this test would pass with them folded together")
 	}
 }
 
