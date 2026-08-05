@@ -291,6 +291,14 @@ func checkAttemptShape(attempt *ManifestAttempt) error {
 // EvidenceDir resolves an attempt's evidence directory INSIDE the results
 // store, and proves the resolved path stays there.
 //
+// ABSENCE IS NOT AN ERROR. present=false means this attempt has no evidence
+// on disk, which D8 makes an ordinary outcome: the attempt imports with zero
+// attachments. Not every attempt produces evidence, an interrupted suite may
+// never have written any, and a store can be pruned — none of which should
+// cost an operator their import. The distinction matters because the two
+// outcomes want opposite responses: absence is reported and moved past, while
+// a directory that exists but cannot be trusted must stop the import.
+//
 // The record's own EvidencePointer locations are absolute paths recorded on
 // the machine that ran the attempt: faithful provenance and a poor locator,
 // since the store is portable and those paths are not. So the directory is
@@ -307,54 +315,68 @@ func checkAttemptShape(attempt *ManifestAttempt) error {
 // directory resolves to a legitimate in-store path and passes any containment
 // test, while attributing one attempt's evidence to another — a
 // misattribution containment was never able to see.
-func (s *Suite) EvidenceDir(runID string) (string, error) {
+func (s *Suite) EvidenceDir(runID string) (dir string, present bool, err error) {
 	if !runIDPattern.MatchString(runID) {
-		return "", reject(runID, ReasonRunID, "cannot be used as a path component")
+		return "", false, reject(runID, ReasonRunID, "cannot be used as a path component")
 	}
 	root, rootErr := filepath.EvalSymlinks(s.Dir)
 	if rootErr != nil {
-		return "", fmt.Errorf("resolve results store root: %w", rootErr)
+		return "", false, fmt.Errorf("resolve results store root: %w", rootErr)
 	}
 	evidenceRoot := filepath.Join(root, "evidence")
-	if linkErr := refuseSymlink(evidenceRoot, "the evidence root"); linkErr != nil {
-		return "", linkErr
+	switch found, linkErr := inspectDir(evidenceRoot, "the evidence root"); {
+	case linkErr != nil:
+		return "", false, linkErr
+	case !found:
+		// A store with no evidence tree at all. Every attempt in it imports
+		// without attachments; that is a fact about the store, not a fault.
+		return "", false, nil
 	}
-	dir := filepath.Join(evidenceRoot, runID)
-	if linkErr := refuseSymlink(dir, "an evidence directory"); linkErr != nil {
-		return "", linkErr
+	candidate := filepath.Join(evidenceRoot, runID)
+	switch found, linkErr := inspectDir(candidate, "an evidence directory"); {
+	case linkErr != nil:
+		return "", false, linkErr
+	case !found:
+		return "", false, nil
 	}
-	// Resolved and compared anyway. The Lstat checks above cover the two
+	// Resolved and compared anyway. The link checks above cover the two
 	// components this function builds; this covers everything else on the
 	// path, and costs one syscall.
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolve evidence dir: %w", err)
+	resolved, evalErr := filepath.EvalSymlinks(candidate)
+	if evalErr != nil {
+		return "", false, fmt.Errorf("resolve evidence dir: %w", evalErr)
 	}
 	// The separator is part of the prefix, so a sibling named
 	// "evidence-other" cannot pass a test for "evidence".
 	if !strings.HasPrefix(resolved, evidenceRoot+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: evidence for %q resolves to %s, outside %s",
+		return "", false, fmt.Errorf("%w: evidence for %q resolves to %s, outside %s",
 			ErrIncoherent, runID, resolved, evidenceRoot)
 	}
-	return resolved, nil
+	return resolved, true, nil
 }
 
-// refuseSymlink rejects a path that IS a symlink, whatever it points at.
+// inspectDir reports whether path is a usable directory, refusing one that is
+// a symlink or not a directory at all.
 //
 // Lstat rather than Stat: Stat follows the link and reports the target, which
-// is the question this is not asking.
-func refuseSymlink(path, what string) error {
+// is the question this is not asking. A missing path is reported as absent
+// rather than as an error — the caller decides what absence means, and for
+// evidence it means zero attachments.
+func inspectDir(path, what string) (bool, error) {
 	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return fmt.Errorf("inspect %s: %w", what, err)
+		return false, fmt.Errorf("inspect %s: %w", what, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: %s (%s) is a symbolic link; evidence is read from the store's own "+
+		return false, fmt.Errorf("%w: %s (%s) is a symbolic link; evidence is read from the store's own "+
 			"layout, and a link can attribute one attempt's files to another even when its target "+
 			"is inside the store", ErrIncoherent, what, path)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("%w: %s (%s) is not a directory", ErrIncoherent, what, path)
+		return false, fmt.Errorf("%w: %s (%s) is not a directory", ErrIncoherent, what, path)
 	}
-	return nil
+	return true, nil
 }

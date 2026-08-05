@@ -244,16 +244,19 @@ func TestEvidenceDirStaysInsideTheStore(t *testing.T) {
 	}
 
 	// The control: a legitimate run id resolves inside the store.
-	resolved, err := suite.EvidenceDir(runID)
+	resolved, present, err := suite.EvidenceDir(runID)
 	if err != nil {
 		t.Fatalf("a legitimate evidence dir must resolve: %v", err)
+	}
+	if !present {
+		t.Fatal("an evidence dir that exists must be reported present")
 	}
 	if !strings.Contains(resolved, "evidence") {
 		t.Fatalf("resolved to %s, which is not under the evidence root", resolved)
 	}
 
 	for _, hostile := range []string{"../escape", "..", ".", "a/b", "", "/etc"} {
-		if _, err := suite.EvidenceDir(hostile); err == nil {
+		if _, _, err := suite.EvidenceDir(hostile); err == nil {
 			t.Errorf("run id %q must be refused as a path component", hostile)
 		}
 	}
@@ -264,7 +267,7 @@ func TestEvidenceDirStaysInsideTheStore(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "evidence", "escapee")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if _, err := suite.EvidenceDir("escapee"); err == nil {
+	if _, _, err := suite.EvidenceDir("escapee"); err == nil {
 		t.Error("a symlink pointing outside the results store must be refused")
 	}
 
@@ -276,7 +279,7 @@ func TestEvidenceDirStaysInsideTheStore(t *testing.T) {
 		filepath.Join(dir, "evidence", "impostor")); err != nil {
 		t.Fatalf("seed in-store symlink: %v", err)
 	}
-	if _, err := suite.EvidenceDir("impostor"); err == nil {
+	if _, _, err := suite.EvidenceDir("impostor"); err == nil {
 		t.Error("a symlink to another run's evidence must be refused even though its target " +
 			"is inside the store: it misattributes one attempt's files to another")
 	}
@@ -308,8 +311,57 @@ func TestEvidenceRootCannotBeEscaped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read suite: %v", err)
 	}
-	if _, err := suite.EvidenceDir(runID); err == nil {
+	if _, _, err := suite.EvidenceDir(runID); err == nil {
 		t.Error("an evidence root that is a symlink out of the store must be refused; " +
 			"anchoring on it would compare an escaped root against itself")
 	}
+}
+
+// TestMissingEvidenceIsNotAFailure pins D8: an attempt with no evidence
+// imports WITHOUT attachments.
+//
+// Absence and untrustworthiness want opposite responses, and an earlier
+// version conflated them: Lstat reports ENOENT, which was wrapped and
+// returned, so a suite whose evidence had never been written — or had been
+// pruned — would have failed the whole import rather than importing with zero
+// attachments. Both shapes of absence are covered, because they arise
+// differently: a store that never had an evidence tree at all, and a store
+// that has one but not for this attempt.
+func TestMissingEvidenceIsNotAFailure(t *testing.T) {
+	records := []map[string]any{baseRecord(t)}
+	runID, _ := records[0]["run_id"].(string)
+
+	t.Run("no evidence tree at all", func(t *testing.T) {
+		dir := writeSuite(t, "golden-all-probe", records, completedManifest("golden-all-probe", records))
+		suite, err := benchmarkimport.ReadSuite(dir, "golden-all-probe")
+		if err != nil {
+			t.Fatalf("read suite: %v", err)
+		}
+		resolved, present, err := suite.EvidenceDir(runID)
+		if err != nil {
+			t.Fatalf("a store with no evidence tree must not fail the import: %v", err)
+		}
+		if present || resolved != "" {
+			t.Errorf("absent evidence must report present=false, got %q/%v", resolved, present)
+		}
+	})
+
+	t.Run("evidence tree without this run", func(t *testing.T) {
+		dir := writeSuite(t, "golden-all-probe", records, completedManifest("golden-all-probe", records))
+		// Another attempt's directory exists; this one's does not.
+		if err := os.MkdirAll(filepath.Join(dir, "evidence", "story-b--config--r1--beef0001"), 0o750); err != nil {
+			t.Fatalf("seed evidence: %v", err)
+		}
+		suite, err := benchmarkimport.ReadSuite(dir, "golden-all-probe")
+		if err != nil {
+			t.Fatalf("read suite: %v", err)
+		}
+		_, present, err := suite.EvidenceDir(runID)
+		if err != nil {
+			t.Fatalf("a missing per-run directory must not fail the import: %v", err)
+		}
+		if present {
+			t.Error("a run with no evidence directory must report present=false")
+		}
+	})
 }
