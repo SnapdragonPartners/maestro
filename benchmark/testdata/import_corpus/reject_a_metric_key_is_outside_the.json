@@ -1,6 +1,6 @@
 {
-  "divergence": "metric registry completeness is the runner's own vocabulary; mirroring the key list here would be the hand-maintained enumeration D1 exists to avoid",
-  "expect": "accept",
+  "expect": "reject",
+  "reason": "a metric key is outside the registry",
   "record": {
     "checks": [
       {
@@ -22,7 +22,50 @@
       "cleanup_verified": true,
       "workspace_dir": "/tmp/ws"
     },
-    "metrics": {},
+    "metrics": {
+      "cost_usd": {
+        "status": "value",
+        "value": 1.25
+      },
+      "human_attention_seconds": {
+        "status": "not_applicable"
+      },
+      "human_interventions": {
+        "status": "value",
+        "value": 0
+      },
+      "invented_metric": {
+        "status": "unsupported"
+      },
+      "iterations": {
+        "status": "value",
+        "value": 3
+      },
+      "llm_calls": {
+        "status": "value",
+        "value": 42
+      },
+      "review_cycles": {
+        "status": "value",
+        "value": 1
+      },
+      "self_repair_cycles": {
+        "status": "value",
+        "value": 0
+      },
+      "tokens_total": {
+        "status": "value",
+        "value": 12000
+      },
+      "tool_calls": {
+        "status": "value",
+        "value": 17
+      },
+      "wall_clock_seconds": {
+        "status": "value",
+        "value": 600.0
+      }
+    },
     "record_schema_version": 1,
     "run_id": "story-a--config--r1--abcd1234",
     "solution_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -62,6 +105,5 @@
       }
     ],
     "verdict": "accepted"
-  },
-  "runner_expect": "reject"
+  }
 }

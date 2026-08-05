@@ -36,10 +36,6 @@ var (
 	knownEnforcement = map[string]bool{
 		"streamed": true, "self-enforced": true, "post-hoc": true,
 	}
-
-	knownMetricStatus = map[string]bool{
-		"value": true, "unsupported": true, "not_applicable": true, "unavailable": true,
-	}
 )
 
 // Validate enforces the per-record semantics.
@@ -53,7 +49,7 @@ var (
 func (r *Record) Validate() error {
 	for _, check := range []func() error{
 		r.validateSchema, r.validateIdentity, r.validateVerdict,
-		r.validateTimestamps, r.validateTarget, r.validateResults,
+		r.validateSolutionCommit, r.validateTimestamps, r.validateTarget, r.validateResults,
 		r.validateMetrics, r.validateIsolation,
 	} {
 		if err := check(); err != nil {
@@ -145,9 +141,31 @@ func (r *Record) validateAccepted() error {
 	return nil
 }
 
+// validateSolutionCommit checks the shape wherever the field is present.
+//
+// validateAccepted requires it on an accepted record; this covers the other
+// verdicts, where the field is OPTIONAL but not arbitrary. A failed attempt
+// that produced a commit still names a real one, and a malformed value there
+// would be persisted as though it resolved.
+func (r *Record) validateSolutionCommit() error {
+	if r.SolutionCommit == "" {
+		return nil
+	}
+	if !commitPattern.MatchString(r.SolutionCommit) {
+		return reject(r.RunID, ReasonSolutionCommit, fmt.Sprintf("%q", r.SolutionCommit))
+	}
+	return nil
+}
+
 func (r *Record) validateTimestamps() error {
 	if r.StartedAt == nil || r.FinishedAt == nil {
 		return reject(r.RunID, ReasonTimestamps, "")
+	}
+	// The zero time is year 1: present in the JSON, and no more a timestamp
+	// than an absent field. A record carrying it would sort before every
+	// window any query could ask about.
+	if r.StartedAt.IsZero() || r.FinishedAt.IsZero() {
+		return reject(r.RunID, ReasonTimestamps, "a timestamp is the zero time")
 	}
 	if r.FinishedAt.Before(*r.StartedAt) {
 		return reject(r.RunID, ReasonTimeOrder,
@@ -193,34 +211,135 @@ func (r *Record) validateResults() error {
 	return nil
 }
 
-// validateMetrics checks each metric's SHAPE and deliberately not the
-// registry's completeness.
+// metricSpec mirrors one registry entry.
 //
-// The metric registry is the runner's own vocabulary. Mirroring the key list
-// here would be precisely the hand-maintained enumeration this repository has
-// been burned by, and it would go stale the first time the runner adds a key.
-// The importer stores what it is given; a record missing a registry key is
-// the runner's rejection to make, and the corpus DECLARES that divergence
-// rather than hiding it.
+// Mirroring the registry is deliberate and was reconsidered. An earlier
+// version validated metric SHAPE only and declared completeness a divergence,
+// reasoning that the key list is the runner's vocabulary. That was wrong:
+// completeness is part of the contract the plane PERSISTS, and a record
+// missing a key would be stored as though it were whole. The drift alarm is
+// the corpus base, which carries every key — add one to the runner's registry
+// without adding it here and the base stops being accepted by both sides.
+type metricSpec struct {
+	key string
+	// integral marks count-kind metrics, whose values must be whole numbers.
+	integral bool
+}
+
+// metricRegistry is the runner's registry in its canonical order.
+//
+//nolint:gochecknoglobals // Package-level table, immutable after init.
+var metricRegistry = []metricSpec{
+	{"tokens_total", true},
+	{"cost_usd", false},
+	{"wall_clock_seconds", false},
+	{"llm_calls", true},
+	{"tool_calls", true},
+	{"iterations", true},
+	{"review_cycles", true},
+	{"self_repair_cycles", true},
+	{"human_interventions", true},
+	{"human_attention_seconds", false},
+}
+
+// engineOwnedMetrics are measured by the engine from its own timestamps, so a
+// value is legal regardless of what the target declares it can report.
+//
+//nolint:gochecknoglobals // Package-level set, immutable after init.
+var engineOwnedMetrics = map[string]bool{"wall_clock_seconds": true}
+
+// validateMetrics enforces completeness, per-metric coherence, and the
+// capability agreement — every rule the runner applies, because the importer
+// cannot rely on the runner having applied them to the bytes on disk.
 func (r *Record) validateMetrics() error {
+	known := make(map[string]bool, len(metricRegistry))
+	for _, spec := range metricRegistry {
+		known[spec.key] = true
+		metric, present := r.Metrics[spec.key]
+		if !present {
+			return reject(r.RunID, ReasonMetricMissing, spec.key)
+		}
+		if err := r.validateMetric(spec, metric); err != nil {
+			return err
+		}
+	}
 	for key := range r.Metrics {
-		metric := r.Metrics[key]
-		if !knownMetricStatus[metric.Status] {
-			return reject(r.RunID, ReasonMetricStatus, fmt.Sprintf("%s: %q", key, metric.Status))
+		if !known[key] {
+			// The registry is the only namespace. An unknown key is a record
+			// written against a vocabulary this build does not have, which
+			// record_schema_version was supposed to catch.
+			return reject(r.RunID, ReasonMetricUnknownKey, key)
+		}
+	}
+	return r.validateCapabilities()
+}
+
+// validateMetric checks one observation against its registry entry.
+func (r *Record) validateMetric(spec metricSpec, metric Metric) error {
+	switch metric.Status {
+	case "value":
+		if metric.Value == nil {
+			return reject(r.RunID, ReasonMetricValue, spec.key+": status value with no value")
+		}
+		value := *metric.Value
+		switch {
+		case math.IsNaN(value) || math.IsInf(value, 0):
+			return reject(r.RunID, ReasonMetricValue, fmt.Sprintf("%s: %v is not finite", spec.key, value))
+		case value < 0:
+			return reject(r.RunID, ReasonMetricNegative, fmt.Sprintf("%s: %v", spec.key, value))
+		case spec.integral && value != math.Trunc(value):
+			return reject(r.RunID, ReasonMetricFractional, fmt.Sprintf("%s: %v", spec.key, value))
+		}
+	case "unsupported", "not_applicable", "unavailable":
+		if metric.Value != nil {
+			return reject(r.RunID, ReasonMetricValue,
+				fmt.Sprintf("%s: status %q carries a value", spec.key, metric.Status))
+		}
+	default:
+		return reject(r.RunID, ReasonMetricStatus, fmt.Sprintf("%s: %q", spec.key, metric.Status))
+	}
+	return nil
+}
+
+// validateCapabilities enforces that a metrics map cannot contradict the
+// capabilities its target declared.
+//
+// A target that says it cannot report a metric, and then reports one, has
+// described two different instruments — and the capability list is what a
+// comparison uses to decide whether an absence is a limitation or a result.
+func (r *Record) validateCapabilities() error {
+	capable := make(map[string]bool, len(r.Target.Capabilities))
+	known := make(map[string]bool, len(metricRegistry))
+	for _, spec := range metricRegistry {
+		known[spec.key] = true
+	}
+	for _, key := range r.Target.Capabilities {
+		if !known[key] {
+			return reject(r.RunID, ReasonCapabilityKey, key)
+		}
+		if capable[key] {
+			return reject(r.RunID, ReasonCapabilityDup, key)
+		}
+		capable[key] = true
+	}
+	for _, spec := range metricRegistry {
+		metric, present := r.Metrics[spec.key]
+		if !present {
+			continue // completeness is validateMetrics's job
 		}
 		switch metric.Status {
-		case "value":
-			if metric.Value == nil {
-				return reject(r.RunID, ReasonMetricValue, key+": status value with no value")
+		case "unsupported":
+			if capable[spec.key] {
+				return reject(r.RunID, ReasonCapabilityConflict,
+					spec.key+" reported unsupported by a target that declares the capability")
 			}
-			if math.IsNaN(*metric.Value) || math.IsInf(*metric.Value, 0) {
-				return reject(r.RunID, ReasonMetricValue, fmt.Sprintf("%s: %v is not finite", key, *metric.Value))
+		case "value", "unavailable":
+			if !capable[spec.key] && !engineOwnedMetrics[spec.key] {
+				return reject(r.RunID, ReasonCapabilityConflict,
+					fmt.Sprintf("%s reported %s without a declared capability", spec.key, metric.Status))
 			}
-		default:
-			if metric.Value != nil {
-				return reject(r.RunID, ReasonMetricValue,
-					fmt.Sprintf("%s: status %q carries a value", key, metric.Status))
-			}
+		case "not_applicable":
+			// Story-dependent; legal with or without the capability.
 		}
 	}
 	return nil

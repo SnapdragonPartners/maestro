@@ -26,9 +26,9 @@ const corpusDir = "../testdata/import_corpus"
 
 type corpusCase struct {
 	Record json.RawMessage `json:"record"`
-	// RawLine is for cases about the LINE rather than the record. The runner
-	// has no line-level contract of its own, so those cases carry a declared
-	// divergence and are skipped here.
+	// RawLine is for cases about the LINE rather than the record — trailing
+	// content, which no JSON object can express. It is fed through the same
+	// decoding as any other case.
 	RawLine string `json:"raw_line,omitempty"`
 
 	Expect       string `json:"expect"`
@@ -65,19 +65,23 @@ func TestCorpusAgreesWithTheRunner(t *testing.T) {
 			if decodeErr := json.Unmarshal(raw, &testCase); decodeErr != nil {
 				t.Fatalf("decode case: %v", decodeErr)
 			}
+			// RawLine cases go through the runner's REAL decoding, which is
+			// json.Unmarshal over one complete scanner line
+			// (results.ReadSuite). That rejects trailing content, so a
+			// trailing-object or stray-delimiter case is refused by both
+			// sides and is NOT a divergence — an earlier version of this
+			// test skipped these cases and declared one that did not exist.
+			// Unknown-field handling is the only genuine decoding divergence:
+			// encoding/json ignores what strict decoding refuses.
+			line := testCase.Record
 			if testCase.RawLine != "" {
-				// A line-level case. It carries a declared divergence, which
-				// loadCorpus on the importer side has already required to
-				// state a reason.
-				t.Skipf("line-level case, divergence declared: %s", testCase.Divergence)
+				line = json.RawMessage(testCase.RawLine)
 			}
 
 			var record runrecord.RunRecord
-			// The runner's own decoding is not strict, which is itself one of
-			// the declared divergences: encoding/json ignores unknown fields.
-			if unmarshalErr := json.Unmarshal(testCase.Record, &record); unmarshalErr != nil {
+			if unmarshalErr := json.Unmarshal(line, &record); unmarshalErr != nil {
 				if testCase.expected() == "reject" {
-					return // malformed JSON is a rejection either way
+					return // malformed or over-long JSON is a rejection either way
 				}
 				t.Fatalf("must be accepted, but did not decode: %v", unmarshalErr)
 			}

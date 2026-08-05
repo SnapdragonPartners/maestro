@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,10 @@ var (
 
 // ManifestSchemaVersion is the manifest contract this build reads.
 const ManifestSchemaVersion = 2
+
+// statusCompleted is the one attempt status that must name a run and be
+// matched by a record.
+const statusCompleted = "completed"
 
 // ManifestAttempt is one planned cell of the suite matrix and its outcome.
 type ManifestAttempt struct {
@@ -121,6 +126,19 @@ func readManifest(dir, suiteRunID string) (*Manifest, error) {
 	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("decode manifest %s: %w", path, err)
 	}
+	// Exhaustion proven by decoding AGAIN and requiring io.EOF, exactly as
+	// the record path does. Decoder.More would not do: it answers "is there
+	// another element in the array or object I am inside?", and after a
+	// top-level value there is none, so it reports false for a stray `]` or
+	// `}` — the one form of trailing garbage that looks like an ending. The
+	// runner's json.Unmarshal rejects all of it, so accepting any here would
+	// be a divergence nobody declared.
+	var rest json.RawMessage
+	if err := decoder.Decode(&rest); err == nil {
+		return nil, fmt.Errorf("%w: manifest %s carries content after the object", ErrIncoherent, path)
+	} else if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: manifest %s: %w", ErrIncoherent, path, err)
+	}
 	if manifest.SchemaVersion != ManifestSchemaVersion {
 		return nil, fmt.Errorf("%w: manifest %s is version %d, this build reads %d",
 			ErrIncoherent, path, manifest.SchemaVersion, ManifestSchemaVersion)
@@ -171,22 +189,26 @@ func (s *Suite) checkCoherence(suiteRunID string) error {
 	if !knownStopReason[s.Manifest.StopReason] {
 		return fmt.Errorf("%w: manifest stop_reason %q", ErrIncoherent, s.Manifest.StopReason)
 	}
-	seen := make(map[string]bool, len(s.Records))
+	// Keyed by run id to the RECORD, not to a bool: the manifest duplicates
+	// each attempt's story and config, and membership alone would accept an
+	// entry naming the right run and the wrong story — leaving the report's
+	// matrix inconsistent with the record underneath it.
+	byRunID := make(map[string]*Record, len(s.Records))
 	for i := range s.Records {
 		record := &s.Records[i]
 		if record.SuiteRunID != suiteRunID {
 			return fmt.Errorf("%w: record %s names suite %q, file names %q",
 				ErrIncoherent, record.RunID, record.SuiteRunID, suiteRunID)
 		}
-		if seen[record.RunID] {
+		if _, seen := byRunID[record.RunID]; seen {
 			// A duplicate is how one attempt becomes two ledger rows, or one
 			// rejected import: the second offer of the same identity would
 			// be compared against the first.
 			return fmt.Errorf("%w: run id %q appears twice", ErrIncoherent, record.RunID)
 		}
-		seen[record.RunID] = true
+		byRunID[record.RunID] = record
 	}
-	return s.checkManifestAgreement(seen)
+	return s.checkManifestAgreement(byRunID)
 }
 
 // checkManifestAgreement compares the manifest's account of the matrix
@@ -196,27 +218,36 @@ func (s *Suite) checkCoherence(suiteRunID string) error {
 // record is a LOST attempt, and a record with no entry is a suite the
 // manifest does not describe. Either makes the manifest fiction, and the
 // report quotes the manifest.
-func (s *Suite) checkManifestAgreement(records map[string]bool) error {
+func (s *Suite) checkManifestAgreement(records map[string]*Record) error {
 	completed := make(map[string]bool, len(s.Manifest.Attempts))
 	for i := range s.Manifest.Attempts {
 		attempt := &s.Manifest.Attempts[i]
-		if !knownAttemptStatus[attempt.Status] {
-			return fmt.Errorf("%w: manifest attempt status %q", ErrIncoherent, attempt.Status)
+		if err := checkAttemptShape(attempt); err != nil {
+			return err
 		}
-		if attempt.Status != "completed" {
+		if attempt.Status != statusCompleted {
 			continue
-		}
-		if attempt.RunID == "" {
-			return fmt.Errorf("%w: a completed manifest attempt names no run id", ErrIncoherent)
 		}
 		if completed[attempt.RunID] {
 			return fmt.Errorf("%w: manifest lists run id %q twice as completed",
 				ErrIncoherent, attempt.RunID)
 		}
 		completed[attempt.RunID] = true
-		if !records[attempt.RunID] {
+		record, present := records[attempt.RunID]
+		if !present {
 			return fmt.Errorf("%w: manifest reports %q completed but no record exists; the attempt is lost",
 				ErrIncoherent, attempt.RunID)
+		}
+		// The duplicated fields must agree. They are the matrix the report
+		// quotes, and a disagreement here means the two files describe
+		// different runs of the same identity.
+		if attempt.Story != record.StoryID {
+			return fmt.Errorf("%w: manifest says %q ran story %q, the record says %q",
+				ErrIncoherent, attempt.RunID, attempt.Story, record.StoryID)
+		}
+		if attempt.Config != record.ConfigName {
+			return fmt.Errorf("%w: manifest says %q ran config %q, the record says %q",
+				ErrIncoherent, attempt.RunID, attempt.Config, record.ConfigName)
 		}
 	}
 	for runID := range records {
@@ -224,6 +255,35 @@ func (s *Suite) checkManifestAgreement(records map[string]bool) error {
 			return fmt.Errorf("%w: record %q has no completed manifest entry; the manifest does not "+
 				"describe this suite", ErrIncoherent, runID)
 		}
+	}
+	return nil
+}
+
+// checkAttemptShape validates one manifest entry on its own terms.
+//
+// Every entry, not only the completed ones: a planned or skipped cell is
+// still part of the matrix the report quotes, and one naming no story is a
+// cell nobody can interpret.
+func checkAttemptShape(attempt *ManifestAttempt) error {
+	switch {
+	case !knownAttemptStatus[attempt.Status]:
+		return fmt.Errorf("%w: manifest attempt status %q", ErrIncoherent, attempt.Status)
+	case strings.TrimSpace(attempt.Story) == "":
+		return fmt.Errorf("%w: a manifest attempt names no story", ErrIncoherent)
+	case strings.TrimSpace(attempt.Config) == "":
+		return fmt.Errorf("%w: a manifest attempt names no config", ErrIncoherent)
+	case attempt.Repeat < 1:
+		// Repeats are 1-based in the runner's own planner; a zero is an
+		// unset field rather than a cell.
+		return fmt.Errorf("%w: manifest attempt for %q/%q has repeat %d",
+			ErrIncoherent, attempt.Story, attempt.Config, attempt.Repeat)
+	case attempt.Status == statusCompleted && attempt.RunID == "":
+		return fmt.Errorf("%w: a completed manifest attempt names no run id", ErrIncoherent)
+	case attempt.Status != statusCompleted && attempt.RunID != "":
+		// A cell that did not complete has no run to name, and naming one
+		// would make it look like a record went missing.
+		return fmt.Errorf("%w: a %s manifest attempt names run id %q",
+			ErrIncoherent, attempt.Status, attempt.RunID)
 	}
 	return nil
 }
@@ -236,25 +296,65 @@ func (s *Suite) checkManifestAgreement(records map[string]bool) error {
 // since the store is portable and those paths are not. So the directory is
 // derived from the store's own layout, and the value that names it is
 // untrusted input.
+//
+// The anchor is the RESULTS-STORE root, not the evidence root. An earlier
+// version compared against the resolved evidence directory, which meant an
+// `evidence` symlink pointing somewhere else made every candidate beneath it
+// look safely contained — the check compared an escaped root against itself.
+//
+// And symlinks are refused rather than followed, even when their target
+// stays inside the store. A run directory that is a link to ANOTHER run's
+// directory resolves to a legitimate in-store path and passes any containment
+// test, while attributing one attempt's evidence to another — a
+// misattribution containment was never able to see.
 func (s *Suite) EvidenceDir(runID string) (string, error) {
 	if !runIDPattern.MatchString(runID) {
 		return "", reject(runID, ReasonRunID, "cannot be used as a path component")
 	}
-	root, err := filepath.EvalSymlinks(filepath.Join(s.Dir, "evidence"))
-	if err != nil {
-		return "", fmt.Errorf("resolve evidence root: %w", err)
+	root, rootErr := filepath.EvalSymlinks(s.Dir)
+	if rootErr != nil {
+		return "", fmt.Errorf("resolve results store root: %w", rootErr)
 	}
-	dir := filepath.Join(root, runID)
+	evidenceRoot := filepath.Join(root, "evidence")
+	if linkErr := refuseSymlink(evidenceRoot, "the evidence root"); linkErr != nil {
+		return "", linkErr
+	}
+	dir := filepath.Join(evidenceRoot, runID)
+	if linkErr := refuseSymlink(dir, "an evidence directory"); linkErr != nil {
+		return "", linkErr
+	}
+	// Resolved and compared anyway. The Lstat checks above cover the two
+	// components this function builds; this covers everything else on the
+	// path, and costs one syscall.
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve evidence dir: %w", err)
 	}
-	// Compared AFTER symlink resolution, so the check sees what the
-	// filesystem will actually open, and with the separator included so
-	// "evidence-other" cannot pass a prefix test for "evidence".
-	if resolved != root && !strings.HasPrefix(resolved, root+string(filepath.Separator)) {
+	// The separator is part of the prefix, so a sibling named
+	// "evidence-other" cannot pass a test for "evidence".
+	if !strings.HasPrefix(resolved, evidenceRoot+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: evidence for %q resolves to %s, outside %s",
-			ErrIncoherent, runID, resolved, root)
+			ErrIncoherent, runID, resolved, evidenceRoot)
 	}
 	return resolved, nil
+}
+
+// refuseSymlink rejects a path that IS a symlink, whatever it points at.
+//
+// Lstat rather than Stat: Stat follows the link and reports the target, which
+// is the question this is not asking.
+func refuseSymlink(path, what string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", what, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: %s (%s) is a symbolic link; evidence is read from the store's own "+
+			"layout, and a link can attribute one attempt's files to another even when its target "+
+			"is inside the store", ErrIncoherent, what, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: %s (%s) is not a directory", ErrIncoherent, what, path)
+	}
+	return nil
 }

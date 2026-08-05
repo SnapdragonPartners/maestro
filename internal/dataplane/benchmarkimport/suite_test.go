@@ -161,6 +161,54 @@ func TestReadSuiteRefusesIncoherence(t *testing.T) {
 			manifest := completedManifest(suiteRunID, records[:1])
 			return writeSuite(t, suiteRunID, records, manifest), suiteRunID
 		},
+		"manifest entry names the wrong story": func(t *testing.T) (string, string) {
+			records := []map[string]any{baseRecord(t)}
+			manifest := completedManifest(suiteRunID, records)
+			attemptsOf(t, manifest)[0]["story"] = "some-other-story"
+			return writeSuite(t, suiteRunID, records, manifest), suiteRunID
+		},
+		"manifest entry names the wrong config": func(t *testing.T) (string, string) {
+			records := []map[string]any{baseRecord(t)}
+			manifest := completedManifest(suiteRunID, records)
+			attemptsOf(t, manifest)[0]["config"] = "some-other-config"
+			return writeSuite(t, suiteRunID, records, manifest), suiteRunID
+		},
+		"manifest entry names no story": func(t *testing.T) (string, string) {
+			records := []map[string]any{baseRecord(t)}
+			manifest := completedManifest(suiteRunID, records)
+			attemptsOf(t, manifest)[0]["story"] = "  "
+			return writeSuite(t, suiteRunID, records, manifest), suiteRunID
+		},
+		"manifest entry has a zero repeat": func(t *testing.T) (string, string) {
+			records := []map[string]any{baseRecord(t)}
+			manifest := completedManifest(suiteRunID, records)
+			attemptsOf(t, manifest)[0]["repeat"] = 0
+			return writeSuite(t, suiteRunID, records, manifest), suiteRunID
+		},
+		"a skipped entry names a run id": func(t *testing.T) (string, string) {
+			records := []map[string]any{baseRecord(t)}
+			manifest := completedManifest(suiteRunID, records)
+			extra := map[string]any{"story": "story-b", "config": "paired-default",
+				"status": "skipped", "run_id": "story-b--config--r1--beef0001", "repeat": 1}
+			manifest["attempts"] = append(attemptsOf(t, manifest), extra)
+			return writeSuite(t, suiteRunID, records, manifest), suiteRunID
+		},
+		"manifest carries trailing content": func(t *testing.T) (string, string) {
+			records := []map[string]any{baseRecord(t)}
+			dir := writeSuite(t, suiteRunID, records, completedManifest(suiteRunID, records))
+			path := filepath.Join(dir, suiteRunID+".manifest.json")
+			raw, err := os.ReadFile(path) //nolint:gosec // test-controlled path
+			if err != nil {
+				t.Fatalf("read manifest: %v", err)
+			}
+			// A stray closing delimiter: the case Decoder.More cannot see,
+			// because after a top-level value there is no container to be
+			// "more" of.
+			if err := os.WriteFile(path, append(raw, ']'), 0o600); err != nil {
+				t.Fatalf("append trailing content: %v", err)
+			}
+			return dir, suiteRunID
+		},
 		"manifest entry names the wrong run id": func(t *testing.T) (string, string) {
 			records := []map[string]any{baseRecord(t)}
 			manifest := completedManifest(suiteRunID, records)
@@ -211,14 +259,57 @@ func TestEvidenceDirStaysInsideTheStore(t *testing.T) {
 	}
 
 	// A symlink whose NAME is a valid run id but which points out of the
-	// store. The shape check passes it, so only the post-resolution
-	// containment check can catch it.
+	// store. The shape check passes it, so only the link check can catch it.
 	outside := t.TempDir()
-	link := filepath.Join(dir, "evidence", "escapee")
-	if err := os.Symlink(outside, link); err != nil {
+	if err := os.Symlink(outside, filepath.Join(dir, "evidence", "escapee")); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	if _, err := suite.EvidenceDir("escapee"); err == nil {
 		t.Error("a symlink pointing outside the results store must be refused")
+	}
+
+	// A symlink to ANOTHER run's directory, entirely inside the store. It
+	// resolves to a legitimate in-store path, so every containment test
+	// passes it — while attributing one attempt's evidence to another. Only
+	// refusing links as such can see this.
+	if err := os.Symlink(filepath.Join(dir, "evidence", runID),
+		filepath.Join(dir, "evidence", "impostor")); err != nil {
+		t.Fatalf("seed in-store symlink: %v", err)
+	}
+	if _, err := suite.EvidenceDir("impostor"); err == nil {
+		t.Error("a symlink to another run's evidence must be refused even though its target " +
+			"is inside the store: it misattributes one attempt's files to another")
+	}
+}
+
+// TestEvidenceRootCannotBeEscaped covers the anchor.
+//
+// An earlier version compared candidates against the resolved EVIDENCE root.
+// If that root is itself a link out of the store, every candidate beneath it
+// looks safely contained — the check compared an escaped root against itself.
+// The anchor is the results-store root, and the evidence root is refused
+// outright when it is a link.
+func TestEvidenceRootCannotBeEscaped(t *testing.T) {
+	records := []map[string]any{baseRecord(t)}
+	dir := writeSuite(t, "golden-all-probe", records, completedManifest("golden-all-probe", records))
+	runID, _ := records[0]["run_id"].(string)
+
+	// The evidence root is a link to somewhere else entirely, with a
+	// plausibly-named run directory inside it.
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, runID), 0o750); err != nil {
+		t.Fatalf("seed outside tree: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "evidence")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	suite, err := benchmarkimport.ReadSuite(dir, "golden-all-probe")
+	if err != nil {
+		t.Fatalf("read suite: %v", err)
+	}
+	if _, err := suite.EvidenceDir(runID); err == nil {
+		t.Error("an evidence root that is a symlink out of the store must be refused; " +
+			"anchoring on it would compare an escaped root against itself")
 	}
 }
