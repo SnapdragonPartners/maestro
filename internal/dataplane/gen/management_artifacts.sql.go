@@ -182,7 +182,7 @@ INSERT INTO management_artifacts (
     artifact_id, organization_id, user_id,
     artifact_type, artifact_category, status, scope_type,
     scope_organization_id, scope_product_id, scope_feature_id,
-    scope_epic_id, scope_story_id,
+    scope_epic_id, scope_story_id, scope_benchmark_run_id,
     product_id, feature_id, epic_id, story_id,
     author_instance_id, produced_by_tool_call_id,
     amends_artifact_id, supersedes_artifact_id, replaces_artifact_id,
@@ -191,11 +191,11 @@ INSERT INTO management_artifacts (
     $1, $2, $3,
     $4, $5, 'draft', $6,
     $7, $8, $9,
-    $10, $11,
-    $12, $13, $14, $15,
-    $16, $17,
-    $18, $19, $20,
-    $21, $22, $23, $24, $25
+    $10, $11, $12,
+    $13, $14, $15, $16,
+    $17, $18,
+    $19, $20, $21,
+    $22, $23, $24, $25, $26
 )
 RETURNING artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id
 `
@@ -212,6 +212,7 @@ type CreateManagementArtifactParams struct {
 	ScopeFeatureID       pgtype.UUID
 	ScopeEpicID          pgtype.UUID
 	ScopeStoryID         pgtype.UUID
+	ScopeBenchmarkRunID  pgtype.UUID
 	ProductID            pgtype.UUID
 	FeatureID            pgtype.UUID
 	EpicID               pgtype.UUID
@@ -260,6 +261,7 @@ func (q *Queries) CreateManagementArtifact(ctx context.Context, arg CreateManage
 		arg.ScopeFeatureID,
 		arg.ScopeEpicID,
 		arg.ScopeStoryID,
+		arg.ScopeBenchmarkRunID,
 		arg.ProductID,
 		arg.FeatureID,
 		arg.EpicID,

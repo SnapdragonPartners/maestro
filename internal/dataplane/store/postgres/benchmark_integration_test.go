@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -471,22 +472,47 @@ func TestBenchmarkLookupsAreTenantScoped(t *testing.T) {
 
 // newBenchmarkAuditArtifact writes one benchmark-scoped Audit artifact, the
 // shape a run record becomes, so the ledger has a real artifact to name.
+//
+// Through the SEAM, which is what makes it evidence. An earlier version
+// inserted the row with raw SQL because scopeColumns had no benchmark case
+// and refused the scope outright — so the ledger tests were proving something
+// about a hand-written INSERT, and the scope the whole family is built on had
+// never been written by the code that writes it. Item 9 closes that case, and
+// this asserts the round trip: a scope written wrong lands in the wrong column
+// and comes back as the wrong type or a nil id.
 func (f *fixture) newBenchmarkAuditArtifact(t *testing.T, runID uuid.UUID) uuid.UUID {
 	t.Helper()
-	artifactID, err := uuid.NewV7()
+	artifact, err := f.store.CreateAuditArtifact(context.Background(), store.CreateAuditArtifactInput{
+		Type:             "test_event",
+		Summary:          "attempt",
+		Payload:          json.RawMessage(`{"title":"attempt"}`),
+		Scope:            store.Scope{Type: store.ScopeBenchmark, ID: runID},
+		AuthorInstanceID: f.systemAgent,
+		OrganizationID:   f.organizationID,
+	})
 	if err != nil {
-		t.Fatalf("allocate artifact id: %v", err)
+		t.Fatalf("create benchmark-scoped audit artifact: %v", err)
 	}
-	if _, err := f.pool.Exec(context.Background(), `
-		INSERT INTO audit_artifacts (artifact_id, organization_id, artifact_type, scope_type,
-		                             scope_benchmark_run_id, author_instance_id, schema_version,
-		                             summary, payload, payload_digest)
-		VALUES ($1, $2, 'benchmark.run_record', 'benchmark', $3, $4, 1, 'attempt', '{}'::jsonb,
-		        repeat('d', 64))`,
-		artifactID, f.organizationID, runID, f.systemAgent); err != nil {
-		t.Fatalf("seed benchmark audit artifact: %v", err)
+	if artifact.Scope.Type != store.ScopeBenchmark || artifact.Scope.ID != runID {
+		t.Fatalf("artifact came back scoped to %s/%s, want benchmark/%s",
+			artifact.Scope.Type, artifact.Scope.ID, runID)
 	}
-	return artifactID
+	stored, err := f.store.ListAuditArtifactsByScope(context.Background(), f.organizationID,
+		store.Scope{Type: store.ScopeBenchmark, ID: runID})
+	if err != nil {
+		t.Fatalf("list by benchmark scope: %v", err)
+	}
+	// The list is what a benchmark scope is FOR: scope_id is a generated
+	// column, and a benchmark row whose scope column went unwritten would be
+	// invisible to exactly this query while still existing.
+	var found bool
+	for i := range stored {
+		found = found || stored[i].ArtifactID == artifact.ArtifactID
+	}
+	if !found {
+		t.Fatalf("artifact %s is not listed under its own benchmark scope", artifact.ArtifactID)
+	}
+	return artifact.ArtifactID
 }
 
 // newOrganization returns a second tenant's id for cross-tenant assertions.

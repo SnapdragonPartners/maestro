@@ -363,6 +363,7 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 		ScopeFeatureID:      toNullUUID(arc.featureID),
 		ScopeEpicID:         toNullUUID(arc.epicID),
 		ScopeStoryID:        toNullUUID(arc.storyID),
+		ScopeBenchmarkRunID: toNullUUID(arc.benchmarkRunID),
 
 		ProductID: toNullUUID(input.Lineage.ProductID),
 		FeatureID: toNullUUID(input.Lineage.FeatureID),
@@ -442,6 +443,7 @@ func (t *tx) CreateAuditArtifact(ctx context.Context, input store.CreateAuditArt
 		ScopeFeatureID:      toNullUUID(arc.featureID),
 		ScopeEpicID:         toNullUUID(arc.epicID),
 		ScopeStoryID:        toNullUUID(arc.storyID),
+		ScopeBenchmarkRunID: toNullUUID(arc.benchmarkRunID),
 
 		ProductID: toNullUUID(input.Lineage.ProductID),
 		FeatureID: toNullUUID(input.Lineage.FeatureID),

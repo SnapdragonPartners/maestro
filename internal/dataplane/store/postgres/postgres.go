@@ -258,6 +258,7 @@ type scopeArc struct {
 	featureID      *uuid.UUID
 	epicID         *uuid.UUID
 	storyID        *uuid.UUID
+	benchmarkRunID *uuid.UUID
 }
 
 // scopeColumns spreads a scope across the exclusive arc.
@@ -279,8 +280,7 @@ func scopeColumns(scope store.Scope) (scopeArc, error) {
 	case store.ScopeStory:
 		return scopeArc{storyID: &id}, nil
 	case store.ScopeBenchmark:
-		return scopeArc{}, fmt.Errorf(
-			"scope type %q has no column until item 9 adds the benchmark runs table", scope.Type)
+		return scopeArc{benchmarkRunID: &id}, nil
 	default:
 		return scopeArc{}, fmt.Errorf("unknown scope type %q", scope.Type)
 	}
