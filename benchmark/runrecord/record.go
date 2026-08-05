@@ -12,8 +12,29 @@ import (
 // self-describes with it; readers reject versions they do not know.
 const SchemaVersion = 1
 
-//nolint:gochecknoglobals // Package-level compiled regex for performance.
-var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+//nolint:gochecknoglobals // Package-level compiled regexes for performance.
+var (
+	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+	// runIDPattern and suiteRunIDPattern make the identity SHAPES part of the
+	// contract rather than leaving them at "non-empty".
+	//
+	// Both values are used as path components: the engine joins run_id into a
+	// workspace directory and into the evidence directory, and the results
+	// store names its files after suite_run_id. A value containing a
+	// separator, or `.`/`..`, escapes the directory it is supposed to name.
+	// This package does not read hostile records -- the runner generates
+	// these ids itself -- so this is defence in depth rather than the
+	// security boundary, which is the importer's. It is one line, it closes
+	// the joins at their source, and it makes the two-sided corpus able to
+	// agree on the rule at all.
+	//
+	// suiteRunIDPattern is the store's own filename rule; runIDPattern is
+	// stricter by one character class, matching design D8 and the plane's
+	// benchmark_attempts CHECK.
+	runIDPattern      = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+	suiteRunIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+)
 
 // Verdict is the runner's terminal judgment of one attempt.
 type Verdict string
@@ -254,8 +275,14 @@ func (r *RunRecord) validateIdentity() error {
 	switch {
 	case r.RunID == "":
 		return fmt.Errorf("run_id is required")
+	case !runIDPattern.MatchString(r.RunID):
+		return fmt.Errorf("run_id %q must match %s: it names a workspace and evidence directory",
+			r.RunID, runIDPattern)
 	case r.SuiteRunID == "":
 		return fmt.Errorf("suite_run_id is required")
+	case !suiteRunIDPattern.MatchString(r.SuiteRunID):
+		return fmt.Errorf("suite_run_id %q must match %s: it names the store's files",
+			r.SuiteRunID, suiteRunIDPattern)
 	case r.StoryID == "":
 		return fmt.Errorf("story_id is required")
 	case r.ConfigName == "":
