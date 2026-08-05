@@ -4,26 +4,21 @@ package postgres_test
 
 import (
 	"context"
-	"crypto/rand"
-	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"orchestrator/internal/dataplane/canonical"
-	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
-	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
-	"orchestrator/internal/dataplane/stack"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
 )
@@ -72,64 +67,12 @@ func testRegistry(t *testing.T) *registry.Registry {
 	return built
 }
 
-// disposableDatabase mirrors the migrations suite's helper: a uniquely
-// named database, migrated, dropped at the end. Tests here write rows and
-// must never do so in the developer's working database.
+// disposableDatabase is the shared helper under this suite's label: a
+// uniquely named database, migrated, dropped at the end. Tests here write
+// rows and must never do so in the developer's working database.
 func disposableDatabase(t *testing.T) string {
 	t.Helper()
-
-	roots, err := paths.Resolve()
-	if err != nil {
-		t.Fatalf("resolve roots: %v", err)
-	}
-	cfg, err := stack.NewConfig(roots)
-	if err != nil {
-		t.Fatalf("config: %v", err)
-	}
-	rootKey, err := paths.EnsureKey(roots.Config)
-	if err != nil {
-		t.Fatalf("key: %v", err)
-	}
-	adminDSN, err := cfg.DSN(rootKey)
-	if err != nil {
-		t.Fatalf("admin dsn: %v", err)
-	}
-	admin, err := sql.Open("pgx", adminDSN)
-	if err != nil {
-		t.Fatalf("open admin: %v", err)
-	}
-	// Not deferred: t.Cleanup runs after this returns, so a deferred close
-	// would leave the drop holding a closed connection.
-	if err := admin.Ping(); err != nil {
-		_ = admin.Close()
-		t.Skipf("data plane unavailable (run `make dataplane-up`): %v", err)
-	}
-
-	suffix := make([]byte, 8)
-	if _, err := rand.Read(suffix); err != nil {
-		t.Fatalf("random suffix: %v", err)
-	}
-	name := "maestro_store_" + hex.EncodeToString(suffix)
-
-	if _, err := admin.Exec(fmt.Sprintf("CREATE DATABASE %q", name)); err != nil {
-		_ = admin.Close()
-		t.Fatalf("create %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		defer func() { _ = admin.Close() }()
-		if _, err := admin.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %q WITH (FORCE)", name)); err != nil {
-			t.Errorf("drop %s: %v", name, err)
-		}
-	})
-
-	dsn, err := cfg.DSNFor(rootKey, name)
-	if err != nil {
-		t.Fatalf("dsn for %s: %v", name, err)
-	}
-	if err := migrations.Up(context.Background(), dsn); err != nil {
-		t.Fatalf("migrate %s: %v", name, err)
-	}
-	return dsn
+	return planetest.DSN(t, "store")
 }
 
 // fixture is one organization with the principals the acceptance rules need
@@ -170,26 +113,16 @@ type fixture struct {
 }
 
 // testRootKey builds a file-backed provider over a throwaway config root.
-//
-// MayCreate because the root is empty and this IS first-time setup for it;
-// the LoadOnly half of design D4's rule is exercised by the paths suite,
-// which owns that decision.
 func testRootKey(t *testing.T) secret.RootKeyProvider {
 	t.Helper()
-	return secret.KeyFile(t.TempDir(), secret.MayCreate)
+	return planetest.RootKey(t)
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
 
-	dsn := disposableDatabase(t)
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
+	pool := planetest.Pool(t, disposableDatabase(t))
 	blob, blobConfig := disposableBlob(t)
 	rootKey := testRootKey(t)
 	built, err := postgres.New(pool, testRegistry(t), blob, rootKey)
@@ -1069,6 +1002,105 @@ func TestStopIsOnceOnlyAndIdempotent(t *testing.T) {
 	}
 	if !second.StopTime.Equal(first.StopTime) {
 		t.Fatalf("stop time moved from %v to %v", first.StopTime, second.StopTime)
+	}
+}
+
+// TestRecordedLifetimeIsStoredWhole covers the creation path for a principal
+// whose lifetime is ALREADY OVER.
+//
+// The three values are asserted together because they are stored together and
+// each fails differently: a start defaulted to now() dates a past run at
+// import time, a null stop leaves a finished agent looking live, and a
+// missing reason loses what the run's outcome was. The instance must also
+// never be observable open, which is why it arrives closed in one INSERT
+// rather than through a create-then-stop pair.
+func TestRecordedLifetimeIsStoredWhole(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	started := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	stopped := time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC)
+	input := f.agentInput()
+	input.Recorded = &store.RecordedLifetime{
+		StartTime: started, StopTime: stopped, StopReason: "failed: checks-failed",
+	}
+
+	created, err := f.store.CreatePrincipalInstance(ctx, input)
+	if err != nil {
+		t.Fatalf("create with a recorded lifetime: %v", err)
+	}
+	// Read back rather than trusting the returned struct: the question is
+	// what the DATABASE holds.
+	stored, err := f.store.GetPrincipalInstance(ctx, f.organizationID, created.PrincipalInstanceID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !stored.StartTime.Equal(started) {
+		t.Errorf("start_time = %s, want the supplied %s", stored.StartTime, started)
+	}
+	switch {
+	case stored.StopTime == nil:
+		t.Error("stop_time is null; the instance was created for a lifetime that had already ended")
+	case !stored.StopTime.Equal(stopped):
+		t.Errorf("stop_time = %s, want the supplied %s", stored.StopTime, stopped)
+	}
+	switch {
+	case stored.StopReason == nil:
+		t.Error("stop_reason is null")
+	case *stored.StopReason != "failed: checks-failed":
+		t.Errorf("stop_reason = %q, want the supplied one", *stored.StopReason)
+	}
+
+	// Already closed, so stopping it again records nothing — the same
+	// once-only rule an ordinary instance follows.
+	outcome, err := f.store.StopPrincipalInstance(ctx, f.organizationID, created.PrincipalInstanceID, "later")
+	if err != nil {
+		t.Fatalf("stop an already-closed instance: %v", err)
+	}
+	if outcome.Recorded {
+		t.Error("stopping a recorded lifetime overwrote it; the instance was closed when it was created")
+	}
+}
+
+// TestRecordedLifetimeIsValidatedAtTheSeam covers the lifetimes that could
+// not have happened.
+//
+// The schema's only stop constraint is that time and reason are null
+// together, so none of these is caught by the database: a zero time is year 1
+// and sorts before every window a query could ask about, and a stop before
+// its start is a lifetime that ran backwards. The seam is where a caller
+// finds out, before the row exists rather than after.
+func TestRecordedLifetimeIsValidatedAtTheSeam(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	started := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	stopped := time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC)
+
+	for _, testCase := range []struct {
+		name     string
+		lifetime store.RecordedLifetime
+		want     string
+	}{
+		{"no start", store.RecordedLifetime{StopTime: stopped, StopReason: "r"}, "start time"},
+		{"no stop", store.RecordedLifetime{StartTime: started, StopReason: "r"}, "stop time"},
+		{"stops before it starts",
+			store.RecordedLifetime{StartTime: stopped, StopTime: started, StopReason: "r"},
+			"before it starts"},
+		{"no reason", store.RecordedLifetime{StartTime: started, StopTime: stopped}, "stop reason"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			input := f.agentInput()
+			lifetime := testCase.lifetime
+			input.Recorded = &lifetime
+			created, err := f.store.CreatePrincipalInstance(ctx, input)
+			if err == nil {
+				t.Fatalf("instance %s was created with a lifetime that could not have happened",
+					created.PrincipalInstanceID)
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("error %q does not say which field was wrong (want %q)", err, testCase.want)
+			}
+		})
 	}
 }
 

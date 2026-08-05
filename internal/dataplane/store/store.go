@@ -344,6 +344,23 @@ type CreateReviewInput struct {
 	ReviewerInstanceID uuid.UUID
 }
 
+// RecordedLifetime is the lifetime of a principal that has ALREADY RUN,
+// supplied whole at creation.
+//
+// It exists because reconstruction is not the same act as running. An
+// instance created for a live agent starts now and stops when it ends, which
+// CreatePrincipalInstance and StopPrincipalInstance describe between them —
+// but neither can express a lifetime that is entirely in the past, and a
+// caller composing them creates a live-looking instance for the width of a
+// statement and cannot supply the stop TIME at all. The stop reason is
+// required here for the same reason it is required there: it is the
+// diagnostic that says why the instance ended.
+type RecordedLifetime struct {
+	StartTime  time.Time
+	StopTime   time.Time
+	StopReason string
+}
+
 // CreatePrincipalInstanceInput describes an instance and its MPH signature.
 type CreatePrincipalInstanceInput struct {
 	AgentType         *string
@@ -352,6 +369,10 @@ type CreatePrincipalInstanceInput struct {
 	HarnessConfigHash *string
 	MaestroVersion    *string
 	UserID            *uuid.UUID
+
+	// Recorded supplies a closed, historical lifetime. Nil is the ordinary
+	// case: the instance starts now and stays open until it is stopped.
+	Recorded *RecordedLifetime
 
 	Lineage Lineage
 
@@ -461,9 +482,13 @@ type Writer interface {
 
 	ArchiveArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) error
 
+	// CreatePrincipalInstance opens a lifetime, or records a closed one
+	// whole when the input carries a RecordedLifetime.
 	CreatePrincipalInstance(ctx context.Context, input CreatePrincipalInstanceInput) (*PrincipalInstance, error)
 
-	// StopPrincipalInstance is once-only and idempotent (design D7).
+	// StopPrincipalInstance is once-only and idempotent (design D7). It
+	// stops an OPEN instance; a lifetime already over when it is written
+	// arrives closed through CreatePrincipalInstance instead.
 	StopPrincipalInstance(ctx context.Context, organizationID, instanceID uuid.UUID, reason string) (StopOutcome, error)
 }
 
