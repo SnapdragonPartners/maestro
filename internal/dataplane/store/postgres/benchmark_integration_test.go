@@ -20,82 +20,76 @@ import (
 // (a slug is global, a handle is per-organization), separate comparison and
 // separate tenancy. A suite that exercised only organizations stayed green
 // with the user display-data comparison deleted.
+// provisioned is the neutral shape of what a provisioning call RETURNED.
+//
+// It carries the record, not just the flag, because the returned record is
+// part of the contract: a method that reported Created correctly while
+// returning a zero or unrelated record satisfied the earlier version of these
+// tests, which read identity back from the database instead of looking at
+// what the call handed them.
+type provisioned struct {
+	ID          uuid.UUID
+	DisplayName string
+	Created     bool
+}
+
 type provisioner struct {
 	name string
-	// bootstrap provisions with the given natural key and display name.
-	bootstrap func(t *testing.T, f *fixture, key, display string) (bool, error)
-	// storedDisplay reads back the display name for the key.
-	storedDisplay func(t *testing.T, f *fixture, key string) string
-	// identity returns the row's own id, so a re-bootstrap can be shown to
-	// return the SAME row rather than a second one.
-	identity func(t *testing.T, f *fixture, key string) uuid.UUID
+	// bootstrap provisions with the given natural key and display name,
+	// returning what the call itself produced.
+	bootstrap func(t *testing.T, f *fixture, key, display string) (provisioned, error)
+	// stored reads the row back, so the returned record can be compared
+	// against what is actually persisted.
+	stored func(t *testing.T, f *fixture, key string) provisioned
 }
 
 func provisioners() []provisioner {
 	return []provisioner{
 		{
 			name: "organization",
-			bootstrap: func(t *testing.T, f *fixture, key, display string) (bool, error) {
+			bootstrap: func(t *testing.T, f *fixture, key, display string) (provisioned, error) {
 				t.Helper()
 				out, err := f.store.BootstrapOrganization(context.Background(),
 					store.BootstrapOrganizationInput{Slug: key, DisplayName: display})
-				return out.Created, err
+				return provisioned{
+					ID: out.Record.OrganizationID, DisplayName: out.Record.DisplayName, Created: out.Created,
+				}, err
 			},
-			storedDisplay: func(t *testing.T, f *fixture, key string) string {
+			stored: func(t *testing.T, f *fixture, key string) provisioned {
 				t.Helper()
 				row, err := f.store.GetOrganizationBySlug(context.Background(), key)
 				if err != nil {
 					t.Fatalf("read organization %q: %v", key, err)
 				}
-				return row.DisplayName
-			},
-			identity: func(t *testing.T, f *fixture, key string) uuid.UUID {
-				t.Helper()
-				row, err := f.store.GetOrganizationBySlug(context.Background(), key)
-				if err != nil {
-					t.Fatalf("read organization %q: %v", key, err)
-				}
-				return row.OrganizationID
+				return provisioned{ID: row.OrganizationID, DisplayName: row.DisplayName}
 			},
 		},
 		{
 			name: "user",
-			bootstrap: func(t *testing.T, f *fixture, key, display string) (bool, error) {
+			bootstrap: func(t *testing.T, f *fixture, key, display string) (provisioned, error) {
 				t.Helper()
 				out, err := f.store.BootstrapUser(context.Background(),
 					store.BootstrapUserInput{
 						Handle: key, DisplayName: display, OrganizationID: f.organizationID,
 					})
-				return out.Created, err
+				return provisioned{
+					ID: out.Record.UserID, DisplayName: out.Record.DisplayName, Created: out.Created,
+				}, err
 			},
-			storedDisplay: func(t *testing.T, f *fixture, key string) string {
+			stored: func(t *testing.T, f *fixture, key string) provisioned {
 				t.Helper()
 				row, err := f.store.GetUserByHandle(context.Background(), f.organizationID, key)
 				if err != nil {
 					t.Fatalf("read user %q: %v", key, err)
 				}
-				return row.DisplayName
-			},
-			identity: func(t *testing.T, f *fixture, key string) uuid.UUID {
-				t.Helper()
-				row, err := f.store.GetUserByHandle(context.Background(), f.organizationID, key)
-				if err != nil {
-					t.Fatalf("read user %q: %v", key, err)
-				}
-				return row.UserID
+				return provisioned{ID: row.UserID, DisplayName: row.DisplayName}
 			},
 		},
 	}
 }
 
 // TestBootstrapConflictSemantics drives all three outcomes of D10's table,
-// for both provisioning paths.
-//
-// "Idempotent" alone would have been satisfied by silently ignoring differing
-// display data, and that is the failure to design out: it makes
-// `bootstrap --org acme --org-name "Acme Ltd"` appear to succeed while the
-// plane still says "Acme Inc", and the operator finds out from a report
-// months later.
+// for both provisioning paths, asserting the RETURNED record each time.
 func TestBootstrapConflictSemantics(t *testing.T) {
 	for _, provision := range provisioners() {
 		t.Run(provision.name, func(t *testing.T) {
@@ -105,29 +99,35 @@ func TestBootstrapConflictSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("first bootstrap: %v", err)
 			}
-			if !created {
+			if !created.Created {
 				t.Error("the first bootstrap must report Created")
 			}
-			firstID := provision.identity(t, f, "acme")
+			// The call's OWN record, compared against what is persisted: a
+			// correct flag beside a zero record is not a correct answer.
+			stored := provision.stored(t, f, "acme")
+			if created.ID != stored.ID || created.DisplayName != stored.DisplayName {
+				t.Errorf("the returned record %+v is not the stored row %+v", created, stored)
+			}
 
-			// Matching display data: the no-op, distinguishable from creation.
+			// Matching display data: the no-op, distinguishable from creation,
+			// and returning the SAME row rather than a second one.
 			again, err := provision.bootstrap(t, f, "acme", "Acme Inc")
 			if err != nil {
 				t.Fatalf("matching re-bootstrap must be a no-op, got: %v", err)
 			}
-			if again {
+			if again.Created {
 				t.Error("a re-bootstrap must report Created=false")
 			}
-			if provision.identity(t, f, "acme") != firstID {
-				t.Error("a re-bootstrap must return the SAME row, not a second one")
+			if again.ID != created.ID || again.DisplayName != created.DisplayName {
+				t.Errorf("a re-bootstrap returned %+v, want the first call's %+v", again, created)
 			}
 
 			// Differing display data: a typed conflict, and nothing changes.
 			if _, err := provision.bootstrap(t, f, "acme", "Acme Ltd"); !errors.Is(err, store.ErrBootstrapConflict) {
 				t.Fatalf("differing display data must be a typed conflict, got: %v", err)
 			}
-			if stored := provision.storedDisplay(t, f, "acme"); stored != "Acme Inc" {
-				t.Errorf("the refused bootstrap renamed the record to %q", stored)
+			if after := provision.stored(t, f, "acme"); after.DisplayName != "Acme Inc" {
+				t.Errorf("the refused bootstrap renamed the record to %q", after.DisplayName)
 			}
 		})
 	}
@@ -136,10 +136,6 @@ func TestBootstrapConflictSemantics(t *testing.T) {
 // TestBootstrapRejectsMalformedInput asserts the validation happens before
 // SQL, so an operator's mistake is reported in the vocabulary of the flag
 // they typed rather than as a constraint name.
-//
-// The accepted cases matter as much as the refused ones: the identifier rule
-// is the runner's own suite-id shape, so a leading `_` or `-` is VALID, and
-// an earlier stricter pattern here refused suite ids the schema admits.
 func TestBootstrapRejectsMalformedInput(t *testing.T) {
 	for _, provision := range provisioners() {
 		t.Run(provision.name, func(t *testing.T) {
@@ -164,17 +160,57 @@ func TestBootstrapRejectsMalformedInput(t *testing.T) {
 					t.Fatal("a blank display name must be refused")
 				}
 			})
-			for name, key := range map[string]string{
-				"leading underscore": "_acme",
-				"leading hyphen":     "-acme",
-				"digits and dashes":  "golden-all-2026-08-04",
-			} {
-				t.Run("accepts "+name, func(t *testing.T) {
-					f := newFixture(t)
-					if _, err := provision.bootstrap(t, f, key, "X"); err != nil {
-						t.Fatalf("%q is valid under the runner's own identifier rule: %v", key, err)
-					}
-				})
+		})
+	}
+}
+
+// TestIdentifiersAcceptTheRunnersOwnShape exercises the path the defect was
+// ON.
+//
+// The bug was EnsureBenchmarkRun refusing suite ids the runner produces and
+// migration 000017 admits — so controls routed through the bootstrap paths
+// prove nothing about it: switching EnsureBenchmarkRun back to the stricter
+// pattern restores the defect while they stay green. The accepted cases
+// therefore go through EnsureBenchmarkRun itself, and the whole point is
+// which values are ACCEPTED, since this defect refused valid input rather
+// than admitting invalid input.
+//
+// D8 fixes the two shapes: an attempt's run id must be a single path
+// component beginning with an alphanumeric, and a suite run id follows the
+// runner's own rule, which permits a leading `_` or `-`.
+func TestIdentifiersAcceptTheRunnersOwnShape(t *testing.T) {
+	ctx := context.Background()
+	for name, suiteRunID := range map[string]string{
+		"leading underscore": "_golden_all",
+		"leading hyphen":     "-golden-all",
+		"underscores only":   "___",
+		"ordinary":           "golden-all-2026-08-04",
+		"digits first":       "2026-suite",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			run, err := f.store.EnsureBenchmarkRun(ctx, f.organizationID, suiteRunID)
+			if err != nil {
+				t.Fatalf("%q is a valid suite run id under the runner's own rule "+
+					"(and migration 000017 accepts it): %v", suiteRunID, err)
+			}
+			if !run.Created || run.Record.SuiteRunID != suiteRunID {
+				t.Errorf("EnsureBenchmarkRun returned %+v for %q", run.Record, suiteRunID)
+			}
+		})
+	}
+
+	// And the shapes that are refused, so the rule is not merely permissive.
+	for name, suiteRunID := range map[string]string{
+		"uppercase":      "Golden",
+		"with separator": "golden/all",
+		"dot":            "..",
+		"blank":          "",
+	} {
+		t.Run("refuses "+name, func(t *testing.T) {
+			f := newFixture(t)
+			if _, err := f.store.EnsureBenchmarkRun(ctx, f.organizationID, suiteRunID); err == nil {
+				t.Fatalf("%q must be refused", suiteRunID)
 			}
 		})
 	}
@@ -186,39 +222,41 @@ func TestBootstrapRejectsMalformedInput(t *testing.T) {
 // Two operators racing would both observe no row, both insert, and one would
 // receive a raw 23505 — an outcome that is neither of the two successes and
 // leaks a driver error through the seam. Exactly one caller must report
-// Created, every caller must see the same row, and none may fail.
+// Created, EVERY caller must receive the stored row, and none may fail.
 func TestConcurrentBootstrapConverges(t *testing.T) {
 	for _, provision := range provisioners() {
 		t.Run(provision.name, func(t *testing.T) {
 			f := newFixture(t)
 			const racers = 8
 			var wait sync.WaitGroup
-			created := make([]bool, racers)
+			results := make([]provisioned, racers)
 			failures := make([]error, racers)
 			wait.Add(racers)
 			for i := range racers {
 				go func() {
 					defer wait.Done()
-					created[i], failures[i] = provision.bootstrap(t, f, "racer", "Racer")
+					results[i], failures[i] = provision.bootstrap(t, f, "racer", "Racer")
 				}()
 			}
 			wait.Wait()
 
+			stored := provision.stored(t, f, "racer")
 			createdCount := 0
 			for i := range racers {
 				if failures[i] != nil {
 					t.Fatalf("racer %d failed; matching creates must converge, not error: %v", i, failures[i])
 				}
-				if created[i] {
+				if results[i].Created {
 					createdCount++
+				}
+				// Every racer, not just the winner, must be handed the row
+				// that is actually there.
+				if results[i].ID != stored.ID || results[i].DisplayName != stored.DisplayName {
+					t.Errorf("racer %d received %+v, want the stored row %+v", i, results[i], stored)
 				}
 			}
 			if createdCount != 1 {
 				t.Errorf("%d racers reported Created, want exactly 1", createdCount)
-			}
-			// One row, whichever racer wrote it.
-			if provision.identity(t, f, "racer") == uuid.Nil {
-				t.Error("the racers did not converge on a readable row")
 			}
 		})
 	}

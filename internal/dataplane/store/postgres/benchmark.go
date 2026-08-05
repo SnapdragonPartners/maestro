@@ -31,13 +31,16 @@ var (
 	// case-insensitive filesystem would collide two that differ only by case.
 	identifierPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
-	// runIDPattern is stricter by ONE character class: a run id may not begin
-	// with `-` or `_`. It matches migration 000017's
-	// benchmark_attempts_run_id_check exactly, and the reason for the extra
-	// restriction is that a run id is passed as a command-line argument by
-	// the tooling around the importer, where a leading `-` is read as a flag.
-	// Path escape is already impossible for both patterns: neither admits `.`
-	// or a separator, so `..` and `../x` cannot be spelled.
+	// runIDPattern is design D8's accepted shape for an attempt identity,
+	// and matches migration 000017's benchmark_attempts_run_id_check exactly.
+	// It is stricter than identifierPattern by one character class: a run id
+	// must begin with an alphanumeric.
+	//
+	// Path escape is not what the extra restriction buys — neither pattern
+	// admits `.` or a separator, so `..` and `../x` cannot be spelled by
+	// either. D8 fixed this shape and the schema enforces it; that is the
+	// authority, and inventing a further rationale for it would be a claim
+	// about a caller that does not exist.
 	runIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 )
 
