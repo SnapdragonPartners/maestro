@@ -790,6 +790,49 @@ func classifyAcceptance(transition string, artifact *gen.ManagementArtifact, rev
 		return rejected(transition, artifactID, store.ReasonReviewerKind,
 			fmt.Sprintf("reviewer kind is %q", review.ReviewerKind))
 	}
+	return classifySelfReview(transition, artifactID, review)
+}
+
+// classifySelfReview refuses a human reviewing their own artifact through a
+// second principal instance.
+//
+// The instance comparison above is not enough. A principal instance is one
+// LIFETIME, so the same operator running a command twice has two of them, and
+// could author with the first and accept with the second — while ADR 0020
+// puts the invariant on the principal: "even the human operator does not
+// self-review — a human may be an artifact's author or its approver, never
+// both". The identity that matters is the user, which is exactly what
+// `human-<user_id>` encodes.
+//
+// Two boundaries, both deliberate:
+//
+//   - It does NOT extend to two agent instances sharing a model. ADR 0020
+//     makes distinct reviewer model routing a preference — "where practical",
+//     an M lever and a Phase 5 deliverable — not the invariant. Refusing that
+//     here would enforce a Phase 5 policy through a Phase 2 constraint.
+//   - It compares the AUTHOR PRINCIPAL's user, not the artifact's user_id.
+//     Those are different facts: `management_artifacts.user_id` is the
+//     accountable human behind the work, so an agent-authored artifact
+//     legitimately carries the operator there and that operator must still be
+//     able to review it. Comparing against that column would forbid the
+//     single-operator workflow ADR 0020 explicitly endorses.
+func classifySelfReview(transition string, artifactID uuid.UUID, review *gen.GetArtifactReviewWithReviewerRow) error {
+	if store.PrincipalKind(review.AuthorKind) != store.PrincipalHuman ||
+		store.PrincipalKind(review.ReviewerKind) != store.PrincipalHuman {
+		return nil
+	}
+	// Both are human, so both user ids are non-null by the schema's own
+	// principal_instances_human_user_check; a nil here would be an
+	// inconsistency rather than an ordinary absence.
+	author, reviewer := fromNullUUID(review.AuthorUserID), fromNullUUID(review.ReviewerUserID)
+	if author == nil || reviewer == nil {
+		return fmt.Errorf("%w: a human principal on artifact %s carries no user id",
+			store.ErrInvariant, artifactID)
+	}
+	if *author == *reviewer {
+		return rejected(transition, artifactID, store.ReasonReviewerIsAuthorUser,
+			fmt.Sprintf("both principals belong to user %s", *author))
+	}
 	return nil
 }
 

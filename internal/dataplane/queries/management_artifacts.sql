@@ -152,7 +152,14 @@ WHERE a.artifact_id     = @artifact_id
   AND p.kind IN ('agent', 'human')
   AND author.principal_instance_id = a.author_instance_id
   AND author.organization_id       = a.organization_id
-  AND author.kind IN ('agent', 'human');
+  AND author.kind IN ('agent', 'human')
+  -- The self-review backstop, repeated here as every other acceptance rule
+  -- is. Two HUMAN principals owned by the same user are the same principal
+  -- wearing two instances, and ADR 0020 forbids that human being both author
+  -- and approver. It does not extend to two agent instances sharing a model:
+  -- distinct reviewer model routing is a Phase 5 lever ("where practical"),
+  -- not this invariant.
+  AND NOT (p.kind = 'human' AND author.kind = 'human' AND p.user_id = author.user_id);
 
 -- Accept an AMENDMENT, assigning its sequence in the same statement. The
 -- sequence is assigned on acceptance and retained thereafter: without a
@@ -195,7 +202,14 @@ WHERE a.artifact_id        = @artifact_id
   AND p.kind IN ('agent', 'human')
   AND author.principal_instance_id = a.author_instance_id
   AND author.organization_id       = a.organization_id
-  AND author.kind IN ('agent', 'human');
+  AND author.kind IN ('agent', 'human')
+  -- The self-review backstop, repeated here as every other acceptance rule
+  -- is. Two HUMAN principals owned by the same user are the same principal
+  -- wearing two instances, and ADR 0020 forbids that human being both author
+  -- and approver. It does not extend to two agent instances sharing a model:
+  -- distinct reviewer model routing is a Phase 5 lever ("where practical"),
+  -- not this invariant.
+  AND NOT (p.kind = 'human' AND author.kind = 'human' AND p.user_id = author.user_id);
 
 -- Invalidation is pre-acceptance by definition (ADR 0021), so draft is the
 -- only source status and there are no further preconditions.

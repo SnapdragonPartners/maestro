@@ -110,9 +110,16 @@ const (
 	ReasonReviewNotAccept  RejectionReason = "named review is not an acceptance"
 	ReasonDigestMismatch   RejectionReason = "review does not match the artifact's current content"
 	ReasonReviewerIsAuthor RejectionReason = "reviewer is the artifact's author"
-	ReasonReviewerKind     RejectionReason = "reviewer is not an agent or human principal"
-	ReasonSupersedeTarget  RejectionReason = "superseding artifact does not name this artifact as its target"
-	ReasonSupersedeStatus  RejectionReason = "superseding artifact is not accepted"
+	// ReasonReviewerIsAuthorUser is separate from ReasonReviewerIsAuthor
+	// because the operator's response differs: "use a different instance" is
+	// wrong advice, and "find another human" is right. A principal instance
+	// is one lifetime, so the same human running a command twice has two of
+	// them -- and ADR 0020 puts the invariant on the PRINCIPAL: "even the
+	// human operator does not self-review".
+	ReasonReviewerIsAuthorUser RejectionReason = "reviewer is the same human as the artifact's author"
+	ReasonReviewerKind         RejectionReason = "reviewer is not an agent or human principal"
+	ReasonSupersedeTarget      RejectionReason = "superseding artifact does not name this artifact as its target"
+	ReasonSupersedeStatus      RejectionReason = "superseding artifact is not accepted"
 )
 
 // TransitionRejected is a refused transition, carrying the specific rule

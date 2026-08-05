@@ -40,6 +40,13 @@ WHERE a.artifact_id        = $2
   AND author.principal_instance_id = a.author_instance_id
   AND author.organization_id       = a.organization_id
   AND author.kind IN ('agent', 'human')
+  -- The self-review backstop, repeated here as every other acceptance rule
+  -- is. Two HUMAN principals owned by the same user are the same principal
+  -- wearing two instances, and ADR 0020 forbids that human being both author
+  -- and approver. It does not extend to two agent instances sharing a model:
+  -- distinct reviewer model routing is a Phase 5 lever ("where practical"),
+  -- not this invariant.
+  AND NOT (p.kind = 'human' AND author.kind = 'human' AND p.user_id = author.user_id)
 `
 
 type AcceptManagementAmendmentParams struct {
@@ -101,6 +108,13 @@ WHERE a.artifact_id     = $1
   AND author.principal_instance_id = a.author_instance_id
   AND author.organization_id       = a.organization_id
   AND author.kind IN ('agent', 'human')
+  -- The self-review backstop, repeated here as every other acceptance rule
+  -- is. Two HUMAN principals owned by the same user are the same principal
+  -- wearing two instances, and ADR 0020 forbids that human being both author
+  -- and approver. It does not extend to two agent instances sharing a model:
+  -- distinct reviewer model routing is a Phase 5 lever ("where practical"),
+  -- not this invariant.
+  AND NOT (p.kind = 'human' AND author.kind = 'human' AND p.user_id = author.user_id)
 `
 
 type AcceptManagementArtifactParams struct {
