@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
-edit_date = "2026-08-04"
+edit_date = "2026-08-05"
 status = "draft"
 summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
@@ -399,6 +399,40 @@ a shortcut here — the record has nowhere to put the second signature — and a
 future adapter that reports per-agent MPH would map to per-agent instances with
 no schema change.
 
+### D4a. A lifetime already over is written closed, never opened and then stopped (amendment)
+
+*Proposed during implementation, 2026-08-05; found by Codex review of the mapper.*
+
+D4 requires `start_time` and `stop_time` from the record and `stop_reason` from
+its verdict, and the seam as item 4 shipped it **cannot express any of that**:
+`CreatePrincipalInstance` opens a lifetime and `StopPrincipalInstance` closes one
+later, with no way to supply the stop *time* at all. The first implementation
+therefore created the target with neither, so `start_time` defaulted to `now()` —
+dating every attempt ever imported to the moment of the import — and the instance
+stayed open, leaving every configuration under test looking like it was still
+running. The MPH query D4 exists to serve would then have been answering a
+question about the importer rather than about the runs.
+
+**The seam gains a closed lifetime at creation**, `CreatePrincipalInstanceInput.
+Recorded`, written in the same `INSERT` as the instance. Not a convenience over
+create-then-stop: a pair of statements makes the row observable OPEN for the
+width of a statement, and a reader in that window sees a live agent that finished
+before the import began. The seam validates what the schema cannot — the zero
+time is year 1 and sorts before every window a query could ask about, and a stop
+before its start is a lifetime that ran backwards — because the schema's only
+stop constraint is that time and reason are null together.
+
+**`stop_reason` carries the verdict, plus the failure kind where the record has
+one:** `accepted`, `invalid`, `failed: checks-failed`. Closed vocabularies only.
+The column sits beside the MPH columns and is therefore read by grouping — *which
+runs on this prompt hash failed, and how?* — and `invalid_reason` is free text
+written by whatever refused the attempt, so it stays out and is read from the
+run-record artifact, which carries the record whole.
+
+**The importer's own instance closes when the invocation ends**, including the
+failing end, where it has stopped acting just as certainly. D4 already says one
+instance per import invocation; an invocation that never ends is not one.
+
 ## D5. The suite report is authored by the operator, and a draft is a legitimate outcome
 
 The evidence-bearing artifact is `benchmark.suite_report`: one per terminal suite
@@ -512,6 +546,33 @@ already documents, inherited rather than re-argued.
 `record_digest` is the JCS digest of the envelope, computed by the same seam
 machinery item 4 uses. Not a digest of the raw JSONL line: whitespace is not
 content, and two byte-different serializations of one record are one record.
+
+### D6a. The identity payload carries the record and nothing else (amendment)
+
+*Proposed during implementation, 2026-08-05; found by Codex review of the mapper.*
+
+`record_digest` is the digest of the artifact payload, so **everything in that
+payload is identity**. The first implementation added the results-store
+directory to it as provenance — where these bytes came from — which put a local
+filesystem path inside the identity of an attempt. The store is portable by
+design (D8), and the paths that reach it are not: the same unchanged store
+imported after being moved, copied to another machine, or reached through a
+symlink or a differently-spelled path would offer a different digest for an
+identity already ledgered, and D6's tampering check would fire on bytes that
+never changed. The mechanism built to detect a rewritten record would have been
+reporting relocation.
+
+**The rule, stated so the report cannot repeat it:** a payload whose digest is an
+identity contains only what the thing IS. Provenance about the import —
+where it ran, which store it read, when — belongs to the import's own tool call,
+which records the invocation and is not an identity. This binds the suite report
+as much as the run record: D7 checks a re-imported suite's report for
+payload-digest agreement, so a store locator in *that* payload would resurrect
+the same defect one layer up.
+
+Nothing is lost that the plane did not already hold. The suite the attempt
+belongs to is in the record and in the ledger's `benchmark_run_id`; what the
+directory added was the one fact that varies without the attempt varying.
 
 ## D7. Only a terminal suite gets a report, which is what makes a suite re-importable
 

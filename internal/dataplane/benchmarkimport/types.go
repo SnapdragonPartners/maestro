@@ -35,11 +35,17 @@ const PayloadVersion = 1
 // makes the envelope the schema and the payload the body, and the record is
 // already a normalized contract with its own version — re-modelling it here
 // would be a second schema to keep in step with the first.
+//
+// It carries the record and NOTHING ELSE, because this payload is the
+// identity: its digest is the ledger's record_digest, and D6 makes a
+// differing digest for a known attempt a rejected conflict. An earlier
+// version added the results-store directory as provenance, which put a local
+// filesystem path inside identity — so the same unchanged portable store,
+// moved or spelled differently, became tampering. Provenance about the
+// IMPORT belongs with the import's tool call, which records the invocation;
+// what belongs to the attempt is already in the record.
 type RunRecordPayload struct {
-	// ImportedFrom names the store the record was read from, so a reader can
-	// tell where the bytes came from without consulting the ledger.
-	ImportedFrom string `json:"imported_from"`
-	Record       Record `json:"record"`
+	Record Record `json:"record"`
 }
 
 // RegistryEntries returns the registrations this package writes.
@@ -74,9 +80,6 @@ func validateRunRecordPayload(payload []byte) error {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		return fmt.Errorf("benchmark.run_record payload: %w", err)
-	}
-	if body.ImportedFrom == "" {
-		return fmt.Errorf("benchmark.run_record payload: imported_from is required")
 	}
 	if err := body.Record.Validate(); err != nil {
 		return fmt.Errorf("benchmark.run_record payload: %w", err)

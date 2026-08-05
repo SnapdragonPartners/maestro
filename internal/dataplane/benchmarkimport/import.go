@@ -88,7 +88,7 @@ func New(seam store.Store) *Importer { return &Importer{store: seam} }
 // the object sweep could legitimately reclaim them, and the terminal import
 // would skip the ledgered attempt and never put them back. They belong to
 // report assembly, which rescans every attempt (design D7).
-func (i *Importer) Import(ctx context.Context, options Options) (*Result, error) {
+func (i *Importer) Import(ctx context.Context, options Options) (result *Result, err error) {
 	suite, err := ReadSuite(options.Dir, options.SuiteRunID)
 	if err != nil {
 		return nil, err
@@ -112,12 +112,25 @@ func (i *Importer) Import(ctx context.Context, options Options) (*Result, error)
 	if err != nil {
 		return nil, err
 	}
-	result := &Result{
+	// The importer's instance is one INVOCATION's lifetime (design D4), so it
+	// is closed on the way out — including the failing way out, where the
+	// instance has stopped acting just as certainly. Left open it would make
+	// every import ever run look like an import still running, which is the
+	// same wrong answer as an attempt's principal never stopping.
+	defer func() {
+		// Joined only when it fails, so a successful import returns exactly
+		// the error it produced rather than one wrapped for no reason.
+		if stopErr := i.stopImporter(ctx, organization.OrganizationID, importer, err); stopErr != nil {
+			err = errors.Join(err, stopErr)
+		}
+	}()
+
+	result = &Result{
 		BenchmarkRunID: run.Record.BenchmarkRunID,
 		Terminal:       suite.Manifest.Terminal(),
 	}
 	for index := range suite.Records {
-		outcome, err := i.importAttempt(ctx, &attemptContext{
+		outcome, attemptErr := i.importAttempt(ctx, &attemptContext{
 			suite:          suite,
 			record:         &suite.Records[index],
 			organizationID: organization.OrganizationID,
@@ -125,11 +138,11 @@ func (i *Importer) Import(ctx context.Context, options Options) (*Result, error)
 			benchmarkRunID: run.Record.BenchmarkRunID,
 			importerID:     importer,
 		})
-		if err != nil {
+		if attemptErr != nil {
 			// A failed attempt leaves every earlier one ledgered and
 			// committed. The import is resumable by construction: run it
 			// again and the ledgered attempts are skipped.
-			return result, err
+			return result, attemptErr
 		}
 		result.Attempts = append(result.Attempts, outcome)
 	}
@@ -155,7 +168,7 @@ type attemptContext struct {
 func (i *Importer) importAttempt(ctx context.Context, attempt *attemptContext) (AttemptOutcome, error) {
 	outcome := AttemptOutcome{RunID: attempt.record.RunID}
 
-	payload, digest, err := attempt.payload(attempt.suite.Dir)
+	payload, digest, err := attempt.payload()
 	if err != nil {
 		return outcome, err
 	}
@@ -237,12 +250,17 @@ var errConcurrentImport = errors.New("attempt ledgered concurrently")
 
 // payload builds the artifact body and its canonical digest.
 //
-// The digest is over the ENVELOPE, computed by the same canonical machinery
+// The digest is over the CANONICAL payload, computed by the same machinery
 // the seam uses — not over the raw JSONL line. Whitespace is not content, and
 // two byte-different serializations of one record are one record; digesting
 // the line would make a reformatted file look like tampering.
-func (a *attemptContext) payload(dir string) (json.RawMessage, string, error) {
-	body := RunRecordPayload{Record: *a.record, ImportedFrom: dir}
+//
+// It takes nothing but the record for the same reason. Everything in this
+// body is identity (D6), so anything that varies without the attempt varying
+// — the results-store directory being the one that was here — turns a
+// relocated store into a conflict.
+func (a *attemptContext) payload() (json.RawMessage, string, error) {
+	body := RunRecordPayload{Record: *a.record}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, "", fmt.Errorf("encode run record payload: %w", err)
@@ -272,6 +290,24 @@ func (i *Importer) systemPrincipal(ctx context.Context, organizationID uuid.UUID
 	return instance.PrincipalInstanceID, nil
 }
 
+// stopImporter closes the importer's instance, naming how the import ended.
+//
+// The reason distinguishes the two, because "stopped" alone would make a
+// failed import indistinguishable from a complete one at exactly the moment
+// someone is asking which it was. The import error itself is not folded in:
+// the reason is a lifecycle diagnostic, and an arbitrarily long wrapped
+// message is a poor one.
+func (i *Importer) stopImporter(ctx context.Context, organizationID, importer uuid.UUID, importErr error) error {
+	reason := "import complete"
+	if importErr != nil {
+		reason = "import failed"
+	}
+	if _, err := i.store.StopPrincipalInstance(ctx, organizationID, importer, reason); err != nil {
+		return fmt.Errorf("stop importer principal %s: %w", importer, err)
+	}
+	return nil
+}
+
 // targetPrincipal creates the principal representing the CONFIGURATION UNDER
 // TEST for one attempt, carrying its MPH signature.
 //
@@ -286,6 +322,13 @@ func (i *Importer) systemPrincipal(ctx context.Context, organizationID uuid.UUID
 // contract — the record has nowhere to put the second — so this is one
 // instance per attempt, not per agent. A future adapter reporting per-agent
 // MPH maps to per-agent instances with no schema change.
+//
+// The lifetime is the ATTEMPT'S OWN, not the import's: start and stop from
+// the record's timestamps and the stop reason from its verdict (design D4).
+// Dated at import time instead, every attempt ever run would appear to have
+// happened at once, and every one of them would still be running — which is
+// the same MPH query above answering a question about the importer rather
+// than about the runs.
 func (i *Importer) targetPrincipal(ctx context.Context, tx store.Tx, attempt *attemptContext) (uuid.UUID, error) {
 	mph := attempt.record.Target.MPH
 	agentType := targetAgentType
@@ -296,6 +339,14 @@ func (i *Importer) targetPrincipal(ctx context.Context, tx store.Tx, attempt *at
 		PromptPackID:   &mph.PromptPack,
 		PromptHash:     &mph.PromptHash,
 		OrganizationID: attempt.organizationID,
+		Recorded: &store.RecordedLifetime{
+			// Non-nil on every validated record: validateTimestamps requires
+			// both, refuses the zero time, and refuses a finish that precedes
+			// its start.
+			StartTime:  *attempt.record.StartedAt,
+			StopTime:   *attempt.record.FinishedAt,
+			StopReason: stopReason(attempt.record),
+		},
 	}
 	if mph.HarnessHash != "" {
 		input.HarnessConfigHash = &mph.HarnessHash
@@ -308,6 +359,23 @@ func (i *Importer) targetPrincipal(ctx context.Context, tx store.Tx, attempt *at
 		return uuid.Nil, fmt.Errorf("create target principal for %s: %w", attempt.record.RunID, err)
 	}
 	return instance.PrincipalInstanceID, nil
+}
+
+// stopReason describes why an attempt's principal stopped, in the record's
+// own closed vocabulary.
+//
+// Closed is the point. stop_reason sits beside the MPH columns, so it is read
+// by grouping — "which runs on this prompt hash failed, and how?" — and a
+// vocabulary that grouping cannot rely on answers nothing. Verdict and
+// failure_kind are both closed (validateVerdict enforces each against its
+// set); invalid_reason is free text written by whatever refused the attempt,
+// so it stays out and is read from the run-record artifact, which carries it
+// whole.
+func stopReason(record *Record) string {
+	if record.Verdict == "failed" && record.FailureKind != "" {
+		return record.Verdict + ": " + record.FailureKind
+	}
+	return record.Verdict
 }
 
 // writeMetricEvents records every MEASURED metric.
