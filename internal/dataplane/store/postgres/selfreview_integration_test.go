@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 
+	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -265,4 +267,155 @@ func TestSelfReviewIsRefusedForAmendmentsToo(t *testing.T) {
 		t.Fatalf("amendment self-review must be refused with %q, got: %v",
 			store.ReasonReviewerIsAuthorUser, err)
 	}
+}
+
+// The SQL backstops, exercised by calling the generated statements DIRECTLY.
+//
+// They cannot be reached through the seam: the Go classifier refuses first
+// and always wins, so removing either predicate leaves every test above green
+// and the backstop can disappear silently. That is not hypothetical here —
+// it is exactly what the second mutation configuration for this fix showed.
+// A backstop behind a working guard is only testable by going around the
+// guard.
+//
+// The positive control in each case is not optional. Zero rows for the wrong
+// reason — parameters that match nothing at all — looks identical to zero
+// rows for the right one.
+
+// selfReviewSetup builds an artifact authored by one instance of a human and
+// an accepted review by a SECOND instance of the same human, plus the same
+// shape for a distinct human, so both the negative and the control differ in
+// exactly one variable: who the reviewer is.
+func (f *fixture) selfReviewSetup(t *testing.T, sameUser bool) (artifactID, reviewID uuid.UUID) {
+	t.Helper()
+	author := f.humanPrincipal(t, f.userID)
+	reviewerUser := f.userID
+	if !sameUser {
+		reviewerUser = f.secondUser(t)
+	}
+	reviewer := f.humanPrincipal(t, reviewerUser)
+	artifact := f.draftAuthoredBy(t, author)
+	return artifact.ArtifactID, f.reviewBy(t, artifact, reviewer)
+}
+
+func TestSelfReviewBackstopFiresInSQLForOriginals(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	queries := gen.New(f.pool)
+
+	accept := func(t *testing.T, artifactID, reviewID uuid.UUID) int64 {
+		t.Helper()
+		affected, err := queries.AcceptManagementArtifact(ctx, gen.AcceptManagementArtifactParams{
+			ArtifactID:     pgtype.UUID{Bytes: artifactID, Valid: true},
+			OrganizationID: pgtype.UUID{Bytes: f.organizationID, Valid: true},
+			ReviewID:       pgtype.UUID{Bytes: reviewID, Valid: true},
+		})
+		if err != nil {
+			t.Fatalf("direct AcceptManagementArtifact: %v", err)
+		}
+		return affected
+	}
+
+	t.Run("positive control: a distinct human", func(t *testing.T) {
+		artifactID, reviewID := f.selfReviewSetup(t, false)
+		if affected := accept(t, artifactID, reviewID); affected != 1 {
+			t.Fatalf("affected %d rows, want 1; the parameters do not match a valid acceptance, "+
+				"so the negative case below would prove nothing", affected)
+		}
+	})
+
+	t.Run("the same human through a second instance", func(t *testing.T) {
+		artifactID, reviewID := f.selfReviewSetup(t, true)
+		if affected := accept(t, artifactID, reviewID); affected != 0 {
+			t.Fatalf("affected %d rows, want 0; the statement accepted a human's review of their "+
+				"own artifact, which the Go classifier would have caught first and hidden", affected)
+		}
+	})
+}
+
+func TestSelfReviewBackstopFiresInSQLForAmendments(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	queries := gen.New(f.pool)
+
+	// An amendment authored by one instance of a human, reviewed by another
+	// instance of either the same human or a distinct one.
+	setup := func(t *testing.T, sameUser bool) (originalID, amendmentID, reviewID uuid.UUID) {
+		t.Helper()
+		author := f.humanPrincipal(t, f.userID)
+		other := f.humanPrincipal(t, f.secondUser(t))
+
+		original := f.draftAuthoredBy(t, author)
+		if err := f.store.AcceptArtifact(ctx, f.organizationID, original.ArtifactID,
+			f.reviewBy(t, original, other)); err != nil {
+			t.Fatalf("accept original: %v", err)
+		}
+		amendment, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+			Type:             testType,
+			Summary:          "amendment",
+			Payload:          []byte(`{"title":"amendment"}`),
+			Scope:            store.Scope{Type: store.ScopeOrganization, ID: f.organizationID},
+			AmendsArtifactID: &original.ArtifactID,
+			OrganizationID:   f.organizationID,
+			UserID:           f.userID,
+			AuthorInstanceID: author,
+		})
+		if err != nil {
+			t.Fatalf("create amendment: %v", err)
+		}
+		base, err := f.store.AmendmentBase(ctx, f.organizationID, original.ArtifactID)
+		if err != nil {
+			t.Fatalf("amendment base: %v", err)
+		}
+		reviewerUser := f.userID
+		if !sameUser {
+			reviewerUser = f.secondUser(t)
+		}
+		review, err := f.store.CreateReview(ctx, store.CreateReviewInput{
+			ReviewDigest:       amendment.ReviewDigest,
+			BaseDigest:         &base.Digest,
+			BaseSequence:       &base.Sequence,
+			Rationale:          "looks right",
+			Decision:           store.DecisionAccepted,
+			OrganizationID:     f.organizationID,
+			ArtifactID:         amendment.ArtifactID,
+			ReviewerInstanceID: f.humanPrincipal(t, reviewerUser),
+		})
+		if err != nil {
+			t.Fatalf("create amendment review: %v", err)
+		}
+		return original.ArtifactID, amendment.ArtifactID, review.ReviewID
+	}
+
+	accept := func(t *testing.T, originalID, amendmentID, reviewID uuid.UUID) int64 {
+		t.Helper()
+		sequence := int32(1)
+		affected, err := queries.AcceptManagementAmendment(ctx, gen.AcceptManagementAmendmentParams{
+			AmendmentSequence: &sequence,
+			ArtifactID:        pgtype.UUID{Bytes: amendmentID, Valid: true},
+			OrganizationID:    pgtype.UUID{Bytes: f.organizationID, Valid: true},
+			AmendsArtifactID:  pgtype.UUID{Bytes: originalID, Valid: true},
+			ReviewID:          pgtype.UUID{Bytes: reviewID, Valid: true},
+		})
+		if err != nil {
+			t.Fatalf("direct AcceptManagementAmendment: %v", err)
+		}
+		return affected
+	}
+
+	t.Run("positive control: a distinct human", func(t *testing.T) {
+		originalID, amendmentID, reviewID := setup(t, false)
+		if affected := accept(t, originalID, amendmentID, reviewID); affected != 1 {
+			t.Fatalf("affected %d rows, want 1; the parameters do not match a valid acceptance, "+
+				"so the negative case below would prove nothing", affected)
+		}
+	})
+
+	t.Run("the same human through a second instance", func(t *testing.T) {
+		originalID, amendmentID, reviewID := setup(t, true)
+		if affected := accept(t, originalID, amendmentID, reviewID); affected != 0 {
+			t.Fatalf("affected %d rows, want 0; the amendment statement accepted a human's review "+
+				"of their own amendment", affected)
+		}
+	})
 }
