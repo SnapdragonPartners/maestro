@@ -242,6 +242,11 @@ var metricRegistry = []metricSpec{
 	{"human_attention_seconds", false},
 }
 
+// statusValue is the one metric status that carries a number. The other
+// three are absences with different explanations, and only this one becomes
+// a metric event.
+const statusValue = "value"
+
 // engineOwnedMetrics are measured by the engine from its own timestamps, so a
 // value is legal regardless of what the target declares it can report.
 //
@@ -277,7 +282,7 @@ func (r *Record) validateMetrics() error {
 // validateMetric checks one observation against its registry entry.
 func (r *Record) validateMetric(spec metricSpec, metric Metric) error {
 	switch metric.Status {
-	case "value":
+	case statusValue:
 		if metric.Value == nil {
 			return reject(r.RunID, ReasonMetricValue, spec.key+": status value with no value")
 		}
@@ -333,7 +338,7 @@ func (r *Record) validateCapabilities() error {
 				return reject(r.RunID, ReasonCapabilityConflict,
 					spec.key+" reported unsupported by a target that declares the capability")
 			}
-		case "value", "unavailable":
+		case statusValue, "unavailable":
 			if !capable[spec.key] && !engineOwnedMetrics[spec.key] {
 				return reject(r.RunID, ReasonCapabilityConflict,
 					fmt.Sprintf("%s reported %s without a declared capability", spec.key, metric.Status))
