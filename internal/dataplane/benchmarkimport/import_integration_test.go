@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -632,6 +633,240 @@ func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
 	}
 }
 
+// TestCallsAreImportedFromTheUsageLog covers the per-call mapping of design
+// D3, column by column, against the real seam.
+//
+// Both outcomes, because they store differently and the difference is the
+// point: a successful call carries a measurement and a price, and a failed
+// one carries its error and NO counts — the toolkit populates usage only when
+// the error is nil, so five zeros there would be a measurement nobody made.
+func TestCallsAreImportedFromTheUsageLog(t *testing.T) {
+	const runID = "story-a--config--r1--aaaa1111"
+	p := newPlane(t)
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": runID})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+	writeUsageLog(t, dir, runID, usageHeaderLine(2),
+		`{"finished_at":"2026-08-04T00:05:00.5Z","latency_ns":1500000000,"provider":"anthropic",`+
+			`"model":"claude-opus-5","input_tokens":1200,"output_tokens":340,"reasoning_tokens":90,`+
+			`"cache_read_tokens":800,"cache_write_tokens":7,"cost_usd":0.0425,"success":true}`,
+		`{"finished_at":"2026-08-04T00:06:00Z","latency_ns":250000000,"provider":"ollama",`+
+			`"model":"qwen3-coder","success":false,"error":"context deadline exceeded"}`)
+
+	result := p.mustImport(t, dir)
+	if got := result.Attempts[0].Calls; got != 2 {
+		t.Fatalf("the attempt reported %d calls, want the log's 2", got)
+	}
+	if reason := result.Attempts[0].CallsUnavailable; reason != "" {
+		t.Errorf("calls were read but reported unavailable (%q)", reason)
+	}
+
+	calls := p.calls(t, p.targets(t)[0].PrincipalInstanceID)
+	if len(calls) != 2 {
+		t.Fatalf("the plane holds %d call rows, want 2", len(calls))
+	}
+	byModel := make(map[string]store.LLMCall, len(calls))
+	for _, call := range calls {
+		byModel[call.Model] = call
+	}
+
+	measured, present := byModel["claude-opus-5"]
+	if !present {
+		t.Fatal("the successful call is missing")
+	}
+	if measured.Provider != "anthropic" {
+		t.Errorf("provider is %q; a blank or wrong provider is what D9 exists to prevent", measured.Provider)
+	}
+	// started_at is DERIVED: finished_at minus the recorded latency, which is
+	// the whole logical call including retries.
+	if want := time.Date(2026, 8, 4, 0, 4, 59, 0, time.UTC); !measured.StartedAt.Equal(want) {
+		t.Errorf("started_at is %s, want %s — finished_at less the recorded latency",
+			measured.StartedAt, want)
+	}
+	switch {
+	case measured.Tokens == nil:
+		t.Error("the successful call carries no token measurement")
+	case *measured.Tokens != (store.TokenCounts{Input: 1200, Output: 340, Reasoning: 90,
+		CacheRead: 800, CacheWrite: 7}):
+		// Every axis asserted, and each given a DIFFERENT value above, so a
+		// mapping that reads the wrong field cannot pass.
+		t.Errorf("tokens are %+v, want the log's five axes", *measured.Tokens)
+	}
+	if measured.Cost == nil || measured.Cost.String() != "0.04250000" {
+		t.Errorf("cost is %v, want the log's 0.0425 at the column's scale", measured.Cost)
+	}
+	if measured.ErrorMessage != nil {
+		t.Errorf("the successful call carries error %q", *measured.ErrorMessage)
+	}
+
+	failed, present := byModel["qwen3-coder"]
+	if !present {
+		t.Fatal("the failed call is missing")
+	}
+	if failed.Tokens != nil {
+		t.Errorf("the failed call carries tokens %+v; the provider never reported them", *failed.Tokens)
+	}
+	if failed.Cost != nil {
+		t.Errorf("the failed call carries cost %v", failed.Cost)
+	}
+	if failed.ErrorMessage == nil || *failed.ErrorMessage != "context deadline exceeded" {
+		t.Errorf("the failed call's error is %v, want the log's text", failed.ErrorMessage)
+	}
+	if failed.Succeeded == nil || *failed.Succeeded {
+		t.Errorf("the failed call is recorded as succeeded=%v", failed.Succeeded)
+	}
+}
+
+// TestUnreadableCallsAreARecordedAbsence covers the honest zero.
+//
+// A surface-v1 suite — every suite in benchmark/runs/ today — imports its
+// attempts and cannot yield calls, because v1 folds reasoning into the
+// completion count and the axes cannot be split after the fact. What must not
+// happen is zero call rows meaning "this attempt made no calls", so the
+// reason travels on the outcome and into the import's own tool call.
+func TestUnreadableCallsAreARecordedAbsence(t *testing.T) {
+	const runID = "story-a--config--r1--aaaa1111"
+	p := newPlane(t)
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": runID})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+	writeUsageLog(t, dir, runID, usageHeaderLine(1),
+		`{"ts":"2026-08-04T00:05:00Z","model":"m","prompt_tokens":1,"completion_tokens":1,`+
+			`"cost_usd":0.01,"success":true}`)
+
+	result := p.mustImport(t, dir)
+	if !result.Attempts[0].Imported {
+		t.Fatal("a surface-v1 suite must still import its attempts")
+	}
+	if result.Attempts[0].Calls != 0 {
+		t.Errorf("%d calls were written from a v1 log", result.Attempts[0].Calls)
+	}
+	if reason := result.Attempts[0].CallsUnavailable; !strings.Contains(reason, "surface v1") {
+		t.Errorf("the outcome reports %q; it has to say WHY there are no calls", reason)
+	}
+	if got := len(p.calls(t, p.targets(t)[0].PrincipalInstanceID)); got != 0 {
+		t.Errorf("the plane holds %d call rows from a log this build cannot split", got)
+	}
+	// And the absence is counted where an operator reads it.
+	summary := p.toolCallResult(t, result.ToolCallID)
+	if summary.CallsUnavailable != 1 {
+		t.Errorf("the import summary counts %d attempts with unavailable calls, want 1",
+			summary.CallsUnavailable)
+	}
+}
+
+// TestTheImportRecordsItsOwnToolCall covers design D5's machinery link: the
+// suite report is authored by a human, and produced_by_tool_call_id is what
+// tells a reader it was assembled rather than hand-written.
+func TestTheImportRecordsItsOwnToolCall(t *testing.T) {
+	const runID = "story-a--config--r1--aaaa1111"
+	p := newPlane(t)
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": runID})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+	writeUsageLog(t, dir, runID, usageHeaderLine(2), aCall)
+
+	result := p.mustImport(t, dir)
+	if result.ToolCallID == uuid.Nil {
+		t.Fatal("the import names no tool call")
+	}
+	call, err := p.store.GetToolCall(context.Background(), p.organization.OrganizationID, result.ToolCallID)
+	if err != nil {
+		t.Fatalf("read the import's tool call: %v", err)
+	}
+	if call.ToolName != "benchmark.import" {
+		t.Errorf("the tool call is named %q", call.ToolName)
+	}
+	// Made by the SYSTEM importer, which is the principal that did the work.
+	importers := p.instancesByModel(t, "system-benchmark-importer")
+	if len(importers) != 1 || call.PrincipalInstanceID != importers[0].PrincipalInstanceID {
+		t.Errorf("the tool call is attributed to %s, not to the importer", call.PrincipalInstanceID)
+	}
+	// The results-store path lives HERE and nowhere digested: the tool call
+	// records an invocation and is not an identity (design D6a).
+	var arguments struct {
+		Organization string `json:"organization"`
+		Operator     string `json:"operator"`
+		Dir          string `json:"dir"`
+		SuiteRunID   string `json:"suite_run_id"`
+	}
+	if err := json.Unmarshal(call.Arguments, &arguments); err != nil {
+		t.Fatalf("decode the tool call's arguments: %v", err)
+	}
+	if arguments.Dir != dir || arguments.SuiteRunID != testSuiteRunID ||
+		arguments.Organization != testOrgSlug || arguments.Operator != testOperator {
+		t.Errorf("the tool call records %+v, not what the import was asked to do", arguments)
+	}
+	// Completed, and carrying what the import DID.
+	if call.FinishedAt == nil {
+		t.Error("the import's tool call is still open after the import returned")
+	}
+	if call.Succeeded == nil || !*call.Succeeded {
+		t.Errorf("a successful import left its tool call at succeeded=%v", call.Succeeded)
+	}
+	summary := p.toolCallResult(t, result.ToolCallID)
+	if summary.Attempts != 1 || summary.Imported != 1 || summary.Calls != 1 || !summary.Terminal {
+		t.Errorf("the summary is %+v, want one attempt, one imported, one call, terminal", summary)
+	}
+}
+
+// TestAFailedImportRecordsItOnTheToolCall covers the other exit. An import
+// that died is a fact about the machinery, and the tool call is where a
+// reader looks for it.
+func TestAFailedImportRecordsItOnTheToolCall(t *testing.T) {
+	const failing = "story-a--config--r1--aaaa1111"
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": failing})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+
+	p := newPlaneWith(t, refusingRegistry(failing))
+	result, err := p.importFrom(t, dir)
+	if err == nil {
+		t.Fatal("the import reported success while its only attempt was refused")
+	}
+	if result.ToolCallID == uuid.Nil {
+		t.Fatal("a failed import names no tool call")
+	}
+	call, readErr := p.store.GetToolCall(context.Background(),
+		p.organization.OrganizationID, result.ToolCallID)
+	if readErr != nil {
+		t.Fatalf("read the import's tool call: %v", readErr)
+	}
+	if call.FinishedAt == nil {
+		t.Error("the tool call is still open after the import returned")
+	}
+	if call.Succeeded == nil || *call.Succeeded {
+		t.Errorf("a failed import left its tool call at succeeded=%v", call.Succeeded)
+	}
+	if call.ErrorMessage == nil || !strings.Contains(*call.ErrorMessage, failing) {
+		t.Errorf("the tool call's error is %v; it has to name what failed", call.ErrorMessage)
+	}
+}
+
+// TestCallsRollBackWithTheirAttempt covers the containment design D6 requires.
+//
+// The calls join the attempt's transaction, so a refused attempt leaves none:
+// a call row referring to a principal that no longer exists is not a partial
+// import, it is a broken one.
+//
+// Worth knowing about how strong this is, learned while trying to break it:
+// writing the calls in their OWN transaction, still attributed to the target,
+// cannot leave rows behind at all — the target principal is not visible
+// outside the uncommitted attempt transaction, so the foreign key refuses
+// them. The schema is holding half of this property. The mutation that does
+// survive attributes the calls to the IMPORTER, which was committed before
+// the attempt began, and that one this test catches.
+func TestCallsRollBackWithTheirAttempt(t *testing.T) {
+	const failing = "story-a--config--r1--aaaa1111"
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": failing})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+	writeUsageLog(t, dir, failing, usageHeaderLine(2), aCall, aCall, aCall)
+
+	p := newPlaneWith(t, refusingRegistry(failing))
+	if _, err := p.importFrom(t, dir); err == nil {
+		t.Fatal("the import reported success while its only attempt was refused")
+	}
+	if got := len(p.allCalls(t)); got != 0 {
+		t.Errorf("%d call rows survived their attempt's rollback", got)
+	}
+}
+
 // TestMPHQueryFindsTheImportedRuns is the question ADR 0021 built the MPH
 // columns for, asked here for the first time against real data.
 func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
@@ -953,6 +1188,56 @@ func (p *plane) targetFor(t *testing.T, runID string) store.PrincipalInstance {
 	}
 	t.Fatalf("no target principal is reachable from %s", runID)
 	return store.PrincipalInstance{}
+}
+
+// calls reads one principal's LLM calls.
+func (p *plane) calls(t *testing.T, principal uuid.UUID) []store.LLMCall {
+	t.Helper()
+	found, err := p.store.ListLLMCallsByPrincipal(context.Background(),
+		p.organization.OrganizationID, principal, store.Page{Limit: store.MaxPageLimit})
+	if err != nil {
+		t.Fatalf("list calls of %s: %v", principal, err)
+	}
+	return found
+}
+
+// allCalls reads every LLM call in the plane, however it is attributed.
+//
+// By window rather than by principal, deliberately: a rollback test asking
+// "are this principal's calls gone?" would pass trivially when the principal
+// itself rolled back, whatever happened to the rows.
+func (p *plane) allCalls(t *testing.T) []store.LLMCall {
+	t.Helper()
+	found, err := p.store.ListLLMCallsInWindow(context.Background(), p.organization.OrganizationID,
+		time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC),
+		store.Page{Limit: store.MaxPageLimit})
+	if err != nil {
+		t.Fatalf("list calls: %v", err)
+	}
+	return found
+}
+
+// importSummary mirrors what the import records as its tool call's result.
+type importSummary struct {
+	Attempts         int  `json:"attempts"`
+	Imported         int  `json:"imported"`
+	Calls            int  `json:"calls"`
+	CallsUnavailable int  `json:"calls_unavailable"`
+	Terminal         bool `json:"terminal"`
+}
+
+// toolCallResult reads the import's own summary back out of the plane.
+func (p *plane) toolCallResult(t *testing.T, toolCallID uuid.UUID) importSummary {
+	t.Helper()
+	call, err := p.store.GetToolCall(context.Background(), p.organization.OrganizationID, toolCallID)
+	if err != nil {
+		t.Fatalf("read tool call %s: %v", toolCallID, err)
+	}
+	var summary importSummary
+	if err := json.Unmarshal(call.Result, &summary); err != nil {
+		t.Fatalf("decode the import summary: %v", err)
+	}
+	return summary
 }
 
 // metricEvents reads every metric event in the plane.

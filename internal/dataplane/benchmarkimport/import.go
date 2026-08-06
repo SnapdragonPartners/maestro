@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,11 +31,11 @@ const (
 	// under test.
 	targetAgentType = "benchmark-target"
 
-	// The import's own tool call is NOT written yet. It belongs with the
-	// suite report, where design D5 needs produced_by_tool_call_id to name
-	// the machinery behind an operator-authored claim — and a constant
-	// declared here ahead of its writer is a promise the code does not keep,
-	// which is why it is not sitting here unused.
+	// importToolName is the tool call the system importer makes, one per
+	// suite (design D3). The suite report will name it through
+	// produced_by_tool_call_id, which is how a reader tells an assembled
+	// report from a hand-written one (design D5).
+	importToolName = "benchmark.import"
 )
 
 // Options configures one import.
@@ -52,6 +53,14 @@ type Options struct {
 // AttemptOutcome is what the import did with one attempt.
 type AttemptOutcome struct {
 	RunID string
+	// CallsUnavailable says why an imported attempt produced no call rows,
+	// and is empty when they were read. It is a RECORDED ABSENCE: a
+	// surface-v1 suite cannot yield calls at all, and an attempt whose
+	// evidence was pruned cannot either — but neither of those is "this
+	// attempt made no calls", and a zero would say exactly that (design D9).
+	CallsUnavailable string
+	// Calls is how many llm_calls rows the attempt produced.
+	Calls int
 	// Imported is false when the attempt was already ledgered with the same
 	// digest — the no-op that makes re-import free.
 	Imported bool
@@ -61,6 +70,9 @@ type AttemptOutcome struct {
 type Result struct {
 	Attempts       []AttemptOutcome
 	BenchmarkRunID uuid.UUID
+	// ToolCallID is the import's own tool call. The suite report names it
+	// through produced_by_tool_call_id (design D5).
+	ToolCallID uuid.UUID
 	// Terminal reports whether the suite had stopped. A non-terminal suite
 	// imports its attempts and gets no report (design D7); the report and its
 	// evidence arrive on the later import that finds the suite finished.
@@ -126,9 +138,23 @@ func (i *Importer) Import(ctx context.Context, options Options) (result *Result,
 		}
 	}()
 
+	toolCall, err := i.openToolCall(ctx, organization.OrganizationID, importer, options)
+	if err != nil {
+		return nil, err
+	}
+	// Registered AFTER the principal's stop, so it runs BEFORE it: defers
+	// unwind last-first, and a tool call completed by a principal already
+	// stopped would be a system component acting after its own lifetime.
+	defer func() {
+		if closeErr := i.closeToolCall(ctx, organization.OrganizationID, toolCall, result, err); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}()
+
 	result = &Result{
 		BenchmarkRunID: run.Record.BenchmarkRunID,
 		Terminal:       suite.Manifest.Terminal(),
+		ToolCallID:     toolCall,
 	}
 	for index := range suite.Records {
 		outcome, attemptErr := i.importAttempt(ctx, &attemptContext{
@@ -192,10 +218,21 @@ func (i *Importer) importAttempt(ctx context.Context, attempt *attemptContext) (
 		return outcome, fmt.Errorf("read ledger for %s: %w", attempt.record.RunID, err)
 	}
 
+	// Read before the transaction opens: parsing a log is not work to hold a
+	// transaction open for, and a log this build cannot trust should stop the
+	// attempt before any of it is written.
+	usage, err := attempt.suite.ReadUsageLog(attempt.record.RunID)
+	if err != nil {
+		return outcome, fmt.Errorf("read calls for %s: %w", attempt.record.RunID, err)
+	}
+
 	err = i.store.WithTx(ctx, func(tx store.Tx) error {
 		target, txErr := i.targetPrincipal(ctx, tx, attempt)
 		if txErr != nil {
 			return txErr
+		}
+		if callErr := i.writeCalls(ctx, tx, attempt, usage, target); callErr != nil {
+			return callErr
 		}
 		artifact, txErr := tx.CreateAuditArtifact(ctx, store.CreateAuditArtifactInput{
 			Type:    TypeRunRecord,
@@ -243,8 +280,105 @@ func (i *Importer) importAttempt(ctx context.Context, attempt *attemptContext) (
 		return outcome, fmt.Errorf("import attempt %s: %w", attempt.record.RunID, err)
 	}
 	outcome.Imported = true
+	outcome.Calls, outcome.CallsUnavailable = len(usage.Lines), usage.Reason
 	return outcome, nil
 }
+
+// writeCalls records one llm_calls row per usage line, opened and completed.
+//
+// Inside the ATTEMPT'S transaction (design D6), so calls cannot outlive a
+// rolled-back attempt: a call row referring to a principal that no longer
+// exists is not a partial import, it is a broken one.
+//
+// Attributed to the CONFIGURATION UNDER TEST, not to the importer. The
+// importer moved these rows; the target made the calls, and the MPH question
+// the target principal exists to answer is only meaningful if its cost sits
+// with it.
+func (i *Importer) writeCalls(ctx context.Context, tx store.Tx, attempt *attemptContext,
+	usage *UsageLog, principal uuid.UUID,
+) error {
+	if !usage.Available() {
+		// A recorded absence, already carried on the outcome. Nothing is
+		// written here rather than zero rows being written to mean the same
+		// thing, because a zero would say the attempt made no calls.
+		return nil
+	}
+	for index := range usage.Lines {
+		line := &usage.Lines[index]
+		call, err := tx.CreateLLMCall(ctx, store.CreateLLMCallInput{
+			Provider: *line.Provider,
+			Model:    *line.Model,
+			// Derived, never stored twice: the log records one instant and
+			// one exact duration, so this is computed rather than read.
+			StartedAt:           ptr(line.StartedAt()),
+			UserID:              &attempt.userID,
+			PrincipalInstanceID: principal,
+			OrganizationID:      attempt.organizationID,
+		})
+		if err != nil {
+			return fmt.Errorf("open call %d of %s: %w", index+1, attempt.record.RunID, err)
+		}
+		completion, err := completeCall(line, call.LLMCallID, attempt.organizationID)
+		if err != nil {
+			return fmt.Errorf("call %d of %s: %w", index+1, attempt.record.RunID, err)
+		}
+		if _, err := tx.CompleteLLMCall(ctx, completion); err != nil {
+			return fmt.Errorf("complete call %d of %s: %w", index+1, attempt.record.RunID, err)
+		}
+	}
+	return nil
+}
+
+// completeCall maps one usage line onto the seam's completion input.
+//
+// The seam requires tokens exactly when the call succeeded and forbids them
+// otherwise, which is the same rule the line was validated against — so a
+// line that got this far cannot produce a combination the seam refuses.
+func completeCall(line *UsageLine, callID, organizationID uuid.UUID) (store.CompleteLLMCallInput, error) {
+	completion := store.CompleteLLMCallInput{
+		FinishedAt:     line.FinishedAt,
+		OrganizationID: organizationID,
+		LLMCallID:      callID,
+		Succeeded:      *line.Success,
+	}
+	if *line.Success {
+		completion.Tokens = &store.TokenCounts{
+			Input: *line.InputTokens, Output: *line.OutputTokens,
+			Reasoning: *line.ReasoningTokens, CacheRead: *line.CacheReadTokens,
+			CacheWrite: *line.CacheWriteTokens,
+		}
+	} else {
+		message := *line.Error
+		completion.ErrorMessage = &message
+	}
+	if line.CostUSD != nil {
+		cost, err := costOf(*line.CostUSD)
+		if err != nil {
+			return completion, err
+		}
+		completion.Cost = &cost
+	}
+	return completion, nil
+}
+
+// costOf converts the log's float64 to the seam's exact decimal.
+//
+// Formatted at the column's own scale rather than at the float's full
+// precision: the destination is numeric(18,8), so a value carried at more
+// precision than that would be rounded by the database instead of here,
+// where the rounding can at least be seen. A cost too large for the column
+// is refused rather than truncated — the alternative is storing a number
+// that is not the one measured.
+func costOf(cost float64) (store.USD, error) {
+	parsed, err := store.ParseUSD(strconv.FormatFloat(cost, 'f', store.USDFractionalDigits, 64))
+	if err != nil {
+		return store.USD{}, fmt.Errorf("cost %v: %w", cost, err)
+	}
+	return parsed, nil
+}
+
+// ptr returns a pointer to a value the seam takes optionally.
+func ptr[T any](value T) *T { return &value }
 
 // errConcurrentImport rolls back an attempt another importer ledgered first.
 var errConcurrentImport = errors.New("attempt ledgered concurrently")
@@ -289,6 +423,106 @@ func (i *Importer) systemPrincipal(ctx context.Context, organizationID uuid.UUID
 		return uuid.Nil, fmt.Errorf("create importer principal: %w", err)
 	}
 	return instance.PrincipalInstanceID, nil
+}
+
+// importArguments is what the import was ASKED to do, recorded on its tool
+// call.
+//
+// This is where the results-store directory belongs, and the only place it
+// belongs: the tool call records an invocation and is not an identity, while
+// an artifact payload is digested and a local path inside one turns a moved
+// store into tampering (design D6a).
+type importArguments struct {
+	Organization string `json:"organization"`
+	Operator     string `json:"operator"`
+	Dir          string `json:"dir"`
+	SuiteRunID   string `json:"suite_run_id"`
+}
+
+// importSummary is what the import DID, recorded as the tool call's result.
+type importSummary struct {
+	Attempts int `json:"attempts"`
+	Imported int `json:"imported"`
+	Calls    int `json:"calls"`
+	// CallsUnavailable counts imported attempts whose calls could not be
+	// read. Reported rather than folded into a zero, for the reason D9 gives.
+	CallsUnavailable int  `json:"calls_unavailable"`
+	Terminal         bool `json:"terminal"`
+}
+
+// openToolCall records the invocation the importer is about to perform.
+//
+// One per suite, by the system importer (design D3). It is exhaust: an
+// import that dies leaves an open tool call, which is a true statement about
+// what happened rather than a row needing repair.
+func (i *Importer) openToolCall(ctx context.Context, organizationID, importer uuid.UUID,
+	options Options,
+) (uuid.UUID, error) {
+	arguments, err := json.Marshal(importArguments{
+		Organization: options.OrganizationSlug, Operator: options.OperatorHandle,
+		Dir: options.Dir, SuiteRunID: options.SuiteRunID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("encode import arguments: %w", err)
+	}
+	call, err := i.store.CreateToolCall(ctx, store.CreateToolCallInput{
+		ToolName:            importToolName,
+		Arguments:           arguments,
+		PrincipalInstanceID: importer,
+		OrganizationID:      organizationID,
+	})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("open import tool call: %w", err)
+	}
+	return call.ToolCallID, nil
+}
+
+// closeToolCall records what the import did, or how it failed.
+//
+// On the DETACHED context, for the reason D4a gives: this is a write whose
+// purpose is to record how an operation ended, so it cannot depend on the
+// context whose ending it is recording.
+func (i *Importer) closeToolCall(ctx context.Context, organizationID, toolCall uuid.UUID,
+	result *Result, importErr error,
+) error {
+	summary, err := json.Marshal(result.summarise())
+	if err != nil {
+		return fmt.Errorf("encode import summary: %w", err)
+	}
+	completion := store.CompleteToolCallInput{
+		Result: summary, OrganizationID: organizationID, ToolCallID: toolCall,
+		Succeeded: importErr == nil,
+	}
+	if importErr != nil {
+		message := importErr.Error()
+		completion.ErrorMessage = &message
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopImporterTimeout)
+	defer cancel()
+	if _, err := i.store.CompleteToolCall(cleanupCtx, completion); err != nil {
+		return fmt.Errorf("complete import tool call %s: %w", toolCall, err)
+	}
+	return nil
+}
+
+// summarise counts what the import produced. A nil result is the import that
+// failed before it had one, which is still a summary: nothing happened.
+func (r *Result) summarise() importSummary {
+	if r == nil {
+		return importSummary{}
+	}
+	summary := importSummary{Attempts: len(r.Attempts), Terminal: r.Terminal}
+	for index := range r.Attempts {
+		attempt := &r.Attempts[index]
+		if attempt.Imported {
+			summary.Imported++
+		}
+		summary.Calls += attempt.Calls
+		if attempt.Imported && attempt.CallsUnavailable != "" {
+			summary.CallsUnavailable++
+		}
+	}
+	return summary
 }
 
 // stopImporterTimeout bounds the cleanup write. Detached from the caller's
