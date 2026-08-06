@@ -38,6 +38,11 @@ const (
 // not_applicable, so it has no value and must produce no event.
 const absentMetric = "human_attention_seconds"
 
+// barrierTimeout bounds every wait in the concurrency test. Generous, because
+// it is not measuring anything — it exists so a barrier that never opens
+// fails the test instead of hanging the suite.
+const barrierTimeout = 30 * time.Second
+
 // plane is a disposable data plane with the importer's registry and a
 // bootstrapped tenant.
 type plane struct {
@@ -519,9 +524,41 @@ func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
 		result *benchmarkimport.Result
 		err    error
 	}
+	loserCtx, cancelLoser := context.WithCancel(context.Background())
 	loserDone := make(chan outcome, 1)
+	finished := make(chan struct{})
+
+	// Registered BEFORE the goroutine starts, and before any assertion that
+	// can end the test.
+	//
+	// Every t.Fatal below unwinds through runtime.Goexit, which runs cleanups
+	// and skips the rest of the function — so a barrier released only on the
+	// happy path is not released at all when the test fails. The loser then
+	// stays parked in the validator holding a pooled connection, and
+	// pgxpool.Close (registered by planetest.Pool, therefore running AFTER
+	// this one) waits for it forever: a real failure would be reported as a
+	// hung suite rather than as itself.
+	//
+	// Release first and cancel second, deliberately: the validator waits on
+	// the channel alone, so cancelling a goroutine parked there would free
+	// nothing. The cancel covers the case where it is past the barrier and
+	// blocked in the database instead.
+	var releaseOnce sync.Once
+	releaseBarrier := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseBarrier()
+		cancelLoser()
+		select {
+		case <-finished:
+		case <-time.After(barrierTimeout):
+			t.Error("the losing importer never returned; its transaction is still holding a pooled " +
+				"connection and the pool cannot close")
+		}
+	})
+
 	go func() {
-		result, err := loser.Import(context.Background(), benchmarkimport.Options{
+		defer close(finished)
+		result, err := loser.Import(loserCtx, benchmarkimport.Options{
 			OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
 			Dir: dir, SuiteRunID: testSuiteRunID,
 		})
@@ -530,7 +567,7 @@ func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
 
 	select {
 	case <-entered:
-	case <-time.After(30 * time.Second):
+	case <-time.After(barrierTimeout):
 		t.Fatal("the first importer never reached the seam's validation gate")
 	}
 	// Committed while the first importer holds an open transaction it has not
@@ -539,12 +576,12 @@ func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
 	if importedCount(winnerResult) != 1 {
 		t.Fatalf("the winning import wrote %d attempts, want 1", importedCount(winnerResult))
 	}
-	close(release)
+	releaseBarrier()
 
 	var got outcome
 	select {
 	case got = <-loserDone:
-	case <-time.After(30 * time.Second):
+	case <-time.After(barrierTimeout):
 		t.Fatal("the first importer never returned after being released")
 	}
 	if got.err != nil {
