@@ -26,8 +26,14 @@ const UsageSurfaceVersion = 2
 // The adapter copies it there from the project's .maestro directory.
 const usageLogFileName = "usage.jsonl"
 
-// maxUsageLineBytes bounds one line, matching the record reader's limit.
-const maxUsageLineBytes = 16 * 1024 * 1024
+// MaxUsageLineBytes bounds one usage line, matching the record reader's
+// limit and the writer's own.
+//
+// One number shared by every component that touches this surface: a line the
+// writer is willing to emit must be one both readers are willing to read, or
+// a legal call becomes an unreadable log. It is exported so the two-sided
+// corpus can assert the three agree rather than trusting that they do.
+const MaxUsageLineBytes = 16 * 1024 * 1024
 
 // usageHeader is the log's first line.
 type usageHeader struct {
@@ -369,10 +375,24 @@ func (l *UsageLine) budgetTokens() (int64, error) {
 // both would put two contradicting authoritative accounts in the plane, the
 // per-call rows saying one thing and the metric events beside them another.
 //
-// Only MEASURED metrics are compared. A record that declines to measure
-// (`unavailable` for a local config's cost, or for a log the tail never
-// validated) is not disagreeing with anything; it is declining to say, which
-// D9 makes a legitimate outcome.
+// An ACCEPTED attempt must additionally have MEASURED its calls and tokens.
+// It ran to completion, so its metrics are the target's own observation, and
+// a validated log always produces measured counts there — silence beside a
+// readable log would mean per-call rows with no canonical total to agree
+// with.
+//
+// The requirement stops at accepted, deliberately, because a FAILED attempt
+// legitimately has both. When the target errors, the engine synthesizes
+// `unavailable` for every supported metric and then overlays only the
+// streamed tracker totals — `tokens_total` and `cost_usd`, never
+// `llm_calls` (engine/attempt.go, overlayStreamedUsage) — while evidence,
+// including the usage log, is still exported. So a target-error attempt
+// carrying real calls beside `llm_calls: unavailable` is the ordinary
+// shape of that path, and requiring measurement there would refuse every
+// one of them.
+//
+// cost_usd is never required: a local config's cost is `unavailable` by
+// item 5.1 rather than the log's zero passed through.
 func (u *UsageLog) Reconcile(record *Record) error {
 	if !u.Available() {
 		return nil // nothing was read, so there is nothing to reconcile
@@ -381,16 +401,35 @@ func (u *UsageLog) Reconcile(record *Record) error {
 	if err != nil {
 		return err
 	}
-	for _, check := range []struct {
+	checks := []struct {
 		key      string
 		computed float64
+		// required marks a metric the record MUST have measured when a
+		// readable log sits beside it.
+		required bool
 	}{
-		{"llm_calls", float64(totals.Calls)},
-		{"tokens_total", float64(totals.Tokens)},
-		{"cost_usd", totals.Cost},
-	} {
+		// An accepted attempt ran to completion, so its metrics come from
+		// the target's own observation, where a validated log always yields
+		// measured counts. Silence there is a contradiction: per-call rows
+		// with no canonical total to agree with.
+		{"llm_calls", float64(totals.Calls), record.Verdict == verdictAccepted},
+		{"tokens_total", float64(totals.Tokens), record.Verdict == verdictAccepted},
+		// cost_usd is NEVER required. A local config's cost is `unavailable`
+		// by contract (item 5.1) rather than the log's zero passed through,
+		// and that is a legitimate silence beside a log full of calls.
+		{"cost_usd", totals.Cost, false},
+	}
+	for index := range checks {
+		check := &checks[index]
 		metric, present := record.Metrics[check.key]
-		if !present || metric.Status != statusValue || metric.Value == nil {
+		measured := present && metric.Status == statusValue && metric.Value != nil
+		if !measured {
+			if check.required {
+				return fmt.Errorf("%w: the record's usage log accounts for %v %s, but the record "+
+					"itself declines to measure it; an accepted attempt's metrics come from the run "+
+					"that wrote this log, so it cannot have both",
+					ErrIncoherent, check.computed, check.key)
+			}
 			continue
 		}
 		if *metric.Value != check.computed {
@@ -526,18 +565,34 @@ func legacyOrRefused(version int, path string) (*UsageLog, error) {
 // A trailing fragment is discarded with io.EOF rather than returned: the
 // writer appends whole lines, so a fragment is a write that did not finish,
 // and the tail already excluded it from everything the record says.
+//
+// The size cap is applied WHILE READING, not after. ReadString allocates
+// until it finds a newline, so a hostile or torn log holding one enormous
+// unterminated run of bytes would be read into memory in full and only then
+// measured — the check would report the problem after doing the damage it
+// exists to prevent. ReadSlice returns what fits in the buffer and says
+// there is more, so the total is bounded as it accumulates.
 func readCompleteLine(reader *bufio.Reader, path string) (string, error) {
-	text, err := reader.ReadString('\n')
-	switch {
-	case errors.Is(err, io.EOF):
-		return "", io.EOF
-	case err != nil:
-		return "", fmt.Errorf("read usage log %s: %w", path, err)
-	case len(text) > maxUsageLineBytes:
-		return "", fmt.Errorf("%w: usage log %s carries a line over %d bytes",
-			ErrIncoherent, path, maxUsageLineBytes)
+	var line strings.Builder
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if line.Len()+len(chunk) > MaxUsageLineBytes {
+			return "", fmt.Errorf("%w: usage log %s carries a line over %d bytes",
+				ErrIncoherent, path, MaxUsageLineBytes)
+		}
+		line.Write(chunk)
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue // more of this line follows
+		case errors.Is(err, io.EOF):
+			// Whatever accumulated here reached no newline, so it is a write
+			// that did not finish. Dropped, exactly as the tail drops it.
+			return "", io.EOF
+		case err != nil:
+			return "", fmt.Errorf("read usage log %s: %w", path, err)
+		}
+		return strings.TrimSpace(line.String()), nil
 	}
-	return strings.TrimSpace(text), nil
 }
 
 // decodeUsageHeader reads the first line's surface version.

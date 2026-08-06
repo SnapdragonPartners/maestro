@@ -113,6 +113,41 @@ func decodeUsageLine(trimmed string) (usageLine, error) {
 	return entry, nil
 }
 
+// maxUsageLineBytes bounds one line. It mirrors the writer's own limit and
+// the importer's, because a line one component is willing to emit must be one
+// the others are willing to read.
+const maxUsageLineBytes = 16 * 1024 * 1024
+
+// errUsageLineTooLong reports a line past the shared cap.
+var errUsageLineTooLong = fmt.Errorf("a usage line exceeds %d bytes", maxUsageLineBytes)
+
+// readBoundedLine reads one newline-terminated line without letting an
+// unterminated run of bytes allocate without limit.
+//
+// ReadSlice returns what fits in the buffer and reports that more follows, so
+// the accumulated size is checked as it grows rather than after the whole
+// line has already been built.
+func readBoundedLine(reader *bufio.Reader) (string, error) {
+	var line strings.Builder
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if line.Len()+len(chunk) > maxUsageLineBytes {
+			return "", errUsageLineTooLong
+		}
+		line.Write(chunk)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
+			// Returned as-is: advance() distinguishes io.EOF (an incomplete
+			// tail line, normal) from a real read failure, and wrapping would
+			// hide the sentinel it switches on.
+			return "", err //nolint:wrapcheck // the caller classifies io.EOF
+		}
+		return line.String(), nil
+	}
+}
+
 // checkUsageHeader validates the log's first line STRICTLY.
 //
 // Unknown fields and trailing content are refused for the same reason a line
@@ -343,7 +378,14 @@ func (u *usageTail) advance() error {
 	}
 	reader := bufio.NewReader(file)
 	for {
-		line, readErr := reader.ReadString('\n')
+		line, readErr := readBoundedLine(reader)
+		if errors.Is(readErr, errUsageLineTooLong) {
+			// Bounded WHILE READING rather than after: a log holding one
+			// enormous unterminated run of bytes would otherwise be pulled
+			// into memory in full before anything could object. The same cap
+			// the writer emits under and the importer reads under.
+			return fmt.Errorf("usage log %s: %w", u.path, readErr)
+		}
 		if readErr != nil {
 			return nil // incomplete tail line or EOF; next tick continues
 		}

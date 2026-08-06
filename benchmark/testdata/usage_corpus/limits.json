@@ -1,0 +1,4 @@
+{
+  "max_line_bytes": 16777216,
+  "why": "One number for every component that touches this surface: the writer emits under it, the budget tail and the importer read under it. A line one component is willing to produce must be one the others are willing to read, or a legal call makes the whole file unreadable. Each side asserts its own constant against this file, because three constants that merely happen to agree today are three constants that can drift."
+}

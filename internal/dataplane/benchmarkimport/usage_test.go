@@ -9,11 +9,16 @@ import (
 	"testing"
 
 	"orchestrator/internal/dataplane/benchmarkimport"
+	"orchestrator/pkg/agent/middleware/metrics"
 )
 
 // usageCorpusDir is the importer's half of the two-sided usage corpus. The
 // budget tail runs the same cases from the benchmark module.
 const usageCorpusDir = "../../../benchmark/testdata/usage_corpus"
+
+// usageCorpusLimits is the manifest beside the cases: the one number every
+// component that touches this surface must agree on.
+const usageCorpusLimits = "limits.json"
 
 // usageCase is one case as it appears on disk.
 type usageCase struct {
@@ -51,6 +56,15 @@ func loadUsageCorpus(t *testing.T) map[string]usageCase {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
+		if entry.Name() == usageCorpusLimits {
+			continue // the manifest, not a case
+		}
+		// By NAME, so a case file that declares neither verdict is a failure
+		// rather than a file quietly ignored: a corpus that skips what it
+		// does not recognise is a corpus that can lose a rule.
+		if !strings.HasPrefix(entry.Name(), "accept_") && !strings.HasPrefix(entry.Name(), "reject_") {
+			t.Fatalf("%s is neither a case (accept_/reject_) nor the manifest", entry.Name())
+		}
 		raw, readErr := os.ReadFile(filepath.Join(usageCorpusDir, entry.Name()))
 		if readErr != nil {
 			t.Fatalf("read %s: %v", entry.Name(), readErr)
@@ -71,6 +85,34 @@ func loadUsageCorpus(t *testing.T) map[string]usageCase {
 		t.Fatal("the usage corpus is empty; every assertion below would pass vacuously")
 	}
 	return cases
+}
+
+// TestTheSharedLineCapIsTheSameEverywhere holds the three components to one
+// number.
+//
+// The importer and the writer live in one module and can be compared
+// directly; the budget tail is a separate module and asserts the same corpus
+// file from its own side. Three constants that merely happen to agree today
+// are three constants that can drift tomorrow.
+func TestTheSharedLineCapIsTheSameEverywhere(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(usageCorpusDir, usageCorpusLimits))
+	if err != nil {
+		t.Fatalf("read the corpus limits: %v", err)
+	}
+	var limits struct {
+		MaxLineBytes int `json:"max_line_bytes"`
+	}
+	if err := json.Unmarshal(raw, &limits); err != nil {
+		t.Fatalf("decode the corpus limits: %v", err)
+	}
+	if benchmarkimport.MaxUsageLineBytes != limits.MaxLineBytes {
+		t.Errorf("the importer reads under %d bytes, the corpus declares %d",
+			benchmarkimport.MaxUsageLineBytes, limits.MaxLineBytes)
+	}
+	if metrics.MaxUsageLineBytes != limits.MaxLineBytes {
+		t.Errorf("the writer emits under %d bytes, the corpus declares %d",
+			metrics.MaxUsageLineBytes, limits.MaxLineBytes)
+	}
 }
 
 // TestUsageCorpusAgreesWithTheImporter runs every case through this side.
@@ -492,33 +534,127 @@ func TestReconcileComparesTheTwoAccounts(t *testing.T) {
 	}
 }
 
-// TestReconcileSkipsMetricsTheRecordDeclinesToMeasure covers the legitimate
-// silence. A local config's cost is `unavailable` (item 5.1) rather than the
-// log's zero passed through, and a metric that declines to say is not
-// disagreeing with anything.
-func TestReconcileSkipsMetricsTheRecordDeclinesToMeasure(t *testing.T) {
-	record := recordWithRunID(t)
-	applyMetrics(t, record, map[string]any{"llm_calls": 1.0, "tokens_total": 15.0})
-	metrics, ok := record["metrics"].(map[string]any)
-	if !ok {
-		t.Fatal("the record carries no metrics map")
-	}
-	metrics["cost_usd"] = map[string]any{"status": "unavailable", "reason": "local provider; USD cost unmodeled"}
+// TestReconcileRequiresWhatAnAcceptedRecordMustHaveMeasured covers the
+// asymmetry between the three metrics, which is not a matter of taste.
+//
+// An ACCEPTED attempt ran to completion, so its metrics are the target's own
+// observation and a validated log always yields measured calls and tokens
+// there. Silence beside a readable log would be per-call rows with no
+// canonical total to agree with.
+//
+// A FAILED attempt is the opposite, and the difference is in the engine: when
+// the target errors, synthesizeMetrics marks every supported metric
+// `unavailable` and overlayStreamedUsage then restores only tokens_total and
+// cost_usd from the tracker — never llm_calls — while evidence, the usage log
+// included, is still exported. A target-error attempt carrying real calls
+// beside `llm_calls: unavailable` is therefore the ORDINARY shape of that
+// path, and a rule requiring measurement everywhere would refuse every one of
+// them. cost_usd is never required, because a local config's cost is
+// `unavailable` by item 5.1 rather than the log's zero passed through.
+func TestReconcileRequiresWhatAnAcceptedRecordMustHaveMeasured(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		verdict     map[string]any
+		unavailable []string
+		refused     bool
+	}{
+		{
+			name:        "an accepted record declining to count its calls",
+			unavailable: []string{"llm_calls"},
+			refused:     true,
+		},
+		{
+			name:        "an accepted record declining to total its tokens",
+			unavailable: []string{"tokens_total"},
+			refused:     true,
+		},
+		{
+			name:        "an accepted record declining to price itself",
+			unavailable: []string{"cost_usd"},
+		},
+		{
+			// The shape every target-error attempt has.
+			name: "a failed record declining to count its calls",
+			verdict: map[string]any{
+				"verdict": "failed", "failure_kind": "target-error",
+				"solution_commit": "", "terminal_state_reached": false,
+			},
+			unavailable: []string{"llm_calls"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			record := recordWithRunID(t)
+			for key, value := range testCase.verdict {
+				record[key] = value
+			}
+			applyMetrics(t, record, map[string]any{
+				"llm_calls": 1.0, "tokens_total": 15.0, "cost_usd": 0.01,
+			})
+			metrics, ok := record["metrics"].(map[string]any)
+			if !ok {
+				t.Fatal("the record carries no metrics map")
+			}
+			for _, key := range testCase.unavailable {
+				metrics[key] = map[string]any{"status": "unavailable", "reason": "not collected"}
+			}
 
-	records := []map[string]any{record}
+			records := []map[string]any{record}
+			dir := writeSuite(t, "golden-all-probe", records, completedManifest("golden-all-probe", records))
+			writeUsageLog(t, dir, usageRunID, usageHeaderLine(2), aCall)
+
+			suite, err := benchmarkimport.ReadSuite(dir, "golden-all-probe")
+			if err != nil {
+				t.Fatalf("read suite: %v", err)
+			}
+			log, err := suite.ReadUsageLog(usageRunID)
+			if err != nil {
+				t.Fatalf("read usage log: %v", err)
+			}
+			err = log.Reconcile(&suite.Records[0])
+			switch {
+			case testCase.refused && err == nil:
+				t.Fatal("a record with per-call rows and no canonical total was accepted")
+			case !testCase.refused && err != nil:
+				t.Fatalf("a legitimate silence was refused: %v", err)
+			}
+		})
+	}
+}
+
+// TestALineOverTheSharedCapIsRefused covers the bound every component that
+// touches this surface enforces.
+//
+// Applied WHILE READING: a log holding one enormous unterminated run of bytes
+// would otherwise be pulled into memory in full and measured afterwards,
+// which is the check doing its damage before it does its job.
+func TestALineOverTheSharedCapIsRefused(t *testing.T) {
+	records := []map[string]any{recordWithRunID(t)}
 	dir := writeSuite(t, "golden-all-probe", records, completedManifest("golden-all-probe", records))
-	writeUsageLog(t, dir, "story-a--config--r1--abcd1234", usageHeaderLine(2), aCall)
+
+	evidence := filepath.Join(dir, "evidence", usageRunID)
+	if err := os.MkdirAll(evidence, 0o750); err != nil {
+		t.Fatalf("create evidence dir: %v", err)
+	}
+	// A line that is OTHERWISE VALID and merely too big, terminated, so the
+	// size rule is the only thing that can refuse it. An oversized line that
+	// is also malformed would be caught by validation, and the test would
+	// pass with the bound deleted.
+	oversized := `{"finished_at":"2026-08-04T00:05:00Z","latency_ns":1000,"provider":"anthropic",` +
+		`"model":"claude-opus-5","success":false,"error":"` +
+		strings.Repeat("x", benchmarkimport.MaxUsageLineBytes) + `"}`
+	body := usageHeaderLine(2) + "\n" + oversized + "\n"
+	if err := os.WriteFile(filepath.Join(evidence, "usage.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write usage log: %v", err)
+	}
 
 	suite, err := benchmarkimport.ReadSuite(dir, "golden-all-probe")
 	if err != nil {
 		t.Fatalf("read suite: %v", err)
 	}
-	log, err := suite.ReadUsageLog("story-a--config--r1--abcd1234")
-	if err != nil {
-		t.Fatalf("read usage log: %v", err)
-	}
-	if err := log.Reconcile(&suite.Records[0]); err != nil {
-		t.Fatalf("a record that declines to measure its cost was refused: %v", err)
+	if _, err := suite.ReadUsageLog(usageRunID); err == nil {
+		t.Fatal("a line over the shared cap was read")
+	} else if !strings.Contains(err.Error(), "over") {
+		t.Errorf("the refusal (%v) does not name the limit", err)
 	}
 }
 

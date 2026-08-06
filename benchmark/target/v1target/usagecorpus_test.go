@@ -23,6 +23,9 @@ import (
 // must agree, so a rule tightened on one side turns a case red immediately.
 const usageCorpusDir = "../../testdata/usage_corpus"
 
+// usageCorpusLimits is the manifest beside the cases.
+const usageCorpusLimits = "limits.json"
+
 type usageCorpusCase struct {
 	Line json.RawMessage `json:"line"`
 	// RawLine is for cases about the LINE rather than the entry — trailing
@@ -51,6 +54,27 @@ func (c usageCorpusCase) text() string {
 	return string(c.Line)
 }
 
+// TestTheSharedLineCapMatchesTheCorpus holds this reader to the same number
+// the writer emits under and the importer reads under. It is asserted through
+// the corpus because the three live in two modules and cannot see each
+// other's constants.
+func TestTheSharedLineCapMatchesTheCorpus(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(usageCorpusDir, usageCorpusLimits))
+	if err != nil {
+		t.Fatalf("read the corpus limits: %v", err)
+	}
+	var limits struct {
+		MaxLineBytes int `json:"max_line_bytes"`
+	}
+	if err := json.Unmarshal(raw, &limits); err != nil {
+		t.Fatalf("decode the corpus limits: %v", err)
+	}
+	if maxUsageLineBytes != limits.MaxLineBytes {
+		t.Errorf("the tail reads under %d bytes, the corpus declares %d",
+			maxUsageLineBytes, limits.MaxLineBytes)
+	}
+}
+
 // TestUsageCorpusAgreesWithTheTail runs every case through the tail's own
 // path.
 //
@@ -68,6 +92,12 @@ func TestUsageCorpusAgreesWithTheTail(t *testing.T) {
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
+		}
+		if entry.Name() == usageCorpusLimits {
+			continue // the manifest, not a case
+		}
+		if !strings.HasPrefix(entry.Name(), "accept_") && !strings.HasPrefix(entry.Name(), "reject_") {
+			t.Fatalf("%s is neither a case (accept_/reject_) nor the manifest", entry.Name())
 		}
 		name := strings.TrimSuffix(entry.Name(), ".json")
 		t.Run(name, func(t *testing.T) {

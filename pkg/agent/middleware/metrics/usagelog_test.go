@@ -367,6 +367,13 @@ func TestUsageLogRecorderRefusesForeignHeader(t *testing.T) {
 		// must, because appending here concatenates the next entry onto the
 		// header line and corrupts the log from the second line onward.
 		{"valid current header with no newline", `{"usage_surface_version":2}`},
+		// Strictness the two READERS enforce. A header carrying an unknown
+		// key, or content after the object, is one the budget tail and the
+		// importer both refuse — so appending beneath it would build a log
+		// nobody can read, losing every call in the file rather than one.
+		{"unknown key in the header", `{"usage_surface_version":2,"extra":1}`},
+		{"content after the header object", `{"usage_surface_version":2}]`},
+		{"a header that is not an object", `[2]`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "usage.jsonl")
@@ -393,6 +400,43 @@ func TestUsageLogRecorderRefusesForeignHeader(t *testing.T) {
 				t.Fatalf("the refused file must be left byte-for-byte unchanged:\nwant %q\ngot  %q", original, after)
 			}
 		})
+	}
+}
+
+// TestUsageErrorTextIsBounded covers the one field that can grow without
+// limit.
+//
+// A provider error can carry an entire response body, and the failure text is
+// a diagnostic: the first kilobytes say what went wrong. Truncating keeps the
+// call COUNTED, which is what accounting needs; refusing the line would drop
+// it from every total instead, and a line past the shared cap is one both
+// readers refuse — losing the whole file, not one call.
+func TestUsageErrorTextIsBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	recorder, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	defer recorder.Close() //nolint:errcheck // test cleanup
+
+	observation := failedObservation()
+	observation.Error = strings.Repeat("x", MaxUsageLineBytes)
+	recorder.ObserveCall(observation)
+	if err := recorder.Err(); err != nil {
+		t.Fatalf("a long diagnostic must be truncated, not dropped: %v", err)
+	}
+
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read back: %v", readErr)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if len(line)+1 > MaxUsageLineBytes {
+			t.Fatalf("a written line is %d bytes, over the shared %d-byte cap", len(line)+1, MaxUsageLineBytes)
+		}
+	}
+	if !strings.Contains(string(raw), "truncated") {
+		t.Error("the truncation is silent; a diagnostic that was cut has to say so")
 	}
 }
 

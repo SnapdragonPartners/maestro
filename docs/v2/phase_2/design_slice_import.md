@@ -909,10 +909,23 @@ the canonical figures by the tail's own arithmetic — file order, budget axes
 (`input + output + reasoning`, cache excluded), float64 cost — and refuses the
 attempt on any mismatch, before opening the transaction.
 
-Only **measured** metrics are compared. A record that declines to measure is
-not disagreeing with anything: a local config's `cost_usd` is `unavailable` by
-item 5.1 rather than the log's zero passed through, and a log the tail never
-validated leaves all three unavailable.
+**An accepted attempt must have measured its calls and tokens.** It ran to
+completion, so its metrics are the target's own observation, where a validated
+log always yields measured counts (`run.go`'s `metrics`). Silence there beside
+a readable log would leave per-call rows in the plane with no canonical total
+to agree with, so `llm_calls` and `tokens_total` are *required* to be measured
+and equal.
+
+**The requirement stops at accepted, and the reason is in the engine.** When
+the target errors, `synthesizeMetrics` marks every supported metric
+`unavailable` and `overlayStreamedUsage` then restores only `tokens_total` and
+`cost_usd` from the streamed tracker — **never `llm_calls`** — while evidence,
+the usage log included, is still exported. A target-error attempt carrying
+real calls beside `llm_calls: unavailable` is therefore the ordinary shape of
+that path, not a contradiction, and requiring measurement unconditionally
+would refuse every one of them. `cost_usd` is never required at all: a local
+config's cost is `unavailable` by item 5.1 rather than the log's zero passed
+through.
 
 **The framing is the tail's framing.** The tail consumes a line only once its
 newline has arrived, so a torn final write never reaches the totals above. The
@@ -920,9 +933,30 @@ importer drops that fragment for the same reason and by the same rule — a
 reader that took it would import a call the record does not know about, and
 then fail the reconciliation for a file that is exactly as healthy as the tail
 thought it was. `bufio.Scanner` returns a final unterminated token and is
-therefore the wrong tool here. The header is read strictly on both sides, with
-unknown fields and trailing content refused and exhaustion proven, because the
-header decides how every line beneath it is read.
+therefore the wrong tool here.
+
+**The header is read strictly by all THREE components** — writer, tail and
+importer — with unknown fields and trailing content refused and exhaustion
+proven, because the header decides how every line beneath it is read. The
+writer matters as much as the readers: appending v2 lines beneath a header the
+readers refuse builds a log nobody can read, losing every call in the file
+rather than one, which is the undercounting `usage.error` exists to prevent
+arriving one door over.
+
+**One line cap, enforced while reading, in all three.** `ReadString` and
+`json.Unmarshal` both allocate the whole line before anything can object, so a
+hostile or torn log holding one enormous unterminated run of bytes is read
+into memory in full and only then measured — the check doing its damage before
+its job. The cap is applied as the line accumulates (`ReadSlice`), and it is
+the *same* cap in the writer, the tail and the importer: a line one component
+is willing to emit must be one the others are willing to read. The number
+lives in the corpus (`limits.json`) and each side asserts its own constant
+against it, because three constants that merely happen to agree today are
+three that can drift. The writer additionally bounds the one field that can
+grow without limit — a provider error can carry a whole response body — by
+truncating the diagnostic with a visible marker rather than refusing the line,
+since truncating keeps the call counted while refusing drops it from every
+total.
 
 **A failed call carries no cost, as it carries no tokens.** `calculateCost`
 returns nil whenever `success` is false — cost is computed *from* the token

@@ -26,7 +26,7 @@ var (
 //
 //nolint:gochecknoglobals // Package-level sets, immutable after init.
 var (
-	knownVerdicts = map[string]bool{"accepted": true, "failed": true, "invalid": true}
+	knownVerdicts = map[string]bool{verdictAccepted: true, "failed": true, "invalid": true}
 
 	knownFailureKinds = map[string]bool{
 		"budget-overrun": true, "checks-failed": true, "validator-failed": true,
@@ -94,7 +94,7 @@ func (r *Record) validateVerdict() error {
 		return reject(r.RunID, ReasonVerdict, fmt.Sprintf("%q", r.Verdict))
 	}
 	switch r.Verdict {
-	case "accepted":
+	case verdictAccepted:
 		return r.validateAccepted()
 	case "failed":
 		if !knownFailureKinds[r.FailureKind] {
@@ -241,6 +241,11 @@ var metricRegistry = []metricSpec{
 	{"human_interventions", true},
 	{"human_attention_seconds", false},
 }
+
+// verdictAccepted is the one verdict that means the attempt ran to
+// completion and its checks passed. Named because more than one rule turns
+// on it, and a bare string is where those rules drift apart.
+const verdictAccepted = "accepted"
 
 // statusValue is the one metric status that carries a number. The other
 // three are absences with different explanations, and only this one becomes

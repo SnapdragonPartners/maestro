@@ -33,6 +33,31 @@ const UsageSurfaceVersion = 2
 // UsageLogFileName is the log's location under the project .maestro dir.
 const UsageLogFileName = "usage.jsonl"
 
+// MaxUsageLineBytes bounds one line of the log.
+//
+// One number shared by every component that touches this surface: the budget
+// tail and the importer both refuse a longer line, so a line this writer
+// emits past the cap makes the whole file unreadable rather than just that
+// call. Bounded here so the disagreement cannot arise.
+const MaxUsageLineBytes = 16 * 1024 * 1024
+
+// maxUsageErrorBytes bounds the one field that can grow without limit.
+//
+// A provider error can carry an entire response body, and the failure text is
+// a DIAGNOSTIC: the first kilobytes say what went wrong and the rest is
+// noise. Truncating it keeps the call counted, which is what accounting
+// needs; refusing the line would drop the call from every total instead. The
+// marker makes the truncation visible rather than silent.
+const maxUsageErrorBytes = 8 * 1024
+
+// truncateError bounds a failure diagnostic, marking it when it is cut.
+func truncateError(text string) string {
+	if len(text) <= maxUsageErrorBytes {
+		return text
+	}
+	return text[:maxUsageErrorBytes] + "… [truncated]"
+}
+
 // UsageErrorFileName is the sentinel written next to the usage log on the
 // first append/sync failure. External instrumentation (the benchmark
 // adapter) treats its presence as fatal for the run: a stalled log means
@@ -87,7 +112,7 @@ func entryFor(observation *Observation) UsageEntry {
 		Model:      observation.Model,
 		StoryID:    observation.StoryID,
 		AgentID:    observation.AgentID,
-		Error:      observation.Error,
+		Error:      truncateError(observation.Error),
 		CostUSD:    observation.Cost,
 		LatencyNS:  observation.Latency.Nanoseconds(),
 		Success:    observation.Success,
@@ -167,6 +192,25 @@ func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error)
 	return recorder, nil
 }
 
+// decodeUsageHeader parses the log's first line strictly: unknown keys and
+// trailing content are refused, and exhaustion is proven by decoding a second
+// value and requiring io.EOF. Decoder.More would not do -- it answers a
+// question about the container it is inside, so it reports false for the
+// trailing `]` that most looks like an ending.
+func decodeUsageHeader(line string) (UsageHeader, error) {
+	var header UsageHeader
+	decoder := json.NewDecoder(strings.NewReader(line))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&header); err != nil {
+		return header, fmt.Errorf("decode header: %w", err)
+	}
+	var rest json.RawMessage
+	if err := decoder.Decode(&rest); !errors.Is(err, io.EOF) {
+		return header, errors.New("content follows the header object")
+	}
+	return header, nil
+}
+
 // checkExistingHeader refuses to append beneath a header this build did not
 // write.
 //
@@ -205,11 +249,18 @@ func checkExistingHeader(file *os.File, path string) error {
 			"would concatenate the next entry onto it. Move the file aside once every writer on "+
 			"this directory has stopped", ErrSurfaceVersionMismatch, path)
 	}
-	var header UsageHeader
-	if unmarshalErr := json.Unmarshal([]byte(strings.TrimSpace(line)), &header); unmarshalErr != nil {
-		return fmt.Errorf("%w: %s has an unreadable header line; this build writes v%d. "+
+	// STRICTLY, and for the same reason both readers do it: the header
+	// decides how every line beneath it is read. An unknown key or trailing
+	// content means the file was written by a contract this build does not
+	// speak, and appending v2 lines beneath it produces a file the budget
+	// tail and the importer both refuse -- so accepting it here would write
+	// a log nobody can read, which is the undercounting this check exists to
+	// prevent, arriving one door over.
+	header, headerErr := decodeUsageHeader(strings.TrimSpace(line))
+	if headerErr != nil {
+		return fmt.Errorf("%w: %s has an unreadable header line (%w); this build writes v%d. "+
 			"Move the file aside once every writer on this directory has stopped",
-			ErrSurfaceVersionMismatch, path, UsageSurfaceVersion)
+			ErrSurfaceVersionMismatch, path, headerErr, UsageSurfaceVersion)
 	}
 	if header.UsageSurfaceVersion != UsageSurfaceVersion {
 		return fmt.Errorf("%w: %s is v%d and this build writes v%d. "+
@@ -283,6 +334,16 @@ func (u *UsageLogRecorder) writeLine(v any) error {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal usage line: %w", err)
+	}
+	// A line past the shared cap is one both readers refuse, so emitting it
+	// would produce a log nobody can read — every call in the file lost, not
+	// just this one. Refusing takes the same path as a failed write, which
+	// raises the sentinel and fails the run loudly: an accounting problem is
+	// exactly what that mechanism exists to surface. The realistic cause is a
+	// pathological error text, which is why entryFor bounds that first.
+	if len(raw)+1 > MaxUsageLineBytes {
+		return fmt.Errorf("usage line is %d bytes, over the %d-byte limit every reader of this "+
+			"surface enforces", len(raw)+1, MaxUsageLineBytes)
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
