@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -290,6 +291,11 @@ func (i *Importer) systemPrincipal(ctx context.Context, organizationID uuid.UUID
 	return instance.PrincipalInstanceID, nil
 }
 
+// stopImporterTimeout bounds the cleanup write. Detached from the caller's
+// context, it needs a deadline of its own, or a cancelled import could hang
+// on the one statement it has left to make.
+const stopImporterTimeout = 10 * time.Second
+
 // stopImporter closes the importer's instance, naming how the import ended.
 //
 // The reason distinguishes the two, because "stopped" alone would make a
@@ -297,12 +303,22 @@ func (i *Importer) systemPrincipal(ctx context.Context, organizationID uuid.UUID
 // someone is asking which it was. The import error itself is not folded in:
 // the reason is a lifecycle diagnostic, and an arbitrarily long wrapped
 // message is a poor one.
+//
+// The cleanup runs on a context DETACHED from the caller's. Cancellation and
+// deadline expiry are the most likely ways an import fails, and they are
+// exactly the cases where the caller's context can no longer carry a write —
+// so reusing it would leave the instance open in precisely the situation the
+// closing exists for, while looking correct in every test that does not
+// cancel. Values are kept, so tracing and tenancy carried on the context
+// survive; only the cancellation does not.
 func (i *Importer) stopImporter(ctx context.Context, organizationID, importer uuid.UUID, importErr error) error {
 	reason := "import complete"
 	if importErr != nil {
 		reason = "import failed"
 	}
-	if _, err := i.store.StopPrincipalInstance(ctx, organizationID, importer, reason); err != nil {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopImporterTimeout)
+	defer cancel()
+	if _, err := i.store.StopPrincipalInstance(cleanupCtx, organizationID, importer, reason); err != nil {
 		return fmt.Errorf("stop importer principal %s: %w", importer, err)
 	}
 	return nil

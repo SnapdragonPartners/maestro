@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -449,6 +450,151 @@ func TestImporterPrincipalIsClosedWhenTheImportEnds(t *testing.T) {
 	}
 }
 
+// TestImporterPrincipalIsClosedWhenTheContextIsCancelled covers the exit the
+// closing exists for and the caller's context cannot serve.
+//
+// Cancellation and deadline expiry are the most likely ways an import fails,
+// and they are exactly the cases where the caller's context can no longer
+// carry a write. A cleanup reusing it leaves the instance open in precisely
+// that situation while passing every test that does not cancel — so this one
+// cancels AFTER the principal exists, from inside the seam's own validation
+// gate, which is reached mid-transaction and well after creation.
+func TestImporterPrincipalIsClosedWhenTheContextIsCancelled(t *testing.T) {
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := newPlaneWith(t, cancellingRegistry(cancel))
+
+	_, err := benchmarkimport.New(p.store).Import(ctx, benchmarkimport.Options{
+		OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
+		Dir: dir, SuiteRunID: testSuiteRunID,
+	})
+	if err == nil {
+		t.Fatal("the import reported success after its context was cancelled")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("import failed with %v, want the cancellation; a different failure would mean this "+
+			"test is exercising some other path", err)
+	}
+
+	importers := p.instancesByModel(t, "system-benchmark-importer")
+	if len(importers) != 1 {
+		t.Fatalf("found %d importer principals, want one per invocation", len(importers))
+	}
+	switch {
+	case importers[0].StopTime == nil:
+		t.Error("the importer's instance is still open after a cancelled import; the cleanup cannot " +
+			"run on the context that was cancelled")
+	case importers[0].StopReason == nil || *importers[0].StopReason != "import failed":
+		t.Errorf("importer stopped with reason %v, want it to say the import failed", importers[0].StopReason)
+	}
+}
+
+// TestConcurrentImportersWriteOneAttemptOnce covers the loser's rollback.
+//
+// Two importers can both find an attempt unledgered — the check before the
+// transaction is exactly that, a check before the transaction — and both then
+// write a principal, an artifact and a metric set before either reaches the
+// ledger. Only the winner's may survive: the loser rolls its whole
+// transaction back rather than leaving a second artifact for one identity,
+// and reports the attempt as imported, because it genuinely is.
+//
+// Ordered by a barrier rather than by racing, so the loser is a fact rather
+// than a probability: the first importer blocks inside its transaction at the
+// seam's validation gate, the second runs to completion, and only then is the
+// first released to meet a ledger row that was not there when it looked.
+func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
+	const runID = "story-a--config--r1--aaaa1111"
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": runID})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	p := newPlaneWith(t, barrierRegistry(entered, release))
+	loser := benchmarkimport.New(p.store)
+	winner := p.reopen(t, benchmarkimport.RegistryEntries())
+
+	type outcome struct {
+		result *benchmarkimport.Result
+		err    error
+	}
+	loserDone := make(chan outcome, 1)
+	go func() {
+		result, err := loser.Import(context.Background(), benchmarkimport.Options{
+			OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
+			Dir: dir, SuiteRunID: testSuiteRunID,
+		})
+		loserDone <- outcome{result, err}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first importer never reached the seam's validation gate")
+	}
+	// Committed while the first importer holds an open transaction it has not
+	// yet ledgered.
+	winnerResult := winner.mustImport(t, dir)
+	if importedCount(winnerResult) != 1 {
+		t.Fatalf("the winning import wrote %d attempts, want 1", importedCount(winnerResult))
+	}
+	close(release)
+
+	var got outcome
+	select {
+	case got = <-loserDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the first importer never returned after being released")
+	}
+	if got.err != nil {
+		t.Fatalf("losing the ledger race is not an error — the attempt IS imported: %v", got.err)
+	}
+	if importedCount(got.result) != 0 {
+		t.Errorf("the losing import reported %d attempts written; the winner's are the ones that count",
+			importedCount(got.result))
+	}
+	if len(got.result.Attempts) != 1 {
+		t.Errorf("the losing import reported %d attempts, want the suite's 1", len(got.result.Attempts))
+	}
+
+	// One of everything the transaction holds. The artifact is the invariant
+	// the ledger exists for; the principal and the metric events are what a
+	// rollback that reached only the ledger row would leave behind.
+	//
+	// These counts are also what proves the BARRIER landed. A loser that had
+	// short-circuited at the check before the transaction would leave one of
+	// each as well — and would leave one of each with the rollback deleted,
+	// so the test would be asserting something adjacent to the contract
+	// rather than the contract. Disabling the rollback makes these two, two
+	// and eighteen, which it can only do if the loser got inside.
+	if got := p.artifactCount(t, winnerResult.BenchmarkRunID); got != 1 {
+		t.Errorf("%d run-record artifacts exist for one attempt", got)
+	}
+	if got := len(p.targets(t)); got != 1 {
+		t.Errorf("%d target principals exist for one attempt", got)
+	}
+	if got := len(p.metricEvents(t)); got != measuredMetrics {
+		t.Errorf("%d metric events exist, want the one attempt's %d", got, measuredMetrics)
+	}
+	ledgered := p.attempt(t, runID, winnerResult.BenchmarkRunID)
+	if ledgered.AuditArtifactID == uuid.Nil {
+		t.Error("the ledger row names no artifact")
+	}
+	// The surviving artifact is the one the LEDGER names: a loser whose
+	// artifact committed while the winner's row pointed elsewhere would leave
+	// exactly one of each and still be wrong.
+	if stored := p.storedRecord(t, ledgered.AuditArtifactID); stored.RunID != runID {
+		t.Errorf("the ledgered artifact carries record %s, want %s", stored.RunID, runID)
+	}
+	// Both importers ran, so both have an instance, and both are closed.
+	for _, instance := range p.instancesByModel(t, "system-benchmark-importer") {
+		if instance.StopTime == nil {
+			t.Errorf("importer instance %s is still open", instance.PrincipalInstanceID)
+		}
+	}
+}
+
 // TestMPHQueryFindsTheImportedRuns is the question ADR 0021 built the MPH
 // columns for, asked here for the first time against real data.
 func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
@@ -642,6 +788,53 @@ func TestImportResolvesTenantsAndNeverCreatesThem(t *testing.T) {
 	}
 }
 
+// withRunRecordValidator returns the importer's registry with the run-record
+// validator wrapped.
+//
+// The validator is the one hook the seam already calls from INSIDE the
+// attempt's transaction, which is what makes it the place to stand a test in
+// the middle of one. It runs after the principal is created and before the
+// ledger row, so a wrapper here observes and interferes exactly where a real
+// failure or a real race would land.
+func withRunRecordValidator(wrap func(inner registry.Validator, payload []byte) error) map[registry.Type]registry.Entry {
+	entries := benchmarkimport.RegistryEntries()
+	entry := entries[benchmarkimport.TypeRunRecord]
+	inner := entry.Validators[benchmarkimport.PayloadVersion]
+	entry.Validators = map[int]registry.Validator{
+		benchmarkimport.PayloadVersion: registry.ValidatorFunc(func(payload []byte) error {
+			return wrap(inner, payload)
+		}),
+	}
+	entries[benchmarkimport.TypeRunRecord] = entry
+	return entries
+}
+
+// cancellingRegistry cancels the import's context mid-transaction, after the
+// importer's principal exists.
+func cancellingRegistry(cancel context.CancelFunc) map[registry.Type]registry.Entry {
+	var once sync.Once
+	return withRunRecordValidator(func(inner registry.Validator, payload []byte) error {
+		once.Do(cancel)
+		return inner.Validate(payload)
+	})
+}
+
+// barrierRegistry holds an import inside its transaction until it is
+// released, closing entered once it is there.
+//
+// Only the first artifact blocks: a second would deadlock a suite of more
+// than one record against a test that releases once.
+func barrierRegistry(entered chan<- struct{}, release <-chan struct{}) map[registry.Type]registry.Entry {
+	var once sync.Once
+	return withRunRecordValidator(func(inner registry.Validator, payload []byte) error {
+		once.Do(func() {
+			close(entered)
+			<-release
+		})
+		return inner.Validate(payload)
+	})
+}
+
 // refusingRegistry is the importer's registry with one named run id refused
 // by the run-record validator.
 //
@@ -649,27 +842,20 @@ func TestImportResolvesTenantsAndNeverCreatesThem(t *testing.T) {
 // calls out: the artifact write fails inside the attempt's transaction,
 // which is where a real refusal would land.
 func refusingRegistry(runID string) map[registry.Type]registry.Entry {
-	entries := benchmarkimport.RegistryEntries()
-	entry := entries[benchmarkimport.TypeRunRecord]
-	inner := entry.Validators[benchmarkimport.PayloadVersion]
-	entry.Validators = map[int]registry.Validator{
-		benchmarkimport.PayloadVersion: registry.ValidatorFunc(func(payload []byte) error {
-			var body struct {
-				Record struct {
-					RunID string `json:"run_id"`
-				} `json:"record"`
-			}
-			if err := json.Unmarshal(payload, &body); err != nil {
-				return fmt.Errorf("refusing registry: %w", err)
-			}
-			if body.Record.RunID == runID {
-				return fmt.Errorf("refusing %s on purpose", runID)
-			}
-			return inner.Validate(payload)
-		}),
-	}
-	entries[benchmarkimport.TypeRunRecord] = entry
-	return entries
+	return withRunRecordValidator(func(inner registry.Validator, payload []byte) error {
+		var body struct {
+			Record struct {
+				RunID string `json:"run_id"`
+			} `json:"record"`
+		}
+		if err := json.Unmarshal(payload, &body); err != nil {
+			return fmt.Errorf("refusing registry: %w", err)
+		}
+		if body.Record.RunID == runID {
+			return fmt.Errorf("refusing %s on purpose", runID)
+		}
+		return inner.Validate(payload)
+	})
 }
 
 // artifactCount is how many run-record artifacts the suite's scope holds.

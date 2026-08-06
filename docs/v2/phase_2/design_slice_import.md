@@ -423,7 +423,9 @@ before its start is a lifetime that ran backwards — because the schema's only
 stop constraint is that time and reason are null together.
 
 **`stop_reason` carries the verdict, plus the failure kind where the record has
-one:** `accepted`, `invalid`, `failed: checks-failed`. Closed vocabularies only.
+one:** `accepted`, `invalid`, and `failed: <failure-kind>` over the record's six
+kinds — `budget-overrun`, `checks-failed`, `validator-failed`,
+`evidence-missing`, `branch-state`, `target-error`. Closed vocabularies only.
 The column sits beside the MPH columns and is therefore read by grouping — *which
 runs on this prompt hash failed, and how?* — and `invalid_reason` is free text
 written by whatever refused the attempt, so it stays out and is read from the
@@ -432,6 +434,15 @@ run-record artifact, which carries the record whole.
 **The importer's own instance closes when the invocation ends**, including the
 failing end, where it has stopped acting just as certainly. D4 already says one
 instance per import invocation; an invocation that never ends is not one.
+
+**That closing runs on a context detached from the caller's**, bounded by its
+own deadline. Cancellation and deadline expiry are the most likely ways an
+import fails, and they are exactly the cases where the caller's context can no
+longer carry a write — so a cleanup reusing it leaves the instance open in
+precisely the situation the closing exists for, while looking correct in every
+test that does not cancel. The rule generalizes past this call: any write whose
+purpose is to record how an operation ENDED cannot depend on the context whose
+ending it is recording.
 
 ## D5. The suite report is authored by the operator, and a draft is a legitimate outcome
 
