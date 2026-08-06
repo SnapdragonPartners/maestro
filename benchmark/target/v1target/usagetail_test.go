@@ -251,6 +251,31 @@ func TestUsageTailHeaderIsReadStrictly(t *testing.T) {
 	}
 }
 
+// TestUsageTailReadFailureIsFatal covers the difference between "nothing more
+// has been written yet" and "this log can no longer be read".
+//
+// Only io.EOF means the former. Every other read error means the stream has
+// stopped for a reason, and treating it as EOF makes the tail return success
+// with a partial account: every call after the failure is missing from the
+// totals that enforce the cap and become the record's canonical figures, with
+// nothing saying so. The final drain has the same exposure, which is where it
+// would matter most.
+//
+// The failure is induced by making the path a DIRECTORY: os.Open succeeds and
+// the first read returns EISDIR, which is a genuine non-EOF read error rather
+// than a stubbed one.
+func TestUsageTailReadFailureIsFatal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	tail := &usageTail{path: path}
+	if err := tail.advance(); err == nil {
+		t.Fatal("a log that cannot be read must fail the attempt, not report success with " +
+			"whatever was counted before the failure")
+	}
+}
+
 func TestVerifyAdvertisedSurface(t *testing.T) {
 	good := "maestro v1\n  commit: abc\n  usage-surface: v2\n"
 	if err := verifyAdvertisedSurface(good); err != nil {

@@ -374,6 +374,13 @@ func TestUsageLogRecorderRefusesForeignHeader(t *testing.T) {
 		{"unknown key in the header", `{"usage_surface_version":2,"extra":1}`},
 		{"content after the header object", `{"usage_surface_version":2}]`},
 		{"a header that is not an object", `[2]`},
+		// The discriminating size case: syntactically perfect, CURRENT
+		// version, and padded past the cap every reader enforces. Nothing
+		// else here refuses it — the version check passes and TrimSpace makes
+		// it parse — so only the bound can, and appending beneath it would
+		// build a file the tail and the importer both reject.
+		{"a valid header padded past the shared cap",
+			strings.Repeat(" ", MaxUsageLineBytes) + `{"usage_surface_version":2}`},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "usage.jsonl")

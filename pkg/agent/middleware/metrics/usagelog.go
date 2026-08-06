@@ -192,6 +192,37 @@ func NewUsageLogRecorder(path string, inner Recorder) (*UsageLogRecorder, error)
 	return recorder, nil
 }
 
+// errHeaderTooLong reports a header past the shared line cap.
+var errHeaderTooLong = errors.New("header line exceeds the shared usage-line cap")
+
+// readBoundedHeaderLine reads the first line under the SAME cap the readers
+// apply, reporting whether it was newline-terminated.
+//
+// Bounded while reading, not after: ReadString would pull an unterminated
+// multi-megabyte run into memory before anything could measure it. The
+// termination flag is returned rather than inferred from io.EOF because the
+// caller needs both facts, and an unterminated header is the more dangerous
+// one -- appending after it concatenates the next entry onto the header line.
+func readBoundedHeaderLine(reader *bufio.Reader) (string, bool, error) {
+	var line strings.Builder
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if line.Len()+len(chunk) > MaxUsageLineBytes {
+			return "", false, errHeaderTooLong
+		}
+		line.Write(chunk)
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			return line.String(), false, nil
+		case err != nil:
+			return "", false, fmt.Errorf("read header line: %w", err)
+		}
+		return line.String(), true, nil
+	}
+}
+
 // decodeUsageHeader parses the log's first line strictly: unknown keys and
 // trailing content are refused, and exhaustion is proven by decoding a second
 // value and requiring io.EOF. Decoder.More would not do -- it answers a
@@ -233,8 +264,17 @@ func checkExistingHeader(file *os.File, path string) error {
 		return fmt.Errorf("seek usage log %s: %w", path, err)
 	}
 	reader := bufio.NewReader(file)
-	line, err := reader.ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
+	line, terminated, err := readBoundedHeaderLine(reader)
+	switch {
+	case errors.Is(err, errHeaderTooLong):
+		// The same cap both readers enforce. A header padded past it is
+		// syntactically fine and version-correct, so nothing else here would
+		// refuse it — and appending beneath it produces a file the tail and
+		// the importer both reject, losing every call in it.
+		return fmt.Errorf("%w: %s has a header line over %d bytes, which every reader of this "+
+			"surface refuses. Move the file aside once every writer on this directory has stopped",
+			ErrSurfaceVersionMismatch, path, MaxUsageLineBytes)
+	case err != nil:
 		return fmt.Errorf("read usage log header %s: %w", path, err)
 	}
 	// EOF before the delimiter means the header line was never terminated,
@@ -244,7 +284,7 @@ func checkExistingHeader(file *os.File, path string) error {
 	// valid but unfinished is the most dangerous case, not the safest: the
 	// version check would pass and the corruption would land on the line
 	// after it.
-	if errors.Is(err, io.EOF) {
+	if !terminated {
 		return fmt.Errorf("%w: %s ends without a newline after its header line, so appending "+
 			"would concatenate the next entry onto it. Move the file aside once every writer on "+
 			"this directory has stopped", ErrSurfaceVersionMismatch, path)

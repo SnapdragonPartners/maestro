@@ -379,15 +379,26 @@ func (u *usageTail) advance() error {
 	reader := bufio.NewReader(file)
 	for {
 		line, readErr := readBoundedLine(reader)
-		if errors.Is(readErr, errUsageLineTooLong) {
+		switch {
+		case errors.Is(readErr, io.EOF):
+			// The ONLY tolerated stop: an incomplete tail line, or the end of
+			// what has been written so far. The next tick continues.
+			return nil
+		case errors.Is(readErr, errUsageLineTooLong):
 			// Bounded WHILE READING rather than after: a log holding one
 			// enormous unterminated run of bytes would otherwise be pulled
 			// into memory in full before anything could object. The same cap
 			// the writer emits under and the importer reads under.
 			return fmt.Errorf("usage log %s: %w", u.path, readErr)
-		}
-		if readErr != nil {
-			return nil // incomplete tail line or EOF; next tick continues
+		case readErr != nil:
+			// A REAL read failure -- a permission change, an I/O error, the
+			// path no longer being a regular file. Treating it as EOF, which
+			// this did, means the stream simply stops: every call after it is
+			// missing from the totals that enforce the cap and become the
+			// record's canonical figures, and nothing says so. Undercounting
+			// in silence is the one outcome this surface exists to prevent,
+			// and it would reach the final drain too.
+			return fmt.Errorf("read usage log %s: %w", u.path, readErr)
 		}
 		u.offset += int64(len(line))
 		trimmed := strings.TrimSpace(line)
