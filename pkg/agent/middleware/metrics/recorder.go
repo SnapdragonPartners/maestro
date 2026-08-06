@@ -154,6 +154,13 @@ func (o *Observation) validateOutcome() error {
 	case !o.Success && o.Tokens != nil:
 		return fmt.Errorf("%w: failed call carries token counts, which the provider never reported",
 			ErrInvalidObservation)
+	case !o.Success && o.Cost != nil:
+		// Cost is computed FROM the token counts, which a failed call does
+		// not have: CalculateCost is never reached on the failure path. A
+		// cost here is the same fabrication as the counts, one column over,
+		// and both readers of this surface refuse it.
+		return fmt.Errorf("%w: failed call carries cost %v, computed from tokens nobody measured",
+			ErrInvalidObservation, *o.Cost)
 	}
 	if o.Tokens == nil {
 		return nil

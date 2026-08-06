@@ -78,6 +78,17 @@ type UsageLog struct {
 // Available reports whether this attempt's calls can be imported.
 func (u *UsageLog) Available() bool { return u.Reason == "" }
 
+// LegacyUsageSurfaceVersion is the one older surface whose logs are read as
+// an absence rather than refused.
+//
+// v1 is a REVIEWED case: it folds reasoning into a completion count, so its
+// axes cannot be split after the fact, and every suite in benchmark/runs/
+// today is one (design D9). No other version has been examined — a v3 log
+// was written by a contract this build has never seen, and treating it as
+// "no calls" would silently discard measurements that exist. Unknown is
+// refused; only this one is legacy.
+const LegacyUsageSurfaceVersion = 1
+
 // The reasons an attempt yields no calls. Each is a different fact about the
 // store, and an operator reading a report needs to tell them apart.
 const (
@@ -249,6 +260,12 @@ func (l *UsageLine) validateTriangle(measured bool) error {
 		// The toolkit populates usage only when the error is nil, so counts
 		// on a failed call are a measurement nobody made.
 		return errors.New("a failed call carries token counts the provider never reported")
+	case !*l.Success && l.CostUSD != nil:
+		// Cost is computed FROM the token counts, which a failed call does
+		// not have, so the producer never prices one. A cost here is the
+		// same fabrication as the counts, one column over.
+		return fmt.Errorf("a failed call carries cost %v, which was computed from tokens nobody measured",
+			*l.CostUSD)
 	}
 	return nil
 }
@@ -256,28 +273,13 @@ func (l *UsageLine) validateTriangle(measured bool) error {
 // validateTokenRange refuses a measurement whose axes cannot be summed.
 //
 // A wrapped sum is a small positive number that looks entirely ordinary, so
-// the overflow has to be caught while the axes are still separate.
-//
-// The total is input + output + reasoning, which is the budget total the
-// engine's cap was enforced against — cache reads and writes are validated
-// but not added, because adding them would change what a declared cap meant
-// (design D9). This importer never sums the axes itself, since the plane
-// stores each in its own column, so the check is here for a different reason
-// than the tail's: the two readers of this surface must not disagree about
-// which lines are READABLE. A file the tail refused mid-run must not import
+// the overflow has to be caught while the axes are still separate. The total
+// is the budget one, so the two readers of this surface agree about which
+// lines are READABLE: a file the tail refused mid-run must not import
 // cleanly afterwards.
 func (l *UsageLine) validateTokenRange() error {
-	var total int64
-	for _, axis := range l.tokenAxes() {
-		if axis.name == "cache_read_tokens" || axis.name == "cache_write_tokens" {
-			continue
-		}
-		if *axis.value > math.MaxInt64-total {
-			return fmt.Errorf("the token axes overflow int64 at %s", axis.name)
-		}
-		total += *axis.value
-	}
-	return nil
+	_, err := l.budgetTokens()
+	return err
 }
 
 // validateCost checks the optional cost.
@@ -293,6 +295,109 @@ func (l *UsageLine) validateCost() error {
 		return errors.New("cost_usd is not finite")
 	case cost < 0:
 		return fmt.Errorf("cost_usd is %v", cost)
+	}
+	return nil
+}
+
+// UsageTotals is what the log says about the attempt as a whole.
+//
+// Recomputed here by the SAME arithmetic the budget tail used to produce the
+// record's canonical figures — file order, budget axes only, float64 cost —
+// because the point is to compare them, and a different summation would
+// disagree by rounding alone.
+type UsageTotals struct {
+	Cost   float64
+	Calls  int64
+	Tokens int64
+}
+
+// Totals recomputes the canonical figures from the lines.
+func (u *UsageLog) Totals() (UsageTotals, error) {
+	var totals UsageTotals
+	for index := range u.Lines {
+		line := &u.Lines[index]
+		tokens, err := line.budgetTokens()
+		if err != nil {
+			return UsageTotals{}, fmt.Errorf("call %d: %w", index+1, err)
+		}
+		if tokens > math.MaxInt64-totals.Tokens {
+			return UsageTotals{}, fmt.Errorf("call %d: the accumulated token total overflows int64", index+1)
+		}
+		totals.Calls++
+		totals.Tokens += tokens
+		if line.CostUSD != nil {
+			// Finite addends can still sum to an infinity, so the SUM is
+			// what is checked rather than the value the line carried.
+			totals.Cost += *line.CostUSD
+			if math.IsNaN(totals.Cost) || math.IsInf(totals.Cost, 0) {
+				return UsageTotals{}, fmt.Errorf("call %d: the accumulated cost is no longer finite", index+1)
+			}
+		}
+	}
+	return totals, nil
+}
+
+// budgetTokens is one line's contribution to the cap-relevant total: input
+// plus visible output plus reasoning. Cache reads and writes are recorded
+// and NOT added, because adding them would change what a declared cap meant.
+// A failed line contributes nothing, having measured nothing.
+func (l *UsageLine) budgetTokens() (int64, error) {
+	measured, err := l.Measured()
+	if err != nil || !measured {
+		return 0, err
+	}
+	var total int64
+	for _, axis := range l.tokenAxes() {
+		if axis.name == "cache_read_tokens" || axis.name == "cache_write_tokens" {
+			continue
+		}
+		if *axis.value > math.MaxInt64-total {
+			return 0, fmt.Errorf("the token axes overflow int64 at %s", axis.name)
+		}
+		total += *axis.value
+	}
+	return total, nil
+}
+
+// Reconcile checks the log against the record's own canonical metrics.
+//
+// The record and the log are TWO ACCOUNTS OF ONE ATTEMPT written by the same
+// process: the tail streams the log, and its running totals are what
+// `llm_calls`, `tokens_total` and `cost_usd` are set from (run.go's metrics).
+// So they cannot legitimately disagree, and if they do, one of them has been
+// edited, truncated or rewritten since the run — in which case importing
+// both would put two contradicting authoritative accounts in the plane, the
+// per-call rows saying one thing and the metric events beside them another.
+//
+// Only MEASURED metrics are compared. A record that declines to measure
+// (`unavailable` for a local config's cost, or for a log the tail never
+// validated) is not disagreeing with anything; it is declining to say, which
+// D9 makes a legitimate outcome.
+func (u *UsageLog) Reconcile(record *Record) error {
+	if !u.Available() {
+		return nil // nothing was read, so there is nothing to reconcile
+	}
+	totals, err := u.Totals()
+	if err != nil {
+		return err
+	}
+	for _, check := range []struct {
+		key      string
+		computed float64
+	}{
+		{"llm_calls", float64(totals.Calls)},
+		{"tokens_total", float64(totals.Tokens)},
+		{"cost_usd", totals.Cost},
+	} {
+		metric, present := record.Metrics[check.key]
+		if !present || metric.Status != statusValue || metric.Value == nil {
+			continue
+		}
+		if *metric.Value != check.computed {
+			return fmt.Errorf("%w: the record reports %s = %v while its usage log accounts for %v; "+
+				"both were written by the same run, so one of them has changed since",
+				ErrIncoherent, check.key, *metric.Value, check.computed)
+		}
 	}
 	return nil
 }
@@ -349,50 +454,90 @@ func (s *Suite) ReadUsageLog(runID string) (*UsageLog, error) {
 }
 
 // readUsageLines parses the header and then every entry.
+//
+// COMPLETE LINES ONLY, which is the tail's protocol and must be this
+// reader's too. The tail consumes a line only once its newline has arrived,
+// so a torn final write is never counted in the run record's canonical
+// totals. A reader that accepted the partial line would import a call the
+// record does not know about — and the reconciliation below would then be
+// comparing against a set the two sides disagree on. bufio.Scanner returns a
+// final unterminated token, which is exactly the wrong behaviour here, so
+// the framing is done with a Reader instead.
 func readUsageLines(source io.Reader, path string) (*UsageLog, error) {
-	scanner := bufio.NewScanner(source)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxUsageLineBytes)
-
+	reader := bufio.NewReaderSize(source, 64*1024)
 	log := &UsageLog{}
 	header := false
-	for line := 1; scanner.Scan(); line++ {
-		text := strings.TrimSpace(scanner.Text())
+	for line := 1; ; line++ {
+		text, err := readCompleteLine(reader, path)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
 		if text == "" {
 			continue
 		}
 		if !header {
-			version, err := decodeUsageHeader(text, path)
-			if err != nil {
-				return nil, err
+			version, headerErr := decodeUsageHeader(text, path)
+			if headerErr != nil {
+				return nil, headerErr
 			}
 			header = true
 			if version != UsageSurfaceVersion {
-				// A recorded absence, not a failure. Historical suites are
-				// v1 and import normally; what they cannot do is yield call
-				// rows, because the axes cannot be honestly split.
-				return &UsageLog{Reason: fmt.Sprintf(usageLegacyFormat, version, UsageSurfaceVersion)}, nil
+				return legacyOrRefused(version, path)
 			}
 			continue
 		}
-		entry, err := DecodeUsageLine(text)
-		if err != nil {
-			return nil, fmt.Errorf("%s line %d: %w", path, line, err)
+		entry, decodeErr := DecodeUsageLine(text)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("%s line %d: %w", path, line, decodeErr)
 		}
-		if err := entry.Validate(); err != nil {
-			return nil, fmt.Errorf("%s line %d: %w", path, line, err)
+		if validateErr := entry.Validate(); validateErr != nil {
+			return nil, fmt.Errorf("%s line %d: %w", path, line, validateErr)
 		}
 		log.Lines = append(log.Lines, entry)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan usage log %s: %w", path, err)
-	}
 	if !header {
-		// A file with no header states no surface version, so nothing in it
-		// can be read as any version. Reported rather than refused: an
-		// attempt whose log was truncated to nothing still imports.
+		// A file with no complete header line states no surface version, so
+		// nothing in it can be read as any version. Reported rather than
+		// refused: an attempt whose log was truncated to nothing still
+		// imports, without calls.
 		return &UsageLog{Reason: usageEmptyLog}, nil
 	}
 	return log, nil
+}
+
+// legacyOrRefused classifies a log this build cannot read as v2.
+func legacyOrRefused(version int, path string) (*UsageLog, error) {
+	if version == LegacyUsageSurfaceVersion {
+		// A recorded absence, not a failure. Historical suites are v1 and
+		// import normally; what they cannot do is yield call rows.
+		return &UsageLog{Reason: fmt.Sprintf(usageLegacyFormat, version, UsageSurfaceVersion)}, nil
+	}
+	return nil, fmt.Errorf("%w: usage log %s declares surface v%d, which this build has never seen; "+
+		"v%d is read and v%d is the one known legacy format, and treating an unknown contract as "+
+		"'no calls' would discard measurements that are there",
+		ErrIncoherent, path, version, UsageSurfaceVersion, LegacyUsageSurfaceVersion)
+}
+
+// readCompleteLine returns the next NEWLINE-TERMINATED line, trimmed.
+//
+// A trailing fragment is discarded with io.EOF rather than returned: the
+// writer appends whole lines, so a fragment is a write that did not finish,
+// and the tail already excluded it from everything the record says.
+func readCompleteLine(reader *bufio.Reader, path string) (string, error) {
+	text, err := reader.ReadString('\n')
+	switch {
+	case errors.Is(err, io.EOF):
+		return "", io.EOF
+	case err != nil:
+		return "", fmt.Errorf("read usage log %s: %w", path, err)
+	case len(text) > maxUsageLineBytes:
+		return "", fmt.Errorf("%w: usage log %s carries a line over %d bytes",
+			ErrIncoherent, path, maxUsageLineBytes)
+	}
+	return strings.TrimSpace(text), nil
 }
 
 // decodeUsageHeader reads the first line's surface version.
@@ -408,6 +553,13 @@ func decodeUsageHeader(text, path string) (int, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&header); err != nil {
 		return 0, fmt.Errorf("%w: usage log %s has no readable header: %w", ErrIncoherent, path, err)
+	}
+	// Exhaustion proven the same way every other line in this package proves
+	// it. The header decides how every line below it is read, so it is the
+	// last place to accept trailing content.
+	var rest json.RawMessage
+	if err := decoder.Decode(&rest); !isEOF(err) {
+		return 0, fmt.Errorf("%w: usage log %s carries content after its header", ErrIncoherent, path)
 	}
 	if header.UsageSurfaceVersion == nil {
 		return 0, fmt.Errorf("%w: usage log %s has a header naming no surface version", ErrIncoherent, path)

@@ -221,6 +221,15 @@ func TestObservationValidateRejects(t *testing.T) {
 			o.Tokens = &TokenAxes{Input: 10}
 			return o
 		}},
+		{"failure carrying a cost", func() *Observation {
+			// calculateCost returns nil on the failure path, so a priced
+			// failure is a measurement the producer never made -- the same
+			// fabrication as the token counts, one column over.
+			o := failedObservation()
+			priced := 0.02
+			o.Cost = &priced
+			return o
+		}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {

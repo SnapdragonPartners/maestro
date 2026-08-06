@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
-edit_date = "2026-08-05"
+edit_date = "2026-08-06"
 status = "draft"
 summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
@@ -881,6 +881,54 @@ unavailable in the import summary and in the suite report's payload — a record
 absence in the one place that is honest, rather than a sentinel in every row. The
 legacy path is gated on the log's own header version, so it cannot silently
 capture a v2 log.
+
+### D9a. Only v1 is legacy, and the two accounts must reconcile (amendment)
+
+*Proposed during implementation, 2026-08-06; found by Codex review of the
+call mapping.*
+
+**Legacy is a version, not a category.** The paragraph above gates the legacy
+path on the header, which the first implementation read as "anything that is
+not v2 is legacy" — so a v3 log, a v0, or a negative version would have been
+imported as an ordinary absence, silently discarding measurements that are
+sitting in the file. v1 is the one surface that has been *examined*: it folds
+reasoning into a completion count, so its axes cannot be split, and every
+suite in `benchmark/runs/` is one. The rule is therefore explicit in all three
+directions: **v2 is read, v1 is a recorded absence, and every other version is
+refused.** An unknown contract is not an absence.
+
+**The record and its log must reconcile before either is written.** They are
+two accounts of one attempt produced by the same process — the tail streams
+the log, and its running totals are exactly what `run.go` sets `llm_calls`,
+`tokens_total` and `cost_usd` from — so they cannot legitimately disagree. If
+they do, one has been edited, truncated or rewritten since the run, and
+importing both would put two contradicting *authoritative* accounts in the
+plane: the per-call rows saying one thing and the metric events beside them
+another, with nothing to say which is right. The importer therefore recomputes
+the canonical figures by the tail's own arithmetic — file order, budget axes
+(`input + output + reasoning`, cache excluded), float64 cost — and refuses the
+attempt on any mismatch, before opening the transaction.
+
+Only **measured** metrics are compared. A record that declines to measure is
+not disagreeing with anything: a local config's `cost_usd` is `unavailable` by
+item 5.1 rather than the log's zero passed through, and a log the tail never
+validated leaves all three unavailable.
+
+**The framing is the tail's framing.** The tail consumes a line only once its
+newline has arrived, so a torn final write never reaches the totals above. The
+importer drops that fragment for the same reason and by the same rule — a
+reader that took it would import a call the record does not know about, and
+then fail the reconciliation for a file that is exactly as healthy as the tail
+thought it was. `bufio.Scanner` returns a final unterminated token and is
+therefore the wrong tool here. The header is read strictly on both sides, with
+unknown fields and trailing content refused and exhaustion proven, because the
+header decides how every line beneath it is read.
+
+**A failed call carries no cost, as it carries no tokens.** `calculateCost`
+returns nil whenever `success` is false — cost is computed *from* the token
+counts a failed call does not have — so a priced failure is the same
+fabrication as the counts, one column over. The writer, the budget tail and
+the importer all refuse it, and the corpus carries the case.
 
 ## D10. Organizations and users have no creation path, and the slice needs one
 

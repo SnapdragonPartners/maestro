@@ -218,12 +218,9 @@ func (i *Importer) importAttempt(ctx context.Context, attempt *attemptContext) (
 		return outcome, fmt.Errorf("read ledger for %s: %w", attempt.record.RunID, err)
 	}
 
-	// Read before the transaction opens: parsing a log is not work to hold a
-	// transaction open for, and a log this build cannot trust should stop the
-	// attempt before any of it is written.
-	usage, err := attempt.suite.ReadUsageLog(attempt.record.RunID)
+	usage, err := attempt.calls()
 	if err != nil {
-		return outcome, fmt.Errorf("read calls for %s: %w", attempt.record.RunID, err)
+		return outcome, err
 	}
 
 	err = i.store.WithTx(ctx, func(tx store.Tx) error {
@@ -282,6 +279,26 @@ func (i *Importer) importAttempt(ctx context.Context, attempt *attemptContext) (
 	outcome.Imported = true
 	outcome.Calls, outcome.CallsUnavailable = len(usage.Lines), usage.Reason
 	return outcome, nil
+}
+
+// calls reads the attempt's usage log and checks it against the record.
+//
+// Both before the transaction opens: parsing a log is not work to hold one
+// open for, and a log this build cannot trust must stop the attempt before
+// any of it is written. The record and the log are two accounts of one
+// attempt produced by the same run, so importing both when they disagree
+// would put two contradicting authoritative accounts in the plane — the call
+// rows saying one thing and the metric events beside them another, with
+// nothing to say which is right (design D9a).
+func (a *attemptContext) calls() (*UsageLog, error) {
+	usage, err := a.suite.ReadUsageLog(a.record.RunID)
+	if err != nil {
+		return nil, fmt.Errorf("read calls for %s: %w", a.record.RunID, err)
+	}
+	if err := usage.Reconcile(a.record); err != nil {
+		return nil, fmt.Errorf("attempt %s: %w", a.record.RunID, err)
+	}
+	return usage, nil
 }
 
 // writeCalls records one llm_calls row per usage line, opened and completed.

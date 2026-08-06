@@ -643,7 +643,13 @@ func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
 func TestCallsAreImportedFromTheUsageLog(t *testing.T) {
 	const runID = "story-a--config--r1--aaaa1111"
 	p := newPlane(t)
-	records := []map[string]any{recordWith(t, map[string]any{"run_id": runID})}
+	// The record's canonical metrics must ACCOUNT FOR the log beside it:
+	// they were written by one run, and the import now refuses a pair that
+	// disagrees. Budget tokens are input+output+reasoning, so 1200+340+90;
+	// the failed call adds a call and nothing else.
+	record := recordWith(t, map[string]any{"run_id": runID})
+	applyMetrics(t, record, map[string]any{"llm_calls": 2.0, "tokens_total": 1630.0, "cost_usd": 0.0425})
+	records := []map[string]any{record}
 	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
 	writeUsageLog(t, dir, runID, usageHeaderLine(2),
 		`{"finished_at":"2026-08-04T00:05:00.5Z","latency_ns":1500000000,"provider":"anthropic",`+
@@ -759,7 +765,9 @@ func TestUnreadableCallsAreARecordedAbsence(t *testing.T) {
 func TestTheImportRecordsItsOwnToolCall(t *testing.T) {
 	const runID = "story-a--config--r1--aaaa1111"
 	p := newPlane(t)
-	records := []map[string]any{recordWith(t, map[string]any{"run_id": runID})}
+	record := recordWith(t, map[string]any{"run_id": runID})
+	applyMetrics(t, record, map[string]any{"llm_calls": 1.0, "tokens_total": 15.0, "cost_usd": 0.01})
+	records := []map[string]any{record}
 	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
 	writeUsageLog(t, dir, runID, usageHeaderLine(2), aCall)
 
@@ -854,9 +862,15 @@ func TestAFailedImportRecordsItOnTheToolCall(t *testing.T) {
 // the attempt began, and that one this test catches.
 func TestCallsRollBackWithTheirAttempt(t *testing.T) {
 	const failing = "story-a--config--r1--aaaa1111"
-	records := []map[string]any{recordWith(t, map[string]any{"run_id": failing})}
+	// The record must ACCOUNT FOR this log, or reconciliation refuses the
+	// attempt before the transaction opens — and then "no calls survived"
+	// would pass because none was ever written, which is the assertion
+	// passing for the wrong reason rather than the rollback working.
+	record := recordWith(t, map[string]any{"run_id": failing})
+	applyMetrics(t, record, map[string]any{"llm_calls": 2.0, "tokens_total": 138.0, "cost_usd": 0.26})
+	records := []map[string]any{record}
 	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
-	writeUsageLog(t, dir, failing, usageHeaderLine(2), aCall, aCall, aCall)
+	writeUsageLog(t, dir, failing, usageHeaderLine(2), aCall, secondCall)
 
 	p := newPlaneWith(t, refusingRegistry(failing))
 	if _, err := p.importFrom(t, dir); err == nil {

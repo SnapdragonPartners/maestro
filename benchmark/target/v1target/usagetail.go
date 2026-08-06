@@ -113,6 +113,33 @@ func decodeUsageLine(trimmed string) (usageLine, error) {
 	return entry, nil
 }
 
+// checkUsageHeader validates the log's first line STRICTLY.
+//
+// Unknown fields and trailing content are refused for the same reason a line
+// refuses them, and this is the place it matters most: the header decides
+// how every line below it is read. json.Unmarshal ignored unknown keys and
+// this reader accepted `{...}]`, while the importer -- the other reader of
+// this surface -- refused both, so the two disagreed about which files are
+// readable at all.
+func checkUsageHeader(trimmed string) error {
+	var header usageHeader
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&header); err != nil {
+		return fmt.Errorf("usage log header unreadable: want usage_surface_version %d, got %q: %w",
+			usageSurfaceVersion, trimmed, err)
+	}
+	var rest json.RawMessage
+	if err := decoder.Decode(&rest); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("usage log header carries content after the object: %q", trimmed)
+	}
+	if header.UsageSurfaceVersion != usageSurfaceVersion {
+		return fmt.Errorf("usage log header mismatch: want usage_surface_version %d, got %q",
+			usageSurfaceVersion, trimmed)
+	}
+	return nil
+}
+
 // tokenAxes returns the line's five axes in a fixed order, for the rules that
 // treat availability as a property of the whole measurement.
 func (l *usageLine) tokenAxes() [5]struct {
@@ -266,6 +293,10 @@ func (l *usageLine) validateOutcome() error {
 		return fmt.Errorf("a successful call carries no token measurement")
 	case !success && measured:
 		return fmt.Errorf("a failed call carries token counts the provider never reported")
+	case !success && l.CostUSD != nil:
+		// Cost is computed FROM the token counts a failed call does not
+		// have, so the producer never prices one.
+		return fmt.Errorf("a failed call carries cost %v, computed from tokens nobody measured", *l.CostUSD)
 	}
 	return nil
 }
@@ -322,9 +353,8 @@ func (u *usageTail) advance() error {
 			continue
 		}
 		if !u.validated {
-			var header usageHeader
-			if err := json.Unmarshal([]byte(trimmed), &header); err != nil || header.UsageSurfaceVersion != usageSurfaceVersion {
-				return fmt.Errorf("usage log header mismatch: want usage_surface_version %d, got %q", usageSurfaceVersion, trimmed)
+			if err := checkUsageHeader(trimmed); err != nil {
+				return err
 			}
 			u.validated = true
 			continue

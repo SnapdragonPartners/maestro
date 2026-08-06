@@ -221,6 +221,36 @@ func TestUsageTailHeaderMismatchIsFatal(t *testing.T) {
 	}
 }
 
+// TestUsageTailHeaderIsReadStrictly covers the header rules the importer --
+// the other reader of this surface -- enforces.
+//
+// The header decides how every line beneath it is read, so it is the last
+// place to accept an unknown key or trailing content. json.Unmarshal
+// accepted both, which meant a file this reader would process happily was
+// one the importer refused outright: the two disagreed about which logs are
+// readable at all.
+func TestUsageTailHeaderIsReadStrictly(t *testing.T) {
+	for name, header := range map[string]string{
+		"an unknown key":    `{"usage_surface_version":2,"extra":1}`,
+		"trailing content":  `{"usage_surface_version":2}]`,
+		"a second object":   `{"usage_surface_version":2}{"usage_surface_version":2}`,
+		"not an object":     `[2]`,
+		"no version at all": `{}`,
+		"a wrong version":   `{"usage_surface_version":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "usage.jsonl")
+			if err := os.WriteFile(path, []byte(header+"\n"), 0o644); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			tail := &usageTail{path: path}
+			if err := tail.advance(); err == nil {
+				t.Fatal("the header was accepted")
+			}
+		})
+	}
+}
+
 func TestVerifyAdvertisedSurface(t *testing.T) {
 	good := "maestro v1\n  commit: abc\n  usage-surface: v2\n"
 	if err := verifyAdvertisedSurface(good); err != nil {
