@@ -15,6 +15,21 @@ import (
 	"orchestrator/internal/dataplane/paths"
 )
 
+// unlockedVerbs are the exported entry points that deliberately do NOT take
+// the lifecycle lock, each with the reason.
+//
+// Listed for the same reason unguardedVerbs is: an entry point in neither
+// table fails the completeness check, so a verb added later cannot become
+// unlocked by nobody noticing. What is asserted here is the DECISION; the
+// blocking cases below assert the behaviour of everything else.
+//
+//nolint:gochecknoglobals // Immutable expectation table for the test below.
+var unlockedVerbs = map[string]string{
+	"OpenSeam": "using a running plane is not a lifecycle transition: it moves the plane between no " +
+		"states, an import can take minutes, and holding the exclusive lock for its duration would " +
+		"block `down` behind ordinary traffic and serialize two imports the ledger already makes safe",
+}
+
 // testConfig builds a Config rooted in a temporary MAESTRO_HOME.
 func testConfig(t *testing.T) *Config {
 	t.Helper()
@@ -109,7 +124,13 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 	}
 
 	for _, verb := range exportedLifecycleVerbs(t) {
-		if _, covered := operations[verb]; !covered {
+		_, covered := operations[verb]
+		reason, exempt := unlockedVerbs[verb]
+		switch {
+		case covered && exempt:
+			t.Errorf("%s is both expected to block on the lock and listed as exempt (%s): the tables "+
+				"disagree, and one of them is describing code that does not exist", verb, reason)
+		case !covered && !exempt:
 			t.Errorf("%s is an exported lifecycle verb with no case here: it may be acting on a data "+
 				"root while another process holds the lifecycle lock", verb)
 		}
@@ -117,6 +138,11 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 	for verb := range operations {
 		if !slices.Contains(exportedLifecycleVerbs(t), verb) {
 			t.Errorf("this test covers %s, which is no longer an exported lifecycle verb", verb)
+		}
+	}
+	for verb := range unlockedVerbs {
+		if !slices.Contains(exportedLifecycleVerbs(t), verb) {
+			t.Errorf("%s is exempted from the lock and is no longer an exported lifecycle verb", verb)
 		}
 	}
 

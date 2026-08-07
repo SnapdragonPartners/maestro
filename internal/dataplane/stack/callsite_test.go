@@ -28,6 +28,7 @@ var guardedVerbs = map[string]string{
 	"Restore":      "lifecycleRestore",
 	"Verify":       "lifecycleVerify",
 	"RecoverKey":   "lifecycleRecoverKey",
+	"OpenSeam":     "lifecycleUse",
 }
 
 // unguardedVerbs are the entry points deliberately NOT guarded, each with

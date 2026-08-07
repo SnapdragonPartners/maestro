@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"orchestrator/internal/dataplane/paths"
@@ -26,10 +27,22 @@ func main() {
 	forceVersion := flag.Int("version", -1, "for force-version: the schema version to record")
 	destination := flag.String("to", "", "for backup: the archive directory to create (must not exist)")
 	source := flag.String("from", "", "for restore: the archive directory to restore from")
+	org := flag.String("org", "", "for bootstrap and benchmark: the organization slug")
+	orgName := flag.String("org-name", "", "for bootstrap: the organization's display name (defaults to the slug)")
+	user := flag.String("user", "", "for bootstrap: the user handle")
+	userName := flag.String("user-name", "", "for bootstrap: the user's display name (defaults to the handle)")
+	operator := flag.String("operator", "", "for benchmark import: the handle of the operator the report is authored by")
+	results := flag.String("results", "", "for benchmark import: the results store (default "+DefaultResultsDir+")")
+	fileCap := flag.Int64("file-cap", 0, "for benchmark import: the per-file evidence cap in bytes (0 is the default)")
+	attemptCap := flag.Int64("attempt-cap", 0, "for benchmark import: the per-attempt evidence cap in bytes (0 is the default)")
+	var suites suiteList
+	flag.Var(&suites, "suite", "for benchmark: a suite run id; repeatable, and for import may be omitted to mean every suite in the store")
 	flag.Usage = usage
 	flag.Parse()
 
-	if flag.NArg() != 1 {
+	// One or two words: the lifecycle verbs are single, and `benchmark` is
+	// a group with verbs of its own.
+	if flag.NArg() < 1 || flag.NArg() > 2 {
 		usage()
 		os.Exit(2)
 	}
@@ -38,12 +51,21 @@ func main() {
 	// operation: Compose has already been told to start, so the containers
 	// keep coming up and a later `up` picks them up.
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx, flag.Arg(0), runOptions{
+	err := run(ctx, strings.TrimSpace(flag.Arg(0)+" "+flag.Arg(1)), &runOptions{
 		composeFile:  *composeFile,
 		force:        *force,
 		forceVersion: *forceVersion,
 		destination:  *destination,
 		source:       *source,
+		org:          *org,
+		orgName:      *orgName,
+		user:         *user,
+		userName:     *userName,
+		operator:     *operator,
+		results:      *results,
+		suites:       suites,
+		fileCap:      *fileCap,
+		attemptCap:   *attemptCap,
 	})
 	stopSignals()
 	if err != nil {
@@ -53,7 +75,8 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key>
+	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key|
+                                  bootstrap|benchmark import|benchmark show>
 
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
@@ -79,6 +102,23 @@ func usage() {
            which must then be re-entered. Requires -force to skip the prompt.
            This is the second of ADR 0022's two restore branches; the first
            is simply restoring the original key file.
+  bootstrap
+           provision an organization and a user. Nothing else creates
+           either, and the importer resolves them and never creates them.
+           Idempotent by slug and handle; supplying different display data
+           for an existing record is refused rather than silently ignored.
+               dataplanectl -org acme -user dr bootstrap
+  benchmark import
+           import golden runner records from a results store into the plane.
+           Requires -org and -operator; -suite may be repeated, or omitted
+           to mean every suite the store holds. A terminal suite also gets a
+           DRAFT report holding its evidence; a suite still running gets its
+           attempts and no report.
+               dataplanectl -org acme -operator dr benchmark import
+  benchmark show
+           read one suite back out of the plane: its attempts, their
+           verdicts, what its report holds, and what the import left out.
+           Requires -org and exactly one -suite.
 
 flags:
 `)
@@ -91,11 +131,20 @@ type runOptions struct {
 	composeFile  string
 	destination  string
 	source       string
+	org          string
+	orgName      string
+	user         string
+	userName     string
+	operator     string
+	results      string
+	suites       suiteList
+	fileCap      int64
+	attemptCap   int64
 	forceVersion int
 	force        bool
 }
 
-func run(ctx context.Context, command string, opts runOptions) error {
+func run(ctx context.Context, command string, opts *runOptions) error {
 	roots, err := paths.Resolve()
 	if err != nil {
 		return fmt.Errorf("resolve storage roots: %w", err)
@@ -134,6 +183,28 @@ func run(ctx context.Context, command string, opts runOptions) error {
 		return runRecoverKey(ctx, cfg, opts)
 
 	default:
+		return runPlaneCommand(ctx, cfg, command, opts)
+	}
+}
+
+// runPlaneCommand dispatches the verbs that USE a running plane, as opposed
+// to the ones that move it between states.
+//
+// Split from run for the reason the verbs themselves were extracted from
+// it: a dispatch is a table of what exists, and one long enough to trip a
+// complexity budget has stopped being readable as a table.
+func runPlaneCommand(ctx context.Context, cfg *stack.Config, command string, opts *runOptions) error {
+	switch command {
+	case "bootstrap":
+		return runBootstrap(ctx, cfg, opts)
+
+	case "benchmark import":
+		return runBenchmarkImport(ctx, cfg, opts)
+
+	case "benchmark show":
+		return runBenchmarkShow(ctx, cfg, opts)
+
+	default:
 		usage()
 		return fmt.Errorf("unknown command %q", command)
 	}
@@ -162,7 +233,7 @@ func confirmationPrompt() string {
 // Extracted from the dispatch for the same reason the other verbs are: a
 // switch that carries one verb's logic inline invites the next one to do the
 // same, and the dispatch stops being a table of what exists.
-func runReset(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+func runReset(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if !opts.force && !confirmReset(cfg) {
 		fmt.Println("reset cancelled")
 		return nil
@@ -237,7 +308,7 @@ func confirmReset(cfg *stack.Config) bool {
 // most: it deletes every stored secret, and unlike reset there is no archive
 // that brings them back -- the ciphertext was written under a key nobody
 // has. The operator re-enters them.
-func runRecoverKey(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+func runRecoverKey(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if !opts.force && !confirmRecoverKey(cfg) {
 		return errors.New("new-key recovery declined")
 	}
@@ -274,7 +345,7 @@ func confirmRecoverKey(cfg *stack.Config) bool {
 }
 
 // runBackup copies the data root to a new archive directory.
-func runBackup(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+func runBackup(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if opts.destination == "" {
 		return errors.New("backup needs -to <directory>, which must not already exist")
 	}
@@ -292,7 +363,7 @@ func runBackup(ctx context.Context, cfg *stack.Config, opts runOptions) error {
 // Guarded like reset, and for a stronger reason: reset destroys data the
 // operator asked to destroy, while a restore onto a populated root destroys
 // data they may not have realised was there.
-func runRestore(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+func runRestore(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if opts.source == "" {
 		return errors.New("restore needs -from <directory>")
 	}
@@ -308,7 +379,7 @@ func runRestore(ctx context.Context, cfg *stack.Config, opts runOptions) error {
 // Both halves matter: an empty problem list means nothing without the counts
 // beside it, because a pass that walked nothing reports exactly the same
 // thing as a healthy plane.
-func runVerify(ctx context.Context, cfg *stack.Config, _ runOptions) error {
+func runVerify(ctx context.Context, cfg *stack.Config, _ *runOptions) error {
 	report, err := stack.Verify(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("verify the data plane: %w", err)
@@ -332,7 +403,7 @@ func runVerify(ctx context.Context, cfg *stack.Config, _ runOptions) error {
 	return fmt.Errorf("verification found %d problem(s)", len(report.Problems))
 }
 
-func runUp(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+func runUp(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if err := stack.Up(ctx, cfg, opts.composeFile); err != nil {
 		return fmt.Errorf("bring the data plane up: %w", err)
 	}
@@ -349,7 +420,7 @@ func runMigrate(ctx context.Context, cfg *stack.Config) error {
 	return nil
 }
 
-func runDown(ctx context.Context, cfg *stack.Config, opts runOptions) error {
+func runDown(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if err := stack.Down(ctx, cfg, opts.composeFile); err != nil {
 		return fmt.Errorf("bring the data plane down: %w", err)
 	}
