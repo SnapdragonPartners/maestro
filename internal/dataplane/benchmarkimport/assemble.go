@@ -73,6 +73,15 @@ func (e *ReportStale) Is(target error) bool { return target == ErrReportStale }
 // about records nobody can now read.
 var ErrLedgerDiverged = errors.New("the plane holds attempts the results store does not")
 
+// ErrReportClaimInvalid reports a claim naming something that is not this
+// suite's report.
+//
+// It cannot arise from the importer, which writes the artifact under the id
+// it claimed. It exists because dropping the claim's foreign key moved the
+// integrity check to the seam, and a check with no error to raise is not a
+// check.
+var ErrReportClaimInvalid = errors.New("the suite's report claim names an artifact that is not its report")
+
 // ReportOutcome is what the import did about the suite report.
 type ReportOutcome struct {
 	ArtifactID uuid.UUID
@@ -143,21 +152,26 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 		return nil, fmt.Errorf("assemble the report for suite %s: %w", report.suite.Manifest.SuiteRunID, err)
 	}
 
-	existing, err := i.findReport(ctx, report)
+	// The claim is recorded BEFORE the artifact is written, under an
+	// identifier this import preallocates. Writing first and claiming after
+	// leaves a window with no owner: a death between the two commits leaves a
+	// live, fully pinned draft that no claim names, and the retry writes and
+	// claims a second one — two drafts of one suite, both independently
+	// acceptable. Claiming first makes the only inconsistent state a claim
+	// whose artifact does not exist YET, which the next import completes
+	// under the same id rather than having to choose between two.
+	reportID, err := i.claimReport(ctx, report)
+	if err != nil {
+		return nil, err
+	}
+
+	existing, err := i.readClaimedReport(ctx, report, reportID)
 	if err != nil {
 		return nil, err
 	}
 	if existing != nil {
-		if staleErr := checkReportStillDescribes(existing, built.payload,
-			report.suite.Manifest.SuiteRunID); staleErr != nil {
-			return nil, staleErr
-		}
-		return &ReportOutcome{ArtifactID: existing.ArtifactID}, nil
+		return confirmExisting(existing, built.payload, report.suite.Manifest.SuiteRunID)
 	}
-	// Past here this import intends to WRITE a report, and another import of
-	// the same terminal suite may be doing the same. The read above cannot
-	// prevent that — it is a separate statement — so the claim below decides
-	// which of them counts, and this one may still lose.
 
 	// Derived from the SAME serialized payload the artifact will carry, by
 	// the SAME extractor acceptance will run. Building the pin set by
@@ -188,13 +202,62 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 		}
 	}()
 
+	written, err := i.writeReport(ctx, report, reportID, built, pins, operator)
+	if err != nil {
+		return i.settleLostWrite(ctx, report, reportID, built.payload, err)
+	}
+	return &ReportOutcome{
+		ArtifactID:      written.Artifact.ArtifactID,
+		Attachments:     len(written.Attachments),
+		SkippedEvidence: built.scanned.skipped(),
+		Created:         true,
+	}, nil
+}
+
+// confirmExisting reports the claim already settled, once the report it
+// names is known still to describe the suite.
+func confirmExisting(existing *store.ManagementArtifact, candidate []byte, suiteRunID string) (*ReportOutcome, error) {
+	if staleErr := checkReportStillDescribes(existing, candidate, suiteRunID); staleErr != nil {
+		return nil, staleErr
+	}
+	return &ReportOutcome{ArtifactID: existing.ArtifactID}, nil
+}
+
+// settleLostWrite decides whether a failed write was a race this import lost
+// or a fault it has to report.
+//
+// Another import may have completed the same claim between this one's read
+// and its write. Judged by OUTCOME rather than by decoding a driver error:
+// the question is whether the claimed report exists now, and that is
+// directly observable. The write error is returned unchanged when it does
+// not, because then it is the answer.
+func (i *Importer) settleLostWrite(ctx context.Context, report *reportContext,
+	reportID uuid.UUID, candidate []byte, writeErr error,
+) (*ReportOutcome, error) {
+	completed, readErr := i.readClaimedReport(ctx, report, reportID)
+	if readErr != nil || completed == nil {
+		return nil, writeErr
+	}
+	return confirmExisting(completed, candidate, report.suite.Manifest.SuiteRunID)
+}
+
+// writeReport stores the evidence and the draft that cites it, under the
+// identifier the claim already names.
+func (i *Importer) writeReport(ctx context.Context, report *reportContext, reportID uuid.UUID,
+	built *assembled, pins []store.EvidenceRef, operator uuid.UUID,
+) (*store.AttachEvidenceResult, error) {
 	written, err := i.store.AttachEvidence(ctx, store.AttachEvidenceInput{
 		Pins:        pins,
 		Attachments: built.attachments,
 		Artifact: store.CreateManagementArtifactInput{
-			Type:    TypeSuiteReport,
-			Summary: report.summary(built.scanned),
-			Payload: built.payload,
+			// The id the claim already names. AttachEvidence accepts a
+			// preallocated identifier because the payload has to reference
+			// rows built before the write; here it is also what makes the
+			// claim and the artifact one decision rather than two.
+			ArtifactID: reportID,
+			Type:       TypeSuiteReport,
+			Summary:    report.summary(built.scanned),
+			Payload:    built.payload,
 			Scope: store.Scope{
 				Type: store.ScopeBenchmark,
 				ID:   report.benchmarkRunID,
@@ -212,89 +275,71 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 	if err != nil {
 		return nil, fmt.Errorf("write suite report for %s: %w", report.suite.Manifest.SuiteRunID, err)
 	}
-	return i.claimReport(ctx, report, written.Artifact.ArtifactID, built.payload, &ReportOutcome{
-		ArtifactID:      written.Artifact.ArtifactID,
-		Attachments:     len(written.Attachments),
-		SkippedEvidence: built.scanned.skipped(),
-		Created:         true,
-	})
+	return written, nil
 }
 
-// claimReport decides whether the report just written is THE report of this
-// suite, and withdraws it when another import got there first.
+// claimReport records which artifact this suite's report IS, and returns the
+// identifier that won.
 //
-// The claim cannot be part of the transaction that created the artifact —
-// AttachEvidence owns its own, because attachments are remote writes that
-// must land before the rows referencing them — so the order is write, then
-// claim, and losing is a compensating path rather than a rollback.
-//
-// The loser INVALIDATES its draft rather than leaving it. Two drafts for one
-// suite are two claims about one conformance run, both independently
-// acceptable, and the second reviewer would have no way to know they were
-// accepting a duplicate. Invalidation releases its pins in the same
-// transition, which leaves its attachments unreferenced — the residue the
-// object sweep already collects, and the same residue a failed import
-// leaves.
-func (i *Importer) claimReport(ctx context.Context, report *reportContext, artifactID uuid.UUID,
-	payload []byte, outcome *ReportOutcome,
-) (*ReportOutcome, error) {
+// Called before anything is written. The insert is idempotent by
+// (organization, benchmark run), so concurrent imports converge on one
+// identifier: the winner gets its own back, and every loser gets the
+// WINNER's — which is the id it must then write under or read from, never
+// one of its own.
+func (i *Importer) claimReport(ctx context.Context, report *reportContext) (uuid.UUID, error) {
+	// UUIDv7, which a preallocated artifact id must be: the plane orders
+	// artifacts by identifier, and a v4 would order this one at random
+	// forever after.
+	proposed, err := uuid.NewV7()
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("allocate a report id for suite %s: %w",
+			report.suite.Manifest.SuiteRunID, err)
+	}
 	claim, err := i.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
 		OrganizationID:   report.organizationID,
 		BenchmarkRunID:   report.benchmarkRunID,
-		ReportArtifactID: artifactID,
+		ReportArtifactID: proposed,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("claim the report of suite %s: %w", report.suite.Manifest.SuiteRunID, err)
-	}
-	if claim.Created {
-		return outcome, nil
-	}
-
-	if withdrawErr := i.store.InvalidateArtifact(ctx, report.organizationID, artifactID); withdrawErr != nil {
-		// Reported rather than swallowed: the plane now holds a draft
-		// report that is not the suite's report and that nothing will
-		// withdraw, which an operator has to know about even though the
-		// suite itself is correctly reported.
-		return nil, fmt.Errorf("another import claimed the report of suite %s first, and this "+
-			"import's draft %s could not be withdrawn: %w",
-			report.suite.Manifest.SuiteRunID, artifactID, withdrawErr)
-	}
-
-	// The winner's report still has to account for what the plane holds, by
-	// the same rule that governs finding one already there.
-	winner, err := i.store.GetManagementArtifact(ctx, report.organizationID, claim.Record.ReportArtifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the report another import wrote for suite %s: %w",
+		return uuid.Nil, fmt.Errorf("claim the report of suite %s: %w",
 			report.suite.Manifest.SuiteRunID, err)
 	}
-	if staleErr := checkReportStillDescribes(winner, payload,
-		report.suite.Manifest.SuiteRunID); staleErr != nil {
-		return nil, staleErr
-	}
-	return &ReportOutcome{ArtifactID: winner.ArtifactID}, nil
+	return claim.Record.ReportArtifactID, nil
 }
 
-// findReport returns the suite's existing report, or nil.
+// readClaimedReport returns the claimed artifact, or nil when the claim has
+// been recorded and the artifact has not been written yet.
 //
-// Through the CLAIM, not by scanning the scope for an artifact of the right
-// type. The scope holds every benchmark-scoped Management artifact of this
-// run, which now includes the withdrawn draft of any import that lost a
-// race — so a scan would sometimes answer with an artifact that is
-// explicitly not the suite's report. The claim is the only thing that says
-// which one is.
-func (i *Importer) findReport(ctx context.Context, report *reportContext) (*store.ManagementArtifact, error) {
-	claim, err := i.store.GetSuiteReport(ctx, report.organizationID, report.benchmarkRunID)
+// Absence is a legitimate, recoverable state rather than a broken reference:
+// the claim is a durable INTENT, recorded first precisely so that a death
+// before the write leaves a record of what was intended. The caller completes
+// it by writing under the claimed id.
+//
+// What it does NOT accept is an artifact of the wrong kind. Dropping the
+// foreign key removed the database's guarantee that the claim names a real
+// artifact, and that guarantee was never the interesting one: it constrained
+// only the tenant, so a claim naming a Story's design document in the same
+// organization would have satisfied it. The seam checks what actually
+// matters — this is a benchmark.suite_report, and it is scoped to THIS run.
+func (i *Importer) readClaimedReport(
+	ctx context.Context, report *reportContext, reportID uuid.UUID,
+) (*store.ManagementArtifact, error) {
+	artifact, err := i.store.GetManagementArtifact(ctx, report.organizationID, reportID)
 	if errors.Is(err, store.ErrNotFound) {
-		// No report yet, which is the ordinary state of a suite whose first
-		// terminal import is happening now.
-		return nil, nil //nolint:nilnil // absence, with no report to describe
+		return nil, nil //nolint:nilnil // claimed and not yet written, which the caller completes
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read the report claim for suite %s: %w", report.suite.Manifest.SuiteRunID, err)
+		return nil, fmt.Errorf("read the claimed report of suite %s: %w",
+			report.suite.Manifest.SuiteRunID, err)
 	}
-	artifact, err := i.store.GetManagementArtifact(ctx, report.organizationID, claim.ReportArtifactID)
-	if err != nil {
-		return nil, fmt.Errorf("read the report of suite %s: %w", report.suite.Manifest.SuiteRunID, err)
+	switch {
+	case artifact.Type != TypeSuiteReport:
+		return nil, fmt.Errorf("%w: suite %s claims artifact %s as its report, and that artifact is a %s",
+			ErrReportClaimInvalid, report.suite.Manifest.SuiteRunID, reportID, artifact.Type)
+	case artifact.Scope.Type != store.ScopeBenchmark || artifact.Scope.ID != report.benchmarkRunID:
+		return nil, fmt.Errorf("%w: suite %s claims artifact %s as its report, and that artifact is "+
+			"scoped to %s %s", ErrReportClaimInvalid, report.suite.Manifest.SuiteRunID, reportID,
+			artifact.Scope.Type, artifact.Scope.ID)
 	}
 	return artifact, nil
 }

@@ -61,6 +61,21 @@ func suiteWithEvidence(t *testing.T) string {
 	return dir
 }
 
+// otherSuiteWithEvidence is a second, unrelated suite, so a test can plant a
+// claim that names a real report belonging to something else.
+func otherSuiteWithEvidence(t *testing.T) (dir, suiteRunID string) {
+	t.Helper()
+	const suite = "golden-all-other"
+	records := []map[string]any{
+		recordWith(t, map[string]any{
+			"run_id": "story-b--config--r1--cccc3333", "suite_run_id": suite,
+		}),
+	}
+	dir = writeSuite(t, suite, records, completedManifest(suite, records))
+	evidenceFor(t, dir, "story-b--config--r1--cccc3333", map[string]string{"pr.json": `{"number":3}`})
+	return dir, suite
+}
+
 // reportOf reads the suite's report artifact through the claim, which is the
 // only thing that says WHICH benchmark-scoped artifact is the report.
 func (p *plane) reportOf(t *testing.T, benchmarkRunID uuid.UUID) *store.ManagementArtifact {
@@ -661,16 +676,130 @@ func TestConcurrentTerminalImportsProduceOneReport(t *testing.T) {
 	if claimed.Status != store.StatusDraft {
 		t.Errorf("the claimed report is %q, want %q", claimed.Status, store.StatusDraft)
 	}
-	for _, artifact := range p.managementArtifacts(t, results[0].BenchmarkRunID) {
-		if artifact.ArtifactID == claimed.ArtifactID {
-			continue
-		}
-		if artifact.Status != store.StatusInvalidated {
-			t.Errorf("the losing draft %s is %q, want %q: two live drafts for one suite are two "+
-				"claims about one conformance run", artifact.ArtifactID, artifact.Status,
-				store.StatusInvalidated)
-		}
+	// And there is exactly ONE report artifact for the suite, not a claimed
+	// one beside the withdrawn drafts of everyone who lost.
+	//
+	// Asserted as a count rather than by checking the losers' statuses. An
+	// earlier version claimed AFTER writing, so a loser had a draft to
+	// withdraw and the test looked at its status; claiming first means a
+	// loser never writes one at all, and that assertion could no longer fail
+	// — it iterated an empty set and passed. What survives is the property
+	// that mattered all along.
+	artifacts := p.managementArtifacts(t, results[0].BenchmarkRunID)
+	if len(artifacts) != 1 {
+		t.Errorf("the suite holds %d Management artifacts, want 1: every one of them is a claim "+
+			"about the same conformance run", len(artifacts))
 	}
+	if len(artifacts) == 1 && artifacts[0].ArtifactID != claimed.ArtifactID {
+		t.Errorf("the suite's one artifact is %s and the claim names %s",
+			artifacts[0].ArtifactID, claimed.ArtifactID)
+	}
+}
+
+// An import that died between claiming and writing is COMPLETED by the next
+// one, under the same identifier.
+//
+// This is the window the claim exists to close, entered from the surviving
+// side. Recording the claim first means the only inconsistent state is a
+// claim whose artifact does not exist yet — recoverable, because there is
+// exactly one identifier to write under and no second artifact to choose
+// between. Writing first and claiming after had the opposite property: a
+// death left a live, fully pinned draft that no claim named, and the retry
+// wrote another.
+func TestAClaimWithoutItsArtifactIsCompletedByTheNextImport(t *testing.T) {
+	p := newPlane(t)
+	dir := suiteWithEvidence(t)
+	ctx := context.Background()
+
+	// Stand in for the import that claimed and then died: the run row and
+	// the claim exist, and nothing was ever written under the claimed id.
+	run, err := p.store.EnsureBenchmarkRun(ctx, p.organization.OrganizationID, testSuiteRunID)
+	if err != nil {
+		t.Fatalf("ensure benchmark run: %v", err)
+	}
+	abandoned := uuid.Must(uuid.NewV7())
+	claim, err := p.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
+		OrganizationID:   p.organization.OrganizationID,
+		BenchmarkRunID:   run.Record.BenchmarkRunID,
+		ReportArtifactID: abandoned,
+	})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if !claim.Created {
+		t.Fatal("the claim already existed; the test needs to plant it")
+	}
+
+	result := p.mustImport(t, dir)
+	if result.Report == nil {
+		t.Fatal("the import produced no report")
+	}
+	if result.Report.ArtifactID != abandoned {
+		t.Errorf("the import wrote report %s, and the claim it found named %s: the claim is the "+
+			"identifier, and writing a different one is how a second report comes to exist",
+			result.Report.ArtifactID, abandoned)
+	}
+	if count := p.managementArtifactCount(t, run.Record.BenchmarkRunID); count != 1 {
+		t.Errorf("the suite holds %d Management artifacts, want 1", count)
+	}
+	// And it is a real report: readable, draft, holding its evidence.
+	artifact := p.reportOf(t, run.Record.BenchmarkRunID)
+	if artifact.Status != store.StatusDraft {
+		t.Errorf("the completed report is %q, want %q", artifact.Status, store.StatusDraft)
+	}
+	if result.Report.Attachments != 4 {
+		t.Errorf("the completed report holds %d evidence files, want 4", result.Report.Attachments)
+	}
+}
+
+// One artifact cannot be two suites' report.
+//
+// The mirror of one report per suite, and the schema is the arbiter for both.
+// This is the case dropping the foreign key does NOT weaken: the uniqueness
+// on (organization, artifact) still refuses it, and the seam translates the
+// refusal instead of passing a constraint name to somebody holding a suite id.
+func TestAClaimNamingAForeignArtifactIsRefused(t *testing.T) {
+	p := newPlane(t)
+	dir := suiteWithEvidence(t)
+	ctx := context.Background()
+
+	// A real, well-formed report — for a DIFFERENT suite.
+	otherDir, otherSuite := otherSuiteWithEvidence(t)
+	other, err := benchmarkimport.New(p.store).Import(ctx, &benchmarkimport.Options{
+		OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
+		Dir: otherDir, SuiteRunID: otherSuite,
+	})
+	if err != nil {
+		t.Fatalf("import the other suite: %v", err)
+	}
+	if other.Report == nil {
+		t.Fatal("the other suite produced no report")
+	}
+
+	run, err := p.store.EnsureBenchmarkRun(ctx, p.organization.OrganizationID, testSuiteRunID)
+	if err != nil {
+		t.Fatalf("ensure benchmark run: %v", err)
+	}
+	_, err = p.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
+		OrganizationID:   p.organization.OrganizationID,
+		BenchmarkRunID:   run.Record.BenchmarkRunID,
+		ReportArtifactID: other.Report.ArtifactID,
+	})
+	if !errors.Is(err, store.ErrReportAlreadyClaimed) {
+		t.Fatalf("claiming another suite's report returned %v, want ErrReportAlreadyClaimed", err)
+	}
+	// A typed error, not the driver's. A raw 23505 at the seam describes a
+	// constraint name to somebody holding a suite id.
+	if strings.Contains(err.Error(), "SQLSTATE") {
+		t.Errorf("the refusal leaks a driver error: %v", err)
+	}
+
+	// And the suite is still reportable: the refused claim wrote nothing.
+	result := p.mustImport(t, dir)
+	if result.Report == nil || !result.Report.Created {
+		t.Errorf("the suite could not be reported after a refused claim: %+v", result.Report)
+	}
+	_ = dir
 }
 
 // Truncation cannot remove what a DRAFT report holds.

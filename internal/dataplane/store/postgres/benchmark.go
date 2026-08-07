@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
@@ -372,6 +373,12 @@ func notFoundByName(err error, kind, name string) error {
 	return fmt.Errorf("read %s %q: %w", kind, name, err)
 }
 
+// The uniqueness rules this seam has to speak for.
+const (
+	uniqueViolation                = "23505"
+	reportArtifactUniqueConstraint = "benchmark_reports_artifact_key"
+)
+
 // GetSuiteReport returns which artifact is the suite's report.
 func (t *tx) GetSuiteReport(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) (*store.SuiteReportClaim, error) {
 	row, err := t.queries.GetBenchmarkReport(ctx, gen.GetBenchmarkReportParams{
@@ -410,6 +417,19 @@ func (t *tx) ClaimSuiteReport(ctx context.Context, input store.ClaimSuiteReportI
 		ReportArtifactID:  toUUID(input.ReportArtifactID),
 	})
 	if err != nil {
+		// The statement's ON CONFLICT covers one of the two uniqueness
+		// rules -- one report per suite, which is the arbiter this call
+		// exists to consult. The other, one suite per report, is a caller
+		// error rather than a race: it means this artifact is already
+		// another suite's report. Translated rather than passed through,
+		// because a raw 23505 at the seam describes a constraint name to
+		// somebody holding a suite id.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation &&
+			pgErr.ConstraintName == reportArtifactUniqueConstraint {
+			return empty, fmt.Errorf("%w: artifact %s is already the report of another suite",
+				store.ErrReportAlreadyClaimed, input.ReportArtifactID)
+		}
 		return empty, fmt.Errorf("claim the report of benchmark run %s: %w", input.BenchmarkRunID, err)
 	}
 	stored, err := t.GetSuiteReport(ctx, input.OrganizationID, input.BenchmarkRunID)

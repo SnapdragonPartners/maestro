@@ -170,11 +170,18 @@ func describeReport(
 		return nil, fmt.Errorf("read the report claim of suite %q: %w", suiteRunID, err)
 	}
 	// Read through the claim rather than by scanning the scope for an
-	// artifact of the right type. The scope also holds the withdrawn draft
-	// of any import that lost a race to report this suite, and showing one
-	// of those would be showing an artifact the plane has explicitly said is
-	// not the report.
+	// artifact of the right type: the claim is the only thing that says
+	// WHICH benchmark-scoped artifact is the report.
+	//
+	// The claim is recorded before the artifact is written, so a suite whose
+	// reporting import died between the two has a claim and no artifact.
+	// That reads as "no report yet", which is what it is — the next import
+	// completes it under the same id — rather than as an error about a
+	// dangling reference.
 	artifact, err := seam.GetManagementArtifact(ctx, organizationID, claim.ReportArtifactID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil //nolint:nilnil // claimed and not yet written
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read the report of suite %q: %w", suiteRunID, err)
 	}

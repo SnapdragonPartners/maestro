@@ -38,6 +38,15 @@ var (
 	// make `bootstrap --org acme --org-name "Acme Ltd"` appear to succeed
 	// while the plane still said "Acme Inc".
 	ErrBootstrapConflict = errors.New("the record exists with different display data")
+
+	// ErrReportAlreadyClaimed reports an artifact offered as one suite's
+	// report that is already another's.
+	//
+	// One suite per report is the mirror of one report per suite, and it is
+	// a caller error rather than a race: the first rule is settled by
+	// convergence on a single row, and this one means the caller named an
+	// artifact that belongs to a different run.
+	ErrReportAlreadyClaimed = errors.New("the artifact is already another suite's report")
 )
 
 // ImportConflict carries both sides of a rejected re-import, because the
