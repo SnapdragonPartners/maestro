@@ -1,7 +1,6 @@
 package benchmarkimport
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"orchestrator/internal/dataplane/registry"
@@ -65,6 +64,22 @@ func RegistryEntries() map[registry.Type]registry.Entry {
 			// record carries no evidence of its own, so acceptance requires
 			// exactly zero pins for it. The suite report is what holds them.
 		},
+		TypeSuiteReport: {
+			Category:       registry.CategoryManagement,
+			CurrentVersion: PayloadVersion,
+			Validators: map[int]registry.Validator{
+				PayloadVersion: registry.ValidatorFunc(validateSuiteReportPayload),
+			},
+			// The extractor ships WITH the type, not after it. Acceptance is
+			// its only consumer, and an unregistered extractor is not "cannot
+			// tell" — it means the type carries no evidence, so the expected
+			// set is empty and exactly zero pins are required. A report
+			// assembled with its complete pin set would then be refused by
+			// the first reviewer who tried to accept it.
+			Extractors: map[int]registry.Extractor{
+				PayloadVersion: registry.ExtractorFunc(extractSuiteReportReferences),
+			},
+		},
 	}
 }
 
@@ -76,9 +91,7 @@ func RegistryEntries() map[registry.Type]registry.Entry {
 // older artifact certainly is not.
 func validateRunRecordPayload(payload []byte) error {
 	var body RunRecordPayload
-	decoder := json.NewDecoder(newStrictReader(payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
+	if err := decodeStrict(payload, &body); err != nil {
 		return fmt.Errorf("benchmark.run_record payload: %w", err)
 	}
 	if err := body.Record.Validate(); err != nil {

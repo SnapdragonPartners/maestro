@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"time"
 
@@ -16,8 +15,21 @@ import (
 	"orchestrator/internal/dataplane/store"
 )
 
-// newStrictReader wraps payload bytes for a strict decoder.
-func newStrictReader(payload []byte) io.Reader { return bytes.NewReader(payload) }
+// decodeStrict decodes an artifact payload, refusing a field this build
+// does not know.
+//
+// Strict on the way IN and on the way out. A payload carrying a field this
+// build cannot interpret is one written by a schema this build does not
+// read, and quietly dropping it would let a reader summarize an artifact
+// while silently ignoring part of what it says.
+func decodeStrict[T any](payload []byte, into *T) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(into); err != nil {
+		return fmt.Errorf("decode payload: %w", err)
+	}
+	return nil
+}
 
 // Principal identities the importer writes.
 const (
@@ -48,6 +60,9 @@ type Options struct {
 	// Dir is the results store, and SuiteRunID the suite within it.
 	Dir        string
 	SuiteRunID string
+	// Caps bounds the evidence one attempt may contribute. The zero value
+	// is the default, never "unbounded" (design D8).
+	Caps Caps
 }
 
 // AttemptOutcome is what the import did with one attempt.
@@ -68,7 +83,13 @@ type AttemptOutcome struct {
 
 // Result is what one import produced.
 type Result struct {
-	Attempts       []AttemptOutcome
+	// Report is what the import did about the suite report, and is nil for
+	// a suite that has not stopped. A DRAFT is the expected outcome:
+	// acceptance is a second explicit act by a different human, and item 9
+	// deliberately does not ship it.
+	Report   *ReportOutcome
+	Attempts []AttemptOutcome
+
 	BenchmarkRunID uuid.UUID
 	// ToolCallID is the import's own tool call. The suite report names it
 	// through produced_by_tool_call_id (design D5).
@@ -101,7 +122,7 @@ func New(seam store.Store) *Importer { return &Importer{store: seam} }
 // the object sweep could legitimately reclaim them, and the terminal import
 // would skip the ledgered attempt and never put them back. They belong to
 // report assembly, which rescans every attempt (design D7).
-func (i *Importer) Import(ctx context.Context, options Options) (result *Result, err error) {
+func (i *Importer) Import(ctx context.Context, options *Options) (result *Result, err error) {
 	suite, err := ReadSuite(options.Dir, options.SuiteRunID)
 	if err != nil {
 		return nil, err
@@ -173,6 +194,27 @@ func (i *Importer) Import(ctx context.Context, options Options) (result *Result,
 		}
 		result.Attempts = append(result.Attempts, outcome)
 	}
+	if !result.Terminal {
+		// A suite still running imports its attempts and gets no report. It
+		// acquires one on the later import that finds it finished, which is
+		// what makes a suite re-importable at all: the manifest is status,
+		// rewritten on every update, so storing its digest as an identity
+		// would make the ordinary mid-flight re-import a conflict.
+		return result, nil
+	}
+	report, err := i.assembleReport(ctx, &reportContext{
+		suite:          suite,
+		outcomes:       result.Attempts,
+		caps:           options.Caps,
+		organizationID: organization.OrganizationID,
+		userID:         operator.UserID,
+		benchmarkRunID: run.Record.BenchmarkRunID,
+		toolCallID:     toolCall,
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Report = report
 	return result, nil
 }
 
@@ -458,13 +500,26 @@ type importArguments struct {
 
 // importSummary is what the import DID, recorded as the tool call's result.
 type importSummary struct {
+	// The report half of the summary; see below for why the two evidence
+	// counts sit beside each other.
+	ReportArtifactID string `json:"report_artifact_id,omitempty"`
+
 	Attempts int `json:"attempts"`
 	Imported int `json:"imported"`
 	Calls    int `json:"calls"`
 	// CallsUnavailable counts imported attempts whose calls could not be
 	// read. Reported rather than folded into a zero, for the reason D9 gives.
-	CallsUnavailable int  `json:"calls_unavailable"`
-	Terminal         bool `json:"terminal"`
+	CallsUnavailable int `json:"calls_unavailable"`
+
+	// Attachments and SkippedEvidence are reported side by side
+	// deliberately: a cap that drops work quietly reads as "there was
+	// nothing more to import", and the two counts are the only place an
+	// operator sees the difference at the moment they could still act on it.
+	Attachments     int `json:"attachments"`
+	SkippedEvidence int `json:"skipped_evidence"`
+
+	ReportCreated bool `json:"report_created"`
+	Terminal      bool `json:"terminal"`
 }
 
 // openToolCall records the invocation the importer is about to perform.
@@ -473,7 +528,7 @@ type importSummary struct {
 // import that dies leaves an open tool call, which is a true statement about
 // what happened rather than a row needing repair.
 func (i *Importer) openToolCall(ctx context.Context, organizationID, importer uuid.UUID,
-	options Options,
+	options *Options,
 ) (uuid.UUID, error) {
 	arguments, err := json.Marshal(importArguments{
 		Organization: options.OrganizationSlug, Operator: options.OperatorHandle,
@@ -539,6 +594,12 @@ func (r *Result) summarise() importSummary {
 			summary.CallsUnavailable++
 		}
 	}
+	if r.Report != nil {
+		summary.ReportArtifactID = r.Report.ArtifactID.String()
+		summary.ReportCreated = r.Report.Created
+		summary.Attachments = r.Report.Attachments
+		summary.SkippedEvidence = r.Report.SkippedEvidence
+	}
 	return summary
 }
 
@@ -567,10 +628,27 @@ func (i *Importer) stopImporter(ctx context.Context, organizationID, importer uu
 	if importErr != nil {
 		reason = "import failed"
 	}
+	return i.stopPrincipal(ctx, organizationID, importer, reason)
+}
+
+// stopPrincipal closes one of the import's own instances on a DETACHED
+// context, bounded by its own deadline.
+//
+// Shared by the importer's instance and the operator's because the rule is
+// the same for both and it is the rule that is easy to lose: a write whose
+// purpose is to record how an operation ENDED cannot depend on the context
+// whose ending it is recording. Cancellation and deadline expiry are the
+// most likely ways an import fails, and they are exactly the cases where
+// the caller's context can no longer carry a write — so a cleanup reusing
+// it leaves the instance open in precisely the situation the closing exists
+// for, while looking correct in every test that does not cancel. Values
+// survive, so tracing and tenancy carried on the context do; only the
+// cancellation does not.
+func (i *Importer) stopPrincipal(ctx context.Context, organizationID, instance uuid.UUID, reason string) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stopImporterTimeout)
 	defer cancel()
-	if _, err := i.store.StopPrincipalInstance(cleanupCtx, organizationID, importer, reason); err != nil {
-		return fmt.Errorf("stop importer principal %s: %w", importer, err)
+	if _, err := i.store.StopPrincipalInstance(cleanupCtx, organizationID, instance, reason); err != nil {
+		return fmt.Errorf("stop principal %s: %w", instance, err)
 	}
 	return nil
 }
