@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Build Process (Interim)"
-edit_date = "2026-07-24"
+edit_date = "2026-08-07"
 status = "live"
 summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; review cadence, branching, spikes, testing, and merge rules. Command-level mechanics live in CLAUDE.md."
 type = "process"
@@ -8,7 +8,7 @@ type = "process"
 
 # Maestro v2 Build Process (Interim)
 
-Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`).
+Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit).
 
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 
@@ -45,6 +45,33 @@ An artifact is Accepted when both Codex and DR have approved it.
 - Unit and integration tests gate merges within a phase.
 - The golden story suite runs at the end of each phase (once it exists, Phase 1 onward).
 - **Golden runs spend real money.** They bill live model APIs — the Phase 1a run cost $26.40. DR must explicitly approve or override each individual run. Approval of a phase, of a plan, or of a previous run is not approval for the next one.
+
+### Defect-Shaped Verification
+
+A nontrivial regression test, structural test, or CI guard is not proven merely
+because it passes against the finished code. Temporarily restore the exact defect
+the check claims to catch, using the smallest mutation of code, query, or fixture
+that reproduces it, and prove the intended check fails for the named reason.
+
+A mutation counts as evidence only when all of these hold:
+
+- it applies to the intended site and the mutated code compiles;
+- the selected test actually runs, reaches the protected mechanism, and fails at
+  the intended assertion rather than at an earlier or neighbouring guard;
+- a positive control proves the fixture can pass through the valid path; and
+- the mutation is restored and the clean working tree is verified before any
+  later green run is trusted.
+
+A compiler failure, an empty test selector, an unclassified timeout or hang, or
+a failure caused by a different validation rule is not a killed mutation and
+does not prove the test. Mutation harnesses must bound the test process, refuse
+to start on a tree carrying prior mutation residue, and verify restoration even
+after a failed or timed-out run.
+
+Checkpoint notes report the protected defect and why the discriminating test
+failed, not only a count such as “N/N mutations killed.” This rule is deliberately
+scoped to guards and regression tests where a false green would hide a material
+contract violation; it does not require mutation testing every routine assertion.
 
 ## CI Review And Merge
 
