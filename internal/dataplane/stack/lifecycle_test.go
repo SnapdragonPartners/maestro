@@ -13,22 +13,24 @@ import (
 	"time"
 
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/registry"
 )
 
 // unlockedVerbs are the exported entry points that deliberately do NOT take
 // the lifecycle lock, each with the reason.
 //
-// Listed for the same reason unguardedVerbs is: an entry point in neither
-// table fails the completeness check, so a verb added later cannot become
-// unlocked by nobody noticing. What is asserted here is the DECISION; the
-// blocking cases below assert the behaviour of everything else.
+// EMPTY, and kept rather than deleted. An entry point in neither table fails
+// the completeness check, so a verb added later cannot become unlocked by
+// nobody noticing -- and the one verb that was listed here, OpenSeam, is the
+// reason the table is worth keeping: it was exempted on the argument that
+// ordinary use is not a lifecycle transition, which is true and did not
+// follow. Not a transition means not EXCLUSIVE; it does not mean unlocked,
+// and unlocked let a reset start immediately after the marker guard read
+// clean. It now takes the lock SHARED and appears among the blocking cases
+// below.
 //
 //nolint:gochecknoglobals // Immutable expectation table for the test below.
-var unlockedVerbs = map[string]string{
-	"OpenSeam": "using a running plane is not a lifecycle transition: it moves the plane between no " +
-		"states, an import can take minutes, and holding the exclusive lock for its duration would " +
-		"block `down` behind ordinary traffic and serialize two imports the ledger already makes safe",
-}
+var unlockedVerbs = map[string]string{}
 
 // testConfig builds a Config rooted in a temporary MAESTRO_HOME.
 func testConfig(t *testing.T) *Config {
@@ -108,6 +110,23 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 			return func(ctx context.Context) error {
 				_, err := Verify(ctx, cfg)
 				return err
+			}
+		},
+		"OpenSeam": func(t *testing.T, cfg *Config) func(context.Context) error {
+			t.Helper()
+			// A real registry, built before the lock is taken: OpenSeam
+			// refuses a nil one before reaching for the lock, and the case
+			// would then pass for the wrong reason.
+			types, err := registry.New(nil)
+			if err != nil {
+				t.Fatalf("build registry: %v", err)
+			}
+			return func(ctx context.Context) error {
+				seam, openErr := OpenSeam(ctx, cfg, types)
+				if openErr == nil {
+					seam.Close()
+				}
+				return openErr
 			}
 		},
 		"Restore": func(t *testing.T, cfg *Config) func(context.Context) error {

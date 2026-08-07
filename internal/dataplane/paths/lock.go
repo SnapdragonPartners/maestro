@@ -19,7 +19,26 @@ import (
 // second acquisition in the same process blocks against the first — a
 // caller that already holds it must not take it again.
 func AcquireLock(path string) (func() error, error) {
-	return acquireLock(path)
+	return acquireLock(path, syscall.LOCK_EX)
+}
+
+// AcquireSharedLock takes a SHARED advisory lock on path, so that several
+// holders may coexist while excluding every exclusive holder.
+//
+// It exists for the difference between USING a resource and moving it
+// between states. Data-plane lifecycle operations take the exclusive lock
+// because two of them must never overlap; ordinary use -- an import, a read,
+// anything that runs against a plane while it is up -- must be able to
+// overlap with itself and must NOT overlap with a reset or a restore. A
+// preflight check without a held lock cannot express that: it reports what
+// was true a moment ago, and the destructive operation is free to start
+// immediately afterwards.
+//
+// The same non-re-entrancy warning applies, and one more: flock is per open
+// file description, so a caller already holding the EXCLUSIVE lock on this
+// path deadlocks against itself by asking for the shared one.
+func AcquireSharedLock(path string) (func() error, error) {
+	return acquireLock(path, syscall.LOCK_SH)
 }
 
 // acquireLock takes an exclusive, cross-process advisory lock on path,
@@ -30,12 +49,12 @@ func AcquireLock(path string) (func() error, error) {
 // while a third creates a fresh file at the same path and locks that — two
 // simultaneous "exclusive" holders. An empty lock file is harmless and must
 // outlive every holder.
-func acquireLock(path string) (func() error, error) {
+func acquireLock(path string, mode int) (func() error, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, lockPerm)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file %s: %w", path, err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := syscall.Flock(int(f.Fd()), mode); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("acquire lock %s: %w", path, err)
 	}

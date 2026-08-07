@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -83,7 +84,7 @@ var ErrNoKey = errors.New("root-of-trust key file is not present")
 func LoadKey(configRoot string) (key []byte, err error) {
 	path := filepath.Join(configRoot, KeyFileName)
 
-	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName))
+	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName), syscall.LOCK_EX)
 	if lockErr != nil {
 		return nil, lockErr
 	}
@@ -155,7 +156,7 @@ func EnsureKey(configRoot string) (key []byte, err error) {
 		return nil, fmt.Errorf("create config root %s: %w", configRoot, mkErr)
 	}
 
-	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName))
+	release, lockErr := acquireLock(filepath.Join(configRoot, lockFileName), syscall.LOCK_EX)
 	if lockErr != nil {
 		return nil, lockErr
 	}
