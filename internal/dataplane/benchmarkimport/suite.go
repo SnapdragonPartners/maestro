@@ -217,14 +217,11 @@ func (s *Suite) checkCoherence(suiteRunID string) error {
 		return fmt.Errorf("%w: file names suite %q, manifest names %q",
 			ErrIncoherent, suiteRunID, s.Manifest.SuiteRunID)
 	}
-	if !knownStopReason[s.Manifest.StopReason] {
-		return fmt.Errorf("%w: manifest stop_reason %q", ErrIncoherent, s.Manifest.StopReason)
-	}
 	// Keyed by run id to the RECORD, not to a bool: the manifest duplicates
 	// each attempt's story and config, and membership alone would accept an
 	// entry naming the right run and the wrong story — leaving the report's
 	// matrix inconsistent with the record underneath it.
-	byRunID := make(map[string]*Record, len(s.Records))
+	byRunID := make(map[string]attemptSubject, len(s.Records))
 	for i := range s.Records {
 		record := &s.Records[i]
 		if record.SuiteRunID != suiteRunID {
@@ -237,22 +234,47 @@ func (s *Suite) checkCoherence(suiteRunID string) error {
 			// be compared against the first.
 			return fmt.Errorf("%w: run id %q appears twice", ErrIncoherent, record.RunID)
 		}
-		byRunID[record.RunID] = record
+		byRunID[record.RunID] = attemptSubject{story: record.StoryID, config: record.ConfigName}
 	}
-	return s.checkManifestAgreement(byRunID)
+	return checkManifestCoherence(&s.Manifest, byRunID)
 }
 
-// checkManifestAgreement compares the manifest's account of the matrix
-// against the records that actually exist.
+// attemptSubject is what a manifest entry and an attempt both claim: which
+// story ran under which config.
+//
+// The manifest duplicates these, so they are the pair that has to agree.
+// Keyed on them rather than on membership alone, because a manifest entry
+// naming the right run and the wrong story leaves the report's matrix
+// inconsistent with the attempt underneath it.
+type attemptSubject struct {
+	story  string
+	config string
+}
+
+// checkManifestCoherence compares a manifest's account of the matrix against
+// the attempts that claim to have completed under it.
+//
+// Shared by the SUITE READER, where the attempts are records on disk, and by
+// the REPORT VALIDATOR, where they are the entries of a payload a caller
+// handed the plane. Not a convenience: the report quotes the manifest, so a
+// report whose manifest is incoherent is a Management claim that contradicts
+// itself, and a rule enforced only on the way in from disk is no rule at all
+// for a caller reaching the seam directly.
 //
 // Both directions matter and they fail differently: a completed entry with no
-// record is a LOST attempt, and a record with no entry is a suite the
-// manifest does not describe. Either makes the manifest fiction, and the
-// report quotes the manifest.
-func (s *Suite) checkManifestAgreement(records map[string]*Record) error {
-	completed := make(map[string]bool, len(s.Manifest.Attempts))
-	for i := range s.Manifest.Attempts {
-		attempt := &s.Manifest.Attempts[i]
+// attempt is a LOST attempt, and an attempt with no entry is a suite the
+// manifest does not describe. Either makes the manifest fiction.
+func checkManifestCoherence(manifest *Manifest, attempts map[string]attemptSubject) error {
+	if manifest.SchemaVersion != ManifestSchemaVersion {
+		return fmt.Errorf("%w: manifest is version %d, this build reads %d",
+			ErrIncoherent, manifest.SchemaVersion, ManifestSchemaVersion)
+	}
+	if !knownStopReason[manifest.StopReason] {
+		return fmt.Errorf("%w: manifest stop_reason %q", ErrIncoherent, manifest.StopReason)
+	}
+	completed := make(map[string]bool, len(manifest.Attempts))
+	for i := range manifest.Attempts {
+		attempt := &manifest.Attempts[i]
 		if err := checkAttemptShape(attempt); err != nil {
 			return err
 		}
@@ -264,24 +286,24 @@ func (s *Suite) checkManifestAgreement(records map[string]*Record) error {
 				ErrIncoherent, attempt.RunID)
 		}
 		completed[attempt.RunID] = true
-		record, present := records[attempt.RunID]
+		subject, present := attempts[attempt.RunID]
 		if !present {
 			return fmt.Errorf("%w: manifest reports %q completed but no record exists; the attempt is lost",
 				ErrIncoherent, attempt.RunID)
 		}
 		// The duplicated fields must agree. They are the matrix the report
-		// quotes, and a disagreement here means the two files describe
+		// quotes, and a disagreement here means the two accounts describe
 		// different runs of the same identity.
-		if attempt.Story != record.StoryID {
+		if attempt.Story != subject.story {
 			return fmt.Errorf("%w: manifest says %q ran story %q, the record says %q",
-				ErrIncoherent, attempt.RunID, attempt.Story, record.StoryID)
+				ErrIncoherent, attempt.RunID, attempt.Story, subject.story)
 		}
-		if attempt.Config != record.ConfigName {
+		if attempt.Config != subject.config {
 			return fmt.Errorf("%w: manifest says %q ran config %q, the record says %q",
-				ErrIncoherent, attempt.RunID, attempt.Config, record.ConfigName)
+				ErrIncoherent, attempt.RunID, attempt.Config, subject.config)
 		}
 	}
-	for runID := range records {
+	for runID := range attempts {
 		if !completed[runID] {
 			return fmt.Errorf("%w: record %q has no completed manifest entry; the manifest does not "+
 				"describe this suite", ErrIncoherent, runID)

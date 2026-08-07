@@ -135,23 +135,38 @@ func validateSuiteReportPayload(payload []byte) error {
 			"suite gets a report", body.Manifest.StopReason)
 	}
 
-	seenRun := make(map[string]bool, len(body.Attempts))
+	subjects := make(map[string]attemptSubject, len(body.Attempts))
 	seenAttachment := make(map[string]bool)
 	for index := range body.Attempts {
 		attempt := &body.Attempts[index]
 		if err := validateReportAttempt(attempt); err != nil {
 			return err
 		}
-		if seenRun[attempt.RunID] {
+		if _, seen := subjects[attempt.RunID]; seen {
 			// Two entries for one attempt would double-count every verdict
 			// the report is read for, and would offer the same pin twice
 			// under a set comparison that cannot see the difference.
 			return fmt.Errorf("benchmark.suite_report payload: attempt %q appears twice", attempt.RunID)
 		}
-		seenRun[attempt.RunID] = true
+		subjects[attempt.RunID] = attemptSubject{story: attempt.StoryID, config: attempt.ConfigName}
 		if err := validateReportEvidence(attempt, seenAttachment); err != nil {
 			return err
 		}
+	}
+
+	// The QUOTED MANIFEST is held to the same rules the suite reader holds
+	// the file to, and to the same agreement with the attempts.
+	//
+	// Not redundant with the reader. The reader validates what came off
+	// disk; this validates what a caller hands the plane, and a caller
+	// reaching the seam directly never passed the reader at all. Without
+	// it, a Management artifact could be written whose manifest names an
+	// unknown schema version, carries a status nothing can interpret,
+	// reports an attempt as completed that the report does not account for,
+	// or accounts for an attempt the manifest never planned — a claim that
+	// contradicts itself, stored as though it were reviewed.
+	if err := checkManifestCoherence(&body.Manifest, subjects); err != nil {
+		return fmt.Errorf("benchmark.suite_report payload: %w", err)
 	}
 	return nil
 }

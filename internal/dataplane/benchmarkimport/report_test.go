@@ -106,6 +106,36 @@ func attemptsIn(t *testing.T, payload map[string]any) []any {
 	return attempts
 }
 
+// manifestIn reads the quoted manifest out of a generic payload.
+func manifestIn(t *testing.T, payload map[string]any) map[string]any {
+	t.Helper()
+	manifest, ok := payload["manifest"].(map[string]any)
+	if !ok {
+		t.Fatal("manifest is not an object")
+	}
+	return manifest
+}
+
+// manifestAttempts reads the manifest's cells.
+func manifestAttempts(t *testing.T, payload map[string]any) []any {
+	t.Helper()
+	attempts, ok := manifestIn(t, payload)["attempts"].([]any)
+	if !ok {
+		t.Fatal("manifest attempts are not a list")
+	}
+	return attempts
+}
+
+// firstManifestCell is the control payload's single manifest entry.
+func firstManifestCell(t *testing.T, payload map[string]any) map[string]any {
+	t.Helper()
+	cell, ok := manifestAttempts(t, payload)[0].(map[string]any)
+	if !ok {
+		t.Fatal("the first manifest attempt is not an object")
+	}
+	return cell
+}
+
 // firstAttempt is the one attempt of the control payload.
 func firstAttempt(t *testing.T, payload map[string]any) map[string]any {
 	t.Helper()
@@ -218,6 +248,46 @@ func TestTheReportValidatorRefusesWhatItMustNotHold(t *testing.T) {
 				map[string]any{"path": "big.log", "reason": "seemed large"},
 			}
 		}, "reason"},
+
+		{"a manifest version this build cannot read", func(t *testing.T, payload map[string]any) {
+			manifestIn(t, payload)["manifest_schema_version"] = benchmarkimport.ManifestSchemaVersion + 1
+		}, "this build reads"},
+
+		{"a stop reason outside the vocabulary", func(t *testing.T, payload map[string]any) {
+			// Terminal, so it passes the running check, and still not a
+			// status anything can interpret.
+			manifestIn(t, payload)["stop_reason"] = "gave up"
+		}, "stop_reason"},
+
+		{"a manifest cell naming no story", func(t *testing.T, payload map[string]any) {
+			firstManifestCell(t, payload)["story"] = ""
+		}, "names no story"},
+
+		{"a completed cell the report does not account for", func(t *testing.T, payload map[string]any) {
+			// The manifest says an attempt ran; the report is silent about
+			// it. That attempt is LOST, and the report quoting the manifest
+			// makes the loss look like a record.
+			firstManifestCell(t, payload)["run_id"] = "story-a--config--r9--99999999"
+		}, "the attempt is lost"},
+
+		{"an attempt the manifest never planned", func(t *testing.T, payload map[string]any) {
+			// The OTHER direction, and it needs the manifest left intact:
+			// renaming the one attempt would make the manifest's cell the
+			// thing with no match, which is the case above wearing a
+			// different name.
+			extra := map[string]any{}
+			for key, value := range firstAttempt(t, payload) {
+				extra[key] = value
+			}
+			extra["run_id"] = "story-a--config--r9--99999999"
+			extra["run_record_artifact_id"] = uuid.Must(uuid.NewV7()).String()
+			delete(extra, "evidence")
+			payload["attempts"] = append(attemptsIn(t, payload), extra)
+		}, "no completed manifest entry"},
+
+		{"the manifest and the report naming different stories", func(t *testing.T, payload map[string]any) {
+			firstManifestCell(t, payload)["story"] = "some-other-story"
+		}, "ran story"},
 
 		{"one attempt listed twice", func(t *testing.T, payload map[string]any) {
 			// Two entries for one attempt double-count every verdict the
