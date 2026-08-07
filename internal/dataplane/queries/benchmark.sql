@@ -47,3 +47,22 @@ SELECT * FROM benchmark_attempts
 WHERE organization_id  = @organization_id
   AND benchmark_run_id = @benchmark_run_id
 ORDER BY run_id;
+
+-- The suite-report claim, born final like everything above it and inserted
+-- the same way: the uniqueness on (organization, run) is the arbiter, so two
+-- importers racing to report one terminal suite converge on one row rather
+-- than one of them receiving a violation the seam would have to decode.
+--
+-- The loser learns it lost from the row count, which is why this is
+-- :execrows and not a bare insert.
+-- name: InsertBenchmarkReportIfAbsent :execrows
+INSERT INTO benchmark_reports (benchmark_report_id, organization_id,
+                               benchmark_run_id, report_artifact_id)
+VALUES (@benchmark_report_id, @organization_id,
+        @benchmark_run_id, @report_artifact_id)
+ON CONFLICT ON CONSTRAINT benchmark_reports_run_key DO NOTHING;
+
+-- name: GetBenchmarkReport :one
+SELECT * FROM benchmark_reports
+WHERE organization_id  = @organization_id
+  AND benchmark_run_id = @benchmark_run_id;

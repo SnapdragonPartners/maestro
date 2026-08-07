@@ -68,6 +68,14 @@ type BenchmarkAttempt struct {
 	ImportedAt         pgtype.Timestamptz
 }
 
+type BenchmarkReport struct {
+	BenchmarkReportID pgtype.UUID
+	OrganizationID    pgtype.UUID
+	BenchmarkRunID    pgtype.UUID
+	ReportArtifactID  pgtype.UUID
+	ClaimedAt         pgtype.Timestamptz
+}
+
 type BenchmarkRun struct {
 	BenchmarkRunID  pgtype.UUID
 	OrganizationID  pgtype.UUID

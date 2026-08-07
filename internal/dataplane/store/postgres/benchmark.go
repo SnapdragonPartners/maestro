@@ -371,3 +371,61 @@ func notFoundByName(err error, kind, name string) error {
 	}
 	return fmt.Errorf("read %s %q: %w", kind, name, err)
 }
+
+// GetSuiteReport returns which artifact is the suite's report.
+func (t *tx) GetSuiteReport(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) (*store.SuiteReportClaim, error) {
+	row, err := t.queries.GetBenchmarkReport(ctx, gen.GetBenchmarkReportParams{
+		OrganizationID: toUUID(organizationID),
+		BenchmarkRunID: toUUID(benchmarkRunID),
+	})
+	if err != nil {
+		return nil, notFound(err, "suite report", benchmarkRunID)
+	}
+	claim := suiteReportClaimFromRow(&row)
+	return &claim, nil
+}
+
+// ClaimSuiteReport records which artifact is a suite's report.
+//
+// Insert-or-nothing, then read, exactly as the attempt ledger does: the
+// uniqueness on (organization, run) is the arbiter, so two importers racing
+// to report one terminal suite converge on one row instead of one of them
+// receiving a violation this seam would have to decode.
+//
+// The loser is told through Created=false and handed the WINNER's claim,
+// because "you lost" without saying to whom leaves the caller unable to
+// report what actually happened to the suite.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (t *tx) ClaimSuiteReport(ctx context.Context, input store.ClaimSuiteReportInput) (store.Bootstrapped[store.SuiteReportClaim], error) {
+	var empty store.Bootstrapped[store.SuiteReportClaim]
+	identifier, err := newIdentifier(uuid.Nil)
+	if err != nil {
+		return empty, err
+	}
+	inserted, err := t.queries.InsertBenchmarkReportIfAbsent(ctx, gen.InsertBenchmarkReportIfAbsentParams{
+		BenchmarkReportID: toUUID(identifier),
+		OrganizationID:    toUUID(input.OrganizationID),
+		BenchmarkRunID:    toUUID(input.BenchmarkRunID),
+		ReportArtifactID:  toUUID(input.ReportArtifactID),
+	})
+	if err != nil {
+		return empty, fmt.Errorf("claim the report of benchmark run %s: %w", input.BenchmarkRunID, err)
+	}
+	stored, err := t.GetSuiteReport(ctx, input.OrganizationID, input.BenchmarkRunID)
+	if err != nil {
+		return empty, err
+	}
+	return store.Bootstrapped[store.SuiteReportClaim]{Record: *stored, Created: inserted == 1}, nil
+}
+
+// suiteReportClaimFromRow converts the generated row.
+func suiteReportClaimFromRow(row *gen.BenchmarkReport) store.SuiteReportClaim {
+	return store.SuiteReportClaim{
+		ClaimedAt:        row.ClaimedAt.Time,
+		ClaimID:          fromUUID(row.BenchmarkReportID),
+		OrganizationID:   fromUUID(row.OrganizationID),
+		BenchmarkRunID:   fromUUID(row.BenchmarkRunID),
+		ReportArtifactID: fromUUID(row.ReportArtifactID),
+	}
+}

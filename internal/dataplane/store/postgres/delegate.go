@@ -510,3 +510,24 @@ func (s *Store) EnsureBenchmarkRun(ctx context.Context, organizationID uuid.UUID
 // its own and commit the ledger row apart from the Audit artifact it names,
 // which is the one thing the ledger exists to prevent. structure_test asserts
 // the absence, so a future delegate cannot be added by habit.
+
+// GetSuiteReport returns which artifact is a suite's report.
+func (s *Store) GetSuiteReport(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) (*store.SuiteReportClaim, error) {
+	return inTx(ctx, s, func(t *tx) (*store.SuiteReportClaim, error) {
+		return t.GetSuiteReport(ctx, organizationID, benchmarkRunID)
+	})
+}
+
+// ClaimSuiteReport records which artifact is a suite's report, idempotently.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ClaimSuiteReport(ctx context.Context, input store.ClaimSuiteReportInput) (store.Bootstrapped[store.SuiteReportClaim], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.SuiteReportClaim], error) {
+		outcome, txErr := t.ClaimSuiteReport(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.SuiteReportClaim]{}, err
+	}
+	return *result, nil
+}

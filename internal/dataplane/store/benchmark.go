@@ -113,6 +113,30 @@ type BenchmarkAttempt struct {
 	AuditArtifactID    uuid.UUID
 }
 
+// SuiteReportClaim is the record that one Management artifact IS a suite
+// run's report.
+//
+// It exists because "at most one report per suite" needed something to
+// enforce it. Assembly reads for an existing report and writes one when it
+// finds none, and those are two statements: two imports of one terminal
+// suite can both read nothing and both write. The uniqueness on
+// (organization, benchmark run) is the arbiter, per ADR 0027's rule that
+// shared state is serialized on a key matching the resource.
+type SuiteReportClaim struct {
+	ClaimedAt        time.Time
+	ClaimID          uuid.UUID
+	OrganizationID   uuid.UUID
+	BenchmarkRunID   uuid.UUID
+	ReportArtifactID uuid.UUID
+}
+
+// ClaimSuiteReportInput names the artifact a suite's report is.
+type ClaimSuiteReportInput struct {
+	OrganizationID   uuid.UUID
+	BenchmarkRunID   uuid.UUID
+	ReportArtifactID uuid.UUID
+}
+
 // BootstrapOrganizationInput provisions a tenant.
 type BootstrapOrganizationInput struct {
 	Slug        string
@@ -157,6 +181,11 @@ type BenchmarkReader interface {
 	GetBenchmarkRunBySuite(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (*BenchmarkRun, error)
 	GetBenchmarkAttempt(ctx context.Context, organizationID, benchmarkRunID uuid.UUID, runID string) (*BenchmarkAttempt, error)
 	ListBenchmarkAttempts(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) ([]BenchmarkAttempt, error)
+
+	// GetSuiteReport returns which artifact is the suite's report, or
+	// ErrNotFound when nothing has claimed it. Absence is the ordinary
+	// state of a suite imported while it was still running.
+	GetSuiteReport(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) (*SuiteReportClaim, error)
 }
 
 // BenchmarkWriter is the benchmark family's write surface.
@@ -177,6 +206,21 @@ type BenchmarkWriter interface {
 	// Idempotent by (organization, suite run id) and carrying nothing a
 	// second call would change, so re-import reads rather than writes.
 	EnsureBenchmarkRun(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (Bootstrapped[BenchmarkRun], error)
+
+	// ClaimSuiteReport records which artifact is a suite's report, and
+	// reports whether THIS caller was the one that recorded it.
+	//
+	// Created=false with no error means another importer got there first,
+	// and the returned claim is that importer's. The caller is then holding
+	// a draft report nobody will ever accept, and must withdraw it: two
+	// drafts for one suite are two claims about one conformance run, and
+	// both would be independently acceptable.
+	//
+	// It cannot join the transaction that creates the artifact, because
+	// AttachEvidence owns its own — so the artifact is written first and
+	// claimed second, and losing the claim is a compensating path rather
+	// than a rollback.
+	ClaimSuiteReport(ctx context.Context, input ClaimSuiteReportInput) (Bootstrapped[SuiteReportClaim], error)
 }
 
 // BenchmarkTxWriter is the part of the benchmark family that exists ONLY

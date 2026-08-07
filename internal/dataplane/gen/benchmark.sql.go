@@ -39,6 +39,30 @@ func (q *Queries) GetBenchmarkAttempt(ctx context.Context, arg GetBenchmarkAttem
 	return i, err
 }
 
+const getBenchmarkReport = `-- name: GetBenchmarkReport :one
+SELECT benchmark_report_id, organization_id, benchmark_run_id, report_artifact_id, claimed_at FROM benchmark_reports
+WHERE organization_id  = $1
+  AND benchmark_run_id = $2
+`
+
+type GetBenchmarkReportParams struct {
+	OrganizationID pgtype.UUID
+	BenchmarkRunID pgtype.UUID
+}
+
+func (q *Queries) GetBenchmarkReport(ctx context.Context, arg GetBenchmarkReportParams) (BenchmarkReport, error) {
+	row := q.db.QueryRow(ctx, getBenchmarkReport, arg.OrganizationID, arg.BenchmarkRunID)
+	var i BenchmarkReport
+	err := row.Scan(
+		&i.BenchmarkReportID,
+		&i.OrganizationID,
+		&i.BenchmarkRunID,
+		&i.ReportArtifactID,
+		&i.ClaimedAt,
+	)
+	return i, err
+}
+
 const getBenchmarkRun = `-- name: GetBenchmarkRun :one
 SELECT benchmark_run_id, organization_id, suite_run_id, first_imported_at FROM benchmark_runs
 WHERE benchmark_run_id = $1
@@ -114,6 +138,41 @@ func (q *Queries) InsertBenchmarkAttemptIfAbsent(ctx context.Context, arg Insert
 		arg.RunID,
 		arg.RecordDigest,
 		arg.AuditArtifactID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertBenchmarkReportIfAbsent = `-- name: InsertBenchmarkReportIfAbsent :execrows
+INSERT INTO benchmark_reports (benchmark_report_id, organization_id,
+                               benchmark_run_id, report_artifact_id)
+VALUES ($1, $2,
+        $3, $4)
+ON CONFLICT ON CONSTRAINT benchmark_reports_run_key DO NOTHING
+`
+
+type InsertBenchmarkReportIfAbsentParams struct {
+	BenchmarkReportID pgtype.UUID
+	OrganizationID    pgtype.UUID
+	BenchmarkRunID    pgtype.UUID
+	ReportArtifactID  pgtype.UUID
+}
+
+// The suite-report claim, born final like everything above it and inserted
+// the same way: the uniqueness on (organization, run) is the arbiter, so two
+// importers racing to report one terminal suite converge on one row rather
+// than one of them receiving a violation the seam would have to decode.
+//
+// The loser learns it lost from the row count, which is why this is
+// :execrows and not a bare insert.
+func (q *Queries) InsertBenchmarkReportIfAbsent(ctx context.Context, arg InsertBenchmarkReportIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertBenchmarkReportIfAbsent,
+		arg.BenchmarkReportID,
+		arg.OrganizationID,
+		arg.BenchmarkRunID,
+		arg.ReportArtifactID,
 	)
 	if err != nil {
 		return 0, err
