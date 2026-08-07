@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -114,8 +115,38 @@ func ReadSuite(dir, suiteRunID string) (*Suite, error) {
 	return suite, nil
 }
 
+// manifestSuffix is how a suite announces itself in the results store.
+const manifestSuffix = ".manifest.json"
+
+// ListSuites names every suite run the results store holds.
+//
+// The store's own layout is the index: there is no catalogue file, and
+// adding one would be a second thing to keep true. A name that is not a
+// well-formed suite id is skipped rather than refused — the store is a
+// directory an operator can put anything in, and one stray file should not
+// make every suite in it unimportable.
+func ListSuites(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read results store %s: %w", dir, err)
+	}
+	suites := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), manifestSuffix)
+		if name == entry.Name() || !suiteRunIDPattern.MatchString(name) {
+			continue
+		}
+		suites = append(suites, name)
+	}
+	sort.Strings(suites)
+	return suites, nil
+}
+
 func readManifest(dir, suiteRunID string) (*Manifest, error) {
-	path := filepath.Join(dir, suiteRunID+".manifest.json")
+	path := filepath.Join(dir, suiteRunID+manifestSuffix)
 	raw, err := os.ReadFile(path) //nolint:gosec // suiteRunID is pattern-checked above
 	if err != nil {
 		return nil, fmt.Errorf("read manifest %s: %w", path, err)

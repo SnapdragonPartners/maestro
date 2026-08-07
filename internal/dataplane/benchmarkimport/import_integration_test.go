@@ -125,7 +125,7 @@ func (p *plane) reopen(t *testing.T, entries map[registry.Type]registry.Entry) *
 // importFrom runs one import against the plane.
 func (p *plane) importFrom(t *testing.T, dir string) (*benchmarkimport.Result, error) {
 	t.Helper()
-	return benchmarkimport.New(p.store).Import(context.Background(), benchmarkimport.Options{
+	return benchmarkimport.New(p.store).Import(context.Background(), &benchmarkimport.Options{
 		OrganizationSlug: testOrgSlug,
 		OperatorHandle:   testOperator,
 		Dir:              dir,
@@ -473,7 +473,7 @@ func TestImporterPrincipalIsClosedWhenTheContextIsCancelled(t *testing.T) {
 	defer cancel()
 	p := newPlaneWith(t, cancellingRegistry(cancel))
 
-	_, err := benchmarkimport.New(p.store).Import(ctx, benchmarkimport.Options{
+	_, err := benchmarkimport.New(p.store).Import(ctx, &benchmarkimport.Options{
 		OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
 		Dir: dir, SuiteRunID: testSuiteRunID,
 	})
@@ -559,7 +559,7 @@ func TestConcurrentImportersWriteOneAttemptOnce(t *testing.T) {
 
 	go func() {
 		defer close(finished)
-		result, err := loser.Import(loserCtx, benchmarkimport.Options{
+		result, err := loser.Import(loserCtx, &benchmarkimport.Options{
 			OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
 			Dir: dir, SuiteRunID: testSuiteRunID,
 		})
@@ -1048,13 +1048,13 @@ func TestImportResolvesTenantsAndNeverCreatesThem(t *testing.T) {
 
 	for _, unknown := range []struct {
 		name    string
-		options benchmarkimport.Options
+		options *benchmarkimport.Options
 	}{
-		{"organization", benchmarkimport.Options{
+		{"organization", &benchmarkimport.Options{
 			OrganizationSlug: "no-such-org", OperatorHandle: testOperator,
 			Dir: dir, SuiteRunID: testSuiteRunID,
 		}},
-		{"operator", benchmarkimport.Options{
+		{"operator", &benchmarkimport.Options{
 			OrganizationSlug: testOrgSlug, OperatorHandle: "no-such-operator",
 			Dir: dir, SuiteRunID: testSuiteRunID,
 		}},
@@ -1290,6 +1290,71 @@ func copyTree(t *testing.T, from, to string) {
 		}
 		if err := os.WriteFile(target, body, 0o600); err != nil {
 			t.Fatalf("write %s: %v", target, err)
+		}
+	}
+}
+
+// runningSuite writes the same two attempts with a manifest that has not
+// stopped, so only the terminal import assembles a report.
+func runningSuite(t *testing.T, records []map[string]any) string {
+	t.Helper()
+	manifest := completedManifest(testSuiteRunID, records)
+	manifest["stop_reason"] = "running"
+	return writeSuite(t, testSuiteRunID, records, manifest)
+}
+
+// Truncation over a suite that has NO report still works.
+//
+// A suite imported while it was still running has no report, so nothing pins
+// its run records — and the ledger's own ON DELETE RESTRICT reference makes
+// each of them a row the delete cannot remove. Without a matching predicate
+// in the truncation query that is not a retained row, it is an ABORTED PASS:
+// the whole of audit retention stops working for that organization, on a
+// state the design deliberately supports.
+//
+// The regression is the ERROR, not the retention. A pass that reports the
+// records as retained is the fix; a pass that raises 23001 is the defect.
+func TestTruncationSurvivesASuiteThatHasNoReport(t *testing.T) {
+	p := newPlane(t)
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})}
+	result := p.mustImport(t, runningSuite(t, records))
+	if result.Report != nil {
+		t.Fatal("the running suite acquired a report; then nothing here is unpinned and the test " +
+			"would pass without exercising the defect")
+	}
+
+	truncated, err := p.store.TruncateAuditBefore(context.Background(),
+		p.organization.OrganizationID, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("truncation aborted over an unreported suite: %v", err)
+	}
+	audit := truncated.PerTable["audit_artifacts"]
+	if audit.Candidates == 0 {
+		t.Fatal("no Audit artifact was a candidate; the pass had nothing to trip over")
+	}
+	if audit.Deleted != 0 {
+		t.Errorf("truncation deleted %d Audit artifacts; a ledgered run record is referenced and "+
+			"must be retained", audit.Deleted)
+	}
+	if audit.RetainedReferenced != audit.Candidates {
+		t.Errorf("%d of %d candidates were reported as retained-referenced: an unpinned run record "+
+			"held by the ledger is retained for a reason the report has to name",
+			audit.RetainedReferenced, audit.Candidates)
+	}
+	if !audit.Reconciles() {
+		t.Errorf("the audit_artifacts buckets do not account for every candidate: %+v", audit)
+	}
+	// And the record is still readable, not merely counted.
+	ledger, err := p.store.ListBenchmarkAttempts(context.Background(),
+		p.organization.OrganizationID, result.BenchmarkRunID)
+	if err != nil {
+		t.Fatalf("list attempts: %v", err)
+	}
+	for index := range ledger {
+		if _, err := p.store.GetAuditArtifact(context.Background(),
+			p.organization.OrganizationID, ledger[index].AuditArtifactID); err != nil {
+			t.Errorf("the ledgered run record of %s is gone after truncation: %v",
+				ledger[index].RunID, err)
 		}
 	}
 }
