@@ -85,8 +85,8 @@ type AttemptOutcome struct {
 type Result struct {
 	// Report is what the import did about the suite report, and is nil for
 	// a suite that has not stopped. A DRAFT is the expected outcome:
-	// acceptance is a second explicit act by a different human, and item 9
-	// deliberately does not ship it.
+	// acceptance is a second explicit act by a principal that is not the
+	// author, and item 9 deliberately does not ship it.
 	Report   *ReportOutcome
 	Attempts []AttemptOutcome
 

@@ -112,10 +112,14 @@ const (
 	ReasonReviewerIsAuthor RejectionReason = "reviewer is the artifact's author"
 	// ReasonReviewerIsAuthorUser is separate from ReasonReviewerIsAuthor
 	// because the operator's response differs: "use a different instance" is
-	// wrong advice, and "find another human" is right. A principal instance
-	// is one lifetime, so the same human running a command twice has two of
-	// them -- and ADR 0020 puts the invariant on the PRINCIPAL: "even the
-	// human operator does not self-review".
+	// wrong advice, and "find a reviewer who is not this author" is right.
+	// A principal instance is one lifetime, so the same human running a
+	// command twice has two of them -- and ADR 0020 puts the invariant on
+	// the PRINCIPAL: "even the human operator does not self-review".
+	//
+	// That reviewer need not be a human. ADR 0020 requires a non-author
+	// AGENT OR HUMAN principal, so an agent may review a human's work; the
+	// invariant is non-authorship, not humanity.
 	ReasonReviewerIsAuthorUser RejectionReason = "reviewer is the same human as the artifact's author"
 	ReasonReviewerKind         RejectionReason = "reviewer is not an agent or human principal"
 	ReasonSupersedeTarget      RejectionReason = "superseding artifact does not name this artifact as its target"

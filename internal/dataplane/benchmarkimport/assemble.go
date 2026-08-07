@@ -94,9 +94,11 @@ type reportContext struct {
 //
 // A DRAFT, and that is the item's whole outcome: the report makes a claim,
 // the plane requires an author who could be reviewed, and acceptance is a
-// second explicit act by a DIFFERENT human. Shipping acceptance as an
-// automatic step here would have had to manufacture a reviewer, which is
-// the precise thing ADR 0020 exists to prevent (design D5).
+// second explicit act by a principal that is NOT THE AUTHOR — an agent or a
+// human, since ADR 0020's invariant is non-authorship rather than humanity.
+// Shipping acceptance as an automatic step here would have had to
+// manufacture a reviewer, which is the precise thing ADR 0020 exists to
+// prevent (design D5).
 //
 // The evidence rescan covers EVERY ledgered attempt, not only the ones this
 // import wrote. A partial import writes no attachments at all — they would

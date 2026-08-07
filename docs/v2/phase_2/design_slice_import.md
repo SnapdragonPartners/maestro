@@ -492,7 +492,10 @@ compare the identity the ADR names, not the row id:
 **Reject when the reviewer instance is the author instance, or when author and
 reviewer are both `human` principals with the same `user_id`.** A new rejection
 reason, `ReasonReviewerIsAuthorUser`, because the operator response differs —
-"use a different instance" is wrong advice and "find another human" is right.
+"use a different instance" is wrong advice and "find a reviewer who is not this
+author" is right. That reviewer need not be a human: ADR 0020 requires a
+non-author *agent or human* principal, so the invariant is non-authorship rather
+than humanity.
 
 Two boundaries drawn deliberately:
 
@@ -1133,9 +1136,12 @@ dataplanectl benchmark show   --org <slug> --suite <id>
 delivers a draft report with its complete pin set, which is the whole of what
 the exit criterion needs — the cross-store commit order exercised end to end,
 object write and digest reference and retention pin included. Acceptance needs a
-reviewer who is a different human, and the review invariant is worth more than
-a verb: shipping the command without anyone to run it would invite exactly the
-manufactured reviewer D5 argues against. `show` therefore prints
+reviewer who is not the author — an agent or a human, since ADR 0020's
+invariant is non-authorship rather than humanity — and the review invariant is
+worth more than a verb: shipping the command without anyone to run it would
+invite exactly the manufactured reviewer D5 argues against. The reviewer this
+report waits for is expected to be the `benchmark-evidence-reviewer` agent
+recorded against GitHub #282. `show` therefore prints
 `DRAFT — UNREVIEWED — NOT AUTHORITATIVE` above every unaccepted report, so a
 reader cannot mistake one for a finding. The reviewer role is recorded against
 GitHub #282 for after Phase 2.

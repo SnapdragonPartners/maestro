@@ -16,9 +16,14 @@ import (
 //
 // It is a constant, and it is in this package rather than in the command,
 // because it is a contract rather than formatting: item 9 ships assembly
-// and not acceptance, so every report it can produce is a draft that no
-// second human has reviewed. A draft is a legitimate outcome (design D5);
-// what would not be legitimate is a reader mistaking one for a finding.
+// and not acceptance, so every report it can produce is a draft nobody has
+// reviewed. A draft is a legitimate outcome (design D5); what would not be
+// legitimate is a reader mistaking one for a finding.
+//
+// "Nobody", not "no second human": ADR 0020 requires a reviewer who is a
+// non-author agent OR human principal, and the reviewer this report is
+// waiting for is expected to be an agent (GitHub #282). The invariant is
+// non-authorship, not humanity.
 const DraftBanner = "DRAFT — UNREVIEWED — NOT AUTHORITATIVE"
 
 // View is the plane's own account of one imported suite, read back through

@@ -1,6 +1,6 @@
 +++
 title = "Schema Table Inventory: ADR And Consumer"
-edit_date = "2026-08-04"
+edit_date = "2026-08-07"
 status = "live"
 summary = "Every table the Phase 2 schema creates, traced to the Accepted ADR that requires it and the Phase 2 item that consumes it — the checkable form of the reserved-by-name rule, plus the families deliberately not created and where they land instead."
 type = "inventory"
@@ -67,17 +67,18 @@ Twenty-three tables.
 
 ## Created by item 9
 
-The vertical slice's own two, plus the `scope_benchmark_run_id` column the
-`benchmark` artifact scope has been waiting for. They arrive together because
-neither is usable alone: the column has nothing to reference without the
+The vertical slice's own three, plus the `scope_benchmark_run_id` column the
+`benchmark` artifact scope has been waiting for. The first two arrive together
+because neither is usable alone: the column has nothing to reference without the
 table, and the table has no consumer without the import.
 
 | Table | Required by | Consumed by |
 | --- | --- | --- |
 | `benchmark_runs` | [0025](../../adr/0025-golden-stories-and-benchmark-runner.md) (golden runner records); [0021](../../adr/0021-artifacts-and-principal-instances.md) (the `benchmark` artifact scope) | Item 9: one row per **suite run**, and the entity every imported artifact scopes to; created once and never updated, which is what keeps re-import a no-op rather than a write |
 | `benchmark_attempts` | [0022](../../adr/0022-v2-data-plane.md) Phase 2 scope — the import is append-only and idempotent by stable run/attempt identity | Item 9: the import ledger, where the unique key over (organization, run, `run_id`) **is** the idempotency; written in the same transaction as the Audit artifact it names, since an artifact committed without its ledger row would be imported again |
+| `benchmark_reports` | [0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md) (shared state is serialized on a key matching the resource, never last-writer-wins); [0020](../../adr/0020-review-invariant-reviewer-vs-partner.md) (which is what makes a second authoritative report a defect rather than clutter) | Item 9: the claim that says WHICH Management artifact is a suite's report, unique over (organization, run). Read-then-write is two statements, so without it two terminal imports of one suite both write and the plane holds two independently acceptable accounts of one conformance run |
 
-Twenty-five tables, plus golang-migrate's own `schema_migrations`.
+Twenty-six tables, plus golang-migrate's own `schema_migrations`.
 
 ## Not created by item 3
 

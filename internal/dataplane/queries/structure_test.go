@@ -270,9 +270,13 @@ var completionSetColumns = map[string]bool{
 // An update statement against either would make a second import a write, and
 // the ledger row is the record that the first import happened -- rewriting it
 // is how a conflicting payload would come to overwrite a good one silently.
+// benchmark_reports is born final for the sharpest reason of the three: the
+// row IS the decision about which artifact is a suite's report, and a claim
+// that could be rewritten would let a second import retarget the claim to its
+// own draft -- which is the whole of what the uniqueness was added to stop.
 var bornFinalTables = []string{
 	"metric_events", "audit_events", "audit_artifacts",
-	"benchmark_runs", "benchmark_attempts",
+	"benchmark_runs", "benchmark_attempts", "benchmark_reports",
 }
 
 // namedTruncations maps each permitted DELETE to the ONE table it may

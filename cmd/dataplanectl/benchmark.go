@@ -274,7 +274,8 @@ func printReport(report *benchmarkimport.ViewReport) {
 		// out here, so the words a reader is warned with cannot drift from
 		// the rule that says they must be warned.
 		fmt.Printf("    %s\n", benchmarkimport.DraftBanner)
-		fmt.Printf("    no second human has reviewed this; acceptance is a separate act\n")
+		fmt.Printf("    nobody has reviewed this; acceptance is a separate act by a principal\n")
+		fmt.Printf("    that is not its author\n")
 	}
 	fmt.Printf("    holds %d pinned references:\n", len(report.Pins))
 	for index := range report.Pins {
