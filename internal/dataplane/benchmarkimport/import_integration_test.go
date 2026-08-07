@@ -1303,24 +1303,35 @@ func runningSuite(t *testing.T, records []map[string]any) string {
 	return writeSuite(t, testSuiteRunID, records, manifest)
 }
 
-// Truncation over a suite that has NO report still works.
+// Truncation over a suite that has NO report prunes it, ledger and all.
 //
 // A suite imported while it was still running has no report, so nothing pins
-// its run records — and the ledger's own ON DELETE RESTRICT reference makes
-// each of them a row the delete cannot remove. Without a matching predicate
-// in the truncation query that is not a retained row, it is an ABORTED PASS:
-// the whole of audit retention stops working for that organization, on a
-// state the design deliberately supports.
+// its run records. Two things have to be true of them, and only the first was
+// true at first: the pass must not ABORT (the ledger's reference used to be
+// ON DELETE RESTRICT with no matching predicate, so a 23001 stopped audit
+// retention for the whole tenant), and the record must actually be PRUNED
+// rather than retained forever.
 //
-// The regression is the ERROR, not the retention. A pass that reports the
-// records as retained is the fix; a pass that raises 23001 is the defect.
-func TestTruncationSurvivesASuiteThatHasNoReport(t *testing.T) {
+// The second is the one worth a test of its own. Fixing the abort by
+// excluding ledgered records from the pass made every imported run record
+// permanent: nothing deletes a ledger row, so nothing could ever delete what
+// it named, and retention silently stopped applying to anything that had been
+// imported. The ledger now follows the record it describes.
+func TestTruncationPrunesAnUnreportedSuiteAndItsLedger(t *testing.T) {
 	p := newPlane(t)
 	records := []map[string]any{recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})}
 	result := p.mustImport(t, runningSuite(t, records))
 	if result.Report != nil {
 		t.Fatal("the running suite acquired a report; then nothing here is unpinned and the test " +
 			"would pass without exercising the defect")
+	}
+	ledger, err := p.store.ListBenchmarkAttempts(context.Background(),
+		p.organization.OrganizationID, result.BenchmarkRunID)
+	if err != nil {
+		t.Fatalf("list attempts: %v", err)
+	}
+	if len(ledger) != 1 {
+		t.Fatalf("%d attempts were ledgered, want 1", len(ledger))
 	}
 
 	truncated, err := p.store.TruncateAuditBefore(context.Background(),
@@ -1330,31 +1341,30 @@ func TestTruncationSurvivesASuiteThatHasNoReport(t *testing.T) {
 	}
 	audit := truncated.PerTable["audit_artifacts"]
 	if audit.Candidates == 0 {
-		t.Fatal("no Audit artifact was a candidate; the pass had nothing to trip over")
+		t.Fatal("no Audit artifact was a candidate; the pass had nothing to act on")
 	}
-	if audit.Deleted != 0 {
-		t.Errorf("truncation deleted %d Audit artifacts; a ledgered run record is referenced and "+
-			"must be retained", audit.Deleted)
-	}
-	if audit.RetainedReferenced != audit.Candidates {
-		t.Errorf("%d of %d candidates were reported as retained-referenced: an unpinned run record "+
-			"held by the ledger is retained for a reason the report has to name",
-			audit.RetainedReferenced, audit.Candidates)
+	if audit.Deleted == 0 {
+		t.Errorf("truncation deleted nothing: an unpinned imported run record past the horizon is "+
+			"exactly what retention is for (%+v)", audit)
 	}
 	if !audit.Reconciles() {
 		t.Errorf("the audit_artifacts buckets do not account for every candidate: %+v", audit)
 	}
-	// And the record is still readable, not merely counted.
-	ledger, err := p.store.ListBenchmarkAttempts(context.Background(),
+
+	// The record is gone, and so is the ledger row that claimed it was
+	// imported. A surviving row would assert the presence of something
+	// pruned, and would make the next import a no-op that never restores it.
+	if _, err := p.store.GetAuditArtifact(context.Background(),
+		p.organization.OrganizationID, ledger[0].AuditArtifactID); err == nil {
+		t.Error("the unpinned run record survived truncation")
+	}
+	remaining, err := p.store.ListBenchmarkAttempts(context.Background(),
 		p.organization.OrganizationID, result.BenchmarkRunID)
 	if err != nil {
-		t.Fatalf("list attempts: %v", err)
+		t.Fatalf("list attempts after truncation: %v", err)
 	}
-	for index := range ledger {
-		if _, err := p.store.GetAuditArtifact(context.Background(),
-			p.organization.OrganizationID, ledger[index].AuditArtifactID); err != nil {
-			t.Errorf("the ledgered run record of %s is gone after truncation: %v",
-				ledger[index].RunID, err)
-		}
+	if len(remaining) != 0 {
+		t.Errorf("%d ledger rows survived the records they name; the next import would skip them "+
+			"and never restore what was pruned", len(remaining))
 	}
 }

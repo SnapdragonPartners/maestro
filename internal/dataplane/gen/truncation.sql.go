@@ -63,19 +63,7 @@ SELECT
     count(*) FILTER (WHERE EXISTS (
         SELECT 1 FROM retention_pins p
         WHERE p.pinned_audit_artifact_id = a.artifact_id
-          AND p.organization_id          = a.organization_id))::bigint AS retained_pinned,
-    -- Counted only when it is NOT also pinned, so the buckets stay disjoint
-    -- and Reconciles() holds: a pinned record of an imported attempt is both,
-    -- and counting it twice would make the totals describe more rows than
-    -- exist.
-    count(*) FILTER (WHERE NOT EXISTS (
-            SELECT 1 FROM retention_pins p
-            WHERE p.pinned_audit_artifact_id = a.artifact_id
-              AND p.organization_id          = a.organization_id)
-        AND EXISTS (
-            SELECT 1 FROM benchmark_attempts b
-            WHERE b.audit_artifact_id = a.artifact_id
-              AND b.organization_id   = a.organization_id))::bigint AS retained_referenced
+          AND p.organization_id          = a.organization_id))::bigint AS retained_pinned
 FROM audit_artifacts a
 WHERE a.organization_id = $1
   AND a.created_at      < $2
@@ -87,9 +75,8 @@ type CountAuditArtifactTruncationParams struct {
 }
 
 type CountAuditArtifactTruncationRow struct {
-	Candidates         int64
-	RetainedPinned     int64
-	RetainedReferenced int64
+	Candidates     int64
+	RetainedPinned int64
 }
 
 // --- audit artifacts: pinnable -----------------------------------------
@@ -103,19 +90,19 @@ type CountAuditArtifactTruncationRow struct {
 // The predicate is what turns that protection from an aborted batch into a
 // counted, reported outcome.
 //
-// benchmark_attempts.audit_artifact_id is the SECOND such reference, added by
-// item 9, and it needs its own predicate for exactly the same reason. Without
-// one, an imported run record that nothing pins is a candidate here, the
-// foreign key refuses the delete, and the whole pass aborts with a 23001 --
-// which is what happens to every organization holding a suite imported while
-// it was still running, since the report that pins its records does not exist
-// until the suite stops. The reference is reported as RETAINED_REFERENCED
-// rather than as retained_pinned: nothing pinned these, and calling it a pin
-// would say a retention decision was made that nobody made.
+// benchmark_attempts.audit_artifact_id is the SECOND reference to this table,
+// added by item 9, and it deliberately does NOT get a predicate of its own.
+// An earlier revision gave it one, which fixed the 23001 abort by making
+// every imported run record permanent -- the ledger is never deleted, so a
+// record it named could never be pruned, and Audit retention stopped applying
+// to anything that had ever been imported. That reference now CASCADES
+// (migration 000019): the ledger row follows the record it describes, and a
+// later import recreates both. A record a report pins is excluded by the
+// predicate above before any of that applies.
 func (q *Queries) CountAuditArtifactTruncation(ctx context.Context, arg CountAuditArtifactTruncationParams) (CountAuditArtifactTruncationRow, error) {
 	row := q.db.QueryRow(ctx, countAuditArtifactTruncation, arg.OrganizationID, arg.Before)
 	var i CountAuditArtifactTruncationRow
-	err := row.Scan(&i.Candidates, &i.RetainedPinned, &i.RetainedReferenced)
+	err := row.Scan(&i.Candidates, &i.RetainedPinned)
 	return i, err
 }
 
@@ -313,10 +300,6 @@ WHERE a.organization_id = $1
       SELECT 1 FROM retention_pins p
       WHERE p.pinned_audit_artifact_id = a.artifact_id
         AND p.organization_id          = a.organization_id)
-  AND NOT EXISTS (
-      SELECT 1 FROM benchmark_attempts b
-      WHERE b.audit_artifact_id = a.artifact_id
-        AND b.organization_id   = a.organization_id)
 `
 
 type TruncateAuditArtifactsParams struct {
