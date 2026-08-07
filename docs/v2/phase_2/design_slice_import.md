@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
-edit_date = "2026-08-06"
+edit_date = "2026-08-07"
 status = "draft"
 summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
@@ -624,6 +624,103 @@ This also simplifies the failure story: a partial import writes no objects at al
 so the unreferenced-attachment residue D6 describes can only arise from a failed
 *terminal* import, in one place, on one path.
 
+### D7a. A report's re-import check is over the attempts it covers, not its payload digest (amendment)
+
+*Proposed during implementation, 2026-08-06; found by building the report.*
+
+D7 says a suite that already has a report is "checked for payload-digest
+agreement and otherwise skipped, by the same rule as an attempt". **That check
+cannot be made.** The report payload names the attachment ROWS it pins — a pin
+targets a row and a digest cannot name one — and those identifiers are minted at
+assembly. A second assembly of an unchanged suite therefore produces different
+bytes, and a different digest, every time. Implemented as written, the ordinary
+re-import of a reported suite would have been a permanent conflict.
+
+This is D6a's rule arriving one layer up, exactly where D6a predicted it would:
+a payload used as an identity must contain only what the thing IS, and an
+attachment id is minted by the import rather than being a property of the suite.
+
+**The rule instead: an existing report is checked against the set of attempts it
+accounts for.** Agreement is a no-op; disagreement is `ErrReportStale`, naming
+the attempts on each side. What D7 was protecting is still protected by the
+identities the plane already keeps: an attempt's identity is its record digest,
+and D6 refuses any attempt re-offered with different bytes long before assembly
+runs, so by then the only thing that can disagree is WHICH attempts the report
+covers. That comparison is over values that do not change when the store moves,
+which is the property D6a requires of anything used as an identity.
+
+Two consequences worth stating:
+
+- **A stale report is refused, not amended.** An attempt imported after its
+  suite was reported leaves the report describing a suite that is no longer the
+  suite. The remedy is an amendment, which is acceptance's neighbour and is not
+  in this item; until then the import refuses rather than leaving a decayed
+  claim in place or writing a second report beside it.
+- **The ledger and the store must agree before a report is assembled at all.**
+  A ledgered attempt whose record is no longer in the JSONL means the file was
+  rewritten — the one thing D6 establishes never happens to an append-only file
+  — and a report assembled over it would sign a claim about records nobody can
+  read. That is `ErrLedgerDiverged`.
+
+### D7b. One report per suite is a constraint, not a convention (amendment)
+
+*Proposed during implementation, 2026-08-06; found by extending the item's own
+concurrency test to the report.*
+
+Assembly reads for an existing report and writes one when it finds none, and
+those are **two statements**. Two imports of the same terminal suite can both
+read nothing and both write, leaving two draft reports for one suite — each
+independently acceptable, each pinning its own copy of the evidence, and the
+second reviewer with no way to know they were accepting a duplicate. The plane
+would then hold two authoritative accounts of one conformance run, which is the
+state `SupersedeArtifact` exists to prevent for every other subject.
+
+ADR 0027's rule is that shared state is serialized on a key matching the
+resource. The key is the suite, so migration `000018` adds `benchmark_reports`:
+one row per `(organization, benchmark run)`, born final, naming the Management
+artifact that IS the report. The uniqueness is the arbiter, the same shape as
+the attempt ledger and for the same reason.
+
+The claim cannot join the transaction that creates the artifact — `AttachEvidence`
+owns its own, because the attachments are remote writes that must land before
+the rows referencing them — so the order is **write, then claim**, and losing is
+a compensating path rather than a rollback: the loser invalidates its own draft,
+which releases its pins in the same transition and leaves its attachments as the
+unreferenced residue the sweep already collects.
+
+The claim is also what `show` and the re-import check read. Scanning the scope
+for a Management artifact of the right type would sometimes answer with a
+withdrawn draft, which is explicitly not the suite's report.
+
+### D7c. The ledger's reference has to be a truncation predicate, not just a foreign key (amendment)
+
+*Proposed during implementation, 2026-08-06; found by a mutation run whose
+mutant died for the wrong reason.*
+
+`benchmark_attempts.audit_artifact_id` references `audit_artifacts` `ON DELETE
+RESTRICT`. Item 5's truncation query already states the principle for the other
+such reference — "retention_pins references audit_artifacts ON DELETE RESTRICT
+… the predicate is what turns that protection from an aborted batch into a
+counted, reported outcome" — and item 9 added a second reference without a
+second predicate.
+
+The consequence is not a retained row. It is an **aborted pass**: any
+organization holding an unpinned imported run record makes `TruncateAuditBefore`
+fail with SQLSTATE 23001, and audit retention stops working for that tenant
+entirely. Unpinned imported run records are not an edge case — they are every
+suite imported while it was still running, since the report that pins them does
+not exist until the suite stops.
+
+The fix is the missing predicate, in the count as `retained_referenced` and in
+the delete. Counted only when the row is not ALSO pinned, so the buckets stay
+disjoint and `Reconciles()` holds.
+
+**How it was found is the part worth keeping.** The truncation test was written
+to assert that a draft's pins hold, and a mutation that removed the report's
+run-record pins did kill it — with a foreign-key error, not with a missing
+record. A mutant that dies for the wrong reason proves nothing about the test,
+and in this case it was reporting a defect somewhere else entirely.
+
 ## D8. Evidence bytes are found by walking the store, not by trusting the record
 
 `EvidencePointer.Location` is an **absolute filesystem path recorded on the
@@ -1027,10 +1124,21 @@ typed.
 ## D11. Surface
 
 ```
+dataplanectl bootstrap        --org <slug> --user <handle>
 dataplanectl benchmark import --results <dir> --suite <id> --org <slug> --operator <handle>
-dataplanectl benchmark accept --report <artifact-id> --reviewer <handle> --rationale <text>
 dataplanectl benchmark show   --org <slug> --suite <id>
 ```
+
+**`accept` is deliberately not in item 9** (amendment, 2026-08-06). The item
+delivers a draft report with its complete pin set, which is the whole of what
+the exit criterion needs — the cross-store commit order exercised end to end,
+object write and digest reference and retention pin included. Acceptance needs a
+reviewer who is a different human, and the review invariant is worth more than
+a verb: shipping the command without anyone to run it would invite exactly the
+manufactured reviewer D5 argues against. `show` therefore prints
+`DRAFT — UNREVIEWED — NOT AUTHORITATIVE` above every unaccepted report, so a
+reader cannot mistake one for a finding. The reviewer role is recorded against
+GitHub #282 for after Phase 2.
 
 `--results` defaults to `benchmark/runs`, matching the runner's own default;
 `--suite` may be repeated or omitted to mean every suite the store lists. `show`
@@ -1042,8 +1150,17 @@ Make targets mirror the existing `dataplane-*` family:
 `make benchmark-import SUITE=<id>`, `make benchmark-show SUITE=<id>`.
 
 Code lands in `internal/dataplane/benchmarkimport/`: the reader (D1), the mapper
-(D3–D4), and the importer that drives the seam. The CLI verb is a thin shell over
-it, as the existing `dataplanectl` verbs are over `stack`.
+(D3–D4), the evidence walk (D8), report assembly (D5, D7) and the importer that
+drives the seam. The CLI verb is a thin shell over it, as the existing
+`dataplanectl` verbs are over `stack`.
+
+Reaching the plane needed one addition to `stack`: `OpenSeam`, because the root
+key, the DSN derived from it and the object bucket may not be assembled outside
+that package — `rootKeyFor` alone decides create-versus-load, and a structure
+test enforces it. It carries a `lifecycleUse` of its own, guarded like every
+other operation and deliberately NOT taking the lifecycle lock: using a running
+plane moves it between no states, an import can take minutes, and holding the
+exclusive lock for that long would block `down` behind ordinary traffic.
 
 ## Testing
 
