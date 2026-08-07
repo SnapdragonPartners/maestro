@@ -643,9 +643,21 @@ This is D6a's rule arriving one layer up, exactly where D6a predicted it would:
 a payload used as an identity must contain only what the thing IS, and an
 attachment id is minted by the import rather than being a property of the suite.
 
-**The rule instead: an existing report is checked against the set of attempts it
-accounts for.** Agreement is a no-op; disagreement is `ErrReportStale`, naming
-the attempts on each side. What D7 was protecting is still protected by the
+**The rule instead: an existing report is compared against the report the store
+would produce NOW, over a stable projection** — everything the payload claims,
+with only the minted attachment identifiers normalized away. Agreement is a
+no-op; disagreement is `ErrReportStale`.
+
+The first version of this amendment compared only the ATTEMPTS the report
+covered, and review was right that it was too little: the report quotes the
+terminal manifest, so a stop reason, budget account, cell status or timestamp
+could change while every attempt stayed identical, and the import would call
+that a no-op with the stored report describing a suite that was no longer the
+suite. The same held for an evidence file whose bytes changed under a pinned
+digest. The attempt-level diff survives only to say WHICH attempts moved: a
+projection digest can report that something changed, and an operator needs to
+know what. The cost is a rescan on the no-op path, since deciding whether
+anything changed means assembling the candidate. What D7 was protecting is still protected by the
 identities the plane already keeps: an attempt's identity is its record digest,
 and D6 refuses any attempt re-offered with different bytes long before assembly
 runs, so by then the only thing that can disagree is WHICH attempts the report
@@ -684,16 +696,31 @@ one row per `(organization, benchmark run)`, born final, naming the Management
 artifact that IS the report. The uniqueness is the arbiter, the same shape as
 the attempt ledger and for the same reason.
 
-The claim cannot join the transaction that creates the artifact — `AttachEvidence`
-owns its own, because the attachments are remote writes that must land before
-the rows referencing them — so the order is **write, then claim**, and losing is
-a compensating path rather than a rollback: the loser invalidates its own draft,
-which releases its pins in the same transition and leaves its attachments as the
-unreferenced residue the sweep already collects.
+**The claim is recorded BEFORE the artifact it names** (amended after review).
+The first version wrote the artifact and claimed it afterwards, because a
+foreign key required the referent to exist — which left a window with no owner:
+a death between the two commits leaves a live, fully pinned draft that no claim
+names, and the retry writes and claims a second one. A post-write unique row
+narrows that window; it does not close it.
+
+Reversing the order closes it. The importer preallocates the artifact's
+identifier, records the claim, and writes the artifact under that exact id. The
+only inconsistent state left — a claim whose artifact does not exist *yet* — is
+self-healing rather than ambiguous: the next import finds the claim, sees no
+artifact, and writes it under the id already claimed. There is never a second
+artifact to choose between, so there is nothing to withdraw.
+
+The cost is the foreign key, which cannot survive an intent recorded before its
+referent. That is the shape the object module already uses for destructive work
+— ADR 0022's deletion claim is a durable intent naming storage that may already
+be gone — and integrity moves to the seam, which checks *more* than the key did:
+the key constrained only the tenant, while the seam requires a
+`benchmark.suite_report` scoped to this run. The mirror rule, one suite per
+report, stays in the schema, and the seam translates its violation rather than
+handing a constraint name to somebody holding a suite id.
 
 The claim is also what `show` and the re-import check read. Scanning the scope
-for a Management artifact of the right type would sometimes answer with a
-withdrawn draft, which is explicitly not the suite's report.
+for a Management artifact of the right type would answer with whatever it found.
 
 ### D7c. The ledger's reference has to be a truncation predicate, not just a foreign key (amendment)
 
@@ -714,15 +741,64 @@ entirely. Unpinned imported run records are not an edge case — they are every
 suite imported while it was still running, since the report that pins them does
 not exist until the suite stops.
 
-The fix is the missing predicate, in the count as `retained_referenced` and in
-the delete. Counted only when the row is not ALSO pinned, so the buckets stay
-disjoint and `Reconciles()` holds.
+The first fix was the missing predicate, and review was right that it fixed the
+symptom in the wrong direction: excluding ledgered records from the pass made
+every imported run record **permanent**. Nothing deletes a ledger row, so
+nothing could ever delete the artifact it named; invalidating or archiving a
+report released its pins and not its records, and Audit retention stopped
+applying to anything that had ever been imported.
+
+**So the reference CASCADES** (migration `000019`). A ledger row is a claim that
+an attempt was imported, and when retention removes the artifact that claim
+describes a row which no longer exists — a tombstone that would make the next
+import a no-op restoring nothing. Truncation deletes an unpinned record past the
+horizon and takes its ledger row with it; a later import recreates both. A
+record a report pins is excluded before any of this applies.
+
+`retention_pins` keeps `ON DELETE RESTRICT`, and the asymmetry is the point: a
+pin is a live retention claim by an artifact that cites the evidence, while a
+ledger row is bookkeeping about an import and follows what it describes.
 
 **How it was found is the part worth keeping.** The truncation test was written
 to assert that a draft's pins hold, and a mutation that removed the report's
 run-record pins did kill it — with a foreign-key error, not with a missing
 record. A mutant that dies for the wrong reason proves nothing about the test,
 and in this case it was reporting a defect somewhere else entirely.
+
+### D7d. The report's quoted manifest is held to the suite's own rules (amendment)
+
+*Proposed during review, 2026-08-07.*
+
+The registered validator checked that the manifest named the right suite and had
+stopped, and nothing else about it. Unknown schema version, a stop reason
+nothing can interpret, a cell naming no story, a completed cell the report does
+not account for, an attempt the manifest never planned, or a manifest and a
+report naming different stories for one run: all of it could be written through
+the seam as a reviewed Management claim that contradicts itself.
+
+The reader already had these rules and could not enforce them here, because they
+lived on `Suite` over records read from disk — and a caller reaching the seam
+directly never passes the reader. They are now shared, expressed over the
+story/config pair both accounts duplicate, and run at both boundaries. Sharing
+them is what makes the two agree by construction rather than by two
+implementations happening to be written the same week.
+
+### D7e. The recorded absence is re-read at assembly (amendment)
+
+*Proposed during review, 2026-08-07.*
+
+`calls_unavailable` was carried from the import invocation's own outcomes, and
+an attempt ledgered by an EARLIER import short-circuits before the usage log is
+opened at all. So a surface-v1 attempt — or one whose evidence carries no usage
+log — imported while the suite was still running appeared in the terminal report
+as one whose calls had been read. That is the zero D9 exists to prevent arriving
+by a different route: an absence that disappears reads exactly like a
+measurement.
+
+Assembly re-reads every attempt's usage log, in the same pass that already
+rescans every attempt's evidence. What the rescan can and cannot know is stated
+beside it: it describes the store at report time, which for an append-only
+evidence tree beside an append-only record is the fact the import saw.
 
 ## D8. Evidence bytes are found by walking the store, not by trusting the record
 
@@ -1164,9 +1240,16 @@ Reaching the plane needed one addition to `stack`: `OpenSeam`, because the root
 key, the DSN derived from it and the object bucket may not be assembled outside
 that package — `rootKeyFor` alone decides create-versus-load, and a structure
 test enforces it. It carries a `lifecycleUse` of its own, guarded like every
-other operation and deliberately NOT taking the lifecycle lock: using a running
-plane moves it between no states, an import can take minutes, and holding the
-exclusive lock for that long would block `down` behind ordinary traffic.
+other operation, and it takes the lifecycle lock **shared**, holding it until
+the store is closed.
+
+Not exclusive, because ordinary use must overlap with itself. Not unlocked
+either, which is what the first version did on the argument that using a plane
+is not a lifecycle transition — true, and it does not follow. Not a transition
+means not exclusive; unlocked made the marker guard a TOCTOU, since a reset
+could take the exclusive lock immediately after the check read clean. `down`,
+`reset` and `restore` now wait for an open seam, which is the outcome ADR 0027
+asks for.
 
 ## Testing
 
