@@ -128,14 +128,14 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 	// prevent that — it is a separate statement — so the claim below decides
 	// which of them counts, and this one may still lose.
 
-	payload, bodies, scanned, err := report.build(ledger)
+	built, err := report.build(ledger)
 	// The bodies are closed whatever happens next, including the paths that
 	// never open one: a lazily-opened file is still a descriptor once
 	// AttachEvidence has read it, and a failure between here and there
 	// leaves them to the garbage collector otherwise.
 	defer func() {
-		for index := range bodies {
-			if closeErr := bodies[index].Close(); closeErr != nil {
+		for index := range built.bodies {
+			if closeErr := built.bodies[index].Close(); closeErr != nil {
 				err = errors.Join(err, closeErr)
 			}
 		}
@@ -150,7 +150,7 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 	// implementation of the extractor, and acceptance compares the two as
 	// sets — so the day they disagreed, a correct report would be refused
 	// and nothing would say why.
-	pins, err := pinsFor(payload)
+	pins, err := pinsFor(built.payload)
 	if err != nil {
 		return nil, err
 	}
@@ -160,18 +160,26 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 		return nil, err
 	}
 	defer func() {
-		if stopErr := i.stopPrincipal(ctx, report.organizationID, operator, "report assembled"); stopErr != nil {
+		// The reason distinguishes the two, for the same reason the
+		// importer's does: "stopped" alone makes a failed assembly
+		// indistinguishable from a complete one at exactly the moment
+		// someone is asking which it was.
+		reason := "report assembled"
+		if err != nil {
+			reason = "report assembly failed"
+		}
+		if stopErr := i.stopPrincipal(ctx, report.organizationID, operator, reason); stopErr != nil {
 			err = errors.Join(err, stopErr)
 		}
 	}()
 
 	written, err := i.store.AttachEvidence(ctx, store.AttachEvidenceInput{
 		Pins:        pins,
-		Attachments: report.attachmentInputs(scanned, bodies),
+		Attachments: built.attachments,
 		Artifact: store.CreateManagementArtifactInput{
 			Type:    TypeSuiteReport,
-			Summary: report.summary(scanned),
-			Payload: payload,
+			Summary: report.summary(built.scanned),
+			Payload: built.payload,
 			Scope: store.Scope{
 				Type: store.ScopeBenchmark,
 				ID:   report.benchmarkRunID,
@@ -192,7 +200,7 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 	return i.claimReport(ctx, report, written.Artifact.ArtifactID, ledger, &ReportOutcome{
 		ArtifactID:      written.Artifact.ArtifactID,
 		Attachments:     len(written.Attachments),
-		SkippedEvidence: scanned.skipped(),
+		SkippedEvidence: built.scanned.skipped(),
 		Created:         true,
 	})
 }
@@ -373,16 +381,27 @@ func (s suiteEvidence) skipped() int {
 	return total
 }
 
-// build produces the report payload, the bodies its attachments will be
-// read from, and the scan they came from.
+// assembled is everything one report needs before anything is written.
 //
-// Everything is assembled BEFORE anything is written, which is what lets
-// the attachment identifiers appear in the payload at all: a pin names a
-// row, the payload names the pins, and an id allocated during the write is
-// one nothing could have referenced.
-func (r *reportContext) build(ledger []store.BenchmarkAttempt) (
-	json.RawMessage, []*evidenceBody, suiteEvidence, error,
-) {
+// The attachment inputs are built in the SAME pass that mints their
+// identifiers and writes them into the payload, rather than by a second
+// walk that has to agree with the first about order. A parallel-array
+// pairing would be correct today and silently wrong the first time either
+// walk changed — and "silently wrong" here means one file's bytes stored
+// under another file's digest.
+type assembled struct {
+	payload     json.RawMessage
+	attachments []store.PutAttachmentInput
+	bodies      []*evidenceBody
+	scanned     suiteEvidence
+}
+
+// build produces everything the report needs, before anything is written.
+//
+// Assembled first, which is what lets the attachment identifiers appear in
+// the payload at all: a pin names a row, the payload names the pins, and an
+// id allocated during the write is one nothing could have referenced.
+func (r *reportContext) build(ledger []store.BenchmarkAttempt) (*assembled, error) {
 	records := make(map[string]*Record, len(r.suite.Records))
 	for index := range r.suite.Records {
 		records[r.suite.Records[index].RunID] = &r.suite.Records[index]
@@ -395,8 +414,7 @@ func (r *reportContext) build(ledger []store.BenchmarkAttempt) (
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].RunID < ordered[j].RunID })
 
 	unavailable := r.callsUnavailable()
-	scanned := make(suiteEvidence, 0, len(ordered))
-	bodies := make([]*evidenceBody, 0, len(ordered))
+	built := &assembled{scanned: make(suiteEvidence, 0, len(ordered))}
 	payload := SuiteReportPayload{
 		SuiteRunID: r.suite.Manifest.SuiteRunID,
 		Manifest:   r.suite.Manifest,
@@ -408,22 +426,29 @@ func (r *reportContext) build(ledger []store.BenchmarkAttempt) (
 		if !present {
 			// checkLedgerAgrees ran first and refuses exactly this, so
 			// reaching it means the two disagree about what they checked.
-			return nil, bodies, scanned, fmt.Errorf("%w: no record for ledgered attempt %s",
+			return built, fmt.Errorf("%w: no record for ledgered attempt %s",
 				ErrLedgerDiverged, attempt.RunID)
 		}
 		evidence, err := r.scanAttempt(attempt.RunID)
 		if err != nil {
-			return nil, bodies, scanned, err
+			return built, err
 		}
-		scanned = append(scanned, *evidence)
+		built.scanned = append(built.scanned, *evidence)
 		for fileIndex := range evidence.scan.Files {
+			file := &evidence.scan.Files[fileIndex]
 			// Back from the payload's slash-separated name to a path this
 			// platform can open. The two are deliberately different: the
 			// payload records what the file WAS, portably, and only the
 			// walk's own directory can say where it is.
-			bodies = append(bodies, &evidenceBody{
-				path: filepath.Join(evidence.dir,
-					filepath.FromSlash(evidence.scan.Files[fileIndex].Path)),
+			body := &evidenceBody{path: filepath.Join(evidence.dir, filepath.FromSlash(file.Path))}
+			built.bodies = append(built.bodies, body)
+			built.attachments = append(built.attachments, store.PutAttachmentInput{
+				Body:           body,
+				Digest:         file.Digest,
+				MediaType:      file.MediaType,
+				SizeBytes:      file.SizeBytes,
+				OrganizationID: r.organizationID,
+				AttachmentID:   evidence.attachmentID[fileIndex],
 			})
 		}
 		payload.Attempts = append(payload.Attempts, ReportAttempt{
@@ -442,9 +467,10 @@ func (r *reportContext) build(ledger []store.BenchmarkAttempt) (
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return nil, bodies, scanned, fmt.Errorf("encode suite report payload: %w", err)
+		return built, fmt.Errorf("encode suite report payload: %w", err)
 	}
-	return encoded, bodies, scanned, nil
+	built.payload = encoded
+	return built, nil
 }
 
 // scanAttempt walks one attempt's evidence and allocates an identifier for
@@ -534,29 +560,6 @@ func (r *reportContext) callsUnavailable() map[string]string {
 		}
 	}
 	return reasons
-}
-
-// attachmentInputs pairs every scanned file with the body it will be read
-// from, in the order build appended them.
-func (r *reportContext) attachmentInputs(scanned suiteEvidence, bodies []*evidenceBody) []store.PutAttachmentInput {
-	inputs := make([]store.PutAttachmentInput, 0, len(bodies))
-	position := 0
-	for index := range scanned {
-		evidence := &scanned[index]
-		for fileIndex := range evidence.scan.Files {
-			file := &evidence.scan.Files[fileIndex]
-			inputs = append(inputs, store.PutAttachmentInput{
-				Body:           bodies[position],
-				Digest:         file.Digest,
-				MediaType:      file.MediaType,
-				SizeBytes:      file.SizeBytes,
-				OrganizationID: r.organizationID,
-				AttachmentID:   evidence.attachmentID[fileIndex],
-			})
-			position++
-		}
-	}
-	return inputs
 }
 
 // summary is the one-line description stored beside the report.
