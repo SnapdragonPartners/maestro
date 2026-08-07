@@ -250,8 +250,9 @@ func (t *tx) truncateAuditArtifacts(ctx context.Context, result *store.Truncatio
 		return fmt.Errorf("truncate audit artifacts: %w", err)
 	}
 	return record(result, store.TableAuditArtifacts, store.TableTruncation{
-		Candidates:     counted.Candidates,
-		RetainedPinned: counted.RetainedPinned,
+		Candidates:         counted.Candidates,
+		RetainedPinned:     counted.RetainedPinned,
+		RetainedReferenced: counted.RetainedReferenced,
 	}, deleted)
 }
 

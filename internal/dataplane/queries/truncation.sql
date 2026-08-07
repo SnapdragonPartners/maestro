@@ -68,6 +68,16 @@ WHERE organization_id = @organization_id
 -- artifact is protected by the foreign key as well as by this predicate.
 -- The predicate is what turns that protection from an aborted batch into a
 -- counted, reported outcome.
+--
+-- benchmark_attempts.audit_artifact_id is the SECOND such reference, added by
+-- item 9, and it needs its own predicate for exactly the same reason. Without
+-- one, an imported run record that nothing pins is a candidate here, the
+-- foreign key refuses the delete, and the whole pass aborts with a 23001 --
+-- which is what happens to every organization holding a suite imported while
+-- it was still running, since the report that pins its records does not exist
+-- until the suite stops. The reference is reported as RETAINED_REFERENCED
+-- rather than as retained_pinned: nothing pinned these, and calling it a pin
+-- would say a retention decision was made that nobody made.
 
 -- name: CountAuditArtifactTruncation :one
 SELECT
@@ -75,7 +85,19 @@ SELECT
     count(*) FILTER (WHERE EXISTS (
         SELECT 1 FROM retention_pins p
         WHERE p.pinned_audit_artifact_id = a.artifact_id
-          AND p.organization_id          = a.organization_id))::bigint AS retained_pinned
+          AND p.organization_id          = a.organization_id))::bigint AS retained_pinned,
+    -- Counted only when it is NOT also pinned, so the buckets stay disjoint
+    -- and Reconciles() holds: a pinned record of an imported attempt is both,
+    -- and counting it twice would make the totals describe more rows than
+    -- exist.
+    count(*) FILTER (WHERE NOT EXISTS (
+            SELECT 1 FROM retention_pins p
+            WHERE p.pinned_audit_artifact_id = a.artifact_id
+              AND p.organization_id          = a.organization_id)
+        AND EXISTS (
+            SELECT 1 FROM benchmark_attempts b
+            WHERE b.audit_artifact_id = a.artifact_id
+              AND b.organization_id   = a.organization_id))::bigint AS retained_referenced
 FROM audit_artifacts a
 WHERE a.organization_id = @organization_id
   AND a.created_at      < @before;
@@ -87,7 +109,11 @@ WHERE a.organization_id = @organization_id
   AND NOT EXISTS (
       SELECT 1 FROM retention_pins p
       WHERE p.pinned_audit_artifact_id = a.artifact_id
-        AND p.organization_id          = a.organization_id);
+        AND p.organization_id          = a.organization_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM benchmark_attempts b
+      WHERE b.audit_artifact_id = a.artifact_id
+        AND b.organization_id   = a.organization_id);
 
 -- --- binary attachments: pinned rows are retained ----------------------
 --
