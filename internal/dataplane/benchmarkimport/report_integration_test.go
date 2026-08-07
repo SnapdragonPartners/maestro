@@ -815,6 +815,60 @@ func TestTheReportKeepsAnAbsenceTheTerminalImportNeverObserved(t *testing.T) {
 	}
 }
 
+// A terminal manifest that changed under a written report makes it stale,
+// even when every attempt is identical.
+//
+// This is the case the attempt-set comparison could not see. The report
+// quotes the manifest whole — the stop reason and the per-cell statuses are
+// the whole distinction between "this is what ran" and "this is what was
+// planned" — so a manifest that changed leaves the stored report describing
+// a suite that is no longer the suite, with nothing about the attempts to
+// give it away.
+func TestAChangedManifestMakesTheReportStale(t *testing.T) {
+	p := newPlane(t)
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+	if p.mustImport(t, dir).Report == nil {
+		t.Fatal("the first import produced no report")
+	}
+
+	// Same attempts, same records, same digests. Only the manifest moves:
+	// the suite is now reported as having stopped for a different reason.
+	manifest := completedManifest(testSuiteRunID, records)
+	manifest["stop_reason"] = "suite-budget-exhausted"
+	rewriteSuite(t, dir, records, manifest)
+
+	_, err := p.importFrom(t, dir)
+	if !errors.Is(err, benchmarkimport.ErrReportStale) {
+		t.Fatalf("re-import over a changed manifest returned %v, want ErrReportStale", err)
+	}
+	// And it says WHICH part moved, because a refusal that only reports
+	// "something changed" leaves the operator nothing to look at.
+	if !strings.Contains(err.Error(), "the attempts are unchanged") {
+		t.Errorf("the refusal does not say the attempts were not what moved: %v", err)
+	}
+}
+
+// So does an evidence file that changed under it.
+func TestChangedEvidenceMakesTheReportStale(t *testing.T) {
+	p := newPlane(t)
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})}
+	dir := writeSuite(t, testSuiteRunID, records, completedManifest(testSuiteRunID, records))
+	evidenceFor(t, dir, "story-a--config--r1--aaaa1111", map[string]string{"pr.json": `{"number":1}`})
+	if p.mustImport(t, dir).Report == nil {
+		t.Fatal("the first import produced no report")
+	}
+
+	// The bytes behind a pinned digest change. The report's claim about what
+	// it holds is now false, and no attempt moved.
+	evidenceFor(t, dir, "story-a--config--r1--aaaa1111", map[string]string{"pr.json": `{"number":2}`})
+
+	_, err := p.importFrom(t, dir)
+	if !errors.Is(err, benchmarkimport.ErrReportStale) {
+		t.Fatalf("re-import over changed evidence returned %v, want ErrReportStale", err)
+	}
+}
+
 // Reading one suite back out of the plane: the exit criterion's second half.
 func TestDescribeReadsTheSuiteBack(t *testing.T) {
 	p := newPlane(t)

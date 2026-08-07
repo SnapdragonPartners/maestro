@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"orchestrator/internal/dataplane/canonical"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -31,6 +32,9 @@ var ErrReportStale = errors.New("the suite's report no longer accounts for the a
 // which attempts moved.
 type ReportStale struct {
 	SuiteRunID string
+	// Detail names what moved when the attempt lists agree and the report
+	// still no longer describes the suite.
+	Detail string
 	// Unreported are ledgered attempts the report does not account for:
 	// evidence imported after the report was written. Missing are attempts
 	// the report accounts for that the ledger no longer holds at that
@@ -41,7 +45,10 @@ type ReportStale struct {
 }
 
 func (e *ReportStale) Error() string {
-	detail := make([]string, 0, 2)
+	detail := make([]string, 0, 3)
+	if e.Detail != "" {
+		detail = append(detail, e.Detail)
+	}
 	if len(e.Unreported) > 0 {
 		detail = append(detail, "not accounted for: "+strings.Join(e.Unreported, ", "))
 	}
@@ -114,21 +121,12 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 		return nil, ledgerErr
 	}
 
-	existing, err := i.findReport(ctx, report)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		if coverErr := checkReportCovers(existing, ledger, report.suite.Manifest.SuiteRunID); coverErr != nil {
-			return nil, coverErr
-		}
-		return &ReportOutcome{ArtifactID: existing.ArtifactID}, nil
-	}
-	// Past here this import intends to WRITE a report, and another import of
-	// the same terminal suite may be doing the same. The read above cannot
-	// prevent that — it is a separate statement — so the claim below decides
-	// which of them counts, and this one may still lose.
-
+	// The candidate is assembled BEFORE the existing report is looked up,
+	// because deciding whether a re-import is a no-op means comparing the
+	// report the store would produce NOW against the one already written.
+	// It costs a rescan on the no-op path — every evidence file is hashed —
+	// and that is the price of noticing that an evidence file changed. The
+	// caps bound it, and this is an operator command rather than a hot path.
 	built, err := report.build(ledger)
 	// The bodies are closed whatever happens next, including the paths that
 	// never open one: a lazily-opened file is still a descriptor once
@@ -144,6 +142,22 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 	if err != nil {
 		return nil, fmt.Errorf("assemble the report for suite %s: %w", report.suite.Manifest.SuiteRunID, err)
 	}
+
+	existing, err := i.findReport(ctx, report)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		if staleErr := checkReportStillDescribes(existing, built.payload,
+			report.suite.Manifest.SuiteRunID); staleErr != nil {
+			return nil, staleErr
+		}
+		return &ReportOutcome{ArtifactID: existing.ArtifactID}, nil
+	}
+	// Past here this import intends to WRITE a report, and another import of
+	// the same terminal suite may be doing the same. The read above cannot
+	// prevent that — it is a separate statement — so the claim below decides
+	// which of them counts, and this one may still lose.
 
 	// Derived from the SAME serialized payload the artifact will carry, by
 	// the SAME extractor acceptance will run. Building the pin set by
@@ -198,7 +212,7 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 	if err != nil {
 		return nil, fmt.Errorf("write suite report for %s: %w", report.suite.Manifest.SuiteRunID, err)
 	}
-	return i.claimReport(ctx, report, written.Artifact.ArtifactID, ledger, &ReportOutcome{
+	return i.claimReport(ctx, report, written.Artifact.ArtifactID, built.payload, &ReportOutcome{
 		ArtifactID:      written.Artifact.ArtifactID,
 		Attachments:     len(written.Attachments),
 		SkippedEvidence: built.scanned.skipped(),
@@ -222,7 +236,7 @@ func (i *Importer) assembleReport(ctx context.Context, report *reportContext) (o
 // object sweep already collects, and the same residue a failed import
 // leaves.
 func (i *Importer) claimReport(ctx context.Context, report *reportContext, artifactID uuid.UUID,
-	ledger []store.BenchmarkAttempt, outcome *ReportOutcome,
+	payload []byte, outcome *ReportOutcome,
 ) (*ReportOutcome, error) {
 	claim, err := i.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
 		OrganizationID:   report.organizationID,
@@ -253,8 +267,9 @@ func (i *Importer) claimReport(ctx context.Context, report *reportContext, artif
 		return nil, fmt.Errorf("read the report another import wrote for suite %s: %w",
 			report.suite.Manifest.SuiteRunID, err)
 	}
-	if coverErr := checkReportCovers(winner, ledger, report.suite.Manifest.SuiteRunID); coverErr != nil {
-		return nil, coverErr
+	if staleErr := checkReportStillDescribes(winner, payload,
+		report.suite.Manifest.SuiteRunID); staleErr != nil {
+		return nil, staleErr
 	}
 	return &ReportOutcome{ArtifactID: winner.ArtifactID}, nil
 }
@@ -309,39 +324,66 @@ func (r *reportContext) checkLedgerAgrees(ledger []store.BenchmarkAttempt) error
 	return nil
 }
 
-// checkReportCovers compares an existing report's account against the
-// ledger.
+// checkReportStillDescribes compares the report already written against the
+// one this import would write now.
 //
-// This is design D7's re-import rule, and NOT the payload-digest comparison
-// D7 states. That comparison cannot be made: the payload names the
-// attachment rows it pins, those identifiers are minted at assembly, and a
-// second assembly of an unchanged suite therefore produces a different
-// digest every time. D7 would have made the ordinary re-import of a
-// reported suite a permanent conflict.
+// This is design D7's re-import rule as amended twice. D7 asked for
+// "payload-digest agreement", which cannot be computed: the payload names
+// the attachment ROWS it pins, those identifiers are minted at assembly, and
+// a second assembly of an unchanged suite therefore digests differently
+// every time (D7a). The first fix compared only the ATTEMPTS the report
+// covered, and that was too little: the report also quotes the terminal
+// manifest, so a stop reason, budget account, cell status or timestamp could
+// change under a report that kept describing the old one, and the import
+// would call it a no-op.
 //
-// What it was protecting is still protected, by the identities the plane
-// already keeps. An attempt's identity is its record digest, and D6 has
-// already refused any attempt offered a second time with different bytes,
-// so by the time assembly runs, disagreement can only be about WHICH
-// attempts the report covers. That is what this compares — and it is a
-// comparison over values that do not change when the store is moved, which
-// is the property D6a required of anything used as an identity.
-func checkReportCovers(existing *store.ManagementArtifact, ledger []store.BenchmarkAttempt, suiteRunID string) error {
-	body, err := decodeSuiteReport(existing.Payload)
+// So the comparison is over a STABLE PROJECTION: everything the payload
+// claims, with only the minted attachment identifiers normalized away. The
+// run-record artifact ids stay in — those are the ledger's, and they do not
+// change when a suite is re-imported from a moved store, which is exactly
+// the property D6a requires of anything used as an identity.
+//
+// The attempt-level diff is still computed, and only to say WHICH attempts
+// moved. A digest can say that something changed; an operator needs to know
+// what.
+func checkReportStillDescribes(existing *store.ManagementArtifact, candidate []byte, suiteRunID string) error {
+	stored, err := stableProjection(existing.Payload)
 	if err != nil {
 		return fmt.Errorf("read the report already written for suite %s: %w", suiteRunID, err)
 	}
-	reported := make(map[string]string, len(body.Attempts))
-	for index := range body.Attempts {
-		reported[body.Attempts[index].RunID] = body.Attempts[index].RecordDigest
+	offered, err := stableProjection(candidate)
+	if err != nil {
+		return fmt.Errorf("project the report for suite %s: %w", suiteRunID, err)
+	}
+	if stored == offered {
+		return nil
+	}
+
+	return describeStaleness(existing, candidate, suiteRunID)
+}
+
+// describeStaleness says WHICH part of the report no longer describes the
+// suite, once the projections are known to differ.
+func describeStaleness(existing *store.ManagementArtifact, candidate []byte, suiteRunID string) error {
+	storedBody, err := decodeSuiteReport(existing.Payload)
+	if err != nil {
+		return fmt.Errorf("read the report already written for suite %s: %w", suiteRunID, err)
+	}
+	offeredBody, err := decodeSuiteReport(candidate)
+	if err != nil {
+		return fmt.Errorf("project the report for suite %s: %w", suiteRunID, err)
 	}
 
 	stale := &ReportStale{SuiteRunID: suiteRunID, ArtifactID: existing.ArtifactID}
-	for index := range ledger {
-		attempt := &ledger[index]
+	reported := make(map[string]string, len(storedBody.Attempts))
+	for index := range storedBody.Attempts {
+		reported[storedBody.Attempts[index].RunID] = storedBody.Attempts[index].RecordDigest
+	}
+	for index := range offeredBody.Attempts {
+		attempt := &offeredBody.Attempts[index]
 		digest, accounted := reported[attempt.RunID]
 		// The digest is compared as well as the run id. An attempt covered
-		// under one digest and ledgered under another is not a covered
+		// under one digest and offered under another is not a covered
 		// attempt: it is a different record wearing the same name, and the
 		// report's verdicts describe the one it was written from.
 		if !accounted || digest != attempt.RecordDigest {
@@ -353,12 +395,42 @@ func checkReportCovers(existing *store.ManagementArtifact, ledger []store.Benchm
 	for runID := range reported {
 		stale.Missing = append(stale.Missing, runID)
 	}
-	if len(stale.Unreported) == 0 && len(stale.Missing) == 0 {
-		return nil
-	}
 	sort.Strings(stale.Unreported)
 	sort.Strings(stale.Missing)
+
+	if len(stale.Unreported) == 0 && len(stale.Missing) == 0 {
+		// The attempts agree and the projection does not, so what moved is
+		// the manifest the report quotes or the evidence it describes. Named
+		// rather than left as "something changed": those are the two things
+		// a report claims besides its attempts, and an operator staring at a
+		// refusal needs to know which of them to look at.
+		stale.Detail = "the attempts are unchanged; the quoted manifest or the evidence they " +
+			"describe is not"
+	}
 	return stale
+}
+
+// stableProjection is the digest of everything a report claims, with the
+// minted attachment identifiers removed.
+func stableProjection(payload []byte) (string, error) {
+	body, err := decodeSuiteReport(payload)
+	if err != nil {
+		return "", err
+	}
+	for index := range body.Attempts {
+		evidence := body.Attempts[index].Evidence
+		for fileIndex := range evidence {
+			// The ONE field that varies without the suite varying. The
+			// digest beside it does not: it addresses the same bytes on
+			// every assembly, so a changed evidence file still shows up.
+			evidence[fileIndex].AttachmentID = ""
+		}
+	}
+	digest, err := canonical.Digest(body)
+	if err != nil {
+		return "", fmt.Errorf("digest the report projection: %w", err)
+	}
+	return digest, nil
 }
 
 // scannedEvidence is one attempt's evidence, resolved to the attachment ids
