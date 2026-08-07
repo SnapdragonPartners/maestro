@@ -765,6 +765,56 @@ func TestTruncationCannotRemoveWhatADraftReportHolds(t *testing.T) {
 	}
 }
 
+// A recorded absence survives the import that did not observe it.
+//
+// An attempt ledgered while the suite was still running short-circuits on
+// every later import: it is skipped for its artifact and call rows, which
+// are already correct. It contributes an empty outcome, so a report built
+// from THIS invocation's outcomes would say nothing about why that attempt
+// produced no calls — and "nothing" reads as "its calls were read", which
+// is the zero D9 exists to prevent arriving by a different route.
+func TestTheReportKeepsAnAbsenceTheTerminalImportNeverObserved(t *testing.T) {
+	p := newPlane(t)
+	first := recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})
+	dir := runningSuite(t, []map[string]any{first})
+	// Evidence, but no usage log: a real absence with a reason, and one that
+	// the partial import DOES observe.
+	evidenceFor(t, dir, "story-a--config--r1--aaaa1111", map[string]string{"pr.json": `{"number":1}`})
+
+	partial := p.mustImport(t, dir)
+	if len(partial.Attempts) != 1 || partial.Attempts[0].CallsUnavailable == "" {
+		t.Fatalf("the partial import did not record the absence: %+v", partial.Attempts)
+	}
+	observed := partial.Attempts[0].CallsUnavailable
+
+	// The suite finishes with a second attempt, so the terminal import has
+	// its own outcome to be distracted by.
+	second := recordWith(t, map[string]any{"run_id": "story-a--config--r2--bbbb2222"})
+	records := []map[string]any{first, second}
+	rewriteSuite(t, dir, records, completedManifest(testSuiteRunID, records))
+	evidenceFor(t, dir, "story-a--config--r2--bbbb2222", map[string]string{"pr.json": `{"number":2}`})
+
+	terminal := p.mustImport(t, dir)
+	if terminal.Attempts[0].Imported {
+		t.Fatal("the ledgered attempt was re-imported; then it never short-circuited and this test " +
+			"would pass without exercising the defect")
+	}
+
+	payload := reportPayload(t, p.reportOf(t, terminal.BenchmarkRunID))
+	for _, attempt := range payload.Attempts {
+		if attempt.CallsUnavailable == "" {
+			t.Errorf("attempt %s is reported as having had its calls read; neither attempt has a "+
+				"usage log, and an unrecorded absence reads exactly like a measurement", attempt.RunID)
+		}
+	}
+	for _, attempt := range payload.Attempts {
+		if attempt.RunID == "story-a--config--r1--aaaa1111" && attempt.CallsUnavailable != observed {
+			t.Errorf("the ledgered attempt is reported as %q, and the import that actually read the "+
+				"store said %q", attempt.CallsUnavailable, observed)
+		}
+	}
+}
+
 // Reading one suite back out of the plane: the exit criterion's second half.
 func TestDescribeReadsTheSuiteBack(t *testing.T) {
 	p := newPlane(t)

@@ -81,7 +81,6 @@ type ReportOutcome struct {
 // reportContext carries what assembly needs.
 type reportContext struct {
 	suite          *Suite
-	outcomes       []AttemptOutcome
 	caps           Caps
 	organizationID uuid.UUID
 	userID         uuid.UUID
@@ -415,7 +414,6 @@ func (r *reportContext) build(ledger []store.BenchmarkAttempt) (*assembled, erro
 	copy(ordered, ledger)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].RunID < ordered[j].RunID })
 
-	unavailable := r.callsUnavailable()
 	built := &assembled{scanned: make(suiteEvidence, 0, len(ordered))}
 	payload := SuiteReportPayload{
 		SuiteRunID: r.suite.Manifest.SuiteRunID,
@@ -463,7 +461,7 @@ func (r *reportContext) build(ledger []store.BenchmarkAttempt) (*assembled, erro
 			RunRecordArtifactID: attempt.AuditArtifactID.String(),
 			Evidence:            evidence.reported(),
 			SkippedEvidence:     evidence.reportedSkips(),
-			CallsUnavailable:    unavailable[attempt.RunID],
+			CallsUnavailable:    r.callsUnavailable(attempt.RunID),
 		})
 	}
 
@@ -545,23 +543,33 @@ func (e *scannedEvidence) reportedSkips() []ReportSkip {
 	return skips
 }
 
-// callsUnavailable indexes the recorded absences this import observed.
+// callsUnavailable re-reads one attempt's usage log at ASSEMBLY time and
+// reports why it yields no calls, or "" when it does.
 //
-// Only this import's, and that is a real limit worth stating: an attempt
-// ledgered by an EARLIER import carries its absence on that import's tool
-// call and outcome, not in the plane, so a report assembled later cannot
-// recover it. What the report says is therefore "this import could not read
-// calls for these attempts", which is true, rather than a claim about every
-// attempt that never got any.
-func (r *reportContext) callsUnavailable() map[string]string {
-	reasons := make(map[string]string, len(r.outcomes))
-	for index := range r.outcomes {
-		outcome := &r.outcomes[index]
-		if outcome.CallsUnavailable != "" {
-			reasons[outcome.RunID] = outcome.CallsUnavailable
-		}
+// Re-read rather than carried over from this invocation's outcomes, which is
+// what the first version did and which quietly lost the fact. An attempt
+// ledgered by an EARLIER import short-circuits before the usage log is
+// opened at all, so it contributes an empty outcome -- and a surface-v1
+// attempt imported while the suite was still running would therefore appear
+// in the terminal report as one whose calls were read. A recorded absence
+// that disappears is worse than one that was never recorded: it is the zero
+// D9 exists to prevent, arriving by a different route.
+//
+// What the rescan can and cannot know, stated rather than implied: it
+// describes the STORE as it stands at report time. For an append-only
+// evidence tree beside an append-only record that is the same fact the
+// import saw, and the cases that matter -- a surface-v1 suite, a log that
+// was never written, an attempt with no evidence directory -- do not change
+// with time. A log that has since become unreadable is reported as an
+// absence with the failure named, rather than failing the whole report: by
+// then the attempt's calls are either in the plane or they are not, and
+// refusing to describe the suite would not put them there.
+func (r *reportContext) callsUnavailable(runID string) string {
+	usage, err := r.suite.ReadUsageLog(runID)
+	if err != nil {
+		return "the usage log could not be read: " + err.Error()
 	}
-	return reasons
+	return usage.Reason
 }
 
 // summary is the one-line description stored beside the report.

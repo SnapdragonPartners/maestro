@@ -204,7 +204,6 @@ func (i *Importer) Import(ctx context.Context, options *Options) (result *Result
 	}
 	report, err := i.assembleReport(ctx, &reportContext{
 		suite:          suite,
-		outcomes:       result.Attempts,
 		caps:           options.Caps,
 		organizationID: organization.OrganizationID,
 		userID:         operator.UserID,
