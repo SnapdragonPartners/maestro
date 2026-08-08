@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-07-30"
+edit_date = "2026-08-08"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -831,6 +831,8 @@ Exit criteria:
 
 ### Phase 2: Data Plane And Artifact Core
 
+**Status: closed 2026-08-08** ([plan](phase_2/plan_scope.md), now `archive`; [exit record](phase_2/notes_exit-record.md)). All three roadmap exit criteria below are met, and so is every obligation ADR 0022 added. **One criterion from the phase plan is not: the phase-end `golden-all` regression run, overridden by DR.** `claude-opus-4-1` reached its scheduled retirement mid-phase and repairing the architect seat surfaced [#316](https://github.com/SnapdragonPartners/maestro/issues/316) and [#317](https://github.com/SnapdragonPartners/maestro/issues/317), which together leave no viable architect model. **Phase 3 inherits that regression obligation** — see the measuring-instrument note in Phase 3 below.
+
 Goal: establish the v2 persistence model.
 
 Outputs:
@@ -870,6 +872,10 @@ Outputs:
 V1 retirement belongs here rather than to a phase or a standing cleanup track of its own, because this is the phase that replaces the runtime and `cmd/maestro`. Leaving v1 beside its replacement creates two competing factory paths, and a cleanup track with no phase to force it has no completion condition — which is how the port inventory's `drop` dispositions came to be unscheduled in the first place ([issue #298](https://github.com/SnapdragonPartners/maestro/issues/298)). The Phase 2 plan already anticipates this: `pkg/persistence` is deleted rather than edited "during Phase 3's Orchestrator rework".
 
 **The measuring instrument has to survive the transition, and that is not optional.** The benchmark target is v1-as-patched, so removing the v1 factory path removes the only target the runner can currently drive — and ADR 0025's cadence table requires `golden-all` at N = 1 against `paired-default` at the end of **every phase from Phase 2 onward**, which `process_build.md` states as a working agreement. A phase that deleted v1 without a v2 adapter in place could not meet its own phase-end cadence, which this roadmap has no authority to suspend.
+
+**It did not survive Phase 2, and Phase 3 inherits the debt.** The instrument is currently **unable to run at all**: `claude-opus-4-1` retired on schedule on 2026-08-05, and the two defects found while repairing the architect seat — [#316](https://github.com/SnapdragonPartners/maestro/issues/316) (v1 forces a non-nil `temperature`, so every model that now rejects sampling parameters is undrivable) and [#317](https://github.com/SnapdragonPartners/maestro/issues/317) (the approval loop cannot force its terminal tool and deadlocks into `ESCALATED`) — leave the viable architect set empty. Phase 3 therefore owes **two** runs, not one: Phase 2's carried-forward regression run and its own phase-end run. Both are blocked until #316 and #317 are fixed, which makes them early Phase 3 work rather than phase-end work.
+
+Two durable lessons belong here rather than in a closed phase record. **A benchmark pinned to third-party model IDs inherits their retirement calendars**, and nothing in the harness warned that its architect model had a published end-of-life date; the conformance log records the model per run but no one checks it forward. And **the pairing should be cross-vendor** — the architect reviewing the coder should not be the same model family that produced the work. `paired-local` already pairs across families; `paired-default` had quietly drifted to Anthropic reviewing Anthropic, and #317 is what currently prevents moving it back.
 
 The two halves are sequenced separately and the order is the point. The **adapter** comes before the deletion, so removing v1 never strands the runner. The **conformance run** comes after it, because a run performed while v1 is still present measures a tree that the deletion then changes — it would attest to something other than what Phase 3 ships. Relaxing any of this is an amendment to ADR 0025 and `process_build.md`, not a decision available here.
 

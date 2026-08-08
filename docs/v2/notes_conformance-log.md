@@ -1,6 +1,6 @@
 +++
 title = "Conformance Run Log"
-edit_date = "2026-07-23"
+edit_date = "2026-08-08"
 status = "live"
 type = "notes"
 summary = "The committed, distilled record of every phase-end golden-story conformance run: date, target identity, per-story verdict, and cost/token totals. The durable counterpart to the git-ignored raw results store — interim until the Phase 2 data plane makes performance records first-class artifacts."
@@ -150,3 +150,33 @@ Total **$26.40**. Every attempt was healthy — no fatal shutdown or abandonment
 **Cost note (recorded, not smoothed):** `bugfix-openai-stopreason` ran ~2× its earlier single point ($13.41 / 1.55M vs $7.06 / 727k) — well within its 2.5M / $24 cap; an N=1 conformance point, so nondeterminism shows as a bare value rather than a distribution.
 
 *Phase 1 exit review pending on this run; the v2-derived baseline and two-configuration comparison remain Phase 1B.*
+
+### 2026-08-08 — Phase 2 exit: `golden-all` **not run** (DR override); partial run recorded
+
+**No phase-end `golden-all` run exists for Phase 2.** DR explicitly overrode it after the instrument was found broken by causes outside this phase's work. This row exists because the log's purpose is to make an absent proof visible rather than silent — the override is recorded here as the reason, not as a gap to be discovered later.
+
+**What broke it.** `claude-opus-4-1`, the architect model in `paired-default` for every prior run in this log, reached its **scheduled retirement on 2026-08-05** and now returns `404 not_found_error`. The first attempt at the phase-exit run died in ~8s per story at the architect's first LLM call, both stories `target-error`, **$0.00 spent** — no model, no run. This is a provider calendar event, not a Phase 2 regression: nothing in Phase 2 touched the agent path.
+
+**What was attempted.** The architect seat was moved to `gpt-4.1`, which also restores the cross-vendor pairing intent (`paired-local` already pairs across families; `paired-default` had drifted to Anthropic reviewing Anthropic). That run was stopped after one story. Two v1 defects, both **Phase 3 work** and both filed:
+
+- **[#316](https://github.com/SnapdragonPartners/maestro/issues/316)** — v1 sends a non-nil `temperature` on every call, so every model that now rejects sampling parameters is undrivable. Verified: `claude-opus-5`, `gpt-5` and `o4-mini` all return 400 at the architect's 0.65.
+- **[#317](https://github.com/SnapdragonPartners/maestro/issues/317)** — the architect's code-approval loop cannot force its terminal tool. `gpt-4.1` called `review_complete` zero times there, hit the hard limit at 16 iterations, and deadlocked into `ESCALATED`, which no headless run can answer; the coder then requeued on its 5-minute timeout and billed tokens in a loop.
+
+Between them the viable architect set is currently empty, which is why the suite was overridden rather than re-run on another model.
+
+**The one clean attempt.** Recorded because it is real data on a real identity, and it is the only evidence available that the agent path still functions.
+
+Target descriptor: adapter `v1-as-patched` **0.2.0**; commit `6dfeabe6d167`; binary `sha256:96b34e9965a8…` (`maestro dev`); enforcement **streamed**; usage-surface **v2**; config `paired-default` **`sha256:cdc1490b5cc3`**; MPH model routing architect **`gpt-4.1`**, coder/PM `claude-sonnet-4-6`; prompt pack `v1-embedded`, prompt hash `sha256:410ab96e5627…`, harness hash `sha256:6cfd2372be07…`.
+
+| Story | Story hash | Verdict | Tokens | Cost | Wall | Calls |
+|---|---|---|---|---|---|---|
+| `dep-bump-xnet` | `sha256:6b5141b820bb` | accepted | 670,129 | $1.77 | 281s | 63 |
+| `smoke-comment` | `sha256:75495b46c1a2` | **failed / target-error** | — | — | — | — | 
+
+Suite total **$2.72** (plus $0.00 for the retired-model attempt). Per-model split, read back out of the data plane after import: `claude-sonnet-4-6` 36 calls / 348,830 tokens / $1.1174; `gpt-4.1` 27 calls / 321,299 tokens / $0.6543.
+
+**This is not a comparable series point.** `config_hash` moved `3d999b22fbbb` → `cdc1490b5cc3` and the adapter moved 0.1.0 → 0.2.0, so this is a new identity group by the [Run Protocol](../../benchmark/README.md)'s own rule. It is one attempt, on one rung, at N=1.
+
+**What it does and does not show.** It shows the agent path still completes a rung-2 story end to end — every validator and check passed, and the pipeline produced an accepted result. It does **not** discharge Phase 2's regression obligation: five of six stories never ran, so an unexplained regression in the other rungs would not have been caught. That obligation is carried forward, not met. Recorded honestly here rather than credited.
+
+**A cost observation worth keeping.** `dep-bump-xnet` cost **$1.77 against Phase 1a's $2.07** while using **roughly double the tokens** (670k vs 331k) and 50% more LLM calls (63 vs 42). The GPT architect runs materially more review rounds; it is cheaper only because its per-token rate is far below the retired Opus 4.1's $15/$75. Token-based budget headroom therefore matters more than dollar headroom under this pairing — a distinction that did not apply to any earlier row.

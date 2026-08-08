@@ -182,6 +182,17 @@ var KnownModels = map[string]ModelInfo{
 		MaxContextTokens: 128000,
 		MaxOutputTokens:  4096,
 	},
+	// Pricing and limits verified against developers.openai.com 2026-08-08.
+	// Registered because an unlisted model falls through to the zero-cost
+	// default below, which reports $0 spend and silently disables budget
+	// enforcement — see GetModelInfo.
+	"gpt-4.1": {
+		Provider:         ProviderOpenAI,
+		InputCPM:         2.0,
+		OutputCPM:        8.0,
+		MaxContextTokens: 1047576,
+		MaxOutputTokens:  32768,
+	},
 
 	// OpenAI o3 models
 	"o3-mini": {

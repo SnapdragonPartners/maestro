@@ -1,14 +1,16 @@
 +++
 title = "Maestro v2 Phase 2: Scope And Plan"
-edit_date = "2026-08-01"
-status = "live"
+edit_date = "2026-08-08"
+status = "archive"
 summary = "Approved Phase 2 scope and execution plan: implement ADR 0022's Postgres/MinIO data plane, typed persistence, object module, cold backup, and a vertical slice importing golden runner records into the main database as benchmark-scoped artifacts through an append-only, idempotent path, while the runner keeps its self-contained store. Eleven serial items open with the blocking artifact-envelopes ADR."
 type = "plan"
 +++
 
 # Phase 2: Data Plane And Artifact Core — Scope And Plan
 
-Status: **live** — Approved by Codex and DR, 2026-07-24, after one review round (the results-sink-versus-import question, resolved below); amended 2026-08-01 (Codex and DR) (item 8's writer-set mechanism: the safety properties the original wording bought are delivered structurally by whole-root copy and project-wide quiesce, so the enumeration narrows to a conformance-tested registry and a whole-root freshness rule). It flips to `archive` at phase close. (Phase 1's plan was merged still `draft` and needed a follow-up flip PR; this document is flipped before its own merge to avoid repeating that.)
+Status: **archive** — closed at phase exit (item 10), 2026-08-08. Approved by Codex and DR, 2026-07-24, after one review round (the results-sink-versus-import question, resolved below); amended 2026-08-01 (Codex and DR) (item 8's writer-set mechanism: the safety properties the original wording bought are delivered structurally by whole-root copy and project-wide quiesce, so the enumeration narrows to a conformance-tested registry and a whole-root freshness rule). Flipped before its own merge, since Phase 1's plan merged still `draft` and needed a follow-up flip PR.
+
+**Eleven of twelve exit criteria are met. One is not:** the phase-end `golden-all` regression run, overridden by DR on 2026-08-08 and carried into Phase 3. It is left unchecked below rather than reworded, so the gap stays visible. The closing record is [`notes_exit-record.md`](notes_exit-record.md); this document carries no authority from here on.
 
 Goal (from the [roadmap](../plan_roadmap.md)): establish the v2 persistence model.
 
@@ -89,24 +91,26 @@ The roadmap's Phase 2 exit criteria, plus the obligations ADR 0022's "Phase 2 sc
 
 ### From the roadmap
 
-- [ ] Postgres, migrations, and typed queries build and run locally via Docker with **one command from a clean checkout**.
-- [ ] Core schema migrations apply from empty, and artifact, principal-instance (the roadmap's "agent instance", generalized by ADR 0021), and LLM/tool-call writes have typed queries with tests.
-- [ ] One vertical slice writes real data: golden story runner results can be imported into the data plane and queried — and, beyond the roadmap's wording, re-importing the same records is a no-op rather than a duplicate or an overwrite.
+- [x] Postgres, migrations, and typed queries build and run locally via Docker with **one command from a clean checkout**. *(Item 2; `make dataplane-up` composes, health-gates and migrates, proven on native-Linux CI from cold.)*
+- [x] Core schema migrations apply from empty, and artifact, principal-instance (the roadmap's "agent instance", generalized by ADR 0021), and LLM/tool-call writes have typed queries with tests. *(Items 3–5; 19 tables applying from empty, artifact/review/principal families in item 4, call family in item 5.)*
+- [x] One vertical slice writes real data: golden story runner results can be imported into the data plane and queried — and, beyond the roadmap's wording, re-importing the same records is a no-op rather than a duplicate or an overwrite. *(Item 9; re-exercised end to end at phase exit on freshly-produced records — see the exit record.)*
 
 ### From ADR 0022's Phase 2 scope
 
-- [ ] MinIO is composed alongside Postgres, both bind-mounted under the Maestro data root; the **local durability invariant** is demonstrated — containers recreated and the Docker daemon restarted, data intact.
-- [ ] Typed queries with tests cover the **configuration and secrets** families, including the key-file root of trust.
-- [ ] The **cold-backup operation** exists, is tested, and its documented restore path is validated.
-- [ ] The **object module** with its S3-compatible adapter is implemented behind Maestro's narrow interface.
-- [ ] The vertical slice includes at least one object write with digest reference and retention pin, **exercising the cross-store commit-order invariant**.
+- [x] MinIO is composed alongside Postgres, both bind-mounted under the Maestro data root; the **local durability invariant** is demonstrated — containers recreated and the Docker daemon restarted, data intact. *(Demonstrated 2026-07-27 with digest-verified sentinels, not asserted; evidence in the exit record.)*
+- [x] Typed queries with tests cover the **configuration and secrets** families, including the key-file root of trust. *(Item 7.)*
+- [x] The **cold-backup operation** exists, is tested, and its documented restore path is validated. *(Item 8, including new-key recovery — ADR 0022's second restore branch — exercised in native-Linux CI.)*
+- [x] The **object module** with its S3-compatible adapter is implemented behind Maestro's narrow interface. *(Item 6.)*
+- [x] The vertical slice includes at least one object write with digest reference and retention pin, **exercising the cross-store commit-order invariant**. *(Item 9.)*
 
 ### From this plan
 
-- [ ] The **artifact envelopes ADR is Accepted** (backlog candidate 1) before any DDL merges, and the backlog entry is moved to Resolved.
-- [ ] Every table in the Phase 2 migrations traces to an Accepted ADR **and** a Phase 2 consumer, or carries a written justification for the exception.
+- [x] The **artifact envelopes ADR is Accepted** (backlog candidate 1) before any DDL merges, and the backlog entry is moved to Resolved. *(ADR 0028, item 1, merged before item 3's first migration.)*
+- [x] Every table in the Phase 2 migrations traces to an Accepted ADR **and** a Phase 2 consumer, or carries a written justification for the exception. *(The [table inventory](inventory_schema-tables.md) is the checkable form.)*
 - [ ] **The measuring instrument is intact**: the phase-end `golden-all` run executes against the v1-as-patched target, lands in the runner's self-contained store, is imported into the main Postgres plane through item 9's path, and is distilled into the conformance log. This is a regression test — any unexplained loss of previously demonstrated behavior is exit-blocking. It is not a progress test; the vertical slice supplies that evidence.
-- [ ] ADR needs discovered in-phase are filed in the backlog, and the Phase 3-blocking entries (amendment vs running work, tool execution policy hook, prompt pack identity) are confirmed still-open or resolved.
+
+  **⚠️ NOT MET — overridden by DR, 2026-08-08, and carried into Phase 3.** Left unchecked deliberately: this phase holds no regression evidence for five of the six rungs. Phase 2's own mitigations held and nothing in this phase's work touched the agent path; the instrument was broken from outside it, by `claude-opus-4-1` reaching its **scheduled retirement on 2026-08-05**. Repairing the seat then surfaced two v1 defects that leave the viable architect set empty — [#316](https://github.com/SnapdragonPartners/maestro/issues/316) (sampling parameters forced non-nil) and [#317](https://github.com/SnapdragonPartners/maestro/issues/317) (approval loop cannot force its terminal tool, deadlocking into `ESCALATED`). One rung-2 story ran and was accepted; that is the whole of the evidence. Full record: the [conformance log](../notes_conformance-log.md) and the [exit record](notes_exit-record.md).
+- [x] ADR needs discovered in-phase are filed in the backlog, and the Phase 3-blocking entries (amendment vs running work, tool execution policy hook, prompt pack identity) are confirmed still-open or resolved. *(No new ADR needs; candidates 3, 4 and 5 re-checked and all still open — see the exit record.)*
 
 ## Risks
 
