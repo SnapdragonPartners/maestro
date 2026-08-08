@@ -16,19 +16,20 @@ default = "claude-sonnet-4-6"
 # not uniformly broken: on 2026-08-08 dep-bump-xnet was accepted while the
 # trivial smoke-comment deadlocked.
 #
-# Cross-lineage pairing is ADR 0020's existing reviewer-heterogeneity norm, NOT a
-# new policy. What was under-specified is the unit: 0020 says the reviewer runs a
-# "distinct model", which claude-opus-4-1 reviewing claude-sonnet-4-6 satisfies
-# literally while being one lab and one training lineage — the correlated failure
-# modes the invariant exists to break. DR sharpened this on 2026-08-08 to mean
-# genuinely distinct lineages, generally different labs; amendment pending as ADR
-# backlog candidate 16.
+# Cross-lineage pairing sits under ADR 0020's reviewer-heterogeneity norm, but the
+# lineage rule is PENDING, not operative. 0020 as written says the reviewer runs a
+# "distinct model" — which claude-opus-4-1 reviewing claude-sonnet-4-6 satisfies,
+# so this config CONFORMED under the text in force. DR proposed on 2026-08-08 that
+# the unit should be the originating lab (unchanged by serving provider, weight
+# availability, or fine-tuning), keeping same-lineage review valid but visibly
+# marked degraded. Pending as ADR backlog candidate 16.
 #
-# So this config was DEGRADED — not invalid — from its first commit (0649f51)
-# until 2026-08-08, and nothing flagged it: 0020 requires the degraded state to be
-# actively surfaced, and no lineage concept exists in the code. Every row in the
-# conformance log predating this change was produced same-lineage and unflagged.
-# gpt-4.1 makes the pairing cross-lineage; a golden run has yet to validate it.
+# Under that proposed rule this config would have been DEGRADED — not invalid —
+# from its first commit (0649f51) until 2026-08-08, as would every prior
+# paired-agent row in the conformance log. gpt-4.1 makes the pairing cross-lineage;
+# a golden run has yet to validate it. Note separately that no heterogeneity check
+# exists in the code at any granularity, so nothing would flag a degraded config
+# today regardless of which rule applies.
 #
 # The seat moved off claude-opus-4-1 on 2026-08-08: deprecated 2026-06-05, retired
 # 2026-08-05, now 404. That is what stopped the Phase 2 phase-exit run.
