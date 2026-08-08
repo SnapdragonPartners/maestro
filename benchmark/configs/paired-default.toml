@@ -9,9 +9,43 @@ description = "v1-as-patched paired-agent factory default"
 [model]
 default = "claude-sonnet-4-6"
 
+# ⚠️ DO NOT RUN A PAID SUITE ON THIS CONFIG UNTIL #317 IS FIXED. The architect
+# seat is known-broken: gpt-4.1 never calls the terminal review_complete tool in
+# the code-approval loop, so a story deadlocks into ESCALATED — which no headless
+# run can answer — and then burns tokens in a coder requeue loop. It is flaky,
+# not uniformly broken: on 2026-08-08 dep-bump-xnet was accepted while the
+# trivial smoke-comment deadlocked.
+#
+# Cross-lineage pairing sits under ADR 0020's reviewer-heterogeneity norm, but the
+# lineage rule is PENDING, not operative. 0020 as written says the reviewer runs a
+# "distinct model" — which claude-opus-4-1 reviewing claude-sonnet-4-6 satisfies,
+# so this config CONFORMED under the text in force. DR proposed on 2026-08-08 that
+# the unit should be the originating lab (unchanged by serving provider, weight
+# availability, or fine-tuning), keeping same-lineage review valid but visibly
+# marked degraded. Pending as ADR backlog candidate 16.
+#
+# Under that proposed rule this config would have been DEGRADED — not invalid —
+# from its first commit (0649f51) until 2026-08-08, as would every prior
+# paired-agent row in the conformance log. gpt-4.1 makes the pairing cross-lineage;
+# a golden run has yet to validate it. Note separately that no heterogeneity check
+# exists in the code at any granularity, so nothing would flag a degraded config
+# today regardless of which rule applies.
+#
+# The seat moved off claude-opus-4-1 on 2026-08-08: deprecated 2026-06-05, retired
+# 2026-08-05, now 404. That is what stopped the Phase 2 phase-exit run.
+#
+# #316 does NOT block this config — gpt-4.1 accepts sampling parameters. It rules
+# out the three replacements observed to reject a non-default temperature: gpt-5,
+# o4-mini and claude-opus-5 each returned a 400 at the architect's 0.65. That is
+# the tested set, not a general claim about reasoning-tier models. Untested
+# alternatives remain (gpt-4o, claude-opus-4-5, claude-opus-4-6); they accept
+# temperature but were never tried against #317.
+#
+# This changes config_hash (3d999b22fbbb -> cdc1490b5cc3), so runs from here are a
+# new identity group and are not a comparable series with anything before them.
 [model.roles]
 coder = "claude-sonnet-4-6"
-architect = "claude-opus-4-1"
+architect = "gpt-4.1"
 pm = "claude-sonnet-4-6"
 
 [prompt]

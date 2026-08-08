@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-07-30"
+edit_date = "2026-08-08"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -831,6 +831,8 @@ Exit criteria:
 
 ### Phase 2: Data Plane And Artifact Core
 
+**Status: closed 2026-08-08** ([plan](phase_2/plan_scope.md), now `archive`; [exit record](phase_2/notes_exit-record.md)). All three roadmap exit criteria below are met, and so is every obligation ADR 0022 added. **One criterion from the phase plan is not: the phase-end `golden-all` regression run, overridden by DR.** `claude-opus-4-1` was deprecated 2026-06-05 and retired 2026-08-05, and repairing the architect seat surfaced [#317](https://github.com/SnapdragonPartners/maestro/issues/317), which blocks the committed configuration, and [#316](https://github.com/SnapdragonPartners/maestro/issues/316), which constrains replacements. No viable model was shown not to exist — DR declined further paid exploration after the first replacement failed. **Phase 3 inherits that regression obligation** — see the measuring-instrument note in Phase 3 below.
+
 Goal: establish the v2 persistence model.
 
 Outputs:
@@ -871,6 +873,14 @@ V1 retirement belongs here rather than to a phase or a standing cleanup track of
 
 **The measuring instrument has to survive the transition, and that is not optional.** The benchmark target is v1-as-patched, so removing the v1 factory path removes the only target the runner can currently drive — and ADR 0025's cadence table requires `golden-all` at N = 1 against `paired-default` at the end of **every phase from Phase 2 onward**, which `process_build.md` states as a working agreement. A phase that deleted v1 without a v2 adapter in place could not meet its own phase-end cadence, which this roadmap has no authority to suspend.
 
+**It did not survive Phase 2, and Phase 3 inherits the debt.** `claude-opus-4-1` was deprecated 2026-06-05 and retired 2026-08-05, and the committed `paired-default` cannot currently complete a suite: [#317](https://github.com/SnapdragonPartners/maestro/issues/317) (the architect approval loop cannot force its terminal tool and deadlocks into `ESCALATED`) blocks it outright, and [#316](https://github.com/SnapdragonPartners/maestro/issues/316) (v1 forces a non-nil `temperature`) rules out the three replacements observed to reject it — `gpt-5`, `o4-mini` and `claude-opus-5`. Untested alternatives do exist — `gpt-4o`, `claude-opus-4-5`, `claude-opus-4-6`, of which only temperature compatibility was measured — so the instrument is not provably dead, merely unrepaired: DR declined further paid exploration after the first replacement failed. Phase 3 therefore owes **two** runs, not one, and both should be treated as early work rather than phase-end work, since #317 gates them.
+
+Three durable lessons belong here rather than in a closed phase record.
+
+- **A benchmark pinned to third-party model IDs inherits their retirement calendars.** The Opus 4.1 deprecation was published with ≥60 days' notice, seven weeks before the Phase 2 plan was approved, and no one read it across into the model pins. The conformance log records the model per run; nothing checks it forward. A preflight lifecycle check belongs in the Run Protocol.
+- **Reviewer heterogeneity should mean distinct *lineage*, not distinct model** — proposed by DR on 2026-08-08 as an amendment to ADR 0020, filed as [backlog candidate 16](notes_adr-backlog.md) and **not yet operative**. 0020 today requires a "distinct model" without defining lineage, so Opus-reviewing-Sonnet conforms under the text in force while sharing a lab. The proposed rule takes the originating lab as a conservative proxy — unchanged by serving provider, weight availability, or fine-tuning — and keeps same-lineage review **valid but visibly marked degraded**, never refused. Under it, prior `paired-default` paired-agent runs would be reclassified as degraded. Independently of how that lands, **the flagging machinery does not exist at all**: nothing computes heterogeneity at any granularity, so even a same-model pairing would go unflagged today. DR intends the rule to apply everywhere possible, not only to benchmarks.
+- **A run's recorded commit must rebuild its binary.** The phase-exit target was built from a dirty tree ([#318](https://github.com/SnapdragonPartners/maestro/issues/318)); the digest pinned what ran, but the commit did not reproduce it.
+
 The two halves are sequenced separately and the order is the point. The **adapter** comes before the deletion, so removing v1 never strands the runner. The **conformance run** comes after it, because a run performed while v1 is still present measures a tree that the deletion then changes — it would attest to something other than what Phase 3 ships. Relaxing any of this is an amendment to ADR 0025 and `process_build.md`, not a decision available here.
 
 MVP constraint:
@@ -883,7 +893,8 @@ Exit criteria:
 - Every step emits artifacts to the data plane with correct provenance (agent instance, epic, story).
 - The Epic dashboard shows live state for that Epic.
 - No v1 factory entrypoint remains, every `drop` disposition is complete, and the v2 path passes build, test, and integration verification.
-- Before the v1 factory path is removed, a **v2 target adapter** exists. After removal, the phase-end conformance run required by ADR 0025 — `golden-all`, N = 1, `paired-default` — completes against that adapter. Phase 3 does not exit until it does.
+- **Carried from Phase 2 — discharge before v1 is removed.** Fix [#317](https://github.com/SnapdragonPartners/maestro/issues/317), which is what blocks the committed `paired-default`, then run `golden-all`, N = 1, `paired-default` against the **v1-as-patched** target and record it in the conformance log. [#316](https://github.com/SnapdragonPartners/maestro/issues/316) is Phase 3 work but is **not** a prerequisite for this run — `gpt-4.1` accepts sampling parameters — unless DR chooses to make it one. This is Phase 2's unmet regression checkpoint, and it can only be taken while v1 still exists — removing the v1 factory path destroys the only target that can discharge it. It is therefore a gate *on* v1 retirement, not a phase-end item.
+- Before the v1 factory path is removed, a **v2 target adapter** exists. After removal, the phase-end conformance run required by ADR 0025 — `golden-all`, N = 1, `paired-default` — completes against that adapter. Phase 3 does not exit until it does. This is a **second, distinct** run from the carried Phase 2 checkpoint above: different target, different purpose.
 
 ### Phase 4: Branch Hierarchy And Evidence Packages
 

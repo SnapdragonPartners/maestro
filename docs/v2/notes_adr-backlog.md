@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-07-24"
+edit_date = "2026-08-08"
 status = "live"
 type = "notes"
 summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates ordered by the phase they block."
@@ -105,3 +105,38 @@ Empirically observed in Phase 1 (2026-07-21, `cal-d9-cleanup-4m`): the `cleanup-
 **Severity update (2026-07-22).** The `cleanup-provider-options` prompt was rewritten to stop enumerating its five call sites and to state the task's cohesion outright; the architect then produced **one** Story rather than five. So over-decomposition is **avoidable by well-formed authoring** — it is a latent risk, not a standing blocker, which is a weaker claim than this entry originally made. The case for the review seat is unchanged but now rests on cost asymmetry rather than necessity: we only discovered the wording by burning ~$22 on two runs that never completed, and nothing in the system would have caught it. A reviewer would have; a prompt convention only works until someone writes an enumerating prompt again.
 
 Scope for the ADR: who reviews a decomposition (Reviewer vs Partner/Supervisor per 0020's split — a decomposition reviewer plausibly needs judgment, not just blocking), what it checks (right-sizing, coherence of the split, dependency sanity, no padded verification Stories), and how it escalates. Note the cost asymmetry that makes this worth a gate: an over-decomposition multiplies ceremony across every downstream Story, so the review pays for itself on the first catch.
+
+### 16. Reviewer Heterogeneity Means Distinct **Lineage**, Not Distinct Model — amends ADR 0020; applies to benchmark configs now
+
+Raised by DR at Phase 2 exit (2026-08-08). **This is an amendment, not a new principle** — [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) already carries the norm and the degradation semantics DR wants, including "degraded is not broken" and the requirement that the degraded state be *actively surfaced*. What it does not do is define the unit of distinctness, and the loose reading defeats the intent.
+
+**The defect is one word.** ADR 0020 says the reviewer "runs a **distinct model** from the author" and speaks of "heterogeneous model **lineages**" without defining lineage. Under the literal reading, `claude-opus-4-1` reviewing `claude-sonnet-4-6` is heterogeneous: two distinct models. Under the intended reading it is homogeneous: one lab, one training lineage, highly correlated failure modes — which is precisely the correlation the invariant exists to break.
+
+**The proposed decision text (DR, 2026-08-08).** Stated as the amendment should carry it, deliberately as a proxy rather than a technical claim:
+
+> For Maestro's operational classification, a model's lineage is its **originating lab**. Serving provider and weight availability do not change it, and neither does fine-tuning or derivation — a fine-tune or derived model carries its base model's lineage. This is a **conservative proxy** for correlated training and alignment choices, not a claim that every model from one lab is technically identical. **Distinct-lineage review is preferred; same-lineage review remains valid but must be visibly marked degraded.**
+
+Note the deliberate absence of "must use distinct lineages" — that would contradict warn-never-refuse below.
+
+**Status matters: this is proposed, not operative.** ADR 0020 as written says "distinct model" and defines the degenerate case as author and reviewer *on the same model*. Under the text in force, `paired-default`'s Opus-plus-Sonnet pairing is **heterogeneous and conforming** — so nothing in the [conformance log](notes_conformance-log.md) violated ADR 0020. What can be said is conditional: **under the proposed lineage clarification, prior `paired-default` (paired-agent) runs would be classified as degraded.** The clarification becomes the operative rule only when ADR 0020 is amended and accepted.
+
+**A separate, unconditional gap: the flagging machinery does not exist.** ADR 0020 already requires homogeneous review to be flagged and actively surfaced, and nothing implements that today — `mph/bundle.go` records the roles and `v1target/adapter.go` preserves them, but nothing computes heterogeneity at any granularity. So a genuinely same-*model* configuration would also go unflagged right now. That is a latent gap under the current rule, not a past violation, and it needs closing whichever way the lineage question lands.
+
+**Two scope questions answered by DR, 2026-08-08.**
+
+**Lineage is the lab; weight-openness, serving, and derivation do not change it.** An open-weight model shares a lineage with the same lab's closed-weight models — DeepSeek is the clean case, offering what is effectively the identical model in both forms — so `gpt-oss` is OpenAI-lineage even when Ollama serves it. **A fine-tune or derived model likewise carries its base model's lineage** (DR, 2026-08-08): fine-tuning does not undo the training-data ordering and alignment choices the proxy is standing in for. The rationale is what the amendment should encode, and it is why the proxy is drawn at the lab: shared lab-level training and alignment choices may correlate failures.
+
+> ⚠️ **Implementation trap: `Provider` is not lineage.** `pkg/config`'s `Provider` field and `ProviderPatterns` describe *how a request is routed*, not who trained the model — `gpt-oss` is deliberately routed to `ProviderOllama` (ahead of the `gpt` → OpenAI rule) precisely because serving and origin differ. Building the lineage check on the existing `Provider` value would classify `gpt-oss` as Ollama-lineage and call an OpenAI-vs-OpenAI pairing heterogeneous. Lineage needs its own attribute.
+>
+> Worked consequence: `paired-local` pairs `gpt-oss:20b` (OpenAI lineage) with `qwen3-coder:30b` (Qwen/Alibaba lineage) — **cross-lineage and conforming**, though both route through Ollama. `paired-default` pre-2026-08-08 paired two Anthropic models through one provider — same lineage, degraded. Provider tells you neither answer.
+
+**Same-lineage warns; it does not refuse.** "Degraded, not invalid" is load-bearing: there are legitimate deployments where distinct lineages are unavailable — high-security and sovereign-AI installations where only one lab is permitted, alongside ADR 0020's existing economic and airplane-mode cases. A hard failure would make those configurations unusable rather than honestly labelled. The bar the amendment must clear is that the warning is *visible*: what we have had until now is not an accepted degradation but an invisible one, which is the failure mode ADR 0020 explicitly forbids.
+
+Remaining scope for the amendment:
+
+- **Define the lineage attribute** — where it is declared, and how `human-<user_id>` principals classify (ADR 0020 already makes each human a distinct model; presumably each human is also a distinct lineage, which preserves the human-reviews-agent case).
+- **Restate the degradation ladder** in lineage terms: distinct lineage → same lineage, distinct model → same model. ADR 0020 today has only the last rung.
+- **Where it binds.** DR's "everywhere possible" spans the product's own reviewer routing (ADR 0020 calls that a Phase 5 deliverable) and the benchmark bundles (ADR 0025 makes heterogeneity benchmarkable). The benchmark half is cheap and can be applied immediately; the product half rides Phase 5.
+- **Where the warning surfaces** — MPH bundle validation, the run record, the review record, or all three — given that it must be surfaced to the operator, not merely stored.
+
+Blocks **Phase 5** (reviewer model routing), but the benchmark-side clarification should land sooner, since `paired-default` currently encodes the opposite of the intent and its comment says so.

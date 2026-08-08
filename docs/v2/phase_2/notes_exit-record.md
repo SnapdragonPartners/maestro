@@ -1,14 +1,14 @@
 +++
-title = "Phase 2 Exit Record (In Progress)"
-edit_date = "2026-07-31"
-status = "draft"
-summary = "Running record of Phase 2: what each item delivered, exit-criteria status, decisions and what they cost, and the verification post-mortem behind CLAUDE.md's Verification Discipline. Accumulates as the phase runs; flips live at phase close."
+title = "Phase 2 Exit Record"
+edit_date = "2026-08-08"
+status = "live"
+summary = "Closing record of Phase 2: what each item delivered, exit-criteria status including the golden-run criterion DR overrode, decisions and what they cost, and the verification post-mortem behind CLAUDE.md's Verification Discipline."
 type = "notes"
 +++
 
-# Phase 2 Exit Record (In Progress)
+# Phase 2 Exit Record
 
-Status: **draft — work in progress.** This accumulates as Phase 2 runs and flips to `live` at phase close, when the exit checklist is walked and the remaining criteria are marked. It is written now rather than reconstructed later, because the parts worth keeping — what a decision cost, why a rule exists — are the parts that get lost when a record is assembled from memory at the end.
+Status: **live** — closed at phase exit (item 10), with the exit checklist walked and every criterion marked met, overridden, or carried forward. It was written as the phase ran rather than reconstructed at the end, because the parts worth keeping — what a decision cost, why a rule exists — are the parts that do not survive assembly from memory.
 
 The binding exit criteria live in the [Phase 2 plan](plan_scope.md). This records **status and evidence** against them; where the two disagree, the plan wins.
 
@@ -23,8 +23,10 @@ The binding exit criteria live in the [Phase 2 plan](plan_scope.md). This record
 | 4 | `queries-artifacts` | Merged `55ab7af` (#293) | The persistence seam and its Postgres module, JCS digests, RFC 7396 effective views, the code-resident type registry, and the artifact/review/principal query families. Design [`design_queries_artifacts.md`](design_queries_artifacts.md) live. |
 | 5 | `queries-calls` | Merged `6b66958` (#295) | The call family: per-table write invariants in SQL, the open-to-completed lifecycle behind a structurally enforced update surface, organization-scoped dependency-ordered truncation with a serialization-retry contract, bounded keyset reads, and an exact decimal type for cost. Design [`design_calls_family.md`](design_calls_family.md) live. |
 | 6 | `objects` | Merged `6d54487` (#297) | The object module: a blob adapter separated from the seam that owns pins, content proven by a local hash, the amended cross-store commit order with its expected evidence set extracted from the reviewed payload, pins mutable only while their holder is a draft, and reclamation. ADR 0022 amended. Design [`design_object_module.md`](design_object_module.md) live. |
-| 7 | `config-secrets` | Branch `v2/phase_2/config-secrets` | Configuration records under a governed key registry validated before write and resolved most-specific-wins along the org/product/repository lineage; the secrets vault with per-version keys, canonically-encoded AAD, the six-step ownership ladder, and a root-key provider distinct from the replaceable secrets store. Design [`design_config_secrets.md`](design_config_secrets.md) live. |
-| 8–10 | — | Not started | Backup, vertical slice, phase exit. |
+| 7 | `config-secrets` | Merged `10d01ed` (#301) | Configuration records under a governed key registry validated before write and resolved most-specific-wins along the org/product/repository lineage; the secrets vault with per-version keys, canonically-encoded AAD, the six-step ownership ladder, and a root-key provider distinct from the replaceable secrets store. Design [`design_config_secrets.md`](design_config_secrets.md) live. |
+| 8 | `backup` | Merged `2585723` (#305) + `64dc138` (#309) | Cold backup, restore, verification, and **new-key recovery** — ADR 0022's second restore branch. Five amendments accepted in review (D3a services-usable-not-merely-started, D4a verification-debt marker, D4b interrupted-recovery as a third gated state, D8a/D8b). Native-Linux CI job green on first run, satisfying item 7's assigned proof. Design [`design_backup.md`](design_backup.md) live. |
+| 9 | `slice-benchmark-import` | Merged `6dfeabe` (#315) | **The vertical slice.** The importer reads the runner's results store as data — no runner dependency — writing benchmark-scoped artifacts, principal instances and `llm_calls` through the seam, with evidence walked from the store's own layout and a DRAFT `benchmark.suite_report` holding its complete pin set. Migrations 000017–000020; `dataplanectl bootstrap \| benchmark import \| benchmark show`. Design [`design_slice_import.md`](design_slice_import.md) live. |
+| 10 | `phase-exit` | This document | Exit review, backlog reconciliation, and the conformance-log entry. The phase-end `golden-all` run was **overridden by DR** — see below. |
 
 ## Exit criteria status
 
@@ -33,7 +35,7 @@ Nothing here is claimed complete that has not been demonstrated. Criteria not ye
 **Met**
 
 - **Artifact envelopes ADR Accepted before any DDL merged** — ADR 0028 merged in item 1; the first migration merges in item 3. Backlog candidate 1 moved to Resolved.
-- **Every table traces to an Accepted ADR and a Phase 2 consumer** — the [table inventory](inventory_schema-tables.md) is the checkable form: 19 tables with their ADR and consuming item, plus the eight families deliberately deferred and where they land.
+- **Every table traces to an Accepted ADR and a Phase 2 consumer** — the [table inventory](inventory_schema-tables.md) is the checkable form: **26 tables** at phase close (19 from item 3, 23 after item 7, 26 after item 9's benchmark family), each with its ADR and consuming item, plus the families deliberately deferred and where they land.
 
 - **MinIO composed and bind-mounted; local durability invariant** — composed and bind-mounted under the data root since item 2, and **demonstrated** in item 5 rather than asserted. Evidence below.
 - **One command from a clean checkout** — `make dataplane-up` composes, health-gates, and migrates, proven on native Linux CI from cold. The criterion also names *typed queries*; the artifact, review and principal-instance families landed in item 4 and the call family in item 5, which closes it.
@@ -41,14 +43,36 @@ Nothing here is claimed complete that has not been demonstrated. Criteria not ye
 - **Object module with its S3-compatible adapter** — item 6, behind the narrow interface, with the cross-store commit order enforced at the seam.
 - **Configuration and secrets families with typed queries, including the key-file root of trust** — item 7. Both families resolve along the lineage in one statement; the vault seals and opens at the seam under a required root-key provider, and the locked-plane path refuses before reading the key.
 
-**Not yet met (scheduled)**
+- **Cold-backup operation, tested, with its documented restore path validated** — item 8, including new-key recovery (ADR 0022's second restore branch) exercised in native-Linux CI.
+- **Vertical slice writes real data and is queried back; re-import is a no-op** — item 9, with the object write, digest reference and retention pin exercising the cross-store commit-order invariant end to end.
+- **Backlog reconciliation and the Phase 3-blocking entries confirmed** — item 10, below.
 
-- Cold-backup operation and validated restore → item 8.
-- Vertical slice, including an object write with digest reference and retention pin exercising the commit-order invariant, and idempotent re-import → item 9.
-- Phase-end `golden-all` regression run, imported and distilled into the conformance log → item 10.
-- Backlog reconciliation, and confirming the Phase 3-blocking entries → item 10.
+Item 7's criterion was previously recorded as met on an unmerged branch; it has since merged as #301 and the reference is now a merge commit.
 
-Item 7's criterion is recorded as met on the strength of a branch that is reviewed but **not yet merged**; it converts to a merge reference when the PR lands, and if anything changes in review this entry moves back.
+**Not met — overridden, not satisfied**
+
+- **The phase-end `golden-all` regression run.** DR explicitly overrode it on 2026-08-08. It is recorded as *overridden*, not as met: two of the six stories ran (one accepted, one deadlocked) and **four never executed**, so this phase carries no regression evidence for those four rungs — nor for the agent-path changes item 9 made. See below.
+
+## The measuring instrument, and why this phase has no conformance run
+
+The plan named this the phase's own top risk — "a Phase 2 change that disturbs the measuring instrument is a defect" — and the *persistence* mitigation held as designed: the data plane landed in a new package, `pkg/persistence` was never edited, and the two stacks compose separately.
+
+**That is narrower than "Phase 2 did not touch the agent path", and the stronger claim would be false.** Item 9 changed `pkg/agent/factory_llms.go` and the metrics middleware to carry the usage-surface upgrade — the adapter descriptor moved `v1-as-patched` 0.1.0 → **0.2.0** and the advertised surface v1 → **v2**. Those changes are real and they are **not regression-cleared**, because the run that would have cleared them did not happen.
+
+What can be said precisely: **the blocker that stopped the run was unrelated to the data-plane work** — a retired model, then two pre-existing v1 defects in the request path and the architect loop. What cannot be said: that five-rung behaviour is unchanged. It is unproven either way.
+
+**The trigger was announced, not unforeseeable.** `claude-opus-4-1` was **deprecated on 2026-06-05** with a retirement date of **2026-08-05**, published in Anthropic's [model-deprecations page](https://platform.claude.com/docs/en/about-claude/model-deprecations) and emailed to organizations with active usage, with at least 60 days' notice. That is seven weeks *before* this phase's plan was approved on 2026-07-24. Nobody read it across into the benchmark's model pins. The first phase-exit attempt died in ~8 seconds per story at the architect's first call, for **$0.00** — there was no model to run against. The failure here is a process gap, not bad luck: no step in the Run Protocol or the phase plan checks its pinned model IDs against their published lifecycle.
+
+Moving the seat to `gpt-4.1` surfaced two further v1 defects, both Phase 3 work:
+
+- **[#316](https://github.com/SnapdragonPartners/maestro/issues/316)** — `llmadapter` always sends a non-nil `temperature`, making `maestro-llms`' documented "nil means model default" unreachable. Every model that now rejects sampling parameters is therefore undrivable; verified 400s from `claude-opus-5`, `gpt-5` and `o4-mini`.
+- **[#317](https://github.com/SnapdragonPartners/maestro/issues/317)** — the architect's code-approval loop cannot force its terminal tool. `gpt-4.1` never called `review_complete` there, hit the hard limit at 16 iterations, and deadlocked into `ESCALATED`, which no headless run can answer.
+
+**Only #317 blocks the committed configuration**, and that should not be overstated. `gpt-4.1` accepts sampling parameters, so #316 does not affect it; #316 constrains *which other* models could take the seat. Nor was the viable set shown to be empty — `gpt-4o`, `claude-opus-4-5` and `claude-opus-4-6` all accept `temperature` and were **never tested against #317**. What actually happened is narrower and is what belongs on the record: **after the one tested replacement failed, DR declined further paid exploration** and overrode the suite. Alternatives may well work; nobody has spent the money to find out.
+
+Two of six stories ran. `dep-bump-xnet` (rung 2) was accepted at $1.77; `smoke-comment` (rung 1) ran to 332,670 tokens and $0.95 before deadlocking. So **four rungs never executed**, and the accepted attempt is the only positive evidence this phase holds that the agent path still functions.
+
+**The honest position: Phase 2's regression obligation is carried into Phase 3, not discharged.** Two lessons, neither about the data-plane work: a benchmark pinned to third-party model IDs inherits their retirement calendars, and **the calendar was published seven weeks before the plan was written** — this was catchable. Full detail, identity and per-model costs: the [conformance log](../notes_conformance-log.md).
 
 ## Durability demonstration
 
@@ -139,7 +163,48 @@ Its forms, all seen in this phase: assertions that could not fail; a drift check
 
 The rules in `CLAUDE.md`'s Verification Discipline came from the first two forms. The last three are newer and are recorded here rather than added to `CLAUDE.md` now — a holistic pass over that file is planned, and piecemeal additions are how a short rule list becomes an unread one.
 
+### Item 10 produced a different form: claims broader than their evidence
+
+Every meta-defect above is about *evidence that could not discriminate*. Item 10's review — five rounds, six P1s and four follow-on corrections — found almost nothing wrong with the underlying observations. What kept failing was **the scope of the claims built on them**:
+
+| Written | Actually supported |
+| --- | --- |
+| "Nothing in Phase 2 touched the agent path" | Nothing in the *data-plane work* did; item 9 changed `pkg/agent` and is unverified |
+| "No viable architect model" | One replacement was tested and failed; three others were never tried |
+| "Rules out every reasoning-tier replacement" | Three models were observed to reject a non-default temperature |
+| "Untested non-reasoning alternatives" | Only their temperature compatibility was measured |
+| "Every row in the conformance log" | Every *paired-agent* row; the single-agent controls have no pairing |
+| "`paired-default` was degraded" | It conforms under ADR 0020's operative text; it would be degraded under a *proposed* amendment |
+| "Cross-vendor pairing, adopted by DR" | A principle already Accepted in ADR 0020, whose *unit* DR proposed sharpening |
+
+The pattern is one step of over-generalisation past a sound observation — a true fact stated at a width the evidence does not carry. It is harder to catch than a wrong fact, because checking the fact confirms it and the width goes unexamined. Two of these would have put a **false violation** into the permanent record: the last two assert that something breached an accepted ADR when nothing did.
+
+Three properties make this failure mode distinctive, and worth its own entry:
+
+- **It is invisible to the checks that catch the others.** Tests, mutation, and reproduction all validate facts. None of them reads a sentence and asks whether the quantifier is earned.
+- **It concentrates in the durable artifacts.** These claims were in the conformance log, the roadmap, and this record — the documents specifically meant to outlive the session, and the ones a future reader will trust without re-deriving.
+- **It is systematically *self-flattering to the phase*.** "Nothing touched the agent path", "the instrument broke from outside", "no viable model existed" all move responsibility outward. That direction is not a coincidence and is the tell to look for.
+
+The working rule this suggests, pending the `CLAUDE.md` pass: **before writing a universal — *every*, *nothing*, *no*, *all*, *always* — name the observations that support it and check they cover the whole set.** Where they do not, state the tested set instead. And when writing that a rule was violated, quote the rule's operative text first; a proposed rule cannot be breached retroactively.
+
 ## Follow-ups
 
 - [maestro#287](https://github.com/SnapdragonPartners/maestro/issues/287) — fold `dataplanectl` into the main binary; blocked on moving the compose assets under a package, since embedding cannot reach parent directories.
-- ADR needs discovered in-phase: none so far. Confirmed at item 10.
+- [maestro#282](https://github.com/SnapdragonPartners/maestro/issues/282) — the benchmark-evidence-reviewer agent. Until it exists there is no `accept` verb and every imported suite report stays `DRAFT — UNREVIEWED — NOT AUTHORITATIVE`, which is the correct state under ADR 0020's non-author-review invariant, not a gap in the import path.
+- [maestro#314](https://github.com/SnapdragonPartners/maestro/issues/314) — a checked-in mutation harness satisfying the Defect-Shaped Verification rule. Deliberately deferred past Phase 2.
+- [maestro#316](https://github.com/SnapdragonPartners/maestro/issues/316) — sampling parameters must be optional; `llmadapter` forces `Temperature` non-nil. **Phase 3.**
+- [maestro#317](https://github.com/SnapdragonPartners/maestro/issues/317) — the architect approval loop cannot force its terminal tool, and `ESCALATED` deadlocks headlessly. **Phase 3.** This is the one that blocks the committed config, and therefore blocks validating the **current cross-lineage configuration** by running it. It does not block the policy question itself — [candidate 16](../notes_adr-backlog.md) is settled by amending ADR 0020, not by a run.
+- [maestro#318](https://github.com/SnapdragonPartners/maestro/issues/318) — benchmark preflight must refuse or record a dirty working tree. The phase-exit target was built from uncommitted changes, so its recorded commit does not rebuild its binary. Found in review, not at run time, which is the point.
+
+### ADR needs discovered in-phase
+
+**One**, raised by DR during the item 10 review and filed as [backlog candidate 16](../notes_adr-backlog.md): **reviewer heterogeneity must mean distinct *lineage*, not distinct model.** ADR 0020 already carries the norm and its degradation semantics, but defines the reviewer as running "a distinct model" from the author without defining lineage — so `claude-opus-4-1` reviewing `claude-sonnet-4-6` reads as heterogeneous while being one lab and one training lineage. That is `paired-default`'s exact composition since its first commit — so **under the proposed clarification, every prior paired-agent run in the conformance log would be classified as degraded** (not the single-agent rows, which have no reviewer pairing to classify). Nothing violated ADR 0020 as written: by its operative "distinct model" text those pairings are conforming. Separately and unconditionally, **the flagging machinery does not exist** — nothing computes heterogeneity at any granularity, so even a same-*model* configuration would go unflagged today. Amendment blocks Phase 5; the benchmark-side clarification should land sooner.
+
+Everything else found in this phase was an implementation defect or an amendment to an already-Accepted ADR, not a decision needing its own record:
+
+- Item 6 amended **ADR 0022** (cross-store commit order, acceptance as the verifying step).
+- Item 8 took five amendments to its own design document, all within ADR 0022's accepted backup contract.
+- Items 9's thirteen P1s were implementation defects; its design amendments (D4a, D6a, D7a–D7e, D9a) sit inside ADR 0021's and ADR 0028's accepted models.
+- #316 and #317 are v1 defects with an obvious right answer; neither needs a decision recorded before it can be fixed.
+
+The three **Phase 3-blocking** backlog entries were re-checked and remain **open and unresolved**: candidate 3 (amendment vs running work), candidate 4 (tool execution policy hook), candidate 5 (prompt pack identity, resolution and storage). None was addressed in Phase 2, and each still blocks Phase 3 implementation. Candidate 2 (online backup) remains open and correctly non-blocking — item 8 delivered the cold baseline it trails.
