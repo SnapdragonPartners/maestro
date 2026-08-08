@@ -46,10 +46,19 @@ func TestBenchmarkArchitectModelIsRegistered(t *testing.T) {
 	}
 
 	// The defect this guards is priced work reported as free, so assert the
-	// consequence directly rather than only the fields that produce it.
-	if info.InputCPM == 0 || info.OutputCPM == 0 {
-		t.Errorf("%s prices to zero (in=%v out=%v): priced calls would be "+
-			"recorded as $0 spend", model, info.InputCPM, info.OutputCPM)
+	// consequence through the function that actually computes spend — the CPM
+	// fields above are the inputs to it, not the outcome.
+	const wantCost = 10.0 // 1M prompt @ $2/M + 1M completion @ $8/M
+	cost, err := CalculateCost(model, 1_000_000, 1_000_000)
+	if err != nil {
+		t.Fatalf("CalculateCost(%s): %v", model, err)
+	}
+	if cost != wantCost {
+		t.Errorf("CalculateCost(%s, 1M, 1M) = %v, want %v", model, cost, wantCost)
+	}
+	if cost == 0 {
+		t.Errorf("%s prices to zero: priced calls would be recorded as $0 spend, "+
+			"and the per-story budget cap would never trigger", model)
 	}
 }
 
