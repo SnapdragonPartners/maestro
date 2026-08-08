@@ -19,6 +19,7 @@ import (
 
 	"orchestrator/internal/dataplane/benchmarkimport"
 	"orchestrator/internal/dataplane/planetest"
+	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -837,6 +838,64 @@ func TestASecondReportCannotBeCreatedForAClaimedSuite(t *testing.T) {
 		t.Errorf("the suite holds %d Management artifacts, want 1", count)
 	}
 }
+
+// The rule is about the SCOPE, not about one type name.
+//
+// Both reservation tests above use benchmark.suite_report, so an
+// implementation that regressed from "a benchmark run reserves its one
+// Management artifact" to `if artifactType == "benchmark.suite_report"`
+// would satisfy them and satisfy nothing else. The control is a DIFFERENT
+// registered Management type aimed at the same scope: it must be refused
+// too, because what the scope reserves is an artifact rather than a name.
+func TestTheReservationRuleIsAboutTheScopeAndNotTheType(t *testing.T) {
+	entries := benchmarkimport.RegistryEntries()
+	entries[otherManagementType] = registry.Entry{
+		Category:       registry.CategoryManagement,
+		CurrentVersion: 1,
+		Validators:     map[int]registry.Validator{1: registry.ValidatorFunc(func([]byte) error { return nil })},
+	}
+	p := newPlaneWith(t, entries)
+	ctx := context.Background()
+
+	imported := p.mustImport(t, suiteWithEvidence(t))
+	if imported.Report == nil {
+		t.Fatal("the import produced no report")
+	}
+
+	author, err := p.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
+		Kind: store.PrincipalHuman, Model: "human-" + p.operator.UserID.String(),
+		UserID: &p.operator.UserID, OrganizationID: p.organization.OrganizationID,
+	})
+	if err != nil {
+		t.Fatalf("create the author: %v", err)
+	}
+
+	_, err = p.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Type:    otherManagementType,
+		Summary: "some other Management artifact about this suite",
+		Payload: []byte(`{"note":"anything"}`),
+		Scope: store.Scope{
+			Type: store.ScopeBenchmark,
+			ID:   imported.BenchmarkRunID,
+		},
+		OrganizationID:   p.organization.OrganizationID,
+		UserID:           p.operator.UserID,
+		AuthorInstanceID: author.PrincipalInstanceID,
+	})
+	if !errors.Is(err, store.ErrUnclaimedScope) {
+		t.Fatalf("creating a %s scoped to a claimed benchmark run returned %v, want "+
+			"ErrUnclaimedScope: the reservation is about the scope, not the type",
+			otherManagementType, err)
+	}
+	if count := p.managementArtifactCount(t, imported.BenchmarkRunID); count != 1 {
+		t.Errorf("the suite holds %d Management artifacts, want 1", count)
+	}
+}
+
+// otherManagementType is a second registered Management type, existing only
+// so a test can aim something that is NOT a suite report at a benchmark
+// scope.
+const otherManagementType registry.Type = "test.benchmark_note"
 
 // And a FIRST report cannot be created for a suite that reserved nothing.
 //
