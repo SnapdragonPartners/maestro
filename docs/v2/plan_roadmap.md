@@ -965,7 +965,7 @@ Outputs:
 
 - Artifact generation/review contract.
 - Internal adversarial reviewer interface.
-- Distinct reviewer model routing.
+- Distinct reviewer model routing, and with it the **heterogeneity classification ADR 0020 requires and nothing implements** — the model-lineage attribute, the author/reviewer pairing graph this phase is the first to define, and the surfacing path. Carried since Phase 2; the rule was settled by 0020's 2026-08-08 amendment, the mechanism deliberately was not.
 - Budget review moved to internal reviewer where appropriate.
 - Optional gates: requirements, stories, UAT.
 - Gate UI.
@@ -976,6 +976,7 @@ Exit criteria:
 
 - No Management artifact can reach a persisted, accepted state without a reviewer record. (The Workbench satisfies this through human accept plus the trailing agent check — ADR 0020 admits no configured exemptions.)
 - A reviewer/author disagreement escalates to a human after the configured bound, demonstrated end-to-end.
+- Every review record carries its pairing's rung on ADR 0020's ladder, and a same-lineage pairing is **surfaced to the operator**, not merely stored — 0020 forbids an unlabelled degradation, and silence reads as the preferred state. Demonstrated on a deliberately same-lineage pairing, which must run and be flagged rather than be refused.
 - The three optional gates can be toggled per Epic by config and are visible in the UI.
 - A Workbench session runs end-to-end: entered from the dashboard button, producing Story work on a real Epic branch with trailing evidence and drift review, closed by human Accept.
 
