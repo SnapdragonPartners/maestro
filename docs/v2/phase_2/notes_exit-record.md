@@ -35,7 +35,7 @@ Nothing here is claimed complete that has not been demonstrated. Criteria not ye
 **Met**
 
 - **Artifact envelopes ADR Accepted before any DDL merged** — ADR 0028 merged in item 1; the first migration merges in item 3. Backlog candidate 1 moved to Resolved.
-- **Every table traces to an Accepted ADR and a Phase 2 consumer** — the [table inventory](inventory_schema-tables.md) is the checkable form: 19 tables with their ADR and consuming item, plus the eight families deliberately deferred and where they land.
+- **Every table traces to an Accepted ADR and a Phase 2 consumer** — the [table inventory](inventory_schema-tables.md) is the checkable form: **26 tables** at phase close (19 from item 3, 23 after item 7, 26 after item 9's benchmark family), each with its ADR and consuming item, plus the families deliberately deferred and where they land.
 
 - **MinIO composed and bind-mounted; local durability invariant** — composed and bind-mounted under the data root since item 2, and **demonstrated** in item 5 rather than asserted. Evidence below.
 - **One command from a clean checkout** — `make dataplane-up` composes, health-gates, and migrates, proven on native Linux CI from cold. The criterion also names *typed queries*; the artifact, review and principal-instance families landed in item 4 and the call family in item 5, which closes it.
@@ -51,22 +51,28 @@ Item 7's criterion was previously recorded as met on an unmerged branch; it has 
 
 **Not met — overridden, not satisfied**
 
-- **The phase-end `golden-all` regression run.** DR explicitly overrode it on 2026-08-08. It is recorded as *overridden*, not as met: five of the six stories never executed, so this phase carries **no** regression evidence for those rungs. See below.
+- **The phase-end `golden-all` regression run.** DR explicitly overrode it on 2026-08-08. It is recorded as *overridden*, not as met: two of the six stories ran (one accepted, one deadlocked) and **four never executed**, so this phase carries no regression evidence for those four rungs — nor for the agent-path changes item 9 made. See below.
 
 ## The measuring instrument, and why this phase has no conformance run
 
-The plan named this the phase's own top risk — "a Phase 2 change that disturbs the measuring instrument is a defect" — and the structural mitigation held exactly as designed: the data plane landed in a new package, `pkg/persistence` was never edited, and the two stacks compose separately. **Nothing in Phase 2's work broke the instrument.**
+The plan named this the phase's own top risk — "a Phase 2 change that disturbs the measuring instrument is a defect" — and the *persistence* mitigation held as designed: the data plane landed in a new package, `pkg/persistence` was never edited, and the two stacks compose separately.
 
-It broke anyway, for a reason no phase plan anticipated: **`claude-opus-4-1` reached its scheduled retirement on 2026-08-05** and began returning `404 not_found_error`. It had been the architect model in `paired-default` for every run in the conformance log. The first phase-exit attempt died in ~8 seconds per story at the architect's first call, for **$0.00** — there was no model to run against.
+**That is narrower than "Phase 2 did not touch the agent path", and the stronger claim would be false.** Item 9 changed `pkg/agent/factory_llms.go` and the metrics middleware to carry the usage-surface upgrade — the adapter descriptor moved `v1-as-patched` 0.1.0 → **0.2.0** and the advertised surface v1 → **v2**. Those changes are real and they are **not regression-cleared**, because the run that would have cleared them did not happen.
 
-Moving the seat to `gpt-4.1` — which also restores the cross-vendor pairing intent, since `paired-default` had drifted to Anthropic reviewing Anthropic while `paired-local` pairs across families — surfaced two further v1 defects, both Phase 3 work:
+What can be said precisely: **the blocker that stopped the run was unrelated to the data-plane work** — a retired model, then two pre-existing v1 defects in the request path and the architect loop. What cannot be said: that five-rung behaviour is unchanged. It is unproven either way.
+
+**The trigger was announced, not unforeseeable.** `claude-opus-4-1` was **deprecated on 2026-06-05** with a retirement date of **2026-08-05**, published in Anthropic's [model-deprecations page](https://platform.claude.com/docs/en/about-claude/model-deprecations) and emailed to organizations with active usage, with at least 60 days' notice. That is seven weeks *before* this phase's plan was approved on 2026-07-24. Nobody read it across into the benchmark's model pins. The first phase-exit attempt died in ~8 seconds per story at the architect's first call, for **$0.00** — there was no model to run against. The failure here is a process gap, not bad luck: no step in the Run Protocol or the phase plan checks its pinned model IDs against their published lifecycle.
+
+Moving the seat to `gpt-4.1` surfaced two further v1 defects, both Phase 3 work:
 
 - **[#316](https://github.com/SnapdragonPartners/maestro/issues/316)** — `llmadapter` always sends a non-nil `temperature`, making `maestro-llms`' documented "nil means model default" unreachable. Every model that now rejects sampling parameters is therefore undrivable; verified 400s from `claude-opus-5`, `gpt-5` and `o4-mini`.
 - **[#317](https://github.com/SnapdragonPartners/maestro/issues/317)** — the architect's code-approval loop cannot force its terminal tool. `gpt-4.1` never called `review_complete` there, hit the hard limit at 16 iterations, and deadlocked into `ESCALATED`, which no headless run can answer.
 
-Together these leave the viable architect set empty, which is why DR overrode the suite rather than retry on another model. One story (`dep-bump-xnet`, rung 2) did complete and was accepted, at $1.77; that is the only evidence this phase has that the agent path still functions, and it is one rung out of six.
+**Only #317 blocks the committed configuration**, and that should not be overstated. `gpt-4.1` accepts sampling parameters, so #316 does not affect it; #316 constrains *which other* models could take the seat. Nor was the viable set shown to be empty — `gpt-4o`, `claude-opus-4-5` and `claude-opus-4-6` all accept `temperature` and were **never tested against #317**. What actually happened is narrower and is what belongs on the record: **after the one tested replacement failed, DR declined further paid exploration** and overrode the suite. Alternatives may well work; nobody has spent the money to find out.
 
-**The honest position: Phase 2's regression obligation is carried into Phase 3, not discharged.** The lesson is not about Phase 2's work but about the instrument's own dependencies — a benchmark pinned to third-party model IDs inherits their retirement calendars, and nothing warned us. Full detail, identity and per-model costs: the [conformance log](../notes_conformance-log.md).
+Two of six stories ran. `dep-bump-xnet` (rung 2) was accepted at $1.77; `smoke-comment` (rung 1) ran to 332,670 tokens and $0.95 before deadlocking. So **four rungs never executed**, and the accepted attempt is the only positive evidence this phase holds that the agent path still functions.
+
+**The honest position: Phase 2's regression obligation is carried into Phase 3, not discharged.** Two lessons, neither about the data-plane work: a benchmark pinned to third-party model IDs inherits their retirement calendars, and **the calendar was published seven weeks before the plan was written** — this was catchable. Full detail, identity and per-model costs: the [conformance log](../notes_conformance-log.md).
 
 ## Durability demonstration
 
@@ -163,7 +169,8 @@ The rules in `CLAUDE.md`'s Verification Discipline came from the first two forms
 - [maestro#282](https://github.com/SnapdragonPartners/maestro/issues/282) — the benchmark-evidence-reviewer agent. Until it exists there is no `accept` verb and every imported suite report stays `DRAFT — UNREVIEWED — NOT AUTHORITATIVE`, which is the correct state under ADR 0020's non-author-review invariant, not a gap in the import path.
 - [maestro#314](https://github.com/SnapdragonPartners/maestro/issues/314) — a checked-in mutation harness satisfying the Defect-Shaped Verification rule. Deliberately deferred past Phase 2.
 - [maestro#316](https://github.com/SnapdragonPartners/maestro/issues/316) — sampling parameters must be optional; `llmadapter` forces `Temperature` non-nil. **Phase 3.**
-- [maestro#317](https://github.com/SnapdragonPartners/maestro/issues/317) — the architect approval loop cannot force its terminal tool, and `ESCALATED` deadlocks headlessly. **Phase 3.** Carries the cross-vendor pairing goal with it.
+- [maestro#317](https://github.com/SnapdragonPartners/maestro/issues/317) — the architect approval loop cannot force its terminal tool, and `ESCALATED` deadlocks headlessly. **Phase 3.** This is the one that blocks the committed config; the cross-vendor pairing preference rides on it.
+- [maestro#318](https://github.com/SnapdragonPartners/maestro/issues/318) — benchmark preflight must refuse or record a dirty working tree. The phase-exit target was built from uncommitted changes, so its recorded commit does not rebuild its binary. Found in review, not at run time, which is the point.
 
 ### ADR needs discovered in-phase
 

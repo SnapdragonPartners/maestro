@@ -16,16 +16,21 @@ default = "claude-sonnet-4-6"
 # not uniformly broken: on 2026-08-08 dep-bump-xnet was accepted while the
 # trivial smoke-comment deadlocked.
 #
-# Pairing is cross-vendor by design: the architect that reviews the coder's work
-# must not be the same model family that produced it (paired-local already does
-# this). The seat moved off claude-opus-4-1 on 2026-08-08 when that model reached
-# its scheduled retirement and started returning 404, which is what stopped the
-# Phase 2 phase-exit run. gpt-4.1 is recorded here as the intended direction, to
-# be made to work in Phase 3 rather than reverted to Anthropic-reviewing-Anthropic.
+# Cross-vendor pairing — the architect not sharing a model family with the coder
+# it reviews — is a preference DR adopted on 2026-08-08. It is NOT a restoration:
+# this config has been Anthropic/Anthropic since its first commit (0649f51), and
+# ADR 0025 treats reviewer heterogeneity as something to benchmark rather than a
+# requirement. gpt-4.1 records that preference pending a run that validates it;
+# if it is to become binding it needs an accepted decision, not this comment.
 #
-# Reasoning-tier models cannot fill this seat either until #316 is fixed: v1 sends
-# a non-nil temperature on every call, and gpt-5, o4-mini and claude-opus-5 all
-# reject it with a 400. Between #316 and #317 the viable set is currently empty.
+# The seat moved off claude-opus-4-1 on 2026-08-08: deprecated 2026-06-05, retired
+# 2026-08-05, now 404. That is what stopped the Phase 2 phase-exit run.
+#
+# #316 does NOT block this config — gpt-4.1 accepts sampling parameters. It rules
+# out reasoning-tier replacements only: v1 sends a non-nil temperature on every
+# call, and gpt-5, o4-mini and claude-opus-5 each reject it with a 400. Untested
+# non-reasoning alternatives remain (gpt-4o, claude-opus-4-5, claude-opus-4-6);
+# they accept temperature but were never tried against #317.
 #
 # This changes config_hash (3d999b22fbbb -> cdc1490b5cc3), so runs from here are a
 # new identity group and are not a comparable series with anything before them.
