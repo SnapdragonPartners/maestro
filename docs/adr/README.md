@@ -1,6 +1,6 @@
 +++
 title = "Architecture Decision Records"
-edit_date = "2026-07-26"
+edit_date = "2026-08-08"
 status = "live"
 summary = "Index of Maestro ADRs: the v2 decision sequence (0017+) and the deprecated historical v1 notes (0001-0016), with the documentation authority order in brief."
 +++
@@ -36,7 +36,7 @@ artifacts in `docs/v2/phase_x/`, then the roadmap and cross-phase docs in
 | [0017](0017-v2-documentation-authority-and-lifecycle.md) | v2 Documentation Authority And Lifecycle | Accepted | Defines v2 doc conventions: ADR numbering and acceptance lifecycle, front-matter schema, draft/live/deprecated/archive authority, type_slug.md naming, directory indexes, and the v1 doc archive plan. |
 | [0018](0018-v2-work-taxonomy.md) | v2 Work Taxonomy | Accepted | Defines the v2 work hierarchy — Product, Feature, Epic, Story — and its executors (Work Group, Workbench tempo), the collapsible degenerate path for small work, and the v2 MVP boundary (D1). |
 | [0019](0019-orchestrator-boundary.md) | Orchestrator Boundary | Accepted | Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. |
-| [0020](0020-review-invariant-reviewer-vs-partner.md) | The Review Invariant — Reviewer vs Partner/Supervisor | Accepted | Canonical statement of the symmetric review invariant (every Management artifact reviewed by a non-author) and the two review scopes: narrow Reviewers that block, and Partner/Supervisors that judge. |
+| [0020](0020-review-invariant-reviewer-vs-partner.md) | The Review Invariant — Reviewer vs Partner/Supervisor | Accepted | Canonical statement of the symmetric review invariant (every Management artifact reviewed by a non-author) and the two review scopes: narrow Reviewers that block, and Partner/Supervisors that judge; reviewer heterogeneity is measured in model lineage — the originating lab — on a three-rung ladder that warns but never refuses. |
 | [0021](0021-artifacts-and-principal-instances.md) | Artifacts And Principal Instances | Accepted | Defines the v2 artifact model: artifacts as the sole agent handoff, Management (inputs) vs Audit (exhaust) categories, the scope/lineage signature, principal instances (agent/human/system), the invalidate/amend/supersede lifecycle, evidence retention-pinning, and the MPH signature. |
 | [0022](0022-v2-data-plane.md) | v2 Data Plane | Accepted | Postgres/sqlc/golang-migrate as the v2 data plane, Docker-local by default; schema families derived from the taxonomy and artifact model; multi-user boundaries; all access through the Orchestrator's persistence seam. |
 | [0023](0023-v2-branch-strategy.md) | v2 Branch Strategy | Accepted | Maps git structure to the work hierarchy: Epic branches off default, Story branches off Epic; automated Story→Epic merges, human Accept for Epic→default; reviewed history immutability; naming for Orchestrator-managed branches. |
