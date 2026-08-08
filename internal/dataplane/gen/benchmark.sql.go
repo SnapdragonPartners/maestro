@@ -12,7 +12,7 @@ import (
 )
 
 const getBenchmarkAttempt = `-- name: GetBenchmarkAttempt :one
-SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, imported_at FROM benchmark_attempts
+SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, imported_at, calls_unavailable FROM benchmark_attempts
 WHERE organization_id  = $1
   AND benchmark_run_id = $2
   AND run_id           = $3
@@ -35,6 +35,7 @@ func (q *Queries) GetBenchmarkAttempt(ctx context.Context, arg GetBenchmarkAttem
 		&i.RecordDigest,
 		&i.AuditArtifactID,
 		&i.ImportedAt,
+		&i.CallsUnavailable,
 	)
 	return i, err
 }
@@ -111,9 +112,9 @@ func (q *Queries) GetBenchmarkRunBySuite(ctx context.Context, arg GetBenchmarkRu
 
 const insertBenchmarkAttemptIfAbsent = `-- name: InsertBenchmarkAttemptIfAbsent :execrows
 INSERT INTO benchmark_attempts (benchmark_attempt_id, organization_id, benchmark_run_id,
-                                run_id, record_digest, audit_artifact_id)
+                                run_id, record_digest, audit_artifact_id, calls_unavailable)
 VALUES ($1, $2, $3,
-        $4, $5, $6)
+        $4, $5, $6, $7)
 ON CONFLICT ON CONSTRAINT benchmark_attempts_identity_key DO NOTHING
 `
 
@@ -124,6 +125,7 @@ type InsertBenchmarkAttemptIfAbsentParams struct {
 	RunID              string
 	RecordDigest       string
 	AuditArtifactID    pgtype.UUID
+	CallsUnavailable   string
 }
 
 // Attempts insert the same way, for the same reason. The digest comparison
@@ -138,6 +140,7 @@ func (q *Queries) InsertBenchmarkAttemptIfAbsent(ctx context.Context, arg Insert
 		arg.RunID,
 		arg.RecordDigest,
 		arg.AuditArtifactID,
+		arg.CallsUnavailable,
 	)
 	if err != nil {
 		return 0, err
@@ -213,7 +216,7 @@ func (q *Queries) InsertBenchmarkRunIfAbsent(ctx context.Context, arg InsertBenc
 }
 
 const listBenchmarkAttempts = `-- name: ListBenchmarkAttempts :many
-SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, imported_at FROM benchmark_attempts
+SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, imported_at, calls_unavailable FROM benchmark_attempts
 WHERE organization_id  = $1
   AND benchmark_run_id = $2
 ORDER BY run_id
@@ -241,6 +244,7 @@ func (q *Queries) ListBenchmarkAttempts(ctx context.Context, arg ListBenchmarkAt
 			&i.RecordDigest,
 			&i.AuditArtifactID,
 			&i.ImportedAt,
+			&i.CallsUnavailable,
 		); err != nil {
 			return nil, err
 		}

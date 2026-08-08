@@ -31,9 +31,9 @@ WHERE benchmark_run_id = @benchmark_run_id
 -- disagreed, and an ON CONFLICT clause cannot say.
 -- name: InsertBenchmarkAttemptIfAbsent :execrows
 INSERT INTO benchmark_attempts (benchmark_attempt_id, organization_id, benchmark_run_id,
-                                run_id, record_digest, audit_artifact_id)
+                                run_id, record_digest, audit_artifact_id, calls_unavailable)
 VALUES (@benchmark_attempt_id, @organization_id, @benchmark_run_id,
-        @run_id, @record_digest, @audit_artifact_id)
+        @run_id, @record_digest, @audit_artifact_id, @calls_unavailable)
 ON CONFLICT ON CONSTRAINT benchmark_attempts_identity_key DO NOTHING;
 
 -- name: GetBenchmarkAttempt :one

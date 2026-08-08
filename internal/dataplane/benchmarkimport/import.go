@@ -294,11 +294,17 @@ func (i *Importer) importAttempt(ctx context.Context, attempt *attemptContext) (
 			return metricErr
 		}
 		ledger, txErr := tx.RecordBenchmarkAttempt(ctx, store.RecordBenchmarkAttemptInput{
-			RunID:           attempt.record.RunID,
-			RecordDigest:    digest,
-			OrganizationID:  attempt.organizationID,
-			BenchmarkRunID:  attempt.benchmarkRunID,
-			AuditArtifactID: artifact.ArtifactID,
+			RunID:        attempt.record.RunID,
+			RecordDigest: digest,
+			// Written WITH the attempt, from the read that decided whether
+			// to write call rows at all. A measurement and the reason it is
+			// absent belong to the moment of measurement; reconstructing it
+			// later asks a different question of a store that may have
+			// changed (design D7e).
+			CallsUnavailable: usage.Reason,
+			OrganizationID:   attempt.organizationID,
+			BenchmarkRunID:   attempt.benchmarkRunID,
+			AuditArtifactID:  artifact.ArtifactID,
 		})
 		if txErr != nil {
 			return fmt.Errorf("ledger %s: %w", attempt.record.RunID, txErr)

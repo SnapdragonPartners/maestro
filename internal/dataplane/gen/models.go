@@ -66,6 +66,7 @@ type BenchmarkAttempt struct {
 	RecordDigest       string
 	AuditArtifactID    pgtype.UUID
 	ImportedAt         pgtype.Timestamptz
+	CallsUnavailable   string
 }
 
 type BenchmarkReport struct {
