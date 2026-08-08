@@ -174,7 +174,9 @@ The rules in `CLAUDE.md`'s Verification Discipline came from the first two forms
 
 ### ADR needs discovered in-phase
 
-**None.** Confirmed at item 10 by walking the [backlog](../notes_adr-backlog.md). Everything found in this phase was an implementation defect or an amendment to an already-Accepted ADR, not a decision needing its own record:
+**One**, raised by DR during the item 10 review and filed as [backlog candidate 16](../notes_adr-backlog.md): **reviewer heterogeneity must mean distinct *lineage*, not distinct model.** ADR 0020 already carries the norm and its degradation semantics, but defines the reviewer as running "a distinct model" from the author without defining lineage — so `claude-opus-4-1` reviewing `claude-sonnet-4-6` reads as heterogeneous while being one lab and one training lineage. That is `paired-default`'s exact composition since its first commit, which means **every row in the conformance log was produced by a same-lineage configuration and none was flagged degraded** — ADR 0020's flagging-and-surfacing requirement was never implemented, and no lineage concept exists in the code. Amendment blocks Phase 5; the benchmark-side clarification should land sooner.
+
+Everything else found in this phase was an implementation defect or an amendment to an already-Accepted ADR, not a decision needing its own record:
 
 - Item 6 amended **ADR 0022** (cross-store commit order, acceptance as the verifying step).
 - Item 8 took five amendments to its own design document, all within ADR 0022's accepted backup contract.
