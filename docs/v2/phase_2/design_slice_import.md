@@ -749,16 +749,17 @@ found.
 *Proposed during implementation, 2026-08-06; found by a mutation run whose
 mutant died for the wrong reason.*
 
-`benchmark_attempts.audit_artifact_id` references `audit_artifacts` `ON DELETE
-RESTRICT`. Item 5's truncation query already states the principle for the other
-such reference — "retention_pins references audit_artifacts ON DELETE RESTRICT
-… the predicate is what turns that protection from an aborted batch into a
-counted, reported outcome" — and item 9 added a second reference without a
-second predicate.
+`benchmark_attempts.audit_artifact_id` originally referenced `audit_artifacts`
+`ON DELETE RESTRICT` — it cascades now, which is where this amendment ends up.
+Item 5's truncation query already states the principle for the other such
+reference — "retention_pins references audit_artifacts ON DELETE RESTRICT … the
+predicate is what turns that protection from an aborted batch into a counted,
+reported outcome" — and item 9 added a second reference without a second
+predicate.
 
-The consequence is not a retained row. It is an **aborted pass**: any
-organization holding an unpinned imported run record makes `TruncateAuditBefore`
-fail with SQLSTATE 23001, and audit retention stops working for that tenant
+The consequence was not a retained row. It was an **aborted pass**: any
+organization holding an unpinned imported run record made `TruncateAuditBefore`
+fail with SQLSTATE 23001, and audit retention stopped working for that tenant
 entirely. Unpinned imported run records are not an edge case — they are every
 suite imported while it was still running, since the report that pins them does
 not exist until the suite stops.
