@@ -9,6 +9,13 @@
 # capable architect; mistral-small failed in both seats. Needs a reachable
 # Ollama (OLLAMA_HOST, default http://localhost:11434) with these models
 # pulled. gpt-oss routes to Ollama via the P-8 routing fix.
+#
+# This pairing is CROSS-LINEAGE and conforming under ADR 0020 as sharpened by DR
+# on 2026-08-08 (ADR backlog candidate 16): gpt-oss is OpenAI lineage, qwen3-coder
+# is Qwen/Alibaba lineage. Do not "fix" it by reading the provider column — both
+# models route through Ollama, but the serving provider is not the lineage.
+# Weight-openness is not a lineage distinction either: an open-weight model shares
+# a lab's lineage with that lab's closed-weight models.
 schema_version = 2
 name = "paired-local"
 description = "v1-as-patched paired-agent factory, local Ollama models"

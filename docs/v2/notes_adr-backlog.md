@@ -116,11 +116,21 @@ Raised by DR at Phase 2 exit (2026-08-08). **This is an amendment, not a new pri
 
 **This is not hypothetical, and it is retroactive.** `paired-default` is exactly the Opus-plus-Sonnet case: it has paired `claude-opus-4-1` (architect) with `claude-sonnet-4-6` (coder/PM) since its first commit `0649f51`. So **every row in the [conformance log](notes_conformance-log.md) was produced by a same-lineage configuration**, and none was flagged degraded — because ADR 0020's flagging requirement was never implemented. `mph/bundle.go` records the roles and `v1target/adapter.go` preserves them, but nothing computes heterogeneity, and the concept of a lineage does not exist in the code.
 
-Scope for the amendment:
+**Two scope questions answered by DR, 2026-08-08.**
 
-- **Define lineage** and pick the unit — lab/vendor is DR's stated intent; decide how open-weight models hosted elsewhere are attributed (is `gpt-oss` served by Ollama OpenAI-lineage or its own?), and how `human-<user_id>` principals classify (ADR 0020 already makes each human a distinct model; presumably each human is also a distinct lineage).
+**Lineage is the lab, and weight-openness is not a distinction.** An open-weight model shares a lineage with the same lab's closed-weight models. The rationale is what the amendment should encode: the correlated failure modes come from what a lab does uniformly across everything it ships — training-data ordering and weighting, alignment approach, and the rest of its house method. DeepSeek is the clean case, offering what is effectively the identical model in both forms. So `gpt-oss` is OpenAI-lineage even when Ollama serves it.
+
+> ⚠️ **Implementation trap: `Provider` is not lineage.** `pkg/config`'s `Provider` field and `ProviderPatterns` describe *how a request is routed*, not who trained the model — `gpt-oss` is deliberately routed to `ProviderOllama` (ahead of the `gpt` → OpenAI rule) precisely because serving and origin differ. Building the lineage check on the existing `Provider` value would classify `gpt-oss` as Ollama-lineage and call an OpenAI-vs-OpenAI pairing heterogeneous. Lineage needs its own attribute.
+>
+> Worked consequence: `paired-local` pairs `gpt-oss:20b` (OpenAI lineage) with `qwen3-coder:30b` (Qwen/Alibaba lineage) — **cross-lineage and conforming**, though both route through Ollama. `paired-default` pre-2026-08-08 paired two Anthropic models through one provider — same lineage, degraded. Provider tells you neither answer.
+
+**Same-lineage warns; it does not refuse.** "Degraded, not invalid" is load-bearing: there are legitimate deployments where distinct lineages are unavailable — high-security and sovereign-AI installations where only one lab is permitted, alongside ADR 0020's existing economic and airplane-mode cases. A hard failure would make those configurations unusable rather than honestly labelled. The bar the amendment must clear is that the warning is *visible*: what we have had until now is not an accepted degradation but an invisible one, which is the failure mode ADR 0020 explicitly forbids.
+
+Remaining scope for the amendment:
+
+- **Define the lineage attribute** — where it is declared, and how `human-<user_id>` principals classify (ADR 0020 already makes each human a distinct model; presumably each human is also a distinct lineage, which preserves the human-reviews-agent case).
 - **Restate the degradation ladder** in lineage terms: distinct lineage → same lineage, distinct model → same model. ADR 0020 today has only the last rung.
-- **Where it binds.** DR's "everywhere possible" spans the product's own reviewer routing (ADR 0020 calls that a Phase 5 deliverable) and the benchmark bundles (ADR 0025 §*Configurations* makes heterogeneity benchmarkable). The benchmark half is cheap and can be applied immediately; the product half rides Phase 5.
-- **Make the flag real.** ADR 0020 requires the degraded state to be surfaced, not merely recorded. Decide where it surfaces — MPH bundle validation, the run record, the review record, or all three — and whether a same-lineage benchmark configuration should warn or refuse.
+- **Where it binds.** DR's "everywhere possible" spans the product's own reviewer routing (ADR 0020 calls that a Phase 5 deliverable) and the benchmark bundles (ADR 0025 makes heterogeneity benchmarkable). The benchmark half is cheap and can be applied immediately; the product half rides Phase 5.
+- **Where the warning surfaces** — MPH bundle validation, the run record, the review record, or all three — given that it must be surfaced to the operator, not merely stored.
 
 Blocks **Phase 5** (reviewer model routing), but the benchmark-side clarification should land sooner, since `paired-default` currently encodes the opposite of the intent and its comment says so.
