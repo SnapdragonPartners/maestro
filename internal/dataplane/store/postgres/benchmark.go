@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
@@ -118,6 +117,7 @@ func benchmarkAttemptFromRow(row *gen.BenchmarkAttempt) store.BenchmarkAttempt {
 		ImportedAt:         fromTimestamptz(row.ImportedAt),
 		RunID:              row.RunID,
 		RecordDigest:       row.RecordDigest,
+		CallsUnavailable:   row.CallsUnavailable,
 		BenchmarkAttemptID: fromUUID(row.BenchmarkAttemptID),
 		OrganizationID:     fromUUID(row.OrganizationID),
 		BenchmarkRunID:     fromUUID(row.BenchmarkRunID),
@@ -330,6 +330,7 @@ func (t *tx) RecordBenchmarkAttempt(ctx context.Context, input store.RecordBench
 		RunID:              input.RunID,
 		RecordDigest:       input.RecordDigest,
 		AuditArtifactID:    toUUID(input.AuditArtifactID),
+		CallsUnavailable:   input.CallsUnavailable,
 	})
 	if err != nil {
 		return empty, fmt.Errorf("insert benchmark attempt %q: %w", input.RunID, err)
@@ -373,12 +374,6 @@ func notFoundByName(err error, kind, name string) error {
 	return fmt.Errorf("read %s %q: %w", kind, name, err)
 }
 
-// The uniqueness rules this seam has to speak for.
-const (
-	uniqueViolation                = "23505"
-	reportArtifactUniqueConstraint = "benchmark_reports_artifact_key"
-)
-
 // GetSuiteReport returns which artifact is the suite's report.
 func (t *tx) GetSuiteReport(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) (*store.SuiteReportClaim, error) {
 	row, err := t.queries.GetBenchmarkReport(ctx, gen.GetBenchmarkReportParams{
@@ -404,35 +399,36 @@ func (t *tx) GetSuiteReport(ctx context.Context, organizationID, benchmarkRunID 
 // report what actually happened to the suite.
 //
 //nolint:gocritic // hugeParam: by value, matching the seam interface
-func (t *tx) ClaimSuiteReport(ctx context.Context, input store.ClaimSuiteReportInput) (store.Bootstrapped[store.SuiteReportClaim], error) {
+func (t *tx) ClaimSuiteReport(
+	ctx context.Context, organizationID, benchmarkRunID uuid.UUID,
+) (store.Bootstrapped[store.SuiteReportClaim], error) {
 	var empty store.Bootstrapped[store.SuiteReportClaim]
 	identifier, err := newIdentifier(uuid.Nil)
 	if err != nil {
 		return empty, err
 	}
+	// The ARTIFACT's identifier is allocated here too, and that is the point
+	// of the seam owning it. A caller-supplied id is a caller-supplied
+	// invariant: the nil UUID is read by artifact creation as "allocate one
+	// for me", which would produce an artifact the claim does not name and
+	// let a retry create a second; a v4 is refused by artifact creation
+	// outright, which strands the claim permanently on an id nothing can
+	// ever be written under. Neither is a validation gap so much as a
+	// question the caller should never have been asked.
+	artifactID, err := newIdentifier(uuid.Nil)
+	if err != nil {
+		return empty, err
+	}
 	inserted, err := t.queries.InsertBenchmarkReportIfAbsent(ctx, gen.InsertBenchmarkReportIfAbsentParams{
 		BenchmarkReportID: toUUID(identifier),
-		OrganizationID:    toUUID(input.OrganizationID),
-		BenchmarkRunID:    toUUID(input.BenchmarkRunID),
-		ReportArtifactID:  toUUID(input.ReportArtifactID),
+		OrganizationID:    toUUID(organizationID),
+		BenchmarkRunID:    toUUID(benchmarkRunID),
+		ReportArtifactID:  toUUID(artifactID),
 	})
 	if err != nil {
-		// The statement's ON CONFLICT covers one of the two uniqueness
-		// rules -- one report per suite, which is the arbiter this call
-		// exists to consult. The other, one suite per report, is a caller
-		// error rather than a race: it means this artifact is already
-		// another suite's report. Translated rather than passed through,
-		// because a raw 23505 at the seam describes a constraint name to
-		// somebody holding a suite id.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == uniqueViolation &&
-			pgErr.ConstraintName == reportArtifactUniqueConstraint {
-			return empty, fmt.Errorf("%w: artifact %s is already the report of another suite",
-				store.ErrReportAlreadyClaimed, input.ReportArtifactID)
-		}
-		return empty, fmt.Errorf("claim the report of benchmark run %s: %w", input.BenchmarkRunID, err)
+		return empty, fmt.Errorf("claim the report of benchmark run %s: %w", benchmarkRunID, err)
 	}
-	stored, err := t.GetSuiteReport(ctx, input.OrganizationID, input.BenchmarkRunID)
+	stored, err := t.GetSuiteReport(ctx, organizationID, benchmarkRunID)
 	if err != nil {
 		return empty, err
 	}

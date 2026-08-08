@@ -38,15 +38,6 @@ var (
 	// make `bootstrap --org acme --org-name "Acme Ltd"` appear to succeed
 	// while the plane still said "Acme Inc".
 	ErrBootstrapConflict = errors.New("the record exists with different display data")
-
-	// ErrReportAlreadyClaimed reports an artifact offered as one suite's
-	// report that is already another's.
-	//
-	// One suite per report is the mirror of one report per suite, and it is
-	// a caller error rather than a race: the first rule is settled by
-	// convergence on a single row, and this one means the caller named an
-	// artifact that belongs to a different run.
-	ErrReportAlreadyClaimed = errors.New("the artifact is already another suite's report")
 )
 
 // ImportConflict carries both sides of a rejected re-import, because the
@@ -113,9 +104,16 @@ type BenchmarkRun struct {
 // was imported, and the digest that decides whether a re-offer is a no-op or
 // a conflict.
 type BenchmarkAttempt struct {
-	ImportedAt         time.Time
-	RunID              string
-	RecordDigest       string
+	ImportedAt   time.Time
+	RunID        string
+	RecordDigest string
+	// CallsUnavailable says why this attempt contributed no call rows, and
+	// is empty when they were read. Recorded at IMPORT, in the transaction
+	// that decided it, because it is a fact about the measurement rather
+	// than about the store as it stands later: an attempt whose calls were
+	// read and whose evidence was afterwards pruned would re-read as
+	// unavailable, and the plane would contradict its own llm_calls rows.
+	CallsUnavailable   string
 	BenchmarkAttemptID uuid.UUID
 	OrganizationID     uuid.UUID
 	BenchmarkRunID     uuid.UUID
@@ -134,13 +132,6 @@ type BenchmarkAttempt struct {
 type SuiteReportClaim struct {
 	ClaimedAt        time.Time
 	ClaimID          uuid.UUID
-	OrganizationID   uuid.UUID
-	BenchmarkRunID   uuid.UUID
-	ReportArtifactID uuid.UUID
-}
-
-// ClaimSuiteReportInput names the artifact a suite's report is.
-type ClaimSuiteReportInput struct {
 	OrganizationID   uuid.UUID
 	BenchmarkRunID   uuid.UUID
 	ReportArtifactID uuid.UUID
@@ -175,11 +166,14 @@ type Bootstrapped[T any] struct {
 // row, and the next import writes the artifact again — silently duplicating
 // the record the ledger exists to make unique.
 type RecordBenchmarkAttemptInput struct {
-	RunID           string
-	RecordDigest    string
-	OrganizationID  uuid.UUID
-	BenchmarkRunID  uuid.UUID
-	AuditArtifactID uuid.UUID
+	RunID        string
+	RecordDigest string
+	// CallsUnavailable is the recorded absence, written with the attempt
+	// because it was observed with it. Empty means the calls were read.
+	CallsUnavailable string
+	OrganizationID   uuid.UUID
+	BenchmarkRunID   uuid.UUID
+	AuditArtifactID  uuid.UUID
 }
 
 // BenchmarkReader is the benchmark family's read surface.
@@ -216,20 +210,24 @@ type BenchmarkWriter interface {
 	// second call would change, so re-import reads rather than writes.
 	EnsureBenchmarkRun(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (Bootstrapped[BenchmarkRun], error)
 
-	// ClaimSuiteReport records which artifact is a suite's report, and
-	// reports whether THIS caller was the one that recorded it.
+	// ClaimSuiteReport reserves the identifier a suite's report will be
+	// written under, and reports whether THIS caller reserved it.
 	//
-	// Created=false with no error means another importer got there first,
-	// and the returned claim is that importer's. The caller is then holding
-	// a draft report nobody will ever accept, and must withdraw it: two
-	// drafts for one suite are two claims about one conformance run, and
-	// both would be independently acceptable.
+	// It ALLOCATES that identifier rather than accepting one. A caller
+	// supplying it supplies an invariant with it: the nil UUID is read by
+	// artifact creation as "allocate one", which would produce an artifact
+	// the claim does not name, and a non-v7 id is refused by artifact
+	// creation, which strands the claim on something nothing can ever be
+	// written under.
 	//
-	// It cannot join the transaction that creates the artifact, because
-	// AttachEvidence owns its own — so the artifact is written first and
-	// claimed second, and losing the claim is a compensating path rather
-	// than a rollback.
-	ClaimSuiteReport(ctx context.Context, input ClaimSuiteReportInput) (Bootstrapped[SuiteReportClaim], error)
+	// Created=false with no error means another caller reserved it first,
+	// and the returned claim is that one. The claim is recorded BEFORE the
+	// artifact exists — it cannot join the transaction that creates it,
+	// because AttachEvidence owns its own — so a caller that dies before
+	// writing leaves a claim naming an artifact that does not exist yet.
+	// That is a legitimate, recoverable state: the next caller writes the
+	// artifact under the identifier already reserved.
+	ClaimSuiteReport(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) (Bootstrapped[SuiteReportClaim], error)
 }
 
 // BenchmarkTxWriter is the part of the benchmark family that exists ONLY

@@ -287,19 +287,11 @@ func (i *Importer) writeReport(ctx context.Context, report *reportContext, repor
 // WINNER's — which is the id it must then write under or read from, never
 // one of its own.
 func (i *Importer) claimReport(ctx context.Context, report *reportContext) (uuid.UUID, error) {
-	// UUIDv7, which a preallocated artifact id must be: the plane orders
-	// artifacts by identifier, and a v4 would order this one at random
-	// forever after.
-	proposed, err := uuid.NewV7()
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("allocate a report id for suite %s: %w",
-			report.suite.Manifest.SuiteRunID, err)
-	}
-	claim, err := i.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
-		OrganizationID:   report.organizationID,
-		BenchmarkRunID:   report.benchmarkRunID,
-		ReportArtifactID: proposed,
-	})
+	// The SEAM allocates the identifier. Proposing one here would be
+	// proposing an invariant with it — the nil UUID is read by artifact
+	// creation as "allocate one", and a non-v7 is refused outright — and
+	// neither is a question this caller should be answering.
+	claim, err := i.store.ClaimSuiteReport(ctx, report.organizationID, report.benchmarkRunID)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("claim the report of suite %s: %w",
 			report.suite.Manifest.SuiteRunID, err)
@@ -578,7 +570,7 @@ func (r *reportContext) build(ledger []store.BenchmarkAttempt) (*assembled, erro
 			RunRecordArtifactID: attempt.AuditArtifactID.String(),
 			Evidence:            evidence.reported(),
 			SkippedEvidence:     evidence.reportedSkips(),
-			CallsUnavailable:    r.callsUnavailable(attempt.RunID),
+			CallsUnavailable:    attempt.CallsUnavailable,
 		})
 	}
 
@@ -658,35 +650,6 @@ func (e *scannedEvidence) reportedSkips() []ReportSkip {
 		})
 	}
 	return skips
-}
-
-// callsUnavailable re-reads one attempt's usage log at ASSEMBLY time and
-// reports why it yields no calls, or "" when it does.
-//
-// Re-read rather than carried over from this invocation's outcomes, which is
-// what the first version did and which quietly lost the fact. An attempt
-// ledgered by an EARLIER import short-circuits before the usage log is
-// opened at all, so it contributes an empty outcome -- and a surface-v1
-// attempt imported while the suite was still running would therefore appear
-// in the terminal report as one whose calls were read. A recorded absence
-// that disappears is worse than one that was never recorded: it is the zero
-// D9 exists to prevent, arriving by a different route.
-//
-// What the rescan can and cannot know, stated rather than implied: it
-// describes the STORE as it stands at report time. For an append-only
-// evidence tree beside an append-only record that is the same fact the
-// import saw, and the cases that matter -- a surface-v1 suite, a log that
-// was never written, an attempt with no evidence directory -- do not change
-// with time. A log that has since become unreadable is reported as an
-// absence with the failure named, rather than failing the whole report: by
-// then the attempt's calls are either in the plane or they are not, and
-// refusing to describe the suite would not put them there.
-func (r *reportContext) callsUnavailable(runID string) string {
-	usage, err := r.suite.ReadUsageLog(runID)
-	if err != nil {
-		return "the usage log could not be read: " + err.Error()
-	}
-	return usage.Reason
 }
 
 // summary is the one-line description stored beside the report.

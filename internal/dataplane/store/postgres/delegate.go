@@ -518,12 +518,12 @@ func (s *Store) GetSuiteReport(ctx context.Context, organizationID, benchmarkRun
 	})
 }
 
-// ClaimSuiteReport records which artifact is a suite's report, idempotently.
-//
-//nolint:gocritic // hugeParam: by value, matching the seam interface
-func (s *Store) ClaimSuiteReport(ctx context.Context, input store.ClaimSuiteReportInput) (store.Bootstrapped[store.SuiteReportClaim], error) {
+// ClaimSuiteReport reserves the identifier a suite's report is written under.
+func (s *Store) ClaimSuiteReport(
+	ctx context.Context, organizationID, benchmarkRunID uuid.UUID,
+) (store.Bootstrapped[store.SuiteReportClaim], error) {
 	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.SuiteReportClaim], error) {
-		outcome, txErr := t.ClaimSuiteReport(ctx, input)
+		outcome, txErr := t.ClaimSuiteReport(ctx, organizationID, benchmarkRunID)
 		return &outcome, txErr
 	})
 	if err != nil {
