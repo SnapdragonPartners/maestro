@@ -163,6 +163,30 @@ Its forms, all seen in this phase: assertions that could not fail; a drift check
 
 The rules in `CLAUDE.md`'s Verification Discipline came from the first two forms. The last three are newer and are recorded here rather than added to `CLAUDE.md` now — a holistic pass over that file is planned, and piecemeal additions are how a short rule list becomes an unread one.
 
+### Item 10 produced a different form: claims broader than their evidence
+
+Every meta-defect above is about *evidence that could not discriminate*. Item 10's review — five rounds, six P1s and four follow-on corrections — found almost nothing wrong with the underlying observations. What kept failing was **the scope of the claims built on them**:
+
+| Written | Actually supported |
+| --- | --- |
+| "Nothing in Phase 2 touched the agent path" | Nothing in the *data-plane work* did; item 9 changed `pkg/agent` and is unverified |
+| "No viable architect model" | One replacement was tested and failed; three others were never tried |
+| "Rules out every reasoning-tier replacement" | Three models were observed to reject a non-default temperature |
+| "Untested non-reasoning alternatives" | Only their temperature compatibility was measured |
+| "Every row in the conformance log" | Every *paired-agent* row; the single-agent controls have no pairing |
+| "`paired-default` was degraded" | It conforms under ADR 0020's operative text; it would be degraded under a *proposed* amendment |
+| "Cross-vendor pairing, adopted by DR" | A principle already Accepted in ADR 0020, whose *unit* DR proposed sharpening |
+
+The pattern is one step of over-generalisation past a sound observation — a true fact stated at a width the evidence does not carry. It is harder to catch than a wrong fact, because checking the fact confirms it and the width goes unexamined. Two of these would have put a **false violation** into the permanent record: the last two assert that something breached an accepted ADR when nothing did.
+
+Three properties make this failure mode distinctive, and worth its own entry:
+
+- **It is invisible to the checks that catch the others.** Tests, mutation, and reproduction all validate facts. None of them reads a sentence and asks whether the quantifier is earned.
+- **It concentrates in the durable artifacts.** These claims were in the conformance log, the roadmap, and this record — the documents specifically meant to outlive the session, and the ones a future reader will trust without re-deriving.
+- **It is systematically *self-flattering to the phase*.** "Nothing touched the agent path", "the instrument broke from outside", "no viable model existed" all move responsibility outward. That direction is not a coincidence and is the tell to look for.
+
+The working rule this suggests, pending the `CLAUDE.md` pass: **before writing a universal — *every*, *nothing*, *no*, *all*, *always* — name the observations that support it and check they cover the whole set.** Where they do not, state the tested set instead. And when writing that a rule was violated, quote the rule's operative text first; a proposed rule cannot be breached retroactively.
+
 ## Follow-ups
 
 - [maestro#287](https://github.com/SnapdragonPartners/maestro/issues/287) — fold `dataplanectl` into the main binary; blocked on moving the compose assets under a package, since embedding cannot reach parent directories.
