@@ -628,7 +628,7 @@ This also simplifies the failure story: a partial import writes no objects at al
 so the unreferenced-attachment residue D6 describes can only arise from a failed
 *terminal* import, in one place, on one path.
 
-### D7a. A report's re-import check is over the attempts it covers, not its payload digest (amendment)
+### D7a. A report's re-import check is over a stable projection, not its payload digest (amendment)
 
 *Proposed during implementation, 2026-08-06; found by building the report.*
 
@@ -658,12 +658,16 @@ suite. The same held for an evidence file whose bytes changed under a pinned
 digest. The attempt-level diff survives only to say WHICH attempts moved: a
 projection digest can report that something changed, and an operator needs to
 know what. The cost is a rescan on the no-op path, since deciding whether
-anything changed means assembling the candidate. What D7 was protecting is still protected by the
-identities the plane already keeps: an attempt's identity is its record digest,
-and D6 refuses any attempt re-offered with different bytes long before assembly
-runs, so by then the only thing that can disagree is WHICH attempts the report
-covers. That comparison is over values that do not change when the store moves,
-which is the property D6a requires of anything used as an identity.
+anything changed means assembling the candidate.
+
+What D7 was protecting is protected better, not merely differently. The
+projection is over values that do not change when the store moves — the
+attachment identifier is the only field that does, and it is exactly the field
+normalized away — which is the property D6a requires of anything used as an
+identity. And it covers the whole claim rather than one part of it: an
+attempt's own identity is still its record digest, which D6 refuses to see
+change long before assembly runs, but the manifest and the evidence are claims
+too.
 
 Two consequences worth stating:
 
@@ -678,7 +682,7 @@ Two consequences worth stating:
   — and a report assembled over it would sign a claim about records nobody can
   read. That is `ErrLedgerDiverged`.
 
-### D7b. One report per suite is a constraint, not a convention (amendment)
+### D7b. One report per suite is a plane invariant, enforced at creation (amendment)
 
 *Proposed during implementation, 2026-08-06; found by extending the item's own
 concurrency test to the report.*
@@ -704,26 +708,43 @@ a death between the two commits leaves a live, fully pinned draft that no claim
 names, and the retry writes and claims a second one. A post-write unique row
 narrows that window; it does not close it.
 
-Reversing the order closes it. The importer preallocates the artifact's
-identifier, records the claim, and writes the artifact under that exact id. The
-only inconsistent state left — a claim whose artifact does not exist *yet* — is
-self-healing rather than ambiguous: the next import finds the claim, sees no
-artifact, and writes it under the id already claimed. There is never a second
+Reversing the order closes it. **The claim seam allocates the identifier**,
+records the reservation, and returns it; the caller writes the artifact under
+what it was given. The importer proposes nothing — a caller-supplied identifier
+carries an invariant with it, and both ways of getting it wrong defeat the
+protocol: the nil UUID is read by artifact creation as "allocate one", which
+produces an artifact the claim does not name, and a non-v7 is refused by
+artifact creation outright, which strands the reservation on an id nothing can
+ever be written under.
+
+The only inconsistent state left — a reservation whose artifact does not exist
+*yet* — is self-healing rather than ambiguous: the next import finds it, sees no
+artifact, and writes under the id already reserved. There is never a second
 artifact to choose between, so there is nothing to withdraw.
 
 The cost is the foreign key, which cannot survive an intent recorded before its
 referent. That is the shape the object module already uses for destructive work
 — ADR 0022's deletion claim is a durable intent naming storage that may already
-be gone — and integrity moves to the seam, which checks *more* than the key did:
-the key constrained only the tenant, while the seam requires a
-`benchmark.suite_report` scoped to this run. The mirror rule, one suite per
-report, stays in the schema, and the seam translates its violation rather than
-handing a constraint name to somebody holding a suite id.
+be gone. Its down migration therefore has to DISCARD pending reservations before
+restoring the constraint, or 000020 would be reversible only on planes that
+never used the feature.
 
-The claim is also what `show` and the re-import check read. Scanning the scope
-for a Management artifact of the right type would answer with whatever it found.
+**And the reservation is enforced at creation, not merely consulted by the
+importer** (amended after review). A rule the importer follows is a convention:
+generic Management-artifact creation never looked at the reservation, so another
+caller could create a valid, fully pinned report beside the reserved one and
+accept it. Creation now refuses a benchmark-scoped Management artifact its scope
+did not reserve — expressed over the SCOPE rather than the artifact type, so the
+seam learns no name from the registry's vocabulary. Amendments are exempt: an
+amendment inherits its original's scope, every pin in a chain is held by the
+original, and requiring a reservation of one would forbid amending a report at
+all.
 
-### D7c. The ledger's reference has to be a truncation predicate, not just a foreign key (amendment)
+The reservation is also what `show` and the re-import check read. Scanning the
+scope for a Management artifact of the right type would answer with whatever it
+found.
+
+### D7c. The ledger's reference cascades, so retention still reaches an imported record (amendment)
 
 *Proposed during implementation, 2026-08-06; found by a mutation run whose
 mutant died for the wrong reason.*
@@ -785,7 +806,7 @@ story/config pair both accounts duplicate, and run at both boundaries. Sharing
 them is what makes the two agree by construction rather than by two
 implementations happening to be written the same week.
 
-### D7e. The recorded absence is re-read at assembly (amendment)
+### D7e. The recorded absence is stored with the attempt that observed it (amendment)
 
 *Proposed during review, 2026-08-07.*
 
@@ -797,10 +818,27 @@ as one whose calls had been read. That is the zero D9 exists to prevent arriving
 by a different route: an absence that disappears reads exactly like a
 measurement.
 
-Assembly re-reads every attempt's usage log, in the same pass that already
-rescans every attempt's evidence. What the rescan can and cannot know is stated
-beside it: it describes the store at report time, which for an append-only
-evidence tree beside an append-only record is the fact the import saw.
+The first fix re-read every attempt's usage log at assembly, and review was
+right that it answers a different question. An attempt whose calls WERE read,
+whose evidence is pruned before the suite finishes, re-reads as "no evidence
+directory" — so the report denies the `llm_calls` rows the plane holds for it.
+The reverse is possible too, and a read failure additionally embedded absolute
+store paths in a payload D6a keeps portable.
+
+**So the observation is written where the attempt is**: `calls_unavailable` on
+the ledger row, in the same transaction and from the same read that decided
+whether to write call rows at all. A measurement and the reason it is absent
+belong to the moment of measurement.
+
+The column is NOT NULL with **no default**, and it lives in the ledger's own
+migration (`000017`) rather than a later one. A default would let a writer omit
+it and be handed an answer it never observed — and the answer an empty default
+gives, "the calls were read", is precisely the one that fabricates a
+measurement. Adding it later with that default would have converted every
+already-imported surface-v1 attempt from unavailable into available. Folding it
+into the ledger's own migration removes the conversion rather than describing
+it: no row can predate the column, so there is no historical unknown to invent a
+meaning for.
 
 ## D8. Evidence bytes are found by walking the store, not by trusting the record
 
