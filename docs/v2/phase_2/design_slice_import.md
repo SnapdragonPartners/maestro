@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
-edit_date = "2026-08-07"
+edit_date = "2026-08-08"
 status = "draft"
 summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
@@ -458,20 +458,21 @@ made by the system importer, which is exactly the guardrail migration `000005`
 describes (a state change passes through a tool record) and is how a reader tells
 an assembled report from a hand-written one.
 
-**The default outcome is a draft, and the draft already satisfies item 9's
-requirement.** `AttachEvidence` writes the attachments, then the draft artifact
-and its complete pin set in one transaction — the cross-store commit order,
-exercised end to end, object write and digest reference and retention pin
-included. Acceptance is a second, explicit act:
+**The draft IS item 9's outcome.** `AttachEvidence` writes the attachments,
+then the draft artifact and its complete pin set in one transaction — the
+cross-store commit order, exercised end to end, object write and digest
+reference and retention pin included.
 
-```
-dataplanectl benchmark accept --report <id> --reviewer <handle> --rationale <text>
-```
-
-with the reviewer a *different* human principal, which is the review invariant
-biting on real data rather than in a unit test. If item 9 shipped acceptance as
-an automatic step it would have had to manufacture a reviewer, and a manufactured
-reviewer is the precise thing ADR 0020 exists to prevent.
+**Acceptance is not in item 9 at all** (amended, 2026-08-07). The original
+draft specified a `benchmark accept` verb here; the item ships assembly and
+stops. Acceptance requires a reviewer who is not the author, and ADR 0020 makes
+that a non-author **agent or human** principal — the invariant is
+non-authorship, not humanity. The reviewer this report waits for is expected to
+be the `benchmark-evidence-reviewer` agent recorded against GitHub #282, after
+Phase 2. Shipping the verb with nobody to run it would have invited exactly the
+manufactured reviewer ADR 0020 exists to prevent, so `show` prints
+`DRAFT — UNREVIEWED — NOT AUTHORITATIVE` instead, and the draft's pins hold its
+evidence in the meantime.
 
 ### The seam lets a human self-review, and this item closes it
 
@@ -643,8 +644,8 @@ This is D6a's rule arriving one layer up, exactly where D6a predicted it would:
 a payload used as an identity must contain only what the thing IS, and an
 attachment id is minted by the import rather than being a property of the suite.
 
-**The rule instead: an existing report is compared against the report the store
-would produce NOW, over a stable projection** — everything the payload claims,
+**The rule as it now stands: an existing report is compared against the report
+the store would produce NOW, over a stable projection** — everything the payload claims,
 with only the minted attachment identifiers normalized away. Agreement is a
 no-op; disagreement is `ErrReportStale`.
 
@@ -741,8 +742,9 @@ entirely. Unpinned imported run records are not an edge case — they are every
 suite imported while it was still running, since the report that pins them does
 not exist until the suite stops.
 
-The first fix was the missing predicate, and review was right that it fixed the
-symptom in the wrong direction: excluding ledgered records from the pass made
+The first fix — a predicate excluding ledgered records from the pass — is
+WITHDRAWN, and nothing in the truncation query mentions `benchmark_attempts`
+any more. Review was right that it fixed the symptom in the wrong direction: excluding ledgered records from the pass made
 every imported run record **permanent**. Nothing deletes a ledger row, so
 nothing could ever delete the artifact it named; invalidating or archiving a
 report released its pins and not its records, and Audit retention stopped

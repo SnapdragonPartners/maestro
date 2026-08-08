@@ -1307,10 +1307,11 @@ func runningSuite(t *testing.T, records []map[string]any) string {
 //
 // A suite imported while it was still running has no report, so nothing pins
 // its run records. Two things have to be true of them, and only the first was
-// true at first: the pass must not ABORT (the ledger's reference used to be
-// ON DELETE RESTRICT with no matching predicate, so a 23001 stopped audit
+// true at first: the pass must not ABORT (the ledger's reference was ON
+// DELETE RESTRICT with no matching predicate, so a 23001 stopped audit
 // retention for the whole tenant), and the record must actually be PRUNED
-// rather than retained forever.
+// rather than retained forever. The reference CASCADES now, which is what
+// makes both true at once.
 //
 // The second is the one worth a test of its own. Fixing the abort by
 // excluding ledgered records from the pass made every imported run record
