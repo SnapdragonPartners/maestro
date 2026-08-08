@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -287,8 +289,8 @@ func TestBenchmarkAttemptTenancy(t *testing.T) {
 	attempt := func(org, run, artifact, runID string) string {
 		return fmt.Sprintf(`
 			INSERT INTO benchmark_attempts (benchmark_attempt_id, organization_id, benchmark_run_id,
-			                                run_id, record_digest, audit_artifact_id)
-			VALUES ('%s', '%s', '%s', '%s', repeat('f', 64), '%s')`,
+			                                run_id, record_digest, audit_artifact_id, calls_unavailable)
+			VALUES ('%s', '%s', '%s', '%s', repeat('f', 64), '%s', '')`,
 			"7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a7a", org, run, runID, artifact)
 	}
 
@@ -315,9 +317,9 @@ func TestBenchmarkAttemptTenancy(t *testing.T) {
 	}
 	duplicate := fmt.Sprintf(`
 		INSERT INTO benchmark_attempts (benchmark_attempt_id, organization_id, benchmark_run_id,
-		                                run_id, record_digest, audit_artifact_id)
+		                                run_id, record_digest, audit_artifact_id, calls_unavailable)
 		VALUES ('7b7b7b7b-7b7b-4b7b-8b7b-7b7b7b7b7b7b', '%s', '%s', 'attempt-one',
-		        repeat('e', 64), '%s')`, orgA, runA, auditRunA)
+		        repeat('e', 64), '%s', '')`, orgA, runA, auditRunA)
 	requireConstraint(t, db, duplicate, "benchmark_attempts_identity_key")
 }
 
@@ -388,4 +390,77 @@ func TestBenchmarkScopeMigrationPreservesExistingScopes(t *testing.T) {
 		t.Fatalf("migrate up again: %v", err)
 	}
 	assertState("after up again")
+}
+
+// A ledger row must STATE whether its calls were read.
+//
+// The column carries no default, and that is the whole guard. A default
+// would let a writer omit it and be handed an answer it never observed --
+// and the answer a text default gives, empty, is precisely the one that
+// fabricates a measurement: it means "the calls were read". A surface-v1 log
+// and a missing log both import their attempt with zero call rows and a
+// reason, so "unavailable" is an ordinary outcome and not an edge case.
+//
+// An earlier revision added this column in a later migration with an empty
+// default, which would have converted every already-imported unavailable
+// attempt into an available one. Folding it into the ledger's own migration
+// removes the conversion rather than describing it: no row can predate the
+// column, so there is no historical unknown to invent a meaning for.
+func TestAnAttemptMustStateWhetherItsCallsWereRead(t *testing.T) {
+	dsn := disposableDatabase(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var organizationID, benchmarkRunID, artifactID string
+	if err := db.QueryRow(`
+		WITH org AS (
+			INSERT INTO organizations (organization_id, slug, display_name)
+			VALUES (gen_random_uuid(), 'stated', 'Stated')
+			RETURNING organization_id),
+		principal AS (
+			INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model)
+			SELECT gen_random_uuid(), organization_id, 'system', 'system-benchmark-importer' FROM org
+			RETURNING principal_instance_id, organization_id),
+		run AS (
+			INSERT INTO benchmark_runs (benchmark_run_id, organization_id, suite_run_id)
+			SELECT gen_random_uuid(), organization_id, 'golden-stated' FROM org
+			RETURNING benchmark_run_id, organization_id)
+		INSERT INTO audit_artifacts (artifact_id, organization_id, artifact_type, scope_type,
+		                             scope_benchmark_run_id, author_instance_id,
+		                             schema_version, summary, payload, payload_digest)
+		SELECT gen_random_uuid(), run.organization_id, 'benchmark.run_record', 'benchmark',
+		       run.benchmark_run_id, principal.principal_instance_id,
+		       1, 'a record', '{}'::jsonb, repeat('a', 64)
+		FROM run JOIN principal ON principal.organization_id = run.organization_id
+		RETURNING organization_id, scope_benchmark_run_id, artifact_id`).
+		Scan(&organizationID, &benchmarkRunID, &artifactID); err != nil {
+		t.Fatalf("seed the suite: %v", err)
+	}
+
+	// The column omitted: refused, because the writer did not say.
+	_, err = db.Exec(`
+		INSERT INTO benchmark_attempts (benchmark_attempt_id, organization_id, benchmark_run_id,
+		                                run_id, record_digest, audit_artifact_id)
+		VALUES (gen_random_uuid(), $1, $2, 'story-a--config--r1--aaaa1111', $3, $4)`,
+		organizationID, benchmarkRunID, strings.Repeat("b", 64), artifactID)
+	if err == nil {
+		t.Fatal("an attempt was ledgered without stating whether its calls were read; a default " +
+			"here answers a question the writer never asked the store")
+	}
+
+	// Stated, and the statement is kept verbatim -- including the empty
+	// string, which is a real answer rather than an absent one.
+	for _, stated := range []string{"", "the usage log is surface v1"} {
+		if _, err := db.Exec(`
+			INSERT INTO benchmark_attempts (benchmark_attempt_id, organization_id, benchmark_run_id,
+			                                run_id, record_digest, audit_artifact_id, calls_unavailable)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+			organizationID, benchmarkRunID, "story-a--config--r"+strconv.Itoa(len(stated))+"--aaaa1111",
+			strings.Repeat("c", 64), artifactID, stated); err != nil {
+			t.Fatalf("ledger an attempt stating %q: %v", stated, err)
+		}
+	}
 }

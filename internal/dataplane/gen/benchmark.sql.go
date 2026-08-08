@@ -12,7 +12,7 @@ import (
 )
 
 const getBenchmarkAttempt = `-- name: GetBenchmarkAttempt :one
-SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, imported_at, calls_unavailable FROM benchmark_attempts
+SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, calls_unavailable, imported_at FROM benchmark_attempts
 WHERE organization_id  = $1
   AND benchmark_run_id = $2
   AND run_id           = $3
@@ -34,8 +34,8 @@ func (q *Queries) GetBenchmarkAttempt(ctx context.Context, arg GetBenchmarkAttem
 		&i.RunID,
 		&i.RecordDigest,
 		&i.AuditArtifactID,
-		&i.ImportedAt,
 		&i.CallsUnavailable,
+		&i.ImportedAt,
 	)
 	return i, err
 }
@@ -216,7 +216,7 @@ func (q *Queries) InsertBenchmarkRunIfAbsent(ctx context.Context, arg InsertBenc
 }
 
 const listBenchmarkAttempts = `-- name: ListBenchmarkAttempts :many
-SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, imported_at, calls_unavailable FROM benchmark_attempts
+SELECT benchmark_attempt_id, organization_id, benchmark_run_id, run_id, record_digest, audit_artifact_id, calls_unavailable, imported_at FROM benchmark_attempts
 WHERE organization_id  = $1
   AND benchmark_run_id = $2
 ORDER BY run_id
@@ -243,8 +243,8 @@ func (q *Queries) ListBenchmarkAttempts(ctx context.Context, arg ListBenchmarkAt
 			&i.RunID,
 			&i.RecordDigest,
 			&i.AuditArtifactID,
-			&i.ImportedAt,
 			&i.CallsUnavailable,
+			&i.ImportedAt,
 		); err != nil {
 			return nil, err
 		}

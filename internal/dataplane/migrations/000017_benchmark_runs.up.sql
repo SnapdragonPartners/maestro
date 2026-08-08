@@ -67,6 +67,22 @@ CREATE TABLE benchmark_attempts (
     -- imported again on the next run and silently duplicated.
     audit_artifact_id    uuid        NOT NULL,
 
+    -- Why this attempt contributed no call rows, and EMPTY when they were
+    -- read. Recorded with the attempt because it was observed with it: the
+    -- reason is a fact about the import, and asking the store again later
+    -- answers a different question. An attempt whose calls were read and
+    -- whose evidence was afterwards pruned would re-read as "no evidence
+    -- directory", so the report would deny the llm_calls rows the plane
+    -- holds for it.
+    --
+    -- NOT NULL and NO DEFAULT, deliberately. A default would let a writer
+    -- omit the column and be given an answer it never observed, and the
+    -- answer it would be given -- empty, meaning "the calls were read" -- is
+    -- the one that fabricates a measurement. A surface-v1 log and a missing
+    -- log both import their attempt with zero calls and a reason, so
+    -- "unavailable" is an ordinary outcome rather than an edge case.
+    calls_unavailable    text        NOT NULL,
+
     imported_at          timestamptz NOT NULL DEFAULT now(),
 
     CONSTRAINT benchmark_attempts_run_id_check
