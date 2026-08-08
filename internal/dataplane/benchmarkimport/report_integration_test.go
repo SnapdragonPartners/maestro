@@ -92,6 +92,34 @@ func (p *plane) reportOf(t *testing.T, benchmarkRunID uuid.UUID) *store.Manageme
 	return artifact
 }
 
+// minimalReport is a valid, empty suite report: a terminal manifest whose one
+// cell was skipped, and no attempts. Enough to satisfy the payload validator,
+// so a refusal below cannot be about the payload.
+func minimalReport(t *testing.T, suiteRunID string) benchmarkimport.SuiteReportPayload {
+	t.Helper()
+	return benchmarkimport.SuiteReportPayload{
+		SuiteRunID: suiteRunID,
+		Manifest: benchmarkimport.Manifest{
+			SuiteRunID:    suiteRunID,
+			StopReason:    "completed",
+			SchemaVersion: benchmarkimport.ManifestSchemaVersion,
+			Attempts: []benchmarkimport.ManifestAttempt{{
+				Story: "story-a", Config: "config", Status: "skipped", Repeat: 1,
+			}},
+		},
+	}
+}
+
+// encodeReport serializes a payload for a direct seam call.
+func encodeReport(t *testing.T, payload benchmarkimport.SuiteReportPayload) []byte {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode report payload: %v", err)
+	}
+	return raw
+}
+
 // reportPayload decodes a report artifact's payload.
 func reportPayload(t *testing.T, artifact *store.ManagementArtifact) benchmarkimport.SuiteReportPayload {
 	t.Helper()
@@ -150,8 +178,11 @@ func (p *plane) attachmentCount(t *testing.T) int {
 	return count
 }
 
-// managementArtifacts lists every Management artifact scoped to one suite,
-// INCLUDING the withdrawn drafts of imports that lost a race.
+// managementArtifacts lists every Management artifact scoped to one suite.
+//
+// There should never be more than one: the claim reserves the identifier
+// before anything is written, and creation refuses an artifact the scope did
+// not reserve. Counting them is how a test says so.
 func (p *plane) managementArtifacts(t *testing.T, benchmarkRunID uuid.UUID) []store.ManagementArtifact {
 	t.Helper()
 	artifacts, err := p.store.ListManagementArtifactsByScope(context.Background(),
@@ -626,8 +657,9 @@ func TestAReportThatNoLongerCoversTheLedgerIsRefused(t *testing.T) {
 //
 // Reading for an existing report and writing one are two statements, so
 // nothing in the read prevents a second writer. The claim is what decides,
-// and the loser withdraws its draft rather than leaving a second
-// independently-acceptable account of the same run (ADR 0027).
+// and it decides BEFORE anything is written: every loser learns it lost
+// while holding nothing, so there is no second account of the same run to
+// withdraw (ADR 0027).
 func TestConcurrentTerminalImportsProduceOneReport(t *testing.T) {
 	p := newPlane(t)
 	dir := suiteWithEvidence(t)
@@ -668,23 +700,21 @@ func TestConcurrentTerminalImportsProduceOneReport(t *testing.T) {
 		t.Errorf("the importers report %d different report artifacts, want 1: %v", len(reported), reported)
 	}
 
-	// The winner is a draft, and every loser's draft is withdrawn. Not
-	// merely "one claim exists": an abandoned draft that stayed a draft
-	// would be acceptable by a reviewer who had no way to know it was a
-	// duplicate.
+	// The winner is a draft, and it is the only artifact there is. Not
+	// merely "one claim exists": a second draft would be acceptable by a
+	// reviewer with no way to know it was a duplicate.
 	claimed := p.reportOf(t, results[0].BenchmarkRunID)
 	if claimed.Status != store.StatusDraft {
 		t.Errorf("the claimed report is %q, want %q", claimed.Status, store.StatusDraft)
 	}
-	// And there is exactly ONE report artifact for the suite, not a claimed
-	// one beside the withdrawn drafts of everyone who lost.
+	// And there is exactly ONE report artifact for the suite.
 	//
-	// Asserted as a count rather than by checking the losers' statuses. An
+	// Asserted as a count rather than by checking any loser's status. An
 	// earlier version claimed AFTER writing, so a loser had a draft to
-	// withdraw and the test looked at its status; claiming first means a
-	// loser never writes one at all, and that assertion could no longer fail
-	// — it iterated an empty set and passed. What survives is the property
-	// that mattered all along.
+	// withdraw and this test looked at its status; claiming first means a
+	// loser never writes one, and that assertion could no longer fail — it
+	// iterated an empty set and passed. What survives is the property that
+	// mattered all along.
 	artifacts := p.managementArtifacts(t, results[0].BenchmarkRunID)
 	if len(artifacts) != 1 {
 		t.Errorf("the suite holds %d Management artifacts, want 1: every one of them is a claim "+
@@ -711,33 +741,37 @@ func TestAClaimWithoutItsArtifactIsCompletedByTheNextImport(t *testing.T) {
 	dir := suiteWithEvidence(t)
 	ctx := context.Background()
 
-	// Stand in for the import that claimed and then died: the run row and
-	// the claim exist, and nothing was ever written under the claimed id.
+	// Stand in for the import that reserved an identifier and then died:
+	// the run row and the claim exist, and nothing was ever written under
+	// the reserved id.
 	run, err := p.store.EnsureBenchmarkRun(ctx, p.organization.OrganizationID, testSuiteRunID)
 	if err != nil {
 		t.Fatalf("ensure benchmark run: %v", err)
 	}
-	abandoned := uuid.Must(uuid.NewV7())
-	claim, err := p.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
-		OrganizationID:   p.organization.OrganizationID,
-		BenchmarkRunID:   run.Record.BenchmarkRunID,
-		ReportArtifactID: abandoned,
-	})
+	claim, err := p.store.ClaimSuiteReport(ctx, p.organization.OrganizationID, run.Record.BenchmarkRunID)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
 	if !claim.Created {
 		t.Fatal("the claim already existed; the test needs to plant it")
 	}
+	reserved := claim.Record.ReportArtifactID
+	// The seam allocates it, so the test asserts what a caller could not
+	// have got wrong: a v7, which is what artifact creation requires and
+	// what a caller-supplied nil or v4 would have broken.
+	if reserved.Version() != 7 {
+		t.Fatalf("the reserved identifier is UUID version %d, want 7: artifact creation refuses "+
+			"anything else, which would strand the claim permanently", reserved.Version())
+	}
 
 	result := p.mustImport(t, dir)
 	if result.Report == nil {
 		t.Fatal("the import produced no report")
 	}
-	if result.Report.ArtifactID != abandoned {
-		t.Errorf("the import wrote report %s, and the claim it found named %s: the claim is the "+
+	if result.Report.ArtifactID != reserved {
+		t.Errorf("the import wrote report %s, and the claim it found reserved %s: the claim is the "+
 			"identifier, and writing a different one is how a second report comes to exist",
-			result.Report.ArtifactID, abandoned)
+			result.Report.ArtifactID, reserved)
 	}
 	if count := p.managementArtifactCount(t, run.Record.BenchmarkRunID); count != 1 {
 		t.Errorf("the suite holds %d Management artifacts, want 1", count)
@@ -752,54 +786,97 @@ func TestAClaimWithoutItsArtifactIsCompletedByTheNextImport(t *testing.T) {
 	}
 }
 
-// One artifact cannot be two suites' report.
+// A second report cannot be created for a suite, even by a caller that never
+// consults the claim.
 //
-// The mirror of one report per suite, and the schema is the arbiter for both.
-// This is the case dropping the foreign key does NOT weaken: the uniqueness
-// on (organization, artifact) still refuses it, and the seam translates the
-// refusal instead of passing a constraint name to somebody holding a suite id.
-func TestAClaimNamingAForeignArtifactIsRefused(t *testing.T) {
+// This is the bypass the claim did not close while it was only consulted by
+// the importer. Nothing stopped another caller creating a perfectly valid,
+// fully pinned benchmark.suite_report beside the claimed one and accepting
+// it, leaving the plane holding two authoritative accounts of one
+// conformance run. A rule the importer follows is a convention; a rule
+// creation enforces is an invariant, so this goes at the seam and this test
+// reaches PAST the importer to prove it.
+func TestASecondReportCannotBeCreatedForAClaimedSuite(t *testing.T) {
 	p := newPlane(t)
-	dir := suiteWithEvidence(t)
 	ctx := context.Background()
+	imported := p.mustImport(t, suiteWithEvidence(t))
+	if imported.Report == nil {
+		t.Fatal("the import produced no report")
+	}
+	claimed := p.reportOf(t, imported.BenchmarkRunID)
 
-	// A real, well-formed report — for a DIFFERENT suite.
-	otherDir, otherSuite := otherSuiteWithEvidence(t)
-	other, err := benchmarkimport.New(p.store).Import(ctx, &benchmarkimport.Options{
-		OrganizationSlug: testOrgSlug, OperatorHandle: testOperator,
-		Dir: otherDir, SuiteRunID: otherSuite,
+	// A human principal, so the author rule is satisfied and the refusal
+	// below cannot be that instead.
+	author, err := p.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
+		Kind: store.PrincipalHuman, Model: "human-" + p.operator.UserID.String(),
+		UserID: &p.operator.UserID, OrganizationID: p.organization.OrganizationID,
 	})
 	if err != nil {
-		t.Fatalf("import the other suite: %v", err)
-	}
-	if other.Report == nil {
-		t.Fatal("the other suite produced no report")
+		t.Fatalf("create the author: %v", err)
 	}
 
-	run, err := p.store.EnsureBenchmarkRun(ctx, p.organization.OrganizationID, testSuiteRunID)
-	if err != nil {
-		t.Fatalf("ensure benchmark run: %v", err)
-	}
-	_, err = p.store.ClaimSuiteReport(ctx, store.ClaimSuiteReportInput{
+	// The SAME payload the claimed report carries, so it is valid by
+	// construction: what is being refused is the second artifact, not a
+	// malformed one.
+	_, err = p.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Type:    benchmarkimport.TypeSuiteReport,
+		Summary: "a second account of the same suite",
+		Payload: claimed.Payload,
+		Scope: store.Scope{
+			Type: store.ScopeBenchmark,
+			ID:   imported.BenchmarkRunID,
+		},
 		OrganizationID:   p.organization.OrganizationID,
-		BenchmarkRunID:   run.Record.BenchmarkRunID,
-		ReportArtifactID: other.Report.ArtifactID,
+		UserID:           p.operator.UserID,
+		AuthorInstanceID: author.PrincipalInstanceID,
 	})
-	if !errors.Is(err, store.ErrReportAlreadyClaimed) {
-		t.Fatalf("claiming another suite's report returned %v, want ErrReportAlreadyClaimed", err)
+	if !errors.Is(err, store.ErrUnclaimedScope) {
+		t.Fatalf("creating a second report for a claimed suite returned %v, want ErrUnclaimedScope", err)
 	}
-	// A typed error, not the driver's. A raw 23505 at the seam describes a
-	// constraint name to somebody holding a suite id.
-	if strings.Contains(err.Error(), "SQLSTATE") {
-		t.Errorf("the refusal leaks a driver error: %v", err)
+	if count := p.managementArtifactCount(t, imported.BenchmarkRunID); count != 1 {
+		t.Errorf("the suite holds %d Management artifacts, want 1", count)
+	}
+}
+
+// And a FIRST report cannot be created for a suite that reserved nothing.
+//
+// The other half of the same rule, and the half a test using an
+// already-reported suite cannot see: a caller reaching the seam directly
+// before any claim exists would otherwise write the artifact the claim was
+// supposed to name.
+func TestAReportCannotBeCreatedForASuiteThatReservedNothing(t *testing.T) {
+	p := newPlane(t)
+	ctx := context.Background()
+	// A suite with attempts and no report: imported while still running, so
+	// nothing has reserved an identifier for it.
+	records := []map[string]any{recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})}
+	partial := p.mustImport(t, runningSuite(t, records))
+	if partial.Report != nil {
+		t.Fatal("the running suite acquired a report; then a claim exists and the test proves nothing")
 	}
 
-	// And the suite is still reportable: the refused claim wrote nothing.
-	result := p.mustImport(t, dir)
-	if result.Report == nil || !result.Report.Created {
-		t.Errorf("the suite could not be reported after a refused claim: %+v", result.Report)
+	author, err := p.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
+		Kind: store.PrincipalHuman, Model: "human-" + p.operator.UserID.String(),
+		UserID: &p.operator.UserID, OrganizationID: p.organization.OrganizationID,
+	})
+	if err != nil {
+		t.Fatalf("create the author: %v", err)
 	}
-	_ = dir
+	_, err = p.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Type:    benchmarkimport.TypeSuiteReport,
+		Summary: "a report nobody reserved",
+		Payload: encodeReport(t, minimalReport(t, testSuiteRunID)),
+		Scope: store.Scope{
+			Type: store.ScopeBenchmark,
+			ID:   partial.BenchmarkRunID,
+		},
+		OrganizationID:   p.organization.OrganizationID,
+		UserID:           p.operator.UserID,
+		AuthorInstanceID: author.PrincipalInstanceID,
+	})
+	if !errors.Is(err, store.ErrUnclaimedScope) {
+		t.Fatalf("creating a report for an unreserved suite returned %v, want ErrUnclaimedScope", err)
+	}
 }
 
 // Truncation cannot remove what a DRAFT report holds.
@@ -812,15 +889,13 @@ func TestAClaimNamingAForeignArtifactIsRefused(t *testing.T) {
 // impossible to notice, since every other test in the plane pins from an
 // artifact nobody has looked at either.
 //
-// Stated rather than implied, because the two halves are protected by
-// different things and only one of them is this test's subject:
-//
-//   - The ATTACHMENTS are protected by the pins alone. Nothing else in the
-//     schema references an attachment row, so a report that failed to pin
-//     one would lose its bytes to truncation and the sweep.
-//   - The RUN RECORDS are protected by the pins AND by the ledger's own
-//     ON DELETE RESTRICT reference. Either would keep them, so this test
-//     cannot tell which one did — it asserts that they survive, not why.
+// BOTH halves are protected by the pins and by nothing else, which was not
+// true when this test was written. The ledger's reference used to RESTRICT,
+// so a run record survived whether or not anything pinned it and this test
+// could not tell which had kept it. That reference cascades now: an unpinned
+// record past the horizon is pruned and takes its ledger row with it, so a
+// report that failed to pin one would lose it — and a report that failed to
+// pin an attachment would lose its bytes to truncation and the sweep.
 func TestTruncationCannotRemoveWhatADraftReportHolds(t *testing.T) {
 	p := newPlane(t)
 	result := p.mustImport(t, suiteWithEvidence(t))
@@ -898,16 +973,16 @@ func TestTruncationCannotRemoveWhatADraftReportHolds(t *testing.T) {
 //
 // An attempt ledgered while the suite was still running short-circuits on
 // every later import: it is skipped for its artifact and call rows, which
-// are already correct. It contributes an empty outcome, so a report built
-// from THIS invocation's outcomes would say nothing about why that attempt
-// produced no calls — and "nothing" reads as "its calls were read", which
-// is the zero D9 exists to prevent arriving by a different route.
+// are already correct. A report built from THIS invocation's outcomes would
+// say nothing about why that attempt produced no calls — and "nothing" reads
+// as "its calls were read", which is the zero D9 exists to prevent arriving
+// by a different route.
 func TestTheReportKeepsAnAbsenceTheTerminalImportNeverObserved(t *testing.T) {
 	p := newPlane(t)
 	first := recordWith(t, map[string]any{"run_id": "story-a--config--r1--aaaa1111"})
 	dir := runningSuite(t, []map[string]any{first})
-	// Evidence, but no usage log: a real absence with a reason, and one that
-	// the partial import DOES observe.
+	// Evidence, but no usage log: a real absence with a reason, and one the
+	// partial import DOES observe.
 	evidenceFor(t, dir, "story-a--config--r1--aaaa1111", map[string]string{"pr.json": `{"number":1}`})
 
 	partial := p.mustImport(t, dir)
@@ -941,6 +1016,68 @@ func TestTheReportKeepsAnAbsenceTheTerminalImportNeverObserved(t *testing.T) {
 			t.Errorf("the ledgered attempt is reported as %q, and the import that actually read the "+
 				"store said %q", attempt.CallsUnavailable, observed)
 		}
+	}
+}
+
+// And the report describes the MEASUREMENT, not the store as it stands now.
+//
+// This is the case re-reading the usage log at assembly gets wrong, and it
+// gets it wrong in the direction that matters: an attempt whose calls WERE
+// read, whose evidence is pruned before the suite finishes, re-reads as "the
+// attempt has no evidence directory". The report would then say its calls
+// were unavailable while the plane holds the very rows it is denying.
+//
+// The reason an attempt contributed no calls is a fact about the import, so
+// it is written with the ledger row in the transaction that decided it, and
+// read back from there.
+func TestTheReportDescribesTheMeasurementAndNotTheStore(t *testing.T) {
+	const runID = "story-a--config--r1--aaaa1111"
+	p := newPlane(t)
+
+	// An attempt whose calls really are readable: the record's canonical
+	// metrics account for the log beside it, which the import requires.
+	first := recordWith(t, map[string]any{"run_id": runID})
+	applyMetrics(t, first, map[string]any{"llm_calls": 1.0, "tokens_total": 15.0, "cost_usd": 0.01})
+	dir := runningSuite(t, []map[string]any{first})
+	writeUsageLog(t, dir, runID, usageHeaderLine(2), aCall)
+
+	partial := p.mustImport(t, dir)
+	if partial.Attempts[0].Calls != 1 {
+		t.Fatalf("the partial import read %d calls, want 1", partial.Attempts[0].Calls)
+	}
+	if reason := partial.Attempts[0].CallsUnavailable; reason != "" {
+		t.Fatalf("the calls were read and reported unavailable (%q)", reason)
+	}
+
+	// The evidence is pruned before the suite finishes. The call rows stay
+	// in the plane; only the log they came from is gone.
+	if err := os.RemoveAll(filepath.Join(dir, "evidence", runID)); err != nil {
+		t.Fatalf("prune the evidence: %v", err)
+	}
+
+	second := recordWith(t, map[string]any{"run_id": "story-a--config--r2--bbbb2222"})
+	records := []map[string]any{first, second}
+	rewriteSuite(t, dir, records, completedManifest(testSuiteRunID, records))
+
+	terminal := p.mustImport(t, dir)
+	if terminal.Report == nil {
+		t.Fatal("the terminal import produced no report")
+	}
+	payload := reportPayload(t, p.reportOf(t, terminal.BenchmarkRunID))
+	for _, attempt := range payload.Attempts {
+		if attempt.RunID != runID {
+			continue
+		}
+		if attempt.CallsUnavailable != "" {
+			t.Errorf("the report says attempt %s had no calls available (%q), and the plane holds "+
+				"its call rows: the report is describing the store as it stands rather than the "+
+				"measurement that was taken", runID, attempt.CallsUnavailable)
+		}
+	}
+	// And nothing in the payload names a filesystem path, which is what a
+	// read failure reconstructed at assembly would have embedded in it.
+	if strings.Contains(string(p.reportOf(t, terminal.BenchmarkRunID).Payload), dir) {
+		t.Error("the report payload names the results-store directory it was assembled from")
 	}
 }
 

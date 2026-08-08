@@ -126,6 +126,15 @@ const (
 	ReasonSupersedeStatus      RejectionReason = "superseding artifact is not accepted"
 )
 
+// ErrUnclaimedScope reports a Management artifact created for a scope that
+// reserves exactly one, without being the artifact that scope reserved.
+//
+// A benchmark run is scoped to by one Management artifact -- its suite
+// report -- and the claim is what settles WHICH. Enforcing it only where a
+// caller consults the claim makes it a convention on that caller; enforcing
+// it at creation makes it a property of the plane.
+var ErrUnclaimedScope = errors.New("the scope reserves one artifact, and this is not the one it reserved")
+
 // TransitionRejected is a refused transition, carrying the specific rule
 // that refused it.
 type TransitionRejected struct {

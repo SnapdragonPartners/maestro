@@ -285,6 +285,49 @@ func (t *tx) resolveManagementIdentity(ctx context.Context, input store.CreateMa
 		int(original.SchemaVersion), nil
 }
 
+// requireScopeClaim enforces that a benchmark-scoped Management artifact is
+// the one its suite reserved.
+//
+// The claim table settles which artifact is a suite's report, and until now
+// it settled it only for callers who consulted it. Nothing stopped a second
+// caller creating a perfectly valid, fully pinned benchmark.suite_report
+// beside the claimed one and accepting it: the plane would hold two
+// authoritative accounts of one conformance run, which is the state ADR 0020
+// makes a defect rather than clutter. A rule the importer follows is a
+// convention; a rule creation enforces is an invariant.
+//
+// It is expressed over the SCOPE rather than over the artifact type, so this
+// seam does not learn a type name from the registry's vocabulary. A benchmark
+// run is scoped to by exactly one Management artifact -- its report -- and
+// that is the fact being enforced. An item that wants a second kind of
+// benchmark-scoped Management artifact will have to revisit this
+// deliberately, which is the right place for that conversation.
+//
+// AMENDMENTS are exempt. An amendment inherits its original's scope and
+// cannot itself be a suite's report: every pin in a chain is held by the
+// original, and the claim names the original. Requiring a claim of an
+// amendment would forbid amending a report at all.
+func (t *tx) requireScopeClaim(
+	ctx context.Context, input *store.CreateManagementArtifactInput, artifactID uuid.UUID,
+) error {
+	if input.Scope.Type != store.ScopeBenchmark || input.AmendsArtifactID != nil {
+		return nil
+	}
+	claim, err := t.GetSuiteReport(ctx, input.OrganizationID, input.Scope.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("%w: benchmark run %s has reserved no report, and a Management artifact "+
+			"scoped to it is that report", store.ErrUnclaimedScope, input.Scope.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("read the report claim of benchmark run %s: %w", input.Scope.ID, err)
+	}
+	if claim.ReportArtifactID != artifactID {
+		return fmt.Errorf("%w: benchmark run %s reserved %s as its report, and this artifact is %s",
+			store.ErrUnclaimedScope, input.Scope.ID, claim.ReportArtifactID, artifactID)
+	}
+	return nil
+}
+
 // CreateManagementArtifact writes a draft Management artifact.
 //
 // Category, schema version and both digests are settled here rather than by
@@ -334,6 +377,9 @@ func (t *tx) CreateManagementArtifact(ctx context.Context, input store.CreateMan
 	arc, scopeErr := scopeColumns(input.Scope)
 	if scopeErr != nil {
 		return nil, scopeErr
+	}
+	if claimErr := t.requireScopeClaim(ctx, &input, artifactID); claimErr != nil {
+		return nil, claimErr
 	}
 
 	storedVersion, err := toInt32(version, "schema version")
