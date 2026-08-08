@@ -23,7 +23,7 @@ import (
 func TestAcquireLockExcludesSecondHolder(t *testing.T) {
 	lockPath := filepath.Join(t.TempDir(), lockFileName)
 
-	release, err := acquireLock(lockPath)
+	release, err := acquireLock(lockPath, syscall.LOCK_EX)
 	if err != nil {
 		t.Fatalf("acquireLock: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAcquireLockExcludesSecondHolder(t *testing.T) {
 func TestEnsureKeyWaitsForTheLock(t *testing.T) {
 	root := t.TempDir()
 
-	release, err := acquireLock(filepath.Join(root, lockFileName))
+	release, err := acquireLock(filepath.Join(root, lockFileName), syscall.LOCK_EX)
 	if err != nil {
 		t.Fatalf("acquireLock: %v", err)
 	}
@@ -91,5 +91,66 @@ func TestEnsureKeyWaitsForTheLock(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("EnsureKey did not complete after the lock was released")
+	}
+}
+
+// The shared lock's contract is BOTH halves: several holders coexist, and
+// every one of them excludes an exclusive holder.
+//
+// Asserted directly, in both directions, because the two halves fail
+// differently and only together do they say what "shared use versus
+// exclusive lifecycle" means. A shared lock that excluded its own kind
+// would serialize every import; one that admitted an exclusive holder would
+// let a reset delete the data root under a live one.
+func TestSharedLockAdmitsItsOwnKindAndExcludesExclusive(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), lockFileName)
+
+	first, err := acquireLock(lockPath, syscall.LOCK_SH)
+	if err != nil {
+		t.Fatalf("acquire shared: %v", err)
+	}
+
+	// A second shared holder proceeds. Two imports have no reason to queue.
+	second, err := os.OpenFile(lockPath, os.O_RDWR, lockPerm)
+	if err != nil {
+		t.Fatalf("open lock independently: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+	if shErr := syscall.Flock(int(second.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); shErr != nil {
+		t.Fatalf("a second shared holder was excluded: %v", shErr)
+	}
+
+	// An exclusive holder does not. This is the whole of what the marker
+	// guard could not do on its own: a preflight check reports what was
+	// true a moment ago, and a held lock keeps it true.
+	exclusive, openErr := os.OpenFile(lockPath, os.O_RDWR, lockPerm)
+	if openErr != nil {
+		t.Fatalf("open lock independently: %v", openErr)
+	}
+	defer func() { _ = exclusive.Close() }()
+	err = syscall.Flock(int(exclusive.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("an exclusive holder acquired the lock beside a shared one (err=%v), want "+
+			"EWOULDBLOCK: a reset could delete the data root under a live import", err)
+	}
+
+	// And it is still excluded while ANY shared holder remains, which is
+	// what makes the lock's lifetime the seam's rather than the call's.
+	if relErr := first(); relErr != nil {
+		t.Fatalf("release the first shared holder: %v", relErr)
+	}
+	err = syscall.Flock(int(exclusive.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if !errors.Is(err, syscall.EWOULDBLOCK) {
+		t.Fatalf("an exclusive holder acquired the lock while a shared holder remained (err=%v)", err)
+	}
+
+	if err := syscall.Flock(int(second.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatalf("release the second shared holder: %v", err)
+	}
+	if err := syscall.Flock(int(exclusive.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("the exclusive holder is still blocked after every shared holder released: %v", err)
+	}
+	if err := syscall.Flock(int(exclusive.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatalf("unlock: %v", err)
 	}
 }

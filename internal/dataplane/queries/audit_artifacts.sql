@@ -13,7 +13,7 @@ INSERT INTO audit_artifacts (
     artifact_id, organization_id, user_id,
     artifact_type, artifact_category, scope_type,
     scope_organization_id, scope_product_id, scope_feature_id,
-    scope_epic_id, scope_story_id,
+    scope_epic_id, scope_story_id, scope_benchmark_run_id,
     product_id, feature_id, epic_id, story_id,
     author_instance_id, produced_by_tool_call_id,
     schema_version, summary, payload, payload_digest
@@ -21,7 +21,7 @@ INSERT INTO audit_artifacts (
     @artifact_id, @organization_id, @user_id,
     @artifact_type, @artifact_category, @scope_type,
     @scope_organization_id, @scope_product_id, @scope_feature_id,
-    @scope_epic_id, @scope_story_id,
+    @scope_epic_id, @scope_story_id, @scope_benchmark_run_id,
     @product_id, @feature_id, @epic_id, @story_id,
     @author_instance_id, @produced_by_tool_call_id,
     @schema_version, @summary, @payload, @payload_digest

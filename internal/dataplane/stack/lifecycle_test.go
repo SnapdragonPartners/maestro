@@ -13,7 +13,24 @@ import (
 	"time"
 
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/registry"
 )
+
+// unlockedVerbs are the exported entry points that deliberately do NOT take
+// the lifecycle lock, each with the reason.
+//
+// EMPTY, and kept rather than deleted. An entry point in neither table fails
+// the completeness check, so a verb added later cannot become unlocked by
+// nobody noticing -- and the one verb that was listed here, OpenSeam, is the
+// reason the table is worth keeping: it was exempted on the argument that
+// ordinary use is not a lifecycle transition, which is true and did not
+// follow. Not a transition means not EXCLUSIVE; it does not mean unlocked,
+// and unlocked let a reset start immediately after the marker guard read
+// clean. It now takes the lock SHARED and appears among the blocking cases
+// below.
+//
+//nolint:gochecknoglobals // Immutable expectation table for the test below.
+var unlockedVerbs = map[string]string{}
 
 // testConfig builds a Config rooted in a temporary MAESTRO_HOME.
 func testConfig(t *testing.T) *Config {
@@ -95,6 +112,23 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 				return err
 			}
 		},
+		"OpenSeam": func(t *testing.T, cfg *Config) func(context.Context) error {
+			t.Helper()
+			// A real registry, built before the lock is taken: OpenSeam
+			// refuses a nil one before reaching for the lock, and the case
+			// would then pass for the wrong reason.
+			types, err := registry.New(nil)
+			if err != nil {
+				t.Fatalf("build registry: %v", err)
+			}
+			return func(ctx context.Context) error {
+				seam, openErr := OpenSeam(ctx, cfg, types)
+				if openErr == nil {
+					seam.Close()
+				}
+				return openErr
+			}
+		},
 		"Restore": func(t *testing.T, cfg *Config) func(context.Context) error {
 			t.Helper()
 			// A REAL archive, built before the lock is held. Restore
@@ -109,7 +143,13 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 	}
 
 	for _, verb := range exportedLifecycleVerbs(t) {
-		if _, covered := operations[verb]; !covered {
+		_, covered := operations[verb]
+		reason, exempt := unlockedVerbs[verb]
+		switch {
+		case covered && exempt:
+			t.Errorf("%s is both expected to block on the lock and listed as exempt (%s): the tables "+
+				"disagree, and one of them is describing code that does not exist", verb, reason)
+		case !covered && !exempt:
 			t.Errorf("%s is an exported lifecycle verb with no case here: it may be acting on a data "+
 				"root while another process holds the lifecycle lock", verb)
 		}
@@ -117,6 +157,11 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 	for verb := range operations {
 		if !slices.Contains(exportedLifecycleVerbs(t), verb) {
 			t.Errorf("this test covers %s, which is no longer an exported lifecycle verb", verb)
+		}
+	}
+	for verb := range unlockedVerbs {
+		if !slices.Contains(exportedLifecycleVerbs(t), verb) {
+			t.Errorf("%s is exempted from the lock and is no longer an exported lifecycle verb", verb)
 		}
 	}
 

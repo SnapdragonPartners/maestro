@@ -240,7 +240,8 @@ var namedCompletions = map[string]bool{
 // record's shape makes that obvious in review.
 var outcomeColumns = []string{
 	"finished_at", "succeeded", "error_message",
-	"input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cost_usd",
+	"input_tokens", "output_tokens", "reasoning_tokens",
+	"cache_read_tokens", "cache_write_tokens", "cost_usd",
 	"result",
 }
 
@@ -253,7 +254,7 @@ var outcomeColumns = []string{
 var completionSetColumns = map[string]bool{
 	"finished_at": true, "succeeded": true, "error_message": true,
 	"input_tokens": true, "output_tokens": true, "reasoning_tokens": true,
-	"cached_tokens": true, "cost_usd": true, "result": true,
+	"cache_read_tokens": true, "cache_write_tokens": true, "cost_usd": true, "result": true,
 }
 
 // bornFinalTables are written once and never updated. The asymmetry with
@@ -264,7 +265,19 @@ var completionSetColumns = map[string]bool{
 // lifecycle. Its absence from an earlier version of this list meant a
 // generic UPDATE or DELETE against the one pinnable family in scope would
 // have passed every check here.
-var bornFinalTables = []string{"metric_events", "audit_events", "audit_artifacts"}
+// benchmark_runs and benchmark_attempts join in item 9 for the same reason
+// and a sharper one: the import contract is that re-importing is a NO-OP.
+// An update statement against either would make a second import a write, and
+// the ledger row is the record that the first import happened -- rewriting it
+// is how a conflicting payload would come to overwrite a good one silently.
+// benchmark_reports is born final for the sharpest reason of the three: the
+// row IS the decision about which artifact is a suite's report, and a claim
+// that could be rewritten would let a second import retarget the claim to its
+// own draft -- which is the whole of what the uniqueness was added to stop.
+var bornFinalTables = []string{
+	"metric_events", "audit_events", "audit_artifacts",
+	"benchmark_runs", "benchmark_attempts", "benchmark_reports",
+}
 
 // namedTruncations maps each permitted DELETE to the ONE table it may
 // delete from. Deletion here is retention policy (design D6), with a

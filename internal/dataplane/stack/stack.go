@@ -231,6 +231,12 @@ const (
 	lifecycleVerify
 	lifecycleReset
 	lifecycleRecoverKey
+	// lifecycleUse is ordinary use of a running plane — importing, reading
+	// back, provisioning a tenant. It moves the plane between no states at
+	// all, and it is in this enumeration only because it needs the root key
+	// and must therefore answer the same guard questions every other
+	// operation answers.
+	lifecycleUse
 )
 
 // lifecycles is every operation, in one place, so the marker matrix below
@@ -240,7 +246,7 @@ const (
 var lifecycles = []lifecycle{
 	lifecycleUp, lifecycleMigrate, lifecycleForceVersion,
 	lifecycleDown, lifecycleBackup, lifecycleRestore, lifecycleVerify, lifecycleReset,
-	lifecycleRecoverKey,
+	lifecycleRecoverKey, lifecycleUse,
 }
 
 func (l lifecycle) String() string {
@@ -263,6 +269,8 @@ func (l lifecycle) String() string {
 		return "reset"
 	case lifecycleRecoverKey:
 		return "recover-key"
+	case lifecycleUse:
+		return "use"
 	default:
 		return "unknown"
 	}
@@ -378,9 +386,13 @@ var markerPermits = map[lifecycle]bool{
 	lifecycleBackup:       false,
 	lifecycleVerify:       false,
 	lifecycleRecoverKey:   false,
-	lifecycleDown:         true,
-	lifecycleRestore:      true,
-	lifecycleReset:        true,
+	// Use is refused for the plainest reason of all: a torn restore is a
+	// data root that is not a plane, and writing into one adds records to
+	// a store whose contents nobody can account for.
+	lifecycleUse:     false,
+	lifecycleDown:    true,
+	lifecycleRestore: true,
+	lifecycleReset:   true,
 }
 
 // markerPath is where the restore-incomplete marker lives.
@@ -475,6 +487,11 @@ var unverifiedPermits = map[lifecycle]bool{
 	lifecycleMigrate:      false,
 	lifecycleForceVersion: false,
 	lifecycleBackup:       false,
+	// A plane owing a verification pass has contents that have never been
+	// checked. Importing into it would interleave new records with
+	// unproven ones, and the pass that eventually runs could no longer say
+	// which was which.
+	lifecycleUse: false,
 }
 
 // guardUnverifiedMarker refuses an operation that must not act on a plane
@@ -538,6 +555,10 @@ var recoveryPermits = map[lifecycle]bool{
 	lifecycleMigrate:      false,
 	lifecycleForceVersion: false,
 	lifecycleVerify:       false,
+	// An interrupted recovery leaves a plane whose key material is
+	// half-replaced. Nothing may write to it until recovery finishes or is
+	// abandoned.
+	lifecycleUse: false,
 }
 
 // guardRecoveryMarker refuses an operation that must not act on a plane

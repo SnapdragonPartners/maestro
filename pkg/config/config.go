@@ -2223,7 +2223,25 @@ func CalculateCost(modelName string, promptTokens, completionTokens int) (float6
 
 	// For unknown models, return 0 cost (allows usage but no cost tracking)
 	// This is intentional - we want to support new models without requiring pricing data
+	//
+	// Callers that must distinguish "free" from "not priced" cannot do it from
+	// this return value, and the nil error makes the difference invisible.
+	// Ask ModelPricingKnown first; the usage surface does (design_slice_import.md,
+	// D3), because a local model's calls recorded as $0 made a paired-local run
+	// indistinguishable from one that genuinely cost nothing.
 	return 0.0, nil
+}
+
+// ModelPricingKnown reports whether this model has modelled pricing, so a
+// caller can tell an unpriced call from a free one.
+//
+// Separate from CalculateCost rather than folded into its error: that
+// function's zero-for-unknown behaviour is relied on by callers that only
+// want a number, and changing its contract to serve one caller would move the
+// decision into every one of them.
+func ModelPricingKnown(modelName string) bool {
+	_, exists := KnownModels[modelName]
+	return exists
 }
 
 // GetAPIKey returns the API key for a given provider.

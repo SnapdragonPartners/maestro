@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -53,6 +54,30 @@ func checkKindFields(input store.CreatePrincipalInstanceInput) error {
 	return nil
 }
 
+// checkRecordedLifetime rejects a historical lifetime that could not have
+// happened.
+//
+// The zero time is year 1: present in the struct and no more a timestamp
+// than an unset field, and an instance carrying it sorts before every window
+// a query could ask about. A stop before its start is a lifetime that ran
+// backwards. Neither is caught by the schema — its only stop constraint is
+// that time and reason are null together — so the seam is where a caller
+// finds out, before the row exists rather than after.
+func checkRecordedLifetime(recorded *store.RecordedLifetime) error {
+	switch {
+	case recorded.StartTime.IsZero():
+		return errors.New("a recorded lifetime needs a start time; the zero time is year 1, not a timestamp")
+	case recorded.StopTime.IsZero():
+		return errors.New("a recorded lifetime needs a stop time; the zero time is year 1, not a timestamp")
+	case recorded.StopTime.Before(recorded.StartTime):
+		return fmt.Errorf("recorded lifetime stops at %s, before it starts at %s",
+			recorded.StopTime, recorded.StartTime)
+	case recorded.StopReason == "":
+		return errors.New("a recorded lifetime needs a stop reason; it is the diagnostic that says why the instance ended")
+	}
+	return nil
+}
+
 func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 	return store.PrincipalInstance{
 		AgentType:         fromNullString(row.AgentType),
@@ -89,6 +114,11 @@ func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 // for exactly as long as the gap, so there is no version of this that
 // writes the instance first and the seeds afterwards.
 //
+// A RecordedLifetime is written in the same INSERT for the same reason at a
+// smaller scale: an instance whose whole lifetime is already over must never
+// be observable open, and create-then-stop makes it observable open for the
+// width of a statement.
+//
 // The input is taken by value so a caller cannot mutate it after the call
 // begins. One struct copy per instance creation is not worth trading that
 // guarantee for.
@@ -97,6 +127,20 @@ func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrincipalInstanceInput) (*store.PrincipalInstance, error) {
 	if err := checkKindFields(input); err != nil {
 		return nil, err
+	}
+	var startTime, stopTime *time.Time
+	var stopReason *string
+	if input.Recorded != nil {
+		// Copied, not pointed at. The input struct is taken by value so a
+		// caller cannot mutate it mid-call, and a pointer field would hand
+		// that guarantee straight back — the validation below would then be
+		// checking values the INSERT need not still be using.
+		recorded := *input.Recorded
+		if err := checkRecordedLifetime(&recorded); err != nil {
+			return nil, err
+		}
+		startTime, stopTime = &recorded.StartTime, &recorded.StopTime
+		stopReason = &recorded.StopReason
 	}
 
 	instanceID, err := newIdentifier(uuid.Nil)
@@ -118,7 +162,9 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 		FeatureID:           toNullUUID(input.Lineage.FeatureID),
 		EpicID:              toNullUUID(input.Lineage.EpicID),
 		StoryID:             toNullUUID(input.Lineage.StoryID),
-		StartTime:           toNullTimestamptz(nil),
+		StartTime:           toNullTimestamptz(startTime),
+		StopTime:            toNullTimestamptz(stopTime),
+		StopReason:          stopReason,
 	})
 	if createErr != nil {
 		return nil, fmt.Errorf("create principal instance: %w", createErr)

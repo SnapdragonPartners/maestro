@@ -3,9 +3,13 @@ package metrics
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // fanoutSpy records forwarded observations.
@@ -14,28 +18,47 @@ type fanoutSpy struct {
 	story string
 }
 
-func (f *fanoutSpy) ObserveRequest(storyID, _, _ string, _, _ int, _ float64, _ bool) {
+func (f *fanoutSpy) ObserveCall(observation *Observation) {
 	f.calls++
-	f.story = storyID
+	f.story = observation.StoryID
 }
 
-func TestUsageLogRecorderFanOutAndFormat(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "usage.jsonl")
-	spy := &fanoutSpy{}
-	recorder, err := NewUsageLogRecorder(path, spy)
-	if err != nil {
-		t.Fatalf("new usage log: %v", err)
+// validObservation is a complete, coherent successful call. Tests that mean
+// to exercise something OTHER than validation start from this, so a failure
+// they assert cannot have come from a malformed observation instead of from
+// the thing under test.
+func validObservation() *Observation {
+	cost := 0.01
+	return &Observation{
+		FinishedAt: time.Now().UTC(),
+		Tokens:     &TokenAxes{Input: 100, Output: 40, Reasoning: 10, CacheRead: 5, CacheWrite: 2},
+		Cost:       &cost,
+		Provider:   "anthropic",
+		Model:      "model-x",
+		StoryID:    "story-1",
+		AgentID:    "coder-001",
+		Latency:    1500 * time.Millisecond,
+		Success:    true,
 	}
-	recorder.ObserveRequest("story-1", "coder-001", "model-x", 100, 50, 0.01, true)
-	// Failed calls are recorded too: their tokens were spent.
-	recorder.ObserveRequest("story-1", "coder-001", "model-x", 10, 0, 0, false)
-	if closeErr := recorder.Close(); closeErr != nil {
-		t.Fatalf("close: %v", closeErr)
-	}
-	if spy.calls != 2 || spy.story != "story-1" {
-		t.Fatalf("wrapped recorder must receive every observation: %+v", spy)
-	}
+}
 
+// failedObservation is the coherent shape of a failure: an error text and NO
+// token measurement, because the toolkit reports none for a failed call.
+func failedObservation() *Observation {
+	return &Observation{
+		FinishedAt: time.Now().UTC(),
+		Provider:   "anthropic",
+		Model:      "model-x",
+		StoryID:    "story-1",
+		AgentID:    "coder-001",
+		Error:      "provider returned 500",
+		Latency:    900 * time.Millisecond,
+		Success:    false,
+	}
+}
+
+func readEntries(t *testing.T, path string) (UsageHeader, []UsageEntry) {
+	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open log: %v", err)
@@ -46,8 +69,8 @@ func TestUsageLogRecorderFanOutAndFormat(t *testing.T) {
 		t.Fatalf("missing header line")
 	}
 	var header UsageHeader
-	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil || header.UsageSurfaceVersion != UsageSurfaceVersion {
-		t.Fatalf("header must carry the surface version: %s (%v)", scanner.Text(), err)
+	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+		t.Fatalf("header decode: %v", err)
 	}
 	var entries []UsageEntry
 	for scanner.Scan() {
@@ -57,8 +80,246 @@ func TestUsageLogRecorderFanOutAndFormat(t *testing.T) {
 		}
 		entries = append(entries, entry)
 	}
-	if len(entries) != 2 || entries[0].Model != "model-x" || entries[0].PromptTokens != 100 || entries[1].Success {
-		t.Fatalf("entries wrong: %+v", entries)
+	return header, entries
+}
+
+func TestUsageLogRecorderFanOutAndFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	spy := &fanoutSpy{}
+	recorder, err := NewUsageLogRecorder(path, spy)
+	if err != nil {
+		t.Fatalf("new usage log: %v", err)
+	}
+	recorder.ObserveCall(validObservation())
+	recorder.ObserveCall(failedObservation())
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	if spy.calls != 2 || spy.story != "story-1" {
+		t.Fatalf("wrapped recorder must receive every observation: %+v", spy)
+	}
+
+	header, entries := readEntries(t, path)
+	if header.UsageSurfaceVersion != UsageSurfaceVersion {
+		t.Fatalf("header must carry the surface version: %d", header.UsageSurfaceVersion)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("want 2 entries, got %d", len(entries))
+	}
+
+	ok := entries[0]
+	switch {
+	case ok.Provider != "anthropic":
+		t.Fatalf("provider must be recorded, not defaulted: %q", ok.Provider)
+	case ok.InputTokens == nil || *ok.InputTokens != 100:
+		t.Fatalf("input tokens wrong: %v", ok.InputTokens)
+	case ok.OutputTokens == nil || *ok.OutputTokens != 40:
+		t.Fatalf("output must be VISIBLE output only, unfolded: %v", ok.OutputTokens)
+	case ok.ReasoningTokens == nil || *ok.ReasoningTokens != 10:
+		t.Fatalf("reasoning must be its own axis: %v", ok.ReasoningTokens)
+	case ok.CacheReadTokens == nil || *ok.CacheReadTokens != 5:
+		t.Fatalf("cache read wrong: %v", ok.CacheReadTokens)
+	case ok.CacheWriteTokens == nil || *ok.CacheWriteTokens != 2:
+		t.Fatalf("cache write must be kept apart from cache read: %v", ok.CacheWriteTokens)
+	case ok.LatencyNS != int64(1500*time.Millisecond):
+		t.Fatalf("latency must round-trip exactly in nanoseconds: %d", ok.LatencyNS)
+	}
+
+	// The failed entry must carry its diagnosis and NO fabricated measurement.
+	bad := entries[1]
+	if bad.Success || bad.Error == "" {
+		t.Fatalf("failed entry must record its error: %+v", bad)
+	}
+	if bad.InputTokens != nil || bad.OutputTokens != nil || bad.ReasoningTokens != nil ||
+		bad.CacheReadTokens != nil || bad.CacheWriteTokens != nil {
+		t.Fatalf("a failed call has no token measurement; zeros would be fabricated: %+v", bad)
+	}
+}
+
+// started_at is derived by subtraction at import, so the pair written here
+// must recover it exactly. Milliseconds would have rounded this away.
+func TestUsageEntryLatencyIsReversible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	recorder, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	observation := validObservation()
+	observation.Latency = 1234567891 * time.Nanosecond // not a whole millisecond
+	started := observation.FinishedAt.Add(-observation.Latency)
+	recorder.ObserveCall(observation)
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	_, entries := readEntries(t, path)
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	recovered := entries[0].FinishedAt.Add(-time.Duration(entries[0].LatencyNS))
+	if !recovered.Equal(started) {
+		t.Fatalf("started_at must be recoverable exactly: want %s, got %s", started, recovered)
+	}
+}
+
+// An unpriced model records NO cost. Zero would say the call was free, which
+// is a different fact and the one paired-local runs would have reported.
+func TestUsageEntryUnpricedCostIsAbsent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	recorder, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	observation := validObservation()
+	observation.Cost = nil
+	recorder.ObserveCall(observation)
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(raw), "cost_usd") {
+		t.Fatalf("an unpriced call must omit cost_usd entirely, not write 0: %s", raw)
+	}
+	_, entries := readEntries(t, path)
+	if entries[0].CostUSD != nil {
+		t.Fatalf("cost must decode as absent: %v", *entries[0].CostUSD)
+	}
+}
+
+func TestObservationValidateRejects(t *testing.T) {
+	negativeCost := -0.5
+	nanCost := math.NaN()
+	infCost := math.Inf(1)
+	cases := []struct {
+		name  string
+		build func() *Observation
+	}{
+		{"blank provider", func() *Observation { o := validObservation(); o.Provider = "  "; return o }},
+		{"blank model", func() *Observation { o := validObservation(); o.Model = ""; return o }},
+		{"zero finished_at", func() *Observation { o := validObservation(); o.FinishedAt = time.Time{}; return o }},
+		{"negative latency", func() *Observation { o := validObservation(); o.Latency = -time.Second; return o }},
+		{"negative input", func() *Observation { o := validObservation(); o.Tokens.Input = -1; return o }},
+		{"negative output", func() *Observation { o := validObservation(); o.Tokens.Output = -1; return o }},
+		{"negative reasoning", func() *Observation { o := validObservation(); o.Tokens.Reasoning = -1; return o }},
+		{"negative cache read", func() *Observation { o := validObservation(); o.Tokens.CacheRead = -1; return o }},
+		{"negative cache write", func() *Observation { o := validObservation(); o.Tokens.CacheWrite = -1; return o }},
+		{"token sum overflows", func() *Observation {
+			o := validObservation()
+			o.Tokens = &TokenAxes{Input: math.MaxInt64 - 1, Output: 2}
+			return o
+		}},
+		{"negative cost", func() *Observation { o := validObservation(); o.Cost = &negativeCost; return o }},
+		{"NaN cost", func() *Observation { o := validObservation(); o.Cost = &nanCost; return o }},
+		{"infinite cost", func() *Observation { o := validObservation(); o.Cost = &infCost; return o }},
+		{"success carrying an error", func() *Observation { o := validObservation(); o.Error = "boom"; return o }},
+		{"success with no measurement", func() *Observation { o := validObservation(); o.Tokens = nil; return o }},
+		{"failure with no error text", func() *Observation { o := failedObservation(); o.Error = " "; return o }},
+		{"failure carrying tokens", func() *Observation {
+			o := failedObservation()
+			o.Tokens = &TokenAxes{Input: 10}
+			return o
+		}},
+		{"failure carrying a cost", func() *Observation {
+			// calculateCost returns nil on the failure path, so a priced
+			// failure is a measurement the producer never made -- the same
+			// fabrication as the token counts, one column over.
+			o := failedObservation()
+			priced := 0.02
+			o.Cost = &priced
+			return o
+		}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			observation := testCase.build()
+			err := observation.Validate()
+			if err == nil {
+				t.Fatalf("must be refused: %+v", observation)
+			}
+			if !errors.Is(err, ErrInvalidObservation) {
+				t.Fatalf("must be an ErrInvalidObservation: %v", err)
+			}
+		})
+	}
+	// The control: the fixtures the rejections are derived from must pass, or
+	// every case above could be passing for the wrong reason.
+	for name, observation := range map[string]*Observation{
+		"success": validObservation(), "failure": failedObservation(),
+	} {
+		if err := observation.Validate(); err != nil {
+			t.Fatalf("%s fixture must be valid: %v", name, err)
+		}
+	}
+}
+
+// An invalid observation must not reach the WRAPPED recorder either.
+//
+// The internal aggregator is a consumer like the log is, and its story totals
+// are not covered by the sentinel: a negative axis folded into them would
+// corrupt figures nothing describes as suspect, while only the durable path
+// reported a problem. Validation therefore precedes the fan-out.
+func TestInvalidObservationNeverReachesTheInnerRecorder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	spy := &fanoutSpy{}
+	recorder, err := NewUsageLogRecorder(path, spy)
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	for name, build := range map[string]func() *Observation{
+		"negative axis":   func() *Observation { o := validObservation(); o.Tokens.Output = -5; return o },
+		"non-finite cost": func() *Observation { o := validObservation(); nan := math.NaN(); o.Cost = &nan; return o },
+		"overflowing tuple": func() *Observation {
+			o := validObservation()
+			o.Tokens = &TokenAxes{Input: math.MaxInt64, Output: 1}
+			return o
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			before := spy.calls
+			recorder.ObserveCall(build())
+			if spy.calls != before {
+				t.Fatalf("an invalid observation reached the wrapped recorder and mutated its aggregates")
+			}
+		})
+	}
+	// The control: a valid observation still fans out, so the assertions
+	// above are not passing because nothing ever reaches the inner recorder.
+	before := spy.calls
+	recorder.ObserveCall(validObservation())
+	if spy.calls != before+1 {
+		t.Fatal("a valid observation must still reach the wrapped recorder")
+	}
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+}
+
+// An observation that cannot be recorded takes the same path as a failed
+// write: sticky error plus the machine-observable sentinel. Dropping it
+// quietly is the one outcome nothing downstream could detect.
+func TestInvalidObservationRaisesTheSentinel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	recorder, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	invalid := validObservation()
+	invalid.Provider = ""
+	recorder.ObserveCall(invalid)
+	if recorder.Err() == nil {
+		t.Fatal("an unrecordable observation must be surfaced, not discarded")
+	}
+	if _, statErr := os.Stat(filepath.Join(filepath.Dir(path), UsageErrorFileName)); statErr != nil {
+		t.Fatalf("expected the %s sentinel: %v", UsageErrorFileName, statErr)
+	}
+	if closeErr := recorder.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	_, entries := readEntries(t, path)
+	if len(entries) != 0 {
+		t.Fatalf("the invalid line must not be written: %+v", entries)
 	}
 }
 
@@ -68,7 +329,7 @@ func TestUsageLogRecorderAppendsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	first.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	first.ObserveCall(validObservation())
 	if closeErr := first.Close(); closeErr != nil {
 		t.Fatalf("close: %v", closeErr)
 	}
@@ -76,7 +337,7 @@ func TestUsageLogRecorderAppendsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	second.ObserveRequest("s", "a", "m", 2, 2, 0.002, true)
+	second.ObserveCall(validObservation())
 	if closeErr := second.Close(); closeErr != nil {
 		t.Fatalf("close: %v", closeErr)
 	}
@@ -84,14 +345,125 @@ func TestUsageLogRecorderAppendsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	lines := 0
-	for _, b := range raw {
-		if b == '\n' {
-			lines++
-		}
-	}
+	lines := strings.Count(string(raw), "\n")
 	if lines != 3 { // one header + two entries, no second header
 		t.Fatalf("append across reopen must not duplicate the header: %d lines\n%s", lines, raw)
+	}
+}
+
+// The mixed-version hole: appending v2 lines beneath a v1 header would leave
+// every reader trusting the header and mis-parsing the lines. Refuse, and
+// leave the file exactly as found — a refusal that truncated or rotated would
+// be the loss this check exists to prevent.
+func TestUsageLogRecorderRefusesForeignHeader(t *testing.T) {
+	for _, testCase := range []struct{ name, first string }{
+		{"older version", `{"usage_surface_version":1}`},
+		{"newer version", `{"usage_surface_version":99}`},
+		{"unreadable header", `not json at all`},
+		{"truncated header", `{"usage_surface_version":1`}, // no newline, no closing brace
+		// The discriminating case: a header that is syntactically perfect AND
+		// carries the CURRENT version, but was never terminated. The version
+		// check passes, so only the missing newline can refuse it — and it
+		// must, because appending here concatenates the next entry onto the
+		// header line and corrupts the log from the second line onward.
+		{"valid current header with no newline", `{"usage_surface_version":2}`},
+		// Strictness the two READERS enforce. A header carrying an unknown
+		// key, or content after the object, is one the budget tail and the
+		// importer both refuse — so appending beneath it would build a log
+		// nobody can read, losing every call in the file rather than one.
+		{"unknown key in the header", `{"usage_surface_version":2,"extra":1}`},
+		{"content after the header object", `{"usage_surface_version":2}]`},
+		{"a header that is not an object", `[2]`},
+		// The discriminating size case: syntactically perfect, CURRENT
+		// version, and padded past the cap every reader enforces. Nothing
+		// else here refuses it — the version check passes and TrimSpace makes
+		// it parse — so only the bound can, and appending beneath it would
+		// build a file the tail and the importer both reject.
+		{"a valid header padded past the shared cap",
+			strings.Repeat(" ", MaxUsageLineBytes) + `{"usage_surface_version":2}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "usage.jsonl")
+			original := testCase.first + "\n{\"model\":\"m\"}\n"
+			if !strings.HasSuffix(testCase.first, "}") || testCase.name == "valid current header with no newline" {
+				original = testCase.first // deliberately unterminated
+			}
+			if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			recorder, err := NewUsageLogRecorder(path, Nop())
+			if err == nil {
+				_ = recorder.Close() //nolint:errcheck // cleanup on the failure path
+				t.Fatal("must refuse to append beneath a header this build did not write")
+			}
+			if !errors.Is(err, ErrSurfaceVersionMismatch) {
+				t.Fatalf("want ErrSurfaceVersionMismatch, got %v", err)
+			}
+			after, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatalf("read back: %v", readErr)
+			}
+			if string(after) != original {
+				t.Fatalf("the refused file must be left byte-for-byte unchanged:\nwant %q\ngot  %q", original, after)
+			}
+		})
+	}
+}
+
+// TestUsageErrorTextIsBounded covers the one field that can grow without
+// limit.
+//
+// A provider error can carry an entire response body, and the failure text is
+// a diagnostic: the first kilobytes say what went wrong. Truncating keeps the
+// call COUNTED, which is what accounting needs; refusing the line would drop
+// it from every total instead, and a line past the shared cap is one both
+// readers refuse — losing the whole file, not one call.
+func TestUsageErrorTextIsBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	recorder, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("recorder: %v", err)
+	}
+	defer recorder.Close() //nolint:errcheck // test cleanup
+
+	observation := failedObservation()
+	observation.Error = strings.Repeat("x", MaxUsageLineBytes)
+	recorder.ObserveCall(observation)
+	if err := recorder.Err(); err != nil {
+		t.Fatalf("a long diagnostic must be truncated, not dropped: %v", err)
+	}
+
+	raw, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read back: %v", readErr)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if len(line)+1 > MaxUsageLineBytes {
+			t.Fatalf("a written line is %d bytes, over the shared %d-byte cap", len(line)+1, MaxUsageLineBytes)
+		}
+	}
+	if !strings.Contains(string(raw), "truncated") {
+		t.Error("the truncation is silent; a diagnostic that was cut has to say so")
+	}
+}
+
+// A log this build DID write is reopened normally; without this the refusal
+// above could be passing by refusing everything.
+func TestUsageLogRecorderAcceptsItsOwnHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.jsonl")
+	first, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if closeErr := first.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
+	second, err := NewUsageLogRecorder(path, Nop())
+	if err != nil {
+		t.Fatalf("a log written by this build must reopen: %v", err)
+	}
+	if closeErr := second.Close(); closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
 	}
 }
 
@@ -121,14 +493,15 @@ func TestUsageLogRecorderWriteFailureSurfaced(t *testing.T) {
 	if closeErr := rec.file.Close(); closeErr != nil {
 		t.Fatalf("close: %v", closeErr)
 	}
-	rec.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	// A VALID observation, so the error under test can only be the write.
+	rec.ObserveCall(validObservation())
 	if fatalCalled {
 		t.Fatal("onFatal must not fire while the sentinel write succeeds")
 	}
 	if rec.Err() == nil {
 		t.Fatal("expected sticky write error after append to closed file")
 	}
-	rec.ObserveRequest("s", "a", "m", 2, 2, 0.002, true)
+	rec.ObserveCall(validObservation())
 	if rec.Err() == nil {
 		t.Fatal("write error must remain sticky")
 	}
@@ -164,7 +537,7 @@ func TestUsageLogRecorderCorrelatedFailureAborts(t *testing.T) {
 	if rmErr := os.RemoveAll(dir); rmErr != nil {
 		t.Fatalf("rm dir: %v", rmErr)
 	}
-	rec.ObserveRequest("s", "a", "m", 1, 1, 0.001, true)
+	rec.ObserveCall(validObservation())
 	if fatalErr == nil {
 		t.Fatal("correlated append+sentinel failure must escalate to onFatal")
 	}

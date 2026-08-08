@@ -52,13 +52,15 @@ INSERT INTO principal_instances (
     agent_type, prompt_pack_id, prompt_hash, harness_config_hash,
     maestro_version, user_id,
     product_id, feature_id, epic_id, story_id,
-    start_time
+    start_time, stop_time, stop_reason
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7, $8,
     $9, $10,
     $11, $12, $13, $14,
-    COALESCE($15::timestamptz, now())
+    COALESCE($15::timestamptz, now()),
+    $16::timestamptz,
+    $17
 )
 RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_pack_id, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason
 `
@@ -79,9 +81,21 @@ type CreatePrincipalInstanceParams struct {
 	EpicID              pgtype.UUID
 	StoryID             pgtype.UUID
 	StartTime           pgtype.Timestamptz
+	StopTime            pgtype.Timestamptz
+	StopReason          *string
 }
 
 // Principal instances and their MPH seeding set (ADR 0021).
+// Creation covers both a lifetime that STARTS NOW and one that ALREADY RAN.
+//
+// stop_time and stop_reason are settable here, rather than only through
+// StopPrincipalInstance, because an instance reconstructed from a record of
+// something that already finished has no open phase to represent. Written as
+// a create-then-stop pair it would exist open for the width of a statement,
+// and a reader inside that window sees a live agent that stopped before the
+// import began. The schema's stop check -- stop_time and stop_reason null
+// together -- means a half-supplied pair is refused by the database as well
+// as by the seam.
 func (q *Queries) CreatePrincipalInstance(ctx context.Context, arg CreatePrincipalInstanceParams) (PrincipalInstance, error) {
 	row := q.db.QueryRow(ctx, createPrincipalInstance,
 		arg.PrincipalInstanceID,
@@ -99,6 +113,8 @@ func (q *Queries) CreatePrincipalInstance(ctx context.Context, arg CreatePrincip
 		arg.EpicID,
 		arg.StoryID,
 		arg.StartTime,
+		arg.StopTime,
+		arg.StopReason,
 	)
 	var i PrincipalInstance
 	err := row.Scan(

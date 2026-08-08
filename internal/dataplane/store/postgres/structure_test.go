@@ -1,10 +1,14 @@
 package postgres
 
 import (
+	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"testing"
+
+	"orchestrator/internal/dataplane/store"
 )
 
 // TestStagingIsEmptiedByOneProtocol reads the source, and does so because
@@ -91,4 +95,45 @@ func callsFunction(decl *ast.FuncDecl, name string) bool {
 		return !found
 	})
 	return found
+}
+
+// ledgerWriter is the narrow interface the assertions below are about.
+type ledgerWriter interface {
+	RecordBenchmarkAttempt(ctx context.Context, input store.RecordBenchmarkAttemptInput) (store.Bootstrapped[store.BenchmarkAttempt], error)
+}
+
+// TestLedgerWriteIsTransactionOnly asserts the shape of the SEAM rather than
+// of its implementation.
+//
+// The rule it protects cannot be expressed as a runtime check. The ledger row
+// and the Audit artifact it names must commit together, and every Store
+// method opens a transaction of its own — so a Store delegate would not fail,
+// it would silently do the forbidden thing. The only way to forbid it is for
+// the method not to be on the interface.
+//
+// Both assertions are about store.Tx and store.Store, NOT about *tx and
+// *Store. An earlier version asserted the concrete types, which proved only
+// that the implementation carried the method: deleting BenchmarkTxWriter from
+// store.Tx left it compiling, because *tx still satisfied both interfaces
+// independently of whether the seam exposed either.
+func TestLedgerWriteIsTransactionOnly(t *testing.T) {
+	// Present on the Tx INTERFACE. A compile-time assertion, so removing the
+	// embedding from store.Tx stops this package building.
+	var seam store.Tx
+	var _ ledgerWriter = seam
+
+	// Absent from the Store INTERFACE. Read off the interface's own method
+	// set, because Go cannot assert that a type does not satisfy one, and
+	// because asking the implementation would answer a different question.
+	storeInterface := reflect.TypeOf((*store.Store)(nil)).Elem()
+	if _, exposed := storeInterface.MethodByName("RecordBenchmarkAttempt"); exposed {
+		t.Error("store.Store exposes RecordBenchmarkAttempt: the ledger row would commit in a " +
+			"transaction of its own, apart from the Audit artifact it names, which is the split " +
+			"the ledger exists to prevent")
+	}
+
+	// And the local implementation still satisfies both, so the split above
+	// is a narrowing of the seam rather than a hole in this package.
+	var _ store.Store = (*Store)(nil)
+	var _ store.Tx = (*tx)(nil)
 }

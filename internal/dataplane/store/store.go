@@ -46,8 +46,10 @@ const (
 	ScopeFeature      ScopeType = "feature"
 	ScopeEpic         ScopeType = "epic"
 	ScopeStory        ScopeType = "story"
-	// ScopeBenchmark has no column until item 9 adds the benchmark runs
-	// table, so the schema's exactly-one-scope check refuses it today.
+	// ScopeBenchmark scopes an artifact to one imported benchmark suite run.
+	// Its column and table arrived with item 9 (migration 000017), which also
+	// rebuilt scope_id to include it — so a benchmark-scoped artifact is
+	// listed by the ordinary scope queries rather than being invisible to them.
 	ScopeBenchmark ScopeType = "benchmark"
 )
 
@@ -108,10 +110,30 @@ const (
 	ReasonReviewNotAccept  RejectionReason = "named review is not an acceptance"
 	ReasonDigestMismatch   RejectionReason = "review does not match the artifact's current content"
 	ReasonReviewerIsAuthor RejectionReason = "reviewer is the artifact's author"
-	ReasonReviewerKind     RejectionReason = "reviewer is not an agent or human principal"
-	ReasonSupersedeTarget  RejectionReason = "superseding artifact does not name this artifact as its target"
-	ReasonSupersedeStatus  RejectionReason = "superseding artifact is not accepted"
+	// ReasonReviewerIsAuthorUser is separate from ReasonReviewerIsAuthor
+	// because the operator's response differs: "use a different instance" is
+	// wrong advice, and "find a reviewer who is not this author" is right.
+	// A principal instance is one lifetime, so the same human running a
+	// command twice has two of them -- and ADR 0020 puts the invariant on
+	// the PRINCIPAL: "even the human operator does not self-review".
+	//
+	// That reviewer need not be a human. ADR 0020 requires a non-author
+	// AGENT OR HUMAN principal, so an agent may review a human's work; the
+	// invariant is non-authorship, not humanity.
+	ReasonReviewerIsAuthorUser RejectionReason = "reviewer is the same human as the artifact's author"
+	ReasonReviewerKind         RejectionReason = "reviewer is not an agent or human principal"
+	ReasonSupersedeTarget      RejectionReason = "superseding artifact does not name this artifact as its target"
+	ReasonSupersedeStatus      RejectionReason = "superseding artifact is not accepted"
 )
+
+// ErrUnclaimedScope reports a Management artifact created for a scope that
+// reserves exactly one, without being the artifact that scope reserved.
+//
+// A benchmark run is scoped to by one Management artifact -- its suite
+// report -- and the claim is what settles WHICH. Enforcing it only where a
+// caller consults the claim makes it a convention on that caller; enforcing
+// it at creation makes it a property of the plane.
+var ErrUnclaimedScope = errors.New("the scope reserves one artifact, and this is not the one it reserved")
 
 // TransitionRejected is a refused transition, carrying the specific rule
 // that refused it.
@@ -335,6 +357,23 @@ type CreateReviewInput struct {
 	ReviewerInstanceID uuid.UUID
 }
 
+// RecordedLifetime is the lifetime of a principal that has ALREADY RUN,
+// supplied whole at creation.
+//
+// It exists because reconstruction is not the same act as running. An
+// instance created for a live agent starts now and stops when it ends, which
+// CreatePrincipalInstance and StopPrincipalInstance describe between them —
+// but neither can express a lifetime that is entirely in the past, and a
+// caller composing them creates a live-looking instance for the width of a
+// statement and cannot supply the stop TIME at all. The stop reason is
+// required here for the same reason it is required there: it is the
+// diagnostic that says why the instance ended.
+type RecordedLifetime struct {
+	StartTime  time.Time
+	StopTime   time.Time
+	StopReason string
+}
+
 // CreatePrincipalInstanceInput describes an instance and its MPH signature.
 type CreatePrincipalInstanceInput struct {
 	AgentType         *string
@@ -343,6 +382,10 @@ type CreatePrincipalInstanceInput struct {
 	HarnessConfigHash *string
 	MaestroVersion    *string
 	UserID            *uuid.UUID
+
+	// Recorded supplies a closed, historical lifetime. Nil is the ordinary
+	// case: the instance starts now and stays open until it is stopped.
+	Recorded *RecordedLifetime
 
 	Lineage Lineage
 
@@ -397,6 +440,7 @@ type Reader interface {
 	CallReader
 	ConfigurationReader
 	SecretReader
+	BenchmarkReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -426,6 +470,7 @@ type Writer interface {
 	CallWriter
 	ConfigurationWriter
 	SecretWriter
+	BenchmarkWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)
@@ -450,16 +495,25 @@ type Writer interface {
 
 	ArchiveArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) error
 
+	// CreatePrincipalInstance opens a lifetime, or records a closed one
+	// whole when the input carries a RecordedLifetime.
 	CreatePrincipalInstance(ctx context.Context, input CreatePrincipalInstanceInput) (*PrincipalInstance, error)
 
-	// StopPrincipalInstance is once-only and idempotent (design D7).
+	// StopPrincipalInstance is once-only and idempotent (design D7). It
+	// stops an OPEN instance; a lifetime already over when it is written
+	// arrives closed through CreatePrincipalInstance instead.
 	StopPrincipalInstance(ctx context.Context, organizationID, instanceID uuid.UUID, reason string) (StopOutcome, error)
 }
 
 // Tx is the surface available inside a transaction.
+//
+// It carries BenchmarkTxWriter, which Store deliberately does not: the ledger
+// row and the Audit artifact it names must commit together, and every Store
+// method opens a transaction of its own.
 type Tx interface {
 	Reader
 	Writer
+	BenchmarkTxWriter
 }
 
 // Store is the persistence seam.

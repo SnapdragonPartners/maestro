@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"orchestrator/internal/dataplane/registry"
 )
 
 // TestResetBlocksForTheWHOLEOfARestore is test-plan item 7, and the word
@@ -82,5 +84,76 @@ func TestResetBlocksForTheWholeOfARestore(t *testing.T) {
 			"lifecycle lock does not span the restore's restart and verification, so a reset can "+
 			"delete service data out from under a starting plane",
 			reset.at.Format(time.RFC3339Nano), restore.at.Format(time.RFC3339Nano))
+	}
+}
+
+// TestDownBlocksForTheWholeOfAnOpenSeam is the same question asked of
+// ordinary USE rather than of a lifecycle operation.
+//
+// OpenSeam checks the restore and recovery markers, and an earlier version
+// then operated with nothing held. That is a TOCTOU: the check reports what
+// was true a moment ago, and a reset or a restore is free to take the
+// exclusive lock immediately afterwards and begin deleting the data root
+// under a live import.
+//
+// The lock is now taken SHARED and held until the store is closed, and the
+// duration is the property -- exactly as it is for a restore. The unit tests
+// can show that OpenSeam blocks while an exclusive holder exists, and that a
+// sharedSeam releases on Close. Neither can show that the seam RETURNED by
+// OpenSeam still holds it, which is the half that protects the import: a
+// version releasing the lock as soon as the store was built passes both and
+// leaves the import it was taken for entirely unprotected.
+func TestDownBlocksForTheWholeOfAnOpenSeam(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	// Empty, like every other lifecycle caller's: this seam is opened to
+	// hold a lock, not to read a payload.
+	types, err := registry.New(nil)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	seam, err := OpenSeam(t.Context(), cfg, types)
+	if err != nil {
+		t.Fatalf("OpenSeam: %v", err)
+	}
+
+	type finish struct {
+		at  time.Time
+		err error
+	}
+	downDone := make(chan finish, 1)
+	go func() {
+		err := Down(context.WithoutCancel(t.Context()), cfg, testComposeFile())
+		downDone <- finish{at: time.Now(), err: err}
+	}()
+
+	// It must NOT finish while the seam is open. A generous wait, because
+	// what is being asserted is that nothing happens: too short a one would
+	// pass against a `down` that was merely slow to start.
+	select {
+	case done := <-downDone:
+		seam.Close()
+		t.Fatalf("Down finished at %s while a seam was open (err=%v): a reset or a restore could "+
+			"delete the data root under a live import",
+			done.at.Format(time.RFC3339Nano), done.err)
+	case <-time.After(5 * time.Second):
+	}
+
+	closedAt := time.Now()
+	seam.Close()
+
+	select {
+	case done := <-downDone:
+		if done.err != nil {
+			t.Fatalf("Down: %v", done.err)
+		}
+		if !done.at.After(closedAt) {
+			t.Errorf("Down finished at %s, before the seam was closed at %s",
+				done.at.Format(time.RFC3339Nano), closedAt.Format(time.RFC3339Nano))
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("Down never completed after the seam was closed; the shared lock was not released")
 	}
 }

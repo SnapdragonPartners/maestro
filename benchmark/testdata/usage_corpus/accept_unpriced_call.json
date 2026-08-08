@@ -1,0 +1,16 @@
+{
+  "expect": "accept",
+  "line": {
+    "cache_read_tokens": 800,
+    "cache_write_tokens": 0,
+    "finished_at": "2026-08-04T00:05:00.123456789Z",
+    "input_tokens": 1200,
+    "latency_ns": 1500000000,
+    "model": "claude-opus-5",
+    "output_tokens": 340,
+    "provider": "anthropic",
+    "reasoning_tokens": 90,
+    "success": true
+  },
+  "why": "an unpriced model: absent cost means not knowable, never free"
+}

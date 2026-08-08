@@ -40,6 +40,13 @@ WHERE a.artifact_id        = $2
   AND author.principal_instance_id = a.author_instance_id
   AND author.organization_id       = a.organization_id
   AND author.kind IN ('agent', 'human')
+  -- The self-review backstop, repeated here as every other acceptance rule
+  -- is. Two HUMAN principals owned by the same user are the same principal
+  -- wearing two instances, and ADR 0020 forbids that human being both author
+  -- and approver. It does not extend to two agent instances sharing a model:
+  -- distinct reviewer model routing is a Phase 5 lever ("where practical"),
+  -- not this invariant.
+  AND NOT (p.kind = 'human' AND author.kind = 'human' AND p.user_id = author.user_id)
 `
 
 type AcceptManagementAmendmentParams struct {
@@ -101,6 +108,13 @@ WHERE a.artifact_id     = $1
   AND author.principal_instance_id = a.author_instance_id
   AND author.organization_id       = a.organization_id
   AND author.kind IN ('agent', 'human')
+  -- The self-review backstop, repeated here as every other acceptance rule
+  -- is. Two HUMAN principals owned by the same user are the same principal
+  -- wearing two instances, and ADR 0020 forbids that human being both author
+  -- and approver. It does not extend to two agent instances sharing a model:
+  -- distinct reviewer model routing is a Phase 5 lever ("where practical"),
+  -- not this invariant.
+  AND NOT (p.kind = 'human' AND author.kind = 'human' AND p.user_id = author.user_id)
 `
 
 type AcceptManagementArtifactParams struct {
@@ -168,7 +182,7 @@ INSERT INTO management_artifacts (
     artifact_id, organization_id, user_id,
     artifact_type, artifact_category, status, scope_type,
     scope_organization_id, scope_product_id, scope_feature_id,
-    scope_epic_id, scope_story_id,
+    scope_epic_id, scope_story_id, scope_benchmark_run_id,
     product_id, feature_id, epic_id, story_id,
     author_instance_id, produced_by_tool_call_id,
     amends_artifact_id, supersedes_artifact_id, replaces_artifact_id,
@@ -177,13 +191,13 @@ INSERT INTO management_artifacts (
     $1, $2, $3,
     $4, $5, 'draft', $6,
     $7, $8, $9,
-    $10, $11,
-    $12, $13, $14, $15,
-    $16, $17,
-    $18, $19, $20,
-    $21, $22, $23, $24, $25
+    $10, $11, $12,
+    $13, $14, $15, $16,
+    $17, $18,
+    $19, $20, $21,
+    $22, $23, $24, $25, $26
 )
-RETURNING artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment
+RETURNING artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id
 `
 
 type CreateManagementArtifactParams struct {
@@ -198,6 +212,7 @@ type CreateManagementArtifactParams struct {
 	ScopeFeatureID       pgtype.UUID
 	ScopeEpicID          pgtype.UUID
 	ScopeStoryID         pgtype.UUID
+	ScopeBenchmarkRunID  pgtype.UUID
 	ProductID            pgtype.UUID
 	FeatureID            pgtype.UUID
 	EpicID               pgtype.UUID
@@ -246,6 +261,7 @@ func (q *Queries) CreateManagementArtifact(ctx context.Context, arg CreateManage
 		arg.ScopeFeatureID,
 		arg.ScopeEpicID,
 		arg.ScopeStoryID,
+		arg.ScopeBenchmarkRunID,
 		arg.ProductID,
 		arg.FeatureID,
 		arg.EpicID,
@@ -296,12 +312,13 @@ func (q *Queries) CreateManagementArtifact(ctx context.Context, arg CreateManage
 		&i.CreatedAt,
 		&i.IsAmendment,
 		&i.AmendsTargetIsAmendment,
+		&i.ScopeBenchmarkRunID,
 	)
 	return i, err
 }
 
 const getManagementArtifact = `-- name: GetManagementArtifact :one
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE artifact_id     = $1
   AND organization_id = $2
 `
@@ -348,6 +365,7 @@ func (q *Queries) GetManagementArtifact(ctx context.Context, arg GetManagementAr
 		&i.CreatedAt,
 		&i.IsAmendment,
 		&i.AmendsTargetIsAmendment,
+		&i.ScopeBenchmarkRunID,
 	)
 	return i, err
 }
@@ -376,7 +394,7 @@ func (q *Queries) InvalidateManagementArtifact(ctx context.Context, arg Invalida
 }
 
 const listAcceptedAmendments = `-- name: ListAcceptedAmendments :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE amends_artifact_id = $1
   AND organization_id    = $2
   AND status             = 'accepted'
@@ -435,6 +453,7 @@ func (q *Queries) ListAcceptedAmendments(ctx context.Context, arg ListAcceptedAm
 			&i.CreatedAt,
 			&i.IsAmendment,
 			&i.AmendsTargetIsAmendment,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -447,7 +466,7 @@ func (q *Queries) ListAcceptedAmendments(ctx context.Context, arg ListAcceptedAm
 }
 
 const listManagementArtifactsByEpic = `-- name: ListManagementArtifactsByEpic :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE organization_id = $1
   AND epic_id         = $2
 ORDER BY created_at, artifact_id
@@ -501,6 +520,7 @@ func (q *Queries) ListManagementArtifactsByEpic(ctx context.Context, arg ListMan
 			&i.CreatedAt,
 			&i.IsAmendment,
 			&i.AmendsTargetIsAmendment,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -513,7 +533,7 @@ func (q *Queries) ListManagementArtifactsByEpic(ctx context.Context, arg ListMan
 }
 
 const listManagementArtifactsByProduct = `-- name: ListManagementArtifactsByProduct :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE organization_id = $1
   AND product_id      = $2
 ORDER BY created_at, artifact_id
@@ -567,6 +587,7 @@ func (q *Queries) ListManagementArtifactsByProduct(ctx context.Context, arg List
 			&i.CreatedAt,
 			&i.IsAmendment,
 			&i.AmendsTargetIsAmendment,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -579,7 +600,7 @@ func (q *Queries) ListManagementArtifactsByProduct(ctx context.Context, arg List
 }
 
 const listManagementArtifactsByScope = `-- name: ListManagementArtifactsByScope :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE organization_id = $1
   AND scope_type      = $2
   AND scope_id        = $3
@@ -635,6 +656,7 @@ func (q *Queries) ListManagementArtifactsByScope(ctx context.Context, arg ListMa
 			&i.CreatedAt,
 			&i.IsAmendment,
 			&i.AmendsTargetIsAmendment,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -648,7 +670,7 @@ func (q *Queries) ListManagementArtifactsByScope(ctx context.Context, arg ListMa
 
 const listManagementArtifactsByStory = `-- name: ListManagementArtifactsByStory :many
 
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE organization_id = $1
   AND story_id        = $2
 ORDER BY created_at, artifact_id
@@ -704,6 +726,7 @@ func (q *Queries) ListManagementArtifactsByStory(ctx context.Context, arg ListMa
 			&i.CreatedAt,
 			&i.IsAmendment,
 			&i.AmendsTargetIsAmendment,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -716,7 +739,7 @@ func (q *Queries) ListManagementArtifactsByStory(ctx context.Context, arg ListMa
 }
 
 const lockManagementArtifact = `-- name: LockManagementArtifact :one
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment FROM management_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, status, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, reviewer_instance_id, produced_by_tool_call_id, amends_artifact_id, supersedes_artifact_id, replaces_artifact_id, amendment_sequence, accepted_at, schema_version, summary, payload, payload_digest, review_digest, created_at, is_amendment, amends_target_is_amendment, scope_benchmark_run_id FROM management_artifacts
 WHERE artifact_id     = $1
   AND organization_id = $2
 FOR UPDATE
@@ -767,6 +790,7 @@ func (q *Queries) LockManagementArtifact(ctx context.Context, arg LockManagement
 		&i.CreatedAt,
 		&i.IsAmendment,
 		&i.AmendsTargetIsAmendment,
+		&i.ScopeBenchmarkRunID,
 	)
 	return i, err
 }

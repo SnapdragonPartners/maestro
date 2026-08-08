@@ -42,18 +42,25 @@ func NewInternalRecorder() *InternalRecorder {
 	return internalInstance
 }
 
-// ObserveRequest records metrics for a completed LLM request. Agent and
-// model are unused here (the usage-log recorder consumes them); story
-// aggregates are unchanged.
-func (r *InternalRecorder) ObserveRequest(
-	storyID, _, _ string,
-	promptTokens, completionTokens int,
-	cost float64,
-	success bool,
-) {
-	// Only record successful requests for token/cost tracking
-	if !success || storyID == "" {
+// ObserveCall records metrics for a completed LLM request. Provider, agent
+// and model are unused here (the usage-log recorder consumes them); the story
+// aggregates below are unchanged in meaning.
+//
+// CompletionTokens keeps its established meaning for these aggregates --
+// visible output plus reasoning -- so handleWorkAccepted's existing consumers
+// see the same numbers they saw before the surface split the axes apart.
+func (r *InternalRecorder) ObserveCall(observation *Observation) {
+	// Only successful requests carry a measurement to aggregate; a failed
+	// call has no token counts at all (see Observation.Tokens).
+	storyID := observation.StoryID
+	if !observation.Success || storyID == "" || observation.Tokens == nil {
 		return
+	}
+	promptTokens := observation.Tokens.Input
+	completionTokens := observation.Tokens.Output + observation.Tokens.Reasoning
+	var cost float64
+	if observation.Cost != nil {
+		cost = *observation.Cost
 	}
 
 	r.mu.Lock()
@@ -69,8 +76,8 @@ func (r *InternalRecorder) ObserveRequest(
 	}
 
 	// Update aggregated metrics
-	story.PromptTokens += int64(promptTokens)
-	story.CompletionTokens += int64(completionTokens)
+	story.PromptTokens += promptTokens
+	story.CompletionTokens += completionTokens
 	story.TotalTokens = story.PromptTokens + story.CompletionTokens
 	story.TotalCost += cost
 	story.RequestCount++

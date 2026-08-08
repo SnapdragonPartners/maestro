@@ -1,0 +1,5 @@
+{
+  "expect": "reject",
+  "raw_line": "[]",
+  "why": "an array is not a usage entry"
+}

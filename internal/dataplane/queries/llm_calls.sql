@@ -55,11 +55,16 @@ UPDATE llm_calls
 SET finished_at      = COALESCE(sqlc.narg('finished_at')::timestamptz, now()),
     succeeded        = @succeeded,
     error_message    = @error_message,
-    input_tokens     = @input_tokens,
-    output_tokens    = @output_tokens,
-    reasoning_tokens = @reasoning_tokens,
-    cached_tokens    = @cached_tokens,
-    cost_usd         = @cost_usd
+    -- All five nullable together: a FAILED call has no token measurement at
+    -- all (the toolkit reports usage only on success), and writing zeros
+    -- would assert a measurement nobody made. The schema's availability
+    -- check refuses any partial combination.
+    input_tokens       = sqlc.narg('input_tokens'),
+    output_tokens      = sqlc.narg('output_tokens'),
+    reasoning_tokens   = sqlc.narg('reasoning_tokens'),
+    cache_read_tokens  = sqlc.narg('cache_read_tokens'),
+    cache_write_tokens = sqlc.narg('cache_write_tokens'),
+    cost_usd           = @cost_usd
 WHERE llm_call_id     = @llm_call_id
   AND organization_id = @organization_id
   AND finished_at IS NULL;
@@ -121,18 +126,27 @@ LIMIT @row_limit;
 -- The totals cover completed calls only. open_calls is reported beside them
 -- so a campaign cannot under-report its own cost while still running and
 -- never correct itself.
+--
+-- TOKEN availability is a second axis, not the same one as cost. A local
+-- model's successful call has measured tokens and unknowable cost; a FAILED
+-- call has neither, because the toolkit reports no usage for it at all. One
+-- measured/unmeasured pair cannot express both, so there are two -- and the
+-- token sums filter on their own availability rather than on cost's.
 -- name: AggregateLLMCost :one
 SELECT
-    COALESCE(SUM(cost_usd)         FILTER (WHERE finished_at IS NOT NULL), 0)::numeric AS total_cost_usd,
-    COALESCE(SUM(input_tokens)     FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_input_tokens,
-    COALESCE(SUM(output_tokens)    FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_output_tokens,
-    COALESCE(SUM(reasoning_tokens) FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_reasoning_tokens,
-    COALESCE(SUM(cached_tokens)    FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_cached_tokens,
-    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NOT NULL)::bigint   AS measured_calls,
-    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NULL)::bigint       AS unmeasured_calls,
-    count(*) FILTER (WHERE finished_at IS NULL)::bigint                                AS open_calls,
-    count(*) FILTER (WHERE succeeded IS TRUE)::bigint                                  AS succeeded_calls,
-    count(*) FILTER (WHERE succeeded IS FALSE)::bigint                                 AS failed_calls
+    COALESCE(SUM(cost_usd)           FILTER (WHERE finished_at IS NOT NULL), 0)::numeric AS total_cost_usd,
+    COALESCE(SUM(input_tokens)       FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_input_tokens,
+    COALESCE(SUM(output_tokens)      FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_output_tokens,
+    COALESCE(SUM(reasoning_tokens)   FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_reasoning_tokens,
+    COALESCE(SUM(cache_read_tokens)  FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_cache_read_tokens,
+    COALESCE(SUM(cache_write_tokens) FILTER (WHERE finished_at IS NOT NULL), 0)::bigint  AS total_cache_write_tokens,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NOT NULL)::bigint     AS measured_calls,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND cost_usd IS NULL)::bigint         AS unmeasured_calls,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND input_tokens IS NOT NULL)::bigint AS tokens_measured_calls,
+    count(*) FILTER (WHERE finished_at IS NOT NULL AND input_tokens IS NULL)::bigint     AS tokens_unmeasured_calls,
+    count(*) FILTER (WHERE finished_at IS NULL)::bigint                                  AS open_calls,
+    count(*) FILTER (WHERE succeeded IS TRUE)::bigint                                    AS succeeded_calls,
+    count(*) FILTER (WHERE succeeded IS FALSE)::bigint                                   AS failed_calls
 FROM llm_calls
 WHERE organization_id = @organization_id
   AND provider        = @provider

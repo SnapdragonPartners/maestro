@@ -85,14 +85,31 @@ func TestAppendRejectsInvalidRecords(t *testing.T) {
 }
 
 func TestAppendRejectsUnsafeSuiteIDs(t *testing.T) {
-	store, _ := openStore(t)
+	store, dir := openStore(t)
 	// Uppercase is rejected too: case-insensitive filesystems would collide
 	// IDs differing only by case onto one file.
+	//
+	// TWO layers now refuse these, and deliberately: the record contract owns
+	// the identity shape (runrecord.validateIdentity, so the rule travels with
+	// the record and the importer's mirror of it can agree), and this store
+	// owns its own filename rule. The assertion is therefore about the
+	// OUTCOME and the offending value, not about which layer spoke — an
+	// earlier version matched the store's message text and broke the moment
+	// the contract started refusing first, while the value was just as
+	// rejected as before.
 	for _, id := range []string{"../escape", "Suite-0001"} {
 		rec := recordtest.Accepted()
 		rec.SuiteRunID = id
-		if err := store.Append(rec); err == nil || !strings.Contains(err.Error(), "suite run id") {
-			t.Fatalf("unsafe suite id %q must be rejected, got %v", id, err)
+		err := store.Append(rec)
+		if err == nil {
+			t.Fatalf("unsafe suite id %q must be rejected", id)
+		}
+		if !strings.Contains(err.Error(), id) {
+			t.Fatalf("the rejection of %q must name it, got %v", id, err)
+		}
+		// And nothing reached the disk under that name.
+		if entries, readErr := os.ReadDir(dir); readErr == nil && len(entries) != 0 {
+			t.Fatalf("a refused suite id created %d file(s) in the store", len(entries))
 		}
 	}
 }

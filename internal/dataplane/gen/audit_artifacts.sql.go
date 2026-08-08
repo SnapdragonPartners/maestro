@@ -17,7 +17,7 @@ INSERT INTO audit_artifacts (
     artifact_id, organization_id, user_id,
     artifact_type, artifact_category, scope_type,
     scope_organization_id, scope_product_id, scope_feature_id,
-    scope_epic_id, scope_story_id,
+    scope_epic_id, scope_story_id, scope_benchmark_run_id,
     product_id, feature_id, epic_id, story_id,
     author_instance_id, produced_by_tool_call_id,
     schema_version, summary, payload, payload_digest
@@ -25,12 +25,12 @@ INSERT INTO audit_artifacts (
     $1, $2, $3,
     $4, $5, $6,
     $7, $8, $9,
-    $10, $11,
-    $12, $13, $14, $15,
-    $16, $17,
-    $18, $19, $20, $21
+    $10, $11, $12,
+    $13, $14, $15, $16,
+    $17, $18,
+    $19, $20, $21, $22
 )
-RETURNING artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at
+RETURNING artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at, scope_benchmark_run_id
 `
 
 type CreateAuditArtifactParams struct {
@@ -45,6 +45,7 @@ type CreateAuditArtifactParams struct {
 	ScopeFeatureID       pgtype.UUID
 	ScopeEpicID          pgtype.UUID
 	ScopeStoryID         pgtype.UUID
+	ScopeBenchmarkRunID  pgtype.UUID
 	ProductID            pgtype.UUID
 	FeatureID            pgtype.UUID
 	EpicID               pgtype.UUID
@@ -79,6 +80,7 @@ func (q *Queries) CreateAuditArtifact(ctx context.Context, arg CreateAuditArtifa
 		arg.ScopeFeatureID,
 		arg.ScopeEpicID,
 		arg.ScopeStoryID,
+		arg.ScopeBenchmarkRunID,
 		arg.ProductID,
 		arg.FeatureID,
 		arg.EpicID,
@@ -115,12 +117,13 @@ func (q *Queries) CreateAuditArtifact(ctx context.Context, arg CreateAuditArtifa
 		&i.Payload,
 		&i.PayloadDigest,
 		&i.CreatedAt,
+		&i.ScopeBenchmarkRunID,
 	)
 	return i, err
 }
 
 const getAuditArtifact = `-- name: GetAuditArtifact :one
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at FROM audit_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at, scope_benchmark_run_id FROM audit_artifacts
 WHERE artifact_id     = $1
   AND organization_id = $2
 `
@@ -157,12 +160,13 @@ func (q *Queries) GetAuditArtifact(ctx context.Context, arg GetAuditArtifactPara
 		&i.Payload,
 		&i.PayloadDigest,
 		&i.CreatedAt,
+		&i.ScopeBenchmarkRunID,
 	)
 	return i, err
 }
 
 const listAuditArtifactsByScope = `-- name: ListAuditArtifactsByScope :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at FROM audit_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at, scope_benchmark_run_id FROM audit_artifacts
 WHERE organization_id = $1
   AND scope_type      = $2
   AND scope_id        = $3
@@ -208,6 +212,7 @@ func (q *Queries) ListAuditArtifactsByScope(ctx context.Context, arg ListAuditAr
 			&i.Payload,
 			&i.PayloadDigest,
 			&i.CreatedAt,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -220,7 +225,7 @@ func (q *Queries) ListAuditArtifactsByScope(ctx context.Context, arg ListAuditAr
 }
 
 const listAuditArtifactsByStory = `-- name: ListAuditArtifactsByStory :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at FROM audit_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at, scope_benchmark_run_id FROM audit_artifacts
 WHERE organization_id = $1
   AND story_id        = $2
 ORDER BY created_at, artifact_id
@@ -264,6 +269,7 @@ func (q *Queries) ListAuditArtifactsByStory(ctx context.Context, arg ListAuditAr
 			&i.Payload,
 			&i.PayloadDigest,
 			&i.CreatedAt,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -276,7 +282,7 @@ func (q *Queries) ListAuditArtifactsByStory(ctx context.Context, arg ListAuditAr
 }
 
 const listAuditArtifactsByType = `-- name: ListAuditArtifactsByType :many
-SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at FROM audit_artifacts
+SELECT artifact_id, organization_id, user_id, artifact_type, artifact_category, scope_type, scope_organization_id, scope_product_id, scope_feature_id, scope_epic_id, scope_story_id, scope_id, product_id, feature_id, epic_id, story_id, author_instance_id, produced_by_tool_call_id, schema_version, summary, payload, payload_digest, created_at, scope_benchmark_run_id FROM audit_artifacts
 WHERE organization_id = $1
   AND artifact_type   = $2
 ORDER BY created_at, artifact_id
@@ -320,6 +326,7 @@ func (q *Queries) ListAuditArtifactsByType(ctx context.Context, arg ListAuditArt
 			&i.Payload,
 			&i.PayloadDigest,
 			&i.CreatedAt,
+			&i.ScopeBenchmarkRunID,
 		); err != nil {
 			return nil, err
 		}

@@ -1,18 +1,30 @@
 -- Principal instances and their MPH seeding set (ADR 0021).
 
+-- Creation covers both a lifetime that STARTS NOW and one that ALREADY RAN.
+--
+-- stop_time and stop_reason are settable here, rather than only through
+-- StopPrincipalInstance, because an instance reconstructed from a record of
+-- something that already finished has no open phase to represent. Written as
+-- a create-then-stop pair it would exist open for the width of a statement,
+-- and a reader inside that window sees a live agent that stopped before the
+-- import began. The schema's stop check -- stop_time and stop_reason null
+-- together -- means a half-supplied pair is refused by the database as well
+-- as by the seam.
 -- name: CreatePrincipalInstance :one
 INSERT INTO principal_instances (
     principal_instance_id, organization_id, kind, model,
     agent_type, prompt_pack_id, prompt_hash, harness_config_hash,
     maestro_version, user_id,
     product_id, feature_id, epic_id, story_id,
-    start_time
+    start_time, stop_time, stop_reason
 ) VALUES (
     @principal_instance_id, @organization_id, @kind, @model,
     @agent_type, @prompt_pack_id, @prompt_hash, @harness_config_hash,
     @maestro_version, @user_id,
     @product_id, @feature_id, @epic_id, @story_id,
-    COALESCE(sqlc.narg('start_time')::timestamptz, now())
+    COALESCE(sqlc.narg('start_time')::timestamptz, now()),
+    sqlc.narg('stop_time')::timestamptz,
+    sqlc.narg('stop_reason')
 )
 RETURNING *;
 

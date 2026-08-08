@@ -45,6 +45,7 @@ type AuditArtifact struct {
 	Payload              []byte
 	PayloadDigest        string
 	CreatedAt            pgtype.Timestamptz
+	ScopeBenchmarkRunID  pgtype.UUID
 }
 
 type AuditEvent struct {
@@ -55,6 +56,32 @@ type AuditEvent struct {
 	EventType           string
 	Detail              []byte
 	OccurredAt          pgtype.Timestamptz
+}
+
+type BenchmarkAttempt struct {
+	BenchmarkAttemptID pgtype.UUID
+	OrganizationID     pgtype.UUID
+	BenchmarkRunID     pgtype.UUID
+	RunID              string
+	RecordDigest       string
+	AuditArtifactID    pgtype.UUID
+	CallsUnavailable   string
+	ImportedAt         pgtype.Timestamptz
+}
+
+type BenchmarkReport struct {
+	BenchmarkReportID pgtype.UUID
+	OrganizationID    pgtype.UUID
+	BenchmarkRunID    pgtype.UUID
+	ReportArtifactID  pgtype.UUID
+	ClaimedAt         pgtype.Timestamptz
+}
+
+type BenchmarkRun struct {
+	BenchmarkRunID  pgtype.UUID
+	OrganizationID  pgtype.UUID
+	SuiteRunID      string
+	FirstImportedAt pgtype.Timestamptz
 }
 
 type BinaryAttachment struct {
@@ -123,15 +150,16 @@ type LlmCall struct {
 	LineageKey          string
 	Provider            string
 	Model               string
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CachedTokens        int64
+	InputTokens         *int64
+	OutputTokens        *int64
+	ReasoningTokens     *int64
+	CacheReadTokens     *int64
 	CostUsd             pgtype.Numeric
 	StartedAt           pgtype.Timestamptz
 	FinishedAt          pgtype.Timestamptz
 	Succeeded           *bool
 	ErrorMessage        *string
+	CacheWriteTokens    *int64
 }
 
 type ManagementArtifact struct {
@@ -168,6 +196,7 @@ type ManagementArtifact struct {
 	CreatedAt               pgtype.Timestamptz
 	IsAmendment             bool
 	AmendsTargetIsAmendment *bool
+	ScopeBenchmarkRunID     pgtype.UUID
 }
 
 type MetricEvent struct {

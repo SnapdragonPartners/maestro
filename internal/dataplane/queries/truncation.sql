@@ -68,6 +68,16 @@ WHERE organization_id = @organization_id
 -- artifact is protected by the foreign key as well as by this predicate.
 -- The predicate is what turns that protection from an aborted batch into a
 -- counted, reported outcome.
+--
+-- benchmark_attempts.audit_artifact_id is the SECOND reference to this table,
+-- added by item 9, and it deliberately does NOT get a predicate of its own.
+-- An earlier revision gave it one, which fixed the 23001 abort by making
+-- every imported run record permanent -- the ledger is never deleted, so a
+-- record it named could never be pruned, and Audit retention stopped applying
+-- to anything that had ever been imported. That reference now CASCADES
+-- (migration 000019): the ledger row follows the record it describes, and a
+-- later import recreates both. A record a report pins is excluded by the
+-- predicate above before any of that applies.
 
 -- name: CountAuditArtifactTruncation :one
 SELECT

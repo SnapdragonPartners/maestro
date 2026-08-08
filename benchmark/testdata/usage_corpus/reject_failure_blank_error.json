@@ -1,0 +1,12 @@
+{
+  "expect": "reject",
+  "line": {
+    "error": "  ",
+    "finished_at": "2026-08-04T00:05:00.123456789Z",
+    "latency_ns": 1500000000,
+    "model": "claude-opus-5",
+    "provider": "anthropic",
+    "success": false
+  },
+  "why": "a blank error is a third state and must not read as either of the others"
+}

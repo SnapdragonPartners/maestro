@@ -16,3 +16,25 @@ WHERE slug = $1;
 SELECT user_id, organization_id, handle, display_name, created_at
 FROM users
 WHERE organization_id = $1 AND handle = $2;
+
+-- Provisioning. Item 9 adds it because nothing else could: an importer goes
+-- through the seam, and until now the seam could resolve an organization and
+-- a user but never create one, so every integration test wrote its own with
+-- raw SQL and the importer had no supported path at all.
+--
+-- INSERT ... ON CONFLICT DO NOTHING, then READ, rather than a
+-- check-then-insert. Two operators running bootstrap at once would both see
+-- no row and both insert, and one of them would receive a raw uniqueness
+-- violation -- which is neither "created" nor "already existed" and leaks a
+-- driver error through the seam. Here the unique constraint is the arbiter
+-- and the read that follows is what both callers compare against.
+
+-- name: InsertOrganizationIfAbsent :execrows
+INSERT INTO organizations (organization_id, slug, display_name)
+VALUES (@organization_id, @slug, @display_name)
+ON CONFLICT ON CONSTRAINT organizations_slug_key DO NOTHING;
+
+-- name: InsertUserIfAbsent :execrows
+INSERT INTO users (user_id, organization_id, handle, display_name)
+VALUES (@user_id, @organization_id, @handle, @display_name)
+ON CONFLICT ON CONSTRAINT users_org_handle_key DO NOTHING;

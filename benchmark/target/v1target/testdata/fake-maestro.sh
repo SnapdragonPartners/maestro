@@ -8,7 +8,7 @@ set -eu
 
 if [ "${1:-}" = "-version" ]; then
     echo "maestro fake-v0.0.0 (golden-runner test binary)"
-    echo "  usage-surface: v1"
+    echo "  usage-surface: v2"
     exit 0
 fi
 
@@ -83,9 +83,9 @@ echo "fake maestro ran" > "$PROJECT_DIR/.maestro/logs/run.log"
 # exercise the adapter's usage-surface-required failure path.
 if [ "${FAKE_NO_USAGE:-0}" != "1" ]; then
 cat > "$PROJECT_DIR/.maestro/usage.jsonl" <<'USAGE'
-{"usage_surface_version":1}
-{"ts":"2026-07-17T00:00:01Z","story_id":"st-1","agent_id":"coder-001","model":"fake-model","prompt_tokens":5000,"completion_tokens":3000,"cost_usd":0.5,"success":true}
-{"ts":"2026-07-17T00:00:02Z","story_id":"st-2","agent_id":"coder-001","model":"fake-model","prompt_tokens":3000,"completion_tokens":1000,"cost_usd":0.25,"success":true}
+{"usage_surface_version":2}
+{"finished_at":"2026-07-17T00:00:01Z","story_id":"st-1","agent_id":"coder-001","provider":"fake","model":"fake-model","input_tokens":5000,"output_tokens":2500,"reasoning_tokens":500,"cache_read_tokens":100,"cache_write_tokens":0,"cost_usd":0.5,"latency_ns":1500000000,"success":true}
+{"finished_at":"2026-07-17T00:00:02Z","story_id":"st-2","agent_id":"coder-001","provider":"fake","model":"fake-model","input_tokens":3000,"output_tokens":800,"reasoning_tokens":200,"cache_read_tokens":0,"cache_write_tokens":50,"cost_usd":0.25,"latency_ns":900000000,"success":true}
 USAGE
 fi
 

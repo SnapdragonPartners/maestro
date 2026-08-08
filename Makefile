@@ -289,6 +289,32 @@ dataplane-verify:
 dataplane-recover-key:
 	go run ./cmd/dataplanectl $(if $(filter 1,$(FORCE)),-force,) recover-key
 
+# --- benchmark import ---------------------------------------------------
+#
+# Provisioning and import, mirroring the dataplane-* family. ORG and USER
+# are required by bootstrap because nothing else creates either; the
+# importer resolves them and never creates them, since an import that
+# silently provisions a tenant is a defect waiting for team mode.
+.PHONY: dataplane-bootstrap benchmark-import benchmark-show
+
+dataplane-bootstrap:
+	@test -n "$(ORG)" || { echo "usage: make dataplane-bootstrap ORG=<slug> USER=<handle>"; exit 1; }
+	@test -n "$(USER)" || { echo "usage: make dataplane-bootstrap ORG=<slug> USER=<handle>"; exit 1; }
+	go run ./cmd/dataplanectl -org $(ORG) -user $(USER) bootstrap
+
+# SUITE is optional: omitted, it imports every suite the results store
+# holds, which is the store's own layout answering rather than a list
+# somebody has to keep current.
+benchmark-import:
+	@test -n "$(ORG)" || { echo "usage: make benchmark-import ORG=<slug> OPERATOR=<handle> [SUITE=<id>]"; exit 1; }
+	@test -n "$(OPERATOR)" || { echo "usage: make benchmark-import ORG=<slug> OPERATOR=<handle> [SUITE=<id>]"; exit 1; }
+	go run ./cmd/dataplanectl -org $(ORG) -operator $(OPERATOR) $(if $(SUITE),-suite $(SUITE),) benchmark import
+
+benchmark-show:
+	@test -n "$(ORG)" || { echo "usage: make benchmark-show ORG=<slug> SUITE=<id>"; exit 1; }
+	@test -n "$(SUITE)" || { echo "usage: make benchmark-show ORG=<slug> SUITE=<id>"; exit 1; }
+	go run ./cmd/dataplanectl -org $(ORG) -suite $(SUITE) benchmark show
+
 # Clean build artifacts
 clean:
 	rm -rf bin/
