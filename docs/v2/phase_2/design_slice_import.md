@@ -1,14 +1,14 @@
 +++
 title = "Phase 2 Item 9 Design: Importing Golden Runner Records"
 edit_date = "2026-08-08"
-status = "draft"
-summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, the manifest's non-terminality is what makes a suite re-importable, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
+status = "live"
+summary = "Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, a suite reserves the one report it may hold before that report is written and artifact creation enforces the reservation, a re-import is judged by a stable projection of everything the report claims rather than by a digest its minted identifiers make unrepeatable, the ledger row follows the record it names so retention still reaches an imported attempt, why an attempt yielded no calls is recorded where it was observed rather than reconstructed later from a store that may have changed, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam."
 type = "design"
 +++
 
 # Phase 2 Item 9 Design: Importing Golden Runner Records
 
-Status: **draft** — revised after five Codex review rounds. Round 1
+Status: **live** — accepted by Codex and DR, 2026-08-08, after five review rounds on the design and three on the implementation. Round 1
 approved the central shape and D5, required D10 with explicit conflict semantics,
 **rejected** D2's null `scope_id`, and **rejected** D9's provider sentinel in
 favour of recording it at its source. Round 2 found four further blockers,
@@ -24,6 +24,18 @@ inherited per-record validation — unreachable code, run at write time — with
 two-sided conformance corpus, and added value validity to a surface that had only
 defined presence. Resolutions are inline; all five dispositions are recorded at the
 end.
+
+**Three further rounds ran against the implementation**, and their outcomes are
+the D7a–D7e amendments below rather than a separate disposition list — because
+what they changed was the design, not only the code. Round 1 found six blockers,
+three of which were amendments this document had already made badly: a
+truncation predicate that made every imported run record permanent, a claim
+written after the artifact it named, and a re-import check that could not see a
+changed manifest. Round 2 found five more, including a caller-supplied
+identifier that could defeat the claim protocol and a reservation the plane
+never enforced. Round 3 found a migration default that would have converted
+already-imported unavailable attempts into available ones, and required this
+document to stop describing mechanisms it had replaced.
 
 Delivers the [Phase 2 plan](plan_scope.md)'s item 9: golden story runner records
 from `benchmark/runs/` imported into the main Postgres plane through the
