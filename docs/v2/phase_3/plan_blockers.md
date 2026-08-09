@@ -118,16 +118,79 @@ Five requirements:
 
 1. **Cooperative cancellation with a bounded grace period.** The lease holder is
    asked to stop and given a defined window to reach a safe boundary.
-2. **Provider-enforced termination** of the lease-holding process **and its
-   descendants** once the grace period expires. The local Docker provider must
-   be able to do this; a provider that cannot is not conformant.
-3. **Quarantine or stop the Habitat when termination cannot be confirmed.** Not
-   knowing whether a process died is the dangerous case, and it must have a
-   defined resting state rather than an assumption.
+2. **Provider-enforced termination of the whole fencing domain** once the grace
+   period expires — see the domain model below. A provider that cannot terminate
+   its domain and confirm it is not conformant.
+3. **Quarantine the Habitat when termination cannot be confirmed.** Not knowing
+   whether execution stopped is the dangerous case, and it must have a defined
+   resting state rather than an assumption.
 4. **No reassignment and no fresh dispatch into that Habitat until fencing is
    acknowledged.** A Habitat with an unconfirmed occupant is not a free resource.
 5. **Generation fencing for subsequent mediated calls**, so a call issued by a
    fenced holder is rejected at the boundary even if it arrives late.
+
+#### The fencing unit is a provider domain, not a process tree
+
+A second correction, from the same review that produced the protocol above: the
+first version of requirement 2 said "the lease-holding process **and its
+descendants**." **Process ancestry is not a portable containment boundary**, and
+building on it would have made the protocol unimplementable on every backend
+that matters:
+
+| Backend | Conforming fencing unit | Required behavior |
+| --- | --- | --- |
+| Docker / Compose | The container, or the Habitat's complete Compose project | Stop with a grace period, force-kill, then **wait for every recorded container to be non-running**. Never walk descendants. Docker supports bounded stop and waiting for confirmed exit. |
+| Kubernetes | The Pod, or all Pods and resources in the Habitat's namespace/domain | Wait for **kubelet-confirmed** terminal Pods. Force deletion is explicitly *not* confirmation and can leave processes running indefinitely. A partitioned node or uncertain volume attachment must **quarantine** until node/storage fencing is established. |
+| Filesystem / chroot | An OS process-isolation unit — **not** the directory | On Linux, a dedicated cgroup v2 domain: `cgroup.kill`, then confirm `cgroup.events populated` is zero. `chroot` alone only changes pathname resolution and is explicitly not a sandbox, so a chroot-only provider **cannot conform**. |
+
+The provider contract therefore defines:
+
+- An immutable **`FencingDomainID` and generation**, created *before* execution
+  starts.
+- A guarantee that **every process or subordinate resource able to mutate the
+  Habitat is contained in that domain**.
+- **`Fence()` returns a positive receipt or `unconfirmed`.** Best-effort success
+  is forbidden — there is no third answer, and "we tried" is not a receipt.
+- **Explicit collateral semantics:** if one lease cannot be isolated, fencing
+  terminates every lease sharing that domain. Say so rather than discovering it.
+- **Quarantine and no reuse** whenever confirmation is unavailable.
+
+#### A live escape proves this is not theoretical
+
+Two verified facts about the current v1 executor, `pkg/exec/docker_long_running.go`:
+
+- **The raw host Docker socket is mounted into every long-running container**,
+  unconditionally — `pkg/exec/docker_long_running.go:243` appends
+  `--volume /var/run/docker.sock:/var/run/docker.sock` for all containers, not
+  just Claude Code mode. A holder can therefore create **sibling** containers
+  outside its own PID tree, and stopping the original container does not fence
+  them. Descendant-walking would have missed them by construction.
+- **The stop path cannot back a receipt.** `StopContainer`
+  (`pkg/exec/docker_long_running.go:356-380`) logs `docker stop` and
+  `docker rm -f` failures at Error level, then *swallows both*, deletes the entry
+  from `activeContainers`, unregisters it from the global registry, and returns
+  `nil`. There is no `docker wait` and no non-running check. Worse than the
+  missing confirmation: **the failure path destroys the evidence** — after a
+  failed stop, Maestro no longer records that the container exists, so nothing
+  downstream can reconcile it. That is exactly the "recorded containers" set a
+  receipt would have to wait on.
+
+This is frozen v1 code and is **not** a defect to fix in v1 (CLAUDE.md's v1
+freeze). It is a requirement on the Phase 3 provider, which must remove that
+access, mediate it through the Orchestrator, use a constrained proxy or private
+daemon, or include every created container in the immutable fencing domain.
+
+#### A1 spike requirement
+
+Before the ADR is Accepted, prove the domain model against three backends:
+
+- **Docker/Compose — a focused reproducer**, not a design proof. Demonstrate the
+  socket escape and demonstrate that domain-based fencing catches the sibling
+  container that descendant-walking misses.
+- **Kubernetes partition — design proof.** Show what the protocol does when a
+  node is partitioned and force-deletion is not confirmation.
+- **Linux cgroup-backed filesystem execution — design proof.** Show why
+  chroot-only cannot conform and what the cgroup v2 domain adds.
 
 Confirmed fencing is the precondition for A5's terminal result, and the
 containment guarantee A2 states is only as strong as this protocol makes it.
@@ -281,8 +344,8 @@ Proposed rule:
   version.
 - Retain its output as attributable draft/Audit history.
 - **Fence the execution per A1's protocol** — cooperative cancellation, then
-  provider-enforced termination of the holder and its descendants, quarantining
-  the Habitat if termination cannot be confirmed.
+  provider-enforced termination of the **fencing domain**, quarantining the
+  Habitat when `Fence()` returns `unconfirmed`.
 - **Only after fencing is confirmed**, terminate it as `cancelled` with reason
   `superseded`, never `failed`. A terminal result recorded while an unfenced
   process may still be writing is a false record, and downstream work would be
@@ -514,10 +577,10 @@ on lease revocation, which invalidates authorization but cannot stop a process
 already running inside a Habitat — it keeps editing files and can keep spawning
 children, needing no further authorization for either. A1 now specifies a
 **fencing protocol** (cooperative cancellation with a bounded grace period →
-provider-enforced termination of the holder and descendants → quarantine on
-unconfirmed termination → no reassignment or dispatch until fencing is
-acknowledged → generation fencing for late mediated calls), and A5's terminal
-`cancelled`/`superseded` follows only **confirmed** fencing.
+provider-enforced termination → quarantine on unconfirmed termination → no
+reassignment or dispatch until fencing is acknowledged → generation fencing for
+late mediated calls), and A5's terminal `cancelled`/`superseded` follows only
+**confirmed** fencing.
 
 The defect had spread to three places — A1's lifecycle list, A2's in-Habitat
 containment guarantee, and A5's enforcement paragraph — because each was written
@@ -531,6 +594,33 @@ amendment to ADR 0019 rather than a new ADR — it completes a case 0019 itself
 deferred, it concerns 0019's own subject, and its mechanisms are owned by A1
 (fencing) and A4 (cancellation lifecycle, terminal result), leaving only the
 policy for 0019 to carry.
+
+### Fourth round, 2026-08-09 — fence a domain, not a process tree
+
+One P1, applied. **Process ancestry is not a portable containment boundary.**
+The third round's requirement 2 said "the lease-holding process and its
+descendants," which is unimplementable on every backend that matters: Docker
+socket access creates sibling containers outside the PID tree, a Kubernetes
+agent can create sibling Pods, and a chroot provides no process isolation at
+all. A1 now requires each provider to create an **immutable fencing domain**
+containing everything able to mutate the Habitat, and `Fence()` returns a
+positive receipt or `unconfirmed` — best-effort success is forbidden.
+
+Two claims from the review were verified against the code before being written
+in, and both hold. `pkg/exec/docker_long_running.go:243` mounts the raw host
+Docker socket into **every** long-running container unconditionally, so the
+sibling-container escape is live today. `StopContainer`
+(`:356-380`) swallows both `docker stop` and `docker rm -f` failures and returns
+`nil`. One detail beyond the review: that path also **deletes the container from
+`activeContainers` and the global registry on the failure branch**, so a failed
+stop destroys the record that would let anything reconcile it later — strictly
+worse than an unconfirmed receipt. Frozen v1 code, so not a v1 fix; it is a
+requirement on the Phase 3 provider and the reproducer target for A1's spike.
+
+Same spread pattern as the third round, and the reason it is worth naming twice:
+the wrong abstraction had reached **four** places including the #273 issue body
+this plan had already amended. Grepping the concept rather than fixing the
+flagged line is what caught the tracker copy.
 
 ## Settled Questions
 
