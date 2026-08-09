@@ -1,16 +1,26 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
 edit_date = "2026-08-09"
-status = "draft"
+status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
 +++
 
 # Pre-Phase-3 Blockers: Scope And Sequencing
 
-Status: **draft** — proposed by Claude 2026-08-09, revised the same day against
-Codex's delta arbitration and DR's scoping decision on the tool boundary. Not
-binding until Codex and DR accept it.
+Status: **live** — proposed by Claude 2026-08-09 and accepted the same day after
+five review rounds: Codex approved `607e0ee` with no blocking findings, and DR
+approved. DR's two interventions shaped it materially — scoping the tool
+boundary to Maestro's own agents, and bounding the Habitat backend work.
+
+Flipped to `live` in its own PR rather than after merge, following Phase 2's
+recorded lesson that Phase 1's plan merged still `draft` and needed a follow-up
+flip PR.
+
+**Carried forward to the A1 ADR** (agreed at approval, deliberately *not* a
+revision to this plan, which already implies it): an `isolated` receipt requires
+dispatch into a **new Habitat generation** — the quarantined generation is never
+reused.
 
 ## What This Document Is
 
