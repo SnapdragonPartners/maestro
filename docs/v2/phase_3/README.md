@@ -12,7 +12,7 @@ retirement), produced under the [build process](../process_build.md). The phase
 goal and exit criteria come from the [roadmap](../plan_roadmap.md); the binding
 specifications will be the ADRs the pre-entry work below produces.
 
-- [Pre-Phase-3 Blockers: Scope And Sequencing](plan_blockers.md) (**draft**) — What must be settled before Phase 3 implementation begins: a design cluster of three mutually-constraining ADRs (Habitat, tool-execution policy hook, agent execution contract) plus prompt-pack identity and the amendment-vs-running-work policy, a parallel cloud-portability proof, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted.
+- [Pre-Phase-3 Blockers: Scope And Sequencing](plan_blockers.md) (**draft**) — What must be settled before Phase 3 implementation begins: a design cluster of four ADRs (Habitat, tool-execution policy hook, prompt-pack identity, agent execution contract) plus the amendment-vs-running-work policy, a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted.
 
 The phase scope and plan (`plan_scope.md`) is written after the blocker plan's
 Track A is Accepted, and is listed here when it exists.

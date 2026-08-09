@@ -2,15 +2,15 @@
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
 edit_date = "2026-08-09"
 status = "draft"
-summary = "What must be settled before Phase 3 implementation begins: a design cluster of three mutually-constraining ADRs (Habitat, tool-execution policy hook, agent execution contract) plus prompt-pack identity and the amendment-vs-running-work policy, a parallel cloud-portability proof, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
+summary = "What must be settled before Phase 3 implementation begins: a design cluster of four ADRs (Habitat, tool-execution policy hook, prompt-pack identity, agent execution contract) plus the amendment-vs-running-work policy, a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
 +++
 
 # Pre-Phase-3 Blockers: Scope And Sequencing
 
-Status: **draft** — proposed by Claude 2026-08-09 from DR's and Codex's joint
-sequencing, not yet reviewed. Nothing here is binding until Codex and DR accept
-it.
+Status: **draft** — proposed by Claude 2026-08-09, revised the same day against
+Codex's delta arbitration and DR's scoping decision on the tool boundary. Not
+binding until Codex and DR accept it.
 
 ## What This Document Is
 
@@ -35,32 +35,43 @@ here is "accept the Phase 3 scope and plan."
 Every item below has a defensible claim to being pre-entry work. That is exactly
 the failure mode: a pre-phase that absorbs the phase. Two constraints:
 
-- Design items produce an **Accepted ADR and nothing else**. No implementation
-  lands on the strength of a pre-entry ADR; implementation is Phase 3 items.
+- Design items produce an **Accepted ADR and nothing else**, with **one bounded
+  exception**: A4's contract cannot be proven by inspection, so it carries a
+  conformance executable. That executable lives **outside `pkg/`, `internal/`,
+  and `cmd/`** for the pre-entry period, on the same footing as spike code under
+  the [build process](../process_build.md). Where it lands permanently is a
+  Phase 3 decision. No other pre-entry item ships code.
 - The engineering runway and the benchmark repair are **not gates on the design
-  track**. They are gates on specific Phase 3 activities (the paid runs, the
-  concurrency work) and are sequenced against those, not against phase entry.
+  track**. They gate specific Phase 3 activities — the paid runs, the
+  concurrency work — and are sequenced against those, not against phase entry.
 
 ## The Shape Of The Work
 
-Four tracks, not one chain. The serial reading of this list is the main
-correction proposed to the original sequencing (see [Deltas](#deltas-from-the-proposed-sequencing)).
+Four tracks, not one chain.
 
 ```text
 Track A — design (critical path for phase entry)
-    A1 Habitat  ─┐
-    A2 tool hook ├─ one cluster, reviewed as a set ──┐
-                 │                                   ├─ A4 agent execution contract ─┐
-    A3 prompt pack identity ───────────────────────────┘                             │
-                                                                                     ├─ A5 amendment vs running work
-                                                                                     │
-Track B — cloud portability proof (#286)          parallel, no design dependency
-Track C — benchmark repair (#317, #316, #318, #319, model probe)   gates the paid runs
-Track D — engineering runway (#314, #321, #306, #307, #308)        gates the concurrency work
+
+    A1 Habitat ──────────────────── Accepted first ──┐
+    A2 tool execution policy hook ───────────────────┤
+    A3 prompt pack identity ─────────────────────────┼─→ A4 agent execution contract
+                                                     │      (absorbs #272's contract portion)
+                                                     │                 │
+                                          A1 lease revocation ─────────┴─→ A5 amendment vs running work
+                                                                                    │
+                                                                                    ▼
+                                                                          A6 accept Phase 3 scope
+
+Track B — cloud portability proof (#286)     parallel authoring; gates Orchestrator/persistence wiring
+Track C — benchmark repair (#317, probe, #318, #319, #316)          gates the two paid runs
+Track D — engineering runway (#314, #321, #306, #307, #308)         gates the concurrency work
 ```
 
-Track A is the only track that gates *phase entry*. B, C and D gate specific
-things inside Phase 3 and are scheduled against those.
+A1, A2 and A3 are drafted concurrently and reviewed as a set for consistency.
+**A1 is Accepted before A4**, because A4 consumes an accepted Habitat contract;
+#282 blocks #273's *implementation* completion, not its design ADR.
+
+Only Track A gates phase entry. B, C and D gate specific things inside Phase 3.
 
 ---
 
@@ -71,10 +82,11 @@ things inside Phase 3 and are scheduled against those.
 Establish Habitat as the Orchestrator-managed execution-resource boundary:
 identity, `HabitatSpec` versus mutable `HabitatInstance`, generation/fencing so
 a recycled Habitat cannot satisfy a stale reference, lifecycle
-(provision → ready → lease → release → reconcile → destroy), agent-to-Habitat
+(provision → ready → lease → release → reconcile → destroy), **lease revocation
+and its cancellation semantics** (A5 depends on this directly), agent-to-Habitat
 cardinality including read-only Architect inspection, restart and reconciliation
-expectations, and the rule that **tools target a Habitat reference, never an
-Agent-derived local path**.
+expectations, and the rule that **Maestro tools target a Habitat reference,
+never an Agent-derived local path**.
 
 Why pre-entry: Phase 3 cuts `pkg/workspace`, `pkg/exec`, container state, Coder
 setup, and Architect inspection of Coder workspaces. Establishing the boundary
@@ -87,9 +99,9 @@ Done: an Accepted ADR covering the list above. **Explicitly out**: the local
 Docker provider implementation, the persistence migration, and speculative
 warming policy — all Phase 3 items.
 
-Open for review: the name. `Habitat` is provisional in the issue;
-`Environment`, `Workspace`, `Runtime`, and `Sandbox` are all more overloaded.
-Settle it in the ADR, because it will appear in table names.
+**Name: `Habitat` is accepted** (Codex, 2026-08-09) — more precise than
+`Workspace`, less misleading than `Sandbox`, `Environment`, or `Runtime`. It
+will appear in table names; the ADR fixes it rather than leaving it provisional.
 
 ### A2. Tool execution policy hook — [backlog candidate 4](../notes_adr-backlog.md)
 
@@ -97,29 +109,47 @@ Where the mandatory per-action policy hook lives and what its interface is. No
 policy content — the gating rules are [candidate 12](../notes_adr-backlog.md),
 post-MVP.
 
-Proposed placement (Codex, endorsed): one mandatory hook at the Orchestrator's
-central tool-execution boundary, after principal/Habitat capability resolution
-and before the side effect. Not in the toolloop, not in the dispatcher, not in
-individual tools, not a separate policy service.
+Placement: one mandatory hook at the Orchestrator's central tool-execution
+boundary, after principal/Habitat capability resolution and before the side
+effect. Not in the toolloop, not in the dispatcher, not in individual tools, not
+a separate policy service.
 
-**The decision this ADR must actually make is broader than placement.** A single
-in-process hook enforces nothing against an external agent that executes its own
-tools inside its own runtime — a Claude Code adapter running its own file edits
-does not pass through Maestro's tool boundary. So the ADR must state the scope
-invariant that makes the hook meaningful:
+#### The two modes, and what each actually guarantees
 
-> Any tool action with a side effect on a Maestro-managed resource — Habitat
-> state, repository content, the data plane, the forge — is executed by the
-> Orchestrator through this boundary. An external agent runtime's internal tools
-> are outside the boundary and therefore may not reach those resources; their
-> access is mediated by capability through the execution contract (A4).
+The draft of this document proposed a scope invariant prohibiting external agent
+runtimes from touching Maestro-managed resources directly. **That is withdrawn.**
+It would have disabled Claude Code-style built-in editing unless every internal
+tool were replaced with a mediated one (Codex), and it reaches for control over
+agents that are not Maestro's to control — an engineer may legitimately run other
+agents inside a Habitat, and the application under development may itself be an
+agent (DR). Maestro's job is scoped to **the behavior of Maestro's own agents**.
 
-Without that sentence, "native and external agents share the same enforcement
-point" is an aspiration rather than a property. With it, the hook is a real
-chokepoint and A4 has a concrete requirement to satisfy.
+The ADR must therefore distinguish two modes and state honestly what each
+receives:
 
-Done: an Accepted ADR fixing the placement, the interface, the scope invariant
-above, and the relationship to candidate 12.
+**Mediated actions** — anything crossing back into the Orchestrator: data-plane
+writes, artifact publication, forge operations, Habitat lifecycle, retrieval.
+These pass through the hook, are policed per action, and are recorded in the
+Audit family. This is the chokepoint, and it applies to native Go agents and
+adapted external agents alike, because both reach these resources only through
+the contract (A4).
+
+**In-Habitat actions** — what a process does inside a Habitat already granted to
+it: file edits, running commands, an agent runtime's own internal tools. These
+are **not** individually policed and Maestro makes no per-action claim about
+them. The guarantee is **containment, decided at grant time**: the lease defines
+the blast radius, and enforcement lives at the Habitat boundary and in
+revocation, not in a per-action gate.
+
+Stating the second guarantee as narrowly as it really is, is the point. An agent
+holding a lease can do anything the Habitat permits between mediated actions.
+That is a property of the design, not a gap in it, and A5's cancellation
+semantics are built on top of the honest version rather than the aspirational
+one.
+
+Done: an Accepted ADR fixing the placement, the interface, the mediated/in-Habitat
+split with each mode's guarantee stated explicitly, and the relationship to
+candidate 12.
 
 Cheapest item here to decide and the most expensive to defer: Phase 3 builds the
 tool plumbing, and a seam not chosen gets retrofitted into every tool.
@@ -144,39 +174,56 @@ and skills.
 
 Done: an Accepted ADR. The migration that creates the family is a Phase 3 item.
 
-A3 has no dependency on A1 or A2 and can be authored in parallel with them. It
-joins the graph at A4, whose invocation schema carries pack identity.
+A3 has no dependency on A1 or A2 and is authored in parallel with them. It joins
+the graph at A4, whose invocation schema carries pack identity.
 
 ### A4. Agent execution contract — [#282](https://github.com/SnapdragonPartners/maestro/issues/282)
 
-The versioned wire contract: invocation, events, terminal outcomes, lifecycle,
+The versioned wire contract: invocation, events, terminal result, lifecycle,
 provenance, transport, and capability-based tool/knowledge access. Finalized
-against the Habitat, tool-policy, and prompt-pack contracts above.
+against A1 (Accepted), A2 and A3.
 
-Two splits are proposed:
+**Three scope decisions:**
 
-**Split 1 — contract from presentation.** The issue bundles the contract and
-conformance work with a standalone code-review agent that produces GitHub
-Actions annotations. Only the contract and one exercised vertical slice are
-pre-entry. Actions presentation polish must not hold Phase 3 hostage.
+**1 — Contract, not presentation.** The issue bundles the contract with a
+standalone code-review agent producing GitHub Actions annotations. Only the
+contract and one exercised vertical slice are pre-entry; Actions presentation
+polish is Phase 3 or later and must not hold phase entry hostage.
 
-**Split 2 — the terminal-outcome vocabulary is one artifact with four
-feeders.** The contract owns it, and these all resolve into it rather than being
-solved separately:
+**2 — The terminal result is a structured schema, not one enum.** Four
+independently-discovered needs converge here, and flattening them into a single
+status list would conflate axes that are not the same kind of fact:
 
-| Source | What it needs the vocabulary to express |
-| --- | --- |
-| [#317](https://github.com/SnapdragonPartners/maestro/issues/317) | A headless escalation terminates as a durable **blocked** or **timed-out** outcome that stops requeues and stops billing. Today it deadlocks into `ESCALATED`, which no headless run can answer. |
-| [#280](https://github.com/SnapdragonPartners/maestro/issues/280) | **already-satisfied** (or equivalent) is distinct from a completed Story with a PR. Today the empty-PR case is recorded as ordinary completion and reads as a false negative. |
-| A5 below | **superseded** is distinct from failed, for work cancelled because its version was amended. |
-| The issue itself | retryable infrastructure failure distinct from non-retryable agent failure. |
+| Axis | Values | Fed by |
+| --- | --- | --- |
+| Execution status | `completed`, `blocked`, `cancelled`, `timed_out`, `failed` | [#317](https://github.com/SnapdragonPartners/maestro/issues/317) — a headless escalation must terminate durably as `blocked` or `timed_out`, stopping requeues and stopping billing. Today it deadlocks into `ESCALATED`, which no headless run can answer. |
+| Completion disposition | `changed`, `already_satisfied` | [#280](https://github.com/SnapdragonPartners/maestro/issues/280) — a Story whose work was already merged is a *completed* execution with a different disposition, not a distinct execution status. Today it is recorded as ordinary completion and reads as a false negative. |
+| Cancellation reason | `superseded`, … | A5 — work cancelled because its version was amended terminates as superseded, not failed. |
+| Failure class | retryable infrastructure, non-retryable agent | #282 as filed. |
 
-Treating these as one vocabulary is the point: three of them were discovered
-independently and each would otherwise add a one-off status.
+`already_satisfied` is a work disposition; infrastructure failure is an
+operational fact. Separate axes keep them from colliding.
 
-Done: an Accepted contract ADR plus one executable agent proven against it. The
-#317 and #280 *code* fixes are Phase 3 items; what is pre-entry is that the
-vocabulary has a place for them.
+**3 — A4 absorbs the contract portion of
+[#272](https://github.com/SnapdragonPartners/maestro/issues/272).** Provider,
+model and endpoint identity cannot be deferred past a wire contract that carries
+model identity in its invocation and its provenance. #272 as filed settles
+*routing* — `{provider, model, endpoint}` explicit rather than inferred from the
+model name, replacing v1's `ProviderPatterns`. A4 must settle one thing beyond
+that: whether the **served model identity** (a provider's offering, which is
+what has a retirement date) and the **underlying model identity** (which is what
+has a lineage) are the same key. Track C's #319 depends on that answer. The #272
+*implementation* remains a Phase 3 item.
+
+**Vertical slice (settled):** any real external-process executable driven over
+the local transport is sufficient. It need not carry GitHub Actions
+presentation. It **must** exercise the actual wire boundary, capability
+handling, the event stream, cancellation, and the terminal result — an
+in-process fake or an echo fixture does not discharge this.
+
+Done: an Accepted contract ADR plus that executable. The #317 and #280 *code*
+fixes are Phase 3 items; what is pre-entry is that the schema has a place for
+them.
 
 ### A5. Amendment versus running work — [backlog candidate 3](../notes_adr-backlog.md)
 
@@ -186,25 +233,33 @@ deterministically, reissue — no agent in the loop, and explicitly never by
 draining in-flight channels. ADR 0021 settled the record side, ADR 0028 the
 encoding. **Only the in-flight executor's fate is open.**
 
-Proposed rule (Codex, endorsed):
+Proposed rule:
 
 - Mark the old execution cancellation-requested.
 - Allow its current atomic tool action to reach a safe boundary.
 - Prohibit further actions, and prohibit acceptance against the superseded
   version.
 - Retain its output as attributable draft/Audit history.
-- Terminate it as **superseded**, not failed.
+- Terminate it as `cancelled` with reason `superseded`, never `failed`.
 - Recompute the DAG and dispatch against the new effective version.
 
-Rejected alternatives and why: suspend/resume is too much machinery for Phase 3;
-complete-then-reconcile lets stale work progress and then requires judgment from
-deterministic machinery, which ADR 0019 forbids.
+**Enforcement rests primarily on A1's lease revocation and A4's cancellation
+lifecycle, not on A2's hook.** The hook observes cancellation only at mediated
+actions; per A2's honest statement of the in-Habitat guarantee, a runtime
+holding a lease continues to act between them. Revoking the lease is what
+actually stops it. Building A5 on the hook alone would leave exactly the gap A2
+declines to close.
 
-Depends on A2 more concretely than "after the lifecycles exist on paper": *the
-tool-execution hook is the natural observation point for cancellation-requested*,
-because it is the one place a per-action boundary already exists. And it depends
-on A4 for the `superseded` terminal outcome. A5 is therefore genuinely last in
-Track A.
+Rejected alternatives:
+
+- **Suspend/resume** — too much machinery for Phase 3.
+- **Complete-then-reconcile** — rejected because it lets stale work keep
+  progressing against a version already superseded, spending tokens and Habitat
+  time on output that cannot be accepted. *Not* rejected on ADR 0019 grounds:
+  reconciliation judgment could legitimately be routed to an agent, so the
+  boundary is not what rules it out.
+
+Depends on A1 and A4; therefore last in Track A.
 
 ### A6. Accept the Phase 3 scope and plan
 
@@ -223,21 +278,25 @@ they leave two competing abstractions on the books.
    what Habitat supersedes — #273 says so directly ("amend the existing post-MVP
    Container Runtime Abstraction backlog item rather than leaving two competing
    abstractions"). [Candidate 13 "External Agent Runtime Contract"](../notes_adr-backlog.md)
-   is what #282 supersedes. Both must be re-scoped or converted to resolved
-   stubs pointing at the new ADRs. The backlog's own convention applies: a
-   resolved candidate **keeps its slot** rather than being deleted, so Habitat
-   and the execution contract take new numbered slots and 11/13 become pointers.
+   is what #282 supersedes.
+
+   **Amend slots 11 and 13 in place** — re-scope each to the work it has become,
+   move it out of post-MVP, and then mark that same slot resolved by the ADR it
+   produces. Do not open new slots: the backlog's convention that a resolved
+   candidate keeps its slot exists to preserve citations, and minting new
+   numbers beside resolved pointer stubs would duplicate the concept in two
+   places.
 
 2. **#273 requires "Phase 2 persistence hooks," and Phase 2 is closed.**
-   Proposed resolution: **no Phase 2.1 for schema.** The Habitat tables become a
-   Phase 3 migration, exactly as prompt packs already are — the schema inventory
-   already carries deferred families with a named creator phase, migrations are
-   additive, and the plane is versioned. Reopening a closed phase to add tables
-   would set a worse precedent than the one it fixes. Rewrite #273's section 2 to
-   name Phase 3 as the creator.
+   Resolution: **no Phase 2.1 for schema.** The Habitat tables become a Phase 3
+   migration, exactly as prompt packs already are — the schema inventory already
+   carries deferred families with a named creator phase, migrations are additive,
+   and the plane is versioned. Reopening a closed phase to add tables would set a
+   worse precedent than the one it fixes. Rewrite #273's section 2 to name Phase
+   3 as the creator.
 
-   This leaves **Phase 2.1 meaning exactly one thing: #286** (below), which is
-   genuinely Phase 2's seam being proven rather than new Phase 2 scope.
+   This leaves **Phase 2.1 meaning exactly one thing: #286**, which is Phase 2's
+   seam being proven rather than new Phase 2 scope.
 
 ---
 
@@ -248,23 +307,32 @@ Postgres, one real cloud object store, mode selected at the composition boundary
 with no application-level branching — before Phases 3–6 make local assumptions
 expensive to remove.
 
-**Proposed: this runs parallel to Track A, not at the head of it.** It is the
-only implementation item in the pre-entry set, it needs cloud credentials,
-a project, and spend approval, and **no Track A design decision depends on its
-result.** Habitat is execution, not persistence; the tool hook and the execution
-contract do not touch the storage seam; prompt-pack storage depends on the seam
-holding, which Phase 2 items 4 and 9 already demonstrated. Putting an
-externally-blocked implementation item at the head of a serial chain buys
-schedule risk for no design certainty.
+**It runs parallel to Track A's authoring, and it does not gate phase entry —
+but it is not thereby non-gating.** #286 as filed says it completes before Phase
+3 begins. That wording is **amended, not quietly relaxed**: Track B gates the
+Phase 3 item that wires the Orchestrator through the persistence seam. Nothing
+in Track A depends on its result — Habitat is execution rather than persistence,
+the tool hook and the execution contract never touch the storage seam, and
+prompt-pack storage depends only on the seam holding, which Phase 2 items 4 and
+9 already demonstrated. So it may be authored in parallel; it may not be
+finished after the wiring it exists to protect. **#286's issue text must be
+updated to say this** before this plan is Accepted.
 
-Two additions proposed to its acceptance criteria:
+Two additions to its acceptance criteria:
 
-- **The proof must be a re-runnable manual workflow, not a one-shot report.**
-  Phase 3 adds migrations (Habitat, prompt packs, Work Groups). A one-time
-  portability report is stale the moment those land; a workflow that can be
-  re-triggered stays a live check.
+- **The proof is a re-runnable manual workflow, not a one-shot report.** Phase 3
+  adds migrations (Habitat, prompt packs, Work Groups). A one-time portability
+  report is stale the moment those land; a re-triggerable workflow stays a live
+  check.
 - **Explicit DR approval for the cloud spend**, on the same footing as a paid
   golden run.
+
+**Spend status: broadly approved by DR (2026-08-09)** — start minimal with a
+cheap, disposable managed Postgres plus whatever execution surface the proof
+needs (likely Cloud Run), and expand from there. Four parameters are fixed at
+Track B kickoff rather than here: the cloud project, the credential source, the
+teardown/cleanup rule, and the maximum spend. Kickoff does not proceed until
+they are written down.
 
 ---
 
@@ -277,33 +345,38 @@ adapter. Both are currently unrunnable. This track is early Phase 3 work, not
 phase-entry work, but it must be scheduled early because everything downstream
 of v1 retirement waits on it.
 
-| Item | Status here |
-| --- | --- |
-| [#317](https://github.com/SnapdragonPartners/maestro/issues/317) architect approval loop cannot force its terminal tool | **Required before either run.** It blocks the committed `paired-default` outright. |
-| **Architect model probe** | **Required, and not yet an issue.** `claude-opus-4-1` is retired. `gpt-5`, `o4-mini` and `claude-opus-5` are excluded by #316. `gpt-4o`, `claude-opus-4-5` and `claude-opus-4-6` accept temperature and have **never been tested against #317** — the viable set was not shown empty, only unexplored. This needs a cheap targeted probe, not a full paid suite. |
-| [#318](https://github.com/SnapdragonPartners/maestro/issues/318) dirty-tree preflight | **Required before either run.** The phase-exit target was built from a dirty tree; the digest pinned what ran and the commit did not reproduce it. |
-| [#319](https://github.com/SnapdragonPartners/maestro/issues/319) model-lifecycle preflight | **Required, upgraded from "preferably."** This is the check that would have caught the Opus 4.1 retirement seven weeks before it cost the phase-exit run. It is cheap and it is the only item on this list that prevents a *recurrence* rather than repairing a *symptom*. |
-| [#316](https://github.com/SnapdragonPartners/maestro/issues/316) sampling parameters forced non-nil | **Not a gate on the carried run** — `gpt-4.1` accepts temperature — but it should land early anyway. It is a small fix, and until it does, every reasoning-tier model is undrivable, which is what shrank the replacement pool to guesswork. |
+Ordered, because two of these items depend on the one before:
 
-**One design note carried from ADR 0020's amendment.** #319 creates a
-model-metadata surface (a pinned model ID's published deprecation and retirement
-dates). Model **lineage** — the set of originating labs, the one genuinely
-missing input for the reviewer-heterogeneity mechanism — is the same *kind* of
-fact about the same key, and belongs in the same structure rather than being
-restated per configuration. #319 should therefore land with room for it. The
-mechanism itself remains a Phase 5 exit criterion; only the shape of its home is
-decided here, and only to avoid building the surface twice.
+| Order | Item | Status |
+| --- | --- | --- |
+| 1 | [#317](https://github.com/SnapdragonPartners/maestro/issues/317) architect approval loop cannot force its terminal tool | **Required before either run.** It blocks the committed `paired-default` outright. |
+| 2 | **Architect model probe** (not yet an issue) | **Required, and runs after #317 is fixed.** `claude-opus-4-1` is retired; `gpt-5`, `o4-mini` and `claude-opus-5` are excluded by #316. `gpt-4o`, `claude-opus-4-5` and `claude-opus-4-6` accept temperature and have **never been tested against #317** — the viable set was not shown empty, only unexplored. The probe must exercise the **actual iterative approval loop and its real tool set**, not a raw model call: #317's diagnostic is that architect stages with 0 or 2 general tools converged and stages with 4 never did, so a bare call would prove nothing about the failure being probed. Small explicit spend cap, DR approval before it runs. |
+| 3 | [#318](https://github.com/SnapdragonPartners/maestro/issues/318) dirty-tree preflight | **Required before either run.** The phase-exit target was built from a dirty tree; the digest pinned what ran and the commit did not reproduce it. |
+| 4 | [#319](https://github.com/SnapdragonPartners/maestro/issues/319) model-lifecycle preflight | **Required.** The check that would have caught the Opus 4.1 retirement seven weeks before it cost the phase-exit run — the only item here that prevents a *recurrence* rather than repairing a *symptom*. Depends on A4's identity split (below). |
+| — | [#316](https://github.com/SnapdragonPartners/maestro/issues/316) sampling parameters forced non-nil | **Not a gate on either run** — `gpt-4.1` accepts temperature — but small and worth landing early. Until it does, **the tested replacements that reject temperature stay undrivable**, which is what narrowed the replacement pool. |
+
+**The metadata home, and why it waits on A4.** #319 needs somewhere to record a
+pinned model's published deprecation and retirement dates. Model **lineage** —
+the set of originating labs, the one genuinely missing input for ADR 0020's
+reviewer-heterogeneity mechanism — is a similar kind of fact wanting a similar
+home. But they are **not necessarily keyed the same**: a retirement date belongs
+to a *provider's served model identity*, while lineage belongs to the
+*underlying model* — an open-weight model served by three providers has one
+lineage and up to three retirement calendars. A4 settles that identity split
+(scope decision 3 above); #319 then builds an extensible home consistent with
+it. The heterogeneity mechanism itself remains a Phase 5 exit criterion. Only
+the shape of the home is decided here, and only so it is not built twice.
 
 Each of the two runs needs **explicit DR approval for that specific run**. Phase,
 plan, and previous-run approval are not reusable.
 
-Open question for DR/Codex: does
-[#279](https://github.com/SnapdragonPartners/maestro/issues/279) (no behavioural
-evidence kind; ADR 0025 rung 5 cannot be expressed as written) gate *recording*
-these two runs in the conformance log, or can they be recorded under the
-existing kinds with the gap noted? Phase 3 is the first phase that will produce
-two runs against two different targets, which is when a recording gap is most
-likely to bite.
+**[#279](https://github.com/SnapdragonPartners/maestro/issues/279) does not gate
+either run** (settled 2026-08-09). Its own text says rung 5 is realised in
+intent through `test-output` — `app-healthz-endpoint` stands up the real router
+and speaks HTTP to it — and that it "is not blocking the ladder today." It
+blocks only a claim to a *distinct behavioural-evidence kind* in the evidence
+package. Both runs may be recorded in the conformance log under the existing
+kinds.
 
 ---
 
@@ -317,8 +390,8 @@ gates phase entry.
    in [`process_build.md`](../process_build.md) and Phase 2 paid for it by hand
    in every item. This repays across all of Phase 3.
 2. [#321](https://github.com/SnapdragonPartners/maestro/issues/321) — reap leaked
-   integration Compose projects. Treat this as a **prerequisite** of #307 rather
-   than merely adjacent to it: raising concurrency multiplies the leak.
+   integration Compose projects. A **prerequisite** of #307 rather than merely
+   adjacent to it: raising concurrency multiplies the leak.
 3. [#306](https://github.com/SnapdragonPartners/maestro/issues/306) — the pre-push
    integration gate passes on cached results, so it is not currently a gate at
    all. Fixing it makes the suite slower, which is why the instinct is to do it
@@ -331,60 +404,76 @@ gates phase entry.
    the isolated integration planes. The work that materially improves local
    integration time.
 5. [#308](https://github.com/SnapdragonPartners/maestro/issues/308) — profile
-   `make build` (194s of CI's 339s). A separate CI optimization; it will not
-   improve the local integration suite.
+   `make build` (194s of CI's 339s). Independent CI work; it will not improve the
+   local integration suite.
 
 ---
 
 ## In Phase 3's Plan, Not Pre-Entry
 
-These are Phase 3 gates that must appear in `plan_scope.md`, but do not block
-opening it:
+Phase 3 gates that must appear in `plan_scope.md` but do not block opening it:
 
 - [#265](https://github.com/SnapdragonPartners/maestro/issues/265) — single-owner
   agent restart; remove the dual death-observer shape.
-- [#272](https://github.com/SnapdragonPartners/maestro/issues/272) — explicit
-  provider/endpoint declaration, folded into the new execution contract rather
-  than solved separately. (Note the trap recorded in ADR 0020's amendment:
-  `Provider` describes routing and is **not** lineage.)
+- [#272](https://github.com/SnapdragonPartners/maestro/issues/272) —
+  **implementation only**; its contract portion moved into A4 above. (Note the
+  trap recorded in ADR 0020's amendment: `Provider` describes routing and is
+  **not** lineage.)
 - [#287](https://github.com/SnapdragonPartners/maestro/issues/287) — fold
   `dataplanectl` into the replacement main binary, which needs embedded compose
   assets. Naturally sequenced with the `cmd/maestro` rework.
-- [#298](https://github.com/SnapdragonPartners/maestro/issues/298) — no longer a
+- [#298](https://github.com/SnapdragonPartners/maestro/issues/298) — not a
   scheduling blocker: the roadmap now assigns all `drop` dispositions to Phase 3
-  retirement. **Close it once that roadmap statement is accepted**, and carry the
-  five deletions into the Phase 3 exit checklist so closing the issue does not
-  lose them.
+  retirement. **Close it once its five deletions are copied into the accepted
+  Phase 3 plan and exit checklist**, so closing the issue does not lose them.
 
 ---
 
-## Deltas From The Proposed Sequencing
+## Delta Arbitration
 
-Recorded explicitly so DR can arbitrate each one rather than accepting the whole
-document. Everything not listed here is Codex's proposal adopted unchanged.
+Codex arbitrated eleven proposed deltas on 2026-08-09; DR settled the tool
+boundary. Recorded so the reasoning survives the document it changed.
 
-| # | Delta | Reason |
-| --- | --- | --- |
-| D1 | #286 moves off the head of the serial chain to a parallel track | It is the only implementation item, it is externally blocked on credentials and spend, and no Track A decision depends on its result. |
-| D2 | A1 and A4 are accepted as a set, not in sequence | #282's own text says it **blocks completion of** #273. A strict 2 → 5 ordering inverts a declared dependency. The spikes proceed concurrently; the ADRs are consistency-checked in one review round. |
-| D3 | A2's ADR must state a scope invariant, not only a hook location | A single in-process hook enforces nothing against an external agent running its own tools. Without the invariant, the shared-enforcement-point claim is not a property of the design. |
-| D4 | The terminal-outcome vocabulary is one artifact with four feeders, adding A5's `superseded` | #317, #280 and A5 were discovered independently; each would otherwise add a one-off status to the same enum. |
-| D5 | No Phase 2.1 for schema — Habitat tables are a Phase 3 migration | Matches the existing reserved-family convention (prompt packs already work this way). Phase 2.1 then means exactly #286. |
-| D6 | #286's proof must be a re-runnable workflow | Phase 3 adds migrations; a one-shot report is stale on arrival. |
-| D7 | Backlog candidates 11 and 13 become resolved stubs; Habitat and the execution contract take new slots | The backlog's own numbering convention, and #273's explicit instruction not to leave two competing abstractions. |
-| D8 | #319 is required, not "preferably", and lands with room for model lineage | It is the only Track C item that prevents recurrence rather than repairing a symptom, and lineage is the same kind of fact about the same key. |
-| D9 | #316 added to Track C as early-but-not-gating | Small fix; until it lands the replacement-model pool is restricted to non-reasoning models, which is what made the phase-exit failure unrecoverable. |
-| D10 | Track D order kept, with #306 before #307 for a stated reason | #307 is the high-risk refactor and must not be performed behind a gate that does not actually run. |
-| D11 | An architect-model probe is added to Track C as its own item | The viable set is **untested, not empty** — a distinction the Phase 2 exit record had to be corrected on once already. |
+| # | Delta | Verdict | How this document reflects it |
+| --- | --- | --- | --- |
+| D1 | #286 moves off the head of the serial chain | Accept with condition | Parallel authoring, but it explicitly **gates Orchestrator/persistence wiring**, and #286's own text is amended to say so rather than silently relaxed. |
+| D2 | A1 and A4 accepted as a set | **Revised** | Drafted concurrently and reviewed together, but **A1 is Accepted first**. #282 blocks #273's implementation completion, not its design ADR, and #282 consumes an accepted Habitat contract. |
+| D3 | A2 states a scope invariant, not only a hook location | **Revised substantially** | The coverage question stands; the proposed invariant is **withdrawn**. It would have disabled Claude Code-style built-in editing (Codex) and reached for control over agents outside Maestro's remit — an engineer may run other agents in a Habitat, and the app under development may itself be an agent (DR). Replaced by the mediated / in-Habitat split, with each mode's guarantee stated honestly. |
+| D4 | One terminal-outcome vocabulary with four feeders | Accept as one **schema**, not one enum | Four axes: execution status, completion disposition, cancellation reason, failure class. `already_satisfied` is a work disposition, not the same axis as infrastructure failure. |
+| D5 | Habitat tables are a Phase 3 migration | Accept | Unchanged. |
+| D6 | #286's proof is re-runnable | Accept | Unchanged. |
+| D7 | Backlog slots 11 and 13 | **Revised** | **Amend in place, then mark resolved** — no new slots. New slots beside resolved pointers would duplicate the concepts. |
+| D8 | #319 required, with room for lineage | Accept with correction | #319 required. But retirement keys to a *provider's served model identity* and lineage to the *underlying model* — not necessarily one key. A4 settles the split first; #319 builds the home against it. |
+| D9 | #316 early but not gating | Accept with factual edit | "Every reasoning-tier model is undrivable" → "**the tested replacements that reject temperature** are undrivable." The original claim contradicted this document's own correct statement that viable alternatives remain untested. |
+| D10 | Track D order, #306 before #307 | Accept | #314 → #321 → #306 → #307; #308 independent. |
+| D11 | Architect-model probe as its own item | Accept with conditions | Runs **after** #317 is fixed, against the real iterative approval loop and tool set rather than a raw model call, under an explicit spend cap with DR approval. |
 
-## Open Questions
+Four further corrections from the same round, applied above: the
+"ADR and nothing else" rule now carries a bounded exception for A4's conformance
+executable, which lives outside production packages; #272's contract portion
+moved into A4; A5's enforcement rests on lease revocation and the execution
+contract rather than the policy hook alone; and complete-then-reconcile is
+rejected for permitting stale work rather than on ADR 0019 grounds, since
+reconciliation judgment could legitimately be routed to an agent.
 
-1. Does #279 gate recording Phase 3's two conformance runs, or only rung-5
-   claims about them?
-2. Is `Habitat` the accepted name? It will appear in table names, so it should
-   be settled in A1 rather than after.
-3. Does the A4 vertical slice have to be the GitHub Actions review agent, or may
-   it be any single executable agent exercised over the local transport? The
-   former couples phase entry to a presentation surface; the latter proves the
-   contract just as well.
-4. Track B needs a spend decision from DR before it can be scheduled at all.
+## Settled Questions
+
+All four questions the draft left open were answered in the same round.
+
+1. **#279 does not gate either conformance run or its log record** — only a claim
+   to a distinct behavioural-evidence kind. Track C, above.
+2. **`Habitat` is the accepted name.** A1 fixes it rather than leaving it
+   provisional.
+3. **A4's vertical slice** may be any real external-process executable over the
+   local transport, without Actions presentation, provided it exercises the wire
+   boundary, capabilities, events, cancellation and the terminal result.
+4. **Track B spend is broadly approved by DR**; project, credential source,
+   cleanup rule and maximum spend are fixed at kickoff.
+
+## Remaining Open Items
+
+- #286's issue text must be amended to match Track B's gate before this plan is
+  Accepted.
+- #273's section 2 must be rewritten to name Phase 3 as the creator of the
+  Habitat persistence family.
+- The architect model probe has no issue yet.
