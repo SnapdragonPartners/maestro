@@ -399,7 +399,7 @@ Ordered, because two of these items depend on the one before:
 | Order | Item | Status |
 | --- | --- | --- |
 | 1 | [#317](https://github.com/SnapdragonPartners/maestro/issues/317) architect approval loop cannot force its terminal tool | **Required before either run.** It blocks the committed `paired-default` outright. |
-| 2 | **Architect model probe** (not yet an issue) | **Required, and runs after #317 is fixed.** `claude-opus-4-1` is retired; `gpt-5`, `o4-mini` and `claude-opus-5` are excluded by #316. `gpt-4o`, `claude-opus-4-5` and `claude-opus-4-6` accept temperature and have **never been tested against #317** — the viable set was not shown empty, only unexplored. The probe must exercise the **actual iterative approval loop and its real tool set**, not a raw model call: #317's diagnostic is that architect stages with 0 or 2 general tools converged and stages with 4 never did, so a bare call would prove nothing about the failure being probed. Small explicit spend cap, DR approval before it runs. |
+| 2 | **Architect model probe** — [#323](https://github.com/SnapdragonPartners/maestro/issues/323) | **Required, and runs after #317 is fixed.** `claude-opus-4-1` is retired; `gpt-5`, `o4-mini` and `claude-opus-5` are excluded by #316. `gpt-4o`, `claude-opus-4-5` and `claude-opus-4-6` accept temperature and have **never been tested against #317** — the viable set was not shown empty, only unexplored. The probe must exercise the **actual iterative approval loop and its real tool set**, not a raw model call: #317's diagnostic is that architect stages with 0 or 2 general tools converged and stages with 4 never did, so a bare call would prove nothing about the failure being probed. Small explicit spend cap, DR approval before it runs. |
 | 3 | [#318](https://github.com/SnapdragonPartners/maestro/issues/318) dirty-tree preflight | **Required before either run.** The phase-exit target was built from a dirty tree; the digest pinned what ran and the commit did not reproduce it. |
 | 4 | [#319](https://github.com/SnapdragonPartners/maestro/issues/319) model-lifecycle preflight | **Required.** The check that would have caught the Opus 4.1 retirement seven weeks before it cost the phase-exit run — the only item here that prevents a *recurrence* rather than repairing a *symptom*. Depends on A4's identity split (below). |
 | — | [#316](https://github.com/SnapdragonPartners/maestro/issues/316) sampling parameters forced non-nil | **Not a gate on either run** — `gpt-4.1` accepts temperature — but small and worth landing early. Until it does, **the tested replacements that reject temperature stay undrivable**, which is what narrowed the replacement pool. |
@@ -546,10 +546,23 @@ All four questions the draft left open were answered in the same round.
 4. **Track B spend is broadly approved by DR**; project, credential source,
    cleanup rule and maximum spend are fixed at kickoff.
 
-## Remaining Open Items
+## Tracker Changes Made For This Plan
 
-- #286's issue text must be amended to match Track B's gate before this plan is
-  Accepted.
-- #273's section 2 must be rewritten to name Phase 3 as the creator of the
-  Habitat persistence family.
-- The architect model probe has no issue yet.
+All three were completed on 2026-08-09, before this plan went for final review.
+
+- **[#286](https://github.com/SnapdragonPartners/maestro/issues/286) amended** —
+  scheduling changed from "before Phase 3 begins" to parallel authoring that
+  **gates Orchestrator/persistence wiring**, stated explicitly as a relaxation of
+  the schedule and not of the gate; re-runnable-workflow acceptance criterion
+  added; the four spend parameters named as a kickoff precondition.
+- **[#273](https://github.com/SnapdragonPartners/maestro/issues/273) amended** —
+  `Habitat` name settled; section 2's "Phase 2 persistence hooks" retargeted to a
+  Phase 3 migration; **the fencing protocol added as a new design requirement**;
+  the tool-routing rule scoped to Maestro's own agents; acceptance sequenced
+  before #282.
+- **[#323](https://github.com/SnapdragonPartners/maestro/issues/323) filed** — the
+  architect model probe, carrying D11's conditions: after #317, against the real
+  iterative approval loop and tool set rather than a raw model call, under an
+  explicit spend cap with per-run DR approval.
+
+Nothing else in the tracker was changed.
