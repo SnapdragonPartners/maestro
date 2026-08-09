@@ -2,7 +2,7 @@
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
 edit_date = "2026-08-09"
 status = "draft"
-summary = "What must be settled before Phase 3 implementation begins: a design cluster of four ADRs (Habitat, tool-execution policy hook, prompt-pack identity, agent execution contract) plus the amendment-vs-running-work policy, a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
+summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
 +++
 
@@ -47,7 +47,8 @@ the failure mode: a pre-phase that absorbs the phase. Two constraints:
 
 ## The Shape Of The Work
 
-Four tracks, not one chain.
+Four tracks, not one chain. Track A is **five design decisions** — four new ADRs
+and one amendment to [ADR 0019](../../adr/0019-orchestrator-boundary.md).
 
 ```text
 Track A — design (critical path for phase entry)
@@ -57,7 +58,8 @@ Track A — design (critical path for phase entry)
     A3 prompt pack identity ─────────────────────────┼─→ A4 agent execution contract
                                                      │      (absorbs #272's contract portion)
                                                      │                 │
-                                          A1 lease revocation ─────────┴─→ A5 amendment vs running work
+                                       A1 fencing protocol ────────────┴─→ A5 amendment vs running work
+                                                                             (ADR 0019 amendment)
                                                                                     │
                                                                                     ▼
                                                                           A6 accept Phase 3 scope
@@ -82,8 +84,8 @@ Only Track A gates phase entry. B, C and D gate specific things inside Phase 3.
 Establish Habitat as the Orchestrator-managed execution-resource boundary:
 identity, `HabitatSpec` versus mutable `HabitatInstance`, generation/fencing so
 a recycled Habitat cannot satisfy a stale reference, lifecycle
-(provision → ready → lease → release → reconcile → destroy), **lease revocation
-and its cancellation semantics** (A5 depends on this directly), agent-to-Habitat
+(provision → ready → lease → release → reconcile → destroy), **revocation and
+the fencing protocol below** (A5 depends on it directly), agent-to-Habitat
 cardinality including read-only Architect inspection, restart and reconciliation
 expectations, and the rule that **Maestro tools target a Habitat reference,
 never an Agent-derived local path**.
@@ -102,6 +104,33 @@ warming policy — all Phase 3 items.
 **Name: `Habitat` is accepted** (Codex, 2026-08-09) — more precise than
 `Workspace`, less misleading than `Sandbox`, `Environment`, or `Runtime`. It
 will appear in table names; the ADR fixes it rather than leaving it provisional.
+
+#### Revocation does not stop execution — the fencing protocol
+
+Revoking a lease invalidates **authorization**. It does not stop a process that
+is already running inside the Habitat: that process keeps editing files and can
+keep spawning children, and it needs no further authorization to do either. An
+earlier draft of this plan rested A5 on revocation alone, which would have left
+exactly the gap it was written to close.
+
+A1 must therefore specify a **fencing protocol**, not merely a revocation verb.
+Five requirements:
+
+1. **Cooperative cancellation with a bounded grace period.** The lease holder is
+   asked to stop and given a defined window to reach a safe boundary.
+2. **Provider-enforced termination** of the lease-holding process **and its
+   descendants** once the grace period expires. The local Docker provider must
+   be able to do this; a provider that cannot is not conformant.
+3. **Quarantine or stop the Habitat when termination cannot be confirmed.** Not
+   knowing whether a process died is the dangerous case, and it must have a
+   defined resting state rather than an assumption.
+4. **No reassignment and no fresh dispatch into that Habitat until fencing is
+   acknowledged.** A Habitat with an unconfirmed occupant is not a free resource.
+5. **Generation fencing for subsequent mediated calls**, so a call issued by a
+   fenced holder is rejected at the boundary even if it arrives late.
+
+Confirmed fencing is the precondition for A5's terminal result, and the
+containment guarantee A2 states is only as strong as this protocol makes it.
 
 ### A2. Tool execution policy hook — [backlog candidate 4](../notes_adr-backlog.md)
 
@@ -138,8 +167,11 @@ the contract (A4).
 it: file edits, running commands, an agent runtime's own internal tools. These
 are **not** individually policed and Maestro makes no per-action claim about
 them. The guarantee is **containment, decided at grant time**: the lease defines
-the blast radius, and enforcement lives at the Habitat boundary and in
-revocation, not in a per-action gate.
+the blast radius, and enforcement lives at the Habitat boundary rather than in a
+per-action gate. When such a process must be *stopped* rather than merely
+deauthorized, that is A1's fencing protocol — terminate, confirm, quarantine on
+doubt — because revoking the lease removes authorization without removing the
+running process.
 
 Stating the second guarantee as narrowly as it really is, is the point. An agent
 holding a lease can do anything the Habitat permits between mediated actions.
@@ -225,7 +257,15 @@ Done: an Accepted contract ADR plus that executable. The #317 and #280 *code*
 fixes are Phase 3 items; what is pre-entry is that the schema has a place for
 them.
 
-### A5. Amendment versus running work — [backlog candidate 3](../notes_adr-backlog.md)
+### A5. Amendment versus running work — [backlog candidate 3](../notes_adr-backlog.md), an **ADR 0019 amendment**
+
+**A5 lands as an amendment to [ADR 0019](../../adr/0019-orchestrator-boundary.md),
+not as a fifth ADR.** It completes a decision 0019 itself deferred (its 2026-07-14
+dispatch amendment settled the pending case and explicitly left the in-flight
+case open), it is about the same subject — dispatch and what the Orchestrator
+may decide deterministically — and the mechanisms it relies on are owned
+elsewhere: fencing by A1, cancellation lifecycle and terminal result by A4. What
+is left for A5 is the policy layered over them, which is 0019's business.
 
 Narrower than it reads. ADR 0019's dispatch amendment already settled the
 *pending* case: invalidate version-bound dispatch records, re-evaluate the DAG
@@ -240,15 +280,24 @@ Proposed rule:
 - Prohibit further actions, and prohibit acceptance against the superseded
   version.
 - Retain its output as attributable draft/Audit history.
-- Terminate it as `cancelled` with reason `superseded`, never `failed`.
-- Recompute the DAG and dispatch against the new effective version.
+- **Fence the execution per A1's protocol** — cooperative cancellation, then
+  provider-enforced termination of the holder and its descendants, quarantining
+  the Habitat if termination cannot be confirmed.
+- **Only after fencing is confirmed**, terminate it as `cancelled` with reason
+  `superseded`, never `failed`. A terminal result recorded while an unfenced
+  process may still be writing is a false record, and downstream work would be
+  dispatched against a Habitat that is not actually free.
+- Recompute the DAG and dispatch against the new effective version — never into
+  a Habitat whose fencing is unacknowledged.
 
-**Enforcement rests primarily on A1's lease revocation and A4's cancellation
-lifecycle, not on A2's hook.** The hook observes cancellation only at mediated
-actions; per A2's honest statement of the in-Habitat guarantee, a runtime
-holding a lease continues to act between them. Revoking the lease is what
-actually stops it. Building A5 on the hook alone would leave exactly the gap A2
-declines to close.
+**Enforcement rests on A1's fencing protocol and A4's cancellation lifecycle,
+not on A2's hook.** The hook observes cancellation only at mediated actions; per
+A2's statement of the in-Habitat guarantee, a runtime holding a lease keeps
+acting between them, so building A5 on the hook alone would leave exactly the
+gap A2 declines to close. But **revocation alone does not close it either** —
+that was this plan's own error one round ago. Revocation invalidates
+authorization; a process already running needs none. Stopping it takes
+termination, and *knowing* it stopped takes confirmation.
 
 Rejected alternatives:
 
@@ -451,10 +500,37 @@ boundary. Recorded so the reasoning survives the document it changed.
 Four further corrections from the same round, applied above: the
 "ADR and nothing else" rule now carries a bounded exception for A4's conformance
 executable, which lives outside production packages; #272's contract portion
-moved into A4; A5's enforcement rests on lease revocation and the execution
+moved into A4; A5's enforcement rests on Habitat fencing and the execution
 contract rather than the policy hook alone; and complete-then-reconcile is
 rejected for permitting stale work rather than on ADR 0019 grounds, since
 reconciliation judgment could legitimately be routed to an agent.
+
+### Third round, 2026-08-09 — revocation is not termination
+
+One P1 and one editorial correction, both applied.
+
+**P1: revocation alone does not stop execution.** The second revision rested A5
+on lease revocation, which invalidates authorization but cannot stop a process
+already running inside a Habitat — it keeps editing files and can keep spawning
+children, needing no further authorization for either. A1 now specifies a
+**fencing protocol** (cooperative cancellation with a bounded grace period →
+provider-enforced termination of the holder and descendants → quarantine on
+unconfirmed termination → no reassignment or dispatch until fencing is
+acknowledged → generation fencing for late mediated calls), and A5's terminal
+`cancelled`/`superseded` follows only **confirmed** fencing.
+
+The defect had spread to three places — A1's lifecycle list, A2's in-Habitat
+containment guarantee, and A5's enforcement paragraph — because each was written
+against the same wrong mental model rather than copied from another. All three
+are corrected. *This is the failure shape recorded in CLAUDE.md's Verification
+Discipline and in the "recovery spans the region" lesson: a fix armed beside the
+failure in view covers that one and no other.*
+
+**Editorial: Track A is five design decisions, not five ADRs.** A5 lands as an
+amendment to ADR 0019 rather than a new ADR — it completes a case 0019 itself
+deferred, it concerns 0019's own subject, and its mechanisms are owned by A1
+(fencing) and A4 (cancellation lifecycle, terminal result), leaving only the
+policy for 0019 to carry.
 
 ## Settled Questions
 
