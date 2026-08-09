@@ -976,7 +976,7 @@ Exit criteria:
 
 - No Management artifact can reach a persisted, accepted state without a reviewer record. (The Workbench satisfies this through human accept plus the trailing agent check — ADR 0020 admits no configured exemptions.)
 - A reviewer/author disagreement escalates to a human after the configured bound, demonstrated end-to-end.
-- Every review record carries its pairing's rung on ADR 0020's ladder, and both a same-lineage pairing and an **unclassified** one are **surfaced to the operator**, not merely stored — 0020 forbids an unlabelled degradation, and silence reads as the preferred state. Demonstrated on a deliberately same-lineage pairing and on a model with no recorded lineage: each must run and be flagged rather than be refused or silently pass.
+- Every review record carries a **heterogeneity classification** — rung 1, 2, or 3 on ADR 0020's ladder, or **unclassified**, which sits outside the ladder rather than at the top of it — and both a same-lineage pairing and an unclassified one are **surfaced to the operator**, not merely stored. 0020 forbids an unlabelled degradation, and silence reads as the preferred state. Demonstrated on a deliberately same-lineage pairing and on a model with no recorded lineage: each must run and be flagged rather than be refused or silently pass.
 - The three optional gates can be toggled per Epic by config and are visible in the UI.
 - A Workbench session runs end-to-end: entered from the dashboard button, producing Story work on a real Epic branch with trailing evidence and drift review, closed by human Accept.
 

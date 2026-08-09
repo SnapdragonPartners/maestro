@@ -18,8 +18,9 @@ default = "claude-sonnet-4-6"
 #
 # The architect seat is cross-lineage, which is the PREFERRED state under ADR
 # 0020's reviewer-heterogeneity rule as amended 2026-08-09: heterogeneity is
-# measured in model lineage — the originating lab, unchanged by serving provider,
-# weight availability, or fine-tuning — not in model identity.
+# measured in model lineage — the SET of originating labs, unchanged by serving
+# provider or weight availability, and only ever ADDED to by fine-tuning or other
+# derivation — not in model identity. Rung 1 needs the two sets to be disjoint.
 #
 # History, so the identity groups read correctly. From its first commit (0649f51)
 # until 2026-08-08 this config paired claude-opus-4-1 over claude-sonnet-4-6: two
