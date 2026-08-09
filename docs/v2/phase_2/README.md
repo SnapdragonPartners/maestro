@@ -2,7 +2,7 @@
 title = "Phase 2 Artifacts"
 edit_date = "2026-08-08"
 status = "live"
-summary = "Index of Phase 2 working artifacts: the scope/plan for the data plane and artifact core; later the vertical-slice report."
+summary = "Index of Phase 2 working artifacts, complete at phase close: the archived scope/plan for the data plane and artifact core, the eight per-item design records, the schema table inventory, and the exit record."
 +++
 
 # Phase 2 Artifacts
@@ -24,4 +24,4 @@ Working artifacts of Phase 2 (data plane and artifact core), produced under the 
 
 - [Phase 2 Item 9 Design: Importing Golden Runner Records](design_slice_import.md) — Design for the vertical slice: importing golden runner records into the main Postgres plane as benchmark-scoped artifacts, where the schema's own rules decide the shape — a system principal may never author a Management artifact and only a Management artifact may hold a pin, so the evidence-bearing suite report is authored by the operator and the run records are Audit exhaust; identity is a ledger table with unique keys rather than a convention, a suite reserves the one report it may hold before that report is written and artifact creation enforces the reservation, a re-import is judged by a stable projection of everything the report claims rather than by a digest its minted identifiers make unrepeatable, the ledger row follows the record it names so retention still reaches an imported attempt, why an attempt yielded no calls is recorded where it was observed rather than reconstructed later from a store that may have changed, evidence bytes are found by walking the store rather than by trusting recorded absolute paths, the import boundary is the on-disk record contract guarded by a two-sided fixture instead of a module dependency, and the per-call facts the plane requires are recorded at their source by a v2 usage surface rather than reconstructed or defaulted at the seam.
 
-Expected to land here as the phase executes: the migration and schema conventions record (item 3) and the vertical-slice report (item 9). The artifact-envelopes ADR (item 1) lands in `docs/adr/` as an Accepted decision, not here.
+This set is complete: Phase 2 closed on 2026-08-08 and no further artifacts land here. The migration and schema conventions record and the vertical-slice report, both listed above as design records, are the last of them. The artifact-envelopes ADR (item 1) landed in `docs/adr/` as [ADR 0028](../../adr/0028-artifact-envelopes-and-payload-schemas.md), an Accepted decision rather than a phase artifact.

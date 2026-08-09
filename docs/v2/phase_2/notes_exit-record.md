@@ -1,6 +1,6 @@
 +++
 title = "Phase 2 Exit Record"
-edit_date = "2026-08-08"
+edit_date = "2026-08-09"
 status = "live"
 summary = "Closing record of Phase 2: what each item delivered, exit-criteria status including the golden-run criterion DR overrode, decisions and what they cost, and the verification post-mortem behind CLAUDE.md's Verification Discipline."
 type = "notes"
@@ -198,7 +198,9 @@ The working rule this suggests, pending the `CLAUDE.md` pass: **before writing a
 
 ### ADR needs discovered in-phase
 
-**One**, raised by DR during the item 10 review and filed as [backlog candidate 16](../notes_adr-backlog.md): **reviewer heterogeneity must mean distinct *lineage*, not distinct model.** ADR 0020 already carries the norm and its degradation semantics, but defines the reviewer as running "a distinct model" from the author without defining lineage — so `claude-opus-4-1` reviewing `claude-sonnet-4-6` reads as heterogeneous while being one lab and one training lineage. That is `paired-default`'s exact composition since its first commit — so **under the proposed clarification, every prior paired-agent run in the conformance log would be classified as degraded** (not the single-agent rows, which have no reviewer pairing to classify). Nothing violated ADR 0020 as written: by its operative "distinct model" text those pairings are conforming. Separately and unconditionally, **the flagging machinery does not exist** — nothing computes heterogeneity at any granularity, so even a same-*model* configuration would go unflagged today. Amendment blocks Phase 5; the benchmark-side clarification should land sooner.
+**One**, raised by DR during the item 10 review and filed as [backlog candidate 16](../notes_adr-backlog.md): **reviewer heterogeneity must mean distinct *lineage*, not distinct model.** ADR 0020 already carries the norm and its degradation semantics, but defines the reviewer as running "a distinct model" from the author without defining lineage — so `claude-opus-4-1` reviewing `claude-sonnet-4-6` reads as heterogeneous while being one lab and one training lineage. That is `paired-default`'s exact composition since its first commit — so **under the proposed clarification, every prior paired-agent run in the conformance log would be classified as degraded** (not the single-agent rows, which have no reviewer pairing to classify). Nothing violated ADR 0020 as written: by its operative "distinct model" text those pairings are conforming. Separately and unconditionally, **the flagging machinery does not exist** — nothing computes heterogeneity at any granularity, so even a same-*model* configuration would go unflagged today.
+
+**Resolved 2026-08-09, after this record closed:** ADR 0020 was amended to define model lineage as the set of originating labs and to state a three-rung degradation ladder, plus an unclassified state, that warns and never refuses. Candidate 16 is closed for the rule; the machinery above is deliberately not built and is carried as a Phase 5 exit criterion. One correction to the paragraph above, found in review of that amendment: the *realized* author/reviewer edge is not missing — this phase's own schema persists it — so only advance classification of a configuration depends on Phase 5, and retrospective classification needs nothing but the lineage metadata.
 
 Everything else found in this phase was an implementation defect or an amendment to an already-Accepted ADR, not a decision needing its own record:
 

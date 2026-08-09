@@ -16,20 +16,29 @@ default = "claude-sonnet-4-6"
 # not uniformly broken: on 2026-08-08 dep-bump-xnet was accepted while the
 # trivial smoke-comment deadlocked.
 #
-# Cross-lineage pairing sits under ADR 0020's reviewer-heterogeneity norm, but the
-# lineage rule is PENDING, not operative. 0020 as written says the reviewer runs a
-# "distinct model" — which claude-opus-4-1 reviewing claude-sonnet-4-6 satisfies,
-# so this config CONFORMED under the text in force. DR proposed on 2026-08-08 that
-# the unit should be the originating lab (unchanged by serving provider, weight
-# availability, or fine-tuning), keeping same-lineage review valid but visibly
-# marked degraded. Pending as ADR backlog candidate 16.
+# The architect seat is cross-lineage, which is the PREFERRED state under ADR
+# 0020's reviewer-heterogeneity rule as amended 2026-08-09: heterogeneity is
+# measured in model lineage — the SET of originating labs, unchanged by serving
+# provider or weight availability, and only ever ADDED to by fine-tuning or other
+# derivation — not in model identity. Rung 1 needs the two sets to be disjoint.
 #
-# Under that proposed rule this config would have been DEGRADED — not invalid —
-# from its first commit (0649f51) until 2026-08-08, as would every prior
-# paired-agent row in the conformance log. gpt-4.1 makes the pairing cross-lineage;
-# a golden run has yet to validate it. Note separately that no heterogeneity check
-# exists in the code at any granularity, so nothing would flag a degraded config
-# today regardless of which rule applies.
+# History, so the identity groups read correctly. From its first commit (0649f51)
+# until 2026-08-08 this config paired claude-opus-4-1 over claude-sonnet-4-6: two
+# Anthropic models, one lab. That CONFORMED under 0020's then-operative "distinct
+# model" text and violated nothing; under the amended rule those runs — and every
+# prior paired-agent row in the conformance log — are rung 2, DEGRADED but valid.
+# gpt-4.1 moves this config to rung 1; a golden run has yet to validate it.
+#
+# Note separately that no heterogeneity check exists in the code at any
+# granularity, so nothing flags a degraded config today — a same-MODEL pairing
+# would go unflagged too. The amendment settled the rule without building the
+# mechanism (ADR backlog candidate 16). What is missing to classify a config
+# BEFORE it runs is model-lineage metadata plus the reviews-whom relation, which
+# this bundle does not carry: role routing names the cast, and which role reviews
+# which belongs to the target harness. (Completed reviews are a different case —
+# the plane already stores that edge.) Do NOT build the check on pkg/config's
+# Provider: gpt-oss routes to Ollama, so provider scores an OpenAI-vs-OpenAI
+# pairing heterogeneous.
 #
 # The seat moved off claude-opus-4-1 on 2026-08-08: deprecated 2026-06-05, retired
 # 2026-08-05, now 404. That is what stopped the Phase 2 phase-exit run.
