@@ -118,12 +118,12 @@ Five requirements:
 
 1. **Cooperative cancellation with a bounded grace period.** The lease holder is
    asked to stop and given a defined window to reach a safe boundary.
-2. **Provider-enforced termination of the whole fencing domain** once the grace
-   period expires — see the domain model below. A provider that cannot terminate
-   its domain and confirm it is not conformant.
-3. **Quarantine the Habitat when termination cannot be confirmed.** Not knowing
-   whether execution stopped is the dangerous case, and it must have a defined
-   resting state rather than an assumption.
+2. **Provider-enforced fencing of the whole domain** once the grace period
+   expires, proving **non-interference** — see the domain model below. A provider
+   that cannot produce a positive receipt is not conformant.
+3. **Quarantine the Habitat when fencing cannot be confirmed.** Not knowing
+   whether the old generation can still act is the dangerous case, and it must
+   have a defined resting state rather than an assumption.
 4. **No reassignment and no fresh dispatch into that Habitat until fencing is
    acknowledged.** A Habitat with an unconfirmed occupant is not a free resource.
 5. **Generation fencing for subsequent mediated calls**, so a call issued by a
@@ -137,23 +137,50 @@ descendants**." **Process ancestry is not a portable containment boundary**, and
 building on it would have made the protocol unimplementable on every backend
 that matters:
 
-| Backend | Conforming fencing unit | Required behavior |
-| --- | --- | --- |
-| Docker / Compose | The container, or the Habitat's complete Compose project | Stop with a grace period, force-kill, then **wait for every recorded container to be non-running**. Never walk descendants. Docker supports bounded stop and waiting for confirmed exit. |
-| Kubernetes | The Pod, or all Pods and resources in the Habitat's namespace/domain | Wait for **kubelet-confirmed** terminal Pods. Force deletion is explicitly *not* confirmation and can leave processes running indefinitely. A partitioned node or uncertain volume attachment must **quarantine** until node/storage fencing is established. |
-| Filesystem / chroot | An OS process-isolation unit — **not** the directory | On Linux, a dedicated cgroup v2 domain: `cgroup.kill`, then confirm `cgroup.events populated` is zero. `chroot` alone only changes pathname resolution and is explicitly not a sandbox, so a chroot-only provider **cannot conform**. |
-
 The provider contract therefore defines:
 
 - An immutable **`FencingDomainID` and generation**, created *before* execution
   starts.
 - A guarantee that **every process or subordinate resource able to mutate the
   Habitat is contained in that domain**.
-- **`Fence()` returns a positive receipt or `unconfirmed`.** Best-effort success
-  is forbidden — there is no third answer, and "we tried" is not a receipt.
+- **`Fence()` returns a `FenceReceipt`** — see the three-valued result below.
+  Best-effort success is forbidden; "we tried" is not a receipt.
 - **Explicit collateral semantics:** if one lease cannot be isolated, fencing
-  terminates every lease sharing that domain. Say so rather than discovering it.
+  covers every lease sharing that domain. Say so rather than discovering it.
 - **Quarantine and no reuse** whenever confirmation is unavailable.
+
+#### The receipt proves non-interference, not death
+
+A third correction, and the one the wider backend question actually earned.
+Requiring every provider to confirm *termination* would exclude valid remote and
+native providers for no safety gain — what the system needs is not that the old
+generation died, but that it **cannot affect state reachable by current or
+future work**. A `FenceReceipt` is therefore three-valued:
+
+| Receipt | Meaning | Terminal? |
+| --- | --- | --- |
+| `terminated` | The execution domain is confirmed stopped. | Yes |
+| `isolated` | The old generation is permanently quarantined, its capabilities are revoked, and it cannot mutate state reachable by any current or future generation — even if cleanup continues asynchronously. | Yes |
+| `unconfirmed` | Neither could be established. | **No** — quarantine, no reuse, no dispatch. |
+
+**Docker/Compose uses the `terminated` path**, and it is the only path Phase 3
+implements. `isolated` exists so that a future partitioned Kubernetes, macOS, or
+Terraform-provisioned backend has a conformant answer that does not require
+synchronous confirmation of death.
+
+#### Compatibility matrix — examples, explicitly non-gating
+
+Recorded so the contract can be sanity-checked against shapes it will eventually
+meet. **Only the Docker/Compose row gates A1.** Nothing here authorizes backend
+research or a second provider implementation in Phase 3.
+
+| Backend | Plausible fencing unit | Likely receipt | Gating? |
+| --- | --- | --- | --- |
+| **Docker / Compose** | The container, or the Habitat's complete Compose project | `terminated` — stop with a grace period, force-kill, then **wait for every recorded container to be non-running**. Never walk descendants. | **Yes — the only gating row** |
+| Kubernetes | The Pod, or all Pods and resources in the Habitat's namespace | `terminated` on kubelet-confirmed terminal Pods; force deletion is *not* confirmation. A partitioned node or uncertain volume attachment yields `isolated` or `unconfirmed`, never `terminated`. | No |
+| Linux filesystem execution | A cgroup v2 domain — **not** the directory | `terminated` via `cgroup.kill`, confirmed by `cgroup.events populated` = 0. **chroot-only cannot conform**: it changes pathname resolution, gives no process isolation, and so proves neither termination nor non-interference. | No |
+| macOS native | An OS-level isolation unit, to be determined | Likely `terminated`; the unit is an open question, not a Phase 3 one. | No |
+| Terraform / OpenTofu | — | Likely **provisions the fencing substrate** rather than being the termination primitive. Fencing would be delegated to whatever it provisioned. | No |
 
 #### A live escape proves this is not theoretical
 
@@ -180,17 +207,24 @@ freeze). It is a requirement on the Phase 3 provider, which must remove that
 access, mediate it through the Orchestrator, use a constrained proxy or private
 daemon, or include every created container in the immutable fencing domain.
 
-#### A1 spike requirement
+#### A1 spike requirement — deliberately bounded
 
-Before the ADR is Accepted, prove the domain model against three backends:
+**Two pieces of evidence, and no more.** An earlier version of this section asked
+for proofs against three backends, which invites exactly the scope creep DR
+flagged: the backend list is open-ended (Kubernetes, macOS, Terraform, and
+others), and chasing it would turn a design ADR into a research project.
 
-- **Docker/Compose — a focused reproducer**, not a design proof. Demonstrate the
-  socket escape and demonstrate that domain-based fencing catches the sibling
-  container that descendant-walking misses.
-- **Kubernetes partition — design proof.** Show what the protocol does when a
-  node is partitioned and force-deletion is not confirmation.
-- **Linux cgroup-backed filesystem execution — design proof.** Show why
-  chroot-only cannot conform and what the cgroup v2 domain adds.
+1. **One executable Docker/Compose reproducer.** Demonstrate the socket escape,
+   and demonstrate that domain-based fencing catches the sibling container that
+   descendant-walking misses.
+2. **One bounded paper walkthrough of a materially different failure shape.** A
+   Kubernetes node partition is the convenient choice — **no cluster required**
+   — because it is the case where confirmed termination is unavailable and the
+   `isolated` receipt has to carry the weight.
+
+Everything in the compatibility matrix beyond those two is an example, not an
+obligation. **No further backend research and no second provider implementation
+is warranted in Phase 3.**
 
 Confirmed fencing is the precondition for A5's terminal result, and the
 containment guarantee A2 states is only as strong as this protocol makes it.
@@ -344,8 +378,9 @@ Proposed rule:
   version.
 - Retain its output as attributable draft/Audit history.
 - **Fence the execution per A1's protocol** — cooperative cancellation, then
-  provider-enforced termination of the **fencing domain**, quarantining the
-  Habitat when `Fence()` returns `unconfirmed`.
+  provider-enforced fencing of the **domain**, quarantining the Habitat when
+  `Fence()` returns `unconfirmed`. A `terminated` or `isolated` receipt both
+  satisfy this; only `unconfirmed` blocks.
 - **Only after fencing is confirmed**, terminate it as `cancelled` with reason
   `superseded`, never `failed`. A terminal result recorded while an unfenced
   process may still be writing is a false record, and downstream work would be
@@ -359,8 +394,9 @@ A2's statement of the in-Habitat guarantee, a runtime holding a lease keeps
 acting between them, so building A5 on the hook alone would leave exactly the
 gap A2 declines to close. But **revocation alone does not close it either** —
 that was this plan's own error one round ago. Revocation invalidates
-authorization; a process already running needs none. Stopping it takes
-termination, and *knowing* it stopped takes confirmation.
+authorization; a process already running needs none. Closing it takes a positive
+`FenceReceipt`: either the domain is confirmed stopped, or it is confirmed unable
+to reach anything current or future work will touch.
 
 Rejected alternatives:
 
@@ -621,6 +657,34 @@ Same spread pattern as the third round, and the reason it is worth naming twice:
 the wrong abstraction had reached **four** places including the #273 issue body
 this plan had already amended. Grepping the concept rather than fixing the
 flagged line is what caught the tracker copy.
+
+### Fifth round, 2026-08-09 — non-interference, and a bounded spike
+
+One P1 and one scope correction, both applied. **Codex approved the plan with
+these edits; no further backend research or implementation is warranted now.**
+
+**Scope, raised by DR.** The backend list is open-ended — macOS and Terraform
+are real possibilities beyond the three the fourth round named — and "prove
+against three backends" would have turned a design ADR into a research project.
+The spike now asks for exactly two pieces of evidence: one executable
+Docker/Compose reproducer, and one bounded paper walkthrough of a materially
+different failure shape (a Kubernetes partition, no cluster required). Everything
+else moves to a compatibility matrix marked explicitly non-gating.
+
+**P1: specify non-interference, not mandatory death.** Requiring every provider
+to confirm *termination* would exclude valid remote and native providers for no
+safety gain. What the system actually needs is that the stale generation cannot
+affect state reachable by current or future work. `FenceReceipt` is now
+three-valued — `terminated`, `isolated` (permanently quarantined, capabilities
+revoked, cleanup may continue asynchronously), or `unconfirmed`, which stays
+non-terminal and quarantined. Docker proves the `terminated` path and is the
+only backend Phase 3 implements.
+
+Worth recording *why* the wider question improved the contract rather than
+merely bounding it: asking what macOS and Terraform would do exposed that the
+fourth round's requirement was stricter than the property it was protecting.
+Terraform in particular is not a termination primitive at all — it would
+provision the substrate that does the fencing.
 
 ## Settled Questions
 
