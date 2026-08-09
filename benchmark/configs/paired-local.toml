@@ -11,11 +11,12 @@
 # pulled. gpt-oss routes to Ollama via the P-8 routing fix.
 #
 # This pairing is cross-lineage — rung 1, the preferred state under ADR 0020's
-# heterogeneity rule as amended 2026-08-08: gpt-oss is OpenAI lineage, qwen3-coder
-# is Qwen/Alibaba lineage. Do not "fix" it by reading the provider column — both
-# models route through Ollama, but the serving provider is not the lineage.
-# Neither weight-openness nor fine-tuning changes lineage: it follows the
-# originating lab.
+# heterogeneity rule as amended 2026-08-09: gpt-oss is OpenAI lineage, qwen3-coder
+# is Qwen/Alibaba lineage, and the two sets are disjoint. Do not "fix" it by
+# reading the provider column — both models route through Ollama, but the serving
+# provider is not the lineage. Weight-openness does not change lineage, and
+# fine-tuning only ever ADDS a lab to the set; neither relabels a model away from
+# the lab that originated it.
 schema_version = 2
 name = "paired-local"
 description = "v1-as-patched paired-agent factory, local Ollama models"

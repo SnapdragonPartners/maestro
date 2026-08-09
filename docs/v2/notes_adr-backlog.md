@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-08-08"
+edit_date = "2026-08-09"
 status = "live"
 type = "notes"
 summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates ordered by the phase they block."
@@ -33,7 +33,7 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | Candidate | Resolution |
 | --- | --- |
 | Artifact Envelopes And Payload Schemas (blocked Phase 2) | [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md), Accepted 2026-07-24 as Phase 2 item 1 |
-| Reviewer Heterogeneity Means Distinct Lineage (blocked Phase 5) | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment, accepted 2026-08-08 — the rule only; the mechanism is deferred as tracked work |
+| Reviewer Heterogeneity Means Distinct Lineage (blocked Phase 5) | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment, proposed 2026-08-08 and accepted 2026-08-09 — the rule only; the mechanism is deferred as tracked work |
 
 ## Candidates, Dependency-Ordered
 
@@ -107,22 +107,24 @@ Empirically observed in Phase 1 (2026-07-21, `cal-d9-cleanup-4m`): the `cleanup-
 
 Scope for the ADR: who reviews a decomposition (Reviewer vs Partner/Supervisor per 0020's split — a decomposition reviewer plausibly needs judgment, not just blocking), what it checks (right-sizing, coherence of the split, dependency sanity, no padded verification Stories), and how it escalates. Note the cost asymmetry that makes this worth a gate: an over-decomposition multiplies ceremony across every downstream Story, so the review pays for itself on the first catch.
 
-### 16. Reviewer Heterogeneity Means Distinct **Lineage**, Not Distinct Model — RESOLVED by the [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment (2026-08-08)
+### 16. Reviewer Heterogeneity Means Distinct **Lineage**, Not Distinct Model — RESOLVED by the [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment (proposed 2026-08-08, accepted 2026-08-09)
 
-Raised by DR at Phase 2 exit and accepted the same week as an amendment rather than a new ADR: 0020 already carried the norm and the "degraded is not broken" semantics, and the defect was one undefined word — it required the reviewer to run "a distinct model" without saying what made two models distinct, so two siblings from one lab conformed.
+Raised by DR at Phase 2 exit (2026-08-08) and accepted the next day as an amendment rather than a new ADR: 0020 already carried the norm and the "degraded is not broken" semantics, and the defect was one undefined word — it required the reviewer to run "a distinct model" without saying what made two models distinct, so two siblings from one lab conformed.
 
-**The rule is now in ADR 0020** and is not restated here: model lineage is the originating lab, unchanged by serving provider, weight availability, or fine-tuning; the ladder is distinct lineage → same lineage, distinct model → same model; same-lineage warns and never refuses; and the classified unit is the author/reviewer *pair*. Read it there.
+**The rule is now in ADR 0020** and is not restated here: model lineage is the set of originating labs, unchanged by serving provider or weight availability and only ever added to by derivation; the ladder is disjoint sets → overlapping sets, distinct model → same model, with unknown lineage held outside the ladder as *unclassified*; same-lineage warns and never refuses; and the classified unit is the author/reviewer *edge*. Read it there.
 
-**What the amendment deliberately did not do is build the mechanism**, which does not exist at any granularity — so a same-*model* pairing goes unflagged today too. It needs three pieces and only the first is knowable now:
+**What the amendment deliberately did not do is build the mechanism**, which does not exist at any granularity — so a same-*model* pairing goes unflagged today too. Be precise about what is actually absent, because the first draft of this entry overstated it:
 
-- a declared **model-lineage attribute**, which is a property of a model and belongs with model metadata (alongside the lifecycle metadata [#319](https://github.com/SnapdragonPartners/maestro/issues/319) wants, since a retirement date and a lab are the same kind of fact about a model ID) — never restated per configuration, or two configurations can disagree about one model;
-- the **author/reviewer pairing graph**, which no current artifact declares. An MPH bundle's `[model.roles]` names the cast, not who reviews whom; that edge lives in the target harness and is rewritten by the Phase 3 runtime;
-- the **surfacing path** — a stored classification that nothing shows an operator does not satisfy 0020.
+- **Model-lineage metadata** — the one genuinely missing input. A property of a model, so it belongs with model metadata (alongside the lifecycle metadata [#319](https://github.com/SnapdragonPartners/maestro/issues/319) wants, since a retirement date and a lab are the same kind of fact about a model ID) — never restated per configuration, or two configurations can disagree about one model.
+- **Classification and surfacing** — the computation over an edge and the operator-visible result. A stored classification nothing shows an operator does not satisfy 0020.
+- **The prospective routing contract** — needed *only* to classify a configuration before it runs. An MPH bundle's `[model.roles]` names the cast, not who reviews whom; that edge lives in the target harness and is rewritten by the Phase 3 runtime.
 
-DR decided on 2026-08-08 not to reserve a slot in the MPH bundle for this: lineage is a model fact rather than a bundle fact, the field would have no consumer until the pairing graph exists, and populating it would change `config_hash` on both configs and break the run identity group a second time for a configuration that cannot currently run.
+**The realized edge is not missing.** Phase 2's schema already persists it: `management_artifacts.author_instance_id`, `artifact_reviews.reviewer_instance_id`, both foreign-keyed to `principal_instances`, whose `model` is NOT NULL for every principal kind. So a completed review is already joinable to an (author model, reviewer model) pair, and **retrospective classification is unblocked as soon as lineage metadata exists — it does not wait on Phase 5.**
+
+DR decided on 2026-08-08 not to reserve a slot in the MPH bundle for this: lineage is a model fact rather than a bundle fact, the field would have no consumer until the missing inputs land, and populating it would change `config_hash` on both configs and break the run identity group a second time for a configuration that cannot currently run.
 
 > ⚠️ **Implementation trap, kept because it survives the ADR's general statement: `Provider` is not lineage.** `pkg/config`'s `Provider` field and `ProviderPatterns` describe *how a request is routed*. `gpt-oss` is deliberately matched to `ProviderOllama` ahead of the `gpt` → OpenAI rule, so a check built on the existing `Provider` value would call `gpt-oss` Ollama-lineage and score an OpenAI-vs-OpenAI pairing heterogeneous.
 >
-> Worked case: `paired-local` pairs `gpt-oss:20b` (OpenAI lineage) with `qwen3-coder:30b` (Qwen/Alibaba lineage) — **cross-lineage and conforming**, though both route through Ollama. `paired-default` before 2026-08-08 paired two Anthropic models through one provider — same lineage, degraded. Provider tells you neither answer.
+> Worked case: `paired-local` pairs `gpt-oss:20b` (OpenAI lineage) with `qwen3-coder:30b` (Qwen/Alibaba lineage) — **disjoint sets, rung 1**, though both route through Ollama. `paired-default` before 2026-08-08 paired two Anthropic models through one provider — overlapping sets, rung 2. Provider tells you neither answer.
 
-The mechanism blocks **Phase 5** (reviewer model routing), which is where the pairing graph gets defined.
+Advance classification of a configuration blocks **Phase 5** (reviewer model routing), which is where the prospective routing contract gets defined. Retrospective classification of completed reviews does not.

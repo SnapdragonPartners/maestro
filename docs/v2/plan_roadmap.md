@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-08-08"
+edit_date = "2026-08-09"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -878,7 +878,7 @@ V1 retirement belongs here rather than to a phase or a standing cleanup track of
 Three durable lessons belong here rather than in a closed phase record.
 
 - **A benchmark pinned to third-party model IDs inherits their retirement calendars.** The Opus 4.1 deprecation was published with ≥60 days' notice, seven weeks before the Phase 2 plan was approved, and no one read it across into the model pins. The conformance log records the model per run; nothing checks it forward. A preflight lifecycle check belongs in the Run Protocol.
-- **Reviewer heterogeneity means distinct *model lineage*, not distinct model** — raised by DR on 2026-08-08 and **accepted the same day as an [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment** ([backlog candidate 16](notes_adr-backlog.md), resolved). Lineage is the originating lab, unchanged by serving provider, weight availability, or fine-tuning; same-lineage review stays **valid but visibly marked degraded**, never refused. Prior `paired-default` paired-agent runs are reclassified degraded — labelled, not invalidated. **The flagging machinery still does not exist at any granularity**, so even a same-model pairing goes unflagged today; the amendment deliberately settled the rule without building it, because the author/reviewer pairing graph it would read is a Phase 5 deliverable and the model-lineage attribute belongs with model metadata rather than in a benchmark config.
+- **Reviewer heterogeneity means distinct *model lineage*, not distinct model** — raised by DR on 2026-08-08 and accepted 2026-08-09 as an [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment ([backlog candidate 16](notes_adr-backlog.md), resolved). Lineage is the set of originating labs, unchanged by serving provider or weight availability and only ever *added to* by fine-tuning; same-lineage review stays **valid but visibly marked degraded**, never refused, and unknown lineage is visibly *unclassified* rather than assumed good. Prior `paired-default` paired-agent runs are reclassified degraded — labelled, not invalidated. **The flagging machinery still does not exist at any granularity**, so even a same-model pairing goes unflagged today. The one genuinely missing input is model-lineage metadata, which belongs with model metadata rather than in a benchmark config; the realized author/reviewer edge is already persisted by Phase 2's schema, so completed reviews become classifiable as soon as that metadata exists. Only classifying a configuration *in advance* waits on Phase 5's routing contract.
 - **A run's recorded commit must rebuild its binary.** The phase-exit target was built from a dirty tree ([#318](https://github.com/SnapdragonPartners/maestro/issues/318)); the digest pinned what ran, but the commit did not reproduce it.
 
 The two halves are sequenced separately and the order is the point. The **adapter** comes before the deletion, so removing v1 never strands the runner. The **conformance run** comes after it, because a run performed while v1 is still present measures a tree that the deletion then changes — it would attest to something other than what Phase 3 ships. Relaxing any of this is an amendment to ADR 0025 and `process_build.md`, not a decision available here.
@@ -965,7 +965,7 @@ Outputs:
 
 - Artifact generation/review contract.
 - Internal adversarial reviewer interface.
-- Distinct reviewer model routing, and with it the **heterogeneity classification ADR 0020 requires and nothing implements** — the model-lineage attribute, the author/reviewer pairing graph this phase is the first to define, and the surfacing path. Carried since Phase 2; the rule was settled by 0020's 2026-08-08 amendment, the mechanism deliberately was not.
+- Distinct reviewer model routing, and with it the **heterogeneity classification ADR 0020 requires and nothing implements** — model-lineage metadata, classification and operator surfacing, and the prospective routing contract that lets a configuration be classified before it runs. Carried since Phase 2; the rule was settled by 0020's amendment (accepted 2026-08-09), the mechanism deliberately was not. Note that only the prospective half is genuinely this phase's: the realized author/reviewer edge is already stored, so retrospective classification is unblocked the moment lineage metadata lands and need not wait for this phase.
 - Budget review moved to internal reviewer where appropriate.
 - Optional gates: requirements, stories, UAT.
 - Gate UI.
@@ -976,7 +976,7 @@ Exit criteria:
 
 - No Management artifact can reach a persisted, accepted state without a reviewer record. (The Workbench satisfies this through human accept plus the trailing agent check — ADR 0020 admits no configured exemptions.)
 - A reviewer/author disagreement escalates to a human after the configured bound, demonstrated end-to-end.
-- Every review record carries its pairing's rung on ADR 0020's ladder, and a same-lineage pairing is **surfaced to the operator**, not merely stored — 0020 forbids an unlabelled degradation, and silence reads as the preferred state. Demonstrated on a deliberately same-lineage pairing, which must run and be flagged rather than be refused.
+- Every review record carries its pairing's rung on ADR 0020's ladder, and both a same-lineage pairing and an **unclassified** one are **surfaced to the operator**, not merely stored — 0020 forbids an unlabelled degradation, and silence reads as the preferred state. Demonstrated on a deliberately same-lineage pairing and on a model with no recorded lineage: each must run and be flagged rather than be refused or silently pass.
 - The three optional gates can be toggled per Epic by config and are visible in the UI.
 - A Workbench session runs end-to-end: entered from the dashboard button, producing Story work on a real Epic branch with trailing evidence and drift review, closed by human Accept.
 
