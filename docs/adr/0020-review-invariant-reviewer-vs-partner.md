@@ -48,7 +48,7 @@ Where practical, the reviewer runs a model whose **lineage is disjoint** from th
 
 This is a **conservative proxy** for correlated training and alignment choices, not a claim that every model from one lab is technically identical. Set-valued lineage keeps the proxy conservative in the right direction: an added entry can only ever make two models look *more* correlated, never less.
 
-**Lineage may be unknown, and unknown is its own state.** A model whose lineage is not recorded is **unclassified** — never silently rung 1, and never inferred from a routing or provider field. Unclassified is surfaced exactly as a degradation is: an operator must be able to see that the check did not run, because a check that quietly returns "fine" when it has no data is worse than no check.
+**Lineage may be unknown, and unknown is its own state.** A model whose lineage is not recorded is **unclassified** — never silently rung 1, and never inferred from a routing or provider field. Unclassified **must be surfaced** exactly as a degradation is: an operator has to be able to see that the check did not run, because a check that quietly returns "fine" when it has no data is worse than no check.
 
 > **Terminology.** "Lineage" elsewhere in the v2 corpus — ADRs 0018, 0021, 0022 and the data-plane schema — means the *work* hierarchy chain (Product → Feature → Epic → Story). **Model lineage is an unrelated concept and shares no columns, keys, or constraints with it.** Any implementation must name the two distinctly; they will otherwise be conflated at exactly the seam where a heterogeneity check reads a principal instance that also carries work lineage.
 
@@ -67,7 +67,9 @@ Rung 1 requires both sets to be **known and disjoint**. If either side's lineage
 
 **Same-lineage review warns; it never refuses.** Rungs 2 and 3 are permitted when heterogeneity is unavailable — economic constraints, airplane mode, single-lineage model availability, and high-security or sovereign-AI installations where only one lab is admissible. A hard failure would make those deployments unusable rather than honestly labelled. There is deliberately no "must use distinct lineages" rule here, and unclassified pairings are likewise never refused.
 
-What the warning must clear is **visibility**. The review record captures author and reviewer model *and lineage set*, so evidence and metrics can distinguish the three rungs and the unclassified state; and per the code-review section below, a degraded state is actively surfaced to the operator rather than merely stored. An unlabelled degradation is the failure mode this ADR forbids — silence reads as rung 1.
+What the warning must clear is **visibility**. A review record **must** carry author and reviewer model *and lineage set*, so that evidence and metrics can distinguish the three rungs from the unclassified state; and per the code-review section below, a degraded state **must** be actively surfaced to the operator rather than merely stored. An unlabelled degradation is the failure mode this ADR forbids — silence reads as rung 1.
+
+This is a requirement, not a description of today. The models are already recorded — author and reviewer resolve to principal instances, and `model` is populated for every principal kind — but **lineage is not recorded and no classification is computed anywhere**, so the visibility requirement is currently unmet. See Consequences for what closes it.
 
 **Where it binds.** Both the product's own reviewer routing (the Phase 5 deliverable above) and benchmark configurations under ADR 0025. The rule is uniform; what differs is the surfacing point and what each side can classify — an MPH bundle contributes role-to-model routing but does not by itself carry the reviews-whom relation, so ADR 0025 defers classification rather than claiming the bundle settles it.
 
