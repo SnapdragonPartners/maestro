@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-07-30"
+edit_date = "2026-08-09"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -171,24 +171,17 @@ Candidate formats:
 
 ## Runtime And Infrastructure Ideas
 
-### Container Runtime Abstraction
+### Container Runtime Abstraction — **GRADUATED 2026-08-09**
 
-Docker remains initial implementation, but define an interface that could later support:
+Picked up as **Habitat** — [backlog candidate 11](notes_adr-backlog.md), [issue #273](https://github.com/SnapdragonPartners/maestro/issues/273), item A1 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md). Kept here as a graduation pointer per this note's own rule.
 
-- Raw filesystem execution.
-- macOS/Apple app development.
-- iPhone development.
-- Other sandbox providers.
+The original idea — Docker first, with an interface that could later support raw filesystem execution, macOS/Apple and iPhone development, and other sandbox providers — survives as the **non-gating compatibility matrix** in the blocker plan. Those backends are examples that test the contract's shape; none is Phase 3 work, and no second provider is implemented there.
 
-### Headless Development Agent Interface
+### Headless Development Agent Interface — **GRADUATED 2026-08-09**
 
-Generalize Claude Code-mode agents.
+Picked up as the **Agent Execution Contract** — [backlog candidate 13](notes_adr-backlog.md), [issue #282](https://github.com/SnapdragonPartners/maestro/issues/282), item A4 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md).
 
-Goals:
-
-- Capture token usage where possible.
-- Run other headless development agents, such as OpenHands, inside Maestro containers.
-- Define interface/contract now; implement later.
+All three original goals are carried: capturing token usage becomes the contract's usage events and provenance, running other headless agents such as OpenHands becomes the wire contract's adapter direction, and "define interface/contract now, implement later" is precisely the pre-entry split — the contract is Accepted before Phase 3, and only one executable agent is built to prove it. The contract is versioned and wire-level rather than a Go interface, so non-Go executors qualify.
 
 ### Cloud Job Agent Execution
 

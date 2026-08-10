@@ -431,6 +431,13 @@ B/C/D items as scheduled Phase 3 work with their gates named.
 Two conflicts must be reconciled *before* A1 and A4 can be Accepted, because
 they leave two competing abstractions on the books.
 
+**Item 1 is DONE (2026-08-09).** Slots 11 and 13 were amended in place, the two
+graduated parking-lot entries now point at them, and the backlog carries a note
+that its numbering is stable while its ordering is not. The remaining step is the
+one that waits on the ADRs themselves: **mark slots 11 and 13 RESOLVED when the
+Habitat and execution-contract ADRs are Accepted.** Item 2 was discharged when
+#273 was amended (see below).
+
 1. **The ADR backlog still places the superseded items post-MVP.**
    [Candidate 11 "Container Runtime Abstraction"](../notes_adr-backlog.md) is
    what Habitat supersedes — #273 says so directly ("amend the existing post-MVP
