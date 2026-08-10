@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-09"
+edit_date = "2026-08-10"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -428,17 +428,15 @@ B/C/D items as scheduled Phase 3 work with their gates named.
 
 ## Required Authority Cleanup
 
-Two conflicts must be reconciled *before* A1 and A4 can be Accepted, because
-they leave two competing abstractions on the books.
+Two conflicts had to be reconciled *before* A1 and A4 could be Accepted, because
+they left two competing abstractions on the books. **Both were discharged on
+2026-08-09**; each is recorded below as it was found, with its resolution.
 
-**Item 1 is DONE (2026-08-09).** Slots 11 and 13 were amended in place, the two
-graduated parking-lot entries now point at them, and the backlog carries a note
-that its numbering is stable while its ordering is not. The remaining step is the
-one that waits on the ADRs themselves: **mark slots 11 and 13 RESOLVED when the
-Habitat and execution-contract ADRs are Accepted.** Item 2 was discharged when
-#273 was amended (see below).
+**One step remains, and it waits on the ADRs themselves: mark slots 11 and 13
+RESOLVED when the Habitat and execution-contract ADRs are Accepted.** Nothing
+else here blocks A1 or A4.
 
-1. **The ADR backlog still places the superseded items post-MVP.**
+1. **RESOLVED — the ADR backlog placed the superseded items post-MVP.**
    [Candidate 11 "Container Runtime Abstraction"](../notes_adr-backlog.md) is
    what Habitat supersedes — #273 says so directly ("amend the existing post-MVP
    Container Runtime Abstraction backlog item rather than leaving two competing
@@ -452,7 +450,15 @@ Habitat and execution-contract ADRs are Accepted.** Item 2 was discharged when
    numbers beside resolved pointer stubs would duplicate the concept in two
    places.
 
-2. **#273 requires "Phase 2 persistence hooks," and Phase 2 is closed.**
+   *Done in PR #325:* slot 11 became Habitat Execution Boundary and slot 13 the
+   Agent Execution Contract, both blocking Phase 3 and both carrying the
+   constraints easiest to lose in transit to an ADR; the two originating
+   parking-lot entries are marked graduated with pointers; and the backlog's
+   section was renamed `Candidates, Stable-Numbered`, since stable numbering and
+   true dependency order cannot both hold once a candidate's blocking phase
+   changes.
+
+2. **RESOLVED — #273 required "Phase 2 persistence hooks," and Phase 2 is closed.**
    Resolution: **no Phase 2.1 for schema.** The Habitat tables become a Phase 3
    migration, exactly as prompt packs already are — the schema inventory already
    carries deferred families with a named creator phase, migrations are additive,
@@ -462,6 +468,9 @@ Habitat and execution-contract ADRs are Accepted.** Item 2 was discharged when
 
    This leaves **Phase 2.1 meaning exactly one thing: #286**, which is Phase 2's
    seam being proven rather than new Phase 2 scope.
+
+   *Done:* #273's section 2 was rewritten to name Phase 3 as the creator of the
+   Habitat persistence family.
 
 ---
 
