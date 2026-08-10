@@ -1,6 +1,6 @@
 +++
 title = "Phase 3 Artifacts"
-edit_date = "2026-08-09"
+edit_date = "2026-08-10"
 status = "live"
 summary = "Index of Phase 3 working artifacts: the pre-entry blocker plan, and the phase scope and plan once it is written."
 +++
@@ -13,6 +13,7 @@ goal and exit criteria come from the [roadmap](../plan_roadmap.md); the binding
 specifications will be the ADRs the pre-entry work below produces.
 
 - [Pre-Phase-3 Blockers: Scope And Sequencing](plan_blockers.md) — What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted.
+- [Execution Contracts: Verbs, Result Shape, And Where They Run](notes_execution-contracts.md) — Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat stages are the two clocks rather than two verbs, why the invocation half needs almost nothing and the result half needs a preserved audit artifact, and the verb inventory Phase 3 should prune.
 
 The phase scope and plan (`plan_scope.md`) is written after the blocker plan's
 Track A is Accepted, and is listed here when it exists.
