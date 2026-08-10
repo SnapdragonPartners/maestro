@@ -3,7 +3,7 @@ title = "Maestro v2 ADR Backlog"
 edit_date = "2026-08-09"
 status = "live"
 type = "notes"
-summary = "Reconciled, dependency-ordered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates labelled with the phase they block — numbers are stable and cited elsewhere, so each heading rather than its ordinal position is authoritative about phase."
+summary = "Reconciled, stable-numbered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates each labelled with the phase it blocks — slot numbers are cited by other documents and never change, so a heading rather than a position in the list is what says when a candidate is due."
 +++
 
 # Maestro v2 ADR Backlog
@@ -35,13 +35,13 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | Artifact Envelopes And Payload Schemas (blocked Phase 2) | [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md), Accepted 2026-07-24 as Phase 2 item 1 |
 | Reviewer Heterogeneity Means Distinct Lineage (blocked Phase 5) | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment, proposed 2026-08-08 and accepted 2026-08-09 — the rule only; the mechanism is deferred as tracked work |
 
-## Candidates, Dependency-Ordered
+## Candidates, Stable-Numbered
 
-Ordered by the phase each blocks. An entry should be Accepted before its blocking phase starts implementation.
+**Each heading names the phase that candidate blocks, and the heading is authoritative — position in this list is not.** An entry should be Accepted before its blocking phase starts implementation.
 
-Entries are numbered, and those numbers are cited from phase plans and session notes, so a resolved candidate **keeps its slot** here as a pointer to its ADR rather than being deleted and renumbering everything below it. The section is therefore mostly open candidates with resolved stubs among them; the resolved tables above are the authoritative list of what is done.
+Numbers are stable because phase plans and session notes cite them. A resolved candidate therefore **keeps its slot** as a pointer to its ADR rather than being deleted and renumbering everything below it, and a candidate whose blocking phase changes **keeps its slot** rather than being moved. The section is mostly open candidates with resolved stubs among them; the resolved tables above are the authoritative list of what is done.
 
-**The same stability rule applies when a candidate's blocking phase changes, so position is a hint and the heading is authoritative.** Slots **11** (Habitat) and **13** (Agent Execution Contract) were re-scoped from post-MVP to **blocks Phase 3** on 2026-08-09 and kept their numbers, so they now sit after entries blocking later phases. Read the phase from each heading rather than inferring it from ordinal position.
+The list was originally dependency-ordered and no longer is: slots **11** (Habitat) and **13** (Agent Execution Contract) were re-scoped from post-MVP to **blocks Phase 3** on 2026-08-09 and kept their numbers, so they now sit after entries blocking Phases 4, 5 and 6. Stable numbering and true dependency order cannot both hold, and numbering won because it is what other documents depend on.
 
 ### 1. Artifact Envelopes And Payload Schemas — RESOLVED by [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md)
 
@@ -97,9 +97,10 @@ Habitat is the Orchestrator-managed execution-resource boundary: the stateful pl
 
 It subsumes the original post-MVP framing — a container/execution interface with Docker as the only initial implementation — but inverts its schedule: the boundary is established *before* Phase 3 cuts `pkg/workspace`, `pkg/exec`, container state, Coder setup, and Architect workspace inspection, or those systems get cut twice.
 
-Two constraints the blocker plan fixes, both easy to lose:
+Three constraints the blocker plan fixes, all easy to lose:
 
 - **Fencing proves non-interference, not death.** `Fence()` returns `terminated`, `isolated`, or `unconfirmed`; only `unconfirmed` blocks, and it quarantines. The fencing unit is a provider-created domain — process ancestry is not a portable containment boundary.
+- **An `isolated` receipt is terminal but never permits reuse.** The isolated generation stays **permanently quarantined**, and subsequent work dispatches into a **new Habitat generation**. `isolated` says the old generation can no longer reach anything current or future work touches — it does not say the Habitat is free, and cleanup may still be running. Reading a positive receipt as licence to reuse the same generation would reintroduce exactly the interference the receipt rules out.
 - **The spike is bounded to two artifacts**: one executable Docker/Compose reproducer and one paper walkthrough of a materially different failure shape. The multi-provider cases the original entry gestured at (raw filesystem, macOS, iPhone, other sandboxes) are non-gating compatibility examples, not Phase 3 work.
 
 Mark this slot RESOLVED when the Habitat ADR is Accepted.
