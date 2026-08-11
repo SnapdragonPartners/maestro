@@ -778,6 +778,24 @@ mediate it so every creation is stamped before the resource exists, or use a
 private daemon. Those are not three ways of achieving the same convenience; they
 are the only three ways the domain exists at all.
 
+**Stamping is not containment: a mediator must also refuse to hand out a route it
+does not mediate.** The spike found this by building the mediation option and
+attacking it. A proxy that rewrites labels but forwards the rest of the request
+unchanged will happily create a *correctly labelled* child that mounts the daemon
+socket — and that child then creates an unlabeled grandchild through the raw
+socket. The domain survives one hop and fails at two.
+
+A conformant mediator therefore rejects creates that would give the new resource
+its own unmediated route out: daemon or runtime socket mounts, privileged
+execution, a shared PID namespace, host networking, and whatever else the backend
+treats as equivalent. A private daemon closes the same gap by construction, which
+is the argument for preferring it where it is available.
+
+The general form, which outlives Docker: **a mediated boundary must be closed
+under the creation it permits.** If a resource inside the domain can create
+something with more authority than itself, the boundary is one hop deep, and one
+hop is not a boundary.
+
 **The receipt proves non-interference, not death.**
 
 | Receipt | Meaning | Terminal? | Reuse |

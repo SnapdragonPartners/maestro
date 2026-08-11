@@ -3,7 +3,7 @@ title = "Spike: Docker Fencing Domains And The Socket Escape"
 edit_date = "2026-08-11"
 status = "draft"
 type = "spike"
-summary = "The executable Docker/Compose reproducer ADR 0029 requires: seven three-valued claims run against a live daemon with controls and checked observations, all proven, establishing that the socket escape is real, that a fencing domain contains it only when a mediating boundary enforces membership at creation against a holder actively trying to opt out, that a fence must revoke and drain before enumerating and confirm every member non-running, and that an unconfirmed stop must keep the provider record a reconciler needs — with the reproducer's own four false-proof defects and its self-inflicted container leak recorded rather than quietly repaired."
+summary = "The executable Docker/Compose reproducer ADR 0029 requires: eight three-valued claims run against a live daemon with controls, checked observations, and mutation verification, all proven — establishing that the socket escape is real, that a fencing domain contains it only when a mediating boundary enforces membership at creation against a holder actively trying to opt out, that such a boundary must also be closed under the creation it permits or it is only one hop deep, that a fence must obtain an acknowledged revocation before enumerating and confirm every member non-running, and that an unconfirmed stop must keep the provider record a reconciler needs — with the reproducer's own nine false-proof defects and its self-inflicted container leak recorded rather than quietly repaired."
 +++
 
 # Spike: Docker Fencing Domains And The Socket Escape
@@ -30,9 +30,23 @@ reports false proof: `PROVEN`, `FALSIFIED`, or `ERROR`. Every observation is
 error-checked; none is allowed to read as evidence by failing quietly.
 
 Every claim carries a control, because a claim without one shows a result without
-showing what produces it. C0 controls C1. C2 and C3 control each other — the same
-escape, differing only in whether creation is mediated. C4a and C4b control each
-other — the same stopping work, differing only in order.
+showing what produces it:
+
+- **C0 controls C1** — remove the socket and the same commands must fail, naming
+  the missing daemon.
+- **C1 carries a positive observation control** — a container deliberately
+  sharing the holder's PID namespace must be *visible* in the same process table
+  that shows the escaped sibling absent. Without it, "not visible" is equally
+  consistent with a process table showing nothing useful.
+- **C2 carries a positive enumeration control** — the labelled holder must be
+  present in the same result that omits the sibling.
+- **C2 and C3 control each other** — the same escape, differing only in whether
+  creation is mediated.
+- **C4a and C4b control each other** — the same stopping work, differing only in
+  order.
+
+Beyond controls, each mechanism is **mutation-verified**: disabled, rerun, and
+required to flip its own claim and no others.
 
 ## Results
 
@@ -43,6 +57,7 @@ PROVEN     C0   without a daemon route the same commands fail, and fail for that
 PROVEN     C1   a socket-holding container creates a sibling outside its PID namespace
 PROVEN     C2   an unenforced domain omits the escaped sibling while containing the holder
 PROVEN     C3   a mediated holder lands in the domain without supplying the label, and cannot opt out
+PROVEN     C3b  a mediated holder cannot re-export an unmediated creation route
 PROVEN     C4a  enumerate-then-stop misses siblings created while it stops
 PROVEN     C4b  revoke-drain-enumerate-confirm yields a complete, confirmed set
 PROVEN     C5   an unconfirmed stop keeps the record a reconciler needs (modeled)
@@ -51,16 +66,30 @@ PROVEN     C5   an unconfirmed stop keeps the record a reconciler needs (modeled
 Selected detail from the same run:
 
 ```text
-C0: stderr="failed to connect to the docker API at unix:///var/run/docker.sock;
-    check if the path is correct and if the daemon is running: dial unix
-    /var/run/docker.sock: connect: no such file or directory"
-C2: domain "unenforced" enumerates [holder]; holder present=true; sibling present=false
-C3: sibling in enforced domain=true; sibling in its own chosen domain=false
-C4a: enumerated and stopped 7; 14 in the domain afterwards: 7 created inside the window
-C4b: drained at 7; fenced and stopped 7; 7 in domain afterwards; stop errors=[]; still running=[]
+C0:  stderr="failed to connect to the docker API at unix:///var/run/docker.sock;
+     check if the path is correct and if the daemon is running: dial unix
+     /var/run/docker.sock: connect: no such file or directory"
+C1:  sibling running=true; escaped sibling visible=false; PID-sharing control visible=true
+C2:  domain "unenforced" enumerates [holder]; holder present=true; sibling present=false
+C3:  sibling in enforced domain=true; sibling in its own chosen domain=false
+C3b: refused naming the escape=true; child exists=false; response="proxy: refused,
+     would escape the fencing domain: bind mounts the daemon socket
+     (/var/run/docker.sock:/var/run/docker.sock)"
+C4a: enumerated and stopped 7; 13 in the domain afterwards: 6 created inside the window
+C4b: mediator acknowledged 11 drained creates; fenced and stopped 12; members
+     outside the fenced set=[]; stop errors=[]; still running=[]
 ```
 
-Nothing in §7 is falsified. Two findings sharpen it.
+**Mutation-verified.** Each mechanism was disabled and the run repeated, to
+confirm the claim depends on the mechanism rather than on the environment.
+Disabling the proxy's label injection flips C3 with the expected detail (`in
+enforced domain=false; in its own chosen domain=true`); disabling its escape
+rejection flips C3b; giving the escaped sibling a shared PID namespace flips C1.
+In each case the other claims stayed proven, so the mutations were targeted
+rather than merely destructive.
+
+Nothing in §7 is falsified. Three findings sharpen it, and the third was found
+only by building the mediator well enough to attack it.
 
 **C5 is a modeled proof, not a live-daemon proof**, and is labelled as such
 throughout. `docker stop` escalates to `SIGKILL`, so a genuine unrecoverable stop
@@ -100,9 +129,32 @@ mounts the raw socket and hopes to enumerate by label at fence time has **no
 containment boundary at all** — it merely has one that looks like it works until
 something creates a container the provider did not.
 
-The proxy is [`spikes/phase_3/fencing/proxy`](../../../spikes/phase_3/fencing/proxy),
-roughly ninety lines. It is a demonstration of the mediation option, not a design
-proposal for the Phase 3 provider.
+The proxy is [`spikes/phase_3/fencing/proxy`](../../../spikes/phase_3/fencing/proxy).
+It is a demonstration of the mediation option, not a design proposal for the
+Phase 3 provider.
+
+### Finding 1b — stamping is not containment, and building the mediator proved it
+
+Writing the proxy well enough to satisfy C3 exposed a hole the ADR did not have:
+**a mediator that rewrites labels but forwards the rest of the request unchanged
+is one hop deep.** It will create a *correctly labelled* child that mounts the
+daemon socket, and that child creates an unlabeled grandchild through the raw
+socket. The domain holds at hop one and fails at hop two.
+
+C3b is the control for it. The mediated holder asks for a child bind-mounting
+`/var/run/docker.sock`; the mediator refuses, naming the escape, and no such
+child exists. The proxy now also rejects privileged execution, shared PID
+namespaces, and host networking, on the same grounds — they are routes out of the
+domain that happen not to be a socket.
+
+The general form is worth stating without Docker in it, and it is now in ADR 0029
+§7: **a mediated boundary must be closed under the creation it permits.** If a
+resource inside the domain can create something with more authority than itself,
+the boundary is one hop deep, and one hop is not a boundary.
+
+This is the argument for preferring a private daemon where one is available: it
+closes the same gap by construction rather than by enumeration, and an
+enumeration of escape routes is only ever as good as its last review.
 
 ### Finding 2 — the race is real and is measured in the stopping window
 
@@ -122,31 +174,45 @@ The window is not an instant between two adjacent calls — it is however long t
 fence spends doing its work, which scales with the size of the domain. The larger
 the Habitat, the wider the hole.
 
-C4b establishes a **receipt**, not a set comparison. Set equality alone would pass
-while containers were still running, and a create request already accepted by the
-daemon can land after a single sample. The correct path therefore revokes (killing
-the proxy, the holder's only route to the daemon), waits for the domain size to
-quiesce so in-flight creates have landed, enumerates, stops with **checked**
-errors, waits for **every** member to be observed non-running, and only then
-re-enumerates.
+C4b establishes a **receipt**, and each part of it was earned by a defect:
 
-## Four defects in the reproducer itself, and why they are recorded
+- **An acknowledged revocation, not a killed process.** Killing the proxy
+  discards the error and cannot distinguish "revoked" from "crashed", and creates
+  already accepted may still be completing. The mediator now exposes a barrier
+  that stops admitting creates, waits for in-flight creates to finish, and
+  acknowledges with the count it drained. An earlier version inferred drainage
+  from cardinality holding steady for 750ms, which measures a quiet daemon rather
+  than a closed one.
+- **Confirmed termination**, not stopping. Every member of the fenced set must be
+  observed non-running, with stop errors checked rather than discarded.
+- **Membership, not cardinality.** `len(final) <= len(fenced)` passes if a fenced
+  member disappears while a late-created one replaces it. The check now requires
+  no member outside the fenced set.
+- **A live producer at the moment of revocation.** Reaching the spawn floor only
+  proves the spawner was active earlier; C4b now re-samples immediately before
+  revoking and requires growth, so it cannot pass by fencing a spawner that had
+  already finished.
 
-Successive versions reported results that were not evidence. All are recorded
-because the failure shape is the one this repository keeps paying for — **a check
-that cannot fail for the defect it protects against** — and because a spike that
-hides its own repairs is asking to be trusted rather than read.
+## The reproducer's own defects, and why they are recorded
 
-**C4a could not observe the race it measured.** The first version enumerated and
-revoked microseconds apart, leaving no window, and reported the naive order safe.
-The naive path now spends real time stopping what it enumerated, which is where
-the window comes from.
+Across three review rounds, successive versions reported results that were not
+evidence. All are recorded because the failure shape is the one this repository
+keeps paying for — **a check that cannot fail for the defect it protects
+against** — and because a spike that hides its own repairs is asking to be
+trusted rather than read.
+
+Nine defects, in the order they were found.
+
+**C4a could not observe the race it measured.** It enumerated and revoked
+microseconds apart, leaving no window, and reported the naive order safe. The
+naive path now spends real time stopping what it enumerated, which is where the
+window comes from.
 
 **C5 passed vacuously.** It tried to force a stop failure by trapping `SIGTERM`,
 but `docker stop` escalates to `SIGKILL`, so the container stopped normally and
 the check asserted only that a successfully stopped container is still listed by
 Docker. It also had the wrong subject. It is now explicitly a modeled provider
-proof.
+proof, and asserts the retained record's *state* rather than its mere presence.
 
 **C3 was a tautology.** The holder volunteered the domain label, so the claim
 reduced to "a labelled container is enumerable." Enforcement is now proved
@@ -159,6 +225,25 @@ holder's process table, so a failed `ps` read as "not visible." Domain
 enumeration converted its error to an empty set, which satisfies "the sibling is
 absent." All three are now checked, `ERROR` is a distinct outcome, and C0
 additionally requires the failure text to name the unreachable daemon.
+
+**C1's predicate could not detect a single visible sibling.** After the holder's
+sentinel changed to `sleep 900`, the check tested `Count("sleep 600") > 1` — but
+one visible sibling produces a count of exactly one, so the predicate reported
+"invisible" regardless of the truth. It could not have failed. Sentinels are now
+distinct per role, presence is tested with `Contains`, and a container
+deliberately sharing the holder's PID namespace supplies a **positive observation
+control**: if the control is not visible, the process table cannot be trusted and
+the claim reports `ERROR` rather than proof.
+
+**The mediator permitted a transitive escape** — Finding 1b above.
+
+**Revocation was neither checked nor acknowledged**, and drainage was inferred
+from cardinality holding steady — see the C4b list above.
+
+**C4b compared cardinality rather than membership.**
+
+**The spawner was only known to have been active earlier**, not at the moment of
+revocation.
 
 ### And one the reproducer proved on itself
 

@@ -15,13 +15,16 @@
 //	                outside its own PID namespace.
 //	C2 UNENFORCED   That sibling is absent from the domain while the holder is
 //	                present — so an unenforced domain is not a boundary.
-//	C3 ENFORCED     Behind a mediating proxy, a holder that never supplies the
-//	                domain label still lands inside the domain, and cannot opt
-//	                out by supplying a different one.
+//	C3 ENFORCED     Behind a mediating proxy, a holder that supplies a competing
+//	                domain label still lands inside the enforced domain.
+//	C3b CONTAIN     That holder cannot re-export an unmediated creation route: a
+//	                labelled child holding the daemon socket would break the
+//	                domain at the second hop, so the mediator refuses it.
 //	C4a RACE        Enumerate-then-stop is outrun by a holder still creating
 //	                during the stopping window.
-//	C4b RECEIPT     Revoke, drain, enumerate, stop, and confirm every member
-//	                non-running yields a set nothing is added to afterwards.
+//	C4b RECEIPT     An acknowledged revocation, then enumerate, stop, and confirm
+//	                every member non-running, yields a set with no member outside
+//	                it afterwards — membership, not cardinality.
 //	C5 RECORDS      An unconfirmed stop must leave the provider's record intact.
 //	                Modeled provider state, not a live-daemon behaviour.
 //
@@ -33,6 +36,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -55,8 +59,6 @@ const (
 	// spawnFloor is how many containers must exist before a fence begins, so
 	// both C4 paths are known to have started against an active spawner.
 	spawnFloor = 6
-	// quiesce is how long the domain size must hold steady to count as drained.
-	quiesce = 750 * time.Millisecond
 )
 
 var keep = flag.Bool("keep", false, "leave containers in place for inspection")
@@ -136,6 +138,7 @@ func runMain() int {
 		fmt.Fprintf(os.Stderr, "could not build proxy: %v\n", err)
 		return 2
 	}
+	defer func() { _ = os.RemoveAll(filepath.Dir(proxyBin)) }()
 
 	c0(runID)
 	c1c2(runID)
@@ -210,9 +213,15 @@ func c1c2(runID string) {
 		return
 	}
 
+	// Distinct sentinel durations, so presence is unambiguous. The holder runs
+	// `sleep 900`; an earlier version gave the sibling `sleep 600` and then
+	// tested `Count(...) > 1`, which cannot be true for a single sibling — the
+	// check reported "invisible" no matter what, and could not have failed.
+	const escapedMarker, sharedMarker = "601", "602"
+
 	sibling := runID + "-sibling-unlabeled"
 	if out, err := run("docker", "exec", holder, "docker", "run", "-d",
-		"--name", sibling, "--label", runLabel+"="+runID, image, "sleep", "600"); err != nil {
+		"--name", sibling, "--label", runLabel+"="+runID, image, "sleep", escapedMarker); err != nil {
 		observeFailed("C1", "socket escape", err, "could not create sibling: %s", trim(out))
 		return
 	}
@@ -223,20 +232,36 @@ func c1c2(runID string) {
 		return
 	}
 
-	// A sibling's process is a child of the daemon, never of the holder, so it
-	// cannot appear in the holder's process table. The error is checked: an
-	// earlier version discarded it, so a failed `ps` read as "not visible" and
-	// proved the claim by not observing anything.
+	// Positive observation control: a container deliberately sharing the
+	// holder's PID namespace *must* be visible. Without it, "not visible" is
+	// equally consistent with `ps` showing nothing useful at all.
+	shared := runID + "-pidshared"
+	if out, err := run("docker", "run", "-d", "--name", shared,
+		"--label", runLabel+"="+runID,
+		"--pid=container:"+holder, image, "sleep", sharedMarker); err != nil {
+		observeFailed("C1", "socket escape", err, "could not create the PID-namespace control: %s", trim(out))
+		return
+	}
+
 	psOut, psErr := run("docker", "exec", holder, "ps", "-o", "args")
 	if psErr != nil {
 		observeFailed("C1", "socket escape", psErr, "could not read the holder's process table: %s", trim(psOut))
 		return
 	}
-	visible := strings.Count(psOut, "sleep 600") > 1
+	escapedVisible := strings.Contains(psOut, "sleep "+escapedMarker)
+	controlVisible := strings.Contains(psOut, "sleep "+sharedMarker)
+
+	if !controlVisible {
+		observeFailed("C1", "socket escape",
+			fmt.Errorf("PID-namespace control not visible in the holder's process table"),
+			"the process table cannot be trusted to show what is there; ps output=%q", trim(psOut))
+		return
+	}
 
 	assert("C1", "a socket-holding container creates a sibling outside its PID namespace",
-		running && !visible,
-		"sibling running=%v; visible in holder's process table=%v", running, visible)
+		running && !escapedVisible,
+		"sibling running=%v; escaped sibling visible=%v; PID-sharing control visible=%v",
+		running, escapedVisible, controlVisible)
 
 	// C2 needs a positive control. "The sibling is absent" is also true of an
 	// enumeration that returned nothing at all, so the holder — which does carry
@@ -314,6 +339,33 @@ func c3(runID, proxyBin string) {
 		contains(inDomain, sibling) && !contains(escaped, sibling),
 		"sibling in enforced domain=%v; sibling in its own chosen domain=%v; enforced domain enumerates %v",
 		contains(inDomain, sibling), contains(escaped, sibling), short(inDomain, runID))
+
+	// C3b: stamping alone is not containment. A correctly labelled child that
+	// holds the daemon socket can create an unlabeled grandchild through the raw
+	// socket, and the domain survives one hop and fails at two. The mediator must
+	// refuse to hand out a route it does not mediate.
+	const id3b, stmt3b = "C3b", "a mediated holder cannot re-export an unmediated creation route"
+	twoHop := runID + "-sibling-rearming"
+	out, err := run("docker", "exec", holder, "docker", "run", "-d",
+		"--name", twoHop,
+		"--label", runLabel+"="+runID,
+		"-v", "/var/run/docker.sock:/var/run/docker.sock",
+		image, "sleep", "600")
+	if err == nil {
+		assert(id3b, stmt3b, false,
+			"the mediator accepted a child holding the daemon socket: %s", trim(out))
+		return
+	}
+	exists, existsErr := containerExists(twoHop)
+	if existsErr != nil {
+		observeFailed(id3b, stmt3b, existsErr, "could not check for the re-arming child")
+		return
+	}
+	refusedForReason := strings.Contains(out, "would escape the fencing domain")
+
+	assert(id3b, stmt3b, refusedForReason && !exists,
+		"refused naming the escape=%v; child exists=%v; response=%q",
+		refusedForReason, exists, trim(out))
 }
 
 // c4 tests ordering. Both paths do identical stopping work against a domain a
@@ -358,11 +410,12 @@ func c4(runID, proxyBin string) {
 		"enumerated and stopped %d; %d in the domain afterwards: %d created inside the window",
 		len(first), len(after), len(after)-len(first))
 
-	// Correct: revoke, drain in-flight creates, enumerate, stop with checked
-	// errors, confirm every member non-running, then re-enumerate after a
-	// quiescence barrier. An earlier version compared set sizes from a single
-	// immediate sample and never confirmed termination, so it could report a
-	// receipt it had not established.
+	// Correct: confirm the spawner is producing right now, obtain an acknowledged
+	// revocation from the mediator (creation closed, accepted creates drained),
+	// enumerate, stop with checked errors, confirm every member non-running, then
+	// re-enumerate and compare membership. Earlier versions inferred drainage
+	// from cardinality holding steady and compared set sizes, so they could report
+	// a receipt they had not established.
 	good, err := setupRace(runID, "race2", proxyBin)
 	if good != nil {
 		defer good.teardown()
@@ -376,10 +429,14 @@ func c4(runID, proxyBin string) {
 		return
 	}
 
-	good.revoke() // kill the proxy: the holder's only route to the daemon
-	drained, err := drain(good.domain)
+	if err := good.stillProducing(); err != nil {
+		observeFailed("C4b", "revoke-drain-enumerate-confirm", err,
+			"the spawner must be creating at the moment of revocation")
+		return
+	}
+	drained, err := good.revoke()
 	if err != nil {
-		observeFailed("C4b", "revoke-drain-enumerate-confirm", err, "domain never quiesced after revocation")
+		observeFailed("C4b", "revoke-drain-enumerate-confirm", err, "revocation was not acknowledged")
 		return
 	}
 
@@ -406,12 +463,21 @@ func c4(runID, proxyBin string) {
 		return
 	}
 
-	// A receipt requires all three: nothing was added, every stop succeeded, and
-	// every member is confirmed non-running.
+	// Membership, not cardinality. An earlier version compared lengths, which
+	// passes if a fenced member disappears while a late-created one replaces it.
+	var outside []string
+	for _, n := range final {
+		if !contains(fenced, n) {
+			outside = append(outside, n)
+		}
+	}
+
+	// A receipt requires all three: nothing outside the fenced set, every stop
+	// succeeded, and every member confirmed non-running.
 	assert("C4b", "revoke-drain-enumerate-confirm yields a complete, confirmed set",
-		len(final) <= len(fenced) && len(stopErrs) == 0 && len(stillRunning) == 0,
-		"drained at %d; fenced and stopped %d; %d in domain afterwards; stop errors=%v; still running=%v",
-		drained, len(fenced), len(final), stopErrs, stillRunning)
+		len(outside) == 0 && len(stopErrs) == 0 && len(stillRunning) == 0,
+		"mediator acknowledged %d drained creates; fenced and stopped %d; members outside the fenced set=%v; stop errors=%v; still running=%v",
+		drained, len(fenced), short(outside, runID), stopErrs, stillRunning)
 }
 
 // c5 is a modeled proof about provider state, not a live-daemon behaviour, and
@@ -454,14 +520,15 @@ func c5(runID string) {
 	_, v1Has := v1[name]
 	state, conformantHas := conformant[name]
 
-	assert(id, statement, running && conformantHas && !v1Has,
-		"container still running=%v; v1-shaped registry retains it=%v; conformant retains it=%v (state=%q)",
+	assert(id, statement, running && conformantHas && state == "unconfirmed" && !v1Has,
+		"container still running=%v; v1-shaped registry retains it=%v; conformant retains it=%v with state=%q (must be \"unconfirmed\")",
 		running, v1Has, conformantHas, state)
 }
 
 // ---------- race harness ----------
 
 type race struct {
+	runID                          string
 	domain, network, proxy, holder string
 	spawner                        *exec.Cmd
 }
@@ -471,6 +538,7 @@ type race struct {
 // test — awaitActive is what establishes that.
 func setupRace(runID, tag, proxyBin string) (*race, error) {
 	r := &race{
+		runID:   runID,
 		domain:  runID + "-" + tag,
 		network: runID + "-net-" + tag,
 		holder:  runID + "-holder-" + tag,
@@ -521,9 +589,51 @@ func (r *race) awaitActive() error {
 	return fmt.Errorf("spawner did not reach %d containers", spawnFloor)
 }
 
-// revoke removes the holder's only route to the daemon. Requests already
-// forwarded may still complete — that is what drain waits out.
-func (r *race) revoke() { _, _ = run("docker", "kill", r.proxy) }
+// stillProducing confirms the spawner is creating *right now*, immediately
+// before revocation. awaitActive only proves it was active earlier, and a fence
+// against a spawner that has already finished tests nothing.
+func (r *race) stillProducing() error {
+	before, err := containersInDomain(r.domain)
+	if err != nil {
+		return err
+	}
+	time.Sleep(400 * time.Millisecond)
+	after, err := containersInDomain(r.domain)
+	if err != nil {
+		return err
+	}
+	if len(after) <= len(before) {
+		return fmt.Errorf("spawner not producing at revocation time (%d then %d)",
+			len(before), len(after))
+	}
+	return nil
+}
+
+// revoke asks the mediator to close creation and drain accepted creates, and
+// requires an acknowledgment. An earlier version killed the proxy and discarded
+// the error, then inferred drainage from cardinality holding steady for 750ms —
+// neither a closed door nor a drained queue, just a quiet one. The call runs from
+// a throwaway container on the same network, so no host port has to be published.
+func (r *race) revoke() (int, error) {
+	out, err := run("docker", "run", "--rm", "--network", r.network,
+		"--label", runLabel+"="+r.runID, image,
+		"wget", "-qO-", "--post-data=", "http://"+r.proxy+":"+proxyPort+"/spike/revoke")
+	if err != nil {
+		return 0, fmt.Errorf("revocation call failed: %v (%s)", err, trim(out))
+	}
+	var ack struct {
+		Revoked bool   `json:"revoked"`
+		Drained int    `json:"drained"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(trim(out)), &ack); err != nil {
+		return 0, fmt.Errorf("unparseable acknowledgment %q: %w", trim(out), err)
+	}
+	if !ack.Revoked {
+		return 0, fmt.Errorf("mediator did not acknowledge revocation: %s", ack.Error)
+	}
+	return ack.Drained, nil
+}
 
 func (r *race) teardown() {
 	_, _ = run("docker", "kill", r.holder, r.proxy)
@@ -531,27 +641,6 @@ func (r *race) teardown() {
 		_ = r.spawner.Process.Kill()
 		_ = r.spawner.Wait()
 	}
-}
-
-// drain waits for the domain to stop growing after revocation, so that
-// enumeration happens once in-flight creates have landed.
-func drain(domain string) (int, error) {
-	deadline := time.Now().Add(60 * time.Second)
-	last := -1
-	stableSince := time.Now()
-	for time.Now().Before(deadline) {
-		in, err := containersInDomain(domain)
-		if err != nil {
-			return 0, err
-		}
-		if len(in) != last {
-			last, stableSince = len(in), time.Now()
-		} else if time.Since(stableSince) >= quiesce {
-			return last, nil
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	return 0, fmt.Errorf("domain still changing after 60s")
 }
 
 // awaitAllStopped is the confirmation half of the receipt: every recorded
