@@ -151,20 +151,40 @@ somewhere Maestro has no visibility). Reserve that channel; do not build it.
 
 The one line that belongs in the ADR, restated here for the plan:
 
-- **Incubator contracts** — build, lint, unit test. No ecosystem required.
-- **Habitat contracts** — deploy, integration test. Ecosystem required.
+- **Incubator contracts** — those requiring only the workspace and toolchain.
+- **Habitat contracts** — those requiring deployed or dependent services.
+
+**Routing is by requirement, never by name.** An earlier version of these notes
+listed "build, lint, unit test" as Incubator contracts, which contradicts ADR 0029
+§1: a repository whose unit tests need a database runs them against a Habitat.
+`test` and `integration` are repository terminology and vary between projects.
 
 Consequences the plan has to carry:
 
-- The agent's model is *"run unit tests locally; when you submit finished work or
-  explicitly request it, the Orchestrator stands up the full environment defined
-  in the Habitat source files and runs the integration contract."*
-- **The Habitat definition must include somewhere to execute its own
-  verification.** Under the no-direct-channel invariant the Incubator cannot reach
-  in, so the test runner is part of the environment — a service or target in the
-  Compose project — not something reaching in from outside.
+- The agent's model is *"run what needs only your toolchain locally; when you
+  submit finished work or explicitly request it, the Orchestrator stands up the
+  environment your repository defines and runs the contract there."* Note this is
+  deliberately **not** phrased as "unit tests are local" — that is exactly the
+  label-based routing the rule above rejects.
+- **Verification executes inside the Habitat's fencing domain, and the provider
+  may launch the executor.** An earlier version of these notes required the
+  Habitat *definition* to contain a test runner. That is superseded: ADR 0029 §8
+  permits a **provider-launched verification executor** joining the same fencing
+  domain and instance generation without appearing in the definition — because
+  requiring otherwise would mean editing production deployment definitions, which
+  §1 forbids. A repository may still declare its own runner in a
+  development-facing overlay. What stays prohibited is a runner *outside* the
+  domain reaching in.
 - A contract's declared resource is checkable, which is what makes the invariant
   enforceable rather than aspirational.
+- **The plan must carry the two run kinds** from ADR 0029 §6, because they change
+  what the agent experiences: an *iteration* run redeploys into the existing
+  instance and keeps accumulated state, while an *evidence-bearing* run resets
+  first and is correspondingly slower. Both always converge the code. The
+  Orchestrator classifies; the agent does not choose. DR's v1 analogue is that a
+  test request from the coding loop is an iteration and one from the final
+  approval loop is evidence-bearing — corroboration that the distinction matches
+  how the factory already works, not a proposal to key it on a state name.
 
 ## Verb inventory to prune
 
@@ -172,20 +192,25 @@ Flagged by DR: *"we might also review the verbs we are capturing generally. I'm
 not sure if we need all of the ones we already have."* The current six, with a
 first pass:
 
-| Verb | Resource | Note |
-| --- | --- | --- |
-| `build` | Incubator | Keep. |
-| `test` | Incubator | Keep; means *unit* test under the split. |
-| `lint` | Incubator | Keep. |
-| `run` | — | Reconcile with `deploy`. Probably becomes it. |
-| `clean` | — | Candidate for removal. ADR 0029 §6 states `make clean` is not evidence of reset, which is most of what it was for. |
-| `install` | Incubator | Candidate for removal or fold into the Incubator definition, now that toolchain changes are definition edits rather than imperative container mutation. |
-| `deploy` | Habitat | New. |
-| `integration` | Habitat | New, or `test` with a declared resource. |
+**The `Resource` column is what each verb typically requires, not a fixed
+assignment** — per the routing rule above, the same verb lands in different
+resources in different repositories.
 
-Whether `integration` is a distinct verb or `test` scoped to the Habitat is open.
-A distinct verb is clearer to the agent; a resource-scoped `test` is fewer
-concepts. Decide in the plan.
+| Verb | Typically requires | Note |
+| --- | --- | --- |
+| `build` | Toolchain only | Keep. Habitat-resident only where the build itself needs services, which is unusual. |
+| `test` | **Either** | The verb that most exposes label-based routing: no dependencies means Incubator, a database means Habitat. Same name, same repository intent, different resource. |
+| `lint` | Toolchain only | Keep. |
+| `run` | Deployed services | Reconcile with `deploy`. Probably becomes it. |
+| `clean` | — | Candidate for removal. ADR 0029 §6 states `make clean` is not evidence of reset, which is most of what it was for. |
+| `install` | Toolchain only | Candidate for removal or fold into the Incubator definition, now that toolchain changes are definition edits rather than imperative container mutation. |
+| `deploy` | Deployed services | New. |
+| `integration` | Deployed services | New, or `test` whose requirements route it to the Habitat. |
+
+Whether `integration` is a distinct verb or simply the requirement-routed form of
+`test` is open, and the routing rule tilts it: if requirements determine the
+resource, a second verb carries no information the requirements do not already
+supply. A distinct verb may still be clearer to the agent. Decide in the plan.
 
 ## Habitat lease reclamation — recommended design
 
@@ -222,17 +247,21 @@ read as covering it.
 
 ### Reclaim on demand, not on a clock
 
-An idle timeout exists only to resolve contention. With nothing queued, reclaiming
-an idle Habitat pays a rebuild for no benefit:
+What is reclaimed is the **retention claim** (ADR 0029 §2), not authorization —
+an idle execution holds no lease to take. A timeout on retention exists only to
+resolve contention, so with nothing queued it discards a warm environment for no
+benefit:
 
-- **Nothing queued** → the holder keeps it. The 1:1 case (concurrent executions ≤
-  Habitat capacity) needs no special handling; it falls out.
-- **A queue forms** → an idle holder becomes reclaimable.
+- **Nothing queued** → the Story keeps its warm instance. The 1:1 case
+  (concurrent executions ≤ Habitat capacity) needs no special handling; it falls
+  out.
+- **A queue forms** → a retention claim with no active lease becomes reclaimable.
+  A claim whose lease is active never is.
 
-Still self-curing: a crashed execution is idle by definition and loses the Habitat
-as soon as anyone wants it. If nobody wants it, holding costs nothing. An
-execution that dies without a terminal result is covered by the reconciliation
-path that must exist regardless.
+Still self-curing: a crashed execution holds no lease and stops renewing its
+claim, so it loses the instance as soon as anyone wants it. If nobody wants it,
+holding costs nothing. An execution that dies without a terminal result is covered
+by the reconciliation path that must exist regardless.
 
 The cost is that reclamation needs the scheduler to know who is queued, where a
 timer would be purely local. The Orchestrator already assigns leases and already
@@ -247,16 +276,29 @@ within a short window of acquisition or of its last verification.
 This is a timer, but it bounds *thrash*, not *abandonment*. Keep the two jobs
 distinct so they are not later "simplified" into one number.
 
-### Reclaiming is not free to the reclaimer either
+### What reclamation actually costs — corrected
 
-Under reprovision-only reset (ADR 0029 §6), taking a Habitat from an idle holder
-means tearing it down and building fresh — **both** parties pay. So a queue
-forming does not imply reclaiming; it implies comparing *wait for the holder* against
-*rebuild now*. Cheap provisioning favours eager reclamation; expensive
-provisioning favours waiting.
+An earlier version of this section said reclaiming costs a rebuild that both
+parties pay. That conflated releasing authorization with destroying the
+environment, which ADR 0029 §2 now separates.
 
-This comparison is where provisioning cost belongs, and Maestro **measures** it —
-every provision is timed — rather than being configured with it.
+- **Releasing a lease costs nothing.** Authorization is generation-bound and held
+  only during an active verification session; an idle execution holds none, so
+  there is usually nothing to reclaim in the first place.
+- **Reclaiming the retention claim** hands the instance to another Story. Whether
+  that costs a rebuild depends on §6: the arriving Story's first
+  evidence-bearing verification would reprovision anyway, so reclaiming an
+  instance it was going to reset is nearly free. Reclaiming one it intended to
+  iterate against costs the displaced Story its warm environment.
+
+So the comparison is not *wait versus rebuild* but **whose warm environment is
+worth more** — the arriving Story's queue time against the displaced Story's lost
+warmth. Provisioning cost still weights it, and Maestro **measures** that rather
+than being configured with it, since every provision is timed.
+
+One constraint from ADR 0029 §2 is absolute: **reclamation must exclude an
+instance with an active lease**, and must be bounded so successive retention
+claims cannot starve a queue indefinitely.
 
 ### What is configured, and what is not
 

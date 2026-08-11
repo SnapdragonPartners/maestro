@@ -2,7 +2,7 @@
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
 edit_date = "2026-08-11"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-execution-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service and leased for verification. Source and definitions cross only as an immutable forge commit, spec identity closes over a declared dependency closure, specification and instance and deployment are three separate identities, reset must prove namespacing or removal rather than assume teardown suffices, and both types are fenced as provider-created domains returning a three-valued receipt that speaks only for Maestro-managed state."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-execution-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over a declared dependency closure with runtime configuration as a separate axis; specification, instance, and deployment are three distinct identities; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification rather than every run, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains whose three-valued receipt is constrained by any reach the fenced generation retains."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
@@ -43,6 +43,38 @@ Two non-blocking wording corrections applied: the forge commit is the sole
 and verification runs on a **provider-launched executor inside the Habitat's
 domain**, so the rule does not require editing production deployment definitions
 — which §1 forbids.
+
+**Round 2 (Codex, 2026-08-11) raised six more, all applied.** Five are the same
+shape as round 1's dominant failure, and the shape is worth naming because it has
+now produced eleven of the fourteen findings across both rounds: **a rule stated
+correctly in one section and not carried to an adjacent one.**
+
+1. §2 conflated authorization with capacity retention — the ADR said an idle
+   execution never holds a lease while the companion notes let one hold it
+   indefinitely. Now three things: instance, generation-bound lease, retention
+   claim.
+2. §5 said MVP advances the instance generation on every deployment, which made
+   the Consequences claim that provisioning stays off the iteration path false.
+   Resolved by §6's new rule rather than by conceding the cost — see below.
+3. §7's external-state caveat **weakened an accepted invariant**. `isolated` means
+   the generation cannot affect state reachable by current or future work,
+   irrespective of who provisioned it. Unrevokable external reach now removes
+   `isolated` from the available receipts rather than narrowing what it claims.
+4. §4 said a rotated secret does not change the spec, which is false where a
+   credential points somewhere else. Now a separately recorded
+   runtime-configuration revision — *not* secret versions folded into
+   `SpecDigest`, which would make rotation force reprovisioning.
+5. §8 routed contracts by name (build/lint/test → Incubator), contradicting §1's
+   decision that a database-backed repository's tests run against a Habitat. Now
+   routed by requirement.
+6. The companion notes retained the superseded test-runner requirement corrected
+   in §8 during round 1 — a stale copy in a document authored alongside the fix.
+
+**The substantive new decision is §6's reset rule**, which resolves #2 without
+conceding the cost: reset is required before **evidence-bearing** verification,
+not before every run. The rebuild-per-iteration problem was self-inflicted by an
+over-broad reset rule, not inherited from missing capability — `compose up
+--build` already redeploys application code without disturbing a running database.
 
 ## Context
 
@@ -208,24 +240,37 @@ is exhausted. The Orchestrator assigns leases; agents never claim one. The leasi
 agent need not remain active while deterministic build, deployment, and test steps
 wait for capacity.
 
-**Lease lifetime and instance lifetime are separate.** An earlier draft said the
-Habitat is "released immediately after" verification while also saying one lease
-spans many deployment generations; those cannot both hold. The distinction:
+**Authorization, capacity retention, and the environment are three different
+things.** Two successive drafts conflated them: the first said the Habitat is
+"released immediately after" verification while also saying one lease spans many
+deployment generations, and the second let an idle Story hold authorization
+indefinitely. Neither is right, because *authorization* and *keeping the
+environment earmarked* are not the same claim.
 
-- The **instance** is the provisioned environment. It persists across many
-  deployments of successive commits (§5).
-- The **lease** is exclusive authorization to deploy into it and verify against
-  it. It is held for a bounded interval and released, so a Habitat is never
-  occupied by an idle execution.
+- The **instance** is the provisioned environment (§5). It persists across many
+  deployments of successive commits and is unaffected by who is authorized.
+- The **lease** is exclusive authorization to deploy into an instance and verify
+  against it. It is **generation-bound** and held for an active verification
+  session, so an idle execution holds no authorization.
+- The **retention claim** is the Story execution's continuing hold on the
+  instance as capacity: it keeps the environment warm and earmarked without
+  authorizing anything, and it is what demand-driven reclamation acts on.
 
-An execution may hold a lease across a burst of verification iterations rather
-than reacquiring per test run. This is what makes §1's no-ecosystem rule
-affordable: a repository whose unit tests need a database would otherwise pay a
-lease acquisition on every run of the fast loop.
+**Releasing authorization does not destroy the instance.** That is the point of
+the separation, and it is what makes §1's no-ecosystem rule affordable: a
+repository whose unit tests need a database keeps a warm Habitat between runs
+while holding authorization only while a run is actually in flight.
 
-**Leases bind to the Story execution, not to the agent principal** — the same
-scoping the Incubator has. Agent restart or replacement therefore does not release
-a Habitat lease, and **completion of the Story releases every lease it holds**.
+Whether the retention claim is a distinct persisted object or an affinity field
+on the instance is a **Phase 3 implementation decision**; this ADR fixes only that
+the two are not one thing.
+
+**Reclamation must exclude an instance with an active lease**, and must be bounded
+so a queue cannot be starved indefinitely by successive retention claims.
+
+**Both bind to the Story execution, not to the agent principal** — the same
+scoping the Incubator has. Agent restart or replacement therefore releases
+neither, and **completion of the Story releases both** as the final backstop.
 That is an ownership rule rather than a timeout, so it belongs here rather than in
 scheduling policy.
 
@@ -312,13 +357,41 @@ The closure MUST include, where the provider's backend has them:
 - **Platform, resource, and policy inputs**, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273)
   names explicitly as part of the requested origin.
 
-Secrets are **referenced by identity, never digested by value**; a rotated secret
-does not change the spec.
+Secrets are **referenced by identity, never digested by value**.
 
-A provider that cannot enumerate its closure cannot produce a sound spec identity,
-and MUST declare the spec **unclosed** rather than emit a digest that implies more
-than it covers. An unclosed spec is not a conformance failure in itself — it
-constrains what may be inferred from spec equality.
+#### Runtime configuration is a second axis, not part of the spec
+
+A stable secret identity whose *value* rotates can change what the environment
+does — a credential may point at a different backend — so "referenced by identity"
+alone does not close the gap. But folding a resolved secret version into
+`SpecDigest` is the wrong fix twice over: a routine credential rotation would
+change spec identity and force reprovisioning of every Habitat that used it, and
+declaring the spec `unclosed` over ordinary secrets would make essentially every
+real spec unclosed and drain the term of meaning.
+
+The resolution is a **separately recorded runtime-configuration revision**,
+carried alongside `SpecDigest` in provenance. The spec answers *was the same thing
+requested*; the configuration revision answers *with what runtime values*. Two
+questions, two records, and rotation moves only the second.
+
+Where a provider can obtain an immutable, non-secret resolved version identifier
+for a secret (a version ID, not the value), that identifier belongs in the
+configuration revision. Where it cannot, the configuration revision is declared
+**unresolved** for that entry — which constrains what may be inferred, without
+contaminating spec identity.
+
+#### Unclosed is a declaration, not an escape hatch
+
+A provider that cannot enumerate its closure MUST declare the spec **unclosed**
+rather than emit a digest that implies more than it covers. An unclosed spec is
+not a conformance failure in itself; it constrains what may be inferred from spec
+equality.
+
+**But the Phase 3 Docker/Compose provider MUST produce a closed spec.** `unclosed`
+exists for future backends whose inputs genuinely cannot be enumerated, not as
+permission for the one provider being built to skip the work. A Compose project's
+closure — files, overrides, image digests, build context, non-secret variables —
+is enumerable, so enumerate it.
 
 `HabitatInstance` is the provisioned, mutable resource with a stable ID, its own
 generation, a provider reference, and lifecycle state (§5).
@@ -356,19 +429,73 @@ Evidence needs all three: a verification receipt must be able to say what was
 requested, which incarnation ran it, and which commit was deployed. No two of the
 three reconstruct the third.
 
-**MVP advances the instance generation whenever the deployment generation
-advances**, because reset is reprovision-only (§6) — so the physical action is the
-same in every case. The identities are still recorded separately, because
-in-place convergence later changes which of them advance together and the evidence
-must not have to be reinterpreted retroactively.
+**A deployment does not by itself advance the instance generation, in MVP or
+after.** An earlier draft said it did — that MVP reprovisions on every deployment
+because reset is reprovision-only — and that was wrong in a way that quietly
+negated the benefit this section exists to provide. Deploying application code
+into a running environment has never required a new instance: `docker compose up
+--build` rebuilds the application image and recreates that service while leaving
+the database running. That is present behaviour of the tool Phase 3 already uses,
+not deferred capability.
+
+What actually requires a new instance in MVP is a **reset**, and §6 fixes when a
+reset is required. The two were conflated, and the conflation made the fast loop
+pay a full rebuild per iteration for no stated reason.
+
+The identities are recorded separately regardless, because evidence must say what
+was requested, which incarnation ran it, and which commit was deployed — and
+because in-place reset later changes which of them advance together, without the
+earlier records needing reinterpretation.
 
 ### 6. Reset, and why in-place convergence is a correctness trade
+
+#### Reset is required before evidence-bearing verification, not before every run
+
+A verification whose result becomes a **receipt** requires a clean environment.
+A run whose result is the agent's working feedback does not. Distinguishing them
+is what keeps the fast loop affordable without weakening the guarantee where it
+does work:
+
+| Run | State | Code |
+| --- | --- | --- |
+| **Evidence-bearing verification** | Reset — MVP: a new instance generation | Converged to the promoted commit |
+| **Iteration** (agent working feedback) | Persists in the existing instance | Converged to the promoted commit |
+
+Three properties of this rule matter and are easy to lose:
+
+- **The criterion is evidence-reliance, not leak size.** A leak may be arbitrarily
+  large — a migration that ran, a table of stale rows — and still not matter if
+  nothing relies on the result. A tiny leak matters completely when the result is
+  a receipt. Reasoning from "this leak is small" is how the rule erodes.
+- **It is not "the last run."** There may be several evidence-bearing
+  verifications in a Story, and holding a lease does not make a run an iteration.
+  A candidate submitted for verification takes the reset path whether or not the
+  same execution has been iterating for an hour.
+- **Code convergence is never skipped.** Both paths deploy the promoted commit
+  with images pinned by digest. Stale *data* produces confusing feedback; stale
+  *code* produces confident wrong feedback — an agent concluding its fix worked
+  when the fix never ran. That is the failure this rule must not create, and it is
+  why `compose up` without `--build`, or a `:latest` without `--pull always`, is
+  prohibited on both paths.
+
+**The Orchestrator decides which path applies**, because it knows whether it is
+producing a receipt. This is a deterministic classification, not a judgment, so it
+sits on the Orchestrator's side of [ADR 0019](0019-orchestrator-boundary.md) — it
+is never the agent's choice and never a timer. A v1 analogue survives into v2: a
+test request from the coding loop is an iteration, and one from the final approval
+loop is evidence-bearing.
+
+A **new instance** is provisioned from nothing, which produces a clean environment
+by circumstance rather than by rule. Keep that distinct from a demanded reset, so
+that optimizing one path cannot silently disarm the other.
+
+#### The reset contract
 
 Both resource types expose the same reset contract, and for MVP both providers
 may always answer `reprovision_required`. The Orchestrator then fences the
 existing generation, preserves required evidence, destroys or permanently
-quarantines it, provisions a clean replacement, increments the generation, and
-verifies readiness before leasing.
+quarantines it, provisions a clean replacement, increments the instance
+generation, and verifies readiness before leasing.
 
 Terraform, Compose, and Kubernetes all support incremental convergence, and it is
 tempting to treat teardown-and-rebuild as a placeholder for it. It is not.
@@ -506,16 +633,36 @@ synchronous confirmation of death.
   removes the container from `activeContainers` and the global registry, and
   returns `nil` — so a failed stop leaves no record that the container exists.
 
-**A receipt covers Maestro-managed state and claims nothing beyond it.** Where a
-repository connects a resource Maestro does not provision — a licensed service
-that cannot be containerized, a shared staging dependency — writes the fenced
-generation made to it are outside every receipt. Such connections are permitted;
-they are not a conformance failure. But an instance holding one cannot back a
-verification receipt claiming a clean environment (§6), and the boundary must be
-recorded rather than implied, because `terminated` and `isolated` otherwise read
-as unconditional. This is also why §1 routes Maestro-managed dependent services
-to the Habitat instead of leaving them external: external state is exactly the
-state no receipt can speak for.
+**External reach constrains which receipt is available — it does not shrink what
+a receipt means.** An earlier draft said a receipt "covers Maestro-managed state
+and claims nothing beyond it." That was a weakening of an invariant this ADR does
+not have the authority to weaken: the accepted definition of `isolated` is that
+the old generation cannot affect state reachable by current or future work, and it
+says nothing about who provisioned that state. A generation still holding valid
+credentials to shared staging or a licensed service *can* interfere with later
+work, so `isolated` is simply not available to it.
+
+The correct rule follows from §7's own capability requirement, which the earlier
+draft failed to apply to outward-directed capabilities:
+
+- Where the fenced generation's external capabilities **can be revoked or
+  generation-fenced**, revoking them is part of producing the receipt, and
+  `isolated` is available.
+- Where they **cannot** — a credential the repository baked into its own
+  configuration, which Maestro cannot withdraw — the generation retains reach.
+  Only **`terminated`** can then be a positive receipt, because confirmed
+  stoppage is the only remaining way to establish non-interference. Uncertainty
+  is `unconfirmed`.
+
+Downgrading a later verification receipt does not substitute for this. A terminal
+execution result recorded against a generation that can still reach shared state
+is a false record, which is the exact failure §7 exists to prevent.
+
+External connections remain permitted and are not a conformance failure. What
+changes is that they narrow the available receipts, and an instance holding
+unrevokable external reach also cannot back a verification receipt claiming a
+clean environment (§6). This is a further reason §1 routes Maestro-managed
+dependent services to the Habitat rather than leaving them external.
 
 ### 8. Tool routing, and contracts declare where they run
 
@@ -527,8 +674,17 @@ agents there, and the application under development may itself be an agent.
 **Every execution contract declares the resource it executes in.** This is what
 makes §3 enforceable rather than aspirational:
 
-- **Incubator contracts** — build, lint, unit test. No ecosystem required.
-- **Habitat contracts** — deploy, integration test. Ecosystem required.
+- **Incubator contracts** — those requiring only the workspace and toolchain.
+- **Habitat contracts** — those requiring deployed or dependent services.
+
+**Routing is by requirement, never by the contract's name.** An earlier draft
+assigned build, lint, and unit test to the Incubator and deploy and integration
+test to the Habitat, which contradicts §1: a repository whose unit tests need a
+database runs those tests against a Habitat. `test` versus `integration` is
+repository terminology and varies between projects; what a contract *requires* is
+a fact about the contract. A repository with no dependencies runs `test` in its
+Incubator; a repository needing Postgres runs the same-named contract in its
+Habitat.
 
 An integration-test contract cannot quietly run in the Incubator and reach the
 Habitat, because the Incubator has no route. Verification therefore executes
@@ -611,9 +767,14 @@ to be in this position; Docker and Compose separate cleanly.
   omission from the definition surfaces at promotion rather than after merge.
 - **Verification costs a forge round trip.** Write test, commit, deploy, run. The
   agent is not burning tokens while it waits — these are deterministic steps with
-  no LLM in the loop — so the cost is wall-clock on an unattended step. Separating
-  instance from deployment generation (§5) keeps the expensive part, provisioning,
-  off the per-iteration path.
+  no LLM in the loop — so the cost is wall-clock on an unattended step.
+  Provisioning stays off the per-iteration path because a deployment does not
+  advance the instance generation (§5) and iteration does not demand a reset (§6).
+  **Both are required for that claim**; an earlier draft asserted it while §5 said
+  MVP reprovisioned on every deployment, which would have made it false.
+- **Evidence-bearing verification is deliberately expensive.** It reprovisions in
+  MVP, and that cost is the guarantee, not an inefficiency to optimize away. What
+  the fast path buys is that a repository does not pay it on every test run.
 - **Throughput is the binding constraint, not latency, and §1 tightened it.**
   With many Incubators and few Habitats, stories serialize behind Habitat
   capacity — and routing every Maestro-managed dependent service to the Habitat
@@ -621,13 +782,16 @@ to be in this position; Docker and Compose separate cleanly.
   suggest. This is what makes bounded leases (§2) and per-type capacity limits
   load-bearing rather than administrative. Setting the Habitat limit as if only
   large applications needed one would starve the ordinary database-backed case.
-- **Provenance records all three identities.** A promotion binds Story and source
-  commit, Incubator identity and generation, the spec digests of both resources
-  and the closure each was taken over, artifact digests and locations, Habitat
-  identity, **instance generation and deployment generation**, deployment result,
-  and verification evidence. Where a spec is declared *unclosed* (§4) or an
-  instance carries *unreset* or external state (§6, §7), the record says so, so a
-  later reader cannot infer more from spec equality than the provider established.
+- **Provenance records all three identities plus the configuration axis.** A
+  promotion binds Story and source commit, Incubator identity and generation, the
+  spec digests of both resources and the closure each was taken over, the
+  **runtime-configuration revision** (§4), artifact digests and locations, Habitat
+  identity, **instance generation and deployment generation**, whether the run was
+  evidence-bearing (§6), deployment result, and verification evidence. Where a
+  spec is declared *unclosed*, a configuration entry *unresolved* (§4), or an
+  instance carries *unreset* or unrevokable external reach (§6, §7), the record
+  says so, so a later reader cannot infer more from spec equality than the
+  provider established.
   Any durable promotion record is an artifact and routes through
   [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md)'s envelope and payload
   type registry and [ADR 0021](0021-artifacts-and-principal-instances.md)'s
