@@ -223,10 +223,21 @@ than reacquiring per test run. This is what makes §1's no-ecosystem rule
 affordable: a repository whose unit tests need a database would otherwise pay a
 lease acquisition on every run of the fast loop.
 
-**The lease-duration mechanism is deliberately unresolved here** and is a Phase 3
+**Leases bind to the Story execution, not to the agent principal** — the same
+scoping the Incubator has. Agent restart or replacement therefore does not release
+a Habitat lease, and **completion of the Story releases every lease it holds**.
+That is an ownership rule rather than a timeout, so it belongs here rather than in
+scheduling policy.
+
+**UAT is the known exception**, and it is deferred. A UAT Habitat is held for a
+human at Epic grain, so its lease outlives the automated completion of any Story.
+It is named here so the Story-completion rule is not later read as universal;
+its lifetime is settled with UAT gate policy ([backlog candidate 6](../v2/notes_adr-backlog.md)).
+
+**The reclamation mechanism is deliberately unresolved here** and is a Phase 3
 plan decision. What this ADR fixes is that a lease is bounded and independently
-revocable, that expiry is a lease event and not a fencing event — an expired
-lease deauthorizes, and stopping the occupant is §7's protocol — and that per-type
+revocable, that expiry or reclamation is a lease event and not a fencing event —
+it deauthorizes, and stopping the occupant is §7's protocol — and that per-type
 capacity limits are the backstop against a held lease starving other executions.
 See [notes_execution-contracts.md](../v2/phase_3/notes_execution-contracts.md).
 

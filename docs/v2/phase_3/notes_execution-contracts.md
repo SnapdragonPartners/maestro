@@ -3,7 +3,7 @@ title = "Execution Contracts: Verbs, Result Shape, And Where They Run"
 edit_date = "2026-08-11"
 status = "draft"
 type = "notes"
-summary = "Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat deployment stages are identity changes rather than two verbs, why the invocation half of a contract needs almost nothing and the result half needs a preserved audit artifact, the verb inventory Phase 3 should prune, and the Habitat lease-reclamation mechanisms ADR 0029 deliberately left open."
+summary = "Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat deployment stages are identity changes rather than two verbs, why the invocation half of a contract needs almost nothing and the result half needs a preserved audit artifact, the verb inventory Phase 3 should prune, and a recommended Habitat lease-reclamation design — Story-bound leases reclaimed on demand rather than on a clock, with provisioning cost measured rather than configured — which ADR 0029 deliberately left open."
 +++
 
 # Execution Contracts: Verbs, Result Shape, And Where They Run
@@ -16,8 +16,10 @@ makes the no-direct-channel invariant enforceable. Everything else here is Phase
 3 plan input and must not be folded into the ADR, which would turn a pre-entry
 design item into the phase.
 
-Nothing here is decided. It is recorded so three exchanges of reasoning are not
-lost between the ADR and the plan that consumes it.
+**Nothing here binds.** Some sections carry a recommendation and say so; none is
+Accepted, and the Phase 3 plan is free to overrule any of it. The document exists
+because the reasoning took several exchanges to reach and would otherwise be lost
+between the ADR that excludes it and the plan that consumes it.
 
 ## What v1 actually has
 
@@ -185,42 +187,105 @@ Whether `integration` is a distinct verb or `test` scoped to the Habitat is open
 A distinct verb is clearer to the agent; a resource-scoped `test` is fewer
 concepts. Decide in the plan.
 
-## Habitat lease duration — deferred here by ADR 0029 §2
+## Habitat lease reclamation — recommended design
 
-ADR 0029 fixes that lease lifetime and instance lifetime are separate, that a
-lease is bounded and independently revocable, that expiry deauthorizes but does
-not fence, and that per-type capacity limits are the backstop. It deliberately
-does not fix **how long a lease lasts**, because the answer is a scheduling
-policy rather than a boundary.
+ADR 0029 §2 fixes that lease lifetime and instance lifetime are separate, that a
+lease is bounded and independently revocable, that expiry deauthorizes rather
+than fences, and that per-type capacity limits are the backstop. It deliberately
+does not fix **how a lease ends**, because that is scheduling policy rather than
+a boundary. This section is the recommendation, arrived at 2026-08-11 (DR and
+Claude) and not yet reviewed by Codex.
 
-The shape of the problem, recorded so the plan does not rediscover it:
+### One session concept, not two cases
 
-- **An automated loop is self-delimiting.** A lease acquired for a state-machine
-  phase (the v1 analogue is entering `TESTING`) ends when the phase does. The
-  duration needs no policy — the loop's own completion releases it.
-- **An agent-requested verification is not.** A tool call asking for integration
-  verification has no intrinsic end. The agent may run one test, read the result,
-  fix, and run again, or it may stop and never return.
+The problem first presented as two cases needing two answers: an automated loop
+that is self-delimiting, and an agent tool call that is not. They are one
+mechanism. The lease binds to a **verification session** the Orchestrator opens
+and closes; the loop closes its session on completion, and the tool-call case
+closes on the rules below. Two mechanisms would supply two ways to leak a
+Habitat.
 
-So the open question is narrowly about the second case, and it is a
-**lease-reclamation** question: how does a Habitat get taken back from an
-execution that stopped asking for it?
+### Leases are Story-bound, not agent-bound
 
-Candidate mechanisms, none chosen:
+**Completion of the Story releases every lease it holds.** This is the primary
+release path, not a fallback: leases belong to the Story execution — the same
+scoping ADR 0029 §2 gives the Incubator — so agent restart or replacement does
+not release them and Story completion always does. It is also the explicit
+release verb we would otherwise need, without being a verb the agent can forget.
 
-| Mechanism | Note |
+**UAT is the known exception and is deferred.** A UAT Habitat is held for a human
+at Epic grain, so its lease outlives the automated completion of any Story and is
+paced in hours rather than minutes. Demand-driven reclamation (below) would be
+actively hostile to it. The exception is structural rather than incidental and
+needs its own answer when UAT gate policy is designed; nothing here should be
+read as covering it.
+
+### Reclaim on demand, not on a clock
+
+An idle timeout exists only to resolve contention. With nothing queued, reclaiming
+an idle Habitat pays a rebuild for no benefit:
+
+- **Nothing queued** → the holder keeps it. The 1:1 case (concurrent executions ≤
+  Habitat capacity) needs no special handling; it falls out.
+- **A queue forms** → an idle holder becomes reclaimable.
+
+Still self-curing: a crashed execution is idle by definition and loses the Habitat
+as soon as anyone wants it. If nobody wants it, holding costs nothing. An
+execution that dies without a terminal result is covered by the reconciliation
+path that must exist regardless.
+
+The cost is that reclamation needs the scheduler to know who is queued, where a
+timer would be purely local. The Orchestrator already assigns leases and already
+owns the queue, so this is one component talking to itself.
+
+### A minimum hold, doing a different job
+
+Demand-driven reclamation can thrash — two executions ping-ponging one Habitat,
+each paying a rebuild. A **minimum hold** prevents it: a lease cannot be reclaimed
+within a short window of acquisition or of its last verification.
+
+This is a timer, but it bounds *thrash*, not *abandonment*. Keep the two jobs
+distinct so they are not later "simplified" into one number.
+
+### Reclaiming is not free to the reclaimer either
+
+Under reprovision-only reset (ADR 0029 §6), taking a Habitat from an idle holder
+means tearing it down and building fresh — **both** parties pay. So a queue
+forming does not imply reclaiming; it implies comparing *wait for the holder* against
+*rebuild now*. Cheap provisioning favours eager reclamation; expensive
+provisioning favours waiting.
+
+This comparison is where provisioning cost belongs, and Maestro **measures** it —
+every provision is timed — rather than being configured with it.
+
+### What is configured, and what is not
+
+| | Where it lives | Why |
+| --- | --- | --- |
+| Per-contract timeouts | **Project config**, with a generous default | A fact about the repository's own suite, unmeasurable in advance. |
+| Provisioning cost | **Measured** | The system times every provision. |
+| Contention | **Observed** | The scheduler owns the queue. |
+| Minimum hold | **Small constant** | A stability floor, not a project fact. |
+
+**A ten-minute default test timeout would fail on this repository.** Maestro's own
+`make test-integration` runs around eleven minutes locally. v1's hardcoded
+five-minute timeout in `runMakeTest` is the same defect one size smaller. That is
+the argument for the default being generous and project config being the real
+answer — do not ship a knob for something measurable, and do not ship a default
+for something that is not.
+
+### Alternatives considered
+
+| Mechanism | Why not |
 | --- | --- |
-| Wall-clock TTL with renewal on use | Simplest, and self-curing after a crash or a stuck agent. Costs a held Habitat for up to one TTL after abandonment. |
-| Idle timeout since last verification request | Same self-curing property, more forgiving of a long-running test, and it measures the thing that actually indicates abandonment. |
-| Explicit release verb plus a TTL backstop | The agent releases when done; the TTL only covers failure. Adds a verb the agent can forget, which is why the backstop is not optional. |
-| Bind to the execution's own lifecycle | No timer, but a wedged execution holds the Habitat until something else fences it. |
+| Wall-clock TTL from acquisition | Must exceed the slowest suite or it expires mid-run, forcing a decision about reclaiming a Habitat with live verification in it. Patching that with renewal-on-use produces an idle timeout with extra steps. |
+| Idle timeout since last verification | Strictly worse than demand-driven in the uncontended case (pays a rebuild nobody asked for) and slower in the contended case (a queued execution waits out a clock that was never about it). Retained only as the fallback if demand signalling proves awkward. |
+| Explicit release verb plus TTL backstop | The verb helps only the well-behaved case and the backstop is still mandatory. Story completion gives the same benefit for free. |
 
-Selection criteria worth stating before choosing: it must be self-curing under
-agent crash and under agent inattention; it must not fence a running
-verification merely because a timer expired (ADR 0029 §2 — expiry is a lease
-event, not a fencing event, so a reclaimed lease still goes through §7's protocol
-before the Habitat is reassigned); and its worst case must be bounded by capacity
-limits rather than by agent good behaviour.
+Whichever is chosen, one ADR 0029 constraint holds: **expiry or reclamation
+deauthorizes; it does not fence.** A reclaimed lease still goes through §7's
+protocol before the Habitat is reassigned, and §6's reset requirement applies to
+the replacement.
 
 ## Open questions for the Phase 3 plan
 
@@ -234,7 +299,11 @@ limits rather than by agent good behaviour.
    from the definition surfaces at promotion rather than after merge.
 6. Where does the contract set live — repository config as today, the Incubator
    definition, or the data plane?
-7. Which Habitat lease-reclamation mechanism, per the section above?
+7. Confirm demand-driven lease reclamation, per the section above, and fix the
+   minimum-hold constant and the default contract timeouts.
+8. UAT lease lifetime, which the Story-completion release rule explicitly does
+   not cover. Sequenced with UAT gate policy ([backlog candidate 6](../notes_adr-backlog.md)),
+   not here.
 
 ## Related Documents
 
