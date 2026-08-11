@@ -434,10 +434,18 @@ candidate, not the environment, so it is deployment.
 defaults made explicit — so that cosmetic edits do not churn either digest and
 semantically equal definitions hash equal.
 
-**Every field a provider honors must be classified into exactly one projection.**
-A field the provider acts on but has not classified means the projections are not
-closed, and the spec is declared `unclosed` (below) rather than digested as though
-it were complete.
+**Classification is complete, not exclusive, and it spans three axes.** An earlier
+version of this rule said every field lands in "exactly one projection," which was
+wrong twice: it omitted `RuntimeConfigurationRevision` (§4 below), and raw fields
+are not the unit of classification. A Compose `environment:` entry may supply
+runtime configuration, alter what is provisioned, or feed a build — sometimes more
+than one at once.
+
+Each **normalized semantic contribution** a provider honors MUST be classified
+into one *or more* of `SpecProjection`, `DeploymentProjection`, and
+`RuntimeConfigurationRevision`. The invariant is that **nothing honored is left
+unclassified**; a contribution the provider acts on but has not classified makes
+the result `unclosed` (below) rather than digested as though it were complete.
 
 Both projections use immutable references. A mutable tag closes neither; images
 enter by digest ([ADR 0026](0026-multi-architecture-artifacts.md)).
@@ -503,8 +511,8 @@ exists for future backends whose inputs genuinely cannot be enumerated, not as
 permission for the one provider being built to skip the work. A Compose project's
 spec projection — topology, dependent-service image digests, ports, volumes,
 networks, non-secret variables — is enumerable over its transitive definition
-set, so enumerate it, classify every field it honors, and produce the deployment
-projection separately per the table above.
+set, so enumerate it, classify every semantic contribution it honors across all
+three axes, and produce the deployment projection separately per the table above.
 
 `HabitatInstance` is the provisioned, mutable resource with a stable ID, its own
 generation, a provider reference, and lifecycle state (§5).

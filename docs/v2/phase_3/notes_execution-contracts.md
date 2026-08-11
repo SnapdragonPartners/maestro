@@ -284,9 +284,10 @@ happens:
   until the lease expires or reconciliation clears it.
 
 This is why **lease expiry is not optional** even though session completion is the
-normal release path: it is the only thing that unwedges the second case. It is
-also the narrow job a timer genuinely has here — bounding a lease held by a dead
-session, not measuring abandonment.
+normal release path: it is the *automatic* recovery for the second case, and the
+narrow job a timer genuinely has here — bounding a lease held by a dead session,
+not measuring abandonment. Reconciliation also clears it, so expiry is not the
+only path, just the one that needs no other actor to notice.
 
 If nobody wants the instance, holding it costs nothing in either case. An
 execution that dies without a terminal result remains covered by the
@@ -360,7 +361,7 @@ All are alternatives for expiring the **retention claim**, not the lease.
 
 | Mechanism | Why not |
 | --- | --- |
-| Wall-clock TTL from acquisition | Must exceed the slowest suite or it expires mid-run. Patching that with renewal-on-use produces an idle timeout with extra steps. |
+| Wall-clock TTL from acquisition | **Not** the mid-run hazard an earlier draft claimed — an active lease already prevents reclamation, so a retention TTL cannot take an instance out from under a running suite. The real drawback is premature expiry *between* sessions, discarding warmth the Story was about to use, which is the cost demand-driven reclamation avoids paying at all. |
 | Idle timeout since last verification | Discards a warm instance in the uncontended case for no benefit, and in the contended case makes a queued Story wait out a clock that was never about it. Retained as the fallback if demand signalling proves awkward. |
 | Explicit release verb plus TTL backstop | The verb helps only the well-behaved case and the backstop stays mandatory. Story completion gives the same benefit for free. |
 
