@@ -2,7 +2,7 @@
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
 edit_date = "2026-08-11"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-execution-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over a declared dependency closure with runtime configuration as a separate axis; specification, instance, and deployment are three distinct identities; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification rather than every run, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains whose three-valued receipt is constrained by any reach the fenced generation retains."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains whose three-valued receipt is constrained by any reach the fenced generation retains."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
@@ -75,6 +75,38 @@ conceding the cost: reset is required before **evidence-bearing** verification,
 not before every run. The rebuild-per-iteration problem was self-inflicted by an
 over-broad reset rule, not inherited from missing capability — `compose up
 --build` already redeploys application code without disturbing a running database.
+
+**Round 3 (Codex, 2026-08-11) confirmed the three contested resolutions and
+raised four more, all applied.** Two are consequences of round 2's own changes,
+which is the expected cost of a structural revision; two are older defects the
+new structure exposed.
+
+1. **Reset at ownership transfer** (§6). Round 2's persistent iteration state is
+   safe only while one Story owns the instance. Reclaiming a retention claim for
+   a different Story must fence and reset **before any run**, including one the
+   arriving Story requests as an iteration — otherwise it inherits the displaced
+   Story's code, database, and service state. That is the cross-lifecycle
+   contamination [ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md)
+   forbids, arriving through a door §6 left open by assuming an instance's history
+   belonged to whoever held it. It also collapses the reclamation cost model:
+   reclamation transfers **capacity, never warmth**.
+2. **Spec closure conflated infrastructure with application source** (§4). A
+   Compose `build:` context is commonly the repository root, so the round-2
+   closure would have made every application commit a spec change — advancing the
+   instance generation per commit and silently reinstating the reprovisioning
+   round 2 had just removed. Now two closures, divided by whether an input
+   *describes the environment* or *produces the candidate*.
+3. **Lease terminology stale after retention was introduced** (§2 and the notes).
+   Reclamation was still described as a lease event that merely deauthorizes,
+   when it now acts on a retention claim and does trigger fencing and reset.
+4. **The configuration axis was recorded but not applied** (§4, §5). Now carries
+   lifecycle semantics — resolve and snapshot once per deployment, converge or
+   declare unknown on change, bind verification to the revision actually loaded —
+   and §4's "equal digests" claim is corrected: the inference needs `SpecDigest`
+   **and** `RuntimeConfigurationRevision` together.
+
+`isolated` is settled as of this round, so the Kubernetes walkthrough is
+unparked.
 
 ## Context
 
@@ -279,12 +311,21 @@ human at Epic grain, so its lease outlives the automated completion of any Story
 It is named here so the Story-completion rule is not later read as universal;
 its lifetime is settled with UAT gate policy ([backlog candidate 6](../v2/notes_adr-backlog.md)).
 
-**The reclamation mechanism is deliberately unresolved here** and is a Phase 3
-plan decision. What this ADR fixes is that a lease is bounded and independently
-revocable, that expiry or reclamation is a lease event and not a fencing event —
-it deauthorizes, and stopping the occupant is §7's protocol — and that per-type
-capacity limits are the backstop against a held lease starving other executions.
-See [notes_execution-contracts.md](../v2/phase_3/notes_execution-contracts.md).
+**Lease release and retention reclamation are different events**, and an earlier
+draft described the second in the first's terms:
+
+- **A lease ends** when its verification session completes, or by expiry. This
+  **deauthorizes and nothing more** — it does not stop a process (that is §7's
+  protocol) and it does not disturb the instance.
+- **A retention claim is reclaimed** to reallocate capacity to another Story. This
+  **does** trigger fencing and a reset into a new instance generation before the
+  arriving Story runs anything (§6). It may only act on a claim with **no active
+  lease**, and must be bounded so successive claims cannot starve a queue.
+
+**The reclamation policy is deliberately unresolved here** and is a Phase 3 plan
+decision. What this ADR fixes is the two events above, that leases are bounded and
+independently revocable, and that per-type capacity limits are the backstop. See
+[notes_execution-contracts.md](../v2/phase_3/notes_execution-contracts.md).
 
 **Capacity is limited per resource type, never globally.** A deployment may
 support ten concurrent Incubators and two Habitats. A single limit over both
@@ -335,27 +376,38 @@ addressable by construction.
 source *and* the Habitat definition — the environment is habitat-as-code.
 Promotion advances both together.
 
-#### Spec identity is derived, and must close over everything that shapes the environment
+#### Spec identity is derived, and closes over the environment — not over the candidate
 
 `HabitatSpec` is **derived, not registered**: there is no separate spec object to
 keep in sync with the repository. But "the digest of the definition files" is not
-sufficient, because two equal digests must not be able to provision materially
-different environments. The provider MUST declare a **dependency closure** — the
-complete set of inputs that shape the realized environment — and the spec digest
-is taken over that closure, not over a directory.
+sufficient. The provider MUST declare a **dependency closure** — the inputs that
+shape the realized environment — and the spec digest is taken over that closure,
+not over a directory.
 
-The closure MUST include, where the provider's backend has them:
+**Two closures, and mixing them breaks §5.** A Compose `build:` context is
+commonly the repository root, so a closure that swallows the build context makes
+every application commit a spec change — which would advance the instance
+generation on every commit and reinstate exactly the per-iteration reprovisioning
+§6 removes. The dividing question is: **does this input describe the environment
+the candidate runs in, or does it produce the candidate?**
 
-- The definition files themselves, transitively: included Compose files and
-  overrides, Terraform/OpenTofu modules, Kustomize bases and overlays, Helm charts
-  and values.
-- **Immutable image and artifact references.** A mutable tag in a definition does
-  not close the spec; images enter by digest ([ADR 0026](0026-multi-architecture-artifacts.md)).
-- **Provider selection and version**, and toolchain versions where they change the
-  realized environment.
-- **Non-secret variables and configuration** that alter what is provisioned.
-- **Platform, resource, and policy inputs**, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273)
-  names explicitly as part of the requested origin.
+| Closure | Contains | Feeds |
+| --- | --- | --- |
+| **Spec closure** | Definition files transitively (Compose files and overrides, Terraform/OpenTofu modules, Kustomize bases and overlays, Helm charts and values); **dependent-service image digests**; base and toolchain inputs; provider selection and version; non-secret variables that alter what is provisioned; platform, resource, and policy inputs, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273) names as part of the requested origin | `SpecDigest` → instance generation (§5) |
+| **Deployment closure** | The promoted source commit; application build inputs including the application `Dockerfile` and its context; the resulting **candidate artifact digest** | Deployment identity and provenance (§5) |
+
+Worked example: `postgres:16@sha256:…` is spec — it describes the environment.
+`build: .` for the application service is deployment — it produces the candidate.
+That the `app` service *exists*, with these ports and this dependency on `db`, is
+spec; what gets built into it is not. An application `Dockerfile` change that adds
+a system package changes the candidate, not the environment, so it is deployment.
+
+Both closures use immutable references. A mutable tag closes neither; images enter
+by digest ([ADR 0026](0026-multi-architecture-artifacts.md)).
+
+**The Phase 3 provider MUST enumerate both, and MUST NOT mix them.** Folding the
+deployment closure into `SpecDigest` is not a conservative error — it silently
+destroys the fast loop.
 
 Secrets are **referenced by identity, never digested by value**.
 
@@ -369,16 +421,38 @@ change spec identity and force reprovisioning of every Habitat that used it, and
 declaring the spec `unclosed` over ordinary secrets would make essentially every
 real spec unclosed and drain the term of meaning.
 
-The resolution is a **separately recorded runtime-configuration revision**,
-carried alongside `SpecDigest` in provenance. The spec answers *was the same thing
-requested*; the configuration revision answers *with what runtime values*. Two
-questions, two records, and rotation moves only the second.
+The resolution is a **`RuntimeConfigurationRevision`**, carried alongside
+`SpecDigest`. The spec answers *was the same thing requested*; the configuration
+revision answers *with what runtime values*. Two questions, two records, and
+rotation moves only the second.
 
 Where a provider can obtain an immutable, non-secret resolved version identifier
 for a secret (a version ID, not the value), that identifier belongs in the
 configuration revision. Where it cannot, the configuration revision is declared
 **unresolved** for that entry — which constrains what may be inferred, without
 contaminating spec identity.
+
+**A recorded revision is not enough; it needs lifecycle semantics.** Three rules,
+because a revision that is merely observed cannot back a receipt:
+
+1. **Resolve and snapshot before deployment.** One resolution point per
+   deployment, not lazily per service — otherwise two services in one deployment
+   can load different revisions and no single revision describes the environment.
+2. **Converge on change.** When the revision changes, the provider MUST restart or
+   otherwise converge the services that consume it, **or declare the running
+   revision unknown**. It must not assume a value read at process start has
+   changed because the store behind it did. Blanket restarts are not required —
+   what is forbidden is recording a new revision against services still running
+   the old values.
+3. **Bind verification to the revision actually loaded**, not the most recently
+   observed. Reading the store after the fact reintroduces the same
+   time-of-check gap that makes an unconfirmed fence unsafe.
+
+**Consequently, inference requires the pair.** An earlier draft said two equal
+spec digests must not be able to provision materially different environments. With
+configuration as a separate axis that is true only of
+`SpecDigest` **plus** `RuntimeConfigurationRevision`, and §5's evidence
+requirements take both.
 
 #### Unclosed is a declaration, not an escape hatch
 
@@ -390,8 +464,9 @@ equality.
 **But the Phase 3 Docker/Compose provider MUST produce a closed spec.** `unclosed`
 exists for future backends whose inputs genuinely cannot be enumerated, not as
 permission for the one provider being built to skip the work. A Compose project's
-closure — files, overrides, image digests, build context, non-secret variables —
-is enumerable, so enumerate it.
+spec closure — files, overrides, dependent-service image digests, non-secret
+variables — is enumerable, so enumerate it, and enumerate the deployment closure
+separately per the table above.
 
 `HabitatInstance` is the provisioned, mutable resource with a stable ID, its own
 generation, a provider reference, and lifecycle state (§5).
@@ -447,6 +522,12 @@ was requested, which incarnation ran it, and which commit was deployed — and
 because in-place reset later changes which of them advance together, without the
 earlier records needing reinterpretation.
 
+**Evidence takes `SpecDigest` and `RuntimeConfigurationRevision` together** (§4).
+Neither alone identifies the environment: equal specs with different resolved
+configuration are materially different environments, and equal configuration
+across different specs says nothing. A receipt naming only one of them
+overstates what it establishes.
+
 ### 6. Reset, and why in-place convergence is a correctness trade
 
 #### Reset is required before evidence-bearing verification, not before every run
@@ -461,7 +542,32 @@ does work:
 | **Evidence-bearing verification** | Reset — MVP: a new instance generation | Converged to the promoted commit |
 | **Iteration** (agent working feedback) | Persists in the existing instance | Converged to the promoted commit |
 
-Three properties of this rule matter and are easy to lose:
+#### Ownership transfer is an independent reset trigger
+
+Persistent iteration state is safe **only while the same Story holds the
+instance**. When a retention claim is reclaimed for a different Story (§2), the
+arriving Story MUST get a fenced, reset instance in a new generation **before any
+run**, including a run it requests as an iteration. Without this it inherits the
+displaced Story's code, database contents, and service state — cross-Story
+contamination, which is the failure class
+[ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md) exists to
+forbid, arriving through a door §6 left open by assuming the instance's history
+belonged to whoever was using it.
+
+So the reset triggers are: **evidence-bearing verification**, **ownership
+transfer**, and provisioning a new instance (which is clean by circumstance rather
+than by demand). Iteration by the owning Story is the only path that keeps state.
+
+**This makes reclamation purely a capacity mechanism.** The arriving Story always
+pays a reset, so it gains nothing from the instance being warm — it would pay the
+same for a freshly provisioned one. The displaced Story loses its warmth outright.
+There is therefore no warm-transfer benefit to weigh: reclamation is worth doing
+only when capacity is genuinely exhausted, and never as an optimization. It also
+raises the cost of thrash, which is what the minimum hold bounds.
+
+#### Three properties of the evidence-bearing rule
+
+These matter and are easy to lose:
 
 - **The criterion is evidence-reliance, not leak size.** A leak may be arbitrarily
   large — a migration that ran, a table of stale rows — and still not matter if

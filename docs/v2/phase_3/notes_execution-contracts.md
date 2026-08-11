@@ -3,7 +3,7 @@ title = "Execution Contracts: Verbs, Result Shape, And Where They Run"
 edit_date = "2026-08-11"
 status = "draft"
 type = "notes"
-summary = "Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat deployment stages are identity changes rather than two verbs, why the invocation half of a contract needs almost nothing and the result half needs a preserved audit artifact, the verb inventory Phase 3 should prune, and a recommended Habitat lease-reclamation design — Story-bound leases reclaimed on demand rather than on a clock, with provisioning cost measured rather than configured — which ADR 0029 deliberately left open."
+summary = "Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat deployment stages are identity changes rather than two verbs, why the invocation half of a contract needs almost nothing and the result half needs a preserved audit artifact, the verb inventory Phase 3 should prune, and a recommended Habitat capacity-reclamation design — retention claims reclaimed on demand rather than on a clock, transferring capacity but never warmth since the arriving Story always pays a reset — which ADR 0029 deliberately left open."
 +++
 
 # Execution Contracts: Verbs, Result Shape, And Where They Run
@@ -212,14 +212,20 @@ Whether `integration` is a distinct verb or simply the requirement-routed form o
 resource, a second verb carries no information the requirements do not already
 supply. A distinct verb may still be clearer to the agent. Decide in the plan.
 
-## Habitat lease reclamation — recommended design
+## Habitat capacity reclamation — recommended design
 
-ADR 0029 §2 fixes that lease lifetime and instance lifetime are separate, that a
-lease is bounded and independently revocable, that expiry deauthorizes rather
-than fences, and that per-type capacity limits are the backstop. It deliberately
-does not fix **how a lease ends**, because that is scheduling policy rather than
-a boundary. This section is the recommendation, arrived at 2026-08-11 (DR and
-Claude) and not yet reviewed by Codex.
+ADR 0029 §2 separates the instance, the generation-bound **lease**, and the
+Story's **retention claim** on the instance; it fixes that a lease ends by
+deauthorizing without disturbing the instance, that reclaiming a retention claim
+triggers fencing and reset (§6), and that per-type capacity limits are the
+backstop. It deliberately does not fix **the reclamation policy**, because that is
+scheduling rather than a boundary.
+
+This section is the recommendation, developed 2026-08-11 (DR and Claude) and
+revised after Codex round 3 — which is what introduced ownership-transfer reset
+and, with it, the corrected cost model below. **The subject is the retention
+claim throughout.** Where an earlier version said "lease," it usually meant
+retention; that conflation is the thing round 3 caught.
 
 ### One session concept, not two cases
 
@@ -230,13 +236,22 @@ and closes; the loop closes its session on completion, and the tool-call case
 closes on the rules below. Two mechanisms would supply two ways to leak a
 Habitat.
 
-### Leases are Story-bound, not agent-bound
+### Both bind to the Story, and each ends its own way
 
-**Completion of the Story releases every lease it holds.** This is the primary
-release path, not a fallback: leases belong to the Story execution — the same
-scoping ADR 0029 §2 gives the Incubator — so agent restart or replacement does
-not release them and Story completion always does. It is also the explicit
-release verb we would otherwise need, without being a verb the agent can forget.
+ADR 0029 §2 separates three things, and an earlier version of this section
+described all of them as leases:
+
+- **A lease** ends when its **verification session completes** — that is the
+  normal path, not Story completion. Expiry is the failure backstop. Ending a
+  lease deauthorizes and nothing else.
+- **A retention claim** ends by reclamation for another Story, or by Story
+  completion.
+- **Story completion releases both**, as the final backstop rather than the
+  primary path. It is the explicit release we would otherwise need a verb for,
+  without being a verb the agent can forget.
+
+Both bind to the Story execution — the same scoping §2 gives the Incubator — so
+agent restart or replacement releases neither.
 
 **UAT is the known exception and is deferred.** A UAT Habitat is held for a human
 at Epic grain, so its lease outlives the automated completion of any Story and is
@@ -269,36 +284,45 @@ owns the queue, so this is one component talking to itself.
 
 ### A minimum hold, doing a different job
 
-Demand-driven reclamation can thrash — two executions ping-ponging one Habitat,
-each paying a rebuild. A **minimum hold** prevents it: a lease cannot be reclaimed
-within a short window of acquisition or of its last verification.
+Demand-driven reclamation can thrash — two Stories ping-ponging one Habitat, each
+paying a reset. A **minimum hold** prevents it: a retention claim cannot be
+reclaimed within a short window of acquisition or of its last verification.
 
 This is a timer, but it bounds *thrash*, not *abandonment*. Keep the two jobs
-distinct so they are not later "simplified" into one number.
+distinct so they are not later "simplified" into one number. Ownership-transfer
+reset (below) makes thrash more expensive, so the floor matters more than it did.
 
-### What reclamation actually costs — corrected
+### Reclamation transfers capacity, never warmth
 
-An earlier version of this section said reclaiming costs a rebuild that both
-parties pay. That conflated releasing authorization with destroying the
-environment, which ADR 0029 §2 now separates.
+Two earlier versions of this section got the cost model wrong in opposite
+directions — first that both parties pay a rebuild, then that reclaiming an
+instance the arriving Story would reset anyway is nearly free. ADR 0029 §6's
+ownership-transfer trigger settles it, and the answer is simpler than either:
 
-- **Releasing a lease costs nothing.** Authorization is generation-bound and held
-  only during an active verification session; an idle execution holds none, so
-  there is usually nothing to reclaim in the first place.
-- **Reclaiming the retention claim** hands the instance to another Story. Whether
-  that costs a rebuild depends on §6: the arriving Story's first
-  evidence-bearing verification would reprovision anyway, so reclaiming an
-  instance it was going to reset is nearly free. Reclaiming one it intended to
-  iterate against costs the displaced Story its warm environment.
+**The arriving Story always pays a reset.** Persistent state is safe only while
+one Story owns the instance, so a transferred instance is fenced and reprovisioned
+before the arriving Story runs anything — including a run it requests as an
+iteration. It therefore gains nothing from the instance having been warm; it would
+pay the same for a freshly provisioned one.
 
-So the comparison is not *wait versus rebuild* but **whose warm environment is
-worth more** — the arriving Story's queue time against the displaced Story's lost
-warmth. Provisioning cost still weights it, and Maestro **measures** that rather
-than being configured with it, since every provision is timed.
+Consequences:
 
-One constraint from ADR 0029 §2 is absolute: **reclamation must exclude an
-instance with an active lease**, and must be bounded so successive retention
-claims cannot starve a queue indefinitely.
+- **There is no warm-transfer benefit to weigh.** The wait-versus-rebuild
+  comparison a previous draft described has only one side.
+- **Reclamation is worth doing only when capacity is genuinely exhausted**, never
+  as an optimization. Its sole product is a free slot.
+- **The displaced Story loses its warmth outright**, which is the entire cost of
+  the decision.
+- Releasing a *lease* still costs nothing — it deauthorizes and leaves the
+  instance alone. Only the retention claim carries this cost.
+
+Provisioning cost therefore no longer arbitrates between two options; it sizes how
+much the displaced Story loses. Maestro still **measures** it rather than being
+configured with it, since every provision is timed.
+
+Two constraints from ADR 0029 §2 are absolute: **reclamation may only act on a
+claim with no active lease**, and it must be bounded so successive claims cannot
+starve a queue indefinitely.
 
 ### What is configured, and what is not
 
@@ -318,16 +342,22 @@ for something that is not.
 
 ### Alternatives considered
 
+All are alternatives for expiring the **retention claim**, not the lease.
+
 | Mechanism | Why not |
 | --- | --- |
-| Wall-clock TTL from acquisition | Must exceed the slowest suite or it expires mid-run, forcing a decision about reclaiming a Habitat with live verification in it. Patching that with renewal-on-use produces an idle timeout with extra steps. |
-| Idle timeout since last verification | Strictly worse than demand-driven in the uncontended case (pays a rebuild nobody asked for) and slower in the contended case (a queued execution waits out a clock that was never about it). Retained only as the fallback if demand signalling proves awkward. |
-| Explicit release verb plus TTL backstop | The verb helps only the well-behaved case and the backstop is still mandatory. Story completion gives the same benefit for free. |
+| Wall-clock TTL from acquisition | Must exceed the slowest suite or it expires mid-run. Patching that with renewal-on-use produces an idle timeout with extra steps. |
+| Idle timeout since last verification | Discards a warm instance in the uncontended case for no benefit, and in the contended case makes a queued Story wait out a clock that was never about it. Retained as the fallback if demand signalling proves awkward. |
+| Explicit release verb plus TTL backstop | The verb helps only the well-behaved case and the backstop stays mandatory. Story completion gives the same benefit for free. |
 
-Whichever is chosen, one ADR 0029 constraint holds: **expiry or reclamation
-deauthorizes; it does not fence.** A reclaimed lease still goes through §7's
-protocol before the Habitat is reassigned, and §6's reset requirement applies to
-the replacement.
+Two ADR 0029 constraints hold whichever is chosen, and they differ by event:
+
+- **A lease ending deauthorizes and does not fence.** It leaves the instance
+  running and untouched.
+- **A retention claim being reclaimed does fence**, then resets into a new
+  instance generation before the arriving Story runs anything — §6's
+  ownership-transfer trigger. This is not optional and does not depend on what the
+  arriving Story intends to run.
 
 ## Open questions for the Phase 3 plan
 
@@ -341,10 +371,14 @@ the replacement.
    from the definition surfaces at promotion rather than after merge.
 6. Where does the contract set live — repository config as today, the Incubator
    definition, or the data plane?
-7. Confirm demand-driven lease reclamation, per the section above, and fix the
-   minimum-hold constant and the default contract timeouts.
-8. UAT lease lifetime, which the Story-completion release rule explicitly does
-   not cover. Sequenced with UAT gate policy ([backlog candidate 6](../notes_adr-backlog.md)),
+7. Confirm demand-driven reclamation of retention claims, per the section above,
+   and fix the minimum-hold constant and the default contract timeouts.
+8. Whether the retention claim is a persisted object or an affinity field on the
+   instance. ADR 0029 §2 deliberately leaves the object count to the plan.
+9. UAT lifetime, which the Story-completion release rule explicitly does not
+   cover — and which ownership-transfer reset makes sharper, since a UAT
+   environment a human is using must never be reclaimed underneath them.
+   Sequenced with UAT gate policy ([backlog candidate 6](../notes_adr-backlog.md)),
    not here.
 
 ## Related Documents
