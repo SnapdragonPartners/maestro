@@ -773,27 +773,52 @@ raw socket and intends to enumerate by domain at fence time has no containment
 boundary** — only one that appears to work until something creates a resource the
 provider did not.
 
-This is what makes the Phase 3 obligation concrete: remove raw socket access,
-mediate it so every creation is stamped before the resource exists, or use a
-private daemon. Those are not three ways of achieving the same convenience; they
-are the only three ways the domain exists at all.
+#### Filtering a general-purpose daemon API is not a conforming strategy
 
-**Stamping is not containment: a mediator must also refuse to hand out a route it
-does not mediate.** The spike found this by building the mediation option and
-attacking it. A proxy that rewrites labels but forwards the rest of the request
-unchanged will happily create a *correctly labelled* child that mounts the daemon
-socket — and that child then creates an unlabeled grandchild through the raw
-socket. The domain survives one hop and fails at two.
+An earlier version of this section offered three options — remove raw socket
+access, mediate it so every creation is stamped, or use a private daemon — as
+equally valid. **The spike built the middle one and broke it**, and the result is
+the most useful thing it produced.
 
-A conformant mediator therefore rejects creates that would give the new resource
-its own unmediated route out: daemon or runtime socket mounts, privileged
-execution, a shared PID namespace, host networking, and whatever else the backend
-treats as equivalent. A private daemon closes the same gap by construction, which
-is the argument for preferring it where it is available.
+A mediator that filters container creation still forwards every other operation.
+Two escapes follow, both demonstrated:
+
+- **The mediator is not capability-closed.** The holder `exec`s into the proxy
+  container — which necessarily holds the raw socket — and creates outside the
+  domain. Filtering creates while forwarding `exec` protects nothing, and the
+  same is true of volume APIs that can expose the socket's directory, image
+  builds, and anything else that runs code with the daemon's authority.
+- **A receipt cannot cover what escaped.** Fence that domain properly, confirm
+  every member non-running, and the escaped container is still running. The
+  receipt is *true* and *insufficient*: it speaks for the domain it enumerated,
+  and the escape was never in it.
+
+Closing this by enumeration would mean an allowlist over the whole Docker API
+whose closure is itself a proof obligation, re-established on every daemon
+release. **A
+deny-list is never closed, and an allowlist over a general-purpose API is a
+security-engineering project, not a provider detail.**
+
+So the conforming options are **two**, not three:
+
+1. **No route.** The resource cannot reach a daemon at all.
+2. **A route to a daemon that owns only the domain** — a private or nested
+   daemon — so anything created through it is inside the domain by construction
+   rather than by inspection.
+
+Both are closed *by construction*. Mediation by filtering is closed only by
+review, and the spike shows review missing the second hop on the first attempt.
+
+**For Phase 3 this is not a hard choice.** §1 gives the Incubator no ecosystem, so
+it has no legitimate need to create containers; option 1 applies, and the
+obligation is simply to stop mounting the socket that
+`pkg/exec/docker_long_running.go:243` mounts unconditionally today. A Habitat
+provider that genuinely needs to create containers takes option 2.
 
 The general form, which outlives Docker: **a mediated boundary must be closed
-under the creation it permits.** If a resource inside the domain can create
-something with more authority than itself, the boundary is one hop deep, and one
+under the authority it exposes**, not merely under the one operation it inspects.
+If a resource inside the domain can obtain something with more authority than
+itself — by any route, not just creation — the boundary is one hop deep, and one
 hop is not a boundary.
 
 **The receipt proves non-interference, not death.**

@@ -17,20 +17,31 @@
 //	                present — so an unenforced domain is not a boundary.
 //	C3 ENFORCED     Behind a mediating proxy, a holder that supplies a competing
 //	                domain label still lands inside the enforced domain.
-//	C3b CONTAIN     That holder cannot re-export an unmediated creation route: a
-//	                labelled child holding the daemon socket would break the
-//	                domain at the second hop, so the mediator refuses it.
+//	C3b CONTAIN     That holder cannot obtain a child that directly binds the
+//	                daemon socket — one escape shape, refused.
+//	C3c NOT CLOSED  But the same mediator is NOT capability-closed. It filters
+//	                creates and forwards everything else, so the holder execs
+//	                into the proxy container — which holds the raw socket — and
+//	                creates outside the domain. PROVEN means the hole is real.
+//	C3d NO RECEIPT  And the consequence: fence that domain, confirm every member
+//	                non-running, and the escaped container is still running. A
+//	                receipt speaks only for the domain it enumerated.
 //	C4a RACE        Enumerate-then-stop is outrun by a holder still creating
 //	                during the stopping window.
-//	C4b RECEIPT     An acknowledged revocation, then enumerate, stop, and confirm
-//	                every member non-running, yields a set with no member outside
-//	                it afterwards — membership, not cardinality.
+//	C4b ORDERING    An acknowledged creation barrier, then enumerate, stop, and
+//	                confirm every member non-running, yields a set with no member
+//	                outside it — membership, not cardinality. Scoped to creation.
 //	C5 RECORDS      An unconfirmed stop must leave the provider's record intact.
 //	                Modeled provider state, not a live-daemon behaviour.
 //
-// Controls: C0 for C1; C2 and C3 for each other (identical escape, differing in
-// whether creation is mediated); C4a and C4b for each other (identical stopping
-// work, differing only in order).
+// Controls: C0 for C1; C1 carries a PID-sharing positive control; C2 carries a
+// positive enumeration control; C2 and C3 control each other (identical escape,
+// differing in whether creation is mediated); C4a and C4b control each other
+// (identical stopping work, differing only in order).
+//
+// C3c and C3d are deliberately claims that a hole EXISTS. Their conclusion is
+// that create-filtering mediation is not a conforming fencing strategy — see the
+// spike report and ADR 0029 §7.
 //
 // Run: go run . [-keep]
 package main
@@ -366,6 +377,69 @@ func c3(runID, proxyBin string) {
 	assert(id3b, stmt3b, refusedForReason && !exists,
 		"refused naming the escape=%v; child exists=%v; response=%q",
 		refusedForReason, exists, trim(out))
+
+	// C3c: the create filter is not the boundary it appears to be. Everything
+	// that is not a create is forwarded unchanged, and the proxy container itself
+	// holds the raw socket — so the holder reaches the daemon by exec'ing into
+	// its own mediator. This claim asserts the escape SUCCEEDS: it is evidence
+	// that create-filtering mediation is not capability-closed.
+	const id3c, stmt3c = "C3c", "a create-filtering mediator is NOT capability-closed: non-create APIs reach the daemon"
+	escapeName := runID + "-sibling-via-proxy-exec"
+	out, err = run("docker", "exec", holder, "sh", "-c",
+		"docker exec "+proxy+" sh -c 'apk add --no-cache docker-cli >/dev/null 2>&1 && "+
+			"docker run -d --name "+escapeName+" --label "+runLabel+"="+runID+
+			" "+image+" sleep 600'")
+	escaped2, existsErr := containerExists(escapeName)
+	if existsErr != nil {
+		observeFailed(id3c, stmt3c, existsErr, "could not check for the escaped container")
+		return
+	}
+	inDomain2, domErr := containersInDomain(domain)
+	if domErr != nil {
+		observeFailed(id3c, stmt3c, domErr, "could not enumerate the domain")
+		return
+	}
+
+	// PROVEN here means the hole is real. Escaping via a forwarded API, and
+	// landing outside the domain, is the finding.
+	assert(id3c, stmt3c,
+		err == nil && escaped2 && !contains(inDomain2, escapeName),
+		"exec through the mediator succeeded=%v; unlabeled container created=%v; inside the domain=%v; output=%q",
+		err == nil, escaped2, contains(inDomain2, escapeName), trim(out))
+
+	// C3d: the consequence for the receipt. Fence this domain properly — stop
+	// every member and confirm it — and the escaped container is untouched,
+	// because a receipt can only speak for the domain it enumerated.
+	//
+	// A first attempt at this claim tried to restart a fenced container *through
+	// the holder*, and failed for the wrong reason: the holder carries the domain
+	// label, so fencing had already stopped it. That is correct behaviour, and it
+	// hid the real composition — the surviving actor is the one that escaped the
+	// domain, not one inside it.
+	const id3d, stmt3d = "C3d", "a confirmed receipt over the domain does NOT cover what escaped it"
+	members, err := containersInDomain(domain)
+	if err != nil {
+		observeFailed(id3d, stmt3d, err, "could not enumerate the domain")
+		return
+	}
+	for _, m := range members {
+		_, _ = run("docker", "stop", "-t", "0", m)
+	}
+	stillUp, err := awaitAllStopped(members)
+	if err != nil {
+		observeFailed(id3d, stmt3d, err, "could not confirm termination")
+		return
+	}
+	survivor, err := containerRunning(escapeName)
+	if err != nil {
+		observeFailed(id3d, stmt3d, err, "could not inspect the escaped container")
+		return
+	}
+
+	assert(id3d, stmt3d,
+		len(stillUp) == 0 && survivor,
+		"domain fenced with %d members, all confirmed non-running=%v; the escaped container is still running=%v",
+		len(members), len(stillUp) == 0, survivor)
 }
 
 // c4 tests ordering. Both paths do identical stopping work against a domain a
@@ -472,12 +546,16 @@ func c4(runID, proxyBin string) {
 		}
 	}
 
-	// A receipt requires all three: nothing outside the fenced set, every stop
-	// succeeded, and every member confirmed non-running.
-	assert("C4b", "revoke-drain-enumerate-confirm yields a complete, confirmed set",
+	// Scoped deliberately: this proves the *ordering* property over creation
+	// admission — nothing entered the domain inside the window, every stop
+	// succeeded, every member is confirmed non-running. It does not by itself
+	// establish a terminal receipt; C4c is why.
+	assert("C4b", "an acknowledged creation barrier yields a complete, confirmed set at the moment of fencing",
 		len(outside) == 0 && len(stopErrs) == 0 && len(stillRunning) == 0,
 		"mediator acknowledged %d drained creates; fenced and stopped %d; members outside the fenced set=%v; stop errors=%v; still running=%v",
 		drained, len(fenced), short(outside, runID), stopErrs, stillRunning)
+
+	_ = drained
 }
 
 // c5 is a modeled proof about provider state, not a live-daemon behaviour, and
