@@ -1,9 +1,9 @@
 +++
 title = "Execution Contracts: Verbs, Result Shape, And Where They Run"
-edit_date = "2026-08-10"
+edit_date = "2026-08-11"
 status = "draft"
 type = "notes"
-summary = "Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat stages are the two clocks rather than two verbs, why the invocation half needs almost nothing and the result half needs a preserved audit artifact, and the verb inventory Phase 3 should prune."
+summary = "Design input for the Phase 3 plan on the build/test/lint/deploy contract set: what v1 actually has and how thin it is, why the two Habitat deployment stages are identity changes rather than two verbs, why the invocation half of a contract needs almost nothing and the result half needs a preserved audit artifact, the verb inventory Phase 3 should prune, and the Habitat lease-reclamation mechanisms ADR 0029 deliberately left open."
 +++
 
 # Execution Contracts: Verbs, Result Shape, And Where They Run
@@ -59,7 +59,7 @@ Two observations that matter for Phase 3:
   foundation for UAT. So the Habitat's verification surface has a v1 antecedent
   here too.
 
-## The two Habitat stages are the two clocks, not two verbs
+## The two Habitat stages are identity changes, not two verbs
 
 The stages are real:
 
@@ -68,9 +68,16 @@ The stages are real:
 2. *Is this commit built and deployed everywhere it needs to go?* — application
    deployment.
 
-They map exactly onto ADR 0029 §5: stage 1 is a Habitat generation advance, stage
-2 a deployment generation advance, discriminated by whether the Habitat
-definition digest changed.
+They map onto ADR 0029 §5, which after review round 1 carries **three**
+identities rather than two counters: stage 1 changes the `SpecDigest` and
+therefore requires a new **instance generation**; stage 2 advances the
+**deployment generation** within the current instance. The discriminator is
+whether the Habitat definition closure changed.
+
+The third identity matters here: an instance generation also advances on reset,
+recovery, or quarantine replacement with an unchanged `SpecDigest`, so "the
+definition changed" and "this is a new incarnation" are not the same event and a
+receipt cannot infer one from the other.
 
 **Recommendation: one `deploy` verb, not two.** Three reasons:
 
@@ -178,6 +185,43 @@ Whether `integration` is a distinct verb or `test` scoped to the Habitat is open
 A distinct verb is clearer to the agent; a resource-scoped `test` is fewer
 concepts. Decide in the plan.
 
+## Habitat lease duration — deferred here by ADR 0029 §2
+
+ADR 0029 fixes that lease lifetime and instance lifetime are separate, that a
+lease is bounded and independently revocable, that expiry deauthorizes but does
+not fence, and that per-type capacity limits are the backstop. It deliberately
+does not fix **how long a lease lasts**, because the answer is a scheduling
+policy rather than a boundary.
+
+The shape of the problem, recorded so the plan does not rediscover it:
+
+- **An automated loop is self-delimiting.** A lease acquired for a state-machine
+  phase (the v1 analogue is entering `TESTING`) ends when the phase does. The
+  duration needs no policy — the loop's own completion releases it.
+- **An agent-requested verification is not.** A tool call asking for integration
+  verification has no intrinsic end. The agent may run one test, read the result,
+  fix, and run again, or it may stop and never return.
+
+So the open question is narrowly about the second case, and it is a
+**lease-reclamation** question: how does a Habitat get taken back from an
+execution that stopped asking for it?
+
+Candidate mechanisms, none chosen:
+
+| Mechanism | Note |
+| --- | --- |
+| Wall-clock TTL with renewal on use | Simplest, and self-curing after a crash or a stuck agent. Costs a held Habitat for up to one TTL after abandonment. |
+| Idle timeout since last verification request | Same self-curing property, more forgiving of a long-running test, and it measures the thing that actually indicates abandonment. |
+| Explicit release verb plus a TTL backstop | The agent releases when done; the TTL only covers failure. Adds a verb the agent can forget, which is why the backstop is not optional. |
+| Bind to the execution's own lifecycle | No timer, but a wedged execution holds the Habitat until something else fences it. |
+
+Selection criteria worth stating before choosing: it must be self-curing under
+agent crash and under agent inattention; it must not fence a running
+verification merely because a timer expired (ADR 0029 §2 — expiry is a lease
+event, not a fencing event, so a reclaimed lease still goes through §7's protocol
+before the Habitat is reassigned); and its worst case must be bounded by capacity
+limits rather than by agent good behaviour.
+
 ## Open questions for the Phase 3 plan
 
 1. Does `deploy` subsume `Run`, or sit beside it?
@@ -190,6 +234,7 @@ concepts. Decide in the plan.
    from the definition surfaces at promotion rather than after merge.
 6. Where does the contract set live — repository config as today, the Incubator
    definition, or the data plane?
+7. Which Habitat lease-reclamation mechanism, per the section above?
 
 ## Related Documents
 

@@ -1,19 +1,48 @@
 +++
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
-edit_date = "2026-08-10"
+edit_date = "2026-08-11"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-execution-scoped development environment with a toolchain and no ecosystem, and the Habitat, a production-shaped deployed application environment leased only for verification. They exchange nothing directly — an immutable forge commit is the sole medium — and each is fenced as a provider-created domain returning a three-valued receipt where only terminated and isolated are terminal and neither permits reuse of the fenced generation."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-execution-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service and leased for verification. Source and definitions cross only as an immutable forge commit, spec identity closes over a declared dependency closure, specification and instance and deployment are three separate identities, reset must prove namespacing or removal rather than assume teardown suffices, and both types are fenced as provider-created domains returning a three-valued receipt that speaks only for Maestro-managed state."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
 
-Status: **Proposed** (Claude, 2026-08-10). Item A1 of the accepted
+Status: **Proposed** (Claude, 2026-08-10; revised 2026-08-11 after Codex review
+round 1). Item A1 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), which scoped this
 work under the single name `Habitat`. This ADR splits that resource in two and
 records why; the naming reconciliation is stated explicitly in the Decision
 rather than left for readers to infer. Accepted before
 [ADR backlog candidate 13](../v2/notes_adr-backlog.md) (the agent execution
 contract), which consumes it.
+
+**Round 1 (Codex, 2026-08-11) raised six blockers, all applied.** The split and
+§7's three protocol extensions were confirmed sound; the defects were in what the
+draft claimed around them. Recorded because four of the six share one shape — *a
+correct argument not carried to its own conclusion*:
+
+1. §1 mapped **every** prior requirement to the Incubator. Dependent-service
+   lifecycle belongs to the Habitat, and identity and fencing belong to both. Now
+   an explicit three-way table.
+2. §4's spec digest closed over "the definition files" — insufficient, since equal
+   digests could provision different environments. Now a declared dependency
+   closure with an `unclosed` declaration where a provider cannot enumerate it.
+3. §5 made one counter mean two things: definition-derived *and* incremented on
+   reprovision. Now three identities — spec, instance, deployment.
+4. §6 argued at length that volumes survive `up`, then concluded teardown is
+   "correct by construction" — while `down` does not remove named volumes without
+   `-v` and never removes external ones. The draft contradicted its own argument
+   one paragraph later.
+5. §1's categorical no-ecosystem rule had no stated answer for database-backed
+   development. Now decided, with the reasoning and the two rejected alternatives.
+6. §9 permitted a physically identical instance, which cannot satisfy §3 and §7
+   simultaneously. Now shared *implementation*, never a shared instance.
+
+Two non-blocking wording corrections applied: the forge commit is the sole
+**source and definition** handoff, since digest-addressed binaries also cross;
+and verification runs on a **provider-launched executor inside the Habitat's
+domain**, so the rule does not require editing production deployment definitions
+— which §1 forbids.
 
 ## Context
 
@@ -84,27 +113,76 @@ resources each attaches to.
 Maestro manages two independent Orchestrator-owned execution-resource types.
 
 **Incubator** — a unitary development environment: a writable source workspace,
-the toolchain, and a command executor. It has **no ecosystem**: no databases, no
-queues, no dependent services. It is normally a container; it may be a
+the toolchain, and a command executor. It is normally a container; it may be a
 filesystem-backed environment where containerization is rejected by the platform
 (macOS-native and mobile development), but a filesystem alone is not an
 Incubator — a native command and process executor is mandatory.
 
 **Habitat** — a production-shaped deployed application environment: application
-services, dependent services, provisioned infrastructure, the deployed candidate,
-runtime configuration, and the surfaces integration verification and UAT need.
+services, **dependent services**, provisioned infrastructure, the deployed
+candidate, runtime configuration, and the surfaces integration verification and
+UAT need.
 
-**The naming reconciliation is explicit.** The blocker plan, [issue #273](https://github.com/SnapdragonPartners/maestro/issues/273),
-and [ADR backlog slot 11](../v2/notes_adr-backlog.md) use `Habitat` for the
-single conflated resource, and every *concrete* requirement they state — the
-tool-routing rule, read-only Architect inspection, the removal of Coder workspace
-bind-mounts, the Docker socket escape, the Docker/Compose gating row of the
-fencing compatibility matrix — describes what this ADR calls the **Incubator**.
-Readers of those documents must map accordingly. `Habitat` is retained for the
-deployed environment because that is the resource for which the word is
-descriptive; the alternative, renaming the deployed environment and leaving
-`Habitat` on the development resource, was considered and rejected as the less
-accurate of two imperfect options.
+#### The Incubator owns no ecosystem, and the reason is not fastidiousness
+
+An Incubator has no databases, no queues, and no dependent services. Every
+Maestro-managed service belongs to a Habitat.
+
+The decisive argument is not the slippery slope from a database to a cache to
+everything. It is that **the Incubator has more than one implementation shape**.
+A filesystem-backed Incubator on macOS, for a native or mobile application,
+cannot host a Compose ecosystem. If Incubators may own dependent services, that
+implementation silently becomes second-class — unable to run the dev dependencies
+of any repository that has them — and the abstraction fails precisely at the
+backend it was widened to admit. Commonality of the database case does not make
+macOS able to run Postgres in an Incubator.
+
+**The consequence is not "supply it externally."** A repository whose development
+needs a database has a **Habitat, and a small one**. Habitats span two orders of
+magnitude: a large application's is many services and genuinely expensive; a Go
+service needing Postgres has a one-container Habitat. Only the expensive end
+motivated the split, and nothing here requires a Habitat to be large. An
+externally supplied database was considered and rejected: it sits outside every
+fencing domain, it designs in the cross-Story contention
+[ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md) forbids, it
+is not reproducible from the commit, and Maestro cannot provision it for a fresh
+Story.
+
+**Story-scoped support services inside the Incubator's own fencing domain were
+considered and rejected**, and the rejection is recorded because the option will
+be proposed again. Beyond the multi-implementation argument, it permits a repo to
+run a container Postgres in the fast loop while its Habitat uses a managed
+service — so the fast loop validates something the slow loop does not, and the
+divergence is invisible until it is expensive.
+
+This makes affordable Habitat leasing load-bearing rather than a convenience;
+see §2.
+
+#### The naming reconciliation, stated as a mapping
+
+The blocker plan, [issue #273](https://github.com/SnapdragonPartners/maestro/issues/273),
+and [ADR backlog slot 11](../v2/notes_adr-backlog.md) use `Habitat` for the single
+conflated resource. Their requirements do **not** all move to the Incubator — an
+earlier draft of this ADR claimed they did, which would have silently relocated
+dependent-service lifecycle to the wrong resource. The mapping is:
+
+| Prior requirement | Now attaches to |
+| --- | --- |
+| Tool routing targets a resource reference, never an Agent-derived local path | **Both** |
+| Read-only Architect inspection; removal of Coder workspace bind-mounts | Incubator |
+| Writable source workspace and toolchain lifecycle | Incubator |
+| The Docker socket escape (`docker_long_running.go:243`) and the Compose-network attachment (`registry.go:385`) | Incubator (both are properties of the development container today) |
+| **Dependent-service lifecycle** | **Habitat** |
+| Deployed candidate, runtime configuration, integration and UAT surfaces | Habitat |
+| Identity, spec-versus-instance, generation | **Both**, independently |
+| The fencing protocol and its three-valued receipt | **Both** — the contract is generic over resource type (§7) |
+| The Docker/Compose gating row of the fencing compatibility matrix | **Both** — Docker for the Incubator, Compose for the Habitat |
+| Restart and reconciliation expectations | **Both** |
+
+`Habitat` is retained for the deployed environment because that is the resource
+the word describes. Renaming the deployed environment and leaving `Habitat` on the
+development resource was considered and rejected as the less accurate of two
+imperfect options.
 
 ### 2. Scope, ownership, and cardinality
 
@@ -125,10 +203,32 @@ question rather than a data-loss question.
   Incubator.** A concurrently mutating view is the wrong thing to review;
   forge-mediation (§4) means there is always a better one available.
 
-**The Habitat is leased exclusively for verification and released immediately
-after.** Compatible executions queue when capacity is exhausted. The Orchestrator
-assigns leases; agents never claim one. The leasing agent need not remain active
-while deterministic build, deployment, and test steps wait for capacity.
+**The Habitat is leased exclusively.** Compatible executions queue when capacity
+is exhausted. The Orchestrator assigns leases; agents never claim one. The leasing
+agent need not remain active while deterministic build, deployment, and test steps
+wait for capacity.
+
+**Lease lifetime and instance lifetime are separate.** An earlier draft said the
+Habitat is "released immediately after" verification while also saying one lease
+spans many deployment generations; those cannot both hold. The distinction:
+
+- The **instance** is the provisioned environment. It persists across many
+  deployments of successive commits (§5).
+- The **lease** is exclusive authorization to deploy into it and verify against
+  it. It is held for a bounded interval and released, so a Habitat is never
+  occupied by an idle execution.
+
+An execution may hold a lease across a burst of verification iterations rather
+than reacquiring per test run. This is what makes §1's no-ecosystem rule
+affordable: a repository whose unit tests need a database would otherwise pay a
+lease acquisition on every run of the fast loop.
+
+**The lease-duration mechanism is deliberately unresolved here** and is a Phase 3
+plan decision. What this ADR fixes is that a lease is bounded and independently
+revocable, that expiry is a lease event and not a fencing event — an expired
+lease deauthorizes, and stopping the occupant is §7's protocol — and that per-type
+capacity limits are the backstop against a held lease starving other executions.
+See [notes_execution-contracts.md](../v2/phase_3/notes_execution-contracts.md).
 
 **Capacity is limited per resource type, never globally.** A deployment may
 support ten concurrent Incubators and two Habitats. A single limit over both
@@ -157,48 +257,99 @@ outstanding capabilities.
 the Incubator against a live Habitat is an obvious-looking shortcut. It is
 prohibited. Verification executes in the Habitat (§7).
 
-### 4. The forge commit is the only medium of exchange
+### 4. The forge commit is the sole source and definition handoff
 
-The neutral handoff between the two resources is an **immutable forge commit**.
-The Incubator produces one; the Habitat consumes one. Nothing else crosses.
+The neutral handoff of **source and environment definition** between the two
+resources is an **immutable forge commit**. The Incubator produces one; the
+Habitat consumes one. No source, no definition, and no mutable state crosses by
+any other route.
+
+Digest-addressed binaries do cross, and saying "nothing else crosses" would be
+false: images, packages, and archives live in OCI registries, package registries,
+or object storage and are referenced **by immutable digest** from the definitions
+in the commit. They are reachable only because the commit names them, so the
+commit remains the root of the handoff. Binaries never go into Git.
 
 This is chosen because a forge is the one integration point essentially every
 deployment mechanism already speaks, so existing deployment definitions work
 largely unchanged, and because it makes the exchanged thing immutable and
-addressable by construction. Binary artifacts stay out of Git — they live in OCI
-registries, package registries, or object storage, and are referenced by digest.
+addressable by construction.
 
 **Both halves of the promoted commit matter.** The commit carries the application
 source *and* the Habitat definition — the environment is habitat-as-code.
 Promotion advances both together.
 
-`HabitatSpec` is therefore **derived, not registered**: the spec identity is the
-digest of the Habitat definition files at the promoted commit. There is no
-separate spec object to keep in sync with the repository. `HabitatInstance` is
-the provisioned, mutable resource with a stable ID, generation, provider
-reference, and lifecycle state. The same derivation applies to the Incubator: its
-definition (Dockerfile, devcontainer spec, or equivalent) lives in the commit and
-its spec identity is that definition's digest.
+#### Spec identity is derived, and must close over everything that shapes the environment
 
-### 5. Two clocks
+`HabitatSpec` is **derived, not registered**: there is no separate spec object to
+keep in sync with the repository. But "the digest of the definition files" is not
+sufficient, because two equal digests must not be able to provision materially
+different environments. The provider MUST declare a **dependency closure** — the
+complete set of inputs that shape the realized environment — and the spec digest
+is taken over that closure, not over a directory.
 
-A Habitat carries two independent counters, and the distinction between them is
-supplied by the digest comparison in §4:
+The closure MUST include, where the provider's backend has them:
 
-| Counter | Advances when | Is |
+- The definition files themselves, transitively: included Compose files and
+  overrides, Terraform/OpenTofu modules, Kustomize bases and overlays, Helm charts
+  and values.
+- **Immutable image and artifact references.** A mutable tag in a definition does
+  not close the spec; images enter by digest ([ADR 0026](0026-multi-architecture-artifacts.md)).
+- **Provider selection and version**, and toolchain versions where they change the
+  realized environment.
+- **Non-secret variables and configuration** that alter what is provisioned.
+- **Platform, resource, and policy inputs**, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273)
+  names explicitly as part of the requested origin.
+
+Secrets are **referenced by identity, never digested by value**; a rotated secret
+does not change the spec.
+
+A provider that cannot enumerate its closure cannot produce a sound spec identity,
+and MUST declare the spec **unclosed** rather than emit a digest that implies more
+than it covers. An unclosed spec is not a conformance failure in itself — it
+constrains what may be inferred from spec equality.
+
+`HabitatInstance` is the provisioned, mutable resource with a stable ID, its own
+generation, a provider reference, and lifecycle state (§5).
+
+The same derivation and closure obligation apply to the Incubator: its definition
+(Dockerfile, devcontainer spec, or equivalent) lives in the commit, and its spec
+identity closes over base image digests and toolchain inputs on the same terms.
+
+### 5. Three identities: specification, incarnation, deployment
+
+An earlier draft carried two counters and made one of them mean two things: the
+"Habitat generation" was defined as definition-derived *and* incremented on every
+reprovision. Those diverge the moment a healthy environment is reprovisioned
+against an unchanged definition — a real case, since fencing-then-replace is the
+MVP reset path (§6). Three identities are needed, not two:
+
+| Identity | Changes when | Is |
 | --- | --- | --- |
-| **Habitat generation** | The Habitat definition digest changes | The infrastructure identity, and **the fencing unit** |
-| **Deployment generation** | Only the application source changed | Which commit is running inside that infrastructure |
+| **`SpecDigest`** | The definition closure changes (§4) | *What was requested.* Content-addressed, not a counter. Two instances may share it. |
+| **Instance generation** | A new provider domain is created, for any reason — definition change, reset, recovery, or quarantine replacement | *Which incarnation is real.* This is the **fencing domain identity**, and what stale capabilities are checked against. |
+| **Deployment generation** | A new commit's application code is deployed into the current instance | *What is running inside it.* |
 
-One lease spans many deployment generations. Without this split every commit
-advance would be a new Habitat generation — a new fencing domain, an invalidated
-lease, and re-leasing per iteration, which is the expensive step rather than the
-cheap one. It is also required for evidence: a verification receipt must be able
-to say whether the environment or the code changed, and one counter cannot.
+The essential rule the two-counter version got wrong: **a fresh provider domain
+invalidates stale capabilities even when its `SpecDigest` is unchanged.** Identity
+of request is not identity of incarnation. Binding fencing to the spec would let a
+capability issued against a destroyed environment be honoured by its replacement.
 
-**MVP performs the same physical action for both** — tear down and rebuild — and
-records which clock advanced. The distinction is bookkeeping now and a
-convergence trigger later.
+One **instance** spans many deployment generations. (An earlier draft said "one
+lease," which contradicted §2 — the lease is bounded authorization, the instance
+is the environment.) Without this separation every commit advance would create a
+new provider domain, invalidating the lease and forcing reprovisioning per
+iteration, which is the expensive step rather than the cheap one.
+
+Evidence needs all three: a verification receipt must be able to say what was
+requested, which incarnation ran it, and which commit was deployed. No two of the
+three reconstruct the third.
+
+**MVP advances the instance generation whenever the deployment generation
+advances**, because reset is reprovision-only (§6) — so the physical action is the
+same in every case. The identities are still recorded separately, because
+in-place convergence later changes which of them advance together and the evidence
+must not have to be reinterpreted retroactively.
 
 ### 6. Reset, and why in-place convergence is a correctness trade
 
@@ -224,10 +375,49 @@ half is not: **named volumes survive `up`, so data from one verification run
 leaks into the next.** For a verification environment that is a false-green
 generator — a test that passes on residue from the previous iteration.
 
-Teardown-and-rebuild is therefore correct by construction and is the MVP choice
-for that reason, not merely for simplicity. Any future in-place path MUST state
-what is reset between verification runs even when the infrastructure is not
-reprovisioned. It buys latency by spending a correctness guarantee.
+#### Teardown is not itself a clean reset
+
+The paragraph above was, in an earlier draft, followed by the conclusion that
+teardown-and-rebuild is "correct by construction." That does not follow, and the
+draft contradicted its own argument one paragraph after making it. **The same
+volumes that survive `up` also survive `down`:**
+
+- `docker compose down` removes containers and networks. It removes **named
+  volumes only with `-v`/`--volumes`**.
+- Volumes declared `external: true` are **never** removed by `down`, with or
+  without `-v` — Compose does not own them.
+- Bind-mounted host state is not project state at all and outlives the project
+  entirely.
+
+So teardown-and-rebuild reaches a clean state only for the subset of mutable
+state the project actually owns and is actually asked to remove. Assuming it is
+clean is the same class of error as assuming a stopped container is fenced.
+
+**Requirement.** A reset is complete only when the provider establishes one of:
+
+1. **Generation-scoped namespacing** — the replacement instance's mutable state
+   lives in names derived from the new instance generation (§5), so it cannot
+   reach the prior generation's state whether or not that state was deleted; or
+2. **A positive reset receipt** — the provider enumerates the mutable state the
+   instance owns and confirms its removal.
+
+Mutable state that satisfies neither — external volumes, bind-mounted host paths,
+shared services — MUST be **rejected at provisioning or quarantined**, and MUST
+NOT be silently inherited by a replacement instance. A provider that cannot
+establish either condition for some part of its state declares that part
+**unreset**, and an instance carrying unreset state cannot back a verification
+receipt claiming a clean environment.
+
+Generation-scoped namespacing is preferred over deletion for the same reason
+`isolated` exists in §7: it proves non-interference without depending on a
+destructive operation succeeding.
+
+With that requirement met, teardown-and-rebuild is the MVP choice because it is
+the simpler of two paths that can both be made correct — not because it is
+correct on its own. Any future in-place path MUST state what is reset between
+verification runs even when the infrastructure is not reprovisioned; it buys
+latency by spending a correctness guarantee, and it must show that guarantee is
+restored by other means.
 
 Repository-defined `make clean` is not evidence of reset: it does not cover
 processes, untracked files, credentials, databases, volumes, or service state.
@@ -305,6 +495,17 @@ synchronous confirmation of death.
   removes the container from `activeContainers` and the global registry, and
   returns `nil` — so a failed stop leaves no record that the container exists.
 
+**A receipt covers Maestro-managed state and claims nothing beyond it.** Where a
+repository connects a resource Maestro does not provision — a licensed service
+that cannot be containerized, a shared staging dependency — writes the fenced
+generation made to it are outside every receipt. Such connections are permitted;
+they are not a conformance failure. But an instance holding one cannot back a
+verification receipt claiming a clean environment (§6), and the boundary must be
+recorded rather than implied, because `terminated` and `isolated` otherwise read
+as unconditional. This is also why §1 routes Maestro-managed dependent services
+to the Habitat instead of leaving them external: external state is exactly the
+state no receipt can speak for.
+
 ### 8. Tool routing, and contracts declare where they run
 
 **Maestro's tools target a resource reference, never an Agent-derived local
@@ -319,9 +520,17 @@ makes §3 enforceable rather than aspirational:
 - **Habitat contracts** — deploy, integration test. Ecosystem required.
 
 An integration-test contract cannot quietly run in the Incubator and reach the
-Habitat, because the Incubator has no route. It also follows that **the Habitat
-definition must include somewhere to execute its own verification** — a test
-runner is part of the environment, not something reaching in from outside.
+Habitat, because the Incubator has no route. Verification therefore executes
+**inside the Habitat's fencing domain**.
+
+That does **not** mean the production deployment definition must be modified to
+carry a test runner — requiring it would violate §1's binding constraint that
+those definitions are not Maestro's to write. The **provider launches a
+verification executor into the Habitat's domain**, joining the same fencing unit
+and the same instance generation, without appearing in the definition. A
+repository may instead declare its own runner in a development-facing overlay if
+it prefers; both satisfy the rule. What is prohibited is a runner *outside* the
+domain reaching in, which is the no-channel escape under another name.
 
 The contract set itself, its invocation and result shape, and the reconciliation
 of a `deploy` verb with v1's existing `Run` are **Phase 3 plan material, not part
@@ -337,11 +546,36 @@ may itself become later Story work. Per the roadmap's Phase 3 exit criteria — 
 Epic from intake through Story execution to merged Story branches on a fixture
 repo — **this is the normal Phase 3 case**, not an edge case.
 
-**Physically identical.** One environment may implement both roles for a simple
-application, analogous to build and run stages of a container image. The roles
-and their receipts stay distinct even when the implementation collapses them:
-source and build identity, deployment identity, and verification evidence remain
-separately recorded.
+**Shared implementation, never a shared instance.** A simple application may use
+one image, one provider, and one definition for both roles — the analogy is the
+build and run stages of a container image, which share a Dockerfile and are not
+the same container.
+
+An earlier draft said the two roles could be "physically identical." That is not
+available: **a single instance cannot satisfy both the independent-fencing-domain
+guarantee (§7) and the no-direct-channel invariant (§3)**. Fencing the coding role
+would collaterally fence the verification role, since one domain cannot be fenced
+in half; and an Incubator that *is* the Habitat has a route to it by definition,
+so the invariant is not merely unenforced but false.
+
+The rule:
+
+- The two roles are always **distinct instances with distinct fencing domains**,
+  even when they share an image, a definition, a provider implementation, and a
+  host.
+- They may be **sequential** — the Habitat instance provisioned for verification
+  after the Incubator's candidate is promoted, and released after — which is the
+  ordinary shape for a simple application and costs nothing extra.
+- **Concurrent leases across the two roles by one execution are permitted**
+  (§2 allows holding a Habitat across an iteration burst while the Incubator
+  remains leased), because they are separate domains with no route between them.
+  What is forbidden is collapsing them into one domain to avoid the second
+  provisioning.
+
+A provider that genuinely cannot separate the domains MUST declare the collateral
+semantics required by §7 — that fencing either role fences both — and MUST NOT
+present itself as offering independent domains. No Phase 3 provider is expected
+to be in this position; Docker and Compose separate cleanly.
 
 ## Consequences
 
@@ -366,20 +600,26 @@ separately recorded.
   omission from the definition surfaces at promotion rather than after merge.
 - **Verification costs a forge round trip.** Write test, commit, deploy, run. The
   agent is not burning tokens while it waits — these are deterministic steps with
-  no LLM in the loop — so the cost is wall-clock on an unattended step. The clock
-  split (§5) keeps the expensive part, leasing and provisioning, off the
-  per-iteration path.
-- **The real risk is throughput, not latency.** With many Incubators and few
-  Habitats, stories serialize behind Habitat capacity. This is what makes the
-  short-lease rule in §2 load-bearing and what per-type capacity limits have to be
-  set against.
-- **Provenance records both identities.** A promotion binds Story and source
-  commit, Incubator identity and generation, the environment digests of both
-  resources, artifact digests and locations, Habitat identity, spec digest,
-  Habitat generation *and* deployment generation, deployment result, and
-  verification evidence. Any durable promotion record is an artifact and routes
-  through [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md)'s envelope
-  and payload type registry and [ADR 0021](0021-artifacts-and-principal-instances.md)'s
+  no LLM in the loop — so the cost is wall-clock on an unattended step. Separating
+  instance from deployment generation (§5) keeps the expensive part, provisioning,
+  off the per-iteration path.
+- **Throughput is the binding constraint, not latency, and §1 tightened it.**
+  With many Incubators and few Habitats, stories serialize behind Habitat
+  capacity — and routing every Maestro-managed dependent service to the Habitat
+  means more executions need one than a purely production-shaped reading would
+  suggest. This is what makes bounded leases (§2) and per-type capacity limits
+  load-bearing rather than administrative. Setting the Habitat limit as if only
+  large applications needed one would starve the ordinary database-backed case.
+- **Provenance records all three identities.** A promotion binds Story and source
+  commit, Incubator identity and generation, the spec digests of both resources
+  and the closure each was taken over, artifact digests and locations, Habitat
+  identity, **instance generation and deployment generation**, deployment result,
+  and verification evidence. Where a spec is declared *unclosed* (§4) or an
+  instance carries *unreset* or external state (§6, §7), the record says so, so a
+  later reader cannot infer more from spec equality than the provider established.
+  Any durable promotion record is an artifact and routes through
+  [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md)'s envelope and payload
+  type registry and [ADR 0021](0021-artifacts-and-principal-instances.md)'s
   Management/Audit split — never a bespoke record shape.
 - **Persistence is a Phase 3 migration.** The Habitat and Incubator families are
   created in Phase 3, as prompt packs already are; Phase 2 is closed and
@@ -413,7 +653,16 @@ project.
    `pkg/exec/docker_long_running.go:243` and showing that domain-based fencing
    catches the sibling container descendant-walking misses. Spike code: it lands
    outside `pkg/`, `internal/`, and `cmd/`, and anything preserved goes under
-   `spikes/phase_3/`.
+   `spikes/phase_3/`. It must additionally prove two things the first sketch of
+   this section did not ask for:
+   - **Fencing closes the sibling-creation race before enumeration.** A domain
+     that is enumerated and *then* fenced loses to a holder that creates one more
+     sibling in the interval. The order must be: revoke the ability to create,
+     then enumerate, then confirm. A reproducer that creates its sibling before
+     fencing begins proves nothing about the race.
+   - **Provider records survive a failed fence.** Inject a stop failure and show
+     the container remains recorded and reconcilable — the property
+     `StopContainer` destroys today.
 2. **A paper walkthrough of a Kubernetes node partition** — no cluster required —
    as the materially different failure shape where confirmed termination is
    unavailable and the `isolated` receipt carries the weight.
