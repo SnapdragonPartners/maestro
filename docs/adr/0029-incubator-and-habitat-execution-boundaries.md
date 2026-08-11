@@ -420,10 +420,13 @@ provider MUST define two **projections** over its definition set and hash those:
 | **Spec projection**, plus its transitive dependencies | Service topology; **dependent-service image digests**; ports, networks, volumes, `depends_on`, healthchecks, resource and platform constraints; base and toolchain inputs; provider selection and version; non-secret variables that alter what is provisioned; policy inputs, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273) names as part of the requested origin | `SpecDigest` → instance generation (§5) |
 | **Deployment projection** | The promoted source commit; application build inputs — `build` context, dockerfile, args, target — and the application `Dockerfile` itself; the resulting **candidate artifact digest** | Deployment identity and provenance (§5) |
 
-**The partition is per field, not per service.** The `app` service contributes to
-both: that it exists, exposes these ports, and depends on `db` is spec; what gets
-built into it is deployment. Saying "the app service is deployment" would be
-wrong and would drag its topology out of the spec.
+**Classification is finer-grained than a service, and finer-grained than a
+field.** The `app` service contributes to both projections: that it exists,
+exposes these ports, and depends on `db` is spec; what gets built into it is
+deployment. Saying "the app service is deployment" would drag its topology out of
+the spec. A single field divides the same way — see the classification rule
+below, which is stated over semantic contributions rather than fields for exactly
+this reason.
 
 Worked example: `postgres:16@sha256:…` is spec — it describes the environment.
 `build: .` for the application service is deployment — it produces the candidate.
@@ -727,6 +730,14 @@ Habitats are fenced by the same protocol, each in its own domain.
 2. **Provider-enforced fencing of the whole domain** once the grace period
    expires, proving **non-interference**. A provider that cannot produce a
    positive receipt is not conformant; best-effort success is forbidden.
+   **The order within this step is part of the contract: revoke the ability to
+   create, then enumerate, then confirm.** A fence that enumerates first fixes
+   its set while the holder can still add to it, and the window is not an instant
+   between two calls — it is however long the fence spends stopping what it
+   found, so it widens with the size of the domain. The
+   [Docker spike](../v2/phase_3/spike_docker-fencing.md) measures it: enumerating
+   19 containers and then stopping them left **38** in the domain, while revoking
+   first left zero unaccounted for.
 3. **Quarantine when fencing cannot be confirmed.** Not knowing whether the old
    generation can still act is the dangerous case and needs a defined resting
    state, not an assumption.
@@ -743,6 +754,29 @@ immutable `FencingDomainID` and generation *before* execution starts, and MUST
 guarantee that every process or subordinate resource able to mutate the resource
 is contained in that domain. If one lease cannot be isolated, fencing covers
 every lease sharing the domain; say so rather than discovering it.
+
+#### Domain membership is enforced at creation, never discovered at fencing time
+
+The [Docker spike](../v2/phase_3/spike_docker-fencing.md) establishes this, and it
+is the requirement most easily read past in the paragraph above.
+
+Descendant-walking misses an escaped sibling, which the blocker plan already
+says. But **domain enumeration misses it too** when the sibling was created
+through a raw socket, because nothing stamped it with the domain. The spike's C2
+filtered the domain and got back only the holder; C3 repeated the identical
+escape with the label applied at creation and got back both.
+
+So "include every created container in the immutable fencing domain" is not an
+action a provider can take when it fences. Membership is enforced when the
+resource is created, or it is unavailable afterwards. **A provider that mounts a
+raw socket and intends to enumerate by domain at fence time has no containment
+boundary** — only one that appears to work until something creates a resource the
+provider did not.
+
+This is what makes the Phase 3 obligation concrete: remove raw socket access,
+mediate it so every creation is stamped before the resource exists, or use a
+private daemon. Those are not three ways of achieving the same convenience; they
+are the only three ways the domain exists at all.
 
 **The receipt proves non-interference, not death.**
 
@@ -978,20 +1012,21 @@ Two artifacts are required before acceptance, and deliberately no more. The
 backend list is open-ended and chasing it would turn a design ADR into a research
 project.
 
-1. **An executable Docker/Compose reproducer** demonstrating the socket escape at
-   `pkg/exec/docker_long_running.go:243` and showing that domain-based fencing
-   catches the sibling container descendant-walking misses. Spike code: it lands
-   outside `pkg/`, `internal/`, and `cmd/`, and anything preserved goes under
-   `spikes/phase_3/`. It must additionally prove two things the first sketch of
-   this section did not ask for:
-   - **Fencing closes the sibling-creation race before enumeration.** A domain
-     that is enumerated and *then* fenced loses to a holder that creates one more
-     sibling in the interval. The order must be: revoke the ability to create,
-     then enumerate, then confirm. A reproducer that creates its sibling before
-     fencing begins proves nothing about the race.
-   - **Provider records survive a failed fence.** Inject a stop failure and show
-     the container remains recorded and reconcilable — the property
-     `StopContainer` destroys today.
+1. **An executable Docker/Compose reproducer** — **done**, 2026-08-11:
+   [`spikes/phase_3/fencing`](../v2/phase_3/spike_docker-fencing.md), seven claims
+   run against Docker 29.6.2 / Compose v5.3.1, all proven, nothing in this section
+   falsified. It demonstrates the socket escape at
+   `pkg/exec/docker_long_running.go:243`, that domain enumeration catches the
+   sibling descendant-walking misses **only when creation stamps the domain**,
+   that revoke-before-enumerate closes the race that enumerate-before-stop loses,
+   and that an unconfirmed stop must keep the provider record. Each claim carries
+   a control, so a result also shows what produces it.
+
+   Two findings changed this section rather than merely confirming it: membership
+   enforcement at creation (above), and the ordering requirement in protocol step
+   2. Two defects in the reproducer's own first version are recorded in the spike
+   report, both of the shape this repository keeps paying for — a check that could
+   not fail for the defect it protected against.
 2. **A paper walkthrough of a Kubernetes node partition** — no cluster required —
    as the materially different failure shape where confirmed termination is
    unavailable and the `isolated` receipt carries the weight.
