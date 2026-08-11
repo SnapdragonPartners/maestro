@@ -273,10 +273,24 @@ benefit:
 - **A queue forms** → a retention claim with no active lease becomes reclaimable.
   A claim whose lease is active never is.
 
-Still self-curing: a crashed execution holds no lease and stops renewing its
-claim, so it loses the instance as soon as anyone wants it. If nobody wants it,
-holding costs nothing. An execution that dies without a terminal result is covered
-by the reconciliation path that must exist regardless.
+Still self-curing, but **not uniformly, and an earlier version of this section
+overclaimed it.** A crash leaves two different states depending on when it
+happens:
+
+- **Crashed between sessions** — no lease is held, so the retention claim is
+  immediately reclaimable by anyone who wants the instance.
+- **Crashed during an active session** — the lease is still held, and
+  reclamation may not act on a claim with an active lease. The instance is stuck
+  until the lease expires or reconciliation clears it.
+
+This is why **lease expiry is not optional** even though session completion is the
+normal release path: it is the only thing that unwedges the second case. It is
+also the narrow job a timer genuinely has here — bounding a lease held by a dead
+session, not measuring abandonment.
+
+If nobody wants the instance, holding it costs nothing in either case. An
+execution that dies without a terminal result remains covered by the
+reconciliation path that must exist regardless.
 
 The cost is that reclamation needs the scheduler to know who is queued, where a
 timer would be purely local. The Orchestrator already assigns leases and already

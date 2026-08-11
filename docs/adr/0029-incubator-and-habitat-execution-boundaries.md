@@ -108,6 +108,23 @@ new structure exposed.
 `isolated` is settled as of this round, so the Kubernetes walkthrough is
 unparked.
 
+**Round 4 (Codex, 2026-08-11) confirmed the substance and asked for two
+acceptance cleanups, both applied.** No further conceptual round is expected.
+
+1. **Hash projections, not files** (§4). Round 3 partitioned the closures but
+   still placed whole definition files in the spec closure — and a single
+   `compose.yaml` carries `image:` beside `build:`, so a `build.args` edit would
+   have moved `SpecDigest`. The same defect as round 3's, at field granularity
+   instead of file granularity. Providers now define two normalized projections
+   and classify every field they honor.
+2. **Residual lease/retention terminology** (§2, §5, §9, Consequences, and the
+   notes). One correction in that sweep is substantive rather than editorial: the
+   notes claimed a crashed execution holds no lease, which is true only of a crash
+   *between* sessions. A crash during an active session retains the lease, and
+   reclamation may not act on a claim whose lease is active — so the instance is
+   stuck until expiry or reconciliation. That is why lease expiry is not optional
+   even though session completion is the normal release path.
+
 ## Context
 
 ### What v1 actually has
@@ -391,19 +408,39 @@ generation on every commit and reinstate exactly the per-iteration reprovisionin
 §6 removes. The dividing question is: **does this input describe the environment
 the candidate runs in, or does it produce the candidate?**
 
-| Closure | Contains | Feeds |
+**The unit of hashing is a normalized projection, not a file.** A single
+`compose.yaml` routinely carries both kinds of field — `image: postgres:16` beside
+`build: .` — so hashing whole definition files transitively would mix the closures
+again at field granularity, and a deployment-only change such as a `build.args`
+edit would move `SpecDigest`. That is round 3's defect one level down. Each
+provider MUST define two **projections** over its definition set and hash those:
+
+| Projection | Contains | Feeds |
 | --- | --- | --- |
-| **Spec closure** | Definition files transitively (Compose files and overrides, Terraform/OpenTofu modules, Kustomize bases and overlays, Helm charts and values); **dependent-service image digests**; base and toolchain inputs; provider selection and version; non-secret variables that alter what is provisioned; platform, resource, and policy inputs, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273) names as part of the requested origin | `SpecDigest` → instance generation (§5) |
-| **Deployment closure** | The promoted source commit; application build inputs including the application `Dockerfile` and its context; the resulting **candidate artifact digest** | Deployment identity and provenance (§5) |
+| **Spec projection**, plus its transitive dependencies | Service topology; **dependent-service image digests**; ports, networks, volumes, `depends_on`, healthchecks, resource and platform constraints; base and toolchain inputs; provider selection and version; non-secret variables that alter what is provisioned; policy inputs, which [#273](https://github.com/SnapdragonPartners/maestro/issues/273) names as part of the requested origin | `SpecDigest` → instance generation (§5) |
+| **Deployment projection** | The promoted source commit; application build inputs — `build` context, dockerfile, args, target — and the application `Dockerfile` itself; the resulting **candidate artifact digest** | Deployment identity and provenance (§5) |
+
+**The partition is per field, not per service.** The `app` service contributes to
+both: that it exists, exposes these ports, and depends on `db` is spec; what gets
+built into it is deployment. Saying "the app service is deployment" would be
+wrong and would drag its topology out of the spec.
 
 Worked example: `postgres:16@sha256:…` is spec — it describes the environment.
 `build: .` for the application service is deployment — it produces the candidate.
-That the `app` service *exists*, with these ports and this dependency on `db`, is
-spec; what gets built into it is not. An application `Dockerfile` change that adds
-a system package changes the candidate, not the environment, so it is deployment.
+An application `Dockerfile` change that adds a system package changes the
+candidate, not the environment, so it is deployment.
 
-Both closures use immutable references. A mutable tag closes neither; images enter
-by digest ([ADR 0026](0026-multi-architecture-artifacts.md)).
+**Projections must be normalized** — canonical ordering, resolved interpolation,
+defaults made explicit — so that cosmetic edits do not churn either digest and
+semantically equal definitions hash equal.
+
+**Every field a provider honors must be classified into exactly one projection.**
+A field the provider acts on but has not classified means the projections are not
+closed, and the spec is declared `unclosed` (below) rather than digested as though
+it were complete.
+
+Both projections use immutable references. A mutable tag closes neither; images
+enter by digest ([ADR 0026](0026-multi-architecture-artifacts.md)).
 
 **The Phase 3 provider MUST enumerate both, and MUST NOT mix them.** Folding the
 deployment closure into `SpecDigest` is not a conservative error — it silently
@@ -464,9 +501,10 @@ equality.
 **But the Phase 3 Docker/Compose provider MUST produce a closed spec.** `unclosed`
 exists for future backends whose inputs genuinely cannot be enumerated, not as
 permission for the one provider being built to skip the work. A Compose project's
-spec closure — files, overrides, dependent-service image digests, non-secret
-variables — is enumerable, so enumerate it, and enumerate the deployment closure
-separately per the table above.
+spec projection — topology, dependent-service image digests, ports, volumes,
+networks, non-secret variables — is enumerable over its transitive definition
+set, so enumerate it, classify every field it honors, and produce the deployment
+projection separately per the table above.
 
 `HabitatInstance` is the provisioned, mutable resource with a stable ID, its own
 generation, a provider reference, and lifecycle state (§5).
@@ -494,10 +532,11 @@ invalidates stale capabilities even when its `SpecDigest` is unchanged.** Identi
 of request is not identity of incarnation. Binding fencing to the spec would let a
 capability issued against a destroyed environment be honoured by its replacement.
 
-One **instance** spans many deployment generations. (An earlier draft said "one
-lease," which contradicted §2 — the lease is bounded authorization, the instance
-is the environment.) Without this separation every commit advance would create a
-new provider domain, invalidating the lease and forcing reprovisioning per
+One **instance** spans many deployment generations, and one **retention claim**
+spans the burst of iterations against it. (An earlier draft said "one lease,"
+which contradicted §2 — a lease exists only during an active verification
+session.) Without this separation every commit advance would create a new provider
+domain, invalidating outstanding capabilities and forcing reprovisioning per
 iteration, which is the expensive step rather than the cheap one.
 
 Evidence needs all three: a verification receipt must be able to say what was
@@ -839,11 +878,11 @@ The rule:
 - They may be **sequential** — the Habitat instance provisioned for verification
   after the Incubator's candidate is promoted, and released after — which is the
   ordinary shape for a simple application and costs nothing extra.
-- **Concurrent leases across the two roles by one execution are permitted**
-  (§2 allows holding a Habitat across an iteration burst while the Incubator
-  remains leased), because they are separate domains with no route between them.
-  What is forbidden is collapsing them into one domain to avoid the second
-  provisioning.
+- **One execution may hold both roles at once** — a retention claim on a Habitat
+  across an iteration burst while its Incubator remains leased, and concurrent
+  leases on the two during a verification session — because they are separate
+  domains with no route between them. What is forbidden is collapsing them into
+  one domain to avoid the second provisioning.
 
 A provider that genuinely cannot separate the domains MUST declare the collateral
 semantics required by §7 — that fencing either role fences both — and MUST NOT
@@ -885,9 +924,10 @@ to be in this position; Docker and Compose separate cleanly.
   With many Incubators and few Habitats, stories serialize behind Habitat
   capacity — and routing every Maestro-managed dependent service to the Habitat
   means more executions need one than a purely production-shaped reading would
-  suggest. This is what makes bounded leases (§2) and per-type capacity limits
-  load-bearing rather than administrative. Setting the Habitat limit as if only
-  large applications needed one would starve the ordinary database-backed case.
+  suggest. This is what makes bounded retention claims (§2) and per-type capacity
+  limits load-bearing rather than administrative. Setting the Habitat limit as if
+  only large applications needed one would starve the ordinary database-backed
+  case.
 - **Provenance records all three identities plus the configuration axis.** A
   promotion binds Story and source commit, Incubator identity and generation, the
   spec digests of both resources and the closure each was taken over, the
