@@ -3,7 +3,7 @@ title = "Spike: Fencing A Partitioned Kubernetes Node"
 edit_date = "2026-08-12"
 status = "draft"
 type = "spike"
-summary = "The paper walkthrough ADR 0029 requires: a node partition is the case where confirmed termination is unavailable by construction, and it makes the `isolated` receipt conditional rather than merely earned — available only when every capability the fenced generation holds has an enforcing authority that confirms it can no longer be used, and `unconfirmed` otherwise. A generic Kubernetes Habitat fails that condition on all three counts documented here against primary sources: client certificates have no revocation mechanism, orchestration-level volume detach can leave a live writer, and network policy need not close established connections. Force deletion is forbidden as a fencing primitive because it lets the API state a conclusion nothing established, and the Docker capability-closure finding recurs more strictly, since a partitioned executor keeps every capability it already holds."
+summary = "The paper walkthrough ADR 0029 requires: a node partition is the case where confirmed termination is unavailable by construction, and it makes the `isolated` receipt conditional — available only when every path by which the fenced generation can reach state current or future work will touch is either closed by the authority enforcing that path or leads to a permanently abandoned target, and `unconfirmed` otherwise. Deliberately not 'every capability becomes unusable', which would collapse isolated into terminated: an isolated generation may keep running and keep writing to state nothing will read again. A generic Kubernetes Habitat fails the condition on all three shared-state paths, documented against primary sources: no client-certificate revocation exists, orchestration-level volume detach can leave a live writer, and network policy need not close established connections. Force deletion is forbidden as a fencing primitive because it lets the API state a conclusion nothing established, and the Docker capability-closure finding recurs more strictly, since a partitioned executor keeps every capability it already holds."
 +++
 
 # Spike: Fencing A Partitioned Kubernetes Node
@@ -114,28 +114,39 @@ claim wider than its evidence.
 
 | Candidate act | What it does **not** establish |
 | --- | --- |
-| **Remove the node's authorization** (delete its RBAC bindings, so the API server refuses its requests) | Authentication is the weaker half here, not the stronger: **Kubernetes has no revocation mechanism for client certificates** — no CRL, no OCSP — so "revoke its credential" is not generically available, and the hardening guide's answer is short lifetimes rather than revocation. Authorization removal *is* enforced at the API server on every request and is therefore confirmable. But it only stops the node affecting **cluster state**; the kubelet needs nothing from the control plane to keep running the containers it already has. [Authentication hardening](https://kubernetes.io/docs/concepts/security/hardening-guide/authentication-mechanisms/) |
+| **Positively deny the node identity at the API server** — a provider-specific authorization change, confirmable per request | Two things this is *not*. It is not credential revocation: **Kubernetes has no revocation mechanism for client certificates** — no CRL, no OCSP — and the hardening guide's answer is short lifetimes instead. [Authentication hardening](https://kubernetes.io/docs/concepts/security/hardening-guide/authentication-mechanisms/) And it is not simply "delete the RBAC bindings": kubelets are commonly authorized by the **Node authorizer** against their `system:node:<name>` identity rather than through a removable binding, so what denial looks like depends on the cluster's authorization configuration. [Node authorization](https://kubernetes.io/docs/reference/access-authn-authz/node/) Where a positive denial *is* configurable it is enforced on every request and therefore confirmable — but it only closes the path to **cluster state**; the kubelet needs nothing from the control plane to keep running the containers it already has. |
 | **Detach the volume** | **Forced detach can leave a live writer**, which is data corruption rather than fencing. Detaching at the orchestration layer does not stop a process mid-write on an unreachable node. What is actually sufficient is fencing at the **storage system** — a reservation change, a client-access revocation, a CSI driver that supports fencing — and whether that exists is backend-specific. [Non-graceful node shutdown](https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/) |
 | **Withdraw the network identity** (remove Pod IPs from Service endpoints, apply a deny NetworkPolicy) | NetworkPolicy governs whether connections are **allowed**; implementations are not required to terminate connections already established, and endpoint withdrawal stops new routing rather than existing sockets. A fenced generation holding an open connection may keep using it. [Network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/) |
 
 The pattern still holds, and is worth stating plainly: **you cannot get a receipt
 from the thing you cannot reach, so you must get it from everything that thing
-depends on.** But the corollary is what this round establishes:
+depends on.** Two corollaries, and the second corrects an over-strong version of
+this document:
 
-> A capability is fenced only when **the authority that enforces that capability**
-> confirms the old generation can no longer use it. Not the orchestration layer
-> that *requested* the change — the component that actually decides whether the
-> capability works.
+> A **path into shared state** is closed when the authority that enforces that
+> path confirms the old generation can no longer use it — not the orchestration
+> layer that *requested* the change, but the component that actually decides
+> whether the path works.
 
-The API server is that authority for authorization. The storage system, not
-Kubernetes, is that authority for writes. The dataplane, not the NetworkPolicy
-object, is that authority for established connections.
+> **Or the target is abandoned.** A path needs no revoking if nothing current or
+> future will ever read what lies at the end of it.
 
-**Where any capability lacks such an authority, or its authority cannot confirm,
-the receipt is `unconfirmed`** — the Habitat is quarantined and no dispatch
-occurs. On present evidence that is the *likely* outcome for a generic Kubernetes
-Habitat rather than an edge case, and a provider that wants `isolated` must
-choose backends that can confirm.
+That second branch matters, and an earlier version of this walkthrough omitted
+it — demanding instead that every capability the generation holds become
+unusable. That is approximately termination, and it would have collapsed
+`isolated` into `terminated`. **An `isolated` generation may keep running and may
+keep writing**; what it may not do is reach anything current or future work will
+touch. A partitioned node still scribbling on a local disk that will never be
+read again is *isolated*, not merely tolerated.
+
+The API server is the authority for cluster-state access. The storage system, not
+Kubernetes, is the authority for writes to shared volumes. The dataplane, not the
+NetworkPolicy object, is the authority for established connections.
+
+**Where a path can be neither closed by its authority nor abandoned, the receipt
+is `unconfirmed`** — the Habitat is quarantined and no dispatch occurs. On present
+evidence that is the *likely* outcome for a generic Kubernetes Habitat rather
+than an edge case.
 
 ## Three things this changes or sharpens in ADR 0029
 
@@ -204,17 +215,23 @@ StatefulSet identity rule embodies it, the force-detach timeout trades it away.
 
 **`isolated` is conditionally available**, and the condition is the point:
 
-> `isolated` may be returned **only when, for every capability the fenced
-> generation holds, the authority that enforces that capability confirms the old
-> generation can no longer use it.** Any capability without such an authority, or
-> whose authority cannot confirm, yields `unconfirmed`.
+> `isolated` may be returned **only when every path by which the fenced
+> generation can reach state that current or future work will touch is either
+> closed by the authority enforcing it, or leads to a target permanently
+> abandoned.** Any path that is neither yields `unconfirmed`.
 
-On present evidence a generic Kubernetes Habitat does **not** meet that condition:
-client certificates cannot be individually revoked, orchestration-level volume
-detach can leave a live writer, and network changes need not close established
-connections. `isolated` is therefore reachable only for backends chosen so that
-each capability has a confirming authority — a storage system with real fencing,
-authorization enforced per request, a dataplane that terminates connections.
+Deliberately *not* "every capability becomes unusable" — that is approximately
+termination, and an isolated generation may keep running and keep writing to
+state nothing will read again.
+
+On present evidence a generic Kubernetes Habitat does **not** meet that condition
+for its shared-state paths: client certificates cannot be individually revoked,
+orchestration-level volume detach can leave a live writer, and network changes
+need not close established connections. `isolated` is therefore reachable only by
+choosing backends whose authorities can confirm — a storage system with real
+fencing, a configurable positive denial of the node identity, a dataplane that
+terminates connections — or by arranging that what the fenced generation can
+still reach is never read again.
 
 That is a stronger outcome than "isolated works here." It says the receipt is
 sound *and* tells a future provider what it must buy to earn it.

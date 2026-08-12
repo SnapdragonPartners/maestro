@@ -856,33 +856,60 @@ construction. It does — but only as a **positive act**, and the ADR previously
 defined the receipt by its property without saying what a provider must produce
 to claim it.
 
-To return `isolated`, a provider MUST enumerate the capabilities the fenced
-generation holds and, for each, obtain confirmation **from the authority that
-enforces that capability** — not from the orchestration layer that requested the
-change. You cannot get a receipt from the thing you cannot reach, so you take it
-from everything that thing depends on.
+**The obligation is over paths into shared state, not over capabilities.** A first
+version of this rule required every capability the fenced generation holds to
+become unusable — which is approximately termination, and would have collapsed
+`isolated` into `terminated`, defeating the reason the receipt exists. An
+`isolated` generation **may keep running**, and may keep mutating state that
+nothing current or future will ever read. That is permitted, and it is the whole
+point.
+
+To return `isolated`, a provider MUST enumerate the **paths by which the fenced
+generation can reach state that current or future work will touch**, and for each
+path establish **one** of:
+
+1. **The path is revoked**, confirmed by the authority that enforces it — not by
+   the orchestration layer that requested the change; or
+2. **The target is permanently removed from future reach** — abandoned, never
+   reused, never read. Generation-scoped namespacing (§6) is exactly this: the
+   replacement instance's state lives under names derived from its own generation,
+   so the old generation's writes land somewhere nothing will look.
+
+Branch 2 is what makes `isolated` achievable at all where branch 1 is impossible.
+A local disk you cannot reach does not need revoking if nothing will ever read it
+again.
 
 **The enforcing authority is rarely the orchestrator**, and conflating them is
 how a fencing claim becomes false:
 
-| Capability | Enforcing authority |
+| Path | Enforcing authority |
 | --- | --- |
 | Acting on cluster state | The API server, per request |
-| Writing to storage | The **storage system**, not the volume-attachment record |
+| Writing to shared storage | The **storage system**, not the volume-attachment record |
 | Established network connections | The **dataplane**, not the policy object |
 
-**Any capability without such an authority, or whose authority cannot confirm,
-yields `unconfirmed`** — for the whole generation, not just that capability.
-A provider that cannot enumerate the set at all cannot claim `isolated`, the same
-discipline §4 applies to an `unclosed` spec.
+**Any path that can be neither revoked nor abandoned yields `unconfirmed`** — for
+the whole generation, not just that path. A provider that cannot enumerate the
+paths at all cannot claim `isolated`, the same discipline §4 applies to an
+`unclosed` spec.
 
 This condition is frequently unmet, and the ADR says so rather than implying
 `isolated` is routinely available: the
 [partition walkthrough](../v2/phase_3/spike_kubernetes-partition.md) records that
-a generic Kubernetes Habitat fails it on all three counts — client certificates
-have no revocation mechanism, orchestration-level detach can leave a live writer,
-and network policy need not close established connections. `isolated` is earned
-by choosing backends that can confirm, not by asserting it.
+a generic Kubernetes Habitat fails it on all three shared-state paths — no
+client-certificate revocation exists, orchestration-level detach can leave a live
+writer, and network policy need not close established connections. `isolated` is
+earned by choosing backends that can confirm or by abandoning the target, not by
+asserting it.
+
+**Terraform and equivalent provisioners are not fencing primitives**, and neither
+their state nor a `destroy` result is a receipt. They **provision the substrate**
+in which fencing happens, so the receipt comes from whatever they provisioned —
+the storage system, the API server, the dataplane. Reading a successful `destroy`
+as `terminated` would be the same error as force-deletion: an orchestration layer
+stating a conclusion its enforcing authorities never confirmed. A concrete
+Terraform-backed provider needs its own review against its actual substrate; that
+is out of scope here and is not a Phase 3 obligation.
 
 **Elapsed time is never a receipt.** A monitoring grace period is evidence about
 communication, not about execution, and it is exactly the timer an implementer
@@ -1161,14 +1188,15 @@ project.
    It survives, and the receipt is stronger for it — but **conditionally**, and
    the condition is the finding. `terminated` is correctly unavailable while the
    node is unreachable. `unconfirmed` is the correct default. And `isolated` is
-   available **only when every capability the fenced generation holds has an
-   enforcing authority that confirms it can no longer be used** — never as elapsed
-   time. That obligation is stated above; it was missing, and had `isolated`
+   available **only when every path into state current or future work will touch
+   is closed by its enforcing authority, or its target permanently abandoned** —
+   never as elapsed time, and deliberately not "every capability becomes
+   unusable", which would collapse `isolated` into `terminated`. That obligation is stated above; it was missing, and had `isolated`
    proved reachable only by waiting, the honest fix would have been deleting it
    from the contract.
 
-   **A generic Kubernetes Habitat does not meet the condition**, on all three
-   counts, which the walkthrough documents against primary sources: client
+   **A generic Kubernetes Habitat does not meet the condition** on its
+   shared-state paths, on all three counts, which the walkthrough documents against primary sources: client
    certificates have no revocation mechanism, orchestration-level volume detach
    can leave a live writer, and network policy need not close established
    connections. That is a more useful result than "isolated works here" — it tells
