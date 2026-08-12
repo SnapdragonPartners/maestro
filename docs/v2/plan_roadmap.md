@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-08-09"
+edit_date = "2026-08-12"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -864,7 +864,7 @@ Outputs:
 - Epic model.
 - Story model.
 - Single Work Group lifecycle.
-- Epic-scoped workspace.
+- Story-scoped **Incubators** and, where a repository defines one, leased **Habitats** ([ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md)). Written as "Epic-scoped workspace" before that ADR; the development environment is scoped to the Story execution rather than the Epic, and the deployed application environment is a separate leased resource.
 - Epic dashboard skeleton.
 - Epic-level plan workflow.
 - **V1 retirement:** after the v2 Orchestrator becomes the sole factory path, remove the superseded v1 runtime and every package classified `drop` in the Phase 0 port inventory. Reconcile the inventory against the final import graph and remove dependencies retained only by deleted code.

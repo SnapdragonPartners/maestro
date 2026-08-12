@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-08-09"
+edit_date = "2026-08-12"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -173,7 +173,9 @@ Candidate formats:
 
 ### Container Runtime Abstraction — **GRADUATED 2026-08-09**
 
-Picked up as **Habitat** — [backlog candidate 11](notes_adr-backlog.md), [issue #273](https://github.com/SnapdragonPartners/maestro/issues/273), item A1 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md). Kept here as a graduation pointer per this note's own rule.
+Picked up as **Habitat**, and **resolved 2026-08-12 as two resource types** — [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md), reached via [backlog candidate 11](notes_adr-backlog.md), [issue #273](https://github.com/SnapdragonPartners/maestro/issues/273), and item A1 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md). Kept here as a graduation pointer per this note's own rule.
+
+What this entry originally imagined — one container/execution abstraction — is the **Incubator**. The ADR added a second type, the **Habitat**, for the deployed application environment, because production environment definitions are artifacts Maestro does not own and must not have a development container injected into them.
 
 The original idea — Docker first, with an interface that could later support raw filesystem execution, macOS/Apple and iPhone development, and other sandbox providers — survives as the **non-gating compatibility matrix** in the blocker plan. Those backends are examples that test the contract's shape; none is Phase 3 work, and no second provider is implemented there.
 

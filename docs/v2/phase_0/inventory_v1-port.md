@@ -1,6 +1,6 @@
 +++
 title = "Inventory: v1 Port, Rework, Rewrite, Drop"
-edit_date = "2026-07-15"
+edit_date = "2026-08-12"
 status = "live"
 type = "inventory"
 summary = "The D8 disposition table at package grain over the actual v1 package list: what ports as-is, what ports with rework, what is rewritten, and what is dropped — with breaking-change principles and the deltas from D8's first-pass guess."
@@ -51,7 +51,7 @@ These govern every disposition below and any port decision made later:
 | `pkg/coder/claude` (+ `embedded`, `mcpserver`) | 2,520 | port | 3 | The external Claude Code subprocess integration keeps working as-is; only its tool exposure re-plumbs to v2 tool records (0022). |
 | `cmd/maestro-mcp-proxy`, `cmd/maestro-mcp-server` | 260 | port | 3 | Companion binaries to the above. |
 | `pkg/effect` | 880 | rework | 3 | Approval/completion/merge/question effects become artifact and review flows (0021, 0024). |
-| `pkg/tools` | 10,380 | rework | 2–4 | The registry, execution plumbing, and reusable execution/container/file/git tools keep, rewired so every call lands as a tool record — the atomic Audit action unit (0022). v1 workflow terminal tools (spec submission, story lifecycle, maintenance) die with their flows (0024); ProcessEffect signal discipline keeps (0022). |
+| `pkg/tools` | 10,380 | rework | 2–4 | The registry, execution plumbing, and reusable execution/container/file/git tools keep, rewired so every call lands as a tool record — the atomic Audit action unit (0022). v1 workflow terminal tools (spec submission, story lifecycle, maintenance) die with their flows (0024); ProcessEffect signal discipline keeps (0022). **The container/compose families shrink sharply** under [ADR 0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md): compose lifecycle tools become Orchestrator-owned, definition tools become ordinary file edits, and tools address a resource reference rather than an Agent-derived path. |
 
 ### Orchestrator
 
@@ -86,13 +86,13 @@ These govern every disposition below and any port decision made later:
 | `pkg/forge/gitea` | 1,490 | rework | 3 | The Gitea API client ports; the lifecycle does not — project-named Docker volumes become durable bind mounts under Maestro data (0022 as amended), and single-repo assumptions become repo records with multiple forge bindings. |
 | `pkg/forge/github`, `pkg/github` | 1,140 | rework | 4 | gh-CLI operations port; grows the harness-exclusive merge machinery (0023: `maestro/epic/*` and default writable only by the harness). |
 | `pkg/sync` | 340 | rework | 3 | Airplane-mode Gitea→GitHub sync keeps as a responsibility; its single-repo and `forge_state.json` coupling dies — re-cut over repo records and the secrets vault (item 9, 0022). |
-| `pkg/workspace` | 2,050 | rework | 3 | The four-way local split: active workspaces in Maestro state keyed by repo + Story/run (item 9); pre-creation re-cut for Work Groups. |
+| `pkg/workspace` | 2,050 | rework | 3 | The four-way local split: active workspaces in Maestro state keyed by repo + Story/run (item 9); pre-creation re-cut for Work Groups. **Becomes the Incubator** ([ADR 0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md)) — Story-execution-scoped rather than principal-scoped, addressed by reference rather than by path, and inspected read-only by the Architect instead of bind-mounted. |
 
 ### Containers, execution, and build
 
 | v1 package | LOC | Disposition | Phase | Notes |
 |---|---|---|---|---|
-| `pkg/exec` | 2,550 | port | 3 | Container/workspace isolation (D8 as-is). |
+| `pkg/exec` | 2,550 | port | 3 | Container/workspace isolation (D8 as-is). **Constrained by [ADR 0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md) §7**: the unconditional host Docker socket mount at `docker_long_running.go:243` must go — the Incubator gets no direct daemon route — and stop paths must produce a positive receipt rather than swallowing failures and deleting their own records. |
 | `pkg/build` | 1,540 | port | 3 | Build-service backends. |
 | `internal/utils` | 200 | port | 3 | Container helpers. |
 | `pkg/lint/loopback` | 460 | port | 3 | — |
