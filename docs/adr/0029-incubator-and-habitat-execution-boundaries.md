@@ -857,12 +857,32 @@ defined the receipt by its property without saying what a provider must produce
 to claim it.
 
 To return `isolated`, a provider MUST enumerate the capabilities the fenced
-generation holds and, for each, obtain a revocation **confirmed by a component
-that is not the fenced generation itself**. You cannot get a receipt from the
-thing you cannot reach, so you take it from everything that thing depends on:
-its API identity, its storage attachment, its network identity and workload
-credentials. A provider that cannot enumerate that set cannot claim `isolated` —
-the same discipline §4 applies to an `unclosed` spec.
+generation holds and, for each, obtain confirmation **from the authority that
+enforces that capability** — not from the orchestration layer that requested the
+change. You cannot get a receipt from the thing you cannot reach, so you take it
+from everything that thing depends on.
+
+**The enforcing authority is rarely the orchestrator**, and conflating them is
+how a fencing claim becomes false:
+
+| Capability | Enforcing authority |
+| --- | --- |
+| Acting on cluster state | The API server, per request |
+| Writing to storage | The **storage system**, not the volume-attachment record |
+| Established network connections | The **dataplane**, not the policy object |
+
+**Any capability without such an authority, or whose authority cannot confirm,
+yields `unconfirmed`** — for the whole generation, not just that capability.
+A provider that cannot enumerate the set at all cannot claim `isolated`, the same
+discipline §4 applies to an `unclosed` spec.
+
+This condition is frequently unmet, and the ADR says so rather than implying
+`isolated` is routinely available: the
+[partition walkthrough](../v2/phase_3/spike_kubernetes-partition.md) records that
+a generic Kubernetes Habitat fails it on all three counts — client certificates
+have no revocation mechanism, orchestration-level detach can leave a live writer,
+and network policy need not close established connections. `isolated` is earned
+by choosing backends that can confirm, not by asserting it.
 
 **Elapsed time is never a receipt.** A monitoring grace period is evidence about
 communication, not about execution, and it is exactly the timer an implementer
@@ -1138,22 +1158,35 @@ project.
    No cluster required and none used; it exists to test whether `isolated`
    survives a shape where confirmed termination is unavailable by construction.
 
-   It does, and the receipt is stronger for it. `terminated` is correctly
-   unavailable; `unconfirmed` is the correct default, and Kubernetes' own
-   controllers behave as though it is; and `isolated` is reachable only as a
-   **conjunction of confirmed revocations obtained from reachable components**,
-   never as elapsed time. That obligation is now stated above — it was missing,
-   and had `isolated` turned out to be reachable only by waiting, the honest fix
-   would have been to delete it from the contract.
+   It survives, and the receipt is stronger for it — but **conditionally**, and
+   the condition is the finding. `terminated` is correctly unavailable while the
+   node is unreachable. `unconfirmed` is the correct default. And `isolated` is
+   available **only when every capability the fenced generation holds has an
+   enforcing authority that confirms it can no longer be used** — never as elapsed
+   time. That obligation is stated above; it was missing, and had `isolated`
+   proved reachable only by waiting, the honest fix would have been deleting it
+   from the contract.
+
+   **A generic Kubernetes Habitat does not meet the condition**, on all three
+   counts, which the walkthrough documents against primary sources: client
+   certificates have no revocation mechanism, orchestration-level volume detach
+   can leave a live writer, and network policy need not close established
+   connections. That is a more useful result than "isolated works here" — it tells
+   a future provider what it must buy to earn the receipt.
+
+   Kubernetes is also only **partly** aligned with the rule, and the walkthrough
+   says so rather than claiming an ally: the StatefulSet identity guarantee
+   embodies `unconfirmed`, while the force-detach timeout trades it for
+   availability.
 
    It also sharpens the Docker capability-closure finding: a partitioned executor
    keeps every capability it already holds, so closure must be evaluated over what
    a domain **holds**, not only over what it can acquire.
 
    Two open questions are recorded there and belong to a future Kubernetes
-   provider, not to this ADR: whether every plausible storage backend offers a
-   fencing primitive confirmable from outside the partition, and whether
-   credential revocation leaves a window for a reconnecting node.
+   provider, not to this ADR: which storage backends offer a fencing primitive
+   confirmable from outside the partition, and whether removing authorization
+   leaves a window for a reconnecting node.
 
 Everything in the fencing compatibility matrix of the
 [blocker plan](../v2/phase_3/plan_blockers.md) beyond these is a non-gating

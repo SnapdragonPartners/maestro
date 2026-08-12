@@ -3,7 +3,7 @@ title = "Spike: Fencing A Partitioned Kubernetes Node"
 edit_date = "2026-08-12"
 status = "draft"
 type = "spike"
-summary = "The paper walkthrough ADR 0029 requires: a node partition is the case where confirmed termination is unavailable by construction, and it shows that `isolated` is earned by a positive act — evicting the node's API identity and detaching its storage — rather than granted by a timer, that Kubernetes' own default is `unconfirmed` and force-deletion is a lie the API lets you tell, and that the Docker spike's capability-closure finding recurs here as a stricter rule, since a partitioned kubelet keeps every capability it already holds."
+summary = "The paper walkthrough ADR 0029 requires: a node partition is the case where confirmed termination is unavailable by construction, and it makes the `isolated` receipt conditional rather than merely earned — available only when every capability the fenced generation holds has an enforcing authority that confirms it can no longer be used, and `unconfirmed` otherwise. A generic Kubernetes Habitat fails that condition on all three counts documented here against primary sources: client certificates have no revocation mechanism, orchestration-level volume detach can leave a live writer, and network policy need not close established connections. Force deletion is forbidden as a fencing primitive because it lets the API state a conclusion nothing established, and the Docker capability-closure finding recurs more strictly, since a partitioned executor keeps every capability it already holds."
 +++
 
 # Spike: Fencing A Partitioned Kubernetes Node
@@ -21,9 +21,12 @@ receipt survives contact with a failure shape where **confirmed termination is
 unavailable by construction**. If `isolated` cannot be earned rigorously, it is a
 polite word for `unconfirmed` and the contract is weaker than it reads.
 
-Because it is paper, every claim below is sourced to documented Kubernetes
-behaviour rather than to observation, and the two places where that is not enough
-are marked as open questions rather than settled.
+Because it is paper, every behavioural claim below is **linked to primary
+Kubernetes documentation** rather than observed. An earlier draft asserted that
+sourcing without providing a single link, which is the same defect this document
+goes on to describe — a claim wider than its evidence. Where the documentation
+does not settle a question, it is recorded as open rather than resolved by
+inference.
 
 ## Why this shape, and not another backend
 
@@ -58,19 +61,35 @@ cannot distinguish:
    running and still writing to storage**.
 
 Case 3 is the dangerous one and it is indistinguishable from the others at the
-API. Kubernetes' documented behaviour reflects this honestly:
+API. Kubernetes records this honestly in the node's own condition:
 
-- The node controller marks the node `NotReady` after the monitoring grace period,
-  then applies an unreachable taint.
-- Pods on it are marked for deletion but enter a **terminating** state that does
-  not complete. The API object persists precisely because nothing has confirmed
-  the containers stopped.
-- For a StatefulSet, the controller will **not** create a replacement Pod with the
-  same identity while the original is unconfirmed, because doing so would risk two
-  writers with the same identity against the same volume.
+- When the node controller stops receiving heartbeats, it sets the node's `Ready`
+  condition to **`Unknown`** — not `False`. `False` would assert the node is not
+  ready; `Unknown` asserts nothing, which is the accurate statement. (`kubectl`
+  displays this as `NotReady`, which is where an earlier draft of this document
+  got it wrong. The display string and the condition are different things, and
+  only the condition carries the epistemic content.)
+  [Nodes: conditions](https://kubernetes.io/docs/concepts/architecture/nodes/)
+- Pods on the node are marked for deletion but remain **terminating**. The API
+  object persists precisely because nothing has confirmed the containers stopped.
+- For a StatefulSet, a replacement Pod with the same identity is **not** created
+  while the original is unconfirmed, because that would risk two writers with the
+  same identity against the same volume. Kubernetes documents force-deleting such
+  a Pod as breaking its at-most-one guarantee.
+  [Force delete StatefulSet Pods](https://kubernetes.io/docs/tasks/run-application/force-delete-stateful-set-pod/)
 
-That last behaviour is Kubernetes independently arriving at ADR 0029 §7's rule.
-It is the same reasoning: an unconfirmed occupant means the resource is not free.
+**Narrower than an earlier draft claimed.** That draft said Kubernetes' own
+controllers "behave as though `unconfirmed` is the correct default." The
+StatefulSet case does. The **force-detach path does not**: the attach/detach
+controller will forcibly detach a volume from an unreachable node after a
+timeout, which can detach from a node whose kubelet is still writing.
+Kubernetes itself flags this as risky and gates safer behaviour behind
+non-graceful shutdown handling that requires an operator to assert the node is
+really out.
+[Non-graceful node shutdown](https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/)
+
+So the honest reading is: one controller embodies the rule, another trades it for
+availability, and the second is a caution rather than a precedent.
 
 ## Where `isolated` is earned, and where it is faked
 
@@ -86,26 +105,37 @@ established.**
 So force deletion maps to `unconfirmed` at best, and in practice to a false
 `terminated`. It must be forbidden as a fencing primitive.
 
-`isolated` is available, but only through a **positive act that removes the
-partitioned generation's reach**, and each act has to be confirmed by a component
-that is *not* the partitioned node:
+`isolated` requires a **positive act that removes the partitioned generation's
+reach**, confirmed by something other than the partitioned node. The candidate
+acts are below — and the important word is *candidate*. An earlier draft
+presented these three as receipts. **None of them is generically sufficient**, and
+saying otherwise would have been the same error the Docker spike kept making: a
+claim wider than its evidence.
 
-| Act | Removes | Confirmed by |
-| --- | --- | --- |
-| Evict the node's API identity — revoke or rotate its credential, remove its authorization | The kubelet's ability to affect cluster state on reconnection | The API server, which is reachable |
-| Detach or fence the storage — release the volume attachment, revoke the storage credential, or use the storage system's own fencing | The ability to keep writing to shared state | The storage system or CSI driver, which is reachable |
-| Fence the network identity — withdraw the Pod IPs from service endpoints, revoke workload certificates | The ability to serve or call as the fenced generation | The control plane and mesh, which are reachable |
+| Candidate act | What it does **not** establish |
+| --- | --- |
+| **Remove the node's authorization** (delete its RBAC bindings, so the API server refuses its requests) | Authentication is the weaker half here, not the stronger: **Kubernetes has no revocation mechanism for client certificates** — no CRL, no OCSP — so "revoke its credential" is not generically available, and the hardening guide's answer is short lifetimes rather than revocation. Authorization removal *is* enforced at the API server on every request and is therefore confirmable. But it only stops the node affecting **cluster state**; the kubelet needs nothing from the control plane to keep running the containers it already has. [Authentication hardening](https://kubernetes.io/docs/concepts/security/hardening-guide/authentication-mechanisms/) |
+| **Detach the volume** | **Forced detach can leave a live writer**, which is data corruption rather than fencing. Detaching at the orchestration layer does not stop a process mid-write on an unreachable node. What is actually sufficient is fencing at the **storage system** — a reservation change, a client-access revocation, a CSI driver that supports fencing — and whether that exists is backend-specific. [Non-graceful node shutdown](https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/) |
+| **Withdraw the network identity** (remove Pod IPs from Service endpoints, apply a deny NetworkPolicy) | NetworkPolicy governs whether connections are **allowed**; implementations are not required to terminate connections already established, and endpoint withdrawal stops new routing rather than existing sockets. A fenced generation holding an open connection may keep using it. [Network policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/) |
 
-The pattern is worth stating plainly because it is the general lesson: **you
-cannot get a receipt from the thing you cannot reach, so you must get it from
-everything that thing needs.** `isolated` is not "we waited long enough." It is a
-set of confirmed revocations, each obtained from a reachable component, which
-together establish that the unreachable generation cannot touch anything current
-or future work will touch.
+The pattern still holds, and is worth stating plainly: **you cannot get a receipt
+from the thing you cannot reach, so you must get it from everything that thing
+depends on.** But the corollary is what this round establishes:
 
-Where an act cannot be confirmed — a storage system with no fencing primitive, a
-credential that cannot be revoked — the receipt is `unconfirmed`, the Habitat is
-quarantined, and no dispatch occurs. That is the correct outcome, not a gap.
+> A capability is fenced only when **the authority that enforces that capability**
+> confirms the old generation can no longer use it. Not the orchestration layer
+> that *requested* the change — the component that actually decides whether the
+> capability works.
+
+The API server is that authority for authorization. The storage system, not
+Kubernetes, is that authority for writes. The dataplane, not the NetworkPolicy
+object, is that authority for established connections.
+
+**Where any capability lacks such an authority, or its authority cannot confirm,
+the receipt is `unconfirmed`** — the Habitat is quarantined and no dispatch
+occurs. On present evidence that is the *likely* outcome for a generic Kubernetes
+Habitat rather than an edge case, and a provider that wants `isolated` must
+choose backends that can confirm.
 
 ## Three things this changes or sharpens in ADR 0029
 
@@ -151,27 +181,48 @@ Recorded so the walkthrough is not read as more than it is.
   1. Whether every storage backend Maestro would plausibly use offers a fencing
      primitive that can be confirmed from outside the partitioned node. If some do
      not, those backends can only ever reach `unconfirmed`.
-  2. Whether revoking a kubelet's credential is sufficient to prevent a
-     reconnecting node from acting, or whether in-flight leases and cached tokens
-     leave a window. This is the same question the Docker spike answered
-     empirically for issued capabilities, and it deserves the same treatment
-     before anyone relies on it.
+  2. Whether **removing authorization** is sufficient to prevent a reconnecting
+     node from acting, or whether in-flight leases and cached state leave a
+     window. Note this is deliberately not "revoking its credential": Kubernetes
+     has no client-certificate revocation, so authorization is the mechanism that
+     exists. The Docker spike answered the analogous question empirically for
+     issued capabilities, and this deserves the same treatment before anyone
+     relies on it.
 
-## Conclusion
+## Conclusion — conditional, deliberately
 
-The three-valued receipt survives this shape, and is improved by it.
+The three-valued receipt survives this shape and is improved by it, but the
+result is narrower than an earlier draft claimed.
 
-`terminated` is correctly unavailable — the ADR already says force deletion is not
-confirmation, and this walkthrough explains why the API nonetheless lets you
-pretend otherwise. `unconfirmed` is the correct default and Kubernetes' own
-controllers behave as though it is. And `isolated` is genuinely reachable, but
-only as a **conjunction of confirmed revocations obtained from reachable
-components** — never as the passage of time.
+**`terminated` is correctly unavailable** while the node is unreachable. The API
+nonetheless lets you state it anyway, via force deletion, which is why the ADR
+forbids that as a fencing primitive.
 
-Had `isolated` turned out to be unreachable except by waiting, it would have been
-`unconfirmed` wearing a better name, and the honest fix would have been to delete
-it from the contract. It is not, so it stays — with an evidence obligation it did
-not previously carry.
+**`unconfirmed` is the correct default**, and it is what a conforming provider
+returns unless it can do better. Kubernetes partly agrees with itself here: the
+StatefulSet identity rule embodies it, the force-detach timeout trades it away.
+
+**`isolated` is conditionally available**, and the condition is the point:
+
+> `isolated` may be returned **only when, for every capability the fenced
+> generation holds, the authority that enforces that capability confirms the old
+> generation can no longer use it.** Any capability without such an authority, or
+> whose authority cannot confirm, yields `unconfirmed`.
+
+On present evidence a generic Kubernetes Habitat does **not** meet that condition:
+client certificates cannot be individually revoked, orchestration-level volume
+detach can leave a live writer, and network changes need not close established
+connections. `isolated` is therefore reachable only for backends chosen so that
+each capability has a confirming authority — a storage system with real fencing,
+authorization enforced per request, a dataplane that terminates connections.
+
+That is a stronger outcome than "isolated works here." It says the receipt is
+sound *and* tells a future provider what it must buy to earn it.
+
+Had `isolated` turned out to be reachable only by waiting, it would have been
+`unconfirmed` wearing a better name and the honest fix would have been to delete
+it from the contract. It survives — with an evidence obligation it did not
+previously carry, and an explicit admission that the obligation is often unmet.
 
 ## Related Documents
 
