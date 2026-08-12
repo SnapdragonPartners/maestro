@@ -63,7 +63,9 @@ From the research synthesis:
 
 Post-MVP as implementation ([backlog candidate 12](notes_adr-backlog.md)); the seam it lands in is settled by [ADR 0030](../adr/0030-tool-execution-policy-hook.md).
 
-Update: the seam is **not** in the toolloop or the dispatcher, as this entry originally guessed. It is one mandatory hook at the Orchestrator's tool-execution boundary, and ADR 0030 constrains what the gates above may be: semantic gates consult an agent, because the hook is Orchestrator machinery and may not infer; and human gates deny the attempt with a resolution reference rather than suspending inside the boundary.
+Update: the seam is **not** in the toolloop or the dispatcher, as this entry originally guessed. It is one mandatory hook at the Orchestrator's tool-execution boundary, and ADR 0030 constrains what the gates above may be. Semantic gates consult an agent, because the hook is Orchestrator machinery and may not infer. Human gates emit a **structured resolution requirement** and deny the attempt rather than suspending inside the boundary; the scheduler creates or locates the resolution, and the retry carries an accepted reference bound to the denied action's normalized-argument digest. And any argument a rule reads must be a field the action schema declares safe to persist, since a denial whose grounds cannot be recorded cannot be audited.
+
+Note the scope correction ADR 0030 makes to the third bullet's ambition: **filesystem scopes and per-action enforcement do not reach an agent runtime's own built-in tools, and nothing at this boundary bounds an unmediated call to an external service.** Those are grant-time decisions made when the execution resource is provisioned.
 
 ### Context Ledger
 

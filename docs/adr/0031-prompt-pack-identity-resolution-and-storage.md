@@ -2,7 +2,7 @@
 title = "ADR 0031: Prompt Pack Identity, Resolution, And Storage"
 edit_date = "2026-08-12"
 status = "draft"
-summary = "Fixes the minimal prompt-pack contract the MPH signature's P component has been carrying informally since Phase 1. A pack version is whole rather than an overlay, immutable, and identified by a content digest over a normalized projection of its entries; the pack name is a label and never a comparison key. P identifies the pack, not the prompt -- tool documentation, the seeding set, and repository facts also shape prompt text, so every contribution must be attributable to a recorded MPH component and one attributable to none makes P unclosed. Resolution happens once and deterministically at dispatch from an explicit override or scoped configuration, and the resolved identity is carried in the invocation and reused verbatim on agent restart, because re-resolving would let one Story span two P values invisibly; a pack change takes effect at the next dispatch, which is the amendment path rather than a silent swap. Packs are a data-plane family and not artifacts, the built-in default is imported at bootstrap with no run-time fallback to the binary because a silent fallback makes the signature a lie, and coverage of the slot set the code requires is validated at dispatch and fails closed, with the declared Maestro version range kept as advisory metadata since coverage is the fact the range proxies for. The debt on principal_instances.prompt_pack_id is three roles in one nullable text column, and its only writer today records a foreign pack the plane will never own, so the plane-record reference is a separate and optional field rather than a foreign key forced onto every row."
+summary = "Fixes the minimal prompt-pack contract the MPH signature's P component has been carrying informally since Phase 1. A pack version is whole rather than an overlay, immutable, and identified by a scheme-qualified digest over a JCS-canonicalized projection of its entries -- the container is normalized, prompt text never is, since whitespace is content -- and no comparison crosses schemes, so an imported v1 identity stays opaque rather than joining a group with a v2 pack. The name is a label and therefore cannot be a selector either: an MVP selector names exactly one plane-owned version by reference or digest, and a live dispatch must carry that reference while imported foreign runs are the only records permitted to omit it. The pack digest closes over pack entries and nothing else; what accounts for a model input is invocation provenance assembled from four recorded sources -- pack, harness, seeding set, and accumulated turn material -- whose unclosed status is handed explicitly to the agent execution contract rather than given a column here. Resolution happens once and deterministically at dispatch, and the resolved identity is reused verbatim on agent restart, because re-resolving would let one Story span two P values invisibly. Packs are a data-plane family and not artifacts, the built-in default is imported at bootstrap with no run-time fallback to the binary because a silent fallback makes the signature a lie, and compatibility is validated at import and dispatch as coverage plus parse plus each slot's variable contract against the running harness -- a declared version range can refuse but never authorize. The debt on principal_instances.prompt_pack_id is three roles in one nullable text column, and its only writer today records a foreign pack the plane will never own."
 type = "design"
 +++
 
@@ -109,19 +109,37 @@ a consumer for one.
 
 **Immutable.** A pack version is never edited. An edit produces a new version.
 
-**Identified by content.** The identity of a pack version is a **digest over a
-normalized projection of its entries** — canonical ordering, slot keys, and
-contents — computed with the same RFC 8785 JCS discipline
-[ADR 0028](0028-artifact-envelopes-and-payload-schemas.md) applies to payloads.
-Normalization exists so that cosmetic differences do not mint a new identity and
-semantically equal packs digest equal.
+**Identified by content, under a named scheme.** The identity of a pack version is
+a **digest over a normalized projection of its entries** — the entry container
+canonicalized with the RFC 8785 JCS discipline
+[ADR 0028](0028-artifact-envelopes-and-payload-schemas.md) applies to payloads —
+carried together with **the scheme that produced it**.
+
+Two things about that, and both were wrong in a first version of this section:
+
+**JCS canonicalizes the container, never the prompt text.** Entry ordering, key
+encoding, and structure are normalized so that a cosmetic reordering does not mint
+a new identity. **A prompt string is content and is hashed byte for byte**,
+whitespace included — a template's leading spaces and line breaks are part of what
+the model receives, so "semantically equal packs digest equal" is true of the
+container and false of the text.
+
+**Digests are compared only within a scheme.** The identity Phase 1 records for
+`v1-embedded` is `sha256:` over an ordered expansion of file paths and bytes
+(`benchmark/target/v1target/prompthash.go`); a pack digest is JCS over slot
+entries. They are different functions over different domains, and ADR 0028 already
+treats a runner-supplied identity as opaque and non-rederivable. So a pack
+identity is **scheme-qualified**, imported legacy hashes are preserved verbatim as
+opaque values under their own scheme, and **no comparison, grouping, or equality
+claim crosses schemes.** Equal-looking hex under two schemes means nothing.
 
 **The name is a label, not a key.** `default` is a handle for humans and for
 configuration; it is not what two runs are compared on, and it is not unique
-across organizations. Every MPH comparison keys on the digest. This is the rule
-Phase 1 already follows in practice — `PromptRef.Pack` is documented as a label —
-stated so that a later query does not group by name and quietly average two
-organizations' different packs together.
+across organizations. Every MPH comparison keys on the scheme-qualified digest.
+This is the rule Phase 1 already follows in practice — `PromptRef.Pack` is
+documented as a label — stated so that a later query does not group by name and
+quietly average two organizations' different packs together. §4 draws the
+consequence the label rule forces: a name cannot be a selector either.
 
 Structurally, that means a pack version is unique on its content digest within an
 organization, and a `(name, version)` label pair may never be reused for different
@@ -137,20 +155,27 @@ recorded on the principal instance:
 | Fact | Always present for an agent principal? | Purpose |
 | --- | --- | --- |
 | **Pack name** — the declared label | Yes | Human handle, and what configuration selects by |
-| **Content digest** | Yes | The identity. The key every MPH comparison groups on, and the only one of the three that means the same thing for a pack the plane owns and one it does not |
-| **Pack version reference** — a pointer to the plane's own record | **No** | Resolvability: the pack's entries, metadata, and history |
+| **Scheme-qualified content digest** | Yes | The identity. The key every MPH comparison groups on, within its scheme (§1) |
+| **Pack version reference** — a pointer to the plane's own record | **Nullable on the record; required at dispatch** | Resolvability: the pack's entries, metadata, and history |
 
-**The reference is optional by design, not by omission.** A principal instance may
-record a pack the plane does not own — an imported benchmark run against a target
-Maestro did not configure is exactly that case, and it is not an error. Forcing a
-foreign key onto every row would require fabricating records for prompts the plane
-never held, which is the same class of dishonesty as reporting a missing metric as
-zero (ADR 0025's four-state semantics). A **foreign pack** is recorded by name and
-digest, with no reference, and says so.
+**The reference is nullable for imports, and only for imports.** A principal
+instance may record a pack the plane does not own — an imported benchmark run
+against a target Maestro did not configure is exactly that case, and it is not an
+error. Forcing a foreign key onto every row would require fabricating records for
+prompts the plane never held, which is the same class of dishonesty as reporting a
+missing metric as zero (ADR 0025's four-state semantics). A **foreign pack** is
+recorded by name and legacy-scheme digest, with no reference, and says so.
+
+**A live Maestro dispatch is not that case.** Its principal instance MUST carry the
+reference, and the reference MUST agree with the recorded name, digest, and
+organization. Nullable-because-imports and nullable-in-general are different
+claims, and only the first is made here — a run Maestro itself configured against
+a pack it cannot resolve is a defect, not a foreign pack.
 
 Which columns Phase 3's migration keeps, adds, or retypes is the migration's
-business; what this ADR fixes is that the three facts are three fields and that
-the reference is nullable.
+business; what this ADR fixes is that the three facts are three fields, that the
+digest carries its scheme, and that the reference is absent only for records the
+plane imported rather than produced.
 
 ### 3. P identifies the pack, not the prompt
 
@@ -159,29 +184,47 @@ artifacts, generated tool documentation, and repository facts. A reader who take
 `prompt_hash` to mean *what the model saw* is wrong twice over: it is not derivable
 from the pack, and it would change on every call.
 
-**P identifies the pack.** The rest of the prompt is covered by other components of
-the same signature — tool documentation is generated from the tool surface, which
-is **H** by the roadmap's own definition of the harness lever; the seeding set is
-recorded separately as the instance's input artifact digests
-([ADR 0021](0021-artifacts-and-principal-instances.md)). The signature is complete
-only when the three are read together, and no single component was ever supposed
-to carry the whole prompt.
+**The pack digest closes over pack entries, and over nothing else.** A first
+version of this section pulled everything that shapes a rendered model input into
+"P's closure," which contradicted P's own definition one section earlier and would
+have made the digest depend on the seeding set and the conversation. It does not
+and must not: a pack's identity has to be computable before any run exists.
 
-**The closure rule.** Anything that shapes prompt text must be attributable to a
-recorded MPH component. A contribution attributable to none makes **P unclosed**,
-and an unclosed P is recorded as unclosed rather than digested as though it were
-complete — the same discipline
-[ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §4 applies to a
-spec projection whose provider cannot enumerate its closure, and the same one v1's
-prompt manifest applies by hand today when it refuses an entry that matches
-nothing.
+What that first version was reaching for is a different thing, and it needs its own
+name.
 
-**This rule is a review obligation, not an enforced one**, and the difference is
-worth stating where the rule is rather than only in the consequences. The schema
-cannot tell that a fourth source of prompt text has appeared; v1 pays for the same
-gap with a hand-maintained manifest and a reviewed allowlist. What a pack buys is
-that the boundary is explicit enough for a reviewer to apply the rule — not that
-anything applies it automatically.
+**Invocation provenance** is the account of what shaped a model input, and it is
+assembled from four recorded sources, none of which is P:
+
+| Source | What it covers | Where it is recorded |
+| --- | --- | --- |
+| **P** — the pack | Role and system prompts, state templates, review prompts | The pack digest (§1, §2) |
+| **H** — the harness | Generated tool documentation, rendering machinery, workflow shape | The harness config hash |
+| **The seeding set** | The artifacts the instance was started with | `principal_instance_inputs` ([ADR 0021](0021-artifacts-and-principal-instances.md)) |
+| **Accumulated turn material** | Conversation, tool results, retrieved knowledge, repository facts | Audit records ([ADR 0022](0022-v2-data-plane.md)) |
+
+**The completeness rule attaches to invocation provenance, not to P.** Anything
+that shapes a model input must be attributable to one of the four. A contribution
+attributable to none makes the **invocation provenance unclosed** — the same
+discipline [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §4
+applies to a spec projection whose provider cannot enumerate its closure, and the
+same one v1's prompt manifest applies by hand today when it refuses an entry that
+matches nothing.
+
+**Where an unclosed status is recorded is A4's, not this ADR's.** §2's table is
+about the pack and deliberately has no closure field, because a pack is never
+unclosed — its entries are its closure. The invocation is where the status
+belongs, and the invocation schema is
+[backlog candidate 13](../v2/notes_adr-backlog.md) (item A4), which already carries
+prompt-pack identity. **This ADR hands A4 that obligation explicitly** rather than
+inventing a column for it here, and A4 is where the four-source table above should
+be met with a field.
+
+**And it is a review obligation, not an enforced one.** The schema cannot tell that
+a fifth source of prompt text has appeared; v1 pays for the same gap with a
+hand-maintained manifest and a reviewed allowlist. What a pack buys is that one of
+the four boundaries is now explicit enough for a reviewer to apply the rule — not
+that anything applies it automatically.
 
 ### 4. Resolution happens once, at dispatch
 
@@ -192,15 +235,35 @@ immutable for the life of the execution.
 Resolution is Orchestrator machinery: it reads an explicit selection or falls back
 through scoped configuration, and neither step requires judgment.
 
+#### A selector names exactly one version, so it is never a name
+
+§1 makes the name a non-unique label and makes every edit a new version. Both
+together mean a name **cannot be a selector**: the moment a second version exists
+under one name, "which pack" has no deterministic answer, and a first version of
+this section said configuration selects by name anyway.
+
+**An MVP selector identifies exactly one plane-owned pack version**, by record
+reference or by scheme-qualified digest. Nothing else is a selector. Resolving a
+human-friendly expression — *the newest version of `default`*, a version range, a
+channel — needs the version ordering and registry semantics that are
+[candidate 9](../v2/notes_adr-backlog.md), and is deferred with them. The name
+stays what §1 says it is: a label carried for humans, recorded on the run,
+and validated for agreement (§2), never dereferenced.
+
 **Inputs, in precedence order:**
 
-1. An **explicit selection carried on the dispatch** — how a benchmark
+1. An **explicit selector carried on the dispatch** — how a benchmark
    configuration, a Workbench session, or a Work Group receives a non-default pack.
 2. **Scoped configuration**, most-specific-wins over the
    organization/product/repository lineage, through the Phase 2 configuration
-   records and their key registry (`internal/dataplane/configkeys`). Pack selection
-   registers a key there; it does not invent a second selection mechanism.
+   records and their key registry (`internal/dataplane/configkeys`). The value it
+   holds is a selector in the sense above, not a name. Pack selection registers a
+   key there; it does not invent a second selection mechanism.
 3. Failing both, **no pack resolves and dispatch fails** — see §6.
+
+This is what makes "the reference is required at dispatch" (§2) reachable rather
+than aspirational: resolution produces a version, so the invocation always has one
+to carry.
 
 **A named limit, so it is not discovered later.** `configuration_records`' scope arc
 is organization/product/repository, which is deliberately *not* the artifact scope
@@ -224,21 +287,39 @@ work around; it is the amendment path. Version-bound dispatch
 reissues on amendment, and A5 governs work already executing. A lever that could
 change under a running execution would be a silent swap with no version behind it.
 
-### 5. Coverage is validated at dispatch, and fails closed
+### 5. Compatibility is validated against the running harness, and fails closed
 
-A pack declares the slots it covers. Resolution checks that declaration against the
-slot set the code requires for the roles the execution will run, and **refuses to
-dispatch** on a gap.
+**Slot coverage is necessary and is not compatibility.** A first version of this
+section gated on coverage alone and then called the declared Maestro version
+advisory *because* coverage passes — which does not follow. A pack can supply every
+named slot and still be broken against the running harness: a template referencing
+a variable the harness no longer supplies, a slot documenting a tool contract that
+has changed, or syntax the current renderer rejects.
 
-At dispatch rather than at render, because a pack missing a slot discovered at
-render time has already cost a lease, a provisioned resource, and tokens, and it
-surfaces as a mid-run failure instead of a configuration error.
+So the gate is the **pack-to-harness contract**, checked in three parts against the
+harness version that will actually run:
 
-Roadmap pillar 10's *supported Maestro version* stays as recorded metadata and is
-**advisory**, not the gate. A declared version range is a proxy for the property
-that actually matters, and the property is directly checkable: a pack declaring
-compatibility while missing a slot is still broken, and a pack outside its declared
-range that covers every slot still runs. Record the claim; gate on the fact.
+1. **Coverage** — every slot the code requires for the roles this execution will
+   run is present.
+2. **Parse** — every entry parses under the running renderer.
+3. **Variable and render contract** — each slot's referenced variables are ones the
+   harness supplies for that slot, and nothing it requires is missing.
+
+**Validated at import and again at dispatch.** At import so a broken pack is
+rejected when it is introduced rather than when it is first used; at dispatch
+because the harness version may have moved since, and dispatch is the binding gate.
+
+**At dispatch rather than at render**, because a fault discovered at render time
+has already cost a lease, a provisioned resource, and tokens, and it surfaces as a
+mid-run failure instead of a configuration error.
+
+**The declared Maestro version range can refuse, never authorize.** Pillar 10's
+*supported Maestro version* is recorded and is enforced in one direction only: a
+pack declaring itself incompatible with the running version is refused without
+further work. A pack declaring itself compatible has made a claim, not passed a
+check, and the three-part validation above still runs. That is the honest reading
+of a self-declared range — it is evidence of intent from the pack's author and
+evidence of nothing about the harness it now faces.
 
 ### 6. Storage: a data-plane family, seeded by import, with no run-time fallback
 
@@ -278,10 +359,14 @@ question here is not whether it exists but which copy is authoritative.
   benchmark importer keeps working unchanged, because the plane reference it never
   had is the field that stays optional. Phase 3's migration creates the family; no
   Phase 2 record needs rewriting.
-- **MPH comparison becomes a real query.** Grouping on the pack digest answers
-  "which prompt content produced these costs" across runs, targets, and the
-  file-to-plane storage transition, which is what ADR 0025 promised and what a
-  name-keyed column could not deliver.
+- **MPH comparison becomes a real query, within a scheme.** Grouping on the
+  scheme-qualified digest answers "which prompt content produced these costs"
+  across runs and across the file-to-plane storage transition, which is what
+  ADR 0025 promised and what a name-keyed column could not deliver. It does **not**
+  put a v1-as-patched target's `v1-embedded` identity in a group with a v2 pack:
+  those are different schemes over different domains, and a comparison across them
+  would be arithmetic on unrelated hashes. Cross-target comparison of P remains
+  something a human asserts with reasons, not something a query concludes.
 - **A/B testing prompt versions against golden stories is a configuration change.**
   Two configurations differing only in their explicit pack selection produce two
   identity groups, and nothing else has to move.
@@ -293,11 +378,25 @@ question here is not whether it exists but which copy is authoritative.
 - **A pack edit cannot affect a running Story**, which is correct and will
   occasionally be inconvenient: fixing a bad prompt means a new dispatch, not a
   hot edit. Stated so it is designed for rather than discovered mid-incident.
-- **Dispatch gains two failure modes that did not exist**: no pack resolves, and a
-  resolved pack does not cover the required slots. Both are configuration errors
-  surfaced before any resource is leased, which is where they cost least.
-- **The MPH signature is only as honest as §3's closure rule is applied.** Nothing
-  in the schema prevents a Phase 3 change that injects prompt text from a fourth
+- **Dispatch gains failure modes that did not exist**: no pack resolves, a selector
+  names no plane-owned version, a pack declares itself incompatible with the
+  running harness version, and a pack fails the three-part contract check. All are
+  configuration errors surfaced before any resource is leased, which is where they
+  cost least — and the contract check is the one that will find real breakage,
+  since a pack surviving a harness change is the ordinary case that quietly stops
+  being true.
+- **Phase 3 owes the harness a declared per-slot variable contract.** §5's check is
+  only as strong as that declaration, and today the contract is implicit in what
+  each template happens to reference: `pkg/templates`' `Render` and
+  `RenderWithUserInstructions` both take one `*TemplateData` carrying every field
+  any template might want, so nothing states which variables a given template may
+  use. Making that per-slot and explicit is new work this ADR creates.
+- **A4 inherits the invocation-provenance obligation.** §3 defines completeness
+  over four sources and deliberately does not give the unclosed status a home,
+  because the invocation schema is candidate 13's. If A4 lands without it, the rule
+  has no field and reverts to prose.
+- **The completeness rule is only as honest as it is applied.** Nothing in the
+  schema prevents a Phase 3 change that injects model-input text from a fifth
   place, and no test will fail when one does. It is an untestable guarantee, stated
   beside the decision in §3 as well as here rather than implied to be covered.
 
@@ -314,8 +413,9 @@ content between organizations.
 ## Related Documents
 
 - [Pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md) item A3;
-  [ADR backlog](../v2/notes_adr-backlog.md) candidates 5 (this ADR) and 9
-  (registry expansion).
+  [ADR backlog](../v2/notes_adr-backlog.md) candidates 5 (this ADR), 9 (registry
+  expansion), and 13 (item A4 — the invocation schema that carries pack identity,
+  and which §3 hands the invocation-provenance completeness status).
 - [ADR 0021](0021-artifacts-and-principal-instances.md) (the MPH signature, the
   seeding set, Management versus Audit),
   [ADR 0022](0022-v2-data-plane.md) (data-plane families, the persistence seam),
