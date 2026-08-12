@@ -364,9 +364,16 @@ go run .          # runs all claims, cleans up after itself
 go run . -keep    # leaves containers in place for inspection
 ```
 
-Exits non-zero if any claim is falsified. Every container it creates carries a
-`maestro.spike.run` label, so cleanup is total regardless of which claim failed;
-`-keep` suppresses it deliberately.
+**Exit code is 0 only when every claim is `PROVEN`.** Both `FALSIFIED` and
+`ERROR` exit 1, and the distinction is the point of the three-valued model rather
+than a detail of it: `FALSIFIED` means the claim is false and the ADR changes,
+while `ERROR` means an observation failed and **nothing is established either
+way**. An inconclusive run must never be readable as a passing one. A non-zero
+exit therefore says "read the report", not "the claim is false" — the summary
+table says which.
+
+Every container it creates carries a `maestro.spike.run` label, so cleanup is
+total regardless of which claim failed; `-keep` suppresses it deliberately.
 
 Requires a reachable Docker daemon and pulls `alpine:3` if absent. It creates and
 destroys on the order of 60 containers per run.
