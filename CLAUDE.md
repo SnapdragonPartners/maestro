@@ -65,7 +65,17 @@ Roles:
 2. Never reuse an existing leaf branch name as a namespace prefix; Git refs
    cannot be both a leaf and a directory.
 3. Make and test changes, then commit locally. Never bypass hooks with
-   `--no-verify`; fix failures.
+   `--no-verify`; fix failures. **One narrow exception, and only for push:** the
+   pre-push gate may be skipped if and only if the push is **documentation only**
+   *and* DR confirms it for that specific push. Both conditions, every time —
+   prior approval is not reusable.
+
+   "Documentation only" means **zero** changes to code. One line voids it and the
+   suite runs. Spike code under `spikes/` is code for this purpose even though the
+   root walkers skip it, as are `Makefile`, hooks, CI workflows, generated
+   output, and fixtures. The pre-commit hook (build and lint) is fast and is never
+   bypassed; this exception exists solely because the pre-push integration suite
+   costs ~11 minutes and cannot tell you anything about a Markdown change.
 4. Produce branch notes for Codex and iterate on the local commits until every
    review point is resolved or DR explicitly overrides it.
 5. Push only after Codex and DR approve. Push is a gate, not a routine step.
