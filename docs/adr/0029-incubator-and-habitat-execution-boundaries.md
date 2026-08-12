@@ -2,7 +2,7 @@
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
 edit_date = "2026-08-12"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated is earned by confirmed revocations obtained from reachable components and never by elapsed time."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated means every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target -- never merely that time has passed, and never requiring the fenced generation to stop running."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
@@ -845,7 +845,7 @@ hop is not a boundary.
 | Receipt | Meaning | Terminal? | Reuse |
 | --- | --- | --- | --- |
 | `terminated` | The execution domain is confirmed stopped. | Yes | The resource is free once reprovisioned into a new generation. |
-| `isolated` | The old generation is permanently quarantined, its capabilities revoked, unable to mutate state reachable by any current or future generation — even if cleanup continues asynchronously. | Yes | **Never.** Fresh work receives a new generation or a new resource. |
+| `isolated` | The old generation is permanently quarantined and cannot mutate state reachable by any current or future generation — because **every path into such state is either closed by the authority enforcing it, or leads to a target permanently abandoned**. It may still be running, and may still be writing to what nothing will read again; cleanup may continue asynchronously. | Yes | **Never.** Fresh work receives a new generation or a new resource. |
 | `unconfirmed` | Neither could be established. | **No** | **None** — quarantine, no dispatch. |
 
 #### `isolated` carries an evidence obligation, and time is never the evidence
@@ -975,17 +975,20 @@ says nothing about who provisioned that state. A generation still holding valid
 credentials to shared staging or a licensed service *can* interfere with later
 work, so `isolated` is simply not available to it.
 
-The correct rule follows from §7's own capability requirement, which the earlier
-draft failed to apply to outward-directed capabilities:
+The rule is the two-branch one above, applied to outward-directed paths — three
+cases, not two, and an earlier draft omitted the middle one:
 
-- Where the fenced generation's external capabilities **can be revoked or
-  generation-fenced**, revoking them is part of producing the receipt, and
-  `isolated` is available.
-- Where they **cannot** — a credential the repository baked into its own
-  configuration, which Maestro cannot withdraw — the generation retains reach.
-  Only **`terminated`** can then be a positive receipt, because confirmed
-  stoppage is the only remaining way to establish non-interference. Uncertainty
-  is `unconfirmed`.
+- **The path can be closed** — revoked or generation-fenced. Closing it is part
+  of producing the receipt, and `isolated` is available.
+- **The path cannot be closed, but its target can be permanently abandoned.**
+  `isolated` is still available. A credential that reaches only state nothing
+  current or future will read is not reach into shared state at all. This is the
+  same branch that lets a generation keep scribbling on a disk no one will open.
+- **Neither** — a baked-in credential to a live shared service Maestro cannot
+  withdraw, whose state the next generation genuinely will read. The generation
+  retains reach, so only **`terminated`** can be a positive receipt, confirmed
+  stoppage being the sole remaining way to establish non-interference.
+  Uncertainty is `unconfirmed`.
 
 Downgrading a later verification receipt does not substitute for this. A terminal
 execution result recorded against a generation that can still reach shared state
@@ -1238,6 +1241,7 @@ final reviewed commit.
 | [v1 port inventory](../v2/phase_0/inventory_v1-port.md), rows for `pkg/workspace`, `pkg/exec`, `pkg/tools` | Dispositions for workspace, execution, tools, and container runtime state — **does not contain the word `Habitat`**. Note `pkg/workspace` is already keyed by repo + Story/run, which is consistent with Incubator scoping. |
 | [Issue #273](https://github.com/SnapdragonPartners/maestro/issues/273) | The tracker copy, already amended three times. Its sections 3, 3a and 3b carry the fencing protocol and must reflect the split. |
 | [Pre-Phase-3 Blockers](../v2/phase_3/plan_blockers.md), A1's live-escape section | **Withdraw its "constrained proxy" option.** It currently offers four remedies for the socket escape — remove access, mediate through the Orchestrator, use a constrained proxy or private daemon, or include every created container in the domain. The spike falsified the middle two: filtering mediation is not capability-closed, and "include every created container" is not an action available at fencing time. Two remain: no daemon route, or a daemon owning only the domain. |
+| [Pre-Phase-3 Blockers](../v2/phase_3/plan_blockers.md), A1's receipt table | **Add the abandonment branch.** Its `isolated` row reads "its capabilities are revoked", which encodes only one of the two ways the property can hold and, read strictly, approaches termination. The settled rule is that every path into state current or future work will touch is *either* closed by its enforcing authority *or* leads to a permanently abandoned target. The plan's wording is not wrong about the property — "cannot mutate state reachable by any current or future generation" is exactly right — only about the means. |
 
 ## Related Documents
 
