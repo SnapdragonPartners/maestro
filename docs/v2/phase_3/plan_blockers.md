@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-10"
+edit_date = "2026-08-12"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -90,6 +90,13 @@ Only Track A gates phase entry. B, C and D gate specific things inside Phase 3.
 ## Track A — Design
 
 ### A1. Habitat execution boundary — [#273](https://github.com/SnapdragonPartners/maestro/issues/273), design portion only
+
+> **RESOLVED 2026-08-12 by [ADR 0029: Incubator And Habitat Execution Boundaries](../../adr/0029-incubator-and-habitat-execution-boundaries.md)** (Codex + DR), with both spike artifacts: the [Docker fencing reproducer](spike_docker-fencing.md) and the [Kubernetes partition walkthrough](spike_kubernetes-partition.md). Four things below are superseded by it and are left in place as the record of what was asked rather than what was decided:
+>
+> 1. **One resource became two.** Every *concrete* requirement this item states under the name `Habitat` — the tool-routing rule, read-only Architect inspection, removal of Coder workspace bind-mounts, the live socket escape, the Docker/Compose gating row — describes what the ADR calls the **Incubator**. Dependent-service lifecycle is the **Habitat's**. Identity, generation, and fencing belong to both.
+> 2. **The four remedies for the socket escape are down to two.** "Mediate it through the Orchestrator" and "use a constrained proxy" were falsified by the reproducer: filtering a general-purpose daemon API is not capability-closed, and "include every created container in the fencing domain" is not an action available at fencing time. What remains: **no daemon route**, or **a daemon owning only the domain** — both closed by construction.
+> 3. **The `isolated` row's means clause is too narrow.** "Its capabilities are revoked" is one of two ways the property holds and, read strictly, approaches termination. The settled rule: every path into state current or future work will touch is *either* closed by the authority enforcing it *or* leads to a permanently abandoned target. The row's statement of the *property* — "cannot mutate state reachable by any current or future generation" — was right all along.
+> 4. **Fencing gained a cleanup obligation.** Fence state and cleanup state are independent axes; every resource not confirmed deallocated stays visible, reconciled, and flagged as potentially billable regardless of its receipt.
 
 Establish Habitat as the Orchestrator-managed execution-resource boundary:
 identity, `HabitatSpec` versus mutable `HabitatInstance`, generation/fencing so

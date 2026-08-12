@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-08-09"
+edit_date = "2026-08-12"
 status = "live"
 type = "notes"
 summary = "Reconciled, stable-numbered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates each labelled with the phase it blocks — slot numbers are cited by other documents and never change, so a heading rather than a position in the list is what says when a candidate is due."
@@ -34,6 +34,7 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | --- | --- |
 | Artifact Envelopes And Payload Schemas (blocked Phase 2) | [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md), Accepted 2026-07-24 as Phase 2 item 1 |
 | Reviewer Heterogeneity Means Distinct Lineage (blocked Phase 5) | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment, proposed 2026-08-08 and accepted 2026-08-09 — the rule only; the mechanism is deferred as tracked work |
+| Habitat Execution Boundary (blocked Phase 3) | [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md), Accepted 2026-08-12 as item A1 of the pre-Phase-3 blocker plan — split into the Incubator and the Habitat, with two spike artifacts |
 
 ## Candidates, Stable-Numbered
 
@@ -41,7 +42,7 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 
 Numbers are stable because phase plans and session notes cite them. A resolved candidate therefore **keeps its slot** as a pointer to its ADR rather than being deleted and renumbering everything below it, and a candidate whose blocking phase changes **keeps its slot** rather than being moved. The section is mostly open candidates with resolved stubs among them; the resolved tables above are the authoritative list of what is done.
 
-The list was originally dependency-ordered and no longer is: slots **11** (Habitat) and **13** (Agent Execution Contract) were re-scoped from post-MVP to **blocks Phase 3** on 2026-08-09 and kept their numbers, so they now sit after entries blocking Phases 4, 5 and 6. Stable numbering and true dependency order cannot both hold, and numbering won because it is what other documents depend on.
+The list was originally dependency-ordered and no longer is: slots **11** (Incubator and Habitat, RESOLVED) and **13** (Agent Execution Contract) were re-scoped from post-MVP to **blocks Phase 3** on 2026-08-09 and kept their numbers, so they now sit after entries blocking Phases 4, 5 and 6. Stable numbering and true dependency order cannot both hold, and numbering won because it is what other documents depend on.
 
 ### 1. Artifact Envelopes And Payload Schemas — RESOLVED by [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md)
 
@@ -61,7 +62,7 @@ Sequenced as item A5 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blo
 
 A narrow, binding ADR: where the per-action policy hook lives (toolloop, dispatcher, tool execution layer, or a policy service) and its interface — no policy content. Chosen before Phase 3 builds tool plumbing, or per-action policy gets retrofitted into every tool. The full gating-policy ADR stays post-MVP (below).
 
-Sequenced as item A2 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), which settles the placement (the Orchestrator's central tool-execution boundary, after capability resolution and before the side effect) and adds a decision the original framing missed: the ADR must state the **mediated versus in-Habitat** split and what each mode actually guarantees. Mediated actions — anything crossing back into the Orchestrator — are policed per action. In-Habitat actions are not, and their guarantee is containment decided at grant time. **Maestro's enforcement is scoped to Maestro's own agents** (DR, 2026-08-09): an engineer may legitimately run other agents in a Habitat, and the application under development may itself be an agent.
+Sequenced as item A2 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), which settles the placement (the Orchestrator's central tool-execution boundary, after capability resolution and before the side effect) and adds a decision the original framing missed: the ADR must state the **mediated versus in-resource** split and what each mode actually guarantees. (Written as "in-Habitat" before [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md) split the resource; the ungoverned-actions half is chiefly the **Incubator's**, and the split applies to both types.) Mediated actions — anything crossing back into the Orchestrator — are policed per action. In-Habitat actions are not, and their guarantee is containment decided at grant time. **Maestro's enforcement is scoped to Maestro's own agents** (DR, 2026-08-09): an engineer may legitimately run other agents in a Habitat, and the application under development may itself be an agent.
 
 ### 5. Prompt Pack Identity, Resolution, And Storage — blocks Phase 3
 
@@ -89,21 +90,16 @@ The remainder of the packs/skills candidate after the Phase-3-blocking split abo
 
 Source precedence (ADRs, interfaces/contracts, docs, skills, AST/code facts), citation rules, staleness, pack generation. Inputs: the [cms spike](phase_0/spike_cms.md) (ingestion from maestro-cms, graph contributed upstream per its ADR 0005) and the [cms wishlist](requirements_maestro-cms-wishlist.md) responses.
 
-### 11. Habitat Execution Boundary — blocks Phase 3 (re-scoped 2026-08-09, was "Container Runtime Abstraction — post-MVP")
+### 11. Incubator And Habitat Execution Boundaries — RESOLVED by [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md)
 
-**Re-scoped in place**, per the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md) (item A1) and [issue #273](https://github.com/SnapdragonPartners/maestro/issues/273), which directs that this slot be amended "rather than leaving two competing abstractions." The slot keeps its number because phase plans and session notes cite it.
+Accepted 2026-08-12 (Codex + DR) as item A1 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md); see the Resolved In Later Phases table above. Re-scoped in place on 2026-08-09 from "Container Runtime Abstraction — post-MVP", and the slot keeps its number because phase plans and session notes cite it.
 
-Habitat is the Orchestrator-managed execution-resource boundary: the stateful place tool-driven work happens, distinct from the lightweight Agent principal. The ADR covers identity (`HabitatSpec` versus mutable `HabitatInstance`), generation/fencing, lifecycle, agent-to-Habitat cardinality including read-only Architect inspection, restart and reconciliation, and the rule that Maestro's tools target a Habitat reference rather than an Agent-derived local path.
+**The resolution split the resource in two**, which is the one thing a reader of the old entry must carry forward: the **Incubator** is the unitary Story-scoped development environment with a toolchain and no ecosystem, and the **Habitat** is the deployed application environment holding every Maestro-managed dependent service. Every *concrete* requirement this slot previously stated under the name Habitat — tool routing, read-only Architect inspection, the removal of Coder workspace bind-mounts, the Docker socket escape — attaches to the **Incubator**. Dependent-service lifecycle attaches to the Habitat. Identity, generation, and fencing attach to both.
 
-It subsumes the original post-MVP framing — a container/execution interface with Docker as the only initial implementation — but inverts its schedule: the boundary is established *before* Phase 3 cuts `pkg/workspace`, `pkg/exec`, container state, Coder setup, and Architect workspace inspection, or those systems get cut twice.
+Two constraints this slot recorded were **sharpened by the spike evidence** and should be read from the ADR rather than from here:
 
-Three constraints the blocker plan fixes, all easy to lose:
-
-- **Fencing proves non-interference, not death.** `Fence()` returns `terminated`, `isolated`, or `unconfirmed`; only `unconfirmed` blocks, and it quarantines. The fencing unit is a provider-created domain — process ancestry is not a portable containment boundary.
-- **An `isolated` receipt is terminal but never permits reuse.** The isolated generation stays **permanently quarantined**, and subsequent work dispatches into a **new Habitat generation**. `isolated` says the old generation can no longer reach anything current or future work touches — it does not say the Habitat is free, and cleanup may still be running. Reading a positive receipt as licence to reuse the same generation would reintroduce exactly the interference the receipt rules out.
-- **The spike is bounded to two artifacts**: one executable Docker/Compose reproducer and one paper walkthrough of a materially different failure shape. The multi-provider cases the original entry gestured at (raw filesystem, macOS, iPhone, other sandboxes) are non-gating compatibility examples, not Phase 3 work.
-
-Mark this slot RESOLVED when the Habitat ADR is Accepted.
+- `isolated` is not merely "capabilities revoked". Every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target — and an isolated generation may still be running.
+- Fence state and cleanup state are independent. A resource is visible and reconciled until deallocation is *confirmed*, whatever its receipt.
 
 ### 12. Tool And Action Policy Gating — post-MVP
 
@@ -113,7 +109,7 @@ The full gating-policy ADR behind the Phase 3 hook: structural gates (role/env/t
 
 **Re-scoped in place**, per the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md) (item A4) and [issue #282](https://github.com/SnapdragonPartners/maestro/issues/282). The slot keeps its number for the same citation reason as 11.
 
-A versioned **wire** contract rather than a Go interface, usable by Go-native and non-Go agents alike: invocation (run ID, principal instance, role, task/artifact references, model and prompt-pack identity, policy/budgets, fenced Habitat reference), events, terminal result, lifecycle, provenance, transport, and capability-based tool/knowledge access. Proven by one executable agent exercising the real wire boundary, capabilities, events, cancellation, and terminal result.
+A versioned **wire** contract rather than a Go interface, usable by Go-native and non-Go agents alike: invocation (run ID, principal instance, role, task/artifact references, model and prompt-pack identity, policy/budgets, fenced resource references — Incubator and, where verification needs one, Habitat, per [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md)), events, terminal result, lifecycle, provenance, transport, and capability-based tool/knowledge access. Proven by one executable agent exercising the real wire boundary, capabilities, events, cancellation, and terminal result.
 
 The original entry asked *whether* Maestro can run Claude Code, OpenHands, or similar as first-class executors. That question is settled — it can, and the contract is how — so the slot now carries the contract itself. Three decisions from the blocker plan belong to it:
 

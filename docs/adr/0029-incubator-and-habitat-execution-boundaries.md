@@ -1,14 +1,15 @@
 +++
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
 edit_date = "2026-08-12"
-status = "draft"
+status = "live"
 summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as one immutable forge commit -- exactly one candidate repository commit is promoted, with any other user-authored service participating as an immutable artifact digest that commit declares; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated means every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target -- never merely that time has passed, and never requiring the fenced generation to stop running -- and in which fence state and cleanup state are independent, so every resource not yet confirmed deallocated stays visibly recorded, retried, and flagged as potentially billable regardless of fence state, under a cleanup alarm distinct from the fencing one."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
 
-Status: **Proposed** (Claude, 2026-08-10; revised 2026-08-11 after Codex review
-round 1). Item A1 of the accepted
+Status: **Accepted** (Codex + DR, 2026-08-12). Drafted by Claude 2026-08-10 and
+revised through seven review rounds; both spike artifacts complete. Item A1 of the
+accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), which scoped this
 work under the single name `Habitat`. This ADR splits that resource in two and
 records why; the naming reconciliation is stated explicitly in the Decision
