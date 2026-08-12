@@ -2,7 +2,7 @@
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
 edit_date = "2026-08-12"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as one immutable forge commit -- exactly one candidate repository commit is promoted, with any other user-authored service participating as an immutable artifact digest that commit declares; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated means every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target -- never merely that time has passed, and never requiring the fenced generation to stop running -- and in which fence state and cleanup state are independent, so a quarantined resource stays visibly recorded, retried, and flagged as potentially billable until the provider confirms deallocation."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as one immutable forge commit -- exactly one candidate repository commit is promoted, with any other user-authored service participating as an immutable artifact digest that commit declares; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated means every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target -- never merely that time has passed, and never requiring the fenced generation to stop running -- and in which fence state and cleanup state are independent, so every resource not yet confirmed deallocated stays visibly recorded, retried, and flagged as potentially billable regardless of fence state, under a cleanup alarm distinct from the fencing one."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
@@ -1023,15 +1023,25 @@ The rules:
   confirmation, for the same reason "we issued a stop" is not a fence — the same
   discipline, applied one step later, and not carrying it there was the defect.
 - **Cleanup is retried by reconciliation**, not attempted once at fencing time.
-  `isolated` and `unconfirmed` are the hazardous cases precisely because cleanup
-  may never complete on its own.
-- **Pending quarantines are prominently queryable**, not merely recorded: each
-  with its **age**, **provider identity**, **last cleanup error**, and whether it
-  is **potentially billable**. A cost leak that is technically in the database and
-  visible nowhere is the failure this rule exists to prevent.
-- **Entering `isolated` or `unconfirmed` emits a high-severity operator and Audit
-  event.** Where that notification surfaces is deferred; that it is emitted is
-  not.
+- **Every resource whose cleanup state is not `deallocated` is prominently
+  queryable** — regardless of fence state — each with its **age**, **provider
+  identity**, **last cleanup error**, and whether it is **potentially billable**.
+  A first version of this rule surfaced only pending *quarantines*, which
+  contradicted the two-axis model in the paragraph above it: a `terminated`
+  generation whose deletion failed bills exactly as much as an `isolated` one, and
+  reads as safely finished. A cost leak that is technically in the database and
+  visible nowhere is the failure this rule exists to prevent, and fence state has
+  no bearing on it.
+- **Two distinct alarms, and merging them loses one.** They answer different
+  questions and neither implies the other:
+  - **Fencing alarm** — entering `isolated` or `unconfirmed` emits a
+    high-severity operator and Audit event immediately. *Something may still be
+    able to act, or we do not know.*
+  - **Cleanup alarm** — any cleanup failure, or a `pending` that has gone stale,
+    emits a high-severity event **whatever the fence state**. *Something is still
+    allocated and may still be costing money.*
+
+  Where either notification surfaces is deferred; that both are emitted is not.
 - **After confirmed deallocation, the historical record is retained** and the
   resource is marked deallocated. What clears is the *live-resource condition*,
   never the receipt or the evidence — a fenced generation remains part of the
@@ -1216,14 +1226,18 @@ to be in this position; Docker and Compose separate cleanly.
   quarantine path costs a resource until an operator or reconciliation clears it.
   That cost is the point; making `unconfirmed` cheap by treating it as a soft
   failure would return the system to best-effort fencing.
-- **Quarantine is a visible, ageing, billable thing — by design.** §7 requires
-  pending quarantines to be prominently queryable with age, provider identity,
-  last cleanup error, and billable status, and requires a high-severity event on
-  entry. The trap this closes is specific: `isolated` is terminal for the
-  execution, so an implementation reads it as "done" and stops surfacing a
-  resource that is still allocated. A cost leak recorded in a table nobody reads
-  is indistinguishable from no record at all, which is the same failure as
-  deleting it.
+- **Undeallocated resources are visible, ageing, and billable — by design, and
+  regardless of fence state.** §7 requires every resource whose cleanup state is
+  not `deallocated` to be prominently queryable with age, provider identity, last
+  cleanup error, and billable status, with a cleanup alarm on failure or staleness
+  and a separate fencing alarm on `isolated`/`unconfirmed`. Two traps close here.
+  The first: `isolated` is terminal for the execution, so an implementation reads
+  it as "done" and stops surfacing a resource that is still allocated. The second
+  is subtler and was missed on the first attempt — a **`terminated`** generation
+  whose deletion failed bills exactly as much and *reads as safely finished*, so
+  scoping visibility to quarantines would have left the most reassuring case
+  invisible. A cost leak recorded in a table nobody reads is indistinguishable
+  from no record at all, which is the same failure as deleting it.
 
 ### Deferred
 
@@ -1324,7 +1338,7 @@ final reviewed commit.
 | [Parking lot](../v2/notes_parking-lot.md) | The graduation pointer names both resources. |
 | [Roadmap](../v2/plan_roadmap.md), line 867 | Phase 3's `Epic-scoped workspace` output — **does not contain the word `Habitat`**; #273's documentation-impact section already required this amendment. |
 | [v1 port inventory](../v2/phase_0/inventory_v1-port.md), rows for `pkg/workspace`, `pkg/exec`, `pkg/tools` | Dispositions for workspace, execution, tools, and container runtime state — **does not contain the word `Habitat`**. Note `pkg/workspace` is already keyed by repo + Story/run, which is consistent with Incubator scoping. |
-| [Issue #273](https://github.com/SnapdragonPartners/maestro/issues/273) | The tracker copy, already amended three times. Its sections 3, 3a and 3b carry the fencing protocol and must reflect the split. **It must also gain the cleanup-visibility requirement** (§7): fence state and cleanup state are independent, the provider reference survives until deallocation is *confirmed*, cleanup is retried by reconciliation, pending quarantines are prominently queryable with age and billable status, and entering `isolated` or `unconfirmed` emits a high-severity event. This is an A1 requirement, not a Phase 3 implementation note — it constrains the persistence family the Phase 3 migration creates. |
+| [Issue #273](https://github.com/SnapdragonPartners/maestro/issues/273) | The tracker copy, already amended three times. Its sections 3, 3a and 3b carry the fencing protocol and must reflect the split. **It must also gain the cleanup-visibility requirement** (§7): fence state and cleanup state are independent, the provider reference survives until deallocation is *confirmed*, cleanup is retried by reconciliation, **every** resource whose cleanup state is not `deallocated` is prominently queryable with age and billable status **regardless of fence state**, and two distinct alarms fire — a fencing alarm on entering `isolated`/`unconfirmed`, and a cleanup alarm on any failure or stale `pending` whatever the fence state. This is an A1 requirement, not a Phase 3 implementation note — it constrains the persistence family the Phase 3 migration creates. |
 | [Pre-Phase-3 Blockers](../v2/phase_3/plan_blockers.md), A1's live-escape section | **Withdraw its "constrained proxy" option.** It currently offers four remedies for the socket escape — remove access, mediate through the Orchestrator, use a constrained proxy or private daemon, or include every created container in the domain. The spike falsified the middle two: filtering mediation is not capability-closed, and "include every created container" is not an action available at fencing time. Two remain: no daemon route, or a daemon owning only the domain. |
 | [Pre-Phase-3 Blockers](../v2/phase_3/plan_blockers.md), A1's receipt table | **Add the abandonment branch.** Its `isolated` row reads "its capabilities are revoked", which encodes only one of the two ways the property can hold and, read strictly, approaches termination. The settled rule is that every path into state current or future work will touch is *either* closed by its enforcing authority *or* leads to a permanently abandoned target. The plan's wording is not wrong about the property — "cannot mutate state reachable by any current or future generation" is exactly right — only about the means. |
 
