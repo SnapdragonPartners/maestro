@@ -549,7 +549,7 @@ func c4(runID, proxyBin string) {
 	// Scoped deliberately: this proves the *ordering* property over creation
 	// admission — nothing entered the domain inside the window, every stop
 	// succeeded, every member is confirmed non-running. It does not by itself
-	// establish a terminal receipt; C4c is why.
+	// establish a terminal receipt; C3d is why.
 	assert("C4b", "an acknowledged creation barrier yields a complete, confirmed set at the moment of fencing",
 		len(outside) == 0 && len(stopErrs) == 0 && len(stillRunning) == 0,
 		"mediator acknowledged %d drained creates; fenced and stopped %d; members outside the fenced set=%v; stop errors=%v; still running=%v",

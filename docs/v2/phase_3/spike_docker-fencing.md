@@ -1,6 +1,6 @@
 +++
 title = "Spike: Docker Fencing Domains And The Socket Escape"
-edit_date = "2026-08-11"
+edit_date = "2026-08-12"
 status = "draft"
 type = "spike"
 summary = "The executable Docker/Compose reproducer ADR 0029 requires: ten three-valued claims run against a live daemon with controls, checked observations, and mutation verification, all proven — establishing that the socket escape is real, that a fencing domain contains it only when membership is enforced at creation, that a fence must obtain an acknowledged revocation before enumerating and confirm every member non-running, and that an unconfirmed stop must keep the provider record a reconciler needs. Its most consequential result is negative: building the mediating-proxy option and attacking it showed a create-filtering mediator is not capability-closed and its receipts cannot cover what escaped, so ADR 0029 now names two conforming options rather than three. Eleven false-proof defects in the reproducer itself, and its self-inflicted container leak, are recorded rather than quietly repaired."
@@ -45,8 +45,8 @@ showing what produces it:
 - **C4a and C4b control each other** — the same stopping work, differing only in
   order.
 
-Beyond controls, the mechanisms listed under Results are **mutation-verified**: disabled, rerun, and
-required to flip its own claim and no others.
+Beyond controls, three mechanisms are **mutation-verified**: disabled, rerun, and
+required to flip their own claim and no others. See Results for which.
 
 ## Results
 
@@ -89,7 +89,7 @@ C4b: mediator acknowledged 12 drained creates; fenced and stopped 13; members
      outside the fenced set=[]; stop errors=[]; still running=[]
 ```
 
-**Mutation-verified.** The listed mechanisms below were each disabled and the run repeated, to
+**Mutation-verified.** Three mechanisms were each disabled and the run repeated, to
 confirm the claim depends on the mechanism rather than on the environment.
 Disabling the proxy's label injection flips C3 with the expected detail (`in
 enforced domain=false; in its own chosen domain=true`); disabling its escape
@@ -195,9 +195,14 @@ and this spike watched review miss the second hop on the first attempt and the
 `exec` route on the second.
 
 **For Phase 3 this is not a hard choice.** ADR 0029 §1 gives the Incubator no
-ecosystem, so it has no legitimate need to create containers: option 1 applies,
-and the obligation is just to stop mounting the socket that
+ecosystem, so **Phase 3 gives it no direct daemon route**: option 1 applies, and
+the obligation is just to stop mounting the socket that
 `pkg/exec/docker_long_running.go:243` mounts unconditionally today.
+
+Stated that way on purpose. Container-image builds may later be exposed as an
+Orchestrator-mediated *capability* — narrow and purpose-built — without reopening
+a general-purpose daemon route. Finding 3 forecloses filtering the daemon API, not
+every future path to building an image.
 
 A note on how this was found, because it generalises. Each round of review
 tightened one escape and revealed the next: label opt-out, then the socket-bind
@@ -222,7 +227,10 @@ The window is not an instant between two adjacent calls — it is however long t
 fence spends doing its work, which scales with the size of the domain. The larger
 the Habitat, the wider the hole.
 
-C4b establishes a **receipt**, and each part of it was earned by a defect:
+C4b establishes the **creation-ordering component** of a receipt — necessary, and
+on its own not sufficient. Finding 3 is why: over a domain that is not closed,
+these steps produce a result that is true of the enumerated set and silent about
+everything that escaped it. Each part below was nonetheless earned by a defect:
 
 - **An acknowledged revocation, not a killed process.** Killing the proxy
   discards the error and cannot distinguish "revoked" from "crashed", and creates
@@ -324,13 +332,28 @@ exists to document: a set enumerated once while something was still adding to it
 
 ## What this requires of the Phase 3 provider
 
-1. **Enforce domain membership at creation.** Remove raw socket access, or
-   mediate it so every created container is stamped with the `FencingDomainID`
-   before it exists. Enumerating by label over a raw socket is not fencing.
-2. **Revoke creation before enumerating.** The order is part of the contract, not
-   an implementation detail, and the reproducer measures what ignoring it costs.
-3. **Confirm after stopping**, against the set taken after revocation.
-4. **Never delete a provider record on an unconfirmed stop.** Mark it
+**First, choose a domain that is closed by construction.** Finding 3 leaves two
+options, and filtering a general-purpose daemon API is not among them:
+
+1. **No daemon route.** The resource cannot reach a daemon at all. **This is
+   Phase 3's choice for the Incubator**, which is given no direct daemon route —
+   the obligation is to stop mounting the socket that
+   `pkg/exec/docker_long_running.go:243` mounts unconditionally today. Note this
+   is a statement about *raw* access: container-image builds may later be exposed
+   as an Orchestrator-mediated capability without reopening the daemon.
+2. **A daemon that owns only the domain** — private or nested — so anything
+   created through it is inside by construction rather than by inspection. This
+   is the option for a Habitat provider that genuinely must create containers.
+
+The fencing steps below are **necessary but not sufficient**: they are correct
+only over a domain that is already closed, which is why they come second.
+
+3. **Revoke creation before enumerating**, and require an acknowledgment rather
+   than inferring one. The order is part of the contract, not an implementation
+   detail, and the reproducer measures what ignoring it costs.
+4. **Confirm after stopping**, against the set taken after revocation, with stop
+   errors checked and every member observed non-running.
+5. **Never delete a provider record on an unconfirmed stop.** Mark it
    `unconfirmed` and leave it enumerable.
 
 ## Reproducing

@@ -1,8 +1,8 @@
 +++
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
-edit_date = "2026-08-11"
+edit_date = "2026-08-12"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains whose three-valued receipt is constrained by any reach the fenced generation retains."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated is earned by confirmed revocations obtained from reachable components and never by elapsed time."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
@@ -107,6 +107,19 @@ new structure exposed.
 
 `isolated` is settled as of this round, so the Kubernetes walkthrough is
 unparked.
+
+**Round 5 (Codex, 2026-08-12) confirmed the Docker evidence and cleared the
+executable work.** Three stale copies of the superseded mediation conclusion were
+corrected — the spike report's provider requirements, this ADR's Spike Evidence
+section, and the C4b framing — along with a code comment and the
+mutation-verification scope. The blocker plan's "constrained proxy" remedy is
+added to the acceptance reconciliation table. One wording change preserves a
+future capability: the Incubator has **no direct daemon route** in Phase 3, which
+is a statement about raw access and does not foreclose Orchestrator-mediated
+image builds later.
+
+**Both spike artifacts are now complete.** The Kubernetes walkthrough added the
+`isolated` evidence obligation and the holds-versus-acquires sharpening to §7.
 
 **Round 4 (Codex, 2026-08-11) confirmed the substance and asked for two
 acceptance cleanups, both applied.** No further conceptual round is expected.
@@ -810,10 +823,16 @@ Both are closed *by construction*. Mediation by filtering is closed only by
 review, and the spike shows review missing the second hop on the first attempt.
 
 **For Phase 3 this is not a hard choice.** §1 gives the Incubator no ecosystem, so
-it has no legitimate need to create containers; option 1 applies, and the
-obligation is simply to stop mounting the socket that
+**Phase 3 gives it no direct daemon route**: option 1 applies, and the obligation
+is simply to stop mounting the socket that
 `pkg/exec/docker_long_running.go:243` mounts unconditionally today. A Habitat
-provider that genuinely needs to create containers takes option 2.
+provider that genuinely must create containers takes option 2.
+
+That is a statement about *raw* access, deliberately. Container-image builds and
+similar needs may later be exposed as **Orchestrator-mediated capabilities** —
+narrow, purpose-built, and each closed on its own terms — without reopening a
+general-purpose daemon route. What Finding 3 forecloses is filtering the daemon
+API, not every future path to building an image.
 
 The general form, which outlives Docker: **a mediated boundary must be closed
 under the authority it exposes**, not merely under the one operation it inspects.
@@ -828,6 +847,43 @@ hop is not a boundary.
 | `terminated` | The execution domain is confirmed stopped. | Yes | The resource is free once reprovisioned into a new generation. |
 | `isolated` | The old generation is permanently quarantined, its capabilities revoked, unable to mutate state reachable by any current or future generation — even if cleanup continues asynchronously. | Yes | **Never.** Fresh work receives a new generation or a new resource. |
 | `unconfirmed` | Neither could be established. | **No** | **None** — quarantine, no dispatch. |
+
+#### `isolated` carries an evidence obligation, and time is never the evidence
+
+The [Kubernetes walkthrough](../v2/phase_3/spike_kubernetes-partition.md) tested
+whether `isolated` survives a case where confirmed termination is unavailable by
+construction. It does — but only as a **positive act**, and the ADR previously
+defined the receipt by its property without saying what a provider must produce
+to claim it.
+
+To return `isolated`, a provider MUST enumerate the capabilities the fenced
+generation holds and, for each, obtain a revocation **confirmed by a component
+that is not the fenced generation itself**. You cannot get a receipt from the
+thing you cannot reach, so you take it from everything that thing depends on:
+its API identity, its storage attachment, its network identity and workload
+credentials. A provider that cannot enumerate that set cannot claim `isolated` —
+the same discipline §4 applies to an `unclosed` spec.
+
+**Elapsed time is never a receipt.** A monitoring grace period is evidence about
+communication, not about execution, and it is exactly the timer an implementer
+would reach for. It is a reasonable trigger for *beginning* to fence and is never
+its result.
+
+**Deleting a record is not fencing**, even where an API permits it. Kubernetes
+force-deletion removes the Pod object while the unreachable kubelet keeps running
+the containers — the cluster then believes the workload is gone, which is worse
+than knowing it is unconfirmed. It is the same shape as v1's `StopContainer`
+dropping its own record after a failed stop, and it is forbidden for the same
+reason.
+
+**Capability closure is stricter under partition.** The Docker finding was that a
+domain must be closed under the authority it exposes. A partitioned executor
+**keeps every capability it already holds**, so closure must be evaluated over
+what the domain *holds*, not only over what it can *acquire*. Broad standing
+credentials — cloud IAM, a database superuser, a shared object-store token — each
+add something that must be revoked and confirmed before `isolated` is available.
+**Narrow, individually revocable capabilities are cheaper to fence than broad
+standing ones**, and that cost is invisible until something partitions.
 
 **An `isolated` receipt is terminal but never permits reuse.** It says the old
 generation can no longer reach anything current or future work touches; it does
@@ -1056,23 +1112,48 @@ backend list is open-ended and chasing it would turn a design ADR into a researc
 project.
 
 1. **An executable Docker/Compose reproducer** — **done**, 2026-08-11:
-   [`spikes/phase_3/fencing`](../v2/phase_3/spike_docker-fencing.md), seven claims
-   run against Docker 29.6.2 / Compose v5.3.1, all proven, nothing in this section
-   falsified. It demonstrates the socket escape at
+   [`spikes/phase_3/fencing`](../v2/phase_3/spike_docker-fencing.md), **ten
+   claims** run against Docker 29.6.2 / Compose v5.3.1, all proven, with controls
+   and mutation verification. It demonstrates the socket escape at
    `pkg/exec/docker_long_running.go:243`, that domain enumeration catches the
-   sibling descendant-walking misses **only when creation stamps the domain**,
-   that revoke-before-enumerate closes the race that enumerate-before-stop loses,
-   and that an unconfirmed stop must keep the provider record. Each claim carries
-   a control, so a result also shows what produces it.
+   sibling descendant-walking misses **only when membership is enforced at
+   creation**, that revoke-before-enumerate closes the race enumerate-before-stop
+   loses, and that an unconfirmed stop must keep the provider record.
 
-   Two findings changed this section rather than merely confirming it: membership
-   enforcement at creation (above), and the ordering requirement in protocol step
-   2. Two defects in the reproducer's own first version are recorded in the spike
-   report, both of the shape this repository keeps paying for — a check that could
-   not fail for the defect it protected against.
-2. **A paper walkthrough of a Kubernetes node partition** — no cluster required —
-   as the materially different failure shape where confirmed termination is
-   unavailable and the `isolated` receipt carries the weight.
+   **Three findings changed this section**, and the third is negative and the most
+   consequential: membership enforcement at creation; the revoke-then-enumerate
+   ordering in protocol step 2; and the **withdrawal of filtering mediation as a
+   conforming option**. The spike built that option and broke it twice — the
+   holder reaches the daemon through any forwarded API, and a receipt over the
+   domain cannot cover what escaped it — leaving **two** conforming choices rather
+   than three, both closed by construction.
+
+   **Eleven defects in the reproducer itself** are recorded in the spike report,
+   all of the shape this repository keeps paying for: a check that could not fail
+   for the defect it protected against. They are recorded rather than quietly
+   repaired, because a spike that hides its own repairs asks to be trusted rather
+   than read.
+2. **A paper walkthrough of a Kubernetes node partition** — **done**, 2026-08-12:
+   [spike_kubernetes-partition.md](../v2/phase_3/spike_kubernetes-partition.md).
+   No cluster required and none used; it exists to test whether `isolated`
+   survives a shape where confirmed termination is unavailable by construction.
+
+   It does, and the receipt is stronger for it. `terminated` is correctly
+   unavailable; `unconfirmed` is the correct default, and Kubernetes' own
+   controllers behave as though it is; and `isolated` is reachable only as a
+   **conjunction of confirmed revocations obtained from reachable components**,
+   never as elapsed time. That obligation is now stated above — it was missing,
+   and had `isolated` turned out to be reachable only by waiting, the honest fix
+   would have been to delete it from the contract.
+
+   It also sharpens the Docker capability-closure finding: a partitioned executor
+   keeps every capability it already holds, so closure must be evaluated over what
+   a domain **holds**, not only over what it can acquire.
+
+   Two open questions are recorded there and belong to a future Kubernetes
+   provider, not to this ADR: whether every plausible storage backend offers a
+   fencing primitive confirmable from outside the partition, and whether
+   credential revocation leaves a window for a reconnecting node.
 
 Everything in the fencing compatibility matrix of the
 [blocker plan](../v2/phase_3/plan_blockers.md) beyond these is a non-gating
@@ -1095,6 +1176,7 @@ final reviewed commit.
 | [Roadmap](../v2/plan_roadmap.md), line 867 | Phase 3's `Epic-scoped workspace` output — **does not contain the word `Habitat`**; #273's documentation-impact section already required this amendment. |
 | [v1 port inventory](../v2/phase_0/inventory_v1-port.md), rows for `pkg/workspace`, `pkg/exec`, `pkg/tools` | Dispositions for workspace, execution, tools, and container runtime state — **does not contain the word `Habitat`**. Note `pkg/workspace` is already keyed by repo + Story/run, which is consistent with Incubator scoping. |
 | [Issue #273](https://github.com/SnapdragonPartners/maestro/issues/273) | The tracker copy, already amended three times. Its sections 3, 3a and 3b carry the fencing protocol and must reflect the split. |
+| [Pre-Phase-3 Blockers](../v2/phase_3/plan_blockers.md), A1's live-escape section | **Withdraw its "constrained proxy" option.** It currently offers four remedies for the socket escape — remove access, mediate through the Orchestrator, use a constrained proxy or private daemon, or include every created container in the domain. The spike falsified the middle two: filtering mediation is not capability-closed, and "include every created container" is not an action available at fencing time. Two remain: no daemon route, or a daemon owning only the domain. |
 
 ## Related Documents
 
