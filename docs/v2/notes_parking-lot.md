@@ -61,7 +61,9 @@ From the research synthesis:
 - Semantic gates: high-risk action summaries checked against policy.
 - Human gates: risk-tiered approval with clear summaries.
 
-Post-MVP as implementation, but the toolloop/dispatcher contracts should leave a seam for it (see ADR backlog).
+Post-MVP as implementation ([backlog candidate 12](notes_adr-backlog.md)); the seam it lands in is settled by [ADR 0030](../adr/0030-tool-execution-policy-hook.md).
+
+Update: the seam is **not** in the toolloop or the dispatcher, as this entry originally guessed. It is one mandatory hook at the Orchestrator's tool-execution boundary, and ADR 0030 constrains what the gates above may be: semantic gates consult an agent, because the hook is Orchestrator machinery and may not infer; and human gates deny the attempt with a resolution reference rather than suspending inside the boundary.
 
 ### Context Ledger
 

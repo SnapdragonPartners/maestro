@@ -534,6 +534,8 @@ Prompt pack metadata:
 
 MVP note: prompt pack selection can be deferred if it blocks the golden story runner. A minimal prompt-pack ID/hash can be enough for early metrics.
 
+The minimal contract — identity, resolution, and storage — is settled by [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md), which binds over this pillar where they differ. Two of the bullets above are narrowed there rather than adopted whole: *supported Maestro version* is recorded but advisory, because coverage of the slot set the code requires is the fact it proxies for and is directly checkable; and repo-local and exportable packs stay deferred to [backlog candidate 9](notes_adr-backlog.md) along with registry inheritance. Phase 1's deferral above was taken up and is discharged.
+
 ### 11. Knowledge Revisit
 
 The current DOT-based knowledge artifact was a useful step, but v2 should move knowledge into the data plane and make it multi-source.
