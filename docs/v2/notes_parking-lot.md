@@ -61,11 +61,11 @@ From the research synthesis:
 - Semantic gates: high-risk action summaries checked against policy.
 - Human gates: risk-tiered approval with clear summaries.
 
-Post-MVP as implementation ([backlog candidate 12](notes_adr-backlog.md)); the seam it lands in is settled by [ADR 0030](../adr/0030-tool-execution-policy-hook.md).
+Post-MVP as implementation ([backlog candidate 12](notes_adr-backlog.md)).
 
-Update: the seam is **not** in the toolloop or the dispatcher, as this entry originally guessed. It is one mandatory hook at the Orchestrator's tool-execution boundary, and ADR 0030 constrains what the gates above may be. Semantic gates consult an agent, because the hook is Orchestrator machinery and may not infer. Human gates emit a **structured resolution requirement** and deny the attempt rather than suspending inside the boundary; the scheduler creates or locates the resolution, and the retry carries an accepted reference bound to the denied action's normalized-argument digest. And any argument a rule reads must be a field the action schema declares safe to persist, since a denial whose grounds cannot be recorded cannot be audited.
+Forward reference, **not yet binding**: the seam this would land in is **proposed** in [ADR 0030](../adr/0030-tool-execution-policy-hook.md) (pre-Phase-3 item A2). Two things this entry should expect to change when that ADR is Accepted, recorded now so the guess below is not mistaken for a settled answer. The seam is **not** in the toolloop or the dispatcher, as this entry originally assumed. And the third bullet's ambition is narrower than written: per-action enforcement does not reach an agent runtime's own built-in tools, and nothing at that boundary bounds an unmediated call to an external service — those are grant-time decisions made when the execution resource is provisioned.
 
-Note the scope correction ADR 0030 makes to the third bullet's ambition: **filesystem scopes and per-action enforcement do not reach an agent runtime's own built-in tools, and nothing at this boundary bounds an unmediated call to an external service.** Those are grant-time decisions made when the execution resource is provisioned.
+The reconciliation of this entry happens in that ADR's acceptance commit.
 
 ### Context Ledger
 
