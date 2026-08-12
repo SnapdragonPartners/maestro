@@ -2,7 +2,7 @@
 title = "ADR 0029: Incubator And Habitat Execution Boundaries"
 edit_date = "2026-08-12"
 status = "draft"
-summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as an immutable forge commit; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated means every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target -- never merely that time has passed, and never requiring the fenced generation to stop running."
+summary = "Splits the single conflated execution resource into two Orchestrator-managed types: the Incubator, a unitary Story-scoped development environment carrying a toolchain and no ecosystem because it must also be implementable on platforms that reject containers, and the Habitat, a deployed application environment holding every Maestro-managed dependent service. Source and definitions cross only as one immutable forge commit -- exactly one candidate repository commit is promoted, with any other user-authored service participating as an immutable artifact digest that commit declares; spec identity closes over the inputs describing the environment while the inputs producing the candidate stay in a separate deployment closure, with runtime configuration as a third axis carrying its own lifecycle; specification, instance, and deployment are distinct identities, as are the lease that authorizes and the retention claim that keeps an environment warm; contracts route by what they require rather than what they are named; reset is demanded before evidence-bearing verification and on transfer of ownership, and must prove namespacing or removal rather than assume teardown suffices; and both types are fenced as provider-created domains that must be closed under the authority they expose, returning a three-valued receipt in which isolated means every path into state current or future work will touch is either closed by the authority enforcing it or leads to a permanently abandoned target -- never merely that time has passed, and never requiring the fenced generation to stop running."
 +++
 
 # 0029. Incubator And Habitat Execution Boundaries
@@ -405,6 +405,39 @@ addressable by construction.
 **Both halves of the promoted commit matter.** The commit carries the application
 source *and* the Habitat definition — the environment is habitat-as-code.
 Promotion advances both together.
+
+#### One candidate commit, and other user-authored services as pinned artifacts
+
+A Habitat routinely runs more than one service the user wrote — a frontend beside
+a backend — and [ADR 0018](0018-v2-work-taxonomy.md) makes this the normal case by
+letting a Product group several repositories. The rule:
+
+**Phase 3 promotes exactly one candidate repository commit.** Other user-authored
+services may participate, but only as **immutable dependent artifacts** —
+preferably multi-architecture image digests
+([ADR 0026](0026-multi-architecture-artifacts.md)) — **declared by that commit**.
+They enter the spec projection and provenance like any other dependent service,
+and they are fenced and reset inside the same Habitat domain as everything else.
+Nothing about them is special except their authorship.
+
+**Rejected, and each for the same reason:**
+
+| Rejected | Why |
+| --- | --- |
+| Floating tags | The spec digest no longer determines what runs — the projection is unclosed by construction (above) |
+| Branches | Same, and it makes the environment a moving target across a single verification |
+| Sibling working-tree paths | Not named by the commit, so outside the closure, and not reproducible on another machine |
+| Provider-side cloning or building of a second repository | Turns the provider into a build system for source it never promoted, requires a deployment closure over a repository with no promotion record, and produces a candidate no receipt covers |
+
+The unifying test is §4's own: **if it is not pinned by the promoted commit, it is
+not in the closure, and a spec digest that omits it is a lie.** A second
+repository's source is exactly such an omission.
+
+**Coordinated multi-repository *source* development stays deferred** — the
+"deployment bundles" work already in the Deferred list. What is available now is
+one commit under development at a time, with everything else pinned. That is a
+real constraint on Products spanning repositories, and it is stated rather than
+discovered.
 
 #### Spec identity is derived, and closes over the environment — not over the candidate
 
@@ -1149,8 +1182,10 @@ Incubator providers; remote build execution; mandatory hermetic builds; warm
 pools and optimized reset; in-place convergence; concurrent writers sharing one
 Habitat; dedicated verification resources; browser and device orchestration; UAT
 gate policy and presentation; production deployment; registry and vendor
-selection; multi-repository deployment bundles; provider-specific rollback
-machinery; and inference of deployment definitions Maestro was not given.
+selection; **coordinated multi-repository source development and the deployment
+bundles it needs** (§4 — one candidate commit at a time, everything else pinned);
+provider-specific rollback machinery; and inference of deployment definitions
+Maestro was not given.
 
 The promotion state machine, build and deployment receipts, and artifact-digest
 plumbing are **Phase 4 evidence-package work**, not part of this ADR.
