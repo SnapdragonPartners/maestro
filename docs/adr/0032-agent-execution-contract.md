@@ -33,17 +33,20 @@ presentation. §12 states the boundary in full.
 Verified against the frozen v1 tree at `62ecac6`. None of it is a v1 defect to fix
 — v1 is frozen (CLAUDE.md) — and all of it is a requirement on Phase 3.
 
-**There is no contract.** The nearest thing is `pkg/coder/claude`, which runs an
-external agent as a subprocess and is the closest v1 comes to the boundary this
-ADR specifies. What it has instead of a contract is four separate shapes that each
-carry part of the job, and the way they disagree is the argument for the four axes
-in §5.
+**There is no agent *execution* contract.** v1 is not short of protocols —
+`pkg/proto` carries the typed dispatch protocol of
+[note 0004](0004-channel-dispatch-and-typed-agent-protocol.md), and the MCP
+server speaks JSON-RPC — but neither describes *invoking an agent and receiving
+its outcome*. The nearest thing to that is `pkg/coder/claude`, which runs an
+external agent as a subprocess. What it has instead of a contract is four
+separate shapes that each carry part of the job, and the way they disagree is the
+argument for the four axes in §5.
 
 **The result type is a role-shaped union.** `claude.Result`
 (`pkg/coder/claude/types.go:94`) carries `Plan`, `Summary`, `Evidence`,
 `ExplorationSummary`, `Question`, and `ContainerSwitchTarget` — one field per
-signal, so a new role or a new outcome adds a field to a struct every caller
-switches on.
+signal, so a new role or a new outcome adds a field to a struct its callers
+already switch over.
 
 **One enum holds four different kinds of fact.** `claude.Signal`
 (`types.go:21`) is a single list containing an execution outcome (`ERROR`,
@@ -58,11 +61,14 @@ independently — they are real, and only their encoding is wrong.
 `SignalStoryComplete` is produced by the `done` tool on an empty diff
 (`pkg/tools/build_tools.go:469`), routes the Coder past `TESTING` straight to
 `CODE_REVIEW` (`pkg/coder/coding.go:247`, `pkg/coder/claudecode_coding.go:215`),
-and is stored as free text in `KeyCompletionDetails`. It survives as a
-**control-flow branch** and as prose; there is no terminal-result record with a
-field to carry it, because v1 has no terminal-result record at all. That is the
-precise shape of [#280](https://github.com/SnapdragonPartners/maestro/issues/280):
-not a distinction nobody drew, but one drawn and then dropped.
+and is stored as free text in `KeyCompletionDetails`. So it survives as a
+**control-flow branch** and as prose, and the structure that would carry it
+onward does not exist: `claude.Result` is per-run and in-memory, and the state
+data it lands in is a string. What follows from that is
+[#280](https://github.com/SnapdragonPartners/maestro/issues/280)'s own report —
+the Story is recorded as an ordinary completion and reads as a false negative.
+The distinction was drawn and then dropped, which is a more specific defect than
+one nobody drew.
 
 **The terminal signal travels by side channel, and two sources disagree.** The
 MCP server keeps a single mutex-guarded slot, `lastEffect`
@@ -317,8 +323,10 @@ column is #319's decision.
 **An event is a report about an execution. It is not the record of anything.** The
 durable facts are the Orchestrator's own: the `tool_call` written at ADR 0030's
 boundary, the `llm_call`, the artifact, the principal instance. A runtime that
-emits no events at all still produces a complete action history, because the
-actions went through the boundary.
+emits no events at all still produces a complete record of its **mediated**
+actions, because those went through the boundary — and no record of its
+in-resource or external ones, which never reach it
+([ADR 0030](0030-tool-execution-policy-hook.md) §6).
 
 The event kinds:
 
