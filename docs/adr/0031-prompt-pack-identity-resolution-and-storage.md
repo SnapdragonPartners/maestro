@@ -2,7 +2,7 @@
 title = "ADR 0031: Prompt Pack Identity, Resolution, And Storage"
 edit_date = "2026-08-13"
 status = "draft"
-summary = "Fixes the minimal prompt-pack contract the MPH signature's P component has been carrying informally since Phase 1. A pack version is whole rather than an overlay, immutable, and identified under the named scheme `pack-jcs-sha256-v1` as SHA-256 over the JCS serialization of a slot-key-to-content map and nothing else -- the container is normalized, prompt text never is, since whitespace is content -- with the scheme in a field of its own, because an sha256 prefix names an algorithm and not a scheme; imported v1 identities keep the opaque scheme `v1-manifest-sha256`, no comparison crosses schemes, and the Phase 3 migration backfills the legacy scheme onto rows already imported without rewriting a digest or touching the run-record contract. Because name, declared version range, and declared role coverage sit outside the digest while the content record is immutable and unique by it, mutable metadata lives on a separate installation record -- at most one per organization and content, carrying a revision that resolution binds and updates check optimistically -- that can be corrected without minting a pack. The identity is global while the row is not: content stays organization-scoped, so two tenants holding one pack hold two rows carrying one identity. The name is a label and therefore cannot be a selector either: an MVP selector names exactly one plane-owned version by reference or scheme-qualified digest, a live dispatch must carry that reference while imported foreign runs are the only records permitted to omit it, and no version label exists at all until candidate 9 defines an ordering for it. The pack digest closes over pack entries and nothing else; what accounts for a model input is invocation provenance assembled from four recorded sources -- pack, harness as Maestro version plus config hash, seeding set, and accumulated turn material -- and since most of that accumulates after an invocation begins, the expected source contract is recorded at the start while each model call binds the exact contributing references and digests and only then draws a status, with unclosed a judgment about whether an adapter can supply trustworthy bindings rather than a category of runtime, and with availability held as a state separate from closure because bound Audit sources are truncatable and a closed call may become unreconstructible. All four obligations are handed explicitly to the agent execution contract rather than given a column here. Resolution happens once and deterministically at dispatch, and the resolved identity is reused verbatim on agent restart, because re-resolving would let one Story span two P values invisibly. Packs are a data-plane family and not artifacts; because importing is not selecting and a deployment bootstrap has no organization to configure, organization provisioning is what idempotently imports the built-in default and seeds the scoped selector that makes it resolvable, upgrades move no existing organization's selector, and two organizations in one deployment can therefore default to different packs according to when each was provisioned. There is no run-time fallback to the binary, because a silent fallback makes the signature a lie. Compatibility splits: import checks parse, each slot's variable contract, and coverage of the roles the installation declares, while dispatch checks that this execution's roles fall within them, with both re-run on installation updates -- and a declared version range can refuse but never authorize. The debt on principal_instances.prompt_pack_id is three roles in one nullable text column, and its only writer today records a foreign pack the plane will never own."
+summary = "Fixes the minimal prompt-pack contract the MPH signature's P component has been carrying informally since Phase 1. A pack version is whole rather than an overlay, immutable, and identified under the named scheme `pack-jcs-sha256-v1` as SHA-256 over the JCS serialization of a slot-key-to-content map and nothing else -- the container is normalized, prompt text never is, since whitespace is content -- with the scheme in a field of its own, because an sha256 prefix names an algorithm and not a scheme; imported v1 identities keep the opaque scheme `v1-manifest-sha256`, no comparison crosses schemes, and the Phase 3 migration backfills the legacy scheme onto rows already imported without rewriting a digest or touching the run-record contract. Because name, declared version range, and declared role coverage sit outside the digest while the content record is immutable and unique by it, mutable metadata lives on a separate installation record -- at most one per organization and content, carrying a revision that resolution binds and updates check optimistically -- that can be corrected without minting a pack. The identity is global while the row is not: content stays organization-scoped, so two tenants holding one pack hold two rows carrying one identity. The name is a label and therefore cannot be a selector either: an MVP selector names exactly one plane-owned version by reference or scheme-qualified digest, a live dispatch must carry that reference while imported foreign runs are the only records permitted to omit it, and no version label exists at all until candidate 9 defines an ordering for it. The pack digest closes over pack entries and nothing else; what accounts for a model input is invocation provenance assembled from four recorded sources -- pack, harness as Maestro version plus config hash, seeding set, and accumulated turn material -- and since most of that accumulates after an invocation begins, the expected source contract is recorded at the start while each model call binds the exact contributing references and digests and only then draws a status, with unclosed a judgment about whether an adapter can supply trustworthy bindings rather than a category of runtime, and with availability held as a state separate from closure because bound Audit sources are truncatable and a closed call may become unreconstructible -- a separation that makes the loss reportable rather than preventing it, since ADR 0021's pins cover what an evidence package directly references and do not follow the second hop into a call's bindings. All four obligations are handed explicitly to the agent execution contract rather than given a column here. Resolution happens once and deterministically at dispatch, and the resolved identity is reused verbatim on agent restart, because re-resolving would let one Story span two P values invisibly. Packs are a data-plane family and not artifacts; because importing is not selecting and a deployment bootstrap has no organization to configure, organization provisioning is what idempotently imports the built-in default and seeds the scoped selector that makes it resolvable, upgrades move no existing organization's selector, and two organizations in one deployment can therefore default to different packs according to when each was provisioned. There is no run-time fallback to the binary, because a silent fallback makes the signature a lie. Compatibility splits: import checks parse, each slot's variable contract, and coverage of the roles the installation declares, while dispatch checks that this execution's roles fall within them, with both re-run on installation updates -- and a declared version range can refuse but never authorize. The debt on principal_instances.prompt_pack_id is three roles in one nullable text column, and its only writer today records a foreign pack the plane will never own."
 type = "design"
 +++
 
@@ -391,13 +391,32 @@ forever, which contradicts the retention posture Audit was given, or accept a
 
 A closed call whose sources have been pruned is *closed and unreconstructible* —
 which is an honest and useful thing to be able to say, and is unsayable with one
-field. Pinning then becomes a policy choice layered on top for the calls whose
-provenance must stay reconstructible, and ADR 0021 already has the mechanism:
-evidence packages retention-pin what they cite, so a call cited as evidence keeps
-its sources by the existing rule rather than a new one.
+field.
 
-**A4 owns the rule**, as it owns the bindings themselves. What this ADR fixes is
-that closure must not be read as availability.
+**Existing retention pins do not reach a call's bindings, and a previous version
+of this section said they did.** ADR 0021 pins the Audit records an evidence
+package **directly references**. It says nothing about the records those pinned
+records in turn reference, and provenance bindings are exactly that second hop.
+So "a call cited as evidence keeps its sources by the existing rule" was false:
+cite the call, prune everything it bound, and the pin is satisfied while the
+reconstruction is gone.
+
+Keeping a reconstruction requires one of two things, and **A4 chooses**:
+
+- **Explicit citation** — an evidence package cites the bound sources as well as
+  the call. Simple, uses the existing pin unchanged, and fragile in the obvious
+  direction: whoever assembles the package can omit one and nothing objects.
+- **A defined transitive traversal** — pinning a call pins what its bindings name,
+  with the traversal's depth and termination stated. More robust, and a real
+  mechanism to build rather than a rule to write.
+
+**Until one exists, a cited call's reconstruction can still rot** — and the point
+of the separate availability state is that this becomes *visible* rather than
+silent. The two-state split does not preserve anything; it makes the loss
+reportable. Saying otherwise would repeat the overclaim this paragraph corrects.
+
+The evidence-package half of this is Phase 4 work in any case, per ADR 0029's
+deferred list.
 
 **Where the bindings and the states live is A4's, not this ADR's.** §2's table is
 about the pack and deliberately has no closure field, because a pack is never
@@ -672,9 +691,12 @@ question here is not whether it exists but which copy is authoritative.
 - **Provenance acquires a second, decaying state.** A call's closure is fixed when
   it is made; whether its bound Audit sources still resolve is not, because Audit
   is truncatable by design (ADR 0021). *Closed and unreconstructible* is a real
-  and reportable condition, and pinning is a policy laid on top for calls whose
-  provenance must survive — which evidence packages already do by the existing
-  retention-pin rule rather than a new one.
+  and reportable condition.
+- **Retaining a reconstruction is unfinished work, not an existing guarantee.**
+  ADR 0021's pins cover what an evidence package directly references and do not
+  follow the second hop into a call's bindings, so A4 must choose between explicit
+  citation of those sources and a defined transitive traversal. Until it does, the
+  availability state makes rot visible; it does not prevent it.
 - **Today's adapted runtimes will be recorded as unclosed, and that is a statement
   about their adapters rather than about them.** Claude Code's context assembly is
   internal and its in-resource actions are unmediated under ADR 0030, so nothing

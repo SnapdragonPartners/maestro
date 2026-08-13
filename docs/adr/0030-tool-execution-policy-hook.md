@@ -2,7 +2,7 @@
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
 edit_date = "2026-08-13"
 status = "draft"
-summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries an accepted reference bound to two things rather than to the arguments alone: a resolution subject spanning action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, or generation; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action -- checked across both stages, since admission can authenticate a reference and match its subject but only the gate knows the requirement it is about to derive. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action opens one attempt record durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and completes it after, reads included again, since without a completion a finished retrieval is indistinguishable from an interrupted one; a denial opens and completes together, having no effect to await. That is two writes against the one open-then-complete tool-call record Phase 2 already built, not a second record type. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
+summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries the accumulated set of accepted references -- a set rather than one, because with two gates a single reference livelocks, the second approval clearing the second gate while the first denies again -- each bound to two things rather than to the arguments alone: a resolution subject spanning action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, or generation; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action -- checked across both stages, since admission can authenticate a reference and match its subject but only the gate knows the requirement it is about to derive. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action opens one attempt record durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and completes it after, reads included again, since without a completion a finished retrieval is indistinguishable from an interrupted one; a denial opens and completes together, having no effect to await. That is two writes against the one open-then-complete tool-call record Phase 2 already built, not a second record type. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
 type = "design"
 +++
 
@@ -240,7 +240,7 @@ nothing here linearizes them; what bounds them is §4.
 | **Resolved capability set** | The hook must see what was granted, or it cannot reason about the action it is being asked to allow |
 | **Normalized arguments**, in the canonical JSON form of [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md), with secrets already substituted by reference | A decision must be over a determinate value, and a decision record must be bindable to it by digest. **This is the in-memory decision input, and it is neither the raw input nor what gets persisted** — see below |
 | **Attempt identity** | Correlates the decision with its records, and carries the at-most-once semantics below |
-| **Accepted resolution reference**, optional | Present when a prior attempt was denied pending a resolution and that resolution now exists |
+| **Accepted resolution references** — a set, possibly empty | Every resolution accumulated by prior attempts of this action. A set rather than one reference, for the reason below |
 
 #### The decision, and how a denial that needs resolving is expressed
 
@@ -262,12 +262,50 @@ The flow, with each step owned by the component that may perform it:
 2. The **scheduler** — Orchestrator machinery, and permitted to write — creates or
    locates the corresponding resolution record and routes it to whoever or
    whatever must satisfy it.
-3. A later attempt carries the **accepted resolution reference**, and admission
-   requires that reference to be bound to the denied action's **resolution
-   subject** (below).
+3. A later attempt carries the **accepted resolution references**, each bound to
+   the denied action's **resolution subject** (below).
 
 The denied attempt is over. The resumed action is a new attempt with a new attempt
 identity (below) through the same boundary. Nothing suspends inside the hook.
+
+#### References accumulate, because gates are discovered one at a time
+
+**The attempt carries a set, not one reference**, and a previous version of this
+interface carried one. With two independent gates the single-reference form does
+not converge:
+
+| Attempt | Carries | Outcome |
+| --- | --- | --- |
+| 1 | nothing | gate A denies, requirement `R_A` |
+| 2 | `ref(R_A)` | gate A passes; **gate B is now reachable** and denies, requirement `R_B` |
+| 3 | `ref(R_B)` | gate B passes — and **gate A denies again**, because its approval is no longer being carried |
+
+That is a livelock, not a slow path: the action never runs however many
+resolutions are granted, and the operator sees the same two approvals demanded
+forever. It is a direct consequence of two decisions this ADR makes for good
+reasons — gates evaluate against the same request rather than in a negotiated
+sequence, and nothing suspends inside the boundary — so the fix belongs in the
+interface rather than in either of them.
+
+With a set, each round clears at least one gate and the set only grows, so the
+sequence terminates.
+
+**The rules for the set are deterministic, because "which approval applies" must
+never be a judgment:**
+
+- **Admission authenticates and subject-matches every reference in the set.** If
+  any one fails either check, the **attempt is denied** — not the reference
+  silently dropped. A reference that does not match its subject is a defect or an
+  attack, and ignoring it hides both.
+- **At most one reference per requirement discriminator.** Two references for the
+  same requirement are rejected rather than tie-broken; picking the newest, or the
+  broadest, would be a policy decision hidden in plumbing.
+- **Policy consumes at most one reference per applicable gate**, matching on the
+  discriminator it derived (§3's stage split).
+- **References matching no gate this time are recorded and ignored.** A gate may
+  legitimately have stopped applying between attempts; the surplus approval grants
+  nothing, so refusing it would block progress for no safety gain. Recording it
+  keeps the surplus visible rather than invisible.
 
 **The resolution subject is not the arguments.** A previous version bound an
 approval to the normalized-argument digest alone, which stops the obvious replay —
@@ -286,8 +324,9 @@ decision projection:
 - normalized arguments, in the secret-substituted form of the next subsection;
 - the principal and the applicable capability context.
 
-It excludes the attempt identity and the resolution reference itself, which are
-per-attempt and would make the subject unmatchable by construction.
+It excludes the attempt identity and the carried references themselves, which are
+per-attempt and would make the subject unmatchable by construction — and, with the
+accumulating set above, would change on every round.
 
 The generation is in the subject deliberately: an approval granted before a fence
 does not survive it. That is the same rule as §2's, arriving by a second route,
@@ -301,27 +340,29 @@ different reasons — a spend approval and a data-handling approval, say. Bound 
 the subject alone, either one's acceptance would clear the other, which is a
 privilege escalation performed entirely by matching digests correctly.
 
-So the accepted reference carries `(resolution subject, requirement
+So **each** accepted reference carries `(resolution subject, requirement
 discriminator)`, where the discriminator is a versioned identity of the structured
-requirement itself — its kind, its version, and its parameters.
+requirement itself — its kind, its version, and its parameters. The discriminator
+is also what makes the set above well-formed: it is the key on which two
+references collide.
 
-**Checking it is split across the two stages, because the requirement does not
-exist until the second one.** A previous version had admission match the reference
-against "the requirement now being emitted," which admission cannot do: the
-requirement is derived by the gate, and gates run in the policy stage, after
-admission has finished. The division follows the stage boundary exactly:
+**Checking is split across the two stages, because the requirement does not exist
+until the second one.** A previous version had admission match against "the
+requirement now being emitted," which admission cannot do: the requirement is
+derived by the gate, and gates run in the policy stage, after admission has
+finished. The division follows the stage boundary exactly:
 
-| Stage | What it checks about the reference |
-| --- | --- |
-| **Admission** | That the reference is genuine and accepted, and that its **subject** matches this decision's subject. Both are determinable without knowing which gate will run |
-| **Policy** | That its **requirement discriminator** matches the requirement this gate has deterministically derived. Only the gate knows that |
+| Stage | What it checks | Over |
+| --- | --- | --- |
+| **Admission** | That each reference is genuine and accepted, and that its **subject** matches this decision's subject; and that no discriminator appears twice | **Every** reference in the set. Both checks are determinable without knowing which gates will run |
+| **Policy** | That a reference's **requirement discriminator** matches the requirement this gate has deterministically derived | One gate's own requirement, against at most one reference |
 
-**Admission authenticates the reference; policy decides whether it is the right
-one.** The consequence is worth stating because it is what makes the hook safe to
-extend: a gate never has to trust the reference it was handed — by the time it
-sees one, admission has already established that it is accepted and subject-bound,
-so the gate compares a discriminator and nothing more. A second gate that still
-denies still denies, because its requirement is not the one satisfied.
+**Admission authenticates the set; policy decides which member, if any, is the
+right one for a given gate.** The consequence is worth stating because it is what
+makes the hook safe to extend: a gate never has to trust what it was handed — by
+the time it sees a reference, admission has established that it is accepted and
+subject-bound, so the gate compares a discriminator and nothing more. A gate whose
+requirement is not represented in the set still denies.
 
 The requirement is versioned for the same reason the pack digest scheme is
 ([ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §1): if what a
@@ -744,9 +785,9 @@ Stated so the boundary is not later read as universal:
 Policy content of every kind (candidate 12); a policy service or out-of-process
 policy engine; filesystem-scope and argument-level rules; risk tiering and human
 approval UX; the resolution-record model behind §3's requirement — its storage,
-routing, expiry, and revocation — beyond the two bindings §3 fixes, which are the
-resolution subject and the requirement discriminator; egress policy and
-network-grant design; per-action
+routing, expiry, and revocation — beyond what §3 does fix, which is the two
+bindings (resolution subject and requirement discriminator) and the accumulation
+semantics of the carried set; egress policy and network-grant design; per-action
 rate limiting and quotas; policy versioning and simulation ("what would this rule
 have denied?"); and any per-action governance of in-resource or external
 behavior.
