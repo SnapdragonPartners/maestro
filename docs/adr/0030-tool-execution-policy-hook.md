@@ -1,8 +1,8 @@
 +++
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
-edit_date = "2026-08-12"
+edit_date = "2026-08-13"
 status = "draft"
-summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries an accepted reference bound to two things rather than to the arguments alone: a resolution subject spanning action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, or generation; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action records its decision durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and a terminal outcome after, reads included again, since without one a completed retrieval is indistinguishable from an interrupted one. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
+summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries an accepted reference bound to two things rather than to the arguments alone: a resolution subject spanning action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, or generation; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action -- checked across both stages, since admission can authenticate a reference and match its subject but only the gate knows the requirement it is about to derive. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action opens one attempt record durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and completes it after, reads included again, since without a completion a finished retrieval is indistinguishable from an interrupted one; a denial opens and completes together, having no effect to await. That is two writes against the one open-then-complete tool-call record Phase 2 already built, not a second record type. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
 type = "design"
 +++
 
@@ -303,10 +303,25 @@ privilege escalation performed entirely by matching digests correctly.
 
 So the accepted reference carries `(resolution subject, requirement
 discriminator)`, where the discriminator is a versioned identity of the structured
-requirement itself — its kind, its version, and its parameters. Admission requires
-that the reference be accepted, that its subject match, and that its requirement
-match **the requirement now being emitted**. A second gate that still denies
-still denies, because its requirement is not the one satisfied.
+requirement itself — its kind, its version, and its parameters.
+
+**Checking it is split across the two stages, because the requirement does not
+exist until the second one.** A previous version had admission match the reference
+against "the requirement now being emitted," which admission cannot do: the
+requirement is derived by the gate, and gates run in the policy stage, after
+admission has finished. The division follows the stage boundary exactly:
+
+| Stage | What it checks about the reference |
+| --- | --- |
+| **Admission** | That the reference is genuine and accepted, and that its **subject** matches this decision's subject. Both are determinable without knowing which gate will run |
+| **Policy** | That its **requirement discriminator** matches the requirement this gate has deterministically derived. Only the gate knows that |
+
+**Admission authenticates the reference; policy decides whether it is the right
+one.** The consequence is worth stating because it is what makes the hook safe to
+extend: a gate never has to trust the reference it was handed — by the time it
+sees one, admission has already established that it is accepted and subject-bound,
+so the gate compares a discriminator and nothing more. A second gate that still
+denies still denies, because its requirement is not the one satisfied.
 
 The requirement is versioned for the same reason the pack digest scheme is
 ([ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §1): if what a
@@ -590,39 +605,47 @@ boundary's own code to review.
 
 The record is [ADR 0022](0022-v2-data-plane.md)'s tool call — the atomic Audit
 action unit — encoded per [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md).
-The boundary invents no record type.
+The boundary invents no record type, and it does not need one: **Phase 2 already
+built this shape.** `tool_calls` (migration 000005) has a non-null `started_at`
+with `finished_at` and `succeeded` null while in flight, under a comment saying an
+unfinished call is a real state rather than a missing field, and a check
+constraint tying the two together.
 
-- **Every decision is recorded, allow or deny.** A denial that leaves no record is
-  invisible, and denials are the observations candidate 12 will be tuned against.
-- **The decision record is durably acknowledged before the effect happens or any
-  result is released** — for every mediated action, not only mutating ones. **A
-  read is not exempt**, because releasing data *is* the security-relevant effect of
-  a retrieval: a crash between disclosure and its record would leave data released
-  with nothing recording that it was. An earlier version of this section had reads
-  recording "once" without saying when, which admitted exactly that ordering.
-- **If the pre-effect record cannot be committed, the action fails closed.**
-  Otherwise the record is advisory and the guarantee above is not one.
-- **Every mediated attempt records a terminal outcome after the effect**, bound to
-  the same attempt identity — **reads included**. A mutation's outcome additionally
-  carries effect details; a read's says whether the result was released. An
-  attempt whose outcome record is missing then reads as *attempted, outcome
-  unknown* rather than as nothing at all — which is what a reconciler needs, what
-  §3's at-most-once rule consumes, and the same lesson the Docker spike recorded
-  about an unconfirmed stop that must not destroy the provider record.
+**One logical attempt record, opened and completed** — two durable *writes*, not
+two records. A previous version of this section alternated between the two
+phrasings, which would have read as a schema change nobody asked for.
 
-  A previous version of this section gave outcomes to mutations only, which broke
-  the rule two subsections up: with no terminal record, **a successful read is
-  indistinguishable from an interrupted one**, every completed retrieval sits
-  permanently in `unknown`, and a transport retry cannot tell whether disclosure
-  already happened. "The read has no effect to lose" was the wrong test — the
-  release is the effect, and a release with no terminal record is exactly the
-  ambiguity the two-phase shape exists to remove.
+- **Every attempt is opened durably before the effect happens or any result is
+  released**, for every mediated action, not only mutating ones. **A read is not
+  exempt**, because releasing data *is* the security-relevant effect of a
+  retrieval: a crash between disclosure and the open would leave data released
+  with nothing recording that it was.
+- **If the open cannot be committed, the action fails closed.** Otherwise the
+  record is advisory and the guarantee above is not one.
+- **Every attempt is completed**, bound by its attempt identity — **reads
+  included**. A mutation's completion carries effect details; a read's says
+  whether the result was released. An attempt left open then reads as *attempted,
+  outcome unknown* rather than as nothing at all — which is what a reconciler
+  needs, what §3's at-most-once rule consumes, and the same lesson the Docker
+  spike recorded about an unconfirmed stop that must not destroy the provider
+  record.
 
-So the cost is **two writes per mediated action**, not one for reads and two for
-mutations. That is more than the previous version claimed and is the honest
-figure; what bounds it is the split in §4 rather than the action rate, since
-in-resource actions — every file edit and every command the agent's own runtime
-runs — pay nothing here.
+  A previous version of this section completed mutations only, which broke the
+  at-most-once rule: with no completion, **a successful read is indistinguishable
+  from an interrupted one**, every completed retrieval sits permanently in
+  `unknown`, and a transport retry cannot tell whether disclosure already
+  happened. "The read has no effect to lose" was the wrong test — the release is
+  the effect.
+- **A denial is terminal and is opened and completed together**, in one
+  transaction, with the reason code. There is no effect to await, so waiting for
+  one would leave every denied attempt permanently unresolved — which a previous
+  version's "completed after the effect" implied. Denials are also the
+  observations candidate 12 will be tuned against, so losing them is not a small
+  loss.
+
+So the cost is **two writes for an executed action and one for a denied one** —
+more than the previous version claimed for reads, and bounded by the split in §4
+rather than by the action rate, since in-resource actions pay nothing here.
 
 **Rejected: record once, after the effect.** That is v1's shape
 (`toolloop.go:546`), and it loses the window that matters. A crash between a forge
@@ -699,9 +722,11 @@ Stated so the boundary is not later read as universal:
 - **Per-action policy becomes a configuration change rather than a code change.**
   That is the whole point of choosing the seam now: candidate 12 lands as rules
   behind an existing hook.
-- **Two records per mediated action — decision then outcome — and a data-plane
-  read per mediated action.** Named as a real cost, bounded by how few mediated
-  actions there are relative to in-resource ones.
+- **Two writes per executed mediated action — open then complete — one for a
+  denial, and a data-plane read per mediated action.** Named as a real cost,
+  bounded by how few mediated actions there are relative to in-resource ones. The
+  record itself is `tool_calls` as Phase 2 already shaped it; what is new is the
+  ordering obligation, not the schema.
 - **Audit gains a redaction obligation.** Every action family needs a declared
   safe projection before it can be recorded at all, which is work Phase 3 pays per
   family rather than once — and is what keeps a `shell` action from writing a
