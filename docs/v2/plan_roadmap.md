@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-08-12"
+edit_date = "2026-08-13"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -534,7 +534,13 @@ Prompt pack metadata:
 
 MVP note: prompt pack selection can be deferred if it blocks the golden story runner. A minimal prompt-pack ID/hash can be enough for early metrics.
 
-The minimal contract — identity, resolution, and storage — is **proposed** in [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md) (pre-Phase-3 item A3). It is not yet Accepted and **does not yet bind over this pillar**; this pointer is a forward reference, and the reconciliation of the bullets above happens in that ADR's acceptance commit, not here.
+The minimal contract — identity, resolution, and storage — is settled by [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md) (Accepted 2026-08-13, pre-Phase-3 item A3), which **binds over this pillar** where they differ. Three of the bullets above are narrowed there rather than adopted whole:
+
+- *Immutable, hash-addressed* holds, with the digest **scheme-qualified** — an `sha256:` prefix names an algorithm, not a scheme — and no comparison crossing schemes.
+- *Supported Maestro version* is recorded but can only **refuse**, never authorize. A declared range is a claim; the gate is coverage plus parse plus each slot's variable contract, checked against the harness that will actually run.
+- *Exportable*, repo-local packs, and the user-facing install experience stay deferred to [backlog candidate 9](notes_adr-backlog.md), which ADR 0031 re-cuts: the minimal installation record is Phase 3 work, only the registry around it is later.
+
+The MVP note above is discharged — pack selection was taken up rather than deferred, and the label-plus-hash form Phase 1 used is exactly what the ADR generalizes.
 
 ### 11. Knowledge Revisit
 

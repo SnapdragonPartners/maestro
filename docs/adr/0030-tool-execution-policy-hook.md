@@ -1,15 +1,16 @@
 +++
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
 edit_date = "2026-08-13"
-status = "draft"
+status = "live"
 summary = "All agent requests for Maestro-managed effects pass through one Orchestrator boundary that records intent, validates machine policy, obtains human approval when required, and records the result. Human approval blocks the Story and caller without consuming LLM turns; headless runs instead mark the Story blocked. Expensive resources are acquired only after approval, and all current authorization, work-version, and resource conditions are revalidated immediately before execution. The design centralizes policy and auditing without introducing approval retries, resolution chains, or arbitrary agent checkpointing."
 type = "design"
 +++
 
 # 0030. The Tool Execution Boundary And Its Policy Hook
 
-Status: **Proposed** (Claude, 2026-08-12; substantially redrafted 2026-08-13).
-Item A2 of the accepted
+Status: **Accepted** (Codex + DR, 2026-08-13). Drafted by Claude 2026-08-12 and
+substantially redrafted 2026-08-13 after DR overturned its central premise; ten
+review rounds. Item A2 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), which settles the
 placement and directs this ADR at the part the original framing missed: the
 mediated versus in-resource split and what each mode honestly guarantees. Drafted

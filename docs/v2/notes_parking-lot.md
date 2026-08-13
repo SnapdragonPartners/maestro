@@ -63,13 +63,13 @@ From the research synthesis:
 
 Post-MVP as implementation ([backlog candidate 12](notes_adr-backlog.md)).
 
-Forward reference, **not yet binding**: the seam this would land in is **proposed** in [ADR 0030](../adr/0030-tool-execution-policy-hook.md) (pre-Phase-3 item A2). Three things this entry should expect to change when that ADR is Accepted, recorded now so the guesses above are not mistaken for a settled answer.
+**The seam is settled by [ADR 0030](../adr/0030-tool-execution-policy-hook.md)** (Accepted 2026-08-13, pre-Phase-3 item A2), which binds over the guesses above. Three corrections:
 
-- The seam is **not** in the toolloop or the dispatcher, as this entry originally assumed.
-- The third bullet's ambition is narrower than written: per-action enforcement does not reach an agent runtime's own built-in tools, and nothing at that boundary bounds an unmediated call to an external service — those are grant-time decisions made when the execution resource is provisioned.
-- A human gate **blocks the call and the Story** rather than refusing and being retried; the operator answers at a scope the gate declares, and a headless run marks the Story blocked instead of waiting.
+- The seam is **not** in the toolloop or the dispatcher, as this entry assumed, and not a policy service. It is one mandatory boundary at the Orchestrator's tool-execution seam.
+- The third bullet's ambition is narrower than written: per-action enforcement does not reach an agent runtime's own built-in tools, and nothing at that boundary bounds an unmediated call to an external service. Those are grant-time decisions made when the execution resource is provisioned — and a permissive external grant can cost the resource its fenceability, not merely its policeability.
+- A human gate **blocks the call and the Story** rather than refusing and being retried. One operator decision resolves one logical action, at a scope the gate declares; composition across gates is intersection at the boundary; and a headless run marks the Story blocked instead of waiting.
 
-The reconciliation of this entry happens in that ADR's acceptance commit.
+Two constraints on the semantic and human bullets specifically: a semantic gate is an **agent**, because the hook is Orchestrator machinery and may not infer; and a rule may only read fields the action schema declares safe to persist, since a denial whose grounds cannot be recorded cannot be audited.
 
 ### Context Ledger
 
