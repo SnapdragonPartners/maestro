@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-12"
+edit_date = "2026-08-13"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -248,6 +248,14 @@ containment guarantee A2 states is only as strong as this protocol makes it.
 
 ### A2. Tool execution policy hook — [backlog candidate 4](../notes_adr-backlog.md)
 
+> **RESOLVED 2026-08-13 by [ADR 0030: The Tool Execution Boundary And Its Policy Hook](../../adr/0030-tool-execution-policy-hook.md)** (Codex + DR). Three things below are superseded by it and are left in place as the record of what was asked rather than what was decided:
+>
+> 1. **The escalation model is inverted.** This item's "no policy content" scope held, but its unstated assumption — that a gate needing a human returns an answer to the caller — did not. A human-required call is **one logically blocked call**: the Story enters `awaiting_resolution`, the caller performs no LLM turns, and one operator decision resolves one logical action. The ADR was drafted the other way, on the premise that blocking was too expensive to hold, and DR overturned that premise after six review rounds of correct fixes inside it. A blocked execution burns no tokens; the retained Incubator or Habitat is the only real cost, and it is the same either way.
+> 2. **"Mediated versus in-resource" is two axes, not one split, and the effect site is three-valued.** Mediation is the request path; containment is the effect site — Orchestrator-side, in-resource, or **external**. This item's wording has no place for an agent runtime's own shell calling an outside service, which is neither the Orchestrator's nor inside the resource's own state and is bounded only by the grants made at provisioning.
+> 3. **"in-Habitat" is "in-resource" throughout.** The wording below predates [ADR 0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md) splitting the resource. The ungoverned-actions half is chiefly the **Incubator's**, and the split applies to both types.
+>
+> Two things this item asked for are settled as asked: the placement, and the honest statement of each mode's guarantee.
+
 Where the mandatory per-action policy hook lives and what its interface is. No
 policy content — the gating rules are [candidate 12](../notes_adr-backlog.md),
 post-MVP.
@@ -301,6 +309,14 @@ Cheapest item here to decide and the most expensive to defer: Phase 3 builds the
 tool plumbing, and a seam not chosen gets retrofitted into every tool.
 
 ### A3. Prompt pack identity, resolution, and storage — [backlog candidate 5](../notes_adr-backlog.md)
+
+> **RESOLVED 2026-08-13 by [ADR 0031: Prompt Pack Identity, Resolution, And Storage](../../adr/0031-prompt-pack-identity-resolution-and-storage.md)** (Codex + DR). Three things below are narrower than what was decided, and are left in place as the record of what was asked:
+>
+> 1. **"`principal_instances.prompt_pack_id` becomes a real reference" is not what the debt needed.** That column is doing three jobs — naming a pack, identifying its content, and standing in for a plane reference — and its only writer records `"v1-embedded"`, a pack the plane will never own. A foreign key on every row would mean fabricating records for prompts the plane never held, or refusing the benchmark import. The reference is therefore **required at dispatch and absent only for imported foreign runs**.
+> 2. **Storage is not one record.** Content is immutable and content-addressed; the mutable facts a pack cannot be resolved without — display name, declared version range, declared role coverage — live on a separate **installation** record, because they sit outside the digest. That re-cuts one line of [candidate 9](../notes_adr-backlog.md), which is amended in place.
+> 3. **Identity is scheme-qualified.** An `sha256:` prefix names an algorithm, not a semantic scheme, so a v1-embedded identity and a v2 pack digest are never comparable. The Phase 3 migration backfills the scheme without rewriting a digest or touching [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s run-record contract.
+>
+> Resolution-once-at-dispatch is settled exactly as asked, with the addition that a restarted agent reuses the resolved identity rather than re-resolving.
 
 The minimal contract: pack identity and content hash, resolution (which pack a
 run uses, decided once and deterministically at dispatch), and data-plane

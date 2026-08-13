@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-08-12"
+edit_date = "2026-08-13"
 status = "live"
 type = "notes"
 summary = "Reconciled, stable-numbered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates each labelled with the phase it blocks — slot numbers are cited by other documents and never change, so a heading rather than a position in the list is what says when a candidate is due."
@@ -35,6 +35,8 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | Artifact Envelopes And Payload Schemas (blocked Phase 2) | [ADR 0028](../adr/0028-artifact-envelopes-and-payload-schemas.md), Accepted 2026-07-24 as Phase 2 item 1 |
 | Reviewer Heterogeneity Means Distinct Lineage (blocked Phase 5) | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment, proposed 2026-08-08 and accepted 2026-08-09 — the rule only; the mechanism is deferred as tracked work |
 | Habitat Execution Boundary (blocked Phase 3) | [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md), Accepted 2026-08-12 as item A1 of the pre-Phase-3 blocker plan — split into the Incubator and the Habitat, with two spike artifacts |
+| Tool Execution Policy Hook (blocked Phase 3) | [ADR 0030](../adr/0030-tool-execution-policy-hook.md), Accepted 2026-08-13 as item A2 — one boundary in three gates, with a human-required call logically blocked rather than denied and retried |
+| Prompt Pack Identity, Resolution, And Storage (blocked Phase 3) | [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md), Accepted 2026-08-13 as item A3 — scheme-qualified content identity, immutable content beside a mutable installation, resolution once at dispatch |
 
 ## Candidates, Stable-Numbered
 
@@ -58,17 +60,27 @@ Deferred from ADR 0019's dispatch amendment (2026-07-14): the policy for work al
 
 Sequenced as item A5 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), which fixes two things about it. **It is an amendment to [ADR 0019](../adr/0019-orchestrator-boundary.md), not a new ADR** — it completes a case 0019 itself deferred, concerns 0019's own subject, and its mechanisms are owned by candidates 11 (fencing) and 13 (cancellation lifecycle, terminal result), leaving only the policy. And it is **last** in the design track, because it depends on both.
 
-### 4. Tool Execution Policy Hook — blocks Phase 3
+### 4. Tool Execution Policy Hook — RESOLVED by [ADR 0030](../adr/0030-tool-execution-policy-hook.md)
 
-A narrow, binding ADR: where the per-action policy hook lives (toolloop, dispatcher, tool execution layer, or a policy service) and its interface — no policy content. Chosen before Phase 3 builds tool plumbing, or per-action policy gets retrofitted into every tool. The full gating-policy ADR stays post-MVP (below).
+Accepted 2026-08-13 (Codex + DR) as item A2 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md); see the Resolved In Later Phases table above. The slot keeps its number because phase plans and session notes cite it.
 
-Sequenced as item A2 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), which settles the placement (the Orchestrator's central tool-execution boundary, after capability resolution and before the side effect) and adds a decision the original framing missed: the ADR must state the **mediated versus in-resource** split and what each mode actually guarantees. (Written as "in-Habitat" before [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md) split the resource; the ungoverned-actions half is chiefly the **Incubator's**, and the split applies to both types.) Mediated actions — anything crossing back into the Orchestrator — are policed per action. In-Habitat actions are not, and their guarantee is containment decided at grant time. **Maestro's enforcement is scoped to Maestro's own agents** (DR, 2026-08-09): an engineer may legitimately run other agents in a Habitat, and the application under development may itself be an agent.
+Three things a reader of the old entry must carry forward, because each is wider than what this slot asked for:
 
-### 5. Prompt Pack Identity, Resolution, And Storage — blocks Phase 3
+- **The placement question is closed.** Not the toolloop, not the dispatcher, not a policy service: one mandatory boundary at the Orchestrator's tool-execution seam, and Phase 3 must be able to demonstrate that no tool reaches its effect around it.
+- **The mediated / in-resource split became two independent axes**, and the effect site is **three-valued**. Mediation is the request path — what the Orchestrator can refuse; containment is the effect site, which is Orchestrator-side, in-resource, or **external**. An unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and only direct access to Orchestrator-managed effects is structurally forbidden. Reading the split as binary understates what Maestro does not govern.
+- **A human-required call blocks; it is not denied and retried.** The Story enters `awaiting_resolution` and one operator decision resolves one logical action. Headless runs mark the Story blocked immediately rather than waiting.
 
-Split from the broader packs/skills candidate (2026-07-15): the port inventory moves templates and packs into the data plane during Phase 3, and the MPH signature's P component needs pack identity from Phase 1's runner onward. The minimal contract — pack identity and content hash, resolution (which pack a run uses), and data-plane storage (family reserved since Phase 2, ADR 0022) — blocks Phase 3. Skills and registry expansion (installed org-level packs, versioning/export, repo-local packs) remain a later candidate below.
+**Maestro's enforcement stays scoped to Maestro's own agents** (DR, 2026-08-09): an engineer may legitimately run other agents in a resource, and the application under development may itself be an agent.
 
-Sequenced as item A3 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), which adds that resolution happens **once and deterministically at dispatch**, with the invocation carrying an immutable pack ID and content digest. It has no dependency on candidates 11 or 4 and is authored in parallel with them, joining at candidate 13's invocation schema. The concrete debt it settles: `principal_instances.prompt_pack_id` is a nullable `text` column today with no table behind it and no FK.
+Four constraints the ADR places on candidate 12, recorded here so they are not rediscovered: a semantic gate is an **agent**, because the hook may not infer; a human gate returns *requires an operator* and declares which scopes it permits; **composition across gates is intersection and belongs to the boundary**, never to a gate or a UI; and a rule may only read fields the action schema declares safe to persist, since a denial whose grounds cannot be recorded cannot be audited.
+
+### 5. Prompt Pack Identity, Resolution, And Storage — RESOLVED by [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md)
+
+Accepted 2026-08-13 (Codex + DR) as item A3 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md); see the Resolved In Later Phases table above.
+
+**It re-cuts one line of candidate 9 below**, which is the thing to carry forward: "installed org-level packs" was a single deferred item and is two. The **minimal installation record** — display name, declared Maestro version range, declared role coverage, and a revision — is **required now**, because those facts sit outside the content digest that makes a pack immutable and could otherwise never be corrected, and Phase 3 cannot resolve a pack without them. What stays deferred is the **registry**: browsing and installing as a user-facing act, governance over who may install what, inheritance and overlays, versioning and export formats, distribution, and sharing across organizations.
+
+Two further constraints the ADR fixes, both easy to lose in transit: a pack digest is **scheme-qualified** and no comparison crosses schemes, so an imported v1 identity stays opaque rather than joining a group with a v2 pack; and the pack **name is a label**, never a selector and never a comparison key. The concrete debt it settles: `principal_instances.prompt_pack_id` was a nullable `text` column doing three jobs, whose only writer records a pack the plane will never own.
 
 ### 6. UAT And Demo Mode — blocks Phase 4
 
@@ -85,6 +97,8 @@ Anchored 2026-07-15 (Phase 0 item 12 review; the reconcile found it had no phase
 ### 9. Skills And Pack Registry Expansion — Phase 5/6
 
 The remainder of the packs/skills candidate after the Phase-3-blocking split above: installed org-level packs/skills as DB-canonical, immutable, versioned, exportable; repo-local packs; the skills registry (pillar 10).
+
+**Narrowed 2026-08-13 by [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md)** (slot 5). "Installed org-level packs" is two items, not one, and the first has moved out of this candidate: the **minimal installation record** a pack cannot be resolved without — display name, declared Maestro version range, declared role coverage, revision — is **in Phase 3 scope and no longer deferred here**. Its design is settled; the migration and the code are Phase 3 implementation and are not written. What remains in this candidate is the **registry** around it: browsing and installing as a user-facing act, governance over who may install what, inheritance and overlays, human-readable version labels and their ordering, export formats, distribution, repo-local packs, deduplicating identical content across organizations, and the skills registry. Also carried here: agent-authored packs and their review posture, since making a pack a Management artifact would put every pack edit under the review invariant and that has not been decided.
 
 ### 10. Knowledge Hierarchy And Knowledge Packs — blocks Phase 6
 
