@@ -397,6 +397,28 @@ Notes on the axes that are easy to get wrong:
   than `failed`. When a cancellation is legitimate and what it does to pending
   actions is [A5](0019-orchestrator-boundary.md)'s.
 
+#### A result violating the applicability rule is a protocol violation
+
+A first draft of this section defined the rule and did not say what happens when
+a runtime sends a result that breaks it. **It is refused and the execution fails
+`non_retryable_agent`**; it is not recorded and then reasoned about downstream.
+Accepting it would put the exact axis collision this schema exists to prevent
+into the plane, with the validator having seen it and shrugged. The conformance
+slice exercises this directly.
+
+#### `blocked` is recorded by the Orchestrator, not claimed by the agent
+
+The other four statuses may be claimed by the runtime and are then subject to
+§4's override. `blocked` is different in kind: it is a fact about a **gate the
+agent cannot see**, established by ADR 0030's boundary and the invocation's
+declared responder availability. The agent stops; the Orchestrator records.
+
+This fell out of the conformance slice rather than being designed: the headless
+agent reaches a decision it cannot get answered, stops issuing turns, and exits
+**without a terminal event**, and the host composes the result from the
+boundary's own state. An agent that named itself blocked would be asserting
+something it has no way to know.
+
 #### Two things that are not execution statuses
 
 **`rejected` is not one, and #282 as filed lists it.** An agent asked to review
@@ -448,6 +470,19 @@ outcome rather than a state is what stops the confusion this section exists to
 remove from reappearing one level down — and it is the value the existing
 `tool_calls_finished_check` constraint cannot express, which is why the Phase 3
 migration must replace that constraint rather than only add to the table.
+
+**Reconciliation acts on `open` and on nothing else**, and this is a rule the
+conformance slice had to discover. ADR 0030 §8 states that the *watchdog* leaves
+both waits alone; the **reconciler is a different actor** and no rule was written
+for it. A first implementation settled every attempt that was not already
+settled, which swept up an attempt sitting healthily in `operator_waiting` and
+destroyed the requirement reference a `blocked` result must carry (§5) — so the
+execution reported itself blocked on nothing.
+
+An attempt in a **declared** wait is healthy, not interrupted. That is the whole
+distinction the nonterminal states exist to draw, and the first implementation
+collapsed it one level below where ADR 0030 drew it. Phase 3's reconciler owes
+the same scoping.
 
 **Entering and leaving a wait is a durable transition**, per ADR 0030 §8, not the
 absence of a completion.
@@ -502,10 +537,26 @@ Three different things, and v1 has one mechanism for all of them.
   cannot is restarted from the last durable workflow artifact, which ADR 0030 §4
   already names as the recovery state actually promised.
 - **Re-attach** is transport plumbing. Each action the runtime issues carries a
-  **correlation identity it chooses**; the Orchestrator's response carries the
-  attempt identity that owns ADR 0030 §3's at-most-once semantics. After a
-  transport reconnection the runtime re-announces its outstanding correlation
-  identities and receives their current state.
+  **correlation identity**; the Orchestrator's response carries the attempt
+  identity that owns ADR 0030 §3's at-most-once semantics. A runtime rejoining
+  an execution re-announces its outstanding correlation identities and receives
+  their current state.
+
+**Re-attach and restart coincide on the local transport**, and a first draft of
+this section said "after a transport reconnection" as though they were separate.
+Over stdio they are not: **a broken transport is a dead process**, so there is no
+live runtime to reconnect to and the only case the local transport presents is a
+*restarted* runtime rejoining an existing execution. The reconnection wording is
+retained because a socket or remote transport will need it, and it is now stated
+as what it is — a case Phase 3's transport does not produce.
+
+**A correlation identity must be derivable, not merely chosen.** The runtime
+picks it, but the choice must survive the runtime's own death: a restarted
+runtime cannot re-announce identities it invented and then lost. Deriving them
+from the invocation identity and a step ordinal is sufficient and is what the
+conformance slice does. Without this rule at-most-once holds within a process and
+silently stops holding across a restart, which is precisely the boundary a
+restart crosses.
 
 **Re-attach never surfaces approval semantics to the agent.** The runtime learns
 that a call is still outstanding; it does not learn that a human is being asked.
@@ -708,6 +759,13 @@ shared filesystem, and no identity may be a process-local handle. Anything else 
 deferred with
 [candidate 14](../v2/notes_adr-backlog.md).
 
+**What stdio cannot exercise, and is therefore unproven rather than proven.**
+Because a broken stdio transport is a dead process (§6), the local transport
+produces no reconnection case at all: it produces restarts. The re-attach
+semantics are defined for a transport that can reconnect, and Phase 3 ships none.
+That is a deliberate forward provision, and it is the kind of claim this ADR must
+not let a later reader mistake for something the conformance slice demonstrated.
+
 ### 11. Versioning and compatibility
 
 - **The contract carries a version and it is negotiated at the handshake.** The
@@ -773,11 +831,106 @@ numbers that would make the scenarios look green. That is ADR 0025's
 posture the [Docker fencing spike](../v2/phase_3/spike_docker-fencing.md) took
 when it recorded its own eleven defects rather than quietly repairing them.
 
+### What was run, and what it changed
+
+**Done**, 2026-08-13:
+[`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
+**22 claims, all `PROVEN`**; sixteen spawn a real external process and speak
+newline-delimited JSON to it. **7 of 7 mutations killed for their named reason**,
+under a harness that requires a positive control, refuses to start on residue,
+and verifies restoration by digest.
+
+**Five findings changed this ADR**, and the first is a defect in the design
+rather than in the harness:
+
+1. **Reconciliation must be scoped to `open`** (§6) — it was destroying the
+   requirement set a `blocked` result must reference. Now a permanent mutation.
+2. **Re-attach over stdio is restart, not reconnection** (§6).
+3. **Correlation identities must be derivable** (§6), or at-most-once stops
+   holding at exactly the boundary a restart crosses.
+4. **An invalid terminal result is a protocol violation** (§5), not a result to
+   record and reason about later.
+5. **`blocked` is the Orchestrator's to record** (§5), not the agent's to claim.
+
+**One mutation initially survived and indicted the assertion rather than the
+mutation** — a claim was checking a consequence before the mechanism, so a
+neighbouring guard fired first. Recorded because it is this repository's standing
+lesson arriving on schedule, and it was caught only because the harness required
+the failure to match a *named reason* rather than merely to occur.
+
+**Uncovered and declared as such**, never fabricated: model calls and everything
+shaped by them, concurrency accounting (§7 is reasoned, not measured), resumable
+runtimes, the retention traversal (§9), composite execution, any transport but
+the local one, and the data plane itself — the recorder is in-memory, and the
+schema claims here were made by reading migrations rather than running them.
+
 ## Consequences
 
-*(to be completed after the conformance slice runs — findings from the slice
-belong here, and stating them before the evidence exists would be the overclaim
-this repository keeps paying for)*
+- **Phase 3 gets one boundary instead of two.** A native Go agent and an adapted
+  external runtime meet the same contract, so ADR 0030's claim that no tool
+  reaches its effect around the boundary becomes demonstrable rather than
+  aspirational. v1's MCP path — Maestro tools executed with no record at all — is
+  the shape this closes.
+- **`tool_calls` needs a migration bigger than ADR 0030 §8 asked for.** That
+  section calls it additive; it must also **replace
+  `tool_calls_finished_check`**, because settling an attempt requires a boolean
+  `succeeded` and the reconciliation outcome `unknown` is neither true nor false.
+  The record cannot currently express a state ADR 0030 requires of it.
+- **Four axes are four columns, and consumers switch on one of them.** Code that
+  wants "did this work?" reads execution status; code that wants "was there
+  anything to do?" reads the disposition. v1's single `Signal` enum forced every
+  consumer to switch over a set whose members are not alternatives.
+- **#280 and #317 gain a place to be fixed rather than a fix.** The schema now
+  has a field for an already-satisfied completion and a durable `blocked`
+  terminal; the code changes remain Phase 3 items.
+- **[#319](https://github.com/SnapdragonPartners/maestro/issues/319) is
+  unblocked and its home is two-level.** Lifecycle facts key on the served
+  identity, lineage on the underlying model, with a nullable reference between
+  them whose null is ADR 0020's existing `unclassified`. Whether that is two
+  tables is #319's decision.
+- **Provenance acquires a real cost.** Bindings per model call are more data than
+  a status field, and the alternative — a status nobody can check — is what
+  ADR 0031 §3 refuses. The retention traversal is chosen and unbuilt, so a cited
+  call's reconstruction can still rot; the availability state makes that
+  *visible*, and claiming more would repeat the overclaim ADR 0031 corrected.
+- **An adapted runtime's honesty becomes measurable and mostly absent.** Today's
+  Claude Code path reports no bindings, so it records as unclosed — a statement
+  about its adapter, not about it, and a definite thing for an adapter author to
+  build toward.
+- **Blocking is affordable for a native agent and costs a process for an external
+  one.** §7 makes the runtime declare whether it can be released and resumed, so
+  holding an OS process across a human's attention span is a decision rather than
+  a default. ADR 0030's "a suspended goroutine and nothing more" is exact for the
+  in-process case and was never a claim about the other one.
+- **A run can exhaust resource capacity while runnable concurrency sits idle.**
+  That is the correct behaviour under §7's two-limit accounting and it is legible
+  as a queue on a named resource type, rather than a run that mysteriously stops
+  progressing.
+- **The contract is one more thing to version.** Additive-within-version and a
+  handshake keep that cheap; what it buys is that an external agent can be
+  written against a stable surface, which is the precondition for the `maestro-agent`
+  extraction staying an evidence-based Phase 8 decision rather than a rewrite.
+
+### Deferred
+
+Policy content (candidate 12); amendment policy (A5); the knowledge base
+(candidate 10); GitHub Actions presentation; `maestro-agent` extraction (Phase 8);
+the #272 routing implementation; the #317 and #280 code fixes; scheduling policy
+including the release rule for a resource held by a blocked execution; remote and
+socket transports (candidate 14); the provenance retention traversal's mechanism
+(Phase 4); composite and paired execution's runtime (Phase 5); and where the
+conformance executable lives permanently.
+
+### Responsibility split
+
+| Item | Owner |
+| --- | --- |
+| The wire contract, the four-axis result, the action and execution state vocabularies, cancellation lifecycle, re-attach, provenance obligations, the model identity split, and the concurrency accounting | **This ADR** |
+| Which policies exist and which approval scopes each gate exposes | **Candidate 12** |
+| When a cancellation is legitimate, and what amendment does to pending actions and grants | **A5** (ADR 0019 amendment) |
+| The `tool_calls` migration including the constraint replacement; the reconciler's scoping in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values | **Phase 3 plan** |
+| The provenance retention traversal's mechanism, and the evidence-package half | **Phase 4** |
+| The metadata home for served-model lifecycle and underlying-model lineage | **[#319](https://github.com/SnapdragonPartners/maestro/issues/319)**, against §3's split |
 
 ## Related Documents
 
