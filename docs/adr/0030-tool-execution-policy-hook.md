@@ -182,7 +182,36 @@ an operator is required**, before anything blocks. It does not stop at the first
 This is what blocking buys over the deny-and-retry design: gates evaluate against
 one request, so their requirements are all knowable at once, and **the operator
 answers once** rather than discovering a second gate after clearing the first.
-The recorded set is also what gate 3 compares against (§5).
+
+##### Composing scopes across the collected requirements
+
+Each gate declares which of §4's scopes it permits, and once one action carries
+several requirements those declarations have to be composed. **The action's
+effective scopes are their *intersection*.**
+
+Union is the available alternative and it is wrong: if gate A permits only `once`
+while gate B permits `once` or `for_story`, a union would offer `for_story` and a
+single approval would install a Story-wide grant that **gate A never authorized**.
+That is the UI becoming an authority on what may be approved — the thing §9's
+third constraint already forbids, arriving through composition instead of through
+the UI. Intersection makes the strictest gate govern, which is the only direction
+that cannot broaden anyone.
+
+Two rules follow:
+
+- **A gate permitting only `once` forces the whole action to `once`.** That applies
+  to both decisions, so `deny_for_story` can be withheld as well as
+  `approve_for_story`. The operator can always still decide this action.
+- **An empty intersection fails closed as an invalid policy configuration**, not as
+  a denial. Two gates that share no permitted scope describe an action no operator
+  can answer, which is a defect in the rules rather than an answer about the
+  action, and it must surface as one — candidate 12 owns the rules, so it owns the
+  fix.
+
+**The requirement set is persisted in canonical form**, ordering-independent, and
+it is what gate 3 compares against (§5). Canonical form is what makes that
+comparison well-defined; two evaluations that collected the same requirements in a
+different order are the same set and must compare equal.
 
 #### The request
 
@@ -406,9 +435,11 @@ never execute, so gate 3 consumes the persisted decision rather than re-asking:
 - Gate 3 does **not** re-raise the operator requirement the persisted decision
   answered, for the same logical action (§4's binding: Story version, action,
   intended target, arguments).
-- **If the set of operator-requiring reasons is no longer identical to the set
-  gate 1 recorded, the action terminates as stale**, and a fresh action is
-  required. It does not return to gate 2 to collect a second approval.
+- **If the canonical requirement set is no longer identical to the one gate 1
+  recorded, the action terminates as stale**, and a fresh action is required. It
+  does not return to gate 2 to collect a second approval. Gate 3 composes scopes
+  the same way gate 1 did (§3), so a change in what the gates permit is a change
+  in the set.
 
 **The action never accumulates approvals, and a previous version of this section
 let it.** Sending the action back to gate 2 for a newly-appeared requirement would
@@ -629,7 +660,10 @@ gates. It remains post-MVP. Four constraints:
    or weaken admission.
 2. Its semantic gates consult an agent, because the hook may not infer (§3).
 3. Its human gates return *requires an operator* and declare which of §4's scopes they
-   permit. They do not compose scopes at the UI.
+   permit. Composition across gates is intersection and belongs to the boundary
+   (§3), not to a gate and not to the UI. A rule set whose gates share no permitted
+   scope for some action is a configuration defect candidate 12 owns, and the
+   boundary will fail closed on it rather than paper over it.
 4. Any argument its rules read must be a field the action schema declares, since the
    record carries only the declared projection and a digest (§3). A rule keyed on
    something unrecordable is a rule whose denials cannot be audited.
