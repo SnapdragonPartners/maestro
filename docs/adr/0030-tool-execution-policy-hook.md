@@ -2,7 +2,7 @@
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
 edit_date = "2026-08-13"
 status = "draft"
-summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries the accumulated set of accepted references, scoped to a resolution chain identity that survives approval rounds and is minted afresh for an intentional repetition -- a set rather than one reference, because with two gates a single reference livelocks, the second approval clearing the second gate while the first denies again; and a chain rather than nothing, because the subject must exclude the attempt identity to match across rounds, which without a chain would let one approved $100 spend authorize the next identical one. Each reference is bound to two things rather than to the arguments alone: a resolution subject spanning the chain identity, action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, generation, or intent; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action -- checked across both stages, since admission can authenticate a reference and match its subject but only the gate knows the requirement it is about to derive. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action opens one attempt record durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and completes it after, reads included again, since without a completion a finished retrieval is indistinguishable from an interrupted one; a denial opens and completes together, having no effect to await. That is two writes against the one open-then-complete tool-call record Phase 2 already built, not a second record type. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
+summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries the accumulated set of accepted references, scoped to a resolution chain that the scheduler owns durably -- a set rather than one reference, because with two gates a single reference livelocks, the second approval clearing the second gate while the first denies again; a chain rather than nothing, because the subject must exclude the attempt identity to match across rounds, which without a chain would let one approved $100 spend authorize the next identical one; and Orchestrator-owned rather than caller-supplied, because an identity that carries authorization cannot rest on the party it constrains, so chains are created by denials, claimed atomically by one attempt at a time, terminal after commit or an unknown outcome or the invalidation of any member, and never minted for an intentional repetition, which therefore meets every gate afresh. Each reference is bound to two things rather than to the arguments alone: a resolution subject spanning the chain identity, action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, generation, or intent; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action -- checked across both stages, since admission can authenticate a reference and match its subject but only the gate knows the requirement it is about to derive. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action opens one attempt record durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and completes it after, reads included again, since without a completion a finished retrieval is indistinguishable from an interrupted one; a denial opens and completes together, having no effect to await. That is two writes against the one open-then-complete tool-call record Phase 2 already built, not a second record type. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
 type = "design"
 +++
 
@@ -240,7 +240,7 @@ nothing here linearizes them; what bounds them is §4.
 | **Resolved capability set** | The hook must see what was granted, or it cannot reason about the action it is being asked to allow |
 | **Normalized arguments**, in the canonical JSON form of [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md), with secrets already substituted by reference | A decision must be over a determinate value, and a decision record must be bindable to it by digest. **This is the in-memory decision input, and it is neither the raw input nor what gets persisted** — see below |
 | **Attempt identity** | Correlates the decision with its records, and carries the at-most-once semantics below |
-| **Resolution chain identity** | The logical action these attempts belong to. Survives approval rounds, and is what makes an approval single-use rather than standing — see below |
+| **Resolution chain reference**, absent on a first attempt | Names the Orchestrator-owned chain this attempt continues. Issued by the scheduler when a gate first denies, never minted by the caller, and what makes an approval single-use rather than standing — see below |
 | **Accepted resolution references** — a set, possibly empty | Every resolution accumulated by prior attempts **of this chain**. A set rather than one reference, for the reason below |
 
 #### The decision, and how a denial that needs resolving is expressed
@@ -261,10 +261,11 @@ The flow, with each step owned by the component that may perform it:
 1. The hook denies, emitting a **resolution requirement**: what kind of resolution
    would clear this denial, and against what.
 2. The **scheduler** — Orchestrator machinery, and permitted to write — creates or
-   locates the corresponding resolution record and routes it to whoever or
-   whatever must satisfy it.
-3. A later attempt carries the **accepted resolution references**, each bound to
-   the denied action's **resolution subject** (below).
+   locates the corresponding resolution record, **creates or continues the
+   resolution chain**, and routes the resolution to whoever or whatever must
+   satisfy it.
+3. A later attempt carries the **chain reference** and the **accepted resolution
+   references**, each bound to the denied action's **resolution subject** (below).
 
 The denied attempt is over. The resumed action is a new attempt with a new attempt
 identity (below) through the same boundary. Nothing suspends inside the hook.
@@ -316,13 +317,10 @@ The set above needs to know which action's approvals it holds, and neither
 identity already in the interface can tell it. So there are two, and they answer
 different questions:
 
-| Identity | Spans | A new one is minted when |
-| --- | --- | --- |
-| **Attempt identity** | one pass through the boundary | every new pass, **including each approval round** |
-| **Resolution chain identity** | every attempt of one logical action, across approval rounds | the caller intends a **distinct** action |
-
-Concretely: a transport retry reuses **both**; an approval round mints a new
-attempt and keeps the chain; an intentional repetition mints **both** anew.
+| Identity | Spans | Owned by | Exists to |
+| --- | --- | --- | --- |
+| **Attempt identity** | one pass through the boundary | the **caller** | prevent *accidental* duplication — it is an idempotency key |
+| **Resolution chain identity** | every attempt of one logical action, across approval rounds | the **Orchestrator**, durably | prevent *replay* — it is authorization state |
 
 **The chain is in the resolution subject; the attempt is not.** That asymmetry is
 the whole point, and a previous version of this ADR had only the attempt identity
@@ -338,20 +336,52 @@ and therefore could express neither half of it:
   would approve the next one**, and the approval a human believed was
   single-use would be a standing grant for as long as the context held.
 
-The rule for minting a chain is the caller obligation the at-most-once rules
-already state one level down, and it fails the same way if ignored: a caller that
-reuses a chain for a genuinely new action is asking for the previous approval to
-be reused, exactly as a caller that reuses an attempt identity is asking for the
-previous effect not to happen twice.
+##### The chain is Orchestrator-owned state, not a token the caller supplies
 
-**An invalidated member terminates the chain.** If a carried reference expires or
-is revoked, the chain ends and a fresh one begins; the set does not continue with
-a hole in it. This follows from the termination argument above — it holds only
-while the set grows monotonically *and* its members stay valid, so an approval
-expiring while a later gate is being resolved would silently restore the livelock.
-Ending the chain makes that an explicit restart. The expiry and revocation
-*mechanism* remains candidate 12's; what is fixed here is what happens to the
-chain when one fires.
+A previous version made minting a fresh chain a **caller obligation**, which is
+the shape §5 of this same ADR rejects: a rule the caller is asked to honor is
+documentation, not a boundary. A buggy or adversarial caller reuses the old chain
+identity, resubmits the carried references under a new attempt identity, and
+executes the approved action again — or runs several attempts on one chain at
+once. The subject would match every time, correctly, and the replay this identity
+exists to stop would happen anyway.
+
+The ownership difference between the two identities follows from what each
+protects. An attempt identity guards against a dropped response being executed
+twice; a caller that gets it wrong duplicates its own work, and a caller that
+wants to act twice may simply act twice, which is allowed. A chain carries
+**authorization**, so its integrity cannot rest on the party it constrains.
+
+- **Chains are created by denials, not by callers.** When the hook denies with a
+  resolution requirement, the **scheduler** — already the component that creates
+  or locates the resolution record — creates the chain or continues the existing
+  one, and hands its reference back. A first attempt carries no chain, because
+  none exists yet.
+- **A chain reference naming no durable chain is rejected at admission**, exactly
+  as an unmatched resolution reference is. There is no path by which a caller
+  invents one.
+- **An attempt claims its chain atomically during admission**, before anything
+  passes to effect. A chain admits **one** attempt at a time, so concurrent
+  attempts on one chain are rejected rather than racing — the same
+  serialize-on-a-key-matching-the-resource rule
+  [ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md) makes
+  binding for shared state, applied to an authorization token.
+- **A chain is terminal after its attempt commits, after an `unknown` outcome, or
+  when any carried member is invalidated.** Reuse of a terminal chain is rejected.
+  The `unknown` case is deliberately terminal rather than resumable: §6 leaves an
+  unfinished attempt to reconciliation precisely because nobody knows whether the
+  effect happened, and letting an approval survive that uncertainty would authorize
+  a second execution of something that may already have run.
+- **Intentional repetition requests a new chain; it does not supply one.** The
+  repetition is therefore unapprovable by inheritance — it starts with no
+  references and meets every gate afresh.
+
+Invalidation terminating the chain also preserves the accumulation argument above,
+which holds only while the set grows monotonically *and* its members stay valid:
+an approval expiring while a later gate is being resolved would otherwise restore
+the livelock silently. Ending the chain makes it an explicit restart. The expiry
+and revocation *mechanism* remains candidate 12's; what is fixed here is what
+happens to the chain when one fires.
 
 **The resolution subject is not the arguments.** A previous version bound an
 approval to the normalized-argument digest alone, which stops the obvious replay —
@@ -427,9 +457,10 @@ rules are fixed, so they are fixed here:
 
 - **A transport retry of the same logical action reuses the same attempt
   identity.** A dropped response is not a new action.
-- **An intentional repetition is a new attempt identity — and a new chain.**
-  Running the same command twice on purpose is two actions: they must record as
-  two, and the second must not inherit the first's approvals.
+- **An intentional repetition is a new attempt identity, and starts without a
+  chain.** Running the same command twice on purpose is two actions: they must
+  record as two, and the second cannot inherit the first's approvals, because it
+  carries no chain to inherit them through.
 - **One attempt identity commits its effect at most once.** This is what makes the
   identity load-bearing rather than a correlation key.
 - **An attempt with a recorded intent and no outcome does not re-execute.** It
@@ -820,6 +851,12 @@ Stated so the boundary is not later read as universal:
   bounded by how few mediated actions there are relative to in-resource ones. The
   record itself is `tool_calls` as Phase 2 already shaped it; what is new is the
   ordering obligation, not the schema.
+- **The scheduler gains durable state it did not have.** Resolution chains are
+  Orchestrator-owned, claimed atomically, and carry terminal conditions — so
+  Phase 3 owes them a persisted home and the concurrency discipline
+  [ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md) already
+  requires of shared state. That is more than a token in a request, and it is what
+  makes the single-use property of an approval enforceable rather than requested.
 - **Audit gains a redaction obligation.** Every action family needs a declared
   safe projection before it can be recorded at all, which is work Phase 3 pays per
   family rather than once — and is what keeps a `shell` action from writing a
@@ -836,11 +873,12 @@ Stated so the boundary is not later read as universal:
 
 Policy content of every kind (candidate 12); a policy service or out-of-process
 policy engine; filesystem-scope and argument-level rules; risk tiering and human
-approval UX; the resolution-record model behind §3's requirement — its storage,
-routing, and the mechanism of expiry and revocation — beyond what §3 does fix,
-which is the two bindings (resolution subject and requirement discriminator), the
-two identities and their minting rules, the accumulation semantics of the carried
-set, and what an invalidated member does to its chain; egress policy and
+approval UX; the resolution-record model behind §3's requirement — its routing,
+and the mechanism of expiry and revocation — beyond what §3 does fix, which is the
+two bindings (resolution subject and requirement discriminator), the two
+identities and their ownership, that chains are durable Orchestrator state with
+atomic claim and defined terminal conditions, the accumulation semantics of the
+carried set, and what an invalidated member does to its chain; egress policy and
 network-grant design; per-action
 rate limiting and quotas; policy versioning and simulation ("what would this rule
 have denied?"); and any per-action governance of in-resource or external
