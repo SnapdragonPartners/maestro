@@ -2,29 +2,39 @@
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
 edit_date = "2026-08-13"
 status = "draft"
-summary = "Fixes one mandatory boundary through which every agent-initiated action that crosses back into the Orchestrator must pass, and the single policy hook inside it. The boundary runs in three stages -- deterministic admission (liveness, work version, resource generation, capability containment), then the policy hook, then record-and-effect -- so an empty policy cannot disable an invariant and candidate 12 never reimplements one; and because an authoritative generation read is only a snapshot, the whole admission-to-effect interval is linearized against fencing: every action family declares the commit point after which its effect is no longer the Orchestrator's to withhold, and a receipt requires each unsettled attempt to be drained short of that point, committed conditionally, or already inside the domain being fenced -- marking an attempt invalid is not a mechanism, since it changes nothing unless the effect site checks it atomically and cannot un-send a transmitted request. Mediation and containment are independent axes: mediation describes the request path and is what the Orchestrator can refuse, while the effect site is three-valued -- Orchestrator-side, in-resource, or external -- so an unmediated call to an outside service is bounded only by the network and credential grants made at provisioning, and unrevokable external reach costs the resource its fenceability under ADR 0029. Only direct access to Orchestrator-managed effects is structurally forbidden, and whether an action is mediated is decided by what the execution resource cannot do for itself rather than by a table. In-resource actions are not individually policed, their guarantee is containment of local state rather than of reach, and what stops such a process is ADR 0029's fencing protocol, never deauthorization. The hook is deterministic, side-effect-free and fail-closed, may not infer, and never suspends: a gate needing a human or an agent denies with a structured resolution requirement that the scheduler satisfies, and the retry carries the accumulated set of accepted references, scoped to a resolution chain that the scheduler owns durably -- a set rather than one reference, because with two gates a single reference livelocks, the second approval clearing the second gate while the first denies again; a chain rather than nothing, because the subject must exclude the attempt identity to match across rounds, which without a chain would let one approved $100 spend authorize the next identical one; and Orchestrator-owned rather than caller-supplied, because an identity that carries authorization cannot rest on the party it constrains, so chains are created by denials, claimed atomically by one attempt at a time, terminal after commit or an unknown outcome or the invalidation of any member, and never minted for an intentional repetition, which therefore meets every gate afresh. Each reference is bound to two things rather than to the arguments alone: a resolution subject spanning the chain identity, action identity, work version, resource generations, arguments, and principal and capability context, so an approval cannot be replayed under a different action, scope, generation, or intent; and a versioned discriminator of the requirement itself, so satisfying one gate does not clear a different gate over the same action -- checked across both stages, since admission can authenticate a reference and match its subject but only the gate knows the requirement it is about to derive. Attempt identity carries at-most-once semantics, so a transport retry reuses it, an intentional repetition takes a new one, and an intent with no outcome reconciles as unknown instead of re-executing. Every mediated action opens one attempt record durably before the effect or before any result is released -- reads included, because disclosure is the effect of a retrieval -- and completes it after, reads included again, since without a completion a finished retrieval is indistinguishable from an interrupted one; a denial opens and completes together, having no effect to await. That is two writes against the one open-then-complete tool-call record Phase 2 already built, not a second record type. What persists is a governed projection of schema-declared safe fields plus a digest taken over the secret-substituted input, never the raw arguments, since an unkeyed digest of raw input is an offline guessing oracle for low-entropy values and a digest is not a redaction; substituted references are version-pinned, because a reference that survives rotation would leave the digest unchanged while the effective input moved."
+summary = "All agent requests for Maestro-managed effects pass through one Orchestrator boundary that records intent, validates machine policy, obtains human approval when required, and records the result. Human approval blocks the Story and caller without consuming LLM turns; headless runs instead mark the Story blocked. Expensive resources are acquired only after approval, and all current authorization, work-version, and resource conditions are revalidated immediately before execution. The design centralizes policy and auditing without introducing approval retries, resolution chains, or arbitrary agent checkpointing."
 type = "design"
 +++
 
 # 0030. The Tool Execution Boundary And Its Policy Hook
 
-Status: **Proposed** (Claude, 2026-08-12). Item A2 of the accepted
+Status: **Proposed** (Claude, 2026-08-12; substantially redrafted 2026-08-13).
+Item A2 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), which settles the
 placement and directs this ADR at the part the original framing missed: the
-mediated versus in-resource split and what each mode honestly guarantees.
-Drafted concurrently with, and reviewed as a set alongside,
+mediated versus in-resource split and what each mode honestly guarantees. Drafted
+concurrently with, and reviewed as a set alongside,
 [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) (item A3).
 
 This ADR resolves [ADR backlog candidate 4](../v2/notes_adr-backlog.md). It fixes
 **no policy content**; the gating rules are
 [candidate 12](../v2/notes_adr-backlog.md), post-MVP.
 
-The blocker plan calls this the cheapest item in Track A to decide and the most
-expensive to defer, because Phase 3 builds the tool plumbing and a seam not
-chosen gets retrofitted into every tool. The v1 survey below is the evidence for
-that: v1 has five tool-execution call sites and records the Audit action unit on
-one of them, which is what "retrofitted into every tool" looks like after the
-fact.
+**The redraft replaced one premise and everything built on it.** Earlier versions
+held that the boundary never suspends, so a gate needing a human *denied* and the
+approved action returned as a fresh attempt. That required an approval to survive
+across attempts, which required a replay-proof subject, a durable resolution chain
+to make the approval single-use, an accumulated reference set once two gates could
+each deny, and Orchestrator-owned chain state with atomic claim and terminal
+conditions. Six review rounds of real defects were found and fixed inside that
+structure. The premise was wrong: a blocked execution performs no LLM turns and
+costs almost nothing, while the expensive thing — a retained Incubator or
+Habitat — costs the same either way, and more once
+[ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §6's reset on return
+is counted. **A human-required tool call is one logically blocked call.** Chains,
+accumulated references, approval rounds, replay subjects, and the never-suspends
+rule are removed; nothing replaces them, because with a single call there is
+nothing to replay.
 
 ## Context
 
@@ -49,860 +59,605 @@ places:
 `toolloop.go` alone. `pkg/coder/driver.go:1920` defines a `logToolExecution`
 wrapper on the Coder that **has no callers anywhere in the repository**.
 
-The consequence is worth stating plainly, because it is the shape Phase 3 must
-not reproduce: **the one execution path serving an adapted external agent runtime
-records nothing.** Claude Code reaches Maestro's tools over the MCP server, and
-that path has no persistence call at all. Any measurement of tool behavior under
-that runtime is measuring the tool loop's callers only.
+The consequence is the shape Phase 3 must not reproduce: **the one execution path
+serving an adapted external agent runtime records nothing.** Claude Code reaches
+Maestro's tools over the MCP server, and that path has no persistence call at all.
 
 **Authorization is an allowlist resolved at construction, not per action.**
 `tools.NewProvider(ctx, allowedTools)` (`pkg/tools/registry.go:139`) captures a set
-of tool names, and `Get` refuses a name outside it (`registry.go:159`). That is a
-real gate, and it is the right *kind* of gate — but it decides once, on the name
-alone. It never sees arguments, it has no notion of which resource or which
-generation the call belongs to, and a refusal on one of the four unrecorded paths
-leaves nothing behind.
+of tool names, and `Get` refuses a name outside it (`registry.go:159`). That is the
+right *kind* of gate, deciding once, on the name alone. It never sees arguments, it
+has no notion of which resource the call belongs to, and a refusal on one of the
+four unrecorded paths leaves nothing behind.
 
 **Recording happens after the effect and cannot fail loudly.**
-`LogToolExecution` is called after `Exec` returns (`toolloop.go:546`) and hands
-the record to a persistence channel with no response
-(`pkg/persistence/persist.go:110`). A process that dies between the side effect
-and the record leaves no trace that the action was ever attempted — the failure
-mode the [Docker fencing spike](../v2/phase_3/spike_docker-fencing.md) hit from
-the other direction, where a failed stop deleted the record a reconciler needed.
+`LogToolExecution` is called after `Exec` returns (`toolloop.go:546`) and hands the
+record to a persistence channel with no response (`pkg/persistence/persist.go:110`).
+A process that dies between the side effect and the record leaves no trace that the
+action was attempted — the failure mode the
+[Docker fencing spike](../v2/phase_3/spike_docker-fencing.md) hit from the other
+direction, where a failed stop deleted the record a reconciler needed.
+
+**And v1 has the escalation failure this ADR must not repeat.**
+[#317](https://github.com/SnapdragonPartners/maestro/issues/317) is a headless run
+deadlocking in `ESCALATED` — a state no headless run can answer — and
+[#221](https://github.com/SnapdragonPartners/maestro/issues/221) is a watchdog
+recycling work that was legitimately not progressing. Blocking on a human is only
+safe if both are designed for, which is why §4 states them rather than leaving them
+to be discovered.
 
 ### The question this answers, and the question it does not
 
-The [research synthesis](../v2/research_synthesis.md) posed it as open question 7
-— *where should policy gates live: toolloop, dispatcher, tool execution layer, or
-a separate policy service?* — and the parking lot's
+The [research synthesis](../v2/research_synthesis.md) posed it as open question 7 —
+*where should policy gates live: toolloop, dispatcher, tool execution layer, or a
+separate policy service?* — and the parking lot's
 [tool-level policy gates](../v2/notes_parking-lot.md) entry deferred the
 implementation post-MVP while asking that the contracts leave a seam.
 
-This ADR is that seam and nothing more. What structural, semantic, and human
-gates actually check is candidate 12.
+This ADR is that seam and nothing more. What structural, semantic, and human gates
+actually check is candidate 12.
 
 ### What this ADR must satisfy
 
 - [ADR 0019](0019-orchestrator-boundary.md): tool implementation, routing,
   persistence, and deterministic gate evaluation are Orchestrator machinery.
   Anything requiring inference is an agent.
-- [ADR 0022](0022-v2-data-plane.md): the tool call is the atomic Audit action
-  unit, and any LLM output that creates artifacts, decisions, or state
-  transitions must pass through a tool/action record — parsed free text can never
-  be a side door.
+- [ADR 0022](0022-v2-data-plane.md): the tool call is the atomic Audit action unit,
+  and any LLM output that creates artifacts, decisions, or state transitions must
+  pass through a tool/action record — parsed free text can never be a side door.
 - [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §7 requirement 5:
   a call issued by a fenced holder is **rejected at the boundary** even if it
   arrives late. That boundary is this one.
-- [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §8: Maestro's
-  tools target a resource reference, never an Agent-derived local path — binding
-  on Maestro's own agents, and not a claim of control over arbitrary processes
-  inside a resource.
-- [ADR backlog candidate 13](../v2/notes_adr-backlog.md) (item A4): native Go
-  agents and adapted external agents reach these resources only through the wire
-  contract, so both meet this boundary.
+- [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §8: Maestro's tools
+  target a resource reference, never an Agent-derived local path — binding on
+  Maestro's own agents, and not a claim of control over arbitrary processes inside a
+  resource.
+- [ADR backlog candidate 13](../v2/notes_adr-backlog.md) (item A4): native Go agents
+  and adapted external agents reach these resources only through the wire contract,
+  so both meet this boundary.
 
 ## Decision
 
-### 1. One mandatory boundary, at the Orchestrator's tool-execution seam
+### 1. One mandatory boundary
 
 Every **agent-initiated action that crosses back into the Orchestrator** passes
-through a single execution boundary: after the invocation's capabilities are
-resolved, and before the side effect.
+through a single execution boundary before its effect.
 
 Not in the tool loop, not in the dispatcher, not in individual tools, and not a
-separate policy service. The blocker plan settled this and it is not reopened
-here. What matters for Phase 3 is the adjective: **mandatory**. The boundary is
-the only route to the effect, structurally — not a function every tool is
-expected to call. A tool that can be executed without traversing it is a defect
-in the same class as v1's four unrecorded call sites, and Phase 3 must be able to
-demonstrate the property rather than assert it.
+separate policy service. The blocker plan settled the placement and it is not
+reopened. What matters for Phase 3 is the adjective: **mandatory**. The boundary is
+the only route to the effect, structurally — not a function every tool is expected
+to call. A tool that can execute without traversing it is a defect in the same class
+as v1's four unrecorded call sites, and Phase 3 must be able to demonstrate the
+property rather than assert it.
 
 The seam is one place for a reason that outlives policy: it is where the action
-identity, the principal, the work version, the resource generation, and the
-arguments are all simultaneously in hand. Nothing upstream has the resource
-generation; nothing downstream has the principal.
+identity, the principal, the work version, the target, and the arguments are all
+simultaneously in hand.
 
-### 2. The boundary has three stages, and the hook is only the middle one
+### 2. Three gates, in order — and resources come last
 
-An empty policy must not be able to disable an invariant, and candidate 12 must
-not have to reimplement one. So the boundary is staged, in this order:
+| Gate | Decides | Outcome |
+| --- | --- | --- |
+| **1. Machine-verifiable admission and policy** | principal, effective Story version, action, arguments, capabilities, intended target | allow, deny, or **requires an operator** |
+| **2. Human approval**, only when gate 1 says so | the operator's decision, at a declared scope | approve or deny |
+| **3. Resource resolution and execution** | acquire or provision the resource, revalidate everything, execute | effect, recorded |
+
+**Expensive resources are acquired after approval, not before.** Inspecting a
+Habitat database can be approved before a Habitat exists; Maestro obtains one
+afterwards. Provisioning first would hold a production-shaped environment for the
+length of a human's attention span, which is the one genuinely expensive thing in
+the flow.
+
+Two consequences of that ordering are worth stating because they read as omissions
+otherwise:
+
+- **Gate 1 cannot check resource generation or leases**, because there may be no
+  resource yet. It validates the *intended target*. Generation, lease, and
+  provisioning state are gate 3's, revalidated immediately before the effect.
+- **The fencing window is short.** §5's linearization spans gate 3 to commit, not
+  the human wait. An earlier ordering would have held a fencing registration open
+  across an approval that might take hours.
+
+### 3. Gate 1 — machine-verifiable admission and policy
+
+Two stages, in this order, so that an empty policy cannot disable an invariant and
+candidate 12 never has to reimplement one:
 
 1. **Admission — deterministic, Orchestrator-owned, not policy.** The principal
    instance is live; the invocation's work version is still the effective one; the
-   generation of every referenced execution resource is current; the action is
-   contained in the invocation's resolved capability set; the referenced resources
-   are leased to this execution. Every one of these is a rule-and-config decision
-   under ADR 0019 and none of them is negotiable by a policy implementation.
-2. **Policy — the hook.** The single extension point. In MVP it is a
-   default-allow implementation carrying no rules. Candidate 12 fills it.
-3. **Record and effect.** Per §6.
+   action is contained in the invocation's resolved capability set; the intended
+   target is one this execution may name. Every one is a rule-and-config decision
+   under ADR 0019 and none is negotiable by a policy implementation.
+2. **Policy — the hook.** The single extension point. In MVP it is a default-allow
+   implementation carrying no rules. Candidate 12 fills it.
 
-Admission is where [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md)
-§7's fifth requirement is discharged, and it is the reason the stage ordering is
-part of the contract rather than an implementation detail. A late call from a
-fenced holder is rejected here, before any policy runs, because the receipt that
-fenced it is a fact about the world and not a rule someone may configure away.
+**The decision is three-valued**: allow, deny, or **requires an operator**. A
+requires-an-operator decision carries a **structured requirement** — what is being
+asked, and at which scopes the gate permits an answer (§4) — because the consumer
+is the scheduler and a UI, not a person reading prose.
 
-**The generation check reads authoritative state, not a cached copy.** A boundary
-that trusts the generation recorded in the invocation cannot reject a late call,
-because the invocation is exactly what the fenced holder still holds. That is a
-data-plane read per mediated action, and it is the price of the guarantee rather
-than an inefficiency to optimize away. It is affordable because mediated actions
-are comparatively rare — see §4.
-
-#### The whole admission-to-effect interval participates in fencing
-
-**An authoritative read is a snapshot, and a snapshot is not the guarantee.** A
-first version of this section stopped at the check above, which leaves the window
-the check was written to close: fencing can complete after admission and before
-policy, before the intent record, or before the effect commits, and the effect
-then lands under a generation that already holds a positive receipt. ADR 0029 §7
-would have reported `terminated` truthfully and the mutation would have happened
-anyway.
-
-So the requirement is a **linearization**, not a check: **no effect commits under
-a generation that has been fenced.** The interval from admission to commit
-participates, not the instant admission is evaluated.
-
-**Every action family MUST declare its commit point** — the instant after which
-the effect is no longer the Orchestrator's to withhold. For a data-plane write it
-is the transaction commit; for a forge push, the point the remote accepts the ref
-update; for a mediated external call, **transmission**; for a provider-launched
-executor, the point it starts inside the resource's domain. A family with no
-declared commit point cannot be reasoned about here and therefore cannot be
-fenced around.
-
-`Fence()` may return a positive receipt only when, for **every** attempt admitted
-against that generation and not yet settled, one of these holds:
-
-1. **Drain — the attempt is confirmed not to have passed its commit point, and is
-   stopped before it does.** An admitted attempt registers against
-   `(resource, generation)` before admission completes; `Fence()` **first closes
-   admission for that generation** so no further attempt can register, **then**
-   settles those already registered. The ordering is the same one ADR 0029 §7
-   step 2 already fixes for the domain — *revoke the ability to create, then
-   enumerate, then confirm* — applied one level up, to attempts instead of
-   containers. The [Docker spike](../v2/phase_3/spike_docker-fencing.md) measured
-   what enumerating first costs there; the shape of the error is identical here.
-2. **Conditional commit — the effect commits atomically with a generation
-   predicate**, so a fenced generation's commit fails rather than racing.
-   Available only where the effect site accepts a predicate: a data-plane write
-   does; a forge push, a container start, and an external API call do not.
-3. **Confirmed passage into the fenced domain** — the effect has become part of
-   what is being fenced anyway. A provider-launched verification executor inside
-   the Habitat's domain is the case: fencing the domain covers it, so it needs no
-   separate treatment.
-
-Otherwise **`Fence()` returns `unconfirmed`.**
-
-**"Invalidate the attempt" is not a fourth option, and a previous version of this
-section listed it as one.** Marking an admitted attempt invalid does nothing
-unless the effect site checks that mark atomically before committing — which is
-mechanism 2 under another name. For an external request it is worse than
-ineffective: recording invalidation after transmission does not un-send the
-request, and the record then asserts a control that was never exercised. That is
-the same error as a best-effort stop reported as a receipt, which is what ADR 0029
-§7 exists to forbid.
-
-**Mechanism 1 is the general answer**, because the Orchestrator performs every
-mediated effect and so controls when it starts — but only for attempts still short
-of their commit point, which is why the commit point has to be declared rather
-than assumed.
-
-**A drain that will not settle within ADR 0029 §7's grace period yields
-`unconfirmed`.** A mediated action already in flight against a remote forge cannot
-be hurried, and the answer is the one that protocol already gives for everything
-it cannot confirm: quarantine. Making the unsettled case cheap by returning
-`terminated` anyway would reintroduce best-effort fencing through this door
-instead of the one ADR 0029 closed.
-
-**The obligation binds effects that can mutate state current or future work will
-touch**, which is ADR 0029 §7's own property rather than a softening of it. An
-in-flight *read* — a retrieval, a mediated fetch — cannot mutate that state, so it
-does not hold up a receipt. It can still disclose, which matters and is §6's
-concern, not fencing's. Without this scoping the rule would quarantine a resource
-because a search request was outstanding.
-
-None of this reaches unmediated effects. They never arrive at this boundary, so
-nothing here linearizes them; what bounds them is §4.
-
-### 3. The interface
-
-**The decision request** carries:
+#### The request
 
 | Field | Why it is here |
 | --- | --- |
-| **Action identity** — a stable kind and verb from an Orchestrator-owned vocabulary | Not the caller's tool name. An adapted external runtime brings its own names for the same action (`Edit` against `file_edit`), and candidate 13 makes such runtimes first-class, so policy keyed on the caller's vocabulary would be runtime-specific by construction |
+| **Action identity** — a stable kind and verb from an Orchestrator-owned vocabulary | Not the caller's tool name. An adapted runtime brings its own names for the same action (`Edit` against `file_edit`), so policy keyed on the caller's vocabulary would be runtime-specific by construction |
 | **Principal instance** and role | [ADR 0021](0021-artifacts-and-principal-instances.md); the accountable identity, and what the record attributes to |
-| **Work scope and version** — the lineage tuple and the version the execution is bound to | Version-bound dispatch ([ADR 0019](0019-orchestrator-boundary.md) as amended); admission compares against the effective version |
-| **Resource references** — type, identity, and **generation** | [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §5 and §7 |
+| **Work scope and version** | Version-bound dispatch ([ADR 0019](0019-orchestrator-boundary.md) as amended); admission compares against the effective version |
+| **Intended target** — which resource or resource kind the action is for | Nameable before a resource exists, which is what makes §2's ordering possible |
 | **Resolved capability set** | The hook must see what was granted, or it cannot reason about the action it is being asked to allow |
-| **Normalized arguments**, in the canonical JSON form of [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md), with secrets already substituted by reference | A decision must be over a determinate value, and a decision record must be bindable to it by digest. **This is the in-memory decision input, and it is neither the raw input nor what gets persisted** — see below |
-| **Attempt identity** | Correlates the decision with its records, and carries the at-most-once semantics below |
-| **Resolution chain reference**, absent on a first attempt | Names the Orchestrator-owned chain this attempt continues. Issued by the scheduler when a gate first denies, never minted by the caller, and what makes an approval single-use rather than standing — see below |
-| **Accepted resolution references** — a set, possibly empty | Every resolution accumulated by prior attempts **of this chain**. A set rather than one reference, for the reason below |
+| **Normalized arguments**, canonical JSON per [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md), secrets already substituted | A decision must be over a determinate value, and the record must be bindable to it by digest |
+| **Attempt identity** | Correlates the decision with its record, and carries the at-most-once semantics below |
 
-#### The decision, and how a denial that needs resolving is expressed
+#### Three properties of the hook
 
-**The decision** is two-valued: allow, or deny. A denial carries a machine-readable
-reason code, a human-readable reason, and — when the denial is one a resolution
-could clear — a **structured resolution requirement**.
+- **It is deterministic and may not infer.** ADR 0019's boundary rule applies
+  directly: it decides from rules and configuration. The consequence for candidate
+  12 is better stated now than discovered then — **a semantic gate is an agent.**
+  "High-risk action summaries checked against policy" requires judgment, so it is a
+  gate that consults an agent, not logic inside the hook.
+- **It performs no side effects.** A hook that writes is a second, unrecorded action
+  path.
+- **It is fail-closed.** A hook that errors, or exceeds its bound, denies. Admission
+  fails closed for the same reason, and there the consequence is real: **if the data
+  plane is unreachable, mediated actions stop**, because the effective version
+  cannot be established and must not be assumed. That is correct, and it is an
+  availability property Phase 3 should meet deliberately.
 
-The requirement is structured rather than prose because the consumer is the
-scheduler, not a person, and a scheduler cannot safely parse a reason string. A
-first version of this ADR said the resolution reference "travels in the reason,"
-which was wrong twice: it made control flow depend on prose, and it assumed a
-resolution already exists at the moment of first denial, when nothing has created
-one — the hook cannot, because it performs no side effects.
+#### Attempt identity has at-most-once semantics
 
-The flow, with each step owned by the component that may perform it:
-
-1. The hook denies, emitting a **resolution requirement**: what kind of resolution
-   would clear this denial, and against what.
-2. The **scheduler** — Orchestrator machinery, and permitted to write — creates or
-   locates the corresponding resolution record, **creates or continues the
-   resolution chain**, and routes the resolution to whoever or whatever must
-   satisfy it.
-3. A later attempt carries the **chain reference** and the **accepted resolution
-   references**, each bound to the denied action's **resolution subject** (below).
-
-The denied attempt is over. The resumed action is a new attempt with a new attempt
-identity (below) through the same boundary. Nothing suspends inside the hook.
-
-#### References accumulate, because gates are discovered one at a time
-
-**The attempt carries a set, not one reference**, and a previous version of this
-interface carried one. With two independent gates the single-reference form does
-not converge:
-
-| Attempt | Carries | Outcome |
-| --- | --- | --- |
-| 1 | nothing | gate A denies, requirement `R_A` |
-| 2 | `ref(R_A)` | gate A passes; **gate B is now reachable** and denies, requirement `R_B` |
-| 3 | `ref(R_B)` | gate B passes — and **gate A denies again**, because its approval is no longer being carried |
-
-That is a livelock, not a slow path: the action never runs however many
-resolutions are granted, and the operator sees the same two approvals demanded
-forever. It is a direct consequence of two decisions this ADR makes for good
-reasons — gates evaluate against the same request rather than in a negotiated
-sequence, and nothing suspends inside the boundary — so the fix belongs in the
-interface rather than in either of them.
-
-With a set, each round clears at least one gate and the set only grows, so the
-sequence terminates.
-
-**The rules for the set are deterministic, because "which approval applies" must
-never be a judgment:**
-
-- **Admission authenticates and subject-matches every reference in the set.** If
-  any one fails either check, the **attempt is denied** — not the reference
-  silently dropped. A reference that does not match its subject is a defect or an
-  attack, and ignoring it hides both.
-- **At most one reference per requirement discriminator.** Two references for the
-  same requirement are rejected rather than tie-broken; picking the newest, or the
-  broadest, would be a policy decision hidden in plumbing.
-- **Policy consumes at most one reference per applicable gate**, matching on the
-  discriminator it derived (§3's stage split).
-- **References matching no gate this time are recorded and ignored.** A gate may
-  legitimately have stopped applying between attempts; the surplus approval grants
-  nothing, so refusing it would block progress for no safety gain. Recording it
-  keeps the surplus visible rather than invisible.
-- **Accumulation is scoped to the resolution chain** below. A set is not a
-  property of an action's *shape*; it belongs to one intent.
-
-#### Two identities, because a repetition is not a retry
-
-The set above needs to know which action's approvals it holds, and neither
-identity already in the interface can tell it. So there are two, and they answer
-different questions:
-
-| Identity | Spans | Owned by | Exists to |
-| --- | --- | --- | --- |
-| **Attempt identity** | one pass through the boundary | the **caller** | prevent *accidental* duplication — it is an idempotency key |
-| **Resolution chain identity** | every attempt of one logical action, across approval rounds | the **Orchestrator**, durably | prevent *replay* — it is authorization state |
-
-**The chain is in the resolution subject; the attempt is not.** That asymmetry is
-the whole point, and a previous version of this ADR had only the attempt identity
-and therefore could express neither half of it:
-
-- The attempt identity must be **out**, or the subject would change on every
-  approval round and an accepted resolution could never match the retry it was
-  granted for.
-- The chain identity must be **in**, or nothing distinguishes an approved action
-  from *a second, identical action performed later*. Everything else in the
-  subject — action, scope, version, generations, arguments, principal,
-  capabilities — is by construction the same for both. **Approving one $100 spend
-  would approve the next one**, and the approval a human believed was
-  single-use would be a standing grant for as long as the context held.
-
-##### The chain is Orchestrator-owned state, not a token the caller supplies
-
-A previous version made minting a fresh chain a **caller obligation**, which is
-the shape §5 of this same ADR rejects: a rule the caller is asked to honor is
-documentation, not a boundary. A buggy or adversarial caller reuses the old chain
-identity, resubmits the carried references under a new attempt identity, and
-executes the approved action again — or runs several attempts on one chain at
-once. The subject would match every time, correctly, and the replay this identity
-exists to stop would happen anyway.
-
-The ownership difference between the two identities follows from what each
-protects. An attempt identity guards against a dropped response being executed
-twice; a caller that gets it wrong duplicates its own work, and a caller that
-wants to act twice may simply act twice, which is allowed. A chain carries
-**authorization**, so its integrity cannot rest on the party it constrains.
-
-- **Chains are created by denials, not by callers.** When the hook denies with a
-  resolution requirement, the **scheduler** — already the component that creates
-  or locates the resolution record — creates the chain or continues the existing
-  one, and hands its reference back. A first attempt carries no chain, because
-  none exists yet.
-- **A chain reference naming no durable chain is rejected at admission**, exactly
-  as an unmatched resolution reference is. There is no path by which a caller
-  invents one.
-- **An attempt claims its chain atomically during admission**, before anything
-  passes to effect. A chain admits **one** attempt at a time, so concurrent
-  attempts on one chain are rejected rather than racing — the same
-  serialize-on-a-key-matching-the-resource rule
-  [ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md) makes
-  binding for shared state, applied to an authorization token.
-- **A chain is terminal after its attempt commits, after an `unknown` outcome, or
-  when any carried member is invalidated.** Reuse of a terminal chain is rejected.
-  The `unknown` case is deliberately terminal rather than resumable: §6 leaves an
-  unfinished attempt to reconciliation precisely because nobody knows whether the
-  effect happened, and letting an approval survive that uncertainty would authorize
-  a second execution of something that may already have run.
-- **Intentional repetition requests a new chain; it does not supply one.** The
-  repetition is therefore unapprovable by inheritance — it starts with no
-  references and meets every gate afresh.
-
-Invalidation terminating the chain also preserves the accumulation argument above,
-which holds only while the set grows monotonically *and* its members stay valid:
-an approval expiring while a later gate is being resolved would otherwise restore
-the livelock silently. Ending the chain makes it an explicit restart. The expiry
-and revocation *mechanism* remains candidate 12's; what is fixed here is what
-happens to the chain when one fires.
-
-**The resolution subject is not the arguments.** A previous version bound an
-approval to the normalized-argument digest alone, which stops the obvious replay —
-approving a push of one commit does not approve a push of another — and permits
-every other one: the same arguments under a different action kind, a superseded
-work version, a different resource generation, a different principal, or a wider
-capability set. `rm -rf ./build` approved for a lint action in one Story would
-clear it for a deploy action in another.
-
-The **resolution-subject digest** is therefore taken over the security-relevant
-decision projection:
-
-- the **resolution chain identity** (above) — what makes the approval single-use
-  for one intent rather than standing for every identical action;
-- action identity;
-- effective work scope and version;
-- resource identities **and generations**;
-- normalized arguments, in the secret-substituted form of the next subsection;
-- the principal and the applicable capability context.
-
-It excludes the attempt identity and the carried references themselves, which are
-per-attempt and would make the subject unmatchable by construction — and, with the
-accumulating set above, would change on every round. The chain identity is the
-field that carries what the attempt identity cannot: enough to distinguish
-*this* action from an identical later one, and stable enough to survive the
-approval rounds.
-
-The generation is in the subject deliberately: an approval granted before a fence
-does not survive it. That is the same rule as §2's, arriving by a second route,
-and both are needed — §2 stops a fenced generation from acting, and this stops a
-pre-fence approval from authorizing the generation that replaces it.
-
-**An accepted resolution binds the subject *and* the requirement it satisfied.**
-The subject says which action was approved; it does not say **which gate** was
-being cleared, and two gates can deny the same action in the same context for
-different reasons — a spend approval and a data-handling approval, say. Bound to
-the subject alone, either one's acceptance would clear the other, which is a
-privilege escalation performed entirely by matching digests correctly.
-
-So **each** accepted reference carries `(resolution subject, requirement
-discriminator)`, where the discriminator is a versioned identity of the structured
-requirement itself — its kind, its version, and its parameters. The discriminator
-is also what makes the set above well-formed: it is the key on which two
-references collide.
-
-**Checking is split across the two stages, because the requirement does not exist
-until the second one.** A previous version had admission match against "the
-requirement now being emitted," which admission cannot do: the requirement is
-derived by the gate, and gates run in the policy stage, after admission has
-finished. The division follows the stage boundary exactly:
-
-| Stage | What it checks | Over |
-| --- | --- | --- |
-| **Admission** | That each reference is genuine and accepted, and that its **subject** matches this decision's subject; and that no discriminator appears twice | **Every** reference in the set. Both checks are determinable without knowing which gates will run |
-| **Policy** | That a reference's **requirement discriminator** matches the requirement this gate has deterministically derived | One gate's own requirement, against at most one reference |
-
-**Admission authenticates the set; policy decides which member, if any, is the
-right one for a given gate.** The consequence is worth stating because it is what
-makes the hook safe to extend: a gate never has to trust what it was handed — by
-the time it sees a reference, admission has established that it is accepted and
-subject-bound, so the gate compares a discriminator and nothing more. A gate whose
-requirement is not represented in the set still denies.
-
-The requirement is versioned for the same reason the pack digest scheme is
-([ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §1): if what a
-requirement means changes, acceptances granted under the old meaning must stop
-matching rather than be silently reinterpreted.
-
-#### Attempt identity has at-most-once semantics, and they must be stated
-
-An attempt identity distinguishes a retry from a repetition only if its reuse
-rules are fixed, so they are fixed here:
-
-- **A transport retry of the same logical action reuses the same attempt
-  identity.** A dropped response is not a new action.
-- **An intentional repetition is a new attempt identity, and starts without a
-  chain.** Running the same command twice on purpose is two actions: they must
-  record as two, and the second cannot inherit the first's approvals, because it
-  carries no chain to inherit them through.
-- **One attempt identity commits its effect at most once.** This is what makes the
-  identity load-bearing rather than a correlation key.
+- **A transport retry of the same logical action reuses the same attempt identity.**
+  A dropped response is not a new action.
+- **An intentional repetition is a new attempt identity.** Running the same command
+  twice on purpose is two actions and must record as two.
+- **One attempt identity commits its effect at most once.**
 - **An attempt with a recorded intent and no outcome does not re-execute.** It
   resolves as `unknown` and goes to reconciliation. Blind re-execution is how an
   adapted runtime's retry duplicates a forge push, an artifact publication, or a
-  resource lifecycle transition — and the two-phase record of §6 exists precisely
-  so this case is distinguishable from "never attempted."
+  resource lifecycle transition.
 
 #### The persisted projection is not the decision input
 
-The hook may need complete normalized arguments. Persisting them verbatim would
-put secrets, whole file contents, and unbounded command output into the Audit
-family, which is durable, queryable, and exportable.
-
-So three forms are distinguished, not two:
+The hook may need complete normalized arguments. Persisting them verbatim would put
+secrets, whole file contents, and unbounded command output into the Audit family,
+which is durable, queryable, and exportable. So three forms are distinguished:
 
 - **Raw input** — exactly what the caller supplied, in memory only, never digested
   and never persisted.
 - **Substituted input** — the raw input with every secret replaced by a
-  **version-pinned reference** (below). **This is what admission and the hook
-  decide on, and it is the only form that is ever hashed** — for the record digest
-  (§6) and for the resolution subject (above).
+  **version-pinned reference**. This is what the boundary decides on, and the only
+  form ever hashed.
 - **Persisted projection** — the fields the **action schema** declares safe, plus
   the digest of the substituted input, plus references to artifacts or objects for
   anything large.
 
-**Substitution happens before hashing, not only before persistence**, and a
-previous version of this section got that order wrong. A canonical unkeyed digest
-over complete raw input is an **offline guessing oracle** for anything
-low-entropy — a token pasted into a shell argument, a short credential, an
-internal hostname — and redacting the *projection* does not help, because the
-digest published beside it is the thing being attacked. A digest is not a redaction.
+**Substitution happens before hashing, not only before persistence.** A canonical
+unkeyed digest over complete raw input is an **offline guessing oracle** for
+anything low-entropy — a token pasted into a shell argument, a short credential, an
+internal hostname — and redacting the projection does not help, because the digest
+published beside it is what is attacked. A digest is not a redaction. Where a value
+is sensitive, low-entropy, and not registered secret material, the schema MUST
+specify a **keyed commitment**, with the key held in Phase 2's vault and never in
+the Audit family.
 
-Where a value is sensitive, low-entropy, and cannot be substituted because it is
-not registered secret material, the schema MUST specify a **keyed commitment**
-instead of a plain digest, with the key held where secrets are held (Phase 2's
-vault) and never in the Audit family. A commitment nobody can brute-force is
-still evidential; a digest anybody can is not.
+**A substituted reference names a revision, not a name.** A stable identifier
+survives rotation, so two attempts either side of one would digest identically over
+different effective input. Substitution uses an immutable **secret-version
+reference** (Phase 2's `secrets.version` is already part of the key-derivation
+context), the applicable **runtime-configuration revision** where the value arrives
+that way ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §4 makes
+the same distinction for the same reason), or failing both the keyed commitment's
+scheme and key version.
 
-**A substituted reference names a revision, not a name.** A stable secret
-identifier survives rotation, so two attempts either side of a rotation would
-produce identical record and resolution digests while the effective input
-differed — the digest would then be evidence of the wrong thing, and an approval
-granted against the old value would match against the new one. Substitution
-therefore uses:
+Redaction and substitution are declared by the code-resident action schema, on the
+pattern of ADR 0028's payload type registry — never chosen by the caller, which
+would be the hole Phase 2's configuration key registry refuses. The digest then
+binds the record to the exact **substituted** input, which is a narrower claim than
+"the exact input" and is why the references must be version-pinned.
 
-- an **immutable secret-version reference** — Phase 2's `secrets` table already
-  carries `version`, and it is part of the key-derivation context, so a rotated
-  secret is genuinely a different version rather than the same row edited; or
-- the applicable **runtime-configuration revision** where the value arrives that
-  way ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §4, which
-  makes the same distinction for exactly the same reason: a rotated credential
-  pointing somewhere else is not the same configuration); or
-- failing both, the **keyed commitment's scheme and key version**, recorded so a
-  reader can tell which commitment they are looking at.
+### 4. Gate 2 — human approval, which blocks
 
-Redaction and substitution are both declared by the code-resident action schema,
-on the pattern of
-[ADR 0028](0028-artifact-envelopes-and-payload-schemas.md)'s payload type registry
-— never chosen by the caller, which would be the same hole Phase 2's configuration
-key registry refuses. This extends
-[ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §4's rule that
-secrets are referenced by identity and never digested by value from spec
-projections to every recorded action.
+**The logical tool call does not end.** It and its Story enter
+`awaiting_resolution`.
 
-The digest then binds the record to the exact **substituted** input that was
-decided on — which is a narrower claim than "the exact input," and the narrowing
-is the point. It determines the raw input only as far as its references are
-version-pinned, which is why they must be. The record stays evidential without
-becoming a side channel — by disclosure or by brute force — for the input's
-contents.
+#### Waiting semantics
 
-#### Three properties of the hook itself
+- **The Story and the calling agent are blocked.** The caller performs no further
+  LLM turns and issues no further tool calls.
+- **Further agent-initiated tool calls for that Story are rejected while it awaits
+  resolution**, and a firing of this guard is logged as an **invariant violation**
+  rather than as an ordinary denial: it means something upstream let a blocked
+  caller keep working.
+- **Human resolution, reconciliation, cleanup, and fencing use separate control
+  paths** and remain permitted. Blocking the agent does not block the Orchestrator.
+- **Dependent Stories remain blocked naturally through the DAG**, because their
+  prerequisite has not completed. No separate mechanism is needed.
+- **The watchdog must recognise this as healthy waiting**, not inactivity to recycle
+  or requeue. v1 has failure precedents in both directions (#317, #221), so this is
+  a stated requirement rather than an assumption. The policy belongs to the Phase 3
+  plan; the requirement belongs here.
+- **No agent checkpoint at an arbitrary instruction is promised.** The pending action
+  record and the last durable workflow artifact are sufficient recovery state, which
+  is the same guarantee restart already gives.
+- **The wait is logical.** It must not hold a database transaction or a transport
+  connection open. The open-then-complete record (§6) is what makes that possible:
+  the intent is committed, not held.
+- **A pending action carries an explicit `awaiting_resolution` state.** An
+  unfinished action record alone is ambiguous with a crash, and §6's reconciliation
+  rule reads exactly that ambiguity.
 
-Each is expensive to add later and cheap to require now.
+#### Resource behaviour while waiting
 
-**It is deterministic and may not infer.** The hook is Orchestrator machinery, so
-ADR 0019's boundary rule applies to it directly: it decides from rules and
-configuration. This has a consequence for candidate 12 that is better stated now
-than discovered then — **a semantic gate is an agent.** Candidate 12's
-"high-risk action summaries checked against policy" requires judgment, so it
-cannot be implemented inside the hook. It is a gate that consults an agent, and
-the boundary's synchronous decision cannot wait for one.
+- **The wait does not request or renew a lease.** Any existing lease may expire
+  normally, and lease expiry deauthorizes only
+  ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2).
+- **Retention policy is separate and may keep an environment warm briefly, reassign
+  it, or tear it down.** The pending action cannot depend on its survival.
+- **After approval, gate 3 reacquires a suitable resource or provisions a
+  replacement.** If an Incubator was released, recovery is from the last durable
+  workflow artifact, not from a process checkpoint.
+- **The Phase 3 plan must ensure that awaiting resolution cannot renew a lease
+  indefinitely, and must define when a retained, potentially billable resource is
+  actually relinquished.** ADR 0029 already requires undeallocated resources to stay
+  visible and flagged; what is missing is the release rule for this specific wait.
 
-**It performs no side effects.** A hook that writes is a second, unrecorded
-action path.
+#### Headless operation is first-class
 
-**It is fail-closed.** A hook that errors, or exceeds its bound, denies. A policy
-layer that fails open supplies no guarantee at all, and with a default-allow MVP
-implementation it would be easy to make an error indistinguishable from an
-allowance. Admission fails closed for the same reason, and there the consequence
-is real rather than theoretical: **if the data plane is unreachable, mediated
-actions stop**, because neither the effective version nor the current generation
-can be established and neither can be assumed. That is correct, and it is an
-availability property Phase 3 should meet deliberately rather than discover.
+Not a degraded mode. Where no operator responder exists:
 
-**It never suspends.** A gate that needs a human or an agent denies the attempt
-and emits a resolution requirement, per the flow above. This is the one thing
-about candidate 12 that must be settled now: the alternative — blocking inside the
-hook while approval is sought — holds a lease, an execution slot, and an unbounded
-amount of wall-clock inside a synchronous call, and unwinding it later means
-changing every call site's control flow. Waiting belongs to scheduling, which is
-Orchestrator machinery of a different kind.
+- The action's requirement is **recorded**, and the Story becomes **`blocked`
+  immediately** rather than waiting for a timeout.
+- **Independent runnable work continues.** One gated Story does not end a run.
+- Once no runnable work remains, the headless invocation **exits gracefully with a
+  distinct blocked/incomplete result**, never success.
+- The Story is irreconcilable within that run and remains available for a later
+  operator-enabled one.
 
-### 4. Mediation and containment are independent axes
+This is what keeps #317 from recurring in a new form, and it is why A4's terminal
+result carries `blocked` as an execution status.
 
-The blocker plan states the split as two modes. They are better read as two
-questions with independent answers, because conflating them produces a specific
-false conclusion — that a mediated action's *effects* are policed.
+#### The four outcomes
+
+Decision × scope:
+
+| | Once | For the Story |
+| --- | --- | --- |
+| **Approve** | `approve_once` | `approve_for_story` |
+| **Deny** | `deny_once` | `deny_for_story` |
+
+- **The gate — not the approval UI — declares which scopes it permits.** Some
+  policies should always demand a fresh decision; spec amendment is the obvious one.
+  A UI free to compose scopes would become an authority on what may be approved.
+- **MVP may defer the reusable `*_for_story` grants.** The action-scoped decision is
+  still durable, for crash recovery, but is not reusable by another action.
+- **If Story-scoped grants ship, they are bound to the effective Story version and
+  fail closed on amendment.** A grant is durable authorization, so it is
+  version-bound exactly as ADR 0019's dispatch records are.
+
+**Not outcomes**, stated so they are not proposed as a fifth and sixth:
+
+- **`cancelled`** — the requester cannot withdraw a blocked action. Cancelling the
+  Story is a lifecycle operation on a separate path, and a cancelled Story's pending
+  action fails gate 3's revalidation.
+- **`superseded`** — amendment changes the governing Story version, which makes an
+  incompatible pending action and any reusable grant stale through ordinary
+  invalidation and revalidation. It is an effect of the amendment, not a decision
+  someone makes here.
+- **"Approve with different arguments"** — that makes the human the author of the
+  action. Changing the action requires a new request.
+
+#### What the approval binds to
+
+**The logical action**: its Story version, the action, the intended target, and the
+arguments. **Not an ephemeral resource generation.** Recycling a Habitat between
+approval and execution therefore does not require another approval; amending the
+Story or changing the action does.
+
+The honest limit: an approval whose meaning depends on the *contents* of an
+environment rather than on the action is not expressible this way, because a
+recycled environment is a different one. No Phase 3 gate is in that position, and
+this is recorded as a limit rather than as a mechanism nobody needs yet.
+
+### 5. Gate 3 — resources, revalidation, and execution
+
+Only after approval does Maestro acquire, reacquire, or provision the Incubator or
+Habitat the action needs, establish the lease and generation, revalidate, and
+execute.
+
+**Approval clears the human requirement and nothing else.** Immediately before the
+effect, the boundary revalidates the principal, the effective work version, the
+capability set, the lease and current resource generation, and current machine
+policy. Any failure refuses the action; the agent resumes with a result it can act
+on, and a re-request is an ordinary new action.
+
+#### The admission-to-effect interval participates in fencing
+
+An authoritative generation read is a snapshot, and a snapshot is not a guarantee:
+fencing can complete between revalidation and commit, and the effect would then land
+under a generation already holding a positive receipt. ADR 0029 §7 would have
+reported `terminated` truthfully while the mutation happened anyway.
+
+**Every action family MUST declare its commit point** — the instant after which the
+effect is no longer the Orchestrator's to withhold. For a data-plane write it is the
+transaction commit; for a forge push, the point the remote accepts the ref update;
+for a mediated external call, **transmission**; for a provider-launched executor, the
+point it starts inside the resource's domain.
+
+`Fence()` may return a positive receipt only when, for **every** attempt admitted
+against that generation and not yet settled, one of these holds:
+
+1. **Drain** — the attempt is confirmed not to have passed its commit point and is
+   stopped before it does. Attempts register against `(resource, generation)` before
+   admission completes; `Fence()` **first closes admission for that generation**,
+   **then** settles those already registered. That is ADR 0029 §7 step 2's own
+   ordering — *revoke the ability to create, then enumerate, then confirm* — applied
+   to attempts instead of containers, and the
+   [Docker spike](../v2/phase_3/spike_docker-fencing.md) measured what enumerating
+   first costs.
+2. **Conditional commit** — the effect commits atomically with a generation
+   predicate. Available only where the effect site accepts one: a data-plane write
+   does; a forge push, a container start, and an external call do not.
+3. **Confirmed passage into the fenced domain** — a provider-launched verification
+   executor inside the Habitat's domain is covered by fencing the domain.
+
+Otherwise **`Fence()` returns `unconfirmed`.**
+
+**"Invalidate the attempt" is not a fourth option.** Marking an admitted attempt
+invalid does nothing unless the effect site checks the mark atomically before
+committing, which is mechanism 2 under another name; and for an external request,
+recording invalidation after transmission does not un-send it while the record
+asserts a control never exercised.
+
+**A drain that will not settle within ADR 0029 §7's grace period yields
+`unconfirmed`.** Making the unsettled case cheap by returning `terminated` anyway
+would reintroduce best-effort fencing through this door.
+
+**The obligation binds effects that can mutate state current or future work will
+touch**, which is ADR 0029 §7's own property. An in-flight *read* cannot mutate that
+state and does not hold up a receipt; it can still disclose, which is §6's concern.
+
+Unmediated effects never arrive here, so nothing linearizes them; what bounds them
+is §6.
+
+### 6. Mediation and containment are independent axes
+
+Two questions with independent answers. Conflating them produces a specific false
+conclusion — that a mediated action's *effects* are policed.
 
 - **Mediation** is a property of the **request path**: can the Orchestrator refuse
-  this action? It is what §1's boundary governs.
-- **Containment** is a property of the **effect site**: where does the effect
-  land, and which authority bounds it? It is decided at grant time and enforced by
-  whichever authority owns that site.
+  this action?
+- **Containment** is a property of the **effect site**: where does the effect land,
+  and which authority bounds it? It is decided at grant time.
 
-**The effect site is three-valued, not two.** A first version of this section had
-only *Orchestrator-side* and *in-resource*, which misses the case that matters
-most for an honest claim: an agent runtime's own shell can call an external API,
-mutate a service Maestro does not manage, or write over a connection that is
-already open. That effect is neither the Orchestrator's nor inside the resource's
-own state, and no grant Maestro makes at provisioning time bounds what an
-already-reachable endpoint will accept.
+**The effect site is three-valued.** An agent runtime's own shell can call an
+external API, mutate a service Maestro does not manage, or write over an already-open
+connection. That is neither the Orchestrator's nor inside the resource's own state,
+and no grant Maestro makes at provisioning bounds what a reachable endpoint accepts.
 
 | Request | Effect site | Policed per action | Recorded | Guarantee |
 | --- | --- | --- | --- | --- |
-| Mediated | **Orchestrator-side** — data-plane writes, artifact publication, forge operations, resource lifecycle, message routing, retrieval | Yes | Yes | The action commits only if admission and policy allow it, under §2's linearization, and the record survives it |
+| Mediated | **Orchestrator-side** — data-plane writes, artifact publication, forge operations, resource lifecycle, message routing, retrieval | Yes | Yes | The action commits only if the gates allow it, under §5's linearization, and the record survives it |
 | Mediated | **In-resource** — an execution contract, or a command Maestro is asked to run in a resource | **The decision to run it, only** | Yes | The Orchestrator governs *whether* the command runs; it makes no claim about what the command then does |
-| Mediated | **External** — a Maestro-provided tool that reaches outside, such as a fetch or a search | **The decision to make the call, only** | Yes | Same: the request is governed and recorded, the remote effect is not Maestro's to bound |
-| Not mediated | **In-resource** — the agent runtime's own built-in tools (its editor, its shell), and any other process running in the resource | No | No | Containment alone (below) |
+| Mediated | **External** — a Maestro-provided tool that reaches outside, such as a fetch or a search | **The decision to make the call, only** | Yes | The request is governed and recorded; the remote effect is not Maestro's to bound |
+| Not mediated | **In-resource** — the agent runtime's own built-in tools, and any other process in the resource | No | No | Containment alone (below) |
 | Not mediated | **External** — the same runtime reaching the network directly | No | No | **Bounded only by what was granted**: network reachability and the credentials present in the resource |
-| Not mediated | **Orchestrator-side** | — | — | **Must not exist** (§5) |
+| Not mediated | **Orchestrator-side** | — | — | **Must not exist** (§7) |
 
 **Only direct access to Orchestrator-managed effects is structurally forbidden.**
-That is the honest scope of the prohibition on the last row, and it is narrower than
-"unmediated effects are contained." Maestro governs its own resources; it does not
-govern the internet.
+Maestro governs its own resources; it does not govern the internet.
 
-**Two rows differ by who is asked, not by what happens.** Running a shell command
-appears on both sides of the table, and that is the point rather than an
-ambiguity: a command an agent asks *Maestro* to run in a resource is a mediated
-request, and the same command run by the agent runtime's own built-in shell is
-not. The effect is identical and the governance is not, which is why the
-classification cannot be read off the action's name — and why §5 matters, since
-what decides the row is whether the agent had to ask.
-
-The mediated in-resource row is the one that repays the distinction. An execution
-contract is a mediated request with an in-resource effect: the boundary sees `run
-the test contract`, admits it, records it, and the test then does whatever the
-repository's test suite does inside the resource. Reading "mediated" as "policed"
-would suggest the second half is governed. It is not.
-
-#### External reach is a grant-time decision, and it is ADR 0029's problem too
-
-Nothing at this boundary bounds an unmediated external effect. Two rules that do
-apply, and they are the whole of what Maestro can offer:
-
-- **What the resource can reach is decided when it is provisioned** — network
-  policy, egress, and which credentials are present. That is the grant, and it is
-  the only lever.
-- **Unrevokable external reach removes `isolated` from the available receipts.**
-  [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §7 already settles
-  this: a fenced generation holding a path into shared state that can be neither
-  revoked by its enforcing authority nor permanently abandoned yields
-  `unconfirmed`. An outbound connection to a third-party service is exactly such a
-  path when nothing can close it. The consequence of a permissive grant is
-  therefore not only that Maestro cannot police the call — it is that the resource
-  may become unfenceable, and quarantine is the cost.
-
-This is stated here rather than left to ADR 0029 because the grant is made for
-convenience during development, and the receipt is claimed much later by someone
-who did not make it.
+**Two rows differ by who is asked, not by what happens.** A command an agent asks
+*Maestro* to run in a resource is mediated; the same command run by the runtime's own
+shell is not. The effect is identical and the governance is not, which is why the
+classification cannot be read off the action's name.
 
 #### What in-resource actions actually guarantee
 
 **They are not individually policed, and Maestro makes no per-action claim about
-them.** The guarantee is **containment, decided at grant time**: the grant defines
-the blast radius, and enforcement lives at the resource boundary rather than in a
-per-action gate.
+them.** The guarantee is **containment, decided at grant time**. It bounds what the
+process can do to the resource's own state; whether it can also reach outward is a
+separate part of the same grant.
 
-**Containment bounds local state, not reach.** The grant bounds what the process
-can do to the resource's own state; whether it can also reach outward is a
-separate part of the same grant, per the external rows above. Reading containment
-as covering both is the overclaim this section exists to prevent.
-
-Four consequences, stated as narrowly as they really hold:
-
-- **An agent holding a lease can do anything the resource permits between
-  mediated actions.** That is a property of the design, not a gap in it. A5's
-  cancellation semantics are built on the honest version of this statement rather
-  than the aspirational one.
+- **An agent holding a lease can do anything the resource permits between mediated
+  actions.** That is a property of the design, not a gap in it.
 - **Containment is void, not weakened, if the resource's domain is not closed.**
-  ADR 0029 §7's general form — *a mediated boundary must be closed under the
-  authority it exposes* — applies to the grant exactly as it applies to a fence.
-  The [Docker spike](../v2/phase_3/spike_docker-fencing.md) demonstrated a
-  containment claim that was true about the domain it enumerated and useless
-  because the escape was never in it. An Incubator with a raw daemon socket has no
-  containment guarantee to offer at all. So the in-resource half of this ADR is
-  worth exactly what the resource's closures are worth, and in Phase 3 those are
-  ADR 0029 §1's no-ecosystem rule and its decision to give the Incubator no direct
-  daemon route.
+  ADR 0029 §7's general form — *a mediated boundary must be closed under the authority
+  it exposes* — applies to a grant exactly as to a fence. An Incubator with a raw
+  daemon socket has no containment guarantee to offer at all, so this half of the ADR
+  is worth what the resource's closures are worth: in Phase 3, ADR 0029 §1's
+  no-ecosystem rule and its decision to give the Incubator no direct daemon route.
 - **Stopping such a process is fencing, never deauthorization.** Revoking a lease
-  invalidates authorization; a process already running needs none. See ADR 0029
-  §7.
-- **A permissive external grant can cost the resource its fenceability**, not
-  merely its policeability — the `isolated`/`unconfirmed` consequence above. The
-  cheapest containment decision Maestro makes is the one it makes before anything
-  runs.
+  invalidates authorization; a running process needs none.
+- **A permissive external grant can cost the resource its fenceability**, not merely
+  its policeability: unrevokable external reach removes `isolated` from ADR 0029 §7's
+  receipts, and quarantine is the cost.
 
 #### The scope invariant is withdrawn, and stays withdrawn
 
 An earlier draft of the blocker plan proposed prohibiting external agent runtimes
 from touching Maestro-managed resources directly. It is withdrawn (delta D3), and
-recorded here because it will be proposed again:
+recorded because it will be proposed again: it would disable Claude Code-style
+built-in editing unless every internal tool were replaced by a mediated one (Codex),
+and it reaches for control over agents that are not Maestro's — an engineer may
+legitimately run other agents in a resource, and the application under development
+may itself be an agent (DR).
 
-- It would disable Claude Code-style built-in editing unless every internal tool
-  were replaced by a mediated one (Codex).
-- It reaches for control over agents that are not Maestro's to control: an
-  engineer may legitimately run other agents inside a resource, and the
-  application under development may itself be an agent (DR).
+Maestro's enforcement is scoped to **the behavior of Maestro's own agents**.
 
-Maestro's enforcement is scoped to **the behavior of Maestro's own agents**. That
-is what ADR 0029 §8's tool-routing rule binds, and it is all it binds.
+### 7. Whether an action is mediated is decided by what the resource cannot do
 
-### 5. Whether an action is mediated is decided by what the resource cannot do
-
-This is the finding that makes the table in §4 more than a taxonomy, and it is the
-direct analogue of ADR 0029 §7's rule that domain membership is enforced at
+The direct analogue of ADR 0029 §7's rule that domain membership is enforced at
 creation and never discovered at fencing time.
 
-**An agent-initiated action is mediated if and only if the Orchestrator is
-positioned to refuse it.** Whether it is so positioned depends on one thing:
-whether the execution resource can perform the action itself. A resource holding a
-forge credential can push without asking. A resource holding data-plane
-credentials can write without asking. In neither case does the boundary become
-weaker — it becomes irrelevant, silently, with no change to any code that
-implements it.
+**An agent-initiated action is mediated if and only if the Orchestrator is positioned
+to refuse it**, and that depends on one thing: whether the execution resource can
+perform the action itself. A resource holding a forge credential can push without
+asking; one holding data-plane credentials can write without asking. The boundary
+does not become weaker — it becomes irrelevant, silently, with no change to any code
+implementing it.
 
-So §4's forbidden row — an unmediated request with an Orchestrator-side effect —
-is not forbidden by rule. It is forbidden by construction, and Phase 3 carries the
-obligation:
+So §6's forbidden row is not forbidden by rule. It is forbidden by construction, and
+Phase 3 carries the obligation:
 
 - **Credentials for a mediated resource are not placed inside an execution
-  resource.** Where an execution resource must speak a protocol whose mediated
-  form is the real action — Git being the obvious case — the credential reaches
-  only a target inside the resource's own fencing domain, and the mediated act is
-  the promotion, not the local commit.
+  resource.** Where a resource must speak a protocol whose mediated form is the real
+  action — Git being the obvious case — the credential reaches only a target inside
+  the resource's own fencing domain, and the mediated act is the promotion, not the
+  local commit.
 - **The classification is checkable.** For each action family Phase 3 declares
-  mediated, it must be able to say what prevents the resource from performing it
-  directly. A family with no answer is mediated in documentation only.
+  mediated, it must say what prevents the resource from performing it directly. A
+  family with no answer is mediated in documentation only.
 
-Neither half of this is new as a rule; what is new is the general form and the
-obligation to check it. [ADR 0022](0022-v2-data-plane.md) already states that
-agents never hold connections or issue queries, and
-[ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §4 already makes
-the promoted forge commit the sole source and definition handoff. Each was
-written about its own resource. Stated once, over authorization rather than over
-storage or handoff, it becomes the test a new action family can be held to.
+ADR 0022 already states that agents never hold connections or issue queries, and
+ADR 0029 §4 already makes the promoted forge commit the sole source and definition
+handoff. Each was written about its own resource; stated once over authorization, it
+becomes a test a new action family can be held to.
 
-The failure this closes is not an attack. It is an ordinary Phase 3 convenience —
-mounting a credential so something works — silently reclassifying an action and
-leaving the promotion record incomplete, with no test failing and nothing in the
-boundary's own code to review.
+The failure this closes is not an attack. It is an ordinary convenience — mounting a
+credential so something works — silently reclassifying an action, with no test failing
+and nothing in the boundary's own code to review.
 
-### 6. Recording
+### 8. Recording
 
-The record is [ADR 0022](0022-v2-data-plane.md)'s tool call — the atomic Audit
-action unit — encoded per [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md).
-The boundary invents no record type, and it does not need one: **Phase 2 already
-built this shape.** `tool_calls` (migration 000005) has a non-null `started_at`
-with `finished_at` and `succeeded` null while in flight, under a comment saying an
-unfinished call is a real state rather than a missing field, and a check
-constraint tying the two together.
+The record is [ADR 0022](0022-v2-data-plane.md)'s tool call, encoded per
+[ADR 0028](0028-artifact-envelopes-and-payload-schemas.md). The boundary invents no
+record type and does not need one: **Phase 2 already built this shape.**
+`tool_calls` (migration 000005) has a non-null `started_at` with `finished_at` and
+`succeeded` null while in flight, under a comment saying an unfinished call is a real
+state rather than a missing field.
 
-**One logical attempt record, opened and completed** — two durable *writes*, not
-two records. A previous version of this section alternated between the two
-phrasings, which would have read as a schema change nobody asked for.
+**One logical attempt record, opened and completed.**
 
 - **Every attempt is opened durably before the effect happens or any result is
   released**, for every mediated action, not only mutating ones. **A read is not
-  exempt**, because releasing data *is* the security-relevant effect of a
-  retrieval: a crash between disclosure and the open would leave data released
-  with nothing recording that it was.
-- **If the open cannot be committed, the action fails closed.** Otherwise the
-  record is advisory and the guarantee above is not one.
-- **Every attempt is completed**, bound by its attempt identity — **reads
-  included**. A mutation's completion carries effect details; a read's says
-  whether the result was released. An attempt left open then reads as *attempted,
-  outcome unknown* rather than as nothing at all — which is what a reconciler
-  needs, what §3's at-most-once rule consumes, and the same lesson the Docker
-  spike recorded about an unconfirmed stop that must not destroy the provider
-  record.
+  exempt**: releasing data *is* the security-relevant effect of a retrieval, and a
+  crash between disclosure and the open would leave data released with nothing
+  recording it.
+- **If the open cannot be committed, the action fails closed.**
+- **A pending human requirement is recorded as an explicit `awaiting_resolution`
+  state on that record**, not as the absence of a completion. Without it, waiting and
+  crashing are the same observation, and both reconciliation and the watchdog would
+  have to guess.
+- **Every attempt is completed** — reads included. A mutation's completion carries
+  effect details; a read's says whether the result was released. An attempt left open
+  and not awaiting resolution reads as *attempted, outcome unknown*, which is what a
+  reconciler needs and what §3's at-most-once rule consumes.
+- **A denial is terminal and is opened and completed together**, in one transaction,
+  with the reason code. There is no effect to await. Denials are the observations
+  candidate 12 will be tuned against, so losing them is not a small loss.
 
-  A previous version of this section completed mutations only, which broke the
-  at-most-once rule: with no completion, **a successful read is indistinguishable
-  from an interrupted one**, every completed retrieval sits permanently in
-  `unknown`, and a transport retry cannot tell whether disclosure already
-  happened. "The read has no effect to lose" was the wrong test — the release is
-  the effect.
-- **A denial is terminal and is opened and completed together**, in one
-  transaction, with the reason code. There is no effect to await, so waiting for
-  one would leave every denied attempt permanently unresolved — which a previous
-  version's "completed after the effect" implied. Denials are also the
-  observations candidate 12 will be tuned against, so losing them is not a small
-  loss.
+**Rejected: record once, after the effect.** That is v1's shape (`toolloop.go:546`),
+and a crash between a forge push and its record leaves the plane holding no record of
+the push — which reads as never attempted rather than as unknown.
 
-So the cost is **two writes for an executed action and one for a denied one** —
-more than the previous version claimed for reads, and bounded by the split in §4
-rather than by the action rate, since in-resource actions pay nothing here.
-
-**Rejected: record once, after the effect.** That is v1's shape
-(`toolloop.go:546`), and it loses the window that matters. A crash between a forge
-push and its record leaves the plane holding no record of the push, which reads
-as never attempted rather than as unknown.
-
-### 7. Relationship to candidate 12
+### 9. Relationship to candidate 12
 
 [Candidate 12](../v2/notes_adr-backlog.md) is the gating policy: structural gates
-(role, environment and tool allowlists, filesystem scopes), semantic gates, and
-human gates. It remains post-MVP. Four constraints this ADR imposes on it:
+(role, environment and tool allowlists, filesystem scopes), semantic gates, and human
+gates. It remains post-MVP. Four constraints:
 
-1. It supplies rules to the hook. It does not extend the boundary, reorder the
-   stages, or weaken admission.
+1. It supplies rules to the hook. It does not extend the boundary, reorder the gates,
+   or weaken admission.
 2. Its semantic gates consult an agent, because the hook may not infer (§3).
-3. Its human gates emit a resolution requirement and deny; they do not suspend
-   inside the boundary (§3).
-4. Any argument its rules read must be a field the action schema declares, since
-   the persisted record carries only the declared projection and a digest (§3).
-   A rule keyed on something unrecordable is a rule whose denials cannot be
-   audited.
+3. Its human gates return *requires an operator* and declare which of §4's scopes they
+   permit. They do not compose scopes at the UI.
+4. Any argument its rules read must be a field the action schema declares, since the
+   record carries only the declared projection and a digest (§3). A rule keyed on
+   something unrecordable is a rule whose denials cannot be audited.
 
-MVP ships the boundary with a default-allow hook. The structural allowlist v1
-already has (`registry.go:159`) is subsumed by admission's capability check rather
-than reimplemented as policy: a tool absent from the resolved capability set is
-not denied by a rule, it was never granted.
+MVP ships the boundary with a default-allow hook. The structural allowlist v1 already
+has (`registry.go:159`) is subsumed by admission's capability check rather than
+reimplemented as policy: a tool absent from the resolved capability set was never
+granted.
 
-### 8. Not in scope of this boundary
+### 10. Not in scope of this boundary
 
-Stated so the boundary is not later read as universal:
-
-- **Model invocation.** An LLM call is not an action in ADR 0022's sense — a call
-  that produces no tool call does nothing — and it does not pass this hook. It is
-  recorded in the calls family for cost and trace. Budget enforcement belongs to
-  the execution contract (candidate 13), not here.
-- **Orchestrator-initiated work.** Scheduling, dispatch, reconciliation, and
-  cleanup are the Orchestrator acting on its own behalf. They are recorded, and
-  they are not agent-initiated actions to be refused.
-- **Human actions in the UI.** A human principal's Accept is governed by the
-  review invariant ([ADR 0020](0020-review-invariant-reviewer-vs-partner.md)) and
-  the artifact lifecycle, not by a per-action tool gate.
+- **Model invocation.** An LLM call is not an action in ADR 0022's sense — a call that
+  produces no tool call does nothing — and it does not pass this boundary. Budget
+  enforcement belongs to the execution contract (candidate 13).
+- **Orchestrator-initiated work.** Scheduling, dispatch, reconciliation, and cleanup
+  are the Orchestrator acting on its own behalf. They are recorded, and they are not
+  agent-initiated actions to be refused.
+- **Human actions in the UI.** A human principal's Accept is governed by the review
+  invariant ([ADR 0020](0020-review-invariant-reviewer-vs-partner.md)) and the
+  artifact lifecycle, not by a per-action tool gate.
 
 ## Consequences
 
-- **Phase 3 must build the boundary before the tools, not after.** Every mediated
-  action reaches its effect through one seam; a tool that can bypass it is the
-  defect this ADR exists to prevent, and it is cheap to prevent while the tool
-  surface is being re-cut and expensive afterwards. ADR 0029's consequence that
-  roughly three agent-visible tools replace fourteen is what makes the timing
-  favourable.
-- **The adapted-runtime path stops being a hole.** v1's MCP server executes
-  Maestro tools with no record; under this ADR an external runtime reaches
-  Maestro's actions only through the wire contract (candidate 13), which meets the
-  same boundary as a native agent. This is the single largest observability change
-  the boundary buys, and it is why the split is stated as mediation rather than as
-  "Maestro tools versus other tools."
-- **A data-plane outage stops mediated actions and stops neither in-resource work
-  nor unmediated external reach.** An agent mid-Story keeps editing files, running
-  its toolchain, and calling whatever the network grant permits, and cannot
-  publish, deploy, or promote. This follows from fail-closed admission plus the
-  axes in §4, and it is a defensible posture — but it must be designed for, since
-  the agent experiences it as tools failing rather than as a system pause.
-- **Fencing gains an obligation it did not have.** §2's linearization means
-  `Fence()` cannot simply act on the domain; it must also close admission and
-  settle in-flight attempts before returning a receipt. That is a real addition to
-  ADR 0029 §7's protocol for Phase 3's provider work, and it is the price of the
-  receipt meaning what it says.
-- **Every action family owes a declared commit point**, and the declaration is
-  load-bearing rather than documentation: it is what decides whether an in-flight
-  attempt can be drained, must be conditionally committed, or forces
-  `unconfirmed`. A family whose commit point nobody wrote down cannot be fenced
-  around, which makes this the cheapest thing on this list to skip and the most
-  expensive to have skipped.
-- **Per-action policy becomes a configuration change rather than a code change.**
-  That is the whole point of choosing the seam now: candidate 12 lands as rules
-  behind an existing hook.
-- **Two writes per executed mediated action — open then complete — one for a
-  denial, and a data-plane read per mediated action.** Named as a real cost,
-  bounded by how few mediated actions there are relative to in-resource ones. The
-  record itself is `tool_calls` as Phase 2 already shaped it; what is new is the
-  ordering obligation, not the schema.
-- **The scheduler gains durable state it did not have.** Resolution chains are
-  Orchestrator-owned, claimed atomically, and carry terminal conditions — so
-  Phase 3 owes them a persisted home and the concurrency discipline
-  [ADR 0027](0027-concurrency-safety-for-shared-local-infrastructure.md) already
-  requires of shared state. That is more than a token in a request, and it is what
-  makes the single-use property of an approval enforceable rather than requested.
-- **Audit gains a redaction obligation.** Every action family needs a declared
-  safe projection before it can be recorded at all, which is work Phase 3 pays per
-  family rather than once — and is what keeps a `shell` action from writing a
-  developer's environment into a queryable, exportable table.
-- **Maestro cannot claim per-action governance of what happens inside a
-  resource or beyond it, and should not.** Any external statement about Maestro's
-  controls has to distinguish the axes, or it overclaims. The honest summary is
-  three sentences, not one: mediated actions are governed and recorded;
-  in-resource actions are contained in the resource's own state, and what stops
-  them is fencing; external reach is bounded by the grant made at provisioning and
-  by nothing at this boundary.
+- **Phase 3 must build the boundary before the tools, not after.** A tool that can
+  bypass it is the defect this ADR exists to prevent, and it is cheap to prevent while
+  the tool surface is being re-cut. ADR 0029's consequence that roughly three
+  agent-visible tools replace fourteen is what makes the timing favourable.
+- **The adapted-runtime path stops being a hole.** v1's MCP server executes Maestro
+  tools with no record; here an external runtime reaches Maestro's actions only
+  through the wire contract (candidate 13), which meets the same boundary as a native
+  agent.
+- **A blocked Story costs an execution slot and no tokens.** That is the property that
+  makes blocking affordable, and it is why the earlier deny-and-retry design was
+  removed rather than refined.
+- **Waiting is cheap; waiting *with resources* is not.** The retention window, and the
+  rule for relinquishing a billable resource that is waiting on a human, are Phase 3
+  decisions this ADR requires rather than makes.
+- **Headless runs degrade honestly.** A gated Story blocks and the run continues;
+  the invocation exits with a distinct incomplete result. Golden runs therefore report
+  a gate as a gate, not as a failure or a hang.
+- **A data-plane outage stops mediated actions and stops neither in-resource work nor
+  unmediated external reach.** An agent mid-Story keeps editing files, running its
+  toolchain, and calling whatever the network grant permits, and cannot publish,
+  deploy, or promote.
+- **Fencing gains an obligation**, and **every action family owes a declared commit
+  point.** A family whose commit point nobody wrote down cannot be fenced around,
+  which makes it the cheapest thing here to skip and the most expensive to have
+  skipped.
+- **Two writes per executed action, one for a denial, one more transition when a human
+  is required, and a data-plane read per action.** The record is `tool_calls` as Phase
+  2 shaped it; what is new is the ordering obligation, not the schema.
+- **Audit gains a redaction obligation.** Every action family needs a declared safe
+  projection before it can be recorded at all — which is what keeps a `shell` action
+  from writing a developer's environment into a queryable, exportable table.
+- **Maestro cannot claim per-action governance of what happens inside a resource or
+  beyond it, and should not.** The honest summary is three sentences: mediated actions
+  are governed and recorded; in-resource actions are contained in the resource's own
+  state, and what stops them is fencing; external reach is bounded by the grant made
+  at provisioning and by nothing at this boundary.
 
 ### Deferred
 
-Policy content of every kind (candidate 12); a policy service or out-of-process
-policy engine; filesystem-scope and argument-level rules; risk tiering and human
-approval UX; the resolution-record model behind §3's requirement — its routing,
-and the mechanism of expiry and revocation — beyond what §3 does fix, which is the
-two bindings (resolution subject and requirement discriminator), the two
-identities and their ownership, that chains are durable Orchestrator state with
-atomic claim and defined terminal conditions, the accumulation semantics of the
-carried set, and what an invalidated member does to its chain; egress policy and
-network-grant design; per-action
-rate limiting and quotas; policy versioning and simulation ("what would this rule
-have denied?"); and any per-action governance of in-resource or external
-behavior.
+Policy content of every kind (candidate 12); a policy service or out-of-process policy
+engine; filesystem-scope and argument-level rules; risk tiering and approval UX;
+reusable Story-scoped grants if MVP defers them, and their storage; approval expiry
+and revocation; egress policy and network-grant design; per-action rate limiting and
+quotas; policy versioning and simulation ("what would this rule have denied?"); and
+any per-action governance of in-resource or external behavior.
+
+### Responsibility split
+
+Recorded because several of the rules above are stated here and owned elsewhere.
+
+| Item | Owner |
+| --- | --- |
+| The boundary, the three-gate ordering, logical blocking, final revalidation | **This ADR** |
+| Action and Story states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire | **A4** (candidate 13) |
+| Amendment and cancellation invalidating pending actions and grants | **A5** (ADR 0019 amendment) |
+| Watchdog policy for `awaiting_resolution`; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
+| Which policies exist, their risks, and which approval scopes each gate exposes | **Candidate 12** |
 
 ## Related Documents
 
 - [Pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md) item A2 and delta D3;
-  [ADR backlog](../v2/notes_adr-backlog.md) candidates 4 (this ADR) and 12
-  (policy content).
+  [ADR backlog](../v2/notes_adr-backlog.md) candidates 4 (this ADR) and 12 (policy
+  content).
 - [ADR 0019](0019-orchestrator-boundary.md) (the boundary rule and what is
   Orchestrator machinery), [ADR 0021](0021-artifacts-and-principal-instances.md)
-  (principal instances, Audit category),
-  [ADR 0022](0022-v2-data-plane.md) (the tool call as the atomic action unit, the
-  persistence seam), [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md)
-  (envelope and canonical JSON),
-  [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) (§7 fencing and
-  late-call rejection, §8 tool routing, the capability-closure rule).
-- [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) (item A3,
-  reviewed as a set with this one).
-- [Docker fencing spike](../v2/phase_3/spike_docker-fencing.md) (capability
-  closure, and a record destroyed on the failure path);
+  (principal instances, Audit category), [ADR 0022](0022-v2-data-plane.md) (the tool
+  call as the atomic action unit, the persistence seam),
+  [ADR 0028](0028-artifact-envelopes-and-payload-schemas.md) (envelope and canonical
+  JSON), [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) (§2 leases and
+  retention, §7 fencing and late-call rejection, §8 tool routing, capability closure).
+- [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) (item A3, reviewed
+  as a set with this one).
+- [Docker fencing spike](../v2/phase_3/spike_docker-fencing.md);
   [research synthesis](../v2/research_synthesis.md) open question 7;
   [parking lot](../v2/notes_parking-lot.md) tool-level policy gates.
 - Historical note [0006](0006-toolloop-process-effect-and-terminal-tools.md) (v1's
-  toolloop and terminal-tool discipline, promoted to a data-plane rule by ADR
-  0022).
+  toolloop and terminal-tool discipline, promoted to a data-plane rule by ADR 0022).

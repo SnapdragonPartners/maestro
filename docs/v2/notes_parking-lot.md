@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-08-12"
+edit_date = "2026-08-13"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -63,7 +63,11 @@ From the research synthesis:
 
 Post-MVP as implementation ([backlog candidate 12](notes_adr-backlog.md)).
 
-Forward reference, **not yet binding**: the seam this would land in is **proposed** in [ADR 0030](../adr/0030-tool-execution-policy-hook.md) (pre-Phase-3 item A2). Two things this entry should expect to change when that ADR is Accepted, recorded now so the guess below is not mistaken for a settled answer. The seam is **not** in the toolloop or the dispatcher, as this entry originally assumed. And the third bullet's ambition is narrower than written: per-action enforcement does not reach an agent runtime's own built-in tools, and nothing at that boundary bounds an unmediated call to an external service — those are grant-time decisions made when the execution resource is provisioned.
+Forward reference, **not yet binding**: the seam this would land in is **proposed** in [ADR 0030](../adr/0030-tool-execution-policy-hook.md) (pre-Phase-3 item A2). Three things this entry should expect to change when that ADR is Accepted, recorded now so the guesses above are not mistaken for a settled answer.
+
+- The seam is **not** in the toolloop or the dispatcher, as this entry originally assumed.
+- The third bullet's ambition is narrower than written: per-action enforcement does not reach an agent runtime's own built-in tools, and nothing at that boundary bounds an unmediated call to an external service — those are grant-time decisions made when the execution resource is provisioned.
+- A human gate **blocks the call and the Story** rather than refusing and being retried; the operator answers at a scope the gate declares, and a headless run marks the Story blocked instead of waiting.
 
 The reconciliation of this entry happens in that ADR's acceptance commit.
 
