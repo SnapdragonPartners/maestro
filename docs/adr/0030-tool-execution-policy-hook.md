@@ -303,7 +303,16 @@ binds the record to the exact **substituted** input, which is a narrower claim t
 
 #### Headless operation is first-class
 
-Not a degraded mode. Where no operator responder exists:
+Not a degraded mode.
+
+**Headless is a declared execution configuration, known at dispatch — never an
+observation that nobody answered.** The invocation states whether an operator
+responder is available for it. Deciding from live evidence instead would turn an
+interactive run whose operator stepped away into an immediately terminal block,
+which is precisely the ordinary asynchronous wait this design exists to support.
+An interactive execution waits however long the human takes.
+
+Where the configuration declares no responder:
 
 - The action's requirement is **recorded**, and the Story becomes **`blocked`
   immediately** rather than waiting for a timeout.
@@ -339,10 +348,14 @@ Decision × scope:
 - **`cancelled`** — the requester cannot withdraw a blocked action. Cancelling the
   Story is a lifecycle operation on a separate path, and a cancelled Story's pending
   action fails gate 3's revalidation.
-- **`superseded`** — amendment changes the governing Story version, which makes an
-  incompatible pending action and any reusable grant stale through ordinary
-  invalidation and revalidation. It is an effect of the amendment, not a decision
-  someone makes here.
+- **`superseded`** — amendment changes the governing Story version, and **every
+  pending action and every Story-scoped decision bound to the prior version becomes
+  stale**, unconditionally. Not "every incompatible one": deciding whether an
+  amendment is compatible with a pending approval is a judgment, which under
+  ADR 0019 is not the Orchestrator's to make and cannot be the basis of a
+  fail-safe rule. This is the same unconditional invalidation ADR 0019's dispatch
+  amendment already applies to version-bound dispatch records. It is an effect of
+  the amendment, not a decision someone makes here.
 - **"Approve with different arguments"** — that makes the human the author of the
   action. Changing the action requires a new request.
 
@@ -364,11 +377,31 @@ Only after approval does Maestro acquire, reacquire, or provision the Incubator 
 Habitat the action needs, establish the lease and generation, revalidate, and
 execute.
 
+**Acquiring a resource can itself take time.** Provisioning is not instant, and
+ADR 0029 §2 queues compatible executions when Habitat capacity is exhausted. So
+gate 3 has a wait of its own, and it is a *different* wait from gate 2's — see §8,
+which requires both to be distinguishable in the record from an interrupted call.
+
 **Approval clears the human requirement and nothing else.** Immediately before the
 effect, the boundary revalidates the principal, the effective work version, the
-capability set, the lease and current resource generation, and current machine
-policy. Any failure refuses the action; the agent resumes with a result it can act
-on, and a re-request is an ordinary new action.
+capability set, and the lease and current resource generation, and re-evaluates
+machine policy for a **denial**. Any failure refuses the action; the agent resumes
+with a result it can act on, and a re-request is an ordinary new action.
+
+**The persisted approval satisfies gate 2 for this logical action, and gate 3
+consumes it rather than re-asking.** Re-running the three-valued policy unchanged
+would return *requires an operator* again and the action would never execute — the
+approval would authorize nothing. So the rule is asymmetric on purpose:
+
+- Gate 3 re-evaluates every **deterministic** condition, and an unchanged policy
+  that now *denies* still denies.
+- Gate 3 does **not** re-raise a requirement the persisted decision already
+  satisfies, for the same logical action (§4's binding: Story version, action,
+  intended target, arguments).
+- A **new or different** operator requirement — because policy changed and a gate
+  that did not previously apply now does — is not satisfied by that decision, and
+  the action returns to gate 2 for it. The approval is consumed for what it
+  answered, not for what it never saw.
 
 #### The admission-to-effect interval participates in fencing
 
@@ -520,13 +553,30 @@ and nothing in the boundary's own code to review.
 ### 8. Recording
 
 The record is [ADR 0022](0022-v2-data-plane.md)'s tool call, encoded per
-[ADR 0028](0028-artifact-envelopes-and-payload-schemas.md). The boundary invents no
-record type and does not need one: **Phase 2 already built this shape.**
-`tool_calls` (migration 000005) has a non-null `started_at` with `finished_at` and
-`succeeded` null while in flight, under a comment saying an unfinished call is a real
-state rather than a missing field.
+[ADR 0028](0028-artifact-envelopes-and-payload-schemas.md). **The boundary invents
+no record *type*** — but it does need columns Phase 2's does not have, and an
+earlier version of this section claimed otherwise.
 
-**One logical attempt record, opened and completed.**
+**`tool_calls` cannot express waiting.** Migration 000005 gives it a non-null
+`started_at` with `finished_at` and `succeeded` null while in flight, under a
+comment saying an unfinished call is a real state rather than a missing field. That
+convention has exactly two positions — in flight, and finished — and it carries no
+status column. Under this ADR *in flight* is now at least three different
+situations, and conflating them is precisely the ambiguity §4 sets out to remove:
+
+| Situation | What it means | What must happen |
+| --- | --- | --- |
+| Awaiting an operator | Healthy; gate 2 | Watchdog leaves it alone; the Story is blocked |
+| Awaiting a resource | Healthy; gate 3 provisioning or queued for capacity ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2) | Watchdog leaves it alone; no operator is involved |
+| Interrupted | The process died between open and completion | Reconciliation; the outcome is `unknown` |
+
+So Phase 3 owes an **additive migration** giving the record explicit nonterminal
+states — **at least operator-waiting and resource-waiting** — and A4 owns the
+vocabulary, since it owns the action and Story states. The two waits are kept
+distinct rather than merged into one "waiting" because they have different
+responders, different release rules, and different costs.
+
+**One logical attempt record, opened, possibly waiting, then completed.**
 
 - **Every attempt is opened durably before the effect happens or any result is
   released**, for every mediated action, not only mutating ones. **A read is not
@@ -534,13 +584,11 @@ state rather than a missing field.
   crash between disclosure and the open would leave data released with nothing
   recording it.
 - **If the open cannot be committed, the action fails closed.**
-- **A pending human requirement is recorded as an explicit `awaiting_resolution`
-  state on that record**, not as the absence of a completion. Without it, waiting and
-  crashing are the same observation, and both reconciliation and the watchdog would
-  have to guess.
+- **Entering or leaving a wait is a durable transition on that record**, not the
+  absence of a completion.
 - **Every attempt is completed** — reads included. A mutation's completion carries
   effect details; a read's says whether the result was released. An attempt left open
-  and not awaiting resolution reads as *attempted, outcome unknown*, which is what a
+  in no declared wait reads as *attempted, outcome unknown*, which is what a
   reconciler needs and what §3's at-most-once rule consumes.
 - **A denial is terminal and is opened and completed together**, in one transaction,
   with the reason code. There is no effect to await. Denials are the observations
@@ -592,9 +640,14 @@ granted.
   tools with no record; here an external runtime reaches Maestro's actions only
   through the wire contract (candidate 13), which meets the same boundary as a native
   agent.
-- **A blocked Story costs an execution slot and no tokens.** That is the property that
-  makes blocking affordable, and it is why the earlier deny-and-retry design was
-  removed rather than refined.
+- **A blocked Story costs a dormant execution context and no tokens.** A suspended
+  goroutine and its in-memory state, nothing more. That is the property that makes
+  blocking affordable, and it is why the earlier deny-and-retry design was removed
+  rather than refined. It holds only if a blocked Story does **not** consume runnable
+  scheduling concurrency — if it did, blocked work would starve independent runnable
+  work and the premise would fail. Whether blocked executions count against a
+  concurrency limit is therefore an accounting decision this ADR assigns to A4 and
+  the Phase 3 plan, not one it leaves implicit.
 - **Waiting is cheap; waiting *with resources* is not.** The retention window, and the
   rule for relinquishing a billable resource that is waiting on a human, are Phase 3
   decisions this ADR requires rather than makes.
@@ -609,9 +662,11 @@ granted.
   point.** A family whose commit point nobody wrote down cannot be fenced around,
   which makes it the cheapest thing here to skip and the most expensive to have
   skipped.
-- **Two writes per executed action, one for a denial, one more transition when a human
-  is required, and a data-plane read per action.** The record is `tool_calls` as Phase
-  2 shaped it; what is new is the ordering obligation, not the schema.
+- **Two writes per executed action, one for a denial, one more per wait entered and
+  left, and a data-plane read per action.** No new record *type* — it stays
+  `tool_calls` — but Phase 3 owes an additive migration for the nonterminal states,
+  because Phase 2's in-flight-versus-finished convention cannot tell waiting from
+  interrupted (§8).
 - **Audit gains a redaction obligation.** Every action family needs a declared safe
   projection before it can be recorded at all — which is what keeps a `shell` action
   from writing a developer's environment into a queryable, exportable table.
@@ -637,9 +692,9 @@ Recorded because several of the rules above are stated here and owned elsewhere.
 | Item | Owner |
 | --- | --- |
 | The boundary, the three-gate ordering, logical blocking, final revalidation | **This ADR** |
-| Action and Story states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire | **A4** (candidate 13) |
+| The nonterminal state vocabulary (at least operator-waiting and resource-waiting), action and Story states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** (candidate 13) |
 | Amendment and cancellation invalidating pending actions and grants | **A5** (ADR 0019 amendment) |
-| Watchdog policy for `awaiting_resolution`; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
+| Watchdog policy for the waiting states; the additive migration that adds them; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
 | Which policies exist, their risks, and which approval scopes each gate exposes | **Candidate 12** |
 
 ## Related Documents
