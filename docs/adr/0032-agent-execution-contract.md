@@ -932,10 +932,43 @@ conformance executable lives permanently.
 | The provenance retention traversal's mechanism, and the evidence-package half | **Phase 4** |
 | The metadata home for served-model lifecycle and underlying-model lineage | **[#319](https://github.com/SnapdragonPartners/maestro/issues/319)**, against §3's split |
 
+## Authority Reconciliation On Acceptance
+
+Established by grepping the **concept** rather than the word, because two of the
+entries below never say "execution contract". **None of these is edited while
+this ADR is Proposed** — a live document asserting a decision nobody has accepted
+is the gap the reconciliation sweep opens if it runs early. All of it lands in the
+final reviewed commit.
+
+| Location | Change |
+| --- | --- |
+| [ADR backlog](../v2/notes_adr-backlog.md) slot 13 | Mark **RESOLVED**, pointing here. The slot keeps its number, per its own citation rule. Its instruction is explicit: *mark this slot RESOLVED when the contract ADR is Accepted* |
+| [ADR backlog](../v2/notes_adr-backlog.md) slot 16 | **Narrow one clause.** It reads that a retirement date and a lab are "the same kind of fact about a model ID", which is true of their *kind* and false of their *key*: §3 puts retirement on the served identity and lineage on the underlying model. Read strictly, the current wording asks #319 to build one key — the thing D8 already refused |
+| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A4 | Add the RESOLVED banner, in the form A1–A3 use, recording what the ADR settled differently from what the item asked |
+| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) Track C | #319's dependency on A4 is discharged; the split it waited on is §3 |
+| [Parking lot](../v2/notes_parking-lot.md) | The graduation pointer names the ADR, not only the candidate and the issue |
+| [ADR README](README.md) | Status **Proposed → Accepted**; the summary is already indexed verbatim |
+| This ADR and [its spike report](../v2/phase_3/spike_execution-contract.md) | Front matter `draft` → `live`; body **Proposed → Accepted** |
+| [Issue #282](https://github.com/SnapdragonPartners/maestro/issues/282) | The tracker copy. Its acceptance criteria mix the contract with Phase-3-and-later work — the Actions example, blocking workflow status, the OpenHands and Goose mappings — and the blocker plan's scope decision 1 already separated them. Amend it to record which criteria this ADR discharges and which are Phase 3's |
+
+**Deliberately not changed**, recorded so nobody "reconciles" them: the Phase 2
+[exit record](../v2/phase_2/notes_exit-record.md) and
+[import design](../v2/phase_2/design_slice_import.md) cite #282 for the
+**benchmark-evidence-reviewer agent** and the missing `accept` verb. That is
+#282's other half, it is Phase 3 work, and this ADR does not build it — so those
+statements stay true.
+
+**Corroboration, not conflict:** [ADR 0020](0020-review-invariant-reviewer-vs-partner.md)
+already states that serving is not origin and that "lineage needs its own
+declared attribute." §3's two-key split is what that attribute attaches to, so
+0020 needs no amendment.
+
 ## Related Documents
 
 - [Pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md) item A4 and its three
   scope decisions; [ADR backlog](../v2/notes_adr-backlog.md) candidate 13.
+- [Conformance slice report](../v2/phase_3/spike_execution-contract.md) and the
+  [executable](../../spikes/phase_3/executioncontract/README.md).
 - [Issue #282](https://github.com/SnapdragonPartners/maestro/issues/282) (the
   contract and its vertical slice),
   [#272](https://github.com/SnapdragonPartners/maestro/issues/272) (contract
