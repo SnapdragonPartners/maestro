@@ -177,6 +177,13 @@ requires-an-operator decision carries a **structured requirement** — what is b
 asked, and at which scopes the gate permits an answer (§4) — because the consumer
 is the scheduler and a UI, not a person reading prose.
 
+**Gate 1 evaluates every applicable gate and collects the complete set of reasons
+an operator is required**, before anything blocks. It does not stop at the first.
+This is what blocking buys over the deny-and-retry design: gates evaluate against
+one request, so their requirements are all knowable at once, and **the operator
+answers once** rather than discovering a second gate after clearing the first.
+The recorded set is also what gate 3 compares against (§5).
+
 #### The request
 
 | Field | Why it is here |
@@ -257,8 +264,10 @@ binds the record to the exact **substituted** input, which is a narrower claim t
 
 ### 4. Gate 2 — human approval, which blocks
 
-**The logical tool call does not end.** It and its Story enter
-`awaiting_resolution`.
+**The logical tool call does not end.** The **Story** enters `awaiting_resolution`;
+the **tool call** enters the operator-waiting state A4 names (§8). Two levels, two
+vocabularies — this ADR fixes the Story state because dispatch and the watchdog key
+on it, and leaves the record's state to A4, which owns the action vocabulary.
 
 #### Waiting semantics
 
@@ -282,8 +291,8 @@ binds the record to the exact **substituted** input, which is a narrower claim t
 - **The wait is logical.** It must not hold a database transaction or a transport
   connection open. The open-then-complete record (§6) is what makes that possible:
   the intent is committed, not held.
-- **A pending action carries an explicit `awaiting_resolution` state.** An
-  unfinished action record alone is ambiguous with a crash, and §6's reconciliation
+- **The pending action carries an explicit operator-waiting state of its own.** An
+  unfinished action record alone is ambiguous with a crash, and §8's reconciliation
   rule reads exactly that ambiguity.
 
 #### Resource behaviour while waiting
@@ -388,20 +397,32 @@ capability set, and the lease and current resource generation, and re-evaluates
 machine policy for a **denial**. Any failure refuses the action; the agent resumes
 with a result it can act on, and a re-request is an ordinary new action.
 
-**The persisted approval satisfies gate 2 for this logical action, and gate 3
-consumes it rather than re-asking.** Re-running the three-valued policy unchanged
-would return *requires an operator* again and the action would never execute — the
-approval would authorize nothing. So the rule is asymmetric on purpose:
+**One operator decision resolves one logical action.** Re-running the three-valued
+policy unchanged would return *requires an operator* again and the action would
+never execute, so gate 3 consumes the persisted decision rather than re-asking:
 
 - Gate 3 re-evaluates every **deterministic** condition, and an unchanged policy
   that now *denies* still denies.
-- Gate 3 does **not** re-raise a requirement the persisted decision already
-  satisfies, for the same logical action (§4's binding: Story version, action,
+- Gate 3 does **not** re-raise the operator requirement the persisted decision
+  answered, for the same logical action (§4's binding: Story version, action,
   intended target, arguments).
-- A **new or different** operator requirement — because policy changed and a gate
-  that did not previously apply now does — is not satisfied by that decision, and
-  the action returns to gate 2 for it. The approval is consumed for what it
-  answered, not for what it never saw.
+- **If the set of operator-requiring reasons is no longer identical to the set
+  gate 1 recorded, the action terminates as stale**, and a fresh action is
+  required. It does not return to gate 2 to collect a second approval.
+
+**The action never accumulates approvals, and a previous version of this section
+let it.** Sending the action back to gate 2 for a newly-appeared requirement would
+oblige the record to identify *which* requirement each decision answered and to
+hold more than one — the discriminator and accumulation the redraft removed,
+rebuilt inside the logical call rather than across attempts. One decision, one
+action; if the question changed, the answer is void rather than supplemented.
+
+Set equality is the deterministic test on purpose. It needs reasons to be
+comparable, but it retains exactly **one** decision and never two, which is the
+distinction that matters. It is also deliberately fail-safe in both directions: a
+policy change that *removes* a requirement makes the action stale too, because
+re-asking is cheap and reasoning about which changes are benign is the
+"compatibility" judgment §4 already refuses.
 
 #### The admission-to-effect interval participates in fencing
 
@@ -691,8 +712,8 @@ Recorded because several of the rules above are stated here and owned elsewhere.
 
 | Item | Owner |
 | --- | --- |
-| The boundary, the three-gate ordering, logical blocking, final revalidation | **This ADR** |
-| The nonterminal state vocabulary (at least operator-waiting and resource-waiting), action and Story states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** (candidate 13) |
+| The boundary, the three-gate ordering, logical blocking, one decision per action, final revalidation, and the Story's `awaiting_resolution` state | **This ADR** |
+| The tool call's nonterminal state vocabulary (at least operator-waiting and resource-waiting), action states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** (candidate 13) |
 | Amendment and cancellation invalidating pending actions and grants | **A5** (ADR 0019 amendment) |
 | Watchdog policy for the waiting states; the additive migration that adds them; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
 | Which policies exist, their risks, and which approval scopes each gate exposes | **Candidate 12** |
