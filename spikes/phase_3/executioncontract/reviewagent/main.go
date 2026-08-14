@@ -18,6 +18,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"maestro-spike/phase3/executioncontract/contract"
@@ -46,6 +47,9 @@ type agent struct {
 	attach  chan contract.AttachAck
 	cancel  chan contract.Cancel
 	readErr chan error
+
+	mu           sync.Mutex
+	ackedThrough uint64
 
 	cancelled bool
 }
@@ -173,6 +177,18 @@ func (a *agent) readLoop(rd *contract.Reader) {
 			if c, derr := contract.Decode[contract.Cancel](env); derr == nil {
 				a.cancel <- c
 			}
+		case contract.TypeAck:
+			// The sender's release signal. Everything at or below Through is
+			// durably committed; anything above it this runtime must be
+			// prepared to replay, which is what makes delivery at-least-once
+			// rather than merely deduplicated.
+			if k, derr := contract.Decode[contract.Ack](env); derr == nil {
+				a.mu.Lock()
+				if k.Through > a.ackedThrough {
+					a.ackedThrough = k.Through
+				}
+				a.mu.Unlock()
+			}
 		}
 	}
 }
@@ -287,6 +303,39 @@ func (a *agent) work() error {
 		msg := contract.Activity{Message: "this message is delivered twice"}
 		_ = a.send(contract.TypeActivity, msg)
 		_ = a.w.Repeat(a.inv.ID(), a.epoch, contract.TypeActivity, msg)
+
+	case "replay_prior_epoch":
+		// A restarted runtime replaying an event it emitted under the PREVIOUS
+		// incarnation and never saw acknowledged. The receiver must recognise
+		// it against that epoch's durable watermark -- an in-memory watermark
+		// would have been reset by the restart and would count it twice.
+		_ = a.w.Send(a.inv.ID(), a.epoch-1, contract.TypeUsage, contract.Usage{
+			CallRef: "call-1", InputTokens: 10, OutputTokens: 5,
+			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
+		})
+
+	case "bad_epoch":
+		// An epoch ahead of the active binding is a protocol violation: it
+		// claims an incarnation the Orchestrator has not issued.
+		_ = a.w.Send(a.inv.ID(), a.epoch+7, contract.TypeActivity,
+			contract.Activity{Message: "from an incarnation that does not exist"})
+		time.Sleep(2 * time.Second)
+		return nil
+
+	case "unknown_type":
+		// A message type this build does not implement. Ignoring it lets a
+		// runtime speaking a different contract look healthy while its work is
+		// silently dropped.
+		_ = a.send("invent_a_type", map[string]any{"anything": true})
+		time.Sleep(2 * time.Second)
+		return nil
+
+	case "malformed_usage":
+		// A known type with a body that violates its own contract: usage with
+		// no call reference joins to nothing.
+		_ = a.send(contract.TypeUsage, contract.Usage{InputTokens: 1})
+		time.Sleep(2 * time.Second)
+		return nil
 	}
 
 	_ = a.send(contract.TypeHeartbeat, contract.Heartbeat{Phase: "reading"})
@@ -370,7 +419,7 @@ func (a *agent) work() error {
 			"no candidate changes to review"))
 	}
 
-	if a.mode == "escalate" {
+	if a.mode == "escalate" || a.mode == "escalate_defiant" {
 		// An action whose gate requires an operator. Headless, this settles the
 		// action TERMINALLY as blocked and blocks the Story immediately
 		// (ADR 0030 §4); nothing will ever answer it.
@@ -379,6 +428,15 @@ func (a *agent) work() error {
 			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
 		}
 		if res.Outcome == contract.OutcomeBlocked {
+			if a.mode == "escalate_defiant" {
+				// A runtime that does NOT stop when told its Story is blocked.
+				// The Orchestrator must terminate it rather than waiting for a
+				// courtesy exit, or a blocked Story keeps burning model calls.
+				for {
+					_ = a.send(contract.TypeHeartbeat, contract.Heartbeat{Phase: "ignoring the block"})
+					time.Sleep(150 * time.Millisecond)
+				}
+			}
 			// The caller performs no further LLM turns and issues no further
 			// actions. It stops WITHOUT a terminal event: the Story's state is
 			// not the agent's to declare, and `blocked` is composed by the

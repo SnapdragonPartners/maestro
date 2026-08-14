@@ -29,8 +29,8 @@ directory and spawns it once per scenario.
 `reviewagent` is a **real external process** that speaks the contract over
 stdin and stdout. A4 is explicit that an in-process fake or an echo fixture does
 not discharge it, so every wire scenario spawns a process and exchanges
-newline-delimited JSON with it. Twenty-four of the thirty-three claims do; the
-remaining nine exercise boundary and schema properties the wire scenarios depend
+newline-delimited JSON with it. Twenty-nine of the forty-two claims do; the
+remaining thirteen exercise boundary and schema properties the wire scenarios depend
 on but cannot isolate, and are labelled separately so nothing there reads as
 evidence about the wire.
 
@@ -84,7 +84,7 @@ permanently is a Phase 3 decision.**
 
 ## Mutation harness
 
-`go run ./mutate` restores fourteen defects, one per protected property, and
+`go run ./mutate` restores twenty-three defects, one per protected property, and
 requires each to falsify its named claim **for the named reason**. A compiler
 failure, an `ERROR`, or a failure at a neighbouring guard is not a killed
 mutation.

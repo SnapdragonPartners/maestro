@@ -49,6 +49,10 @@ type Outcome struct {
 	// reporting its own end. Every forced path owes a positive fence receipt.
 	Forced       bool
 	FenceReceipt FenceReceipt
+	// ActionsDrained reports whether every admitted action settled before the
+	// fence was taken (ADR 0030 §5). OutstandingActions is how many did not.
+	ActionsDrained     bool
+	OutstandingActions int
 
 	Events     []string
 	Usage      []contract.Usage
@@ -126,6 +130,13 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 
 	defer func() {
 		_ = stdin.Close()
+		// Cancel BEFORE waiting. Deferred calls run last-in-first-out, so a
+		// `defer cancelRun()` registered earlier runs after this one -- meaning
+		// Wait would block on a process this function has already decided to
+		// stop. An adapter that ignores its closed stdin (the `hang` shape)
+		// then spins until the caller's own context expires, which is how a
+		// 400ms timeout scenario came to take a minute.
+		cancelRun()
 		_ = cmd.Wait()
 	}()
 
@@ -170,15 +181,16 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	started := time.Now()
 	var (
 		cancelRequested bool
+		blockedStop     bool
 		cancelReason    contract.CancellationReason
 		observedTerm    *contract.TerminalResult
 	)
 
-	// Event identity (§4): (invocation, epoch, seq). A repeat is dropped,
-	// because at-least-once delivery cannot be idempotent without a checked
-	// identity -- and a sequence number alone restarts at 1 with every
-	// incarnation, so two different messages would share one identity.
-	seen := map[uint64]uint64{}
+	// Event identity (§4) is (execution, epoch, seq), and the deduplication
+	// state lives on the recorder rather than here, so it survives a restart.
+	// An in-memory watermark would let a replayed usage event be counted twice
+	// after a crash.
+	negotiated := ack.Selected
 
 	var deadline <-chan time.Time
 	if inv.Config.Budgets.MaxWallClockMS > 0 {
@@ -210,9 +222,32 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	actionDone := make(chan contract.ActionResult, 16)
 	var graceExpiry <-chan time.Time
 
+	drainWindow := r.CancelGrace
+	if drainWindow == 0 {
+		drainWindow = 2 * time.Second
+	}
+
 	forcedTerminal := func(res contract.TerminalResult) Outcome {
 		out.Forced = true
+
+		// ADR 0030 §5 before ADR 0029 §7: admitted ACTIONS are settled before
+		// the resource domain is fenced. Fencing an Incubator says nothing
+		// about an in-flight data-plane write or forge push, which land outside
+		// every resource domain -- so a domain receipt alone would report
+		// `terminated` while a mutation was still committing.
+		drained, outstanding := r.Boundary.DrainActions(id, drainWindow)
+		out.ActionsDrained = drained
+		out.OutstandingActions = len(outstanding)
+
 		r.fenceAll(inv, &out)
+		if !drained {
+			// An undrained action means no positive receipt, whatever the
+			// domain reported. Reporting success anyway is best-effort fencing
+			// through a different door.
+			out.FenceReceipt = FenceUnconfirmed
+			out.Events = append(out.Events, fmt.Sprintf(
+				"drain incomplete: %d action(s) unsettled", len(outstanding)))
+		}
 		out.Result = res
 		observedTerm = &res
 		return r.finish(out)
@@ -259,10 +294,31 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 			// The grace period expired, so the domain is fenced. This is the
 			// only thing that actually stops a process -- revoking
 			// authorization does not, because a running process needs none.
+			if blockedStop {
+				return forcedTerminal(contract.Blocked(
+					r.Boundary.BlockedRequirements(id),
+					"a required decision has no responder; execution stopped and fenced"))
+			}
 			return forcedTerminal(contract.Cancelled(cancelReason, "cancelled; fenced after grace period"))
 
 		case res := <-actionDone:
 			_ = w.Send(id, inv.Bindings.Epoch, contract.TypeActionResult, res)
+
+			if res.Outcome == contract.OutcomeBlocked && !blockedStop {
+				// The Orchestrator knows the Story is blocked NOW. Waiting for
+				// the adapter to close its own stream would leave a
+				// non-cooperative runtime free to keep making model calls and
+				// doing unmediated in-resource work under a Story that is
+				// already terminal. So the stop is driven from here, on the
+				// same cooperative-then-fenced path as any other forced stop.
+				blockedStop = true
+				r.Boundary.CloseAdmission(id)
+				_ = w.Send(id, inv.Bindings.Epoch, contract.TypeCancel, contract.Cancel{
+					Reason:     "blocked",
+					DeadlineMS: drainWindow.Milliseconds(),
+				})
+				graceExpiry = time.After(drainWindow)
+			}
 
 		case it, ok := <-items:
 			if !ok {
@@ -283,14 +339,36 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				return r.finish(out)
 			}
 
-			// Event identity, checked before anything acts on the message.
-			if last, ok := seen[it.env.Epoch]; ok && it.env.Seq <= last {
+			// §8: several protocol violations are specified as fatal, so the
+			// envelope is VALIDATED before anything acts on it. A first version
+			// checked only the sequence number and silently ignored the rest,
+			// which made the specification's "fatal" list decorative.
+			if verr := r.validateEnvelope(inv, negotiated, it.env); verr != nil {
+				out.Result = contract.Failed(contract.ClassNonRetryableAgent, verr.Error())
+				out.Events = append(out.Events, "protocol-violation: "+verr.Error())
+				return r.finish(out)
+			}
+
+			// Event identity, against the DURABLE watermark.
+			if it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch) {
 				out.DuplicateEvents++
+				// A duplicate is still acknowledged: the sender must be able to
+				// release it, and re-acknowledging a committed event is exactly
+				// what makes a lost ack recoverable.
+				_ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
+					contract.Ack{Epoch: it.env.Epoch, Through: it.env.Seq})
 				continue
 			}
-			seen[it.env.Epoch] = it.env.Seq
 
-			if done := r.handleEvent(inv, w, it.env, &out, actionDone); done {
+			done := r.handleEvent(inv, w, it.env, &out, actionDone)
+
+			// Advance and acknowledge only AFTER the event's effect is recorded,
+			// so an acknowledgement never promises more than was committed.
+			r.Boundary.Recorder.Advance(id, it.env.Epoch, it.env.Seq)
+			_ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
+				contract.Ack{Epoch: it.env.Epoch, Through: it.env.Seq})
+
+			if done {
 				// The runtime claimed a terminal result, and a claim is all it
 				// is (§4). Where the Orchestrator observed something the claim
 				// contradicts, the observation wins and the claim is RETAINED
@@ -339,8 +417,24 @@ func (r *Runtime) onStreamEnd(inv *contract.Invocation, out *Outcome, observed *
 		// boundary's own state, because a gate the agent cannot see is not the
 		// agent's to report. This is the one execution whose terminal result
 		// arrives without a terminal event.
-		reqs := r.Boundary.BlockedRequirements(id)
-		out.Result = contract.Blocked(reqs, "a required decision has no responder in this configuration")
+		//
+		// It is still a FORCED stop and owes the same discipline: the adapter
+		// exiting is not evidence that the admitted actions settled or that the
+		// resource domain is fenced.
+		out.Forced = true
+		window := r.CancelGrace
+		if window == 0 {
+			window = 2 * time.Second
+		}
+		drained, outstanding := r.Boundary.DrainActions(id, window)
+		out.ActionsDrained = drained
+		out.OutstandingActions = len(outstanding)
+		r.fenceAll(inv, out)
+		if !drained {
+			out.FenceReceipt = FenceUnconfirmed
+		}
+		out.Result = contract.Blocked(r.Boundary.BlockedRequirements(id),
+			"a required decision has no responder in this configuration")
 		return r.finish(*out)
 	}
 	out.Result = contract.Failed(contract.ClassRetryableInfrastructure,
@@ -427,6 +521,89 @@ func (r *Runtime) handleEvent(
 	default:
 		return false
 	}
+}
+
+// knownAgentTypes is the closed set of agent-to-host message types. An unknown
+// type is a protocol violation, not something to ignore: silently dropping it
+// means a runtime speaking a contract this build does not implement looks
+// healthy right up to the point its work is lost.
+//
+//nolint:gochecknoglobals // a fixed vocabulary
+var knownAgentTypes = map[string]bool{
+	contract.TypeStarted: true, contract.TypeHeartbeat: true, contract.TypeActivity: true,
+	contract.TypeActionRequest: true, contract.TypeUsage: true, contract.TypeProvenance: true,
+	contract.TypeWarning: true, contract.TypeTerminal: true, contract.TypeAttach: true,
+}
+
+// validateEnvelope enforces the framing invariants §8 calls fatal.
+func (r *Runtime) validateEnvelope(inv *contract.Invocation, negotiated string, env contract.Envelope) error {
+	if env.V != negotiated {
+		return fmt.Errorf("envelope version %q is not the negotiated %q", env.V, negotiated)
+	}
+	if env.Inv != inv.ID() {
+		return fmt.Errorf("envelope names execution %q, not %q", env.Inv, inv.ID())
+	}
+	// An epoch from the FUTURE is a violation; an older one is not. A replayed
+	// event from a previous incarnation legitimately carries the epoch it was
+	// first emitted under, and refusing it would make the replay obligation
+	// at-least-once delivery depends on impossible to honour. Older epochs are
+	// admitted and deduplicated against that epoch's own watermark.
+	if env.Epoch > inv.Bindings.Epoch {
+		return fmt.Errorf("envelope carries epoch %d, ahead of the active %d",
+			env.Epoch, inv.Bindings.Epoch)
+	}
+	if !knownAgentTypes[env.Type] {
+		return fmt.Errorf("unknown message type %q", env.Type)
+	}
+	if err := validateBody(env); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateBody rejects a malformed body for a KNOWN type. Decoding it and
+// shrugging on error -- which a first version did throughout handleEvent -- turns
+// a corrupt usage report into a silently dropped one.
+func validateBody(env contract.Envelope) error {
+	var err error
+	switch env.Type {
+	case contract.TypeStarted:
+		_, err = contract.Decode[contract.Started](env)
+	case contract.TypeHeartbeat:
+		_, err = contract.Decode[contract.Heartbeat](env)
+	case contract.TypeActivity:
+		_, err = contract.Decode[contract.Activity](env)
+	case contract.TypeWarning:
+		_, err = contract.Decode[contract.Warning](env)
+	case contract.TypeActionRequest:
+		var req contract.ActionRequest
+		if req, err = contract.Decode[contract.ActionRequest](env); err == nil && req.Correlation == "" {
+			return errors.New("action_request carries no correlation")
+		}
+	case contract.TypeUsage:
+		var u contract.Usage
+		if u, err = contract.Decode[contract.Usage](env); err == nil && u.CallRef == "" {
+			return errors.New("usage carries no call reference, so it joins to nothing")
+		}
+	case contract.TypeProvenance:
+		var p contract.Provenance
+		if p, err = contract.Decode[contract.Provenance](env); err == nil {
+			if p.CallRef == "" {
+				return errors.New("provenance carries no call reference")
+			}
+			if p.Closure == contract.ClosureClosed && len(p.Bindings) == 0 {
+				return errors.New("provenance claims closed with no bindings, which is not provenance")
+			}
+		}
+	case contract.TypeAttach:
+		_, err = contract.Decode[contract.Attach](env)
+	case contract.TypeTerminal:
+		// Validated in handleEvent, where an invalid RESULT (as opposed to an
+		// unparseable body) becomes the terminal outcome rather than a framing
+		// error.
+		return nil
+	}
+	return err
 }
 
 func (r *Runtime) fenceAll(inv *contract.Invocation, out *Outcome) {

@@ -21,7 +21,21 @@ const (
 	TypeActionResult = "action_result" // the boundary's answer to an action_request
 	TypeCancel       = "cancel"        // cooperative cancellation with a deadline (§6)
 	TypeAttachAck    = "attach_ack"    // state of this execution's outstanding actions
+	TypeAck          = "ack"           // durable-receipt watermark for agent events (§4)
 )
+
+// Ack advances the receiver's durable watermark for an epoch. Everything at or
+// below Through has been committed by the Orchestrator; the sender may release
+// it. Anything above it the sender MUST be prepared to replay.
+//
+// Identity alone makes a duplicate harmless; it does not make delivery
+// at-least-once. Without an acknowledgement there is nothing telling the sender
+// what to retain, and a crash between emission and commit loses the event
+// silently.
+type Ack struct {
+	Epoch   uint64 `json:"epoch"`
+	Through uint64 `json:"through"`
+}
 
 // Message types, agent -> host.
 const (
@@ -284,9 +298,18 @@ type Activity struct {
 	Message string `json:"message"`
 }
 
-// ActionRequest is a mediated action. Correlation identifies the LOGICAL
-// action; the boundary's reply carries the attempt identity that owns ADR 0030
-// §3's at-most-once semantics.
+// ActionRequest is a mediated action.
+//
+// Correlation is the caller-supplied idempotency key -- what
+// [ADR 0030](0030-tool-execution-policy-hook.md) §3 calls "attempt identity" on
+// the request. It is renamed here only because the boundary's own record needs
+// a primary key of its own, which the reply carries as AttemptID; the semantics
+// ADR 0030 attaches to it are unchanged.
+//
+// The key alone does NOT identify the logical action. The boundary binds it to
+// the action identity and a digest of the substituted arguments, and refuses a
+// reuse that does not match both -- otherwise one correlation could replay the
+// result of a different action, or of the same action with different arguments.
 type ActionRequest struct {
 	Correlation string          `json:"correlation"`
 	Action      ActionID        `json:"action"`

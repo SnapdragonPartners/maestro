@@ -147,8 +147,8 @@ func mutations() []mutation {
 		{
 			name:  "event-identity-not-checked",
 			file:  "host/runtime.go",
-			old:   "\t\t\tif last, ok := seen[it.env.Epoch]; ok && it.env.Seq <= last {",
-			new:   "\t\t\tif last, ok := seen[it.env.Epoch]; ok && it.env.Seq <= last && false {",
+			old:   "\t\t\tif it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch) {",
+			new:   "\t\t\tif it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch) && false {",
 			claim: "events/duplicate-rejected-by-identity",
 			want:  "a replayed envelope was accepted",
 			why:   "at-least-once delivery cannot be idempotent without a checked identity, and a sequence number alone restarts at 1 with every incarnation",
@@ -170,6 +170,87 @@ func mutations() []mutation {
 			claim: "capability/denial-is-data",
 			want:  "no denial was recorded",
 			why:   "admission is the gate an empty policy must not be able to disable",
+		},
+		{
+			name:  "correlation-not-bound-to-its-action",
+			file:  "host/boundary.go",
+			old:   "\t\tif existing.Action != req.Action {",
+			new:   "\t\tif false && existing.Action != req.Action {",
+			claim: "boundary/correlation-is-bound",
+			want:  "reused for a different action returned",
+			why:   "a key that is not bound to its logical action replays the result of a different one, and the boundary reports success for work it never did",
+		},
+		{
+			name:  "correlation-not-bound-to-its-arguments",
+			file:  "host/boundary.go",
+			old:   "\t\tif existing.ArgsDigest != digest {",
+			new:   "\t\tif false && existing.ArgsDigest != digest {",
+			claim: "boundary/correlation-is-bound",
+			want:  "different arguments returned",
+			why:   "same action, different arguments, same key: the second call receives a result computed for the first",
+		},
+		{
+			name:  "admission-closure-not-linearized",
+			file:  "host/boundary.go",
+			old:   "func (b *Boundary) CloseAdmission(invocationID string) {\n\tb.admitMu.Lock()\n\tdefer b.admitMu.Unlock()",
+			new:   "func (b *Boundary) CloseAdmission(invocationID string) {",
+			claim: "boundary/admission-closure-linearizes",
+			want:  "returned while a registration was in flight",
+			why:   "closure that does not linearize with registration leaves a window in which an attempt joins the set AFTER the drain closed it",
+		},
+		{
+			name:  "wait-persists-no-executable-request",
+			file:  "host/boundary.go",
+			old:   "\t\tArgsDigest:  digest,\n\t\tRequest:     req,",
+			new:   "\t\tArgsDigest:  digest,",
+			claim: "reconcile/operator-wait-resumes",
+			want:  "carries no executable request",
+			why:   "preserving the wait ROW is not recovery: without the request the lost continuation cannot be rebuilt and the attempt is stuck forever",
+		},
+		{
+			name:  "watermark-does-not-outlive-the-process",
+			file:  "host/boundary.go",
+			old:   "\treturn r.watermarks[fmt.Sprintf(\"%s\\x00%d\", invocation, epoch)]",
+			new:   "\t_ = invocation\n\t_ = epoch\n\treturn 0",
+			claim: "events/prior-epoch-replay",
+			want:  "replayed prior-epoch event was accepted",
+			why:   "in-memory deduplication is reset by the restart it exists to survive, so a replayed usage event is counted twice",
+		},
+		{
+			name:  "no-drain-before-the-fence",
+			file:  "host/runtime.go",
+			old:   "\t\tif !drained {\n\t\t\t// An undrained action means no positive receipt, whatever the",
+			new:   "\t\tif false {\n\t\t\t// An undrained action means no positive receipt, whatever the",
+			claim: "cancel/undrained-action",
+			want:  "positive receipt was issued with",
+			why:   "ADR 0030 §5: fencing the execution resource says nothing about an in-flight data-plane write or forge push, which land outside every resource domain",
+		},
+		{
+			name:  "headless-block-waits-for-a-courtesy-exit",
+			file:  "host/runtime.go",
+			old:   "\t\t\tif res.Outcome == contract.OutcomeBlocked && !blockedStop {",
+			new:   "\t\t\tif false && res.Outcome == contract.OutcomeBlocked && !blockedStop {",
+			claim: "gate/headless-block-is-orchestrator-driven",
+			want:  "status timed_out",
+			why:   "a non-cooperative runtime keeps making model calls and doing unmediated work under a Story that is already terminally blocked",
+		},
+		{
+			name:  "envelope-not-validated",
+			file:  "host/runtime.go",
+			old:   "\tif !knownAgentTypes[env.Type] {",
+			new:   "\tif false && !knownAgentTypes[env.Type] {",
+			claim: "protocol/unknown-message-type-is-fatal",
+			want:  "the violation was not detected",
+			why:   "ignoring an unimplemented type lets a runtime speaking a different contract look healthy while its work is silently dropped",
+		},
+		{
+			name:  "malformed-known-body-ignored",
+			file:  "host/runtime.go",
+			old:   "\t\tif u, err = contract.Decode[contract.Usage](env); err == nil && u.CallRef == \"\" {",
+			new:   "\t\tif u, err = contract.Decode[contract.Usage](env); err == nil && u.CallRef == \"never\" {",
+			claim: "protocol/malformed-known-body-is-fatal",
+			want:  "the malformed body was not detected",
+			why:   "a usage record that joins to nothing is unattributable spend recorded as though it were attributed",
 		},
 	}
 }
@@ -286,6 +367,14 @@ func apply(m mutation, originals map[string][]byte, digests map[string]string) r
 		return result{m: m, detail: "claim " + m.claim + " still passed"}
 	}
 
+	// A non-green run is not yet evidence. The suite must have RUN to its own
+	// summary: a mutant that makes the suite hang until the timeout, or crash
+	// before it reports, kills nothing and proves nothing.
+	if !suiteRan(out) {
+		return result{m: m, detail: "INCONCLUSIVE: the suite did not reach its summary " +
+			"(hang, crash, or timeout) -- nothing is established"}
+	}
+
 	// It failed -- but it must have failed AS the named claim, FALSIFIED rather
 	// than ERROR, and for the stated reason.
 	line := claimLine(out, m.claim)
@@ -306,13 +395,28 @@ func apply(m mutation, originals map[string][]byte, digests map[string]string) r
 
 // runSuite runs the conformance suite, optionally filtered, and reports whether
 // every claim it ran was PROVEN.
+//
+// Green requires BOTH the expected summary and a clean process exit. A first
+// version discarded the subprocess error and concluded from the output text
+// alone, so a suite that printed the summary and then hung would pass the
+// positive control and every mutation check -- the harness asserting a result it
+// had not actually obtained. That is the "mutation harnesses lie" failure in its
+// own harness.
 func runSuite(only string) (string, bool) {
 	args := []string{"run", "."}
 	if only != "" {
 		args = append(args, "-run", only)
 	}
-	out, _ := run(5*time.Minute, "go", args...)
-	return out, strings.Contains(out, "0 FALSIFIED, 0 ERROR")
+	out, err := run(5*time.Minute, "go", args...)
+	summaryOK := strings.Contains(out, "0 FALSIFIED, 0 ERROR")
+	return out, summaryOK && err == nil
+}
+
+// suiteRan reports whether the suite reached its own summary line at all. A run
+// killed before printing it establishes nothing, and must not be read as a
+// mutation kill.
+func suiteRan(out string) bool {
+	return strings.Contains(out, " claims: ")
 }
 
 func claimLine(out, claim string) string {

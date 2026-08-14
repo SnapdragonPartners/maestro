@@ -7,6 +7,8 @@
 package host
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -52,6 +54,16 @@ type Attempt struct {
 	// validate it; a resource wait that cannot say what it waits for is not
 	// recoverable, only stuck.
 	ResourceOp string
+
+	// ArgsDigest binds the correlation to the arguments it was opened with.
+	// Without it, reusing a correlation with different arguments replays a
+	// result computed for something else.
+	ArgsDigest string
+	// Request is the persisted, substituted request. It is what makes an
+	// operator wait RESTARTABLE: after an Orchestrator restart the in-memory
+	// continuation is gone, and a wait row that cannot reconstruct its own
+	// gate-3 execution is preserved but not recoverable.
+	Request contract.ActionRequest
 }
 
 // Recorder stands in for the persistence seam.
@@ -64,41 +76,78 @@ type Recorder struct {
 	// makes the semantics at-most-once.
 	byCorrelation map[string]*Attempt
 	nextID        int
+	// watermarks is the receiver's durable deduplication state, keyed by
+	// (invocation, epoch). See Watermark.
+	watermarks map[string]uint64
 }
 
 // NewRecorder builds an empty recorder.
 func NewRecorder() *Recorder {
-	return &Recorder{byCorrelation: map[string]*Attempt{}}
+	return &Recorder{
+		byCorrelation: map[string]*Attempt{},
+		watermarks:    map[string]uint64{},
+	}
 }
 
 func correlationKey(invocation, correlation string) string {
 	return invocation + "\x00" + correlation
 }
 
+// ErrCorrelationMismatch reports a correlation reused for a different logical
+// action. It is a caller defect, not a retry.
+type ErrCorrelationMismatch struct{ Detail string }
+
+func (e *ErrCorrelationMismatch) Error() string { return "correlation mismatch: " + e.Detail }
+
+// ArgsDigest is the binding a correlation is checked against. It stands in for
+// ADR 0030 §3's digest over the SUBSTITUTED input -- the spike has no secrets to
+// substitute, so it digests the arguments as given and the distinction is
+// recorded rather than implemented.
+func ArgsDigest(args json.RawMessage) string {
+	sum := sha256.Sum256(args)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // Open records the intent BEFORE the effect, per ADR 0030 §8 -- including for
 // reads, because releasing data is the security-relevant effect of a retrieval.
-// If an attempt already exists for this correlation it is returned unchanged
-// and `fresh` is false: a retry of the same logical action is not a new action.
-func (r *Recorder) Open(invocation, correlation string, action contract.ActionID) (att *Attempt, fresh bool) {
+//
+// A correlation is bound to its LOGICAL ACTION: the action identity and the
+// digest of its substituted arguments. Reuse matching both is a retry and
+// returns the existing attempt; reuse matching neither is a defect and is
+// refused. A first version keyed on the correlation alone, so one key could
+// replay the result of a different action entirely.
+func (r *Recorder) Open(invocation string, req contract.ActionRequest) (att *Attempt, fresh bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	key := correlationKey(invocation, correlation)
+	digest := ArgsDigest(req.Arguments)
+	key := correlationKey(invocation, req.Correlation)
 	if existing, ok := r.byCorrelation[key]; ok {
-		return existing, false
+		if existing.Action != req.Action {
+			return nil, false, &ErrCorrelationMismatch{Detail: fmt.Sprintf(
+				"%q was opened for %s and is being reused for %s",
+				req.Correlation, existing.Action, req.Action)}
+		}
+		if existing.ArgsDigest != digest {
+			return nil, false, &ErrCorrelationMismatch{Detail: fmt.Sprintf(
+				"%q was opened for %s with different arguments", req.Correlation, existing.Action)}
+		}
+		return existing, false, nil
 	}
 	r.nextID++
 	att = &Attempt{
 		ID:          fmt.Sprintf("attempt-%03d", r.nextID),
 		Invocation:  invocation,
-		Correlation: correlation,
-		Action:      action,
+		Correlation: req.Correlation,
+		Action:      req.Action,
 		State:       StateOpen,
 		Transitions: []AttemptState{StateOpen},
+		ArgsDigest:  digest,
+		Request:     req,
 	}
 	r.attempts = append(r.attempts, att)
 	r.byCorrelation[key] = att
-	return att, true
+	return att, true, nil
 }
 
 // Transition records a durable nonterminal state change.
@@ -217,6 +266,29 @@ func (r *Recorder) ForInvocation(invocation string) []*Attempt {
 	return out
 }
 
+// Watermark returns the highest event sequence durably committed for an epoch.
+//
+// It lives on the recorder because the receiver's deduplication state must
+// OUTLIVE the process: in-memory dedup means a crash lets a replayed usage
+// event be counted twice, which is a corrupted cost figure rather than a
+// harmless duplicate.
+func (r *Recorder) Watermark(invocation string, epoch uint64) uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.watermarks[fmt.Sprintf("%s\x00%d", invocation, epoch)]
+}
+
+// Advance commits the watermark. Called only after the event's effect is
+// durable, so an acknowledgement never promises more than was recorded.
+func (r *Recorder) Advance(invocation string, epoch, seq uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%s\x00%d", invocation, epoch)
+	if seq > r.watermarks[key] {
+		r.watermarks[key] = seq
+	}
+}
+
 // Lookup finds an attempt by correlation.
 func (r *Recorder) Lookup(invocation, correlation string) (*Attempt, bool) {
 	r.mu.Lock()
@@ -294,6 +366,13 @@ type Boundary struct {
 	// set the holder is still adding to.
 	admissionClosed     map[string]bool
 	InvariantViolations []string
+
+	// admitMu linearizes admission closure against attempt registration. Taken
+	// before mu, always, so the ordering cannot invert.
+	admitMu sync.Mutex
+
+	// InRegistration is a test seam; see HookInRegistration.
+	InRegistration HookInRegistration
 }
 
 // NewBoundary builds a boundary with the MVP default-allow hook.
@@ -313,10 +392,90 @@ func NewBoundary(rec *Recorder) *Boundary {
 // CloseAdmission refuses further agent-initiated actions for an invocation.
 // Already-admitted attempts may reach their commit point; nothing new joins
 // them.
+//
+// It takes admitMu, which is the same lock attempt registration takes, so the
+// two LINEARIZE. A first version read the closed flag and registered the
+// attempt under different locks, leaving a window in which an attempt could be
+// registered after closure and admitted anyway -- the drain would then be
+// chasing a set that grew after it was closed, which is the precise failure
+// ADR 0029 §7 step 2's ordering exists to prevent.
 func (b *Boundary) CloseAdmission(invocationID string) {
+	b.admitMu.Lock()
+	defer b.admitMu.Unlock()
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.admissionClosed[invocationID] = true
+}
+
+// HookInRegistration runs inside the registration critical section, if set. It
+// exists so the linearization can be tested DETERMINISTICALLY rather than by
+// hoping a race detector trips: a claim can hold a registration open and check
+// that CloseAdmission cannot return while it is in flight.
+//
+//nolint:revive // deliberately a test seam, and named as one
+type HookInRegistration func()
+
+// register atomically refuses-if-closed and opens the attempt.
+func (b *Boundary) register(id string, req contract.ActionRequest) (*Attempt, bool, error) {
+	b.admitMu.Lock()
+	defer b.admitMu.Unlock()
+
+	if b.InRegistration != nil {
+		b.InRegistration()
+	}
+
+	b.mu.Lock()
+	closed := b.admissionClosed[id]
+	b.mu.Unlock()
+
+	att, fresh, err := b.Recorder.Open(id, req)
+	if err != nil {
+		return nil, false, err
+	}
+	if closed && fresh {
+		// Registered and immediately settled, so it is never in the unsettled
+		// set a drain would have to wait on.
+		b.Recorder.Settle(att, contract.OutcomeDenied, admissionClosedReason)
+		return att, false, errAdmissionClosed
+	}
+	return att, fresh, nil
+}
+
+const admissionClosedReason = "admission closed: cancellation in progress"
+
+//nolint:gochecknoglobals // sentinel
+var errAdmissionClosed = &ErrCorrelationMismatch{Detail: admissionClosedReason}
+
+// DrainActions waits until every registered attempt for an execution has
+// settled, and reports whether it succeeded within the window.
+//
+// ADR 0030 §5 requires this: `Fence()` may return a positive receipt only when
+// every attempt admitted against the generation and not yet settled has been
+// drained short of its commit point, conditionally committed, or confirmed
+// inside the fenced domain. Fencing the execution RESOURCE does not settle an
+// Orchestrator-side mutation -- a data-plane write or a forge push lands
+// outside any resource domain, so the domain receipt says nothing about it.
+//
+// A drain that does not settle in time yields no positive receipt, which is
+// ADR 0029 §7's own rule: making the unsettled case cheap by reporting success
+// anyway would reintroduce best-effort fencing through this door.
+func (b *Boundary) DrainActions(invocationID string, within time.Duration) (drained bool, outstanding []*Attempt) {
+	deadline := time.Now().Add(within)
+	for {
+		outstanding = nil
+		for _, a := range b.Recorder.ForInvocation(invocationID) {
+			if b.Recorder.State(a) != StateSettled {
+				outstanding = append(outstanding, a)
+			}
+		}
+		if len(outstanding) == 0 {
+			return true, nil
+		}
+		if time.Now().After(deadline) {
+			return false, outstanding
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // AdmissionClosed reports whether admission has been closed.
@@ -355,7 +514,6 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 
 	b.mu.Lock()
 	isBlocked := b.blocked[id]
-	closed := b.admissionClosed[id]
 	b.mu.Unlock()
 
 	if isBlocked {
@@ -370,7 +528,18 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 		}
 	}
 
-	att, fresh := b.Recorder.Open(id, req.Correlation, req.Action)
+	// Registration and admission closure linearize (see register).
+	att, fresh, err := b.register(id, req)
+	if err != nil {
+		if att != nil {
+			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
+				Outcome: contract.OutcomeDenied, Reason: admissionClosedReason}
+		}
+		// A correlation reused for a different logical action is a caller
+		// defect, and refusing it is the whole point of the binding.
+		return contract.ActionResult{Correlation: req.Correlation,
+			Outcome: contract.OutcomeDenied, Reason: err.Error()}
+	}
 	if !fresh {
 		// A duplicate request for a logical action that already exists never
 		// re-enters the gates. Only a SETTLED attempt may replay its result; an
@@ -388,13 +557,6 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 			Reason:      "replayed: " + att.Reason,
 			Requirement: att.Requirement,
 		}
-	}
-
-	if closed {
-		const why = "admission closed: cancellation in progress"
-		b.Recorder.Settle(att, contract.OutcomeDenied, why)
-		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
-			Outcome: contract.OutcomeDenied, Reason: why}
 	}
 
 	// ---- Gate 1: admission, then policy ----
@@ -441,14 +603,44 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 		}
 
 		b.Recorder.Transition(att, StateOperatorWaiting)
+		return b.completeAction(inv, att, true)
+
+	case DecisionAllow:
+		// fall through
+	}
+
+	return b.completeAction(inv, att, false)
+}
+
+// ResumeWait re-drives a preserved wait after an Orchestrator restart, from the
+// attempt's own persisted request.
+//
+// Preserving the wait ROW is not recovery. The in-memory continuation that was
+// going to run gate 3 died with the process, so without this the attempt is
+// preserved and permanently stuck -- which is what the first version's
+// conformance claim actually demonstrated, since its goroutine was still alive.
+// Recovery means the record carries enough to execute the rest of the action.
+func (b *Boundary) ResumeWait(inv *contract.Invocation, att *Attempt, done chan<- contract.ActionResult) {
+	needOperator := b.Recorder.State(att) == StateOperatorWaiting
+	go func() { done <- b.completeAction(inv, att, needOperator) }()
+}
+
+// completeAction runs gates 2 and 3 for an already-registered attempt. Both the
+// first pass and a post-restart resume go through it, so a resumed action cannot
+// drift from a fresh one.
+func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, needOperator bool) contract.ActionResult {
+	req := att.Request
+
+	if needOperator {
+		requirement := att.Requirement
+		if requirement == nil {
+			requirement = &contract.RequirementRef{GateID: "unnamed", Statement: "an operator is required"}
+		}
 		if b.Operator == nil || !b.Operator(*requirement) {
 			b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied")
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 				Outcome: contract.OutcomeDenied, Reason: "operator denied"}
 		}
-
-	case DecisionAllow:
-		// fall through
 	}
 
 	// ---- Gate 3: resources, revalidation, execution ----

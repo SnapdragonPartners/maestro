@@ -495,6 +495,116 @@ func scenarios() []scenario {
 			},
 		},
 		{
+			name:  "protocol/unknown-message-type-is-fatal",
+			about: "§8 — silently ignoring one lets a runtime look healthy while its work is dropped",
+			mode:  "unknown_type",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				// The mechanism first: the violation must be NAMED. Checking the
+				// status alone would pass on a run that failed for an unrelated
+				// reason, which is exactly what happens when validation is off --
+				// the message is ignored, the adapter exits, and the execution
+				// fails because the transport closed.
+				if !strings.Contains(out.Result.Summary, "unknown message type") {
+					return Falsified, "the violation was not detected; failed instead with: " +
+						out.Result.Summary
+				}
+				if out.Result.FailureClass == nil || *out.Result.FailureClass != contract.ClassNonRetryableAgent {
+					return Falsified, "a protocol violation was not classed non_retryable_agent"
+				}
+				if out.Result.Status != contract.StatusFailed {
+					return Falsified, "status " + string(out.Result.Status)
+				}
+				return Proven, "unknown type refused as a protocol violation"
+			},
+		},
+		{
+			name:  "protocol/malformed-known-body-is-fatal",
+			about: "§8 — decoding and shrugging turns a corrupt report into a dropped one",
+			mode:  "malformed_usage",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if !strings.Contains(out.Result.Summary, "call reference") {
+					return Falsified, "the malformed body was not detected; failed instead with: " +
+						out.Result.Summary
+				}
+				if out.Result.FailureClass == nil || *out.Result.FailureClass != contract.ClassNonRetryableAgent {
+					return Falsified, "a malformed body was not classed non_retryable_agent"
+				}
+				if out.Result.Status != contract.StatusFailed {
+					return Falsified, "status " + string(out.Result.Status)
+				}
+				return Proven, "usage without a call reference refused"
+			},
+		},
+		{
+			name:  "protocol/epoch-ahead-of-binding-is-fatal",
+			about: "§4 — an incarnation the Orchestrator never issued",
+			mode:  "bad_epoch",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusFailed {
+					return Falsified, "a future epoch was accepted: " + string(out.Result.Status)
+				}
+				if !strings.Contains(out.Result.Summary, "ahead of the active") {
+					return Falsified, "failed for the wrong reason: " + out.Result.Summary
+				}
+				return Proven, "an epoch ahead of the binding refused"
+			},
+		},
+		{
+			name:  "cancel/undrained-action-yields-no-positive-receipt",
+			about: "ADR 0030 §5 — fencing a resource says nothing about an Orchestrator-side mutation",
+			setup: func(h *harness, rt *host.Runtime, _ *contract.Invocation) {
+				// The publish action is still mid-flight when the grace expires,
+				// so the drain cannot settle it.
+				h.boundary.ResourceDelay[capPublish.String()] = 5 * time.Second
+				rt.CancelAfter = 200 * time.Millisecond
+				rt.CancelGrace = 300 * time.Millisecond
+			},
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.ActionsDrained {
+					return Errored, "the drain unexpectedly completed; the scenario proved nothing"
+				}
+				if out.OutstandingActions == 0 {
+					return Errored, "no action was left outstanding"
+				}
+				if out.FenceReceipt.Positive() {
+					return Falsified, "a positive receipt was issued with " +
+						itoa(out.OutstandingActions) + " action(s) unsettled"
+				}
+				if out.Result.Status != "" {
+					return Falsified, "a terminal result was recorded: " + string(out.Result.Status)
+				}
+				return Proven, itoa(out.OutstandingActions) +
+					" unsettled action(s) forced an unconfirmed receipt and withheld the result"
+			},
+		},
+		{
+			name:  "gate/headless-block-is-orchestrator-driven",
+			about: "§5 — the Orchestrator stops a blocked execution rather than awaiting a courtesy exit",
+			mode:  "escalate_defiant",
+			setup: func(h *harness, rt *host.Runtime, _ *contract.Invocation) {
+				h.boundary.Policy = requiresOperatorFor(capForge)
+				rt.CancelGrace = 600 * time.Millisecond
+			},
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusBlocked {
+					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				}
+				if !out.Forced {
+					return Falsified, "the stop was not Orchestrator-driven"
+				}
+				if !out.FenceReceipt.Positive() {
+					return Falsified, "recorded without a positive receipt: " + string(out.FenceReceipt)
+				}
+				if out.Claimed != nil {
+					return Falsified, "the agent claimed a terminal result"
+				}
+				if len(out.Result.BlockedOn) == 0 {
+					return Falsified, "no requirement referenced"
+				}
+				return Proven, "a runtime that refused to stop was cancelled, fenced, and recorded blocked"
+			},
+		},
+		{
 			name:  "restart/does-not-reissue-a-settled-action",
 			about: "§6 re-attach across a restart; the Orchestrator enumerates",
 			// Driven by the boundary claim of the same subject, which needs two

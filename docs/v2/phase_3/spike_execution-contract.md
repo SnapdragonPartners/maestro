@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-14"
 status = "draft"
-summary = "Evidence for ADR 0032 from a real external-process agent driven over the local transport: thirty-three claims proven and fourteen mutations killed for their named reason, across two rounds whose second was more valuable than its first. Round one found that reconciliation destroyed the requirement a blocked result must reference, that re-attach over a stdio transport is restart rather than reconnection, that an invalid terminal result is a protocol violation, and that blocked is the Orchestrator's to record. Round two found that four of those fixes were wrong one level down — reconciliation over-corrected into stranding resource waits, derivable correlations are unsound for a nondeterministic runtime, at-most-once covered only settled retries, and closing admission at gate 3 aborted in-flight work instead of draining it — and that the stub had fabricated a provenance record inside the very coverage gap the report declares. Model calls, concurrency accounting, resume, retention and the data plane remain declared uncovered rather than filled."
+summary = "Evidence for ADR 0032 from a real external-process agent driven over the local transport: forty-two claims proven and twenty-three mutations killed for their named reason, across three rounds in which each round mostly found the previous round's fixes wrong one level down. Round one found reconciliation destroying the requirement a blocked result must reference, and re-attach over stdio being restart rather than reconnection. Round two found four of those fixes incomplete — reconciliation over-corrected into stranding resource waits, derivable correlations are unsound for a nondeterministic runtime, at-most-once covered only settled retries, and closing admission at gate 3 aborted in-flight work instead of draining it — and caught the stub fabricating a provenance record inside the coverage gap the report declares. Round three found the guarantees that had no machinery: cancellation fenced resources without settling actions, at-least-once had an identity but no acknowledgement or durable dedup, envelope validation was decorative, a correlation was not bound to its action, and a preserved operator wait could not actually be resumed. The mutation harness was itself wrong — it read green from output text alone — and fixing it exposed a defer-ordering defect that had the suite waiting five minutes on processes it had already killed. Model calls, concurrency accounting, resume, retention and the data plane remain declared uncovered rather than filled."
 type = "spike"
 +++
 
@@ -27,7 +27,7 @@ the [Docker fencing spike](spike_docker-fencing.md). No Docker, no network, no
 API keys, no spend.
 
 - **`reviewagent`** — a real external process speaking newline-delimited JSON
-  over stdin and stdout. Twenty-four of the thirty-three claims spawn it.
+  over stdin and stdout. Twenty-nine of the forty-two claims spawn it.
 - **`host`** — the Orchestrator side: [ADR 0030](../../adr/0030-tool-execution-policy-hook.md)'s
   three gates in miniature, an attempt recorder carrying ADR 0032 §6's state
   vocabulary, and process supervision.
@@ -39,8 +39,8 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 33 claims, 33 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 14 of 14 mutations
-killed for their named reason.**
+**Result: 42 claims, 42 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 23 of 23 mutations
+killed for their named reason.** The suite runs in about nine seconds.
 
 ## Round one — five findings
 
@@ -130,9 +130,50 @@ It is removed, and a claim now asserts the *absence*:
 fixed because declaring a gap and then filling it with a hollow record is worse
 than either alone: the declaration is what a reader trusts.
 
+## Round three — the guarantees that had no machinery
+
+Also from review. Where round two found fixes wrong one level down, round three
+mostly found **claims asserted without anything implementing them** — which is a
+worse failure, because a stated guarantee reads as a delivered one.
+
+| Asserted | What was actually there | What it is now |
+| --- | --- | --- |
+| Cancellation fences the execution | The resource domain was fenced and admitted **actions** were never settled. An in-flight data-plane write or forge push lands outside every resource domain, so the domain receipt said nothing about it. Admission closure was also racy with registration, so the drain closed over a set that could still grow | ADR 0030 §5's drain runs **before** the domain fence, closure **linearizes** with registration, and an undrained attempt yields no positive receipt |
+| Delivery is at-least-once | An identity, and nothing else: no acknowledgement, no sender retention obligation, and deduplication state in memory — reset by exactly the restart it existed to survive | An acknowledged **watermark** per epoch, committed after the effect, with durable receiver state and an explicit sender replay obligation |
+| Protocol violations are fatal | Version, execution identity, epoch, unknown message types and malformed bodies were all silently accepted or ignored | The fatal list is **enumerated** and enforced before anything acts on the message |
+| A correlation is at-most-once | It was keyed on itself alone, so one key could replay the result of a **different action**, or of the same action with different arguments | Bound to the action identity and the substituted-input digest; a mismatched reuse is refused |
+| A preserved operator wait is recovered | The row survived and the in-memory continuation did not. The conformance case kept its goroutine alive, so it demonstrated only that the row survived | The attempt persists its **substituted request**, and the wait is resumed through gate 3 from the record alone |
+| A headless block stops the execution | It was composed only when the adapter closed its own stream, so a non-cooperative runtime kept working under a terminal Story | An Orchestrator-driven stop on the same cancel → drain → fence path as any other forced stop |
+
+Two more: **`message.ask` had no response lifecycle** — it now routes and
+returns a delivery acknowledgement, with the answer arriving as an artifact
+reference because ADR 0021 makes artifacts the sole agent handoff, and the
+waiting is an execution state with another principal as its responder; and the
+**durability table** in §9, since several new families had no stated home.
+
+### The harness was wrong, and fixing it found a real defect
+
+`runSuite` discarded the subprocess error and read green from the output text
+alone, so a suite that printed its summary and then hung would have passed both
+the positive control and every mutation check.
+
+This was verified **by construction** rather than argued: a suite was made to
+print its green summary and then sleep past the timeout. The old form called it
+`green`; the new form, which also requires a clean exit, failed the positive
+control. That is the discrimination, and the earlier natural case — a 5m14s
+suite against a 5m cap — does *not* demonstrate it, because there the summary
+never printed at all.
+
+Requiring a clean exit immediately surfaced a real defect in the host: deferred
+calls run last-in-first-out, so `defer cancelRun()` registered early ran *after*
+`cmd.Wait()`. The host was waiting for processes it had already decided to kill,
+and an adapter that ignores its closed stdin spun until the caller's own context
+expired. **The suite went from 5m14s to 9s**, with all claims still proven —
+five minutes of it had been waiting on the dead.
+
 ## The claims
 
-Thirty-three. Twenty-four spawn a process; nine exercise boundary and schema
+Forty-two. Twenty-nine spawn a process; thirteen exercise boundary and schema
 properties the wire scenarios depend on but cannot isolate, and are labelled
 separately in the code so nothing there is read as evidence about the wire.
 
@@ -170,6 +211,15 @@ separately in the code so nothing there is read as evidence about the wire.
 | `boundary/outstanding-retry-re-enters-no-gate` | ADR 0030 §3 — the half the first version missed |
 | `reconcile/preserves-an-operator-wait` | §6 |
 | `reconcile/hands-back-a-resource-wait` | §6 — the half the over-correction missed |
+| `protocol/unknown-message-type-is-fatal` | §8 — the enumerated fatal list |
+| `protocol/malformed-known-body-is-fatal` | §8 |
+| `protocol/epoch-ahead-of-binding-is-fatal` | §4 — an incarnation never issued |
+| `cancel/undrained-action-yields-no-positive-receipt` | ADR 0030 §5 — actions, not only the domain |
+| `gate/headless-block-is-orchestrator-driven` | §5 — a runtime that refuses to stop is stopped |
+| `boundary/correlation-is-bound-to-its-logical-action` | ADR 0030 §3 — action and argument digest |
+| `boundary/admission-closure-linearizes-with-registration` | ADR 0029 §7 step 2, deterministically |
+| `reconcile/operator-wait-resumes-from-its-record` | §6 — recovery, not preservation |
+| `events/prior-epoch-replay-deduped-across-restart` | §4 — durable watermark |
 
 **`wait/transport-stays-live-during-an-operator-wait` is the claim that closes
 round two's largest gap.** The first implementation ran both gates synchronously
@@ -180,7 +230,7 @@ loop sent cancellation while the operator gate was still deciding, by timestamp.
 
 ## Defect-shaped verification
 
-`go run ./mutate` restores fourteen defects, one per protected property, and
+`go run ./mutate` restores twenty-three defects, one per protected property, and
 counts a mutation as evidence only when it falsifies its named claim **for the
 named reason**. A compiler failure, an `ERROR`, or a failure at a neighbouring
 guard does not count. A positive control proves the suite is green before
@@ -202,6 +252,15 @@ anything is mutated.
 | `event-identity-not-checked` | At-least-once with nothing behind it | KILLED |
 | `stale-generation-not-revalidated` | A late call from a fenced holder | KILLED |
 | `capability-set-not-enforced` | The gate an empty policy must not be able to disable | KILLED |
+| `correlation-not-bound-to-its-action` | One key replaying a different action's result | KILLED |
+| `correlation-not-bound-to-its-arguments` | A result computed for different input | KILLED |
+| `admission-closure-not-linearized` | An attempt joining the set after it closed | KILLED |
+| `wait-persists-no-executable-request` | A wait preserved and permanently stuck | KILLED |
+| `watermark-does-not-outlive-the-process` | Dedup reset by the restart it exists to survive | KILLED |
+| `no-drain-before-the-fence` | A receipt that covers the domain and not the actions | KILLED |
+| `headless-block-waits-for-a-courtesy-exit` | A blocked Story still doing work | KILLED |
+| `envelope-not-validated` | Version skew as silent data loss | KILLED |
+| `malformed-known-body-ignored` | Unattributable spend recorded as attributed | KILLED |
 
 **One mutation initially survived, and the survivor indicted the assertion rather
 than the mutation.** `capability/denial-is-data` checked the execution's status
