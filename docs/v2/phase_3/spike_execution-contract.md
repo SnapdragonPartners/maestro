@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-14"
 status = "draft"
-summary = "Evidence for ADR 0032 from a real external-process agent driven over the local transport: forty-two claims proven and twenty-three mutations killed for their named reason, across three rounds in which each round mostly found the previous round's fixes wrong one level down. Round one found reconciliation destroying the requirement a blocked result must reference, and re-attach over stdio being restart rather than reconnection. Round two found four of those fixes incomplete — reconciliation over-corrected into stranding resource waits, derivable correlations are unsound for a nondeterministic runtime, at-most-once covered only settled retries, and closing admission at gate 3 aborted in-flight work instead of draining it — and caught the stub fabricating a provenance record inside the coverage gap the report declares. Round three found the guarantees that had no machinery: cancellation fenced resources without settling actions, at-least-once had an identity but no acknowledgement or durable dedup, envelope validation was decorative, a correlation was not bound to its action, and a preserved operator wait could not actually be resumed. The mutation harness was itself wrong — it read green from output text alone — and fixing it exposed a defer-ordering defect that had the suite waiting five minutes on processes it had already killed. Model calls, concurrency accounting, resume, retention and the data plane remain declared uncovered rather than filled."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with forty-two claims proven and twenty-five mutations killed for their named reason, every run under the race detector. Four review rounds each found the previous round's fixes wrong one level down, and the last found guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong -- it read green from output text alone -- and fixing it exposed a defer-ordering defect that had the suite waiting five minutes on processes it had already killed."
 type = "spike"
 +++
 
@@ -39,8 +39,9 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 42 claims, 42 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 23 of 23 mutations
-killed for their named reason.** The suite runs in about nine seconds.
+**Result: 42 claims, 42 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 25 of 25 mutations
+killed for their named reason, every run under `-race`.** The suite runs in about
+nine seconds; the mutation harness in about a minute.
 
 ## Round one — five findings
 
@@ -170,6 +171,39 @@ calls run last-in-first-out, so `defer cancelRun()` registered early ran *after*
 and an adapter that ignores its closed stdin spun until the caller's own context
 expired. **The suite went from 5m14s to 9s**, with all claims still proven —
 five minutes of it had been waiting on the dead.
+
+## Round four — a green claim over a data race
+
+Review ran `go run -race .` and the resumption claim reported `PROVEN` **while
+racing**: the abandoned continuation and the resumed one both settled the same
+attempt. Nothing in the suite noticed, because nothing in the suite was
+race-instrumented. **Every run is now under `-race`**, including each mutation
+check — the cheapest thing that would have caught it.
+
+The rest were guarantees the ADR **stated and the code did not implement**:
+
+| Stated | Actually |
+| --- | --- |
+| A wait is recoverable after a restart | Recovery persisted the complete substituted request — data ADR 0030 §3 keeps out of Audit — and promised resumption where §6 offers only artifact-level restart. A wait now goes **`stale`**; only the operator **decision** is persisted, so the human is not re-asked |
+| Delivery is at-least-once | The watermark could skip a gap, acknowledgements were one scalar across epochs, the sender retained nothing, and an `action_request` was acknowledged before its intent was durable. The guarantee is now **narrowed by event type** rather than universally promised |
+| Cancellation drains admitted actions | "Settled" was treated as "safely drained". Attempts now record a **disposition**; a declared wait is *stopped* rather than waited on |
+| Every forced ending fences | Protocol violations and transport failures went straight to recording a failure, leaving actions unsettled and the resource unfenced |
+| A question is an artifact | The spike still sent inline text, and there was no wire path for the answer. The question is published and its **reference** routed; the answer arrives on the mutable **bindings** |
+| Identity is provenance | `started` was carried and never compared — not required to be first, unique, or consistent with the handshake |
+
+### And one of the fixes was wrong in the same way
+
+Caught by the suite rather than by review: marking a drained attempt `stale` did
+not **stop** its goroutine, which committed anyway and drove the receipt to
+`unconfirmed`. That is ADR 0030 §5's own rejected option — *invalidate the
+attempt* — rediscovered by implementing it. The continuation now re-reads its own
+attempt before the effect and abandons it if the drain settled it.
+
+A second, smaller one: the first version of the drain rejected **any** commit
+after admission closed, which made every cooperative cancellation unconfirmed —
+an action admitted before closure and finishing inside the grace period is the
+ordinary case. What the drain guarantees is that nothing commits *after the
+receipt*; a commit during the drain is recorded, not refused.
 
 ## The claims
 

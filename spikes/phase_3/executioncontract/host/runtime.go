@@ -53,12 +53,19 @@ type Outcome struct {
 	// fence was taken (ADR 0030 §5). OutstandingActions is how many did not.
 	ActionsDrained     bool
 	OutstandingActions int
+	// CommittedDuringDrain counts effects that landed after admission closed.
+	// Permitted, and recorded so a cancellation can say what went out with it.
+	CommittedDuringDrain int
 
 	Events     []string
 	Usage      []contract.Usage
 	Provenance []contract.Provenance
 	Handshake  contract.HelloAck
 	Reconciled ReconcileReport
+	// StartedSeen and IdentityError record §9's identity check: `started` must
+	// be first, unique, and agree with the handshake.
+	StartedSeen   bool
+	IdentityError string
 	// DuplicateEvents counts messages rejected by event identity (§4).
 	DuplicateEvents int
 	DispatchErr     error
@@ -238,6 +245,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 		drained, outstanding := r.Boundary.DrainActions(id, drainWindow)
 		out.ActionsDrained = drained
 		out.OutstandingActions = len(outstanding)
+		out.CommittedDuringDrain = len(r.Boundary.CommittedDuringDrain(id))
 
 		r.fenceAll(inv, &out)
 		if !drained {
@@ -328,15 +336,20 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				if errors.Is(it.err, io.EOF) {
 					return r.onStreamEnd(inv, &out, observedTerm, started)
 				}
+				// A protocol violation and a broken transport are both the
+				// ORCHESTRATOR ending the execution, so both take the forced
+				// path: admission closes, actions drain, the domain is fenced.
+				// A first version returned them straight to finish, so a
+				// runtime killed for speaking nonsense left its admitted
+				// actions unsettled and its resource unfenced.
 				var perr *contract.ErrProtocol
 				if errors.As(it.err, &perr) {
-					// §8: a protocol violation is FATAL, unlike a policy denial.
-					out.Result = contract.Failed(contract.ClassNonRetryableAgent, perr.Error())
 					out.Events = append(out.Events, "protocol-violation: "+perr.Detail)
-					return r.finish(out)
+					r.Boundary.CloseAdmission(id)
+					return forcedTerminal(contract.Failed(contract.ClassNonRetryableAgent, perr.Error()))
 				}
-				out.Result = contract.Failed(contract.ClassRetryableInfrastructure, it.err.Error())
-				return r.finish(out)
+				r.Boundary.CloseAdmission(id)
+				return forcedTerminal(contract.Failed(contract.ClassRetryableInfrastructure, it.err.Error()))
 			}
 
 			// §8: several protocol violations are specified as fatal, so the
@@ -344,9 +357,9 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 			// checked only the sequence number and silently ignored the rest,
 			// which made the specification's "fatal" list decorative.
 			if verr := r.validateEnvelope(inv, negotiated, it.env); verr != nil {
-				out.Result = contract.Failed(contract.ClassNonRetryableAgent, verr.Error())
 				out.Events = append(out.Events, "protocol-violation: "+verr.Error())
-				return r.finish(out)
+				r.Boundary.CloseAdmission(id)
+				return forcedTerminal(contract.Failed(contract.ClassNonRetryableAgent, verr.Error()))
 			}
 
 			// Event identity, against the DURABLE watermark.
@@ -375,6 +388,14 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				// rather than discarded.
 				claim := out.Claimed
 				switch {
+				case blockedStop:
+					// The Story is already blocked. Whatever the runtime claims,
+					// the Orchestrator's own state decides -- and it still owes
+					// the drain and the fence.
+					out.Overridden = claim != nil
+					return forcedTerminal(contract.Blocked(
+						r.Boundary.BlockedRequirements(id),
+						"a required decision has no responder; execution stopped and fenced"))
 				case cancelRequested && claim != nil && claim.Status != contract.StatusCancelled:
 					out.Overridden = true
 					return forcedTerminal(contract.Cancelled(cancelReason,
@@ -384,7 +405,27 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 					// terminal result is recorded (§6 step 4).
 					return forcedTerminal(*claim)
 				case claim != nil:
+					// Even an ordinary completion owes the drain: a runtime can
+					// report `completed` while an action it issued is still
+					// committing, and recording that would be the same false
+					// record a forced stop is careful to avoid.
+					drained, outstanding := r.Boundary.DrainActions(id, drainWindow)
+					out.ActionsDrained = drained
+					out.OutstandingActions = len(outstanding)
+					if !drained {
+						out.Overridden = true
+						r.Boundary.CloseAdmission(id)
+						return forcedTerminal(contract.Failed(contract.ClassRetryableInfrastructure,
+							fmt.Sprintf("runtime claimed %s with %d action(s) unsettled",
+								claim.Status, len(outstanding))))
+					}
 					out.Result = *claim
+				}
+				if out.IdentityError != "" {
+					out.Events = append(out.Events, "identity: "+out.IdentityError)
+					r.Boundary.CloseAdmission(id)
+					return forcedTerminal(contract.Failed(contract.ClassNonRetryableAgent,
+						"runtime identity: "+out.IdentityError))
 				}
 				return r.finish(out)
 			}
@@ -408,9 +449,9 @@ func (r *Runtime) onStreamEnd(inv *contract.Invocation, out *Outcome, observed *
 	// preserved, validated, and handed back for restoration (§6).
 	out.Reconciled = r.Boundary.Recorder.Reconcile()
 	out.Events = append(out.Events, fmt.Sprintf(
-		"reconciled: %d unknown, %d operator-waits preserved, %d resource-waits to restore, %d invalid",
-		len(out.Reconciled.SettledUnknown), len(out.Reconciled.OperatorWaitsPreserved),
-		len(out.Reconciled.ResourceWaitsToRestore), len(out.Reconciled.Invalid)))
+		"reconciled: %d unknown, %d stale waits, %d invalid",
+		len(out.Reconciled.SettledUnknown), len(out.Reconciled.StaleWaits),
+		len(out.Reconciled.Invalid)))
 
 	if r.Boundary.IsBlocked(id) {
 		// §5's exception: `blocked` is composed by the ORCHESTRATOR from the
@@ -453,7 +494,33 @@ func (r *Runtime) handleEvent(
 	out.Events = append(out.Events, env.Type)
 
 	switch env.Type {
-	case contract.TypeStarted, contract.TypeHeartbeat, contract.TypeActivity, contract.TypeWarning:
+	case contract.TypeStarted:
+		// Identity is CHECKED, not just carried. A `started` that arrives late,
+		// twice, or disagreeing with the handshake is a runtime whose identity
+		// provenance (§9) would be a self-report nobody compared to anything.
+		st, _ := contract.Decode[contract.Started](env)
+		if out.StartedSeen {
+			out.IdentityError = "a second `started` was sent"
+		} else if len(out.Events) > 1 {
+			// Events records this message too, so >1 means something preceded it.
+			out.IdentityError = "`started` was not the first message"
+		} else if st.Adapter != out.Handshake.Adapter ||
+			st.ExecutableVer != out.Handshake.Executable {
+			out.IdentityError = fmt.Sprintf(
+				"`started` claims %s@%s, the handshake claimed %s@%s",
+				st.Adapter, st.ExecutableVer, out.Handshake.Adapter, out.Handshake.Executable)
+		} else if st.ContractVersion != out.Handshake.Selected {
+			out.IdentityError = fmt.Sprintf(
+				"`started` claims contract %s, the handshake selected %s",
+				st.ContractVersion, out.Handshake.Selected)
+		}
+		out.StartedSeen = true
+		return false
+
+	case contract.TypeHeartbeat, contract.TypeActivity, contract.TypeWarning:
+		if !out.StartedSeen {
+			out.IdentityError = env.Type + " arrived before `started`"
+		}
 		return false
 
 	case contract.TypeUsage:
@@ -495,10 +562,15 @@ func (r *Runtime) handleEvent(
 		if err != nil {
 			return false
 		}
-		// Off the event loop. The result comes back on actionDone, so a gate-2
-		// or gate-3 wait cannot stop this loop from serving cancellation,
-		// heartbeats, or re-attachment.
-		r.Boundary.Submit(inv, req, actionDone)
+		// Submit registers the intent SYNCHRONOUSLY and runs the gates off the
+		// event loop. The synchronous half matters for delivery: the caller
+		// acknowledges this event once handleEvent returns, and acknowledging
+		// before the intent was durable would release a request the
+		// Orchestrator had not yet recorded.
+		if _, serr := r.Boundary.Submit(inv, req, actionDone); serr != nil {
+			actionDone <- contract.ActionResult{Correlation: req.Correlation,
+				Outcome: contract.OutcomeDenied, Reason: serr.Error()}
+		}
 		return false
 
 	case contract.TypeTerminal:

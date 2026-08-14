@@ -2,7 +2,7 @@
 title = "ADR 0032: The Agent Execution Contract"
 edit_date = "2026-08-14"
 status = "draft"
-summary = "Agents reach Maestro only through a versioned wire contract, so a native Go agent and an adapted external runtime meet the same boundary and neither receives a local path or a database connection. An invocation is two records with two lifetimes: an immutable, persisted execution configuration that a restart reuses verbatim, and per-incarnation bindings carrying the resource grants and generations a later gate may replace. Events report and the Orchestrator's own records decide, so a fact the Orchestrator could not observe is recorded as reported rather than observed; delivery is at-least-once through an acknowledged watermark that outlives the process, and every framing violation is enumerated and fatal rather than ignored. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Stopping an execution is always Orchestrator-driven and never waits on the runtime's cooperation: admission closes atomically with attempt registration, admitted actions drain, the domain is fenced, and only a receipt covering both permits a terminal result. A blocked execution consumes no runnable concurrency and consumes resource capacity only while it retains resources, which is the accounting that makes ADR 0030's blocking affordable."
+summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. An invocation splits into an immutable, persisted execution configuration and per-incarnation bindings, because resource grants and resume tokens change while the configuration must not. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result -- and recovery is artifact-level, so a wait interrupted by a restart goes stale rather than resuming."
 +++
 
 # 0032. The Agent Execution Contract
@@ -399,9 +399,20 @@ release rule, and the same obligations: it must name what it waits for, it is
 never settled `unknown` by reconciliation, and it must be restorable from its
 record.
 
+**The question itself is an artifact.** Carrying its text as an action argument
+would be the direct principal-to-principal payload ADR 0021 forbids, merely
+routed through a mediated action — the audit hole closed and the handoff rule
+still broken. The agent publishes the question, then routes its **reference**.
+
+**The answer arrives on the bindings, not the configuration.** The configuration
+is immutable (§2), so an execution cannot acquire a new seeding artifact by
+restarting; the bindings are per-incarnation and are where inbound artifact
+references belong. That is the wire path, and it is the reason the two-record
+split earns its keep beyond resource generations.
+
 Whether an answer can be delivered into a *live* execution or only into a
 restarted one is a Phase 3 decision; the contract requires only that the wait be
-durable and named either way.
+durable and named, and that the reference arrive on the mutable half.
 
 **`usage` and `provenance` are two reports about one model call**, joined by a
 call reference both carry. A first draft gave `usage` no reference at all, which
@@ -464,12 +475,38 @@ are required, and all three are the contract's:
   event's effect is recorded, so an acknowledgement never promises more than was
   committed, and a duplicate is acknowledged too — re-acknowledging a committed
   event is what makes a *lost acknowledgement* recoverable.
-- **A sender retention obligation.** A runtime must be able to replay anything
-  above the watermark. That is what "at-least-once" actually asks of it.
+- **The watermark is contiguous.** It advances only through an unbroken run of
+  committed sequences. Storing the highest received would acknowledge a gap:
+  sequence 5 arriving before 4 would tell the sender it may discard a 4 that was
+  never committed. An epoch is its own sequence space, so the handshake's
+  sequences are not part of it.
+- **A sender retention obligation.** A runtime retains anything above the
+  watermark and replays it **under its original identity** — re-sending under a
+  fresh sequence is a new event the receiver counts again, which is the opposite
+  of a replay.
 - **Durable receiver state.** The watermark is persisted. In-memory
   deduplication is reset by exactly the restart it exists to survive, so a
   replayed usage event from the previous incarnation would be counted a second
   time.
+
+#### The guarantee is narrowed by event type, not promised universally
+
+A durable universal outbox is real machinery, and MVP does not need one for
+`activity`. So the obligation is **scoped to the events whose loss corrupts
+something**:
+
+| Events | Guarantee |
+| --- | --- |
+| `usage`, `provenance` | **At-least-once, with a retention and replay obligation.** These carry accounting and attribution; a lost usage event is a wrong total, not a missing log line |
+| `heartbeat`, `activity`, `warning` | **Best-effort.** Diagnostic. Loss is tolerable, and saying so is better than implying a durability nothing implements |
+| `action_request` | Neither — it is a request, not a report. The **correlation** is its delivery guarantee: a re-request of the same logical action reuses the attempt and commits at most once (§6) |
+| `terminal` | Neither. The Orchestrator observes the stream ending regardless, and composes a result either way (§5) |
+
+**An event is acknowledged only after its effect is durable.** For an
+`action_request` that means the intent is *registered* before the acknowledgement
+goes out — a crash between the two would otherwise lose an action the sender had
+already been told it could release. Registration is therefore synchronous even
+though the gates that follow are not.
 
 **A replay legitimately carries the epoch it was first emitted under**, so an
 older epoch is accepted and deduplicated against *that* epoch's watermark. Only
@@ -653,24 +690,39 @@ treatment:
 | `operator_waiting` | **Preserves, validates, and restores the continuation** | An operator wait is healthy; only an operator can answer it, and destroying it takes the requirement with it. A wait carrying no requirement is a **defect**, surfaced as one rather than settled |
 | `resource_waiting` | **Preserves and hands it back for restoration** | The provisioning or queueing operation does not survive a restart. Leaving it alone strands it exactly as settling it would corrupt it. A wait naming no operation is likewise a defect |
 
-#### Preserving a wait is not recovering it
+#### A wait interrupted by a restart goes stale; it does not resume
 
-The row surviving is necessary and not sufficient. After an **Orchestrator**
-restart the in-memory continuation that was going to run gate 3 is gone, so a
-preserved row with nothing else is preserved and permanently stuck — and a
-conformance case that keeps its goroutine alive demonstrates only that the row
-survived.
+The row surviving is necessary and not sufficient — but the fix is *not* to make
+the wait resumable, and a draft that tried collided with two accepted rules at
+once.
 
-**The persisted attempt must carry the complete substituted request**, so gate 3
-can be re-driven from the record alone: the action identity, the substituted
-arguments, the intended target, and the requirement being answered. A wait must
-also **name what it waits for** — a requirement for an operator wait, a
-provisioning or queueing operation for a resource wait — or nothing can tell a
-stuck wait from a healthy one.
+Resuming gate 3 from the record requires the **complete substituted request**.
+ADR 0030 §3 permits the Audit family to hold only the declared safe projection
+and a digest, precisely because the substituted form may contain what the schema
+excluded; persisting it to enable resumption would put that data back. And §6
+already promises **restart from the last durable workflow artifact** — nothing
+more. Resumption would have been a second, larger guarantee, quietly added.
 
-That is a requirement on the record, not on the reconciler, and it is what makes
-the resumed path identical to the first pass rather than a second
-implementation of it.
+So the rule is artifact-level:
+
+- A declared wait interrupted by an Orchestrator restart is settled **`stale`** —
+  ADR 0030 §5's own word for an action that must be **re-requested** rather than
+  continued — with its requirement preserved and its disposition recorded as
+  stopped before the commit point.
+- It is never settled `unknown`: an attempt awaiting an operator is not an
+  attempt whose outcome nobody knows.
+- The execution restarts from the last durable workflow artifact and re-requests
+  what it still needs.
+
+**The operator decision is persisted, and it is what makes this acceptable.**
+Re-requesting an action must not re-ask a human who already answered, so the
+*decision* — small, declarable, and nothing like the request — is recorded
+against the logical action (its identity and substituted-input digest) and
+consumed on the next request. Asked once per logical action, not once per
+attempt.
+
+A wait must still **name what it waits for** — a requirement, or a provisioning
+operation — because nothing else can tell a stuck wait from a healthy one.
 
 **Entering and leaving a wait is a durable transition**, per ADR 0030 §8, not the
 absence of a completion.
@@ -708,12 +760,29 @@ load-bearing because A5 rests on it.
    outside every resource domain. A domain receipt alone would report
    `terminated` while such a mutation was still committing.
 
-   Each admitted-and-unsettled attempt must therefore be drained short of its
-   commit point, conditionally committed, or confirmed inside the fenced domain,
-   exactly as ADR 0030 §5 requires. **An attempt that does not settle within the
-   grace period yields no positive receipt**, whatever the domain reported —
-   making the unsettled case cheap by reporting success anyway would reintroduce
-   best-effort fencing through a second door.
+   Each admitted attempt must therefore be drained short of its commit point,
+   conditionally committed, or confirmed inside the fenced domain, exactly as
+   ADR 0030 §5 requires — and **"settled" alone does not establish which**. The
+   attempt records a **disposition**: stopped before its commit point, committed,
+   or run inside the fenced domain. Without it a drain cannot tell an action it
+   prevented from one that went ahead.
+
+   **A wait is stopped, not waited on.** An attempt parked in a declared wait is
+   demonstrably before the effect, so the drain settles it `stale` rather than
+   waiting; waiting for a human inside a fencing grace period would guarantee an
+   unconfirmed receipt every time. Only an attempt that is *executing* can commit
+   at any moment, and that is what the drain actually waits for.
+
+   **And stopping must be real.** Marking the record while the continuation runs
+   on is "invalidate the attempt" under another name — the option ADR 0030 §5
+   already rejects, because a mark nothing checks does not prevent a commit. The
+   continuation re-reads its own attempt before the effect and abandons it if the
+   drain settled it.
+
+   **An attempt that does not settle within the grace period yields no positive
+   receipt**, whatever the domain reported. An effect that commits *during* the
+   drain is not a defect — that is what draining is for — but it is recorded, so
+   a cancellation can say what went out with it.
 5. **The terminal result is recorded only after a positive receipt** covering
    *both*: the domain, and the registered actions. `terminated` or `isolated`
    satisfy the domain half; `unconfirmed` does not, and neither does an
@@ -734,8 +803,19 @@ A first version attached the rule to the `cancelled` status alone, so a timed-ou
 execution recorded `timed_out` even when fencing came back `unconfirmed`: the
 identical false record, reached by a different route. What makes the rule
 necessary is not which status is being written but that **the Orchestrator ended
-an execution whose process it has not confirmed stopped**. A forced stop closes
-admission and fences exactly as cancellation does.
+an execution whose process it has not confirmed stopped**.
+
+**Forced means forced, whatever the cause.** Cancellation, deadline expiry, a
+**protocol violation**, a broken transport, and a gate no operator can answer are
+all the Orchestrator ending the execution, and all take the same path. A second
+version routed the protocol and transport cases straight to recording a failure,
+so a runtime killed for speaking nonsense left its admitted actions unsettled and
+its resource unfenced — the very state the discipline exists to prevent, reached
+by the path nobody thought of as a stop.
+
+**Even an ordinary completion drains.** A runtime can report `completed` while an
+action it issued is still committing, and recording that would be the same false
+record. The claim is held until the drain confirms nothing is outstanding.
 
 **A cancelled execution's output is retained as attributable draft and Audit
 history.** It is not accepted against the superseded version; that is A5's.
@@ -948,6 +1028,12 @@ model identity of §3, the harness pair (Maestro version and harness config hash
 which ADR 0031 §3 fixes as **both** being H), the prompt pack of ADR 0031 §2, and
 the resource references with their instance generations.
 
+**`started` must be first, unique, and consistent with the handshake**, and the
+Orchestrator checks all three. An adapter that announces itself twice, or late,
+or claiming an adapter and version the handshake did not, has produced identity
+nobody compared to anything — and §9's provenance would record it as established.
+A mismatch fails the execution.
+
 **Adapter and executable identity are observed where they can be, and marked
 reported where they cannot.** A first draft listed them as invocation provenance
 while the only source was the runtime's own handshake — a self-report recorded as
@@ -970,7 +1056,8 @@ several things around it need a home too:
 | Bindings — resource references and generations | **Persisted**, and refreshed whenever gate 3 replaces a resource |
 | Resume token | **Persisted opaquely.** Never interpreted, and cleared when the runtime is restarted from an artifact instead |
 | Event watermark per (execution, epoch) | **Persisted** (§4) |
-| Attempt, its substituted request, its correlation binding and wait | **Persisted** (§6) |
+| Attempt, its correlation binding, disposition and wait | **Persisted** (§6). **Not** the substituted request: ADR 0030 §3 keeps it out of Audit, and §6 needs only artifact-level recovery |
+| Operator decision, against the logical action | **Persisted** (§6), so a re-requested action does not re-ask |
 
 Phase 3 owns which of these share a table. What this ADR fixes is that none of
 them may live only in a process, because every one of them is consulted after a
@@ -1153,10 +1240,10 @@ when it recorded its own eleven defects rather than quietly repairing them.
 **Done**, 2026-08-13/14:
 [`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
 **42 claims, all `PROVEN`**; twenty-nine spawn a real external process and speak
-newline-delimited JSON to it. **23 of 23 mutations killed for their named
-reason**, under a harness that requires a positive control, requires a clean
-process exit as well as a green summary, refuses to start on residue, and
-verifies restoration by digest.
+newline-delimited JSON to it. **25 of 25 mutations killed for their named
+reason**, **every run under the race detector**, under a harness that requires a
+positive control and a clean process exit as well as a green summary, refuses to
+start on residue, and verifies restoration by digest.
 
 **Findings from running it, in two rounds.** The first round produced five, of
 which the first was a defect in the design rather than in the harness:
@@ -1230,6 +1317,24 @@ the old form called a deliberately-hanging suite green and the new form refused
 it. Requiring a clean exit immediately surfaced a real defect: the host's
 deferred `cancelRun()` ran *after* `cmd.Wait()`, so it waited on processes it
 had already decided to kill. The suite went from **5m14s to 9s**.
+
+**A fourth round found seven more, and the first was a claim reporting `PROVEN`
+over a data race.** Review ran the suite under `-race`; the resumption path had
+two continuations settling one attempt, and nothing in the suite noticed. Every
+run is now race-instrumented, which is the cheapest thing that would have caught
+it. The rest were guarantees the ADR stated and the code did not implement:
+recovery persisted a request ADR 0030 keeps out of Audit and promised more than
+§6 offers; at-least-once had a watermark that could skip gaps, a scalar
+acknowledgement across epochs, and an acknowledgement sent before the intent was
+durable; "settled" was treated as "safely drained"; protocol violations and
+transport failures bypassed the forced-stop path entirely; the question still
+crossed inline despite the ADR requiring an artifact; and `started` was carried
+without ever being compared.
+
+**And one of those fixes was itself wrong in the same way**, caught by the suite
+rather than by review: marking a drained attempt `stale` did not stop its
+goroutine, which committed anyway. A mark nothing checks is not a mechanism —
+ADR 0030 §5's own rejected option, rediscovered by implementing it.
 
 **Uncovered and declared as such**, never fabricated: model calls and everything
 shaped by them, concurrency accounting (§7 is reasoned, not measured), resumable

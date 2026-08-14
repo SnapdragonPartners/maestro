@@ -536,6 +536,23 @@ func scenarios() []scenario {
 			},
 		},
 		{
+			name:  "protocol/started-identity-must-agree-with-the-handshake",
+			about: "§9 — identity that is never compared is a self-report recorded as a fact",
+			mode:  "lying_started",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.IdentityError == "" {
+					return Falsified, "a `started` disagreeing with the handshake was accepted"
+				}
+				if out.Result.Status != contract.StatusFailed {
+					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				}
+				if !strings.Contains(out.Result.Summary, "runtime identity") {
+					return Falsified, "failed for the wrong reason: " + out.Result.Summary
+				}
+				return Proven, "identity mismatch detected: " + out.IdentityError
+			},
+		},
+		{
 			name:  "protocol/epoch-ahead-of-binding-is-fatal",
 			about: "§4 — an incarnation the Orchestrator never issued",
 			mode:  "bad_epoch",
@@ -553,10 +570,11 @@ func scenarios() []scenario {
 			name:  "cancel/undrained-action-yields-no-positive-receipt",
 			about: "ADR 0030 §5 — fencing a resource says nothing about an Orchestrator-side mutation",
 			setup: func(h *harness, rt *host.Runtime, _ *contract.Invocation) {
-				// The publish action is still mid-flight when the grace expires,
-				// so the drain cannot settle it.
-				h.boundary.ResourceDelay[capPublish.String()] = 5 * time.Second
-				rt.CancelAfter = 200 * time.Millisecond
+				// The EFFECT is slow, so the attempt is `open` and mid-commit
+				// when the grace expires. A declared wait would simply be
+				// stopped; only an in-flight commit can defeat the drain.
+				h.publishDelay = 5 * time.Second
+				rt.CancelAfter = 400 * time.Millisecond
 				rt.CancelGrace = 300 * time.Millisecond
 			},
 			check: func(_ *harness, out host.Outcome) (Outcome, string) {

@@ -63,6 +63,49 @@ func (w *Writer) Send(invocation string, epoch uint64, msgType string, body any)
 	return nil
 }
 
+// ResetSeq restarts the sequence space. An epoch is its own space (§4), and the
+// handshake consumes sequences before any epoch exists -- so without this the
+// first in-epoch event lands at 2 and the receiver's contiguous watermark waits
+// forever for a 1 that will never come.
+func (w *Writer) ResetSeq() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.seq = 0
+}
+
+// LastSeq reports the sequence most recently emitted, so a sender can retain an
+// envelope under its own identity.
+func (w *Writer) LastSeq() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.seq
+}
+
+// SendAs re-emits a message under a SPECIFIC identity. It is how a replay
+// differs from a new event: re-sending under a fresh sequence would be a new
+// event the receiver counts again, which is the opposite of a replay.
+func (w *Writer) SendAs(invocation string, epoch, seq uint64, msgType string, body any) error {
+	var raw json.RawMessage
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal %s body: %w", msgType, err)
+		}
+		raw = b
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	line, err := json.Marshal(Envelope{
+		V: Version, Type: msgType, Inv: invocation, Epoch: epoch, Seq: seq, Body: raw})
+	if err != nil {
+		return fmt.Errorf("marshal %s envelope: %w", msgType, err)
+	}
+	if _, err := w.w.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("write %s: %w", msgType, err)
+	}
+	return nil
+}
+
 // Repeat re-sends a message under the identity already used for the previous
 // one. It models a redelivery -- the case at-least-once delivery permits and
 // event identity has to make harmless. Nothing but a conformance scenario has

@@ -64,22 +64,49 @@ func mutations() []mutation {
 			why:   "ordinary wall-clock exhaustion is neither retryable infrastructure nor a non-retryable agent defect; requiring one records a guess as a fact",
 		},
 		{
-			name:  "reconciler-sweeps-an-operator-wait",
+			name:  "reconciler-settles-a-wait-as-unknown",
 			file:  "host/boundary.go",
-			old:   "\t\t\trep.OperatorWaitsPreserved = append(rep.OperatorWaitsPreserved, att)",
-			new:   "\t\t\tatt.State = StateSettled\n\t\t\tatt.Outcome = contract.OutcomeUnknown\n\t\t\trep.SettledUnknown = append(rep.SettledUnknown, att)",
-			claim: "reconcile/preserves-an-operator-wait",
-			want:  "settled a healthy operator wait as unknown",
-			why:   "THE DEFECT THE FIRST ROUND FOUND: an attempt waiting on an operator is healthy, not interrupted, and settling it destroys the requirement a blocked result must reference",
+			old:   "\t\t\tatt.Outcome = contract.OutcomeStale\n\t\t\tatt.Reason = \"orchestrator restarted while awaiting an operator\"",
+			new:   "\t\t\tatt.Outcome = contract.OutcomeUnknown\n\t\t\tatt.Reason = \"orchestrator restarted while awaiting an operator\"",
+			claim: "reconcile/declared-wait-goes-stale",
+			want:  "settled as unknown rather than stale",
+			why:   "THE DEFECT ROUND ONE FOUND, in its final form: an attempt waiting on an operator is not an attempt whose outcome nobody knows, and conflating them destroys the requirement a blocked result references",
 		},
 		{
-			name:  "reconciler-abandons-a-resource-wait",
+			name:  "stale-mark-does-not-stop-the-continuation",
 			file:  "host/boundary.go",
-			old:   "\t\t\trep.ResourceWaitsToRestore = append(rep.ResourceWaitsToRestore, att)",
-			new:   "\t\t\t_ = att",
-			claim: "reconcile/hands-back-a-resource-wait",
-			want:  "0 resource waits handed back",
-			why:   "a resource wait's provisioning operation does not survive a restart, so leaving it alone strands it exactly as settling it would corrupt it",
+			old:   "\tif b.Recorder.State(att) == StateSettled {\n\t\treturn contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,\n\t\t\tOutcome: att.Outcome, Reason: att.Reason}\n\t}",
+			new:   "\tif false {\n\t\treturn contract.ActionResult{}\n\t}",
+			claim: "reconcile/declared-wait-goes-stale",
+			want:  "settled as succeeded rather than stale",
+			why:   "'invalidate the attempt' is not a mechanism: a mark nothing checks does not stop the goroutine, which commits anyway -- ADR 0030 §5's own rejected option, rediscovered",
+		},
+		{
+			name:  "operator-decision-not-persisted",
+			file:  "host/boundary.go",
+			old:   "\t\tb.Recorder.RecordDecision(inv.ID(), binding, true)",
+			new:   "\t\t_ = binding",
+			claim: "boundary/operator-decision-is-not-re-asked",
+			want:  "the operator was asked again",
+			why:   "without a persisted decision, going stale on restart means asking a human the same question a second time -- which is what makes stale unacceptable rather than merely inconvenient",
+		},
+		{
+			name:  "sequence-not-reset-per-epoch",
+			file:  "reviewagent/main.go",
+			old:   "\ta.w.ResetSeq()",
+			new:   "",
+			claim: "events/duplicate-rejected-by-identity",
+			want:  "a replayed envelope was accepted",
+			why:   "the handshake consumes sequences before any epoch exists, so without a per-epoch space the contiguous watermark waits forever for a sequence that never comes and never advances",
+		},
+		{
+			name:  "started-identity-not-compared",
+			file:  "host/runtime.go",
+			old:   "\t\t} else if st.Adapter != out.Handshake.Adapter ||",
+			new:   "\t\t} else if false || st.Adapter != out.Handshake.Adapter \u0026\u0026 false ||",
+			claim: "protocol/started-identity",
+			want:  "disagreeing with the handshake was accepted",
+			why:   "identity carried and never compared is a self-report recorded as though it were established (§9)",
 		},
 		{
 			name:  "reconciler-settles-nothing",
@@ -111,11 +138,11 @@ func mutations() []mutation {
 		{
 			name:  "headless-leaves-a-phantom-operator-wait",
 			file:  "host/boundary.go",
-			old:   "\t\t\tb.Recorder.Settle(att, contract.OutcomeBlocked, requirement.Statement)",
+			old:   "\t\t\tb.Recorder.Settle(att, contract.OutcomeBlocked, requirement.Statement, DispositionBeforeCommit)",
 			new:   "\t\t\tb.Recorder.Transition(att, StateOperatorWaiting)",
 			claim: "gate/headless-blocks-with-one-durable-outcome",
-			want:  "was left in operator_waiting",
-			why:   "a headless wait has no responder, so recording it as a wait describes an event that will never happen -- and leaves the action nonterminal under a terminally blocked execution",
+			want:  "settled as stale rather than blocked",
+			why:   "a headless wait has no responder, so recording it as a wait describes an event that will never happen; the drain then sweeps the phantom to `stale` and the blocked result references nothing",
 		},
 		{
 			name:  "terminal-recorded-on-unconfirmed-fence",
@@ -197,15 +224,6 @@ func mutations() []mutation {
 			claim: "boundary/admission-closure-linearizes",
 			want:  "returned while a registration was in flight",
 			why:   "closure that does not linearize with registration leaves a window in which an attempt joins the set AFTER the drain closed it",
-		},
-		{
-			name:  "wait-persists-no-executable-request",
-			file:  "host/boundary.go",
-			old:   "\t\tArgsDigest:  digest,\n\t\tRequest:     req,",
-			new:   "\t\tArgsDigest:  digest,",
-			claim: "reconcile/operator-wait-resumes",
-			want:  "carries no executable request",
-			why:   "preserving the wait ROW is not recovery: without the request the lost continuation cannot be rebuilt and the attempt is stuck forever",
 		},
 		{
 			name:  "watermark-does-not-outlive-the-process",
@@ -403,7 +421,10 @@ func apply(m mutation, originals map[string][]byte, digests map[string]string) r
 // had not actually obtained. That is the "mutation harnesses lie" failure in its
 // own harness.
 func runSuite(only string) (string, bool) {
-	args := []string{"run", "."}
+	// -race on EVERY run. A claim can report PROVEN over a data race -- one did,
+	// and review caught it rather than the suite. Race instrumentation is the
+	// cheapest thing that would have caught it here.
+	args := []string{"run", "-race", "."}
 	if only != "" {
 		args = append(args, "-run", only)
 	}

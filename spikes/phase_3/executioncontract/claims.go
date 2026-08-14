@@ -48,16 +48,15 @@ func boundaryClaims() []boundaryClaim {
 			"ADR 0030 §3 — a retry is not a new action", claimAtMostOnce},
 		{"boundary/outstanding-retry-re-enters-no-gate",
 			"ADR 0030 §3 — only a SETTLED attempt may replay", claimOutstandingRetry},
-		{"reconcile/preserves-an-operator-wait",
-			"§6 — an operator wait is healthy, not interrupted", claimReconcileOperatorWait},
-		{"reconcile/hands-back-a-resource-wait",
-			"§6 — a resource wait's operation does not survive a restart", claimReconcileResourceWait},
+		{"reconcile/declared-wait-goes-stale-not-unknown",
+			"§6 — a wait is not an attempt whose outcome nobody knows", claimReconcileOperatorWait},
 		{"boundary/correlation-is-bound-to-its-logical-action",
 			"ADR 0030 §3 — a key alone can replay the wrong work", claimCorrelationBinding},
 		{"boundary/admission-closure-linearizes-with-registration",
 			"ADR 0029 §7 step 2 — revoke before drain, with no window between", claimAdmissionRace},
-		{"reconcile/operator-wait-resumes-from-its-record",
-			"§6 — preserving a row is not recovering the action", claimResumeOperatorWait},
+		{"boundary/operator-decision-is-not-re-asked",
+			"§6 — asked once per logical action, which is what makes stale acceptable",
+			claimOperatorDecisionIsNotReAsked},
 		{"events/prior-epoch-replay-deduped-across-restart",
 			"§4 — deduplication state must outlive the process", claimDurableWatermark},
 		{"restart/does-not-reissue-a-settled-action",
@@ -184,66 +183,47 @@ func claimAdmissionRace(string) (Outcome, string) {
 	return Proven, "CloseAdmission blocked on an in-flight registration; 100 concurrent rounds all settled"
 }
 
-// claimResumeOperatorWait proves a preserved wait is RECOVERABLE, not merely
-// preserved.
-//
-// The previous claim kept a live goroutine parked in the operator gate, so it
-// demonstrated that the row survived and nothing more. Here the continuation is
-// abandoned exactly as an Orchestrator restart abandons it, and the action is
-// re-driven from the attempt's own persisted request.
-func claimResumeOperatorWait(string) (Outcome, string) {
+// claimOperatorDecisionIsNotReAsked proves the half that makes going stale
+// acceptable: the human is asked once per logical action, not once per attempt.
+func claimOperatorDecisionIsNotReAsked(string) (Outcome, string) {
 	h := newHarness(sampleDiff)
-	inv := invocation("inv-resume", true)
+	inv := invocation("inv-decision", true)
 	h.boundary.Policy = requiresOperatorFor(capForge)
 
-	// Incarnation 1: the operator never answers, and the continuation dies.
-	abandoned := make(chan struct{})
-	h.boundary.Operator = func(contract.RequirementRef) bool {
-		<-abandoned // never returns during this incarnation
-		return false
-	}
-	h.boundary.Submit(inv, contract.ActionRequest{
-		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{"ref":"refs/heads/x"}`)},
-		make(chan contract.ActionResult, 1))
+	asked := 0
+	h.boundary.Operator = func(contract.RequirementRef) bool { asked++; return true }
+	args := json.RawMessage(`{"ref":"refs/heads/x"}`)
 
-	deadline := time.Now().Add(2 * time.Second)
-	var att *host.Attempt
-	for time.Now().Before(deadline) {
-		if a, ok := h.recorder.Lookup(inv.ID(), "c1"); ok && a.State == host.StateOperatorWaiting {
-			att = a
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	first := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: args})
+	if first.Outcome != contract.OutcomeSucceeded {
+		return Errored, "control failed: " + first.Reason
 	}
-	if att == nil {
-		return Errored, "the attempt never reached operator_waiting"
+	if asked != 1 {
+		return Errored, fmt.Sprintf("the operator was asked %d times on the first action", asked)
 	}
 
-	// Restart: reconciliation preserves the wait, and the record must carry
-	// enough to finish the action without the lost continuation.
-	rep := h.recorder.Reconcile()
-	if len(rep.OperatorWaitsPreserved) != 1 {
-		return Falsified, "the wait was not preserved"
+	// The SAME logical action, re-requested under a fresh correlation -- which
+	// is exactly what a stale wait forces the runtime to do.
+	second := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c2", Action: capForge, Arguments: args})
+	if second.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "the re-requested action settled " + string(second.Outcome)
 	}
-	if rep.OperatorWaitsPreserved[0].Request.Correlation == "" ||
-		rep.OperatorWaitsPreserved[0].Request.Action != capForge {
-		return Falsified, "the preserved wait carries no executable request, so it is stuck rather than recoverable"
+	if asked != 1 {
+		return Falsified, fmt.Sprintf("the operator was asked again (%d times total)", asked)
 	}
 
-	// Incarnation 2 answers it, driving gate 3 from the record alone.
-	h.boundary.Operator = func(contract.RequirementRef) bool { return true }
-	done := make(chan contract.ActionResult, 1)
-	h.boundary.ResumeWait(inv, rep.OperatorWaitsPreserved[0], done)
-	res := <-done
-	close(abandoned)
-
-	if res.Outcome != contract.OutcomeSucceeded {
-		return Falsified, "the resumed action settled " + string(res.Outcome) + ": " + res.Reason
+	// A DIFFERENT logical action must still be asked.
+	third := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c3", Action: capForge, Arguments: json.RawMessage(`{"ref":"refs/heads/other"}`)})
+	if third.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "a different action settled " + string(third.Outcome)
 	}
-	if att.State != host.StateSettled {
-		return Falsified, "the attempt is still " + string(att.State)
+	if asked != 2 {
+		return Falsified, fmt.Sprintf("a different logical action reused the decision (asked %d)", asked)
 	}
-	return Proven, "the wait was resumed from its own record and completed through gate 3"
+	return Proven, "asked once per logical action: reuse skipped the gate, different arguments did not"
 }
 
 // claimDurableWatermark proves deduplication survives the process.
@@ -503,11 +483,13 @@ func claimReconcileOperatorWait(string) (Outcome, string) {
 	h.boundary.Submit(inv, contract.ActionRequest{
 		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)}, done)
 
-	// Wait until the attempt is genuinely in the operator wait.
+	// A channel, not a sleep: the attempt stays in the operator wait until this
+	// claim releases it, so reconciliation cannot race a timer.
 	deadline := time.Now().Add(2 * time.Second)
 	var att *host.Attempt
 	for time.Now().Before(deadline) {
-		if a, ok := h.recorder.Lookup(inv.ID(), "c1"); ok && a.State == host.StateOperatorWaiting {
+		if a, ok := h.recorder.Lookup(inv.ID(), "c1"); ok &&
+			h.recorder.State(a) == host.StateOperatorWaiting {
 			att = a
 			break
 		}
@@ -522,61 +504,18 @@ func claimReconcileOperatorWait(string) (Outcome, string) {
 	<-done
 
 	if len(rep.SettledUnknown) != 0 {
-		return Falsified, "reconciliation settled a healthy operator wait as unknown"
+		return Falsified, "reconciliation settled an operator wait as unknown"
 	}
-	if len(rep.OperatorWaitsPreserved) != 1 {
-		return Falsified, fmt.Sprintf("%d operator waits preserved, want 1",
-			len(rep.OperatorWaitsPreserved))
+	if len(rep.StaleWaits) != 1 {
+		return Falsified, fmt.Sprintf("%d stale waits, want 1", len(rep.StaleWaits))
 	}
-	if rep.OperatorWaitsPreserved[0].Requirement == nil {
-		return Falsified, "the preserved wait carries no requirement, so it was not validated"
+	if rep.StaleWaits[0].Outcome != contract.OutcomeStale {
+		return Falsified, "settled as " + string(rep.StaleWaits[0].Outcome) + " rather than stale"
 	}
-	return Proven, "the operator wait survived reconciliation with its requirement intact"
-}
-
-// claimReconcileResourceWait proves the other half of the same rule: a resource
-// wait is neither settled nor left alone. Its provisioning operation does not
-// survive a restart, so it must come back for restoration.
-func claimReconcileResourceWait(string) (Outcome, string) {
-	h := newHarness(sampleDiff)
-	inv := invocation("inv-recon-res", false)
-	h.boundary.ResourceDelay[capPublish.String()] = 700 * time.Millisecond
-
-	done := make(chan contract.ActionResult, 1)
-	h.boundary.Submit(inv, contract.ActionRequest{
-		Correlation: "c1", Action: capPublish, Arguments: json.RawMessage(`{}`)}, done)
-
-	deadline := time.Now().Add(2 * time.Second)
-	var att *host.Attempt
-	for time.Now().Before(deadline) {
-		if a, ok := h.recorder.Lookup(inv.ID(), "c1"); ok && a.State == host.StateResourceWaiting {
-			att = a
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if rep.StaleWaits[0].Requirement == nil {
+		return Falsified, "the stale wait lost its requirement, so a blocked result could not reference it"
 	}
-	if att == nil {
-		return Errored, "the attempt never reached resource_waiting"
-	}
-
-	rep := h.recorder.Reconcile()
-	<-done
-
-	if len(rep.SettledUnknown) != 0 {
-		return Falsified, "reconciliation settled a resource wait as unknown"
-	}
-	if len(rep.ResourceWaitsToRestore) != 1 {
-		return Falsified, fmt.Sprintf("%d resource waits handed back, want 1",
-			len(rep.ResourceWaitsToRestore))
-	}
-	if rep.ResourceWaitsToRestore[0].ResourceOp == "" {
-		return Falsified, "the wait names no operation, so nothing could restore it"
-	}
-	if len(rep.Invalid) != 0 {
-		return Falsified, "a valid wait was reported invalid"
-	}
-	return Proven, "the resource wait was preserved and handed back as " +
-		rep.ResourceWaitsToRestore[0].ResourceOp
+	return Proven, "settled stale, not unknown, with its requirement intact"
 }
 
 // claimRestartNoReissue is the honest form of re-attach on a stdio transport.

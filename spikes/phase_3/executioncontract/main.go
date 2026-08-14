@@ -170,6 +170,10 @@ type harness struct {
 	mu        sync.Mutex
 	published []json.RawMessage
 	routed    []json.RawMessage
+	// publishDelay makes the EFFECT slow rather than the gate. An attempt is
+	// then `open` and mid-commit, which is the only shape a drain must wait on
+	// -- a declared wait it simply stops.
+	publishDelay time.Duration
 }
 
 func newHarness(diff string) *harness {
@@ -181,6 +185,9 @@ func newHarness(diff string) *harness {
 		return json.Marshal(map[string]string{"text": diff})
 	}
 	b.Executors[capPublish.String()] = func(_ *contract.Invocation, args json.RawMessage) (json.RawMessage, error) {
+		if d := h.publishDelay; d > 0 {
+			time.Sleep(d)
+		}
 		h.mu.Lock()
 		h.published = append(h.published, args)
 		h.mu.Unlock()

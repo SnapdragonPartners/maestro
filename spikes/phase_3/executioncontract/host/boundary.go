@@ -58,13 +58,40 @@ type Attempt struct {
 	// ArgsDigest binds the correlation to the arguments it was opened with.
 	// Without it, reusing a correlation with different arguments replays a
 	// result computed for something else.
+	//
+	// It is a DIGEST and not the arguments. Persisting the complete substituted
+	// request would put data ADR 0030 §3 deliberately keeps out of the Audit
+	// family into it, and would promise a recovery this contract does not offer:
+	// §6's guarantee is restart from the last durable workflow ARTIFACT, not
+	// resumption of a half-run action.
 	ArgsDigest string
-	// Request is the persisted, substituted request. It is what makes an
-	// operator wait RESTARTABLE: after an Orchestrator restart the in-memory
-	// continuation is gone, and a wait row that cannot reconstruct its own
-	// gate-3 execution is preserved but not recoverable.
-	Request contract.ActionRequest
+	// Disposition records WHERE the attempt stopped, which is what a fence
+	// receipt actually needs. "Settled" alone does not distinguish an action
+	// that stopped before its commit point from one that committed anyway.
+	Disposition Disposition
+	// SettledAfterClose marks an attempt that settled after admission was
+	// closed. Combined with a committed disposition it is the case a receipt
+	// must refuse: an effect that landed inside the drain window.
+	SettledAfterClose bool
 }
+
+// Disposition is ADR 0030 §5's three safe outcomes, plus the unsafe one.
+type Disposition string
+
+const (
+	// DispositionUnset means nothing recorded where the attempt stopped, which
+	// is itself unsafe: a drain cannot treat it as covered.
+	DispositionUnset Disposition = ""
+	// DispositionBeforeCommit -- confirmed not to have passed its commit point.
+	DispositionBeforeCommit Disposition = "before_commit"
+	// DispositionCommitted -- the effect committed. Safe only in the sense that
+	// it is settled and known; a drain must still refuse a receipt if it
+	// committed AFTER admission closed.
+	DispositionCommitted Disposition = "committed"
+	// DispositionInDomain -- the effect ran inside the fenced resource domain,
+	// so fencing the domain covers it.
+	DispositionInDomain Disposition = "in_domain"
+)
 
 // Recorder stands in for the persistence seam.
 type Recorder struct {
@@ -79,6 +106,23 @@ type Recorder struct {
 	// watermarks is the receiver's durable deduplication state, keyed by
 	// (invocation, epoch). See Watermark.
 	watermarks map[string]uint64
+	// committed holds sequences committed ahead of the watermark, so a gap is
+	// never acknowledged.
+	committed map[string]map[uint64]bool
+	// decisions persists operator approvals against a logical action, so a
+	// restart does not re-ask a human who already answered.
+	decisions map[string]bool
+	// closedAt mirrors admission closure, so a settle can record whether it
+	// happened inside the drain window.
+	closedAt map[string]bool
+}
+
+// MarkAdmissionClosed tells the recorder that admission has closed, so every
+// later settle is stamped as having happened inside the drain window.
+func (r *Recorder) MarkAdmissionClosed(invocation string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closedAt[invocation] = true
 }
 
 // NewRecorder builds an empty recorder.
@@ -86,6 +130,9 @@ func NewRecorder() *Recorder {
 	return &Recorder{
 		byCorrelation: map[string]*Attempt{},
 		watermarks:    map[string]uint64{},
+		committed:     map[string]map[uint64]bool{},
+		decisions:     map[string]bool{},
+		closedAt:      map[string]bool{},
 	}
 }
 
@@ -143,7 +190,6 @@ func (r *Recorder) Open(invocation string, req contract.ActionRequest) (att *Att
 		State:       StateOpen,
 		Transitions: []AttemptState{StateOpen},
 		ArgsDigest:  digest,
-		Request:     req,
 	}
 	r.attempts = append(r.attempts, att)
 	r.byCorrelation[key] = att
@@ -158,13 +204,19 @@ func (r *Recorder) Transition(att *Attempt, to AttemptState) {
 	att.Transitions = append(att.Transitions, to)
 }
 
-// Settle completes an attempt with an outcome.
-func (r *Recorder) Settle(att *Attempt, outcome contract.ActionOutcome, reason string) {
+// Settle completes an attempt with an outcome and a disposition.
+//
+// The disposition is not optional decoration: ADR 0030 §5's receipt is about
+// whether an effect can still land, and "settled" alone cannot say. A refused
+// action stopped before its commit point; an executed one committed.
+func (r *Recorder) Settle(att *Attempt, outcome contract.ActionOutcome, reason string, d Disposition) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	att.SettledAfterClose = r.closedAt[att.Invocation]
 	att.State = StateSettled
 	att.Outcome = outcome
 	att.Reason = reason
+	att.Disposition = d
 	att.Transitions = append(att.Transitions, StateSettled)
 }
 
@@ -181,11 +233,12 @@ func (r *Recorder) State(att *Attempt) AttemptState {
 type ReconcileReport struct {
 	// SettledUnknown held an intent and no outcome.
 	SettledUnknown []*Attempt
-	// OperatorWaitsPreserved are healthy waits, validated and left alone.
-	OperatorWaitsPreserved []*Attempt
-	// ResourceWaitsToRestore are waits whose provisioning or queueing operation
-	// must be restored or re-driven by the Orchestrator. They are NOT settled.
-	ResourceWaitsToRestore []*Attempt
+	// StaleWaits are declared waits the restart invalidated. They are settled
+	// `stale` -- ADR 0030 §5's own word for an action that must be re-requested
+	// rather than continued -- with their requirement and decision preserved,
+	// and NEVER as `unknown`: an attempt awaiting an operator is not an attempt
+	// whose outcome nobody knows.
+	StaleWaits []*Attempt
 	// Invalid are declared waits that failed validation -- an operator wait with
 	// no requirement, or a resource wait naming no operation. These are defects,
 	// not states, and must be visible rather than swept into `unknown`.
@@ -233,14 +286,30 @@ func (r *Recorder) Reconcile() ReconcileReport {
 				rep.Invalid = append(rep.Invalid, att)
 				continue
 			}
-			rep.OperatorWaitsPreserved = append(rep.OperatorWaitsPreserved, att)
+			// STALE, not resumed. The continuation that would have run gate 3
+			// died with the process, and rebuilding it would require persisting
+			// the complete substituted request -- which ADR 0030 §3 keeps out of
+			// Audit, and which promises more than §6's artifact-level recovery.
+			// The requirement and any operator decision are preserved, so the
+			// re-requested action is not re-asked.
+			att.State = StateSettled
+			att.Outcome = contract.OutcomeStale
+			att.Reason = "orchestrator restarted while awaiting an operator"
+			att.Disposition = DispositionBeforeCommit
+			att.Transitions = append(att.Transitions, StateSettled)
+			rep.StaleWaits = append(rep.StaleWaits, att)
 
 		case StateResourceWaiting:
 			if att.ResourceOp == "" {
 				rep.Invalid = append(rep.Invalid, att)
 				continue
 			}
-			rep.ResourceWaitsToRestore = append(rep.ResourceWaitsToRestore, att)
+			att.State = StateSettled
+			att.Outcome = contract.OutcomeStale
+			att.Reason = "orchestrator restarted while awaiting " + att.ResourceOp
+			att.Disposition = DispositionBeforeCommit
+			att.Transitions = append(att.Transitions, StateSettled)
+			rep.StaleWaits = append(rep.StaleWaits, att)
 		}
 	}
 	return rep
@@ -278,15 +347,57 @@ func (r *Recorder) Watermark(invocation string, epoch uint64) uint64 {
 	return r.watermarks[fmt.Sprintf("%s\x00%d", invocation, epoch)]
 }
 
-// Advance commits the watermark. Called only after the event's effect is
-// durable, so an acknowledgement never promises more than was recorded.
+// Advance commits an event and moves the watermark over every CONTIGUOUS
+// sequence committed so far.
+//
+// Storing the maximum received sequence would acknowledge a gap: sequence 5
+// arriving before 4 would advance the watermark past 4, telling the sender it
+// may discard an event that was never committed. The watermark therefore only
+// moves through an unbroken run, and out-of-order arrivals are held until the
+// gap fills.
 func (r *Recorder) Advance(invocation string, epoch, seq uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := fmt.Sprintf("%s\x00%d", invocation, epoch)
-	if seq > r.watermarks[key] {
-		r.watermarks[key] = seq
+	if r.committed[key] == nil {
+		r.committed[key] = map[uint64]bool{}
 	}
+	r.committed[key][seq] = true
+	for {
+		next := r.watermarks[key] + 1
+		if !r.committed[key][next] {
+			return
+		}
+		r.watermarks[key] = next
+		delete(r.committed[key], next)
+	}
+}
+
+// Committed reports whether a specific sequence was committed, whether or not
+// the watermark has reached it.
+func (r *Recorder) Committed(invocation string, epoch, seq uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := fmt.Sprintf("%s\x00%d", invocation, epoch)
+	return seq <= r.watermarks[key] || r.committed[key][seq]
+}
+
+// Decision returns a persisted operator decision for a logical action, if one
+// was recorded. Keeping the DECISION rather than the request is what lets a
+// re-requested action skip gate 2 without persisting anything ADR 0030 §3
+// excludes from Audit.
+func (r *Recorder) Decision(invocation, binding string) (approved, found bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.decisions[invocation+"\x00"+binding]
+	return d, ok
+}
+
+// RecordDecision persists an operator decision against a logical action.
+func (r *Recorder) RecordDecision(invocation, binding string, approved bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.decisions[invocation+"\x00"+binding] = approved
 }
 
 // Lookup finds an attempt by correlation.
@@ -403,8 +514,9 @@ func (b *Boundary) CloseAdmission(invocationID string) {
 	b.admitMu.Lock()
 	defer b.admitMu.Unlock()
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.admissionClosed[invocationID] = true
+	b.mu.Unlock()
+	b.Recorder.MarkAdmissionClosed(invocationID)
 }
 
 // HookInRegistration runs inside the registration critical section, if set. It
@@ -435,7 +547,7 @@ func (b *Boundary) register(id string, req contract.ActionRequest) (*Attempt, bo
 	if closed && fresh {
 		// Registered and immediately settled, so it is never in the unsettled
 		// set a drain would have to wait on.
-		b.Recorder.Settle(att, contract.OutcomeDenied, admissionClosedReason)
+		b.Recorder.Settle(att, contract.OutcomeDenied, admissionClosedReason, DispositionBeforeCommit)
 		return att, false, errAdmissionClosed
 	}
 	return att, fresh, nil
@@ -460,6 +572,21 @@ var errAdmissionClosed = &ErrCorrelationMismatch{Detail: admissionClosedReason}
 // ADR 0029 §7's own rule: making the unsettled case cheap by reporting success
 // anyway would reintroduce best-effort fencing through this door.
 func (b *Boundary) DrainActions(invocationID string, within time.Duration) (drained bool, outstanding []*Attempt) {
+	// Mechanism 1 of ADR 0030 §5 is DRAIN -- stop an attempt before its commit
+	// point, not merely wait for it. An attempt parked in a declared wait is
+	// demonstrably before the effect, so it is stopped rather than waited on;
+	// waiting for a human inside a fencing grace period would guarantee an
+	// unconfirmed receipt every time.
+	for _, a := range b.Recorder.ForInvocation(invocationID) {
+		switch b.Recorder.State(a) {
+		case StateOperatorWaiting, StateResourceWaiting:
+			b.Recorder.Settle(a, contract.OutcomeStale,
+				"stopped before its commit point during the drain", DispositionBeforeCommit)
+		case StateOpen, StateSettled:
+			// An open attempt may commit at any moment; it must be waited on.
+		}
+	}
+
 	deadline := time.Now().Add(within)
 	for {
 		outstanding = nil
@@ -469,13 +596,38 @@ func (b *Boundary) DrainActions(invocationID string, within time.Duration) (drai
 			}
 		}
 		if len(outstanding) == 0 {
-			return true, nil
+			break
 		}
 		if time.Now().After(deadline) {
 			return false, outstanding
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
+
+	// A commit that lands DURING the drain is not a defect -- it is what
+	// draining is for. The guarantee ADR 0030 §5 needs is that nothing commits
+	// after the receipt, and waiting for every attempt to settle before the
+	// fence is what delivers it.
+	//
+	// A first version rejected any post-closure commit outright, which made
+	// every cooperative cancellation unconfirmed: an action admitted before
+	// closure and finishing inside the grace period is the ordinary case. The
+	// fact is still recorded, because "two effects landed during the drain" is
+	// worth being able to see; it just is not a failure.
+	return true, nil
+}
+
+// CommittedDuringDrain reports attempts that committed after admission closed.
+// Not a defect -- draining permits it -- but recorded, because an operator
+// reading a cancellation wants to know what landed on the way out.
+func (b *Boundary) CommittedDuringDrain(invocationID string) []*Attempt {
+	var out []*Attempt
+	for _, a := range b.Recorder.ForInvocation(invocationID) {
+		if a.Disposition == DispositionCommitted && a.SettledAfterClose {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // AdmissionClosed reports whether admission has been closed.
@@ -494,8 +646,18 @@ func (b *Boundary) AdmissionClosed(invocationID string) bool {
 // synchronously inside the transport's only event loop, so while an action
 // waited the host could process no cancellation, no heartbeat, and no
 // re-attachment -- which is the detached wait claimed rather than demonstrated.
-func (b *Boundary) Submit(inv *contract.Invocation, req contract.ActionRequest, done chan<- contract.ActionResult) {
-	go func() { done <- b.execute(inv, req) }()
+func (b *Boundary) Submit(inv *contract.Invocation, req contract.ActionRequest, done chan<- contract.ActionResult) (*Attempt, error) {
+	// Registration is SYNCHRONOUS and the gates are not. The caller
+	// acknowledges the event only after this returns, so the intent is durable
+	// before the sender is told it may discard the request -- a crash between
+	// the acknowledgement and the open would otherwise lose an action the
+	// sender had already released.
+	att, fresh, err := b.register(inv.ID(), req)
+	if err != nil && att == nil {
+		return nil, err
+	}
+	go func() { done <- b.executeRegistered(inv, req, att, fresh, err) }()
+	return att, nil
 }
 
 // ExecuteSync submits an action and waits for it. It exists for the in-process
@@ -503,13 +665,19 @@ func (b *Boundary) Submit(inv *contract.Invocation, req contract.ActionRequest, 
 // nothing on the wire path uses it, because a synchronous wait there is the
 // defect Submit exists to avoid.
 func (b *Boundary) ExecuteSync(inv *contract.Invocation, req contract.ActionRequest) contract.ActionResult {
-	done := make(chan contract.ActionResult, 1)
-	b.Submit(inv, req, done)
-	return <-done
+	return b.execute(inv, req)
+}
+
+func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest) contract.ActionResult {
+	att, fresh, err := b.register(inv.ID(), req)
+	return b.executeRegistered(inv, req, att, fresh, err)
 }
 
 //nolint:gocyclo // The gate sequence is the subject; splitting it hides it.
-func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest) contract.ActionResult {
+func (b *Boundary) executeRegistered(
+	inv *contract.Invocation, req contract.ActionRequest,
+	att *Attempt, fresh bool, err error,
+) contract.ActionResult {
 	id := inv.ID()
 
 	b.mu.Lock()
@@ -528,8 +696,6 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 		}
 	}
 
-	// Registration and admission closure linearize (see register).
-	att, fresh, err := b.register(id, req)
 	if err != nil {
 		if att != nil {
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
@@ -561,7 +727,7 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 
 	// ---- Gate 1: admission, then policy ----
 	if err := b.admit(inv, req.Action); err != nil {
-		b.Recorder.Settle(att, contract.OutcomeDenied, err.Error())
+		b.Recorder.Settle(att, contract.OutcomeDenied, err.Error(), DispositionBeforeCommit)
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeDenied, Reason: err.Error()}
 	}
@@ -573,7 +739,7 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 		if requirement != nil {
 			reason = requirement.Statement
 		}
-		b.Recorder.Settle(att, contract.OutcomeDenied, reason)
+		b.Recorder.Settle(att, contract.OutcomeDenied, reason, DispositionBeforeCommit)
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeDenied, Reason: reason}
 
@@ -596,52 +762,58 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 			b.mu.Lock()
 			b.blocked[id] = true
 			b.mu.Unlock()
-			b.Recorder.Settle(att, contract.OutcomeBlocked, requirement.Statement)
+			b.Recorder.Settle(att, contract.OutcomeBlocked, requirement.Statement, DispositionBeforeCommit)
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 				Outcome: contract.OutcomeBlocked, Reason: requirement.Statement,
 				Requirement: requirement}
 		}
 
 		b.Recorder.Transition(att, StateOperatorWaiting)
-		return b.completeAction(inv, att, true)
+		return b.completeAction(inv, att, req, true)
 
 	case DecisionAllow:
 		// fall through
 	}
 
-	return b.completeAction(inv, att, false)
+	return b.completeAction(inv, att, req, false)
 }
 
-// ResumeWait re-drives a preserved wait after an Orchestrator restart, from the
-// attempt's own persisted request.
+// completeAction runs gates 2 and 3 for an already-registered attempt.
 //
-// Preserving the wait ROW is not recovery. The in-memory continuation that was
-// going to run gate 3 died with the process, so without this the attempt is
-// preserved and permanently stuck -- which is what the first version's
-// conformance claim actually demonstrated, since its goroutine was still alive.
-// Recovery means the record carries enough to execute the rest of the action.
-func (b *Boundary) ResumeWait(inv *contract.Invocation, att *Attempt, done chan<- contract.ActionResult) {
-	needOperator := b.Recorder.State(att) == StateOperatorWaiting
-	go func() { done <- b.completeAction(inv, att, needOperator) }()
-}
-
-// completeAction runs gates 2 and 3 for an already-registered attempt. Both the
-// first pass and a post-restart resume go through it, so a resumed action cannot
-// drift from a fresh one.
-func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, needOperator bool) contract.ActionResult {
-	req := att.Request
+// It has exactly ONE caller. An earlier version exposed it so a preserved wait
+// could be resumed after a restart, which put two continuations over one
+// attempt -- the race detector found both of them settling it. Recovery is
+// artifact-level (§6); a wait does not resume.
+func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, req contract.ActionRequest, needOperator bool) contract.ActionResult {
 
 	if needOperator {
 		requirement := att.Requirement
 		if requirement == nil {
 			requirement = &contract.RequirementRef{GateID: "unnamed", Statement: "an operator is required"}
 		}
+		// A decision already given for this logical action is consumed rather
+		// than re-asked. That is what makes going stale on restart acceptable:
+		// the action is re-requested, but the human is not.
+		binding := req.Action.String() + "\x00" + att.ArgsDigest
+		if approved, found := b.Recorder.Decision(inv.ID(), binding); found {
+			if !approved {
+				b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied (recorded)", DispositionBeforeCommit)
+				return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
+					Outcome: contract.OutcomeDenied, Reason: "operator denied (recorded)"}
+			}
+			b.Recorder.Transition(att, StateOpen)
+			goto gate3
+		}
 		if b.Operator == nil || !b.Operator(*requirement) {
-			b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied")
+			b.Recorder.RecordDecision(inv.ID(), binding, false)
+			b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied", DispositionBeforeCommit)
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 				Outcome: contract.OutcomeDenied, Reason: "operator denied"}
 		}
+		b.Recorder.RecordDecision(inv.ID(), binding, true)
 	}
+
+gate3:
 
 	// ---- Gate 3: resources, revalidation, execution ----
 	if d, ok := b.ResourceDelay[req.Action.String()]; ok && d > 0 {
@@ -670,28 +842,40 @@ func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, needOp
 	// admitted to read. What bounds an attempt that will not settle is the
 	// grace period, not a second refusal.
 	//
+	// If the attempt was settled while this continuation waited -- by the drain
+	// stopping it, or by reconciliation making it stale -- STOP. Marking the
+	// record and letting the continuation run on is "invalidate the attempt"
+	// under another name, which ADR 0030 §5 rejects precisely because a mark
+	// nothing checks does not prevent a commit. The conformance suite caught
+	// exactly that: the drain reported the wait stopped and the goroutine
+	// committed anyway.
+	if b.Recorder.State(att) == StateSettled {
+		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
+			Outcome: att.Outcome, Reason: att.Reason}
+	}
+
 	// Approval clears the human requirement and nothing else; everything
 	// deterministic is still re-checked immediately before the effect.
 	if err := b.revalidate(inv, req.Action); err != nil {
-		b.Recorder.Settle(att, contract.OutcomeDenied, err.Error())
+		b.Recorder.Settle(att, contract.OutcomeDenied, err.Error(), DispositionBeforeCommit)
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeDenied, Reason: err.Error()}
 	}
 
 	exec, ok := b.Executors[req.Action.String()]
 	if !ok {
-		b.Recorder.Settle(att, contract.OutcomeFailed, "no executor for action")
+		b.Recorder.Settle(att, contract.OutcomeFailed, "no executor for action", DispositionBeforeCommit)
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeFailed, Reason: "no executor for action"}
 	}
 	b.Recorder.Transition(att, StateOpen)
 	result, err := exec(inv, req.Arguments)
 	if err != nil {
-		b.Recorder.Settle(att, contract.OutcomeFailed, err.Error())
+		b.Recorder.Settle(att, contract.OutcomeFailed, err.Error(), DispositionCommitted)
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeFailed, Reason: err.Error()}
 	}
-	b.Recorder.Settle(att, contract.OutcomeSucceeded, "")
+	b.Recorder.Settle(att, contract.OutcomeSucceeded, "", DispositionCommitted)
 	return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 		Outcome: contract.OutcomeSucceeded, Result: result}
 }

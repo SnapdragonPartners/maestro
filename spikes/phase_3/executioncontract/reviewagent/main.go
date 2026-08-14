@@ -48,8 +48,14 @@ type agent struct {
 	cancel  chan contract.Cancel
 	readErr chan error
 
-	mu           sync.Mutex
-	ackedThrough uint64
+	mu sync.Mutex
+	// ackedThrough is PER EPOCH. A single scalar cannot express two
+	// incarnations' progress, and Ack carries an epoch precisely because the
+	// sequence spaces are separate.
+	ackedThrough map[uint64]uint64
+	// outbox retains the envelopes this runtime is obliged to be able to
+	// replay -- only the replay-obligated types (§4), not everything.
+	outbox []retained
 
 	cancelled bool
 }
@@ -60,12 +66,13 @@ func main() {
 		mode = "normal"
 	}
 	a := &agent{
-		w:       contract.NewWriter(os.Stdout),
-		mode:    mode,
-		results: make(chan contract.ActionResult, 16),
-		attach:  make(chan contract.AttachAck, 4),
-		cancel:  make(chan contract.Cancel, 1),
-		readErr: make(chan error, 1),
+		w:            contract.NewWriter(os.Stdout),
+		mode:         mode,
+		ackedThrough: map[uint64]uint64{},
+		results:      make(chan contract.ActionResult, 16),
+		attach:       make(chan contract.AttachAck, 4),
+		cancel:       make(chan contract.Cancel, 1),
+		readErr:      make(chan error, 1),
 	}
 	if err := a.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", adapterName, err)
@@ -133,6 +140,9 @@ func (a *agent) run() error {
 	// The epoch is the Orchestrator's, carried on the mutable bindings. Every
 	// event this incarnation emits is identified by (invocation, epoch, seq).
 	a.epoch = inv.Bindings.Epoch
+	// The epoch owns its own sequence space; the handshake's sequences are not
+	// part of it.
+	a.w.ResetSeq()
 
 	// The bindings carry a resource REFERENCE and no path. There is nothing
 	// here to open, which is the point: v1's RunOptions.WorkDir is what this
@@ -143,11 +153,17 @@ func (a *agent) run() error {
 
 	go a.readLoop(rd)
 
-	if err := a.send(contract.TypeStarted, contract.Started{
+	started := contract.Started{
 		Adapter:         adapterName,
 		ExecutableVer:   executableVer,
 		ContractVersion: contract.Version,
-	}); err != nil {
+	}
+	if a.mode == "lying_started" {
+		// The handshake said one thing; `started` says another. Identity that is
+		// carried and never compared is a self-report recorded as a fact (§9).
+		started.Adapter = "something-else"
+	}
+	if err := a.send(contract.TypeStarted, started); err != nil {
 		return err
 	}
 
@@ -184,9 +200,18 @@ func (a *agent) readLoop(rd *contract.Reader) {
 			// rather than merely deduplicated.
 			if k, derr := contract.Decode[contract.Ack](env); derr == nil {
 				a.mu.Lock()
-				if k.Through > a.ackedThrough {
-					a.ackedThrough = k.Through
+				if k.Through > a.ackedThrough[k.Epoch] {
+					a.ackedThrough[k.Epoch] = k.Through
 				}
+				// Released: everything at or below the watermark for that epoch
+				// can leave the outbox.
+				kept := a.outbox[:0]
+				for _, r := range a.outbox {
+					if !(r.epoch == k.Epoch && r.seq <= k.Through) {
+						kept = append(kept, r)
+					}
+				}
+				a.outbox = kept
 				a.mu.Unlock()
 			}
 		}
@@ -303,6 +328,17 @@ func (a *agent) work() error {
 		msg := contract.Activity{Message: "this message is delivered twice"}
 		_ = a.send(contract.TypeActivity, msg)
 		_ = a.w.Repeat(a.inv.ID(), a.epoch, contract.TypeActivity, msg)
+
+	case "replay_outbox":
+		// Emit a replay-obligated event, then replay everything unacknowledged
+		// under its ORIGINAL identity. The receiver must drop the replay.
+		_ = a.sendRetained(contract.TypeUsage, contract.Usage{
+			CallRef: "call-1", InputTokens: 10, OutputTokens: 5,
+			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
+		})
+		time.Sleep(150 * time.Millisecond) // let the ack land
+		a.replayUnacked()
+		_ = a.send(contract.TypeActivity, contract.Activity{Message: "replayed the outbox"})
 
 	case "replay_prior_epoch":
 		// A restarted runtime replaying an event it emitted under the PREVIOUS
@@ -454,9 +490,26 @@ func (a *agent) work() error {
 	// an action record. A raw `question` event would be a side door around
 	// ADR 0030's boundary.
 	if a.mode == "ask" {
+		// The QUESTION is an artifact, not inline text. ADR 0021 makes
+		// artifacts the sole agent handoff, so a question carried as an action
+		// argument would be exactly the direct principal-to-principal payload
+		// that rule forbids. Publish first, then route the reference.
+		qRes, err := a.request(6, actionPublish, map[string]any{
+			"kind": "agent.question",
+			"text": "should a TODO marker block the candidate?",
+		})
+		if err != nil || qRes.Outcome != contract.OutcomeSucceeded {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"could not publish the question artifact"))
+		}
+		var pub struct {
+			ArtifactID string `json:"artifact_id"`
+		}
+		_ = json.Unmarshal(qRes.Result, &pub)
+
 		res, err := a.request(4, contract.ActionAsk, map[string]any{
-			"text":    "should a TODO marker block the candidate?",
-			"context": "the stub backend flags them",
+			"question_artifact": pub.ArtifactID,
+			"to":                "architect",
 		})
 		if err != nil {
 			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
@@ -465,6 +518,21 @@ func (a *agent) work() error {
 			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
 				"ask was not routed: "+res.Reason))
 		}
+		// The result is a DELIVERY ACKNOWLEDGEMENT, not the answer. The answer
+		// arrives as an artifact reference on a later incarnation's bindings.
+		_ = a.send(contract.TypeActivity, contract.Activity{
+			Message: "question routed; awaiting an answer artifact"})
+	}
+
+	if a.mode == "answered" {
+		// A later incarnation, whose BINDINGS carry the answer. The immutable
+		// configuration could not have acquired it.
+		if len(a.inv.Bindings.Inbound) == 0 {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"resumed with no inbound answer artifact"))
+		}
+		_ = a.send(contract.TypeActivity, contract.Activity{
+			Message: "answer artifact " + a.inv.Bindings.Inbound[0].ArtifactID + " received"})
 	}
 
 	// ---- step 3: publish findings as an artifact ----

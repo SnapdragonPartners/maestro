@@ -245,6 +245,13 @@ type Bindings struct {
 	// ResumeToken is opaque to the Orchestrator (§6). Present only when a
 	// resumable runtime is being restarted into an existing execution.
 	ResumeToken string `json:"resume_token,omitempty"`
+	// Inbound carries artifact references that arrived FOR this execution since
+	// the previous incarnation -- an answer to a question, most obviously.
+	//
+	// It is on the bindings and not the configuration precisely because the
+	// configuration is immutable: an execution cannot acquire a new seeding
+	// artifact by restarting, so the arrivals need a mutable home of their own.
+	Inbound []ArtifactRef `json:"inbound,omitempty"`
 }
 
 // Invocation is what crosses the wire: the immutable configuration plus the
@@ -337,6 +344,14 @@ const (
 	// flight. It re-enters no gate and commits nothing; the original
 	// submission's result is still coming.
 	OutcomeOutstanding ActionOutcome = "outstanding"
+	// OutcomeStale is ADR 0030 §5's word for an action that must be RE-REQUESTED
+	// rather than continued. Reconciliation settles a declared wait this way
+	// after an Orchestrator restart: the requirement and any operator decision
+	// are preserved, but the half-run action is not resumed.
+	//
+	// It is deliberately distinct from `unknown`: an attempt awaiting an
+	// operator is not an attempt whose outcome nobody knows.
+	OutcomeStale ActionOutcome = "stale"
 	// OutcomeUnknown is settled by reconciliation for an attempt holding an
 	// intent and no outcome. It is an OUTCOME, not a state (§6) -- and it is
 	// the value Phase 2's tool_calls_finished_check cannot express.
@@ -346,7 +361,7 @@ const (
 // Terminal reports whether this outcome settles the attempt.
 func (o ActionOutcome) Terminal() bool {
 	switch o {
-	case OutcomeSucceeded, OutcomeFailed, OutcomeDenied, OutcomeBlocked, OutcomeUnknown:
+	case OutcomeSucceeded, OutcomeFailed, OutcomeDenied, OutcomeBlocked, OutcomeStale, OutcomeUnknown:
 		return true
 	default:
 		return false
