@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,9 +37,10 @@ var (
 )
 
 type agent struct {
-	w    *contract.Writer
-	inv  *contract.Invocation
-	mode string
+	w     *contract.Writer
+	inv   *contract.Invocation
+	mode  string
+	epoch uint64
 
 	results chan contract.ActionResult
 	attach  chan contract.AttachAck
@@ -56,7 +58,7 @@ func main() {
 	a := &agent{
 		w:       contract.NewWriter(os.Stdout),
 		mode:    mode,
-		results: make(chan contract.ActionResult, 8),
+		results: make(chan contract.ActionResult, 16),
 		attach:  make(chan contract.AttachAck, 4),
 		cancel:  make(chan contract.Cancel, 1),
 		readErr: make(chan error, 1),
@@ -65,6 +67,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", adapterName, err)
 		os.Exit(1)
 	}
+}
+
+func (a *agent) send(msgType string, body any) error {
+	return a.w.Send(a.inv.ID(), a.epoch, msgType, body)
 }
 
 func (a *agent) run() error {
@@ -88,14 +94,15 @@ func (a *agent) run() error {
 		// A version nobody offered. The Orchestrator must refuse at DISPATCH,
 		// producing no execution and no terminal result (§5).
 		selected = "9999.0"
-	} else if !contains(hello.Supported, contract.Version) {
+	} else if !slices.Contains(hello.Supported, contract.Version) {
 		return fmt.Errorf("no mutually supported version; offered %v", hello.Supported)
 	}
 
-	if err := a.w.Send("", contract.TypeHelloAck, contract.HelloAck{
+	if err := a.w.Send("", 0, contract.TypeHelloAck, contract.HelloAck{
 		Selected: selected,
-		// This runtime cannot resume its own session, so §7 holds it resident
-		// while blocked rather than releasing it.
+		// This runtime cannot resume its own session. §7: that does not make it
+		// permanently resident -- after bounded retention it is released and
+		// restarted from the last durable workflow artifact.
 		Resumable:  false,
 		Adapter:    adapterName,
 		Executable: executableVer,
@@ -119,17 +126,20 @@ func (a *agent) run() error {
 		return err
 	}
 	a.inv = &inv
+	// The epoch is the Orchestrator's, carried on the mutable bindings. Every
+	// event this incarnation emits is identified by (invocation, epoch, seq).
+	a.epoch = inv.Bindings.Epoch
 
-	// The invocation carries a resource REFERENCE and no path. There is
-	// nothing here to open, which is the point: v1's RunOptions.WorkDir is
-	// what this replaces.
+	// The bindings carry a resource REFERENCE and no path. There is nothing
+	// here to open, which is the point: v1's RunOptions.WorkDir is what this
+	// replaces.
 	if _, ok := inv.Resource("incubator"); !ok {
-		return fmt.Errorf("no incubator reference in invocation")
+		return fmt.Errorf("no incubator reference in bindings")
 	}
 
 	go a.readLoop(rd)
 
-	if err := a.w.Send(inv.ID, contract.TypeStarted, contract.Started{
+	if err := a.send(contract.TypeStarted, contract.Started{
 		Adapter:         adapterName,
 		ExecutableVer:   executableVer,
 		ContractVersion: contract.Version,
@@ -169,39 +179,52 @@ func (a *agent) readLoop(rd *contract.Reader) {
 
 // request issues one mediated action and waits for the boundary's answer.
 //
-// The correlation is DERIVED from the invocation and a step ordinal rather than
-// random. A restarted runtime must be able to re-announce the correlations it
-// had outstanding, and it cannot do that if it invented them and lost them.
+// The correlation identifies the LOGICAL action. It is derived here from the
+// invocation and a step ordinal, which is sufficient for a deterministic agent
+// -- but the contract does NOT rely on that: after a restart the agent asks the
+// Orchestrator what is outstanding (§6) rather than reconstructing correlations
+// it might not be able to reproduce.
 func (a *agent) request(step int, action contract.ActionID, args any) (contract.ActionResult, error) {
 	raw, err := json.Marshal(args)
 	if err != nil {
 		return contract.ActionResult{}, err
 	}
-	corr := fmt.Sprintf("%s#%d", a.inv.ID, step)
-	if err := a.w.Send(a.inv.ID, contract.TypeActionRequest, contract.ActionRequest{
+	corr := fmt.Sprintf("%s#%d", a.inv.ID(), step)
+	if err := a.send(contract.TypeActionRequest, contract.ActionRequest{
 		Correlation: corr,
 		Action:      action,
 		Arguments:   raw,
 	}); err != nil {
 		return contract.ActionResult{}, err
 	}
-	select {
-	case res := <-a.results:
-		return res, nil
-	case c := <-a.cancel:
-		a.cancelled = true
-		// Reaching a safe boundary means finishing the atomic action already in
-		// flight, then issuing no further ones.
+	return a.awaitResult(action)
+}
+
+func (a *agent) awaitResult(action contract.ActionID) (contract.ActionResult, error) {
+	for {
 		select {
 		case res := <-a.results:
+			if res.Outcome == contract.OutcomeOutstanding {
+				// Someone asked twice for one logical action. Keep waiting for
+				// the original submission's result rather than reissuing.
+				continue
+			}
 			return res, nil
-		case <-time.After(time.Duration(c.DeadlineMS) * time.Millisecond):
-			return contract.ActionResult{}, fmt.Errorf("cancelled while awaiting %s", action)
+		case c := <-a.cancel:
+			a.cancelled = true
+			// Reaching a safe boundary means finishing the atomic action
+			// already in flight, then issuing no further ones.
+			select {
+			case res := <-a.results:
+				return res, nil
+			case <-time.After(time.Duration(c.DeadlineMS) * time.Millisecond):
+				return contract.ActionResult{}, fmt.Errorf("cancelled while awaiting %s", action)
+			}
+		case err := <-a.readErr:
+			return contract.ActionResult{}, err
+		case <-time.After(30 * time.Second):
+			return contract.ActionResult{}, fmt.Errorf("no answer for %s", action)
 		}
-	case err := <-a.readErr:
-		return contract.ActionResult{}, err
-	case <-time.After(30 * time.Second):
-		return contract.ActionResult{}, fmt.Errorf("no answer for %s", action)
 	}
 }
 
@@ -215,7 +238,7 @@ func (a *agent) checkCancel() bool {
 }
 
 func (a *agent) terminal(res contract.TerminalResult) error {
-	return a.w.Send(a.inv.ID, contract.TypeTerminal, res)
+	return a.send(contract.TypeTerminal, res)
 }
 
 // terminalOnCancel is what the agent reports once it has reached a safe
@@ -228,9 +251,8 @@ func (a *agent) terminalOnCancel() error {
 	return a.terminal(contract.Cancelled(contract.ReasonSuperseded, "stopped at a safe boundary"))
 }
 
+//nolint:gocyclo // A flat mode switch is more legible than dispatch indirection.
 func (a *agent) work() error {
-	inv := a.inv
-
 	switch a.mode {
 	case "bad_protocol":
 		// §8's other side: a malformed message is FATAL, unlike a denial.
@@ -243,24 +265,36 @@ func (a *agent) work() error {
 		// a deadline is an Orchestrator-observed fact -- which is why
 		// timed_out is a status rather than a failure class (§5).
 		for {
-			_ = a.w.Send(inv.ID, contract.TypeHeartbeat, contract.Heartbeat{Phase: "stuck"})
+			_ = a.send(contract.TypeHeartbeat, contract.Heartbeat{Phase: "stuck"})
 			time.Sleep(200 * time.Millisecond)
 		}
 
 	case "restart_reattach":
-		// A restarted runtime re-announces its outstanding correlations rather
-		// than reissuing the actions. This is what makes the semantics
-		// at-most-once ACROSS a restart, and it works only because the
-		// correlation is derivable (see request).
+		// A restarted runtime ASKS what is outstanding rather than announcing
+		// correlations it derived. §6: the Orchestrator holds the durable
+		// attempt records, so it is the authority.
 		return a.reattachThenFinish()
+
+	case "duplicate_request":
+		// Two requests for one logical action. The second must not re-enter the
+		// gates; the effect must commit once.
+		return a.duplicateThenFinish()
+
+	case "replay_event":
+		// A redelivery: the same message under the identity already used. At-
+		// least-once delivery permits it, and event identity is what has to
+		// make it harmless.
+		msg := contract.Activity{Message: "this message is delivered twice"}
+		_ = a.send(contract.TypeActivity, msg)
+		_ = a.w.Repeat(a.inv.ID(), a.epoch, contract.TypeActivity, msg)
 	}
 
-	_ = a.w.Send(inv.ID, contract.TypeHeartbeat, contract.Heartbeat{Phase: "reading"})
-	_ = a.w.Send(inv.ID, contract.TypeActivity, contract.Activity{Message: "reading the candidate diff"})
+	_ = a.send(contract.TypeHeartbeat, contract.Heartbeat{Phase: "reading"})
+	_ = a.send(contract.TypeActivity, contract.Activity{Message: "reading the candidate diff"})
 
 	// ---- step 1: read the diff through a mediated action ----
 	diffRes, err := a.request(1, actionReadDiff, map[string]any{
-		"resource": mustResource(inv, "incubator").ReferenceID,
+		"resource": mustResource(a.inv, "incubator").ReferenceID,
 	})
 	if err != nil {
 		return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
@@ -270,7 +304,7 @@ func (a *agent) work() error {
 		// must not re-execute blindly: ADR 0030 §3 sends this to
 		// reconciliation, and blind retry is how an adapted runtime duplicates
 		// a forge push.
-		_ = a.w.Send(inv.ID, contract.TypeWarning, contract.Warning{
+		_ = a.send(contract.TypeWarning, contract.Warning{
 			Message: "attempt " + diffRes.AttemptID + " returned no outcome; not retrying",
 		})
 		os.Exit(3)
@@ -299,9 +333,27 @@ func (a *agent) work() error {
 			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
 				"expected a denial for an ungranted action, got "+string(res.Outcome)))
 		}
-		_ = a.w.Send(inv.ID, contract.TypeActivity, contract.Activity{
-			Message: "denied as expected; continuing",
-		})
+		_ = a.send(contract.TypeActivity, contract.Activity{Message: "denied as expected; continuing"})
+	}
+
+	if a.mode == "act_after_cancel" {
+		// Cancellation has been requested. A well-behaved runtime stops here;
+		// this one deliberately tries one more action, so the boundary's
+		// admission closure has something to refuse. ADR 0029 §7 step 2's
+		// ordering exists precisely because a holder can keep creating.
+		if !a.checkCancel() {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"expected cancellation before the second action"))
+		}
+		res, err := a.request(5, actionPublish, map[string]any{"kind": "review.findings"})
+		if err != nil {
+			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
+		}
+		if res.Outcome != contract.OutcomeDenied {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"an action was admitted after cancellation: "+string(res.Outcome)))
+		}
+		return a.terminalOnCancel()
 	}
 
 	if a.checkCancel() {
@@ -314,30 +366,50 @@ func (a *agent) work() error {
 	// An empty diff is a COMPLETED execution whose work was already done. This
 	// is #280's disposition, decided from real data rather than a mode flag.
 	if strings.TrimSpace(diff.Text) == "" {
-		_ = a.emitProvenance(inv, 0)
 		return a.terminal(contract.Completed(contract.DispositionAlreadySatisfied,
 			"no candidate changes to review"))
 	}
 
-	// ---- step 2: publish findings as an artifact ----
 	if a.mode == "escalate" {
-		// An action whose gate requires an operator. Headless, this blocks the
-		// Story immediately (ADR 0030 §4) rather than waiting for a timeout.
+		// An action whose gate requires an operator. Headless, this settles the
+		// action TERMINALLY as blocked and blocks the Story immediately
+		// (ADR 0030 §4); nothing will ever answer it.
 		res, err := a.request(2, actionForge, map[string]any{"ref": "refs/heads/candidate"})
 		if err != nil {
 			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
 		}
-		if res.Outcome == contract.OutcomeDenied && strings.HasPrefix(res.Reason, "blocked:") {
+		if res.Outcome == contract.OutcomeBlocked {
 			// The caller performs no further LLM turns and issues no further
-			// actions. It stops; the Orchestrator records the blocked result,
-			// because the Story's state is not the agent's to declare.
-			_ = a.w.Send(inv.ID, contract.TypeActivity, contract.Activity{
-				Message: "a decision is required; stopping without further turns",
+			// actions. It stops WITHOUT a terminal event: the Story's state is
+			// not the agent's to declare, and `blocked` is composed by the
+			// Orchestrator from the boundary's own state (§5).
+			_ = a.send(contract.TypeActivity, contract.Activity{
+				Message: "a decision is required and has no responder; stopping",
 			})
 			os.Exit(4)
 		}
 	}
 
+	// ---- ask, as a MEDIATED ACTION ----
+	// Routing a question to another principal changes execution state and
+	// invokes Orchestrator message routing, so under ADR 0022 it passes through
+	// an action record. A raw `question` event would be a side door around
+	// ADR 0030's boundary.
+	if a.mode == "ask" {
+		res, err := a.request(4, contract.ActionAsk, map[string]any{
+			"text":    "should a TODO marker block the candidate?",
+			"context": "the stub backend flags them",
+		})
+		if err != nil {
+			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
+		}
+		if res.Outcome != contract.OutcomeSucceeded {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"ask was not routed: "+res.Reason))
+		}
+	}
+
+	// ---- step 3: publish findings as an artifact ----
 	pubRes, err := a.request(3, actionPublish, map[string]any{
 		"kind":     "review.findings",
 		"backend":  stubBackendTag,
@@ -355,7 +427,7 @@ func (a *agent) work() error {
 		// A runtime that will not stop. The grace period expires, the domain is
 		// fenced, and only then is a terminal result recorded (§6 step 4).
 		for {
-			_ = a.w.Send(inv.ID, contract.TypeHeartbeat, contract.Heartbeat{Phase: "ignoring cancellation"})
+			_ = a.send(contract.TypeHeartbeat, contract.Heartbeat{Phase: "ignoring cancellation"})
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
@@ -363,8 +435,6 @@ func (a *agent) work() error {
 	if a.checkCancel() {
 		return a.terminalOnCancel()
 	}
-
-	_ = a.emitProvenance(inv, len(findings))
 
 	if a.mode == "bad_axes" {
 		// A terminal result that violates §5's applicability rule: completed
@@ -377,27 +447,36 @@ func (a *agent) work() error {
 		})
 	}
 
+	// NO provenance event is emitted, and that is deliberate. This stub makes
+	// no model calls, so there is no model input to account for -- and
+	// provenance is a PER-MODEL-CALL record (§9). Emitting a `closed` status
+	// for a call that never happened would fabricate exactly the coverage the
+	// conformance report declares missing.
+
 	return a.terminal(contract.Completed(contract.DispositionChanged,
 		fmt.Sprintf("%d finding(s) from the %s backend", len(findings), stubBackendTag)))
 }
 
 // reattachThenFinish models a runtime restarted into an existing execution.
 func (a *agent) reattachThenFinish() error {
-	inv := a.inv
-	corr := fmt.Sprintf("%s#%d", inv.ID, 1)
-	if err := a.w.Send(inv.ID, contract.TypeAttach, contract.Attach{Correlations: []string{corr}}); err != nil {
+	if err := a.send(contract.TypeAttach, contract.Attach{}); err != nil {
 		return err
 	}
 	select {
 	case ack := <-a.attach:
-		state := ack.States[corr]
-		_ = a.w.Send(inv.ID, contract.TypeActivity, contract.Activity{
-			Message: "re-attached: " + corr + " is " + string(state),
+		settled := 0
+		for _, act := range ack.Actions {
+			if act.State == contract.AttachSettled {
+				settled++
+			}
+		}
+		_ = a.send(contract.TypeActivity, contract.Activity{
+			Message: fmt.Sprintf("re-attached: %d action(s), %d settled", len(ack.Actions), settled),
 		})
-		if state == contract.AttachSettled {
-			// Already done. Reissuing would be a second action.
+		if settled > 0 {
+			// Already done. Reissuing would be a second logical action.
 			return a.terminal(contract.Completed(contract.DispositionChanged,
-				"resumed; step 1 was already settled and was not reissued"))
+				fmt.Sprintf("resumed; %d settled action(s) were not reissued", settled)))
 		}
 		return a.terminal(contract.Completed(contract.DispositionAlreadySatisfied,
 			"resumed; nothing outstanding"))
@@ -408,30 +487,29 @@ func (a *agent) reattachThenFinish() error {
 	}
 }
 
-// emitProvenance discharges ADR 0031 §3's obligations 2 and 3: the bindings
-// first, and then a status drawn FROM them.
-//
-// The stub makes no model calls, so there is no per-call provenance to emit and
-// this reports the INVOCATION's bindings once. The conformance report declares
-// the per-model-call axes uncovered rather than inventing them.
-func (a *agent) emitProvenance(inv *contract.Invocation, findings int) error {
-	bindings := []contract.SourceBinding{
-		{Source: "P", Ref: inv.Pack.ContentRef, Digest: inv.Pack.Scheme + ":" + inv.Pack.Digest},
-		{Source: "H", Ref: adapterName + "@" + executableVer},
+// duplicateThenFinish issues the same logical action twice.
+func (a *agent) duplicateThenFinish() error {
+	raw, _ := json.Marshal(map[string]any{"kind": "review.findings", "backend": stubBackendTag})
+	corr := fmt.Sprintf("%s#dup", a.inv.ID())
+	req := contract.ActionRequest{Correlation: corr, Action: actionPublish, Arguments: raw}
+
+	if err := a.send(contract.TypeActionRequest, req); err != nil {
+		return err
 	}
-	for _, s := range inv.Seeding {
-		bindings = append(bindings, contract.SourceBinding{Source: "seeding", Ref: s.ArtifactID, Digest: s.Digest})
+	// The duplicate goes out before the first has been answered, so the
+	// boundary sees a request for an action that is still in flight.
+	if err := a.send(contract.TypeActionRequest, req); err != nil {
+		return err
 	}
-	_ = findings
-	return a.w.Send(inv.ID, contract.TypeProvenance, contract.Provenance{
-		CallRef:  "no-model-call",
-		Bindings: bindings,
-		// The stub assembles no turn material of its own, so everything that
-		// shaped its behaviour is bound. A runtime that assembled context
-		// internally could not say this -- which is ADR 0031 §3's point that
-		// unclosed is a property of the ADAPTER, not of being external.
-		Closure: contract.ClosureClosed,
-	})
+
+	res, err := a.awaitResult(actionPublish)
+	if err != nil {
+		return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
+	}
+	if res.Outcome != contract.OutcomeSucceeded {
+		return a.terminal(contract.Failed(contract.ClassNonRetryableAgent, res.Reason))
+	}
+	return a.terminal(contract.Completed(contract.DispositionChanged, "duplicate request issued once"))
 }
 
 // stubAnalyze is the explicitly-stubbed backend. It is NOT a code reviewer and
@@ -456,13 +534,4 @@ func stubAnalyze(diff string) []map[string]any {
 func mustResource(inv *contract.Invocation, kind string) contract.ResourceRef {
 	r, _ := inv.Resource(kind)
 	return r
-}
-
-func contains(hay []string, needle string) bool {
-	for _, s := range hay {
-		if s == needle {
-			return true
-		}
-	}
-	return false
 }

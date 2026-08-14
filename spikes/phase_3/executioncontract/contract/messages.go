@@ -12,15 +12,15 @@ import (
 // Version is the contract version this build speaks. ADR 0032 §11: the version
 // is negotiated at the handshake and a mismatch fails at dispatch, before any
 // resource is acquired.
-const Version = "0032.1"
+const Version = "0032.2"
 
 // Message types, host -> agent.
 const (
 	TypeHello        = "hello"         // version offer, opens the handshake
-	TypeInvoke       = "invoke"        // the resolved invocation (§2)
+	TypeInvoke       = "invoke"        // config + bindings for one incarnation (§2)
 	TypeActionResult = "action_result" // the boundary's answer to an action_request
 	TypeCancel       = "cancel"        // cooperative cancellation with a deadline (§6)
-	TypeAttachAck    = "attach_ack"    // state of the correlations an agent re-announced
+	TypeAttachAck    = "attach_ack"    // state of this execution's outstanding actions
 )
 
 // Message types, agent -> host.
@@ -30,21 +30,27 @@ const (
 	TypeHeartbeat     = "heartbeat"      // liveness (§6: NOT the activity channel)
 	TypeActivity      = "activity"       // human-facing progress, never load-bearing
 	TypeActionRequest = "action_request" // a mediated action
-	TypeQuestion      = "question"       // a nonterminal state, not an outcome
-	TypeUsage         = "usage"          // token axes; §4 decides observed vs reported
+	TypeUsage         = "usage"          // token axes for one model call (§4, §9)
 	TypeProvenance    = "provenance"     // per-call bindings + closure status (§9)
 	TypeWarning       = "warning"        // recorded, not fatal
-	TypeTerminal      = "terminal"       // exactly one per invocation, and it is a claim
-	TypeAttach        = "attach"         // re-announce outstanding correlations (§6)
+	TypeTerminal      = "terminal"       // at most one per invocation, and it is a claim
+	TypeAttach        = "attach"         // ask what is outstanding after a restart (§6)
 )
 
 // Envelope is every message on the wire. ADR 0032 §10: newline-delimited JSON.
+//
+// Identity is (Inv, Epoch, Seq), and all three are needed. A sequence number
+// alone restarts at 1 with every process, so at-least-once delivery could not
+// be made idempotent: two different messages from two incarnations would share
+// an identity. The EPOCH is assigned by the Orchestrator and is what orders
+// them.
 type Envelope struct {
-	V    string          `json:"v"`
-	Type string          `json:"type"`
-	Inv  string          `json:"inv,omitempty"`
-	Seq  uint64          `json:"seq"`
-	Body json.RawMessage `json:"body,omitempty"`
+	V     string          `json:"v"`
+	Type  string          `json:"type"`
+	Inv   string          `json:"inv,omitempty"`
+	Epoch uint64          `json:"epoch"`
+	Seq   uint64          `json:"seq"`
+	Body  json.RawMessage `json:"body,omitempty"`
 }
 
 // ---------- handshake ----------
@@ -64,8 +70,9 @@ type Hello struct {
 type HelloAck struct {
 	Selected string `json:"selected"`
 	// Resumable declares that the runtime can resume its own session from an
-	// opaque token. §7 makes this the difference between an execution that may
-	// be released while blocked and one that must be held resident.
+	// opaque token. §7 makes this the difference between an execution that can
+	// be released and resumed cheaply and one whose restart replays from the
+	// last durable workflow artifact.
 	Resumable bool `json:"resumable"`
 	// Adapter and Executable are provenance (§9), not identity for routing.
 	Adapter    string `json:"adapter"`
@@ -113,9 +120,10 @@ type ServedModelID struct {
 	ProviderModelName string `json:"provider_model_name"`
 }
 
-// ModelBinding is what the invocation carries. The UNDERLYING model reference
-// is deliberately absent: it is a fact about a model rather than about this
-// invocation, and the plane resolves it from model metadata (§3).
+// ModelBinding is the REQUESTED model. The UNDERLYING model reference is
+// deliberately absent: it is a fact about a model rather than about this
+// invocation, and the plane resolves it from model metadata (§3). What the
+// provider actually served is reported per call, on Usage.
 type ModelBinding struct {
 	Route            ModelRoute    `json:"route"`
 	Served           ServedModelID `json:"served"`
@@ -144,6 +152,13 @@ type ActionID struct {
 
 func (a ActionID) String() string { return a.Kind + "." + a.Verb }
 
+// ActionAsk routes a question to another principal. It is a MEDIATED ACTION and
+// not an event: it changes execution state and invokes Orchestrator message
+// routing, so under ADR 0022 it must pass through an action record. A raw
+// `question` event would be a side door around ADR 0030's boundary -- which is
+// the exact hole that ADR forbids.
+var ActionAsk = ActionID{Kind: "message", Verb: "ask"}
+
 // ResourceRef is ADR 0029 §5's reference plus the instance generation, which is
 // the fencing identity. This is the field that replaces v1's RunOptions.WorkDir
 // -- there is deliberately no path here.
@@ -161,47 +176,86 @@ type Budgets struct {
 	MaxIterations  int   `json:"max_iterations,omitempty"`
 }
 
-// Invocation is resolved, immutable, and complete (§2). Everything requiring a
-// decision is decided before it is sent; the runtime looks nothing up.
-type Invocation struct {
-	ID           string        `json:"id"`
-	Principal    PrincipalRef  `json:"principal"`
-	Role         string        `json:"role"`
-	Work         WorkRef       `json:"work"`
-	Seeding      []ArtifactRef `json:"seeding,omitempty"`
-	Model        ModelBinding  `json:"model"`
-	Pack         PackRef       `json:"pack"`
-	Capabilities []ActionID    `json:"capabilities"`
-	Resources    []ResourceRef `json:"resources"`
-	Budgets      Budgets       `json:"budgets"`
+// ExpectedSource is ADR 0031 §3 obligation 1. A source NAME alone is not a
+// capability claim: "this runtime will report its turn material" says nothing
+// about how, so nothing can be checked against it. The MECHANISM is what makes
+// the declaration falsifiable.
+type ExpectedSource struct {
+	Source string `json:"source"` // P | H | seeding | turn
+	// Mechanism is how this runtime will account for that source -- for example
+	// "invocation" (fixed at dispatch), "mediated-actions" (observable in the
+	// Audit record), or "adapter-events" (reported by the adapter).
+	Mechanism string `json:"mechanism"`
+}
+
+// ExecutionConfig is the IMMUTABLE half of an invocation: everything resolved
+// once at dispatch and reused verbatim for the life of the execution, including
+// across a restart. It is persisted, so a restarted Orchestrator can reissue it
+// without re-resolving -- which is what stops a configuration edit between the
+// crash and the restart from moving a factory lever mid-Story.
+//
+// Nothing here may change while the execution lives.
+type ExecutionConfig struct {
+	ID           string           `json:"id"`
+	Principal    PrincipalRef     `json:"principal"`
+	Role         string           `json:"role"`
+	Work         WorkRef          `json:"work"`
+	Seeding      []ArtifactRef    `json:"seeding,omitempty"`
+	Model        ModelBinding     `json:"model"`
+	Pack         PackRef          `json:"pack"`
+	Capabilities []ActionID       `json:"capabilities"`
+	Budgets      Budgets          `json:"budgets"`
+	Sources      []ExpectedSource `json:"expected_sources"`
 
 	// OperatorResponder is ADR 0030 §4: headless is a DECLARED configuration
-	// known at dispatch, never an observation that nobody answered.
+	// known at dispatch, never an observation that nobody answered. It is
+	// immutable because it describes the run, not the moment.
 	OperatorResponder bool `json:"operator_responder"`
+}
 
-	// ExpectedSources is ADR 0031 §3 obligation 1 -- which of the four
-	// provenance sources this runtime will report, and by what mechanism. A
-	// claim about capability, made before there is anything to account for.
-	ExpectedSources []string `json:"expected_sources"`
-
+// Bindings is the MUTABLE half: what is true of THIS incarnation and may differ
+// after a restart or after gate 3 replaces a resource.
+//
+// A first version of this contract put resource generations and the resume
+// token inside an "immutable" invocation, which was self-contradicting on both
+// counts: ADR 0030's gate 3 may acquire or replace a resource mid-execution, so
+// the generation it carries is a snapshot; and a resume token exists only on
+// the second and later incarnations.
+type Bindings struct {
+	// Epoch identifies this incarnation and orders events across restarts. The
+	// ORCHESTRATOR assigns it.
+	Epoch uint64 `json:"epoch"`
+	// Resources carries the current grants and their instance generations
+	// (ADR 0029 §5). Refreshed whenever gate 3 acquires or replaces one.
+	Resources []ResourceRef `json:"resources"`
 	// ResumeToken is opaque to the Orchestrator (§6). Present only when a
 	// resumable runtime is being restarted into an existing execution.
 	ResumeToken string `json:"resume_token,omitempty"`
 }
 
-// HasCapability reports whether the invocation granted this action.
+// Invocation is what crosses the wire: the immutable configuration plus the
+// bindings for this incarnation.
+type Invocation struct {
+	Config   ExecutionConfig `json:"config"`
+	Bindings Bindings        `json:"bindings"`
+}
+
+// ID is the execution's identity, which lives on the immutable half.
+func (inv *Invocation) ID() string { return inv.Config.ID }
+
+// HasCapability reports whether the configuration granted this action.
 //
 // The invocation's copy is NOT the authority -- ADR 0030's admission gate
 // re-checks immediately before the effect (§8). It exists so a runtime can
 // present a coherent tool surface and refuse locally rather than discovering
 // every denial through a round trip.
 func (inv *Invocation) HasCapability(id ActionID) bool {
-	return slices.Contains(inv.Capabilities, id)
+	return slices.Contains(inv.Config.Capabilities, id)
 }
 
-// Resource returns the reference for a resource kind.
+// Resource returns the current binding for a resource kind.
 func (inv *Invocation) Resource(kind string) (ResourceRef, bool) {
-	for _, r := range inv.Resources {
+	for _, r := range inv.Bindings.Resources {
 		if r.Kind == kind {
 			return r, true
 		}
@@ -230,8 +284,8 @@ type Activity struct {
 	Message string `json:"message"`
 }
 
-// ActionRequest is a mediated action. Correlation is chosen by the RUNTIME
-// (§6); the boundary's reply carries the attempt identity that owns ADR 0030
+// ActionRequest is a mediated action. Correlation identifies the LOGICAL
+// action; the boundary's reply carries the attempt identity that owns ADR 0030
 // §3's at-most-once semantics.
 type ActionRequest struct {
 	Correlation string          `json:"correlation"`
@@ -248,11 +302,33 @@ const (
 	// OutcomeDenied is DATA, not a protocol violation (§8). The agent reads it
 	// and continues; the execution does not fail.
 	OutcomeDenied ActionOutcome = "denied"
+	// OutcomeBlocked is TERMINAL for the action: a gate required an operator
+	// and the configuration declares no responder, so nothing will ever answer
+	// it. It is distinct from `denied` because the requirement is preserved and
+	// the Story is irreconcilable within this run rather than refused.
+	//
+	// Leaving such an attempt in `operator_waiting` would be a lie: a headless
+	// wait is not a healthy wait, because it has no responder.
+	OutcomeBlocked ActionOutcome = "blocked"
+	// OutcomeOutstanding answers a DUPLICATE request for an action already in
+	// flight. It re-enters no gate and commits nothing; the original
+	// submission's result is still coming.
+	OutcomeOutstanding ActionOutcome = "outstanding"
 	// OutcomeUnknown is settled by reconciliation for an attempt holding an
 	// intent and no outcome. It is an OUTCOME, not a state (§6) -- and it is
 	// the value Phase 2's tool_calls_finished_check cannot express.
 	OutcomeUnknown ActionOutcome = "unknown"
 )
+
+// Terminal reports whether this outcome settles the attempt.
+func (o ActionOutcome) Terminal() bool {
+	switch o {
+	case OutcomeSucceeded, OutcomeFailed, OutcomeDenied, OutcomeBlocked, OutcomeUnknown:
+		return true
+	default:
+		return false
+	}
+}
 
 // ActionResult is the boundary's answer.
 type ActionResult struct {
@@ -261,25 +337,37 @@ type ActionResult struct {
 	Outcome     ActionOutcome   `json:"outcome"`
 	Reason      string          `json:"reason,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
+	// Requirement is preserved on a blocked outcome so the terminal result can
+	// reference what was actually being asked (§5).
+	Requirement *RequirementRef `json:"requirement,omitempty"`
 }
 
-// Question is a nonterminal state, not an outcome -- the distinction v1's
-// QUESTION signal loses by putting it in the same enum as ERROR and TIMEOUT.
-type Question struct {
-	Text    string `json:"text"`
-	Context string `json:"context,omitempty"`
-}
-
-// Usage carries token axes. §4: whether this is authoritative depends on who
-// could observe it, and the record says which.
+// Usage carries one model call's token axes and what was actually served.
+//
+// CallRef is required: without a stable call identity, usage cannot be joined
+// to the provenance for the same call, and neither can be attributed to a
+// model. §9 makes them two reports about one thing.
 type Usage struct {
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	ReasoningTokens int64 `json:"reasoning_tokens"`
-	CachedTokens    int64 `json:"cached_tokens"`
+	CallRef         string `json:"call_ref"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	ReasoningTokens int64  `json:"reasoning_tokens"`
+	CachedTokens    int64  `json:"cached_tokens"`
 	// CostUSD is a pointer because nil means UNAVAILABLE and 0 means free.
 	// Phase 1's lesson, encoded in llm_calls.cost_usd's own comment.
 	CostUSD *float64 `json:"cost_usd,omitempty"`
+
+	// Served is the EFFECTIVE served identity for this call -- what the
+	// provider says it ran, which is not necessarily what was requested (§3).
+	// An alias resolves at call time to something the requester did not choose,
+	// and recording the alias would make two runs months apart compare equal
+	// when they ran different models.
+	Served ServedModelID `json:"served"`
+	// ServedConfirmed distinguishes an identity the provider REPORTED from one
+	// carried over from the request because the provider said nothing more
+	// specific. Recording the second as though it were the first is the
+	// unavailable-versus-zero error in another costume.
+	ServedConfirmed bool `json:"served_confirmed"`
 }
 
 // SourceBinding is ADR 0031 §3 obligation 2: the exact contributing reference
@@ -298,7 +386,10 @@ const (
 	ClosureUnclosed ClosureStatus = "unclosed"
 )
 
-// Provenance is emitted per model call.
+// Provenance is emitted PER MODEL CALL, and only per model call. There is no
+// such thing as provenance for an execution that made none: with no model
+// input there is nothing to account for, and emitting `closed` anyway would
+// assert an accounting that never happened.
 type Provenance struct {
 	CallRef  string          `json:"call_ref"`
 	Bindings []SourceBinding `json:"bindings"`
@@ -322,10 +413,14 @@ type Cancel struct {
 	DeadlineMS int64  `json:"deadline_ms"`
 }
 
-// Attach re-announces outstanding correlations after a transport interruption.
-type Attach struct {
-	Correlations []string `json:"correlations"`
-}
+// Attach asks what is outstanding for this execution. The AGENT does not
+// enumerate: a first version had it re-announce correlations it derived from a
+// step ordinal, which is unsound for a nondeterministic runtime -- step 3 after
+// a restart need not be the same logical action as step 3 before it.
+//
+// The Orchestrator is the authority on what is outstanding, because it holds
+// the durable attempt records. The agent asks.
+type Attach struct{}
 
 // AttachState is deliberately COARSE. §6: re-attach never surfaces approval
 // semantics to the agent -- the runtime learns a call is still outstanding, it
@@ -337,12 +432,19 @@ type AttachState string
 const (
 	AttachOutstanding AttachState = "outstanding"
 	AttachSettled     AttachState = "settled"
-	AttachUnknown     AttachState = "unknown"
 )
 
-// AttachAck reports each correlation's state, and replays the result of any
-// that settled while the transport was down.
+// OutstandingAction is one entry in the Orchestrator's answer.
+type OutstandingAction struct {
+	Correlation string      `json:"correlation"`
+	AttemptID   string      `json:"attempt_id"`
+	Action      ActionID    `json:"action"`
+	State       AttachState `json:"state"`
+}
+
+// AttachAck reports every known action for the execution, and replays the
+// result of any that settled while the previous incarnation was gone.
 type AttachAck struct {
-	States  map[string]AttachState `json:"states"`
-	Settled []ActionResult         `json:"settled,omitempty"`
+	Actions []OutstandingAction `json:"actions"`
+	Settled []ActionResult      `json:"settled,omitempty"`
 }

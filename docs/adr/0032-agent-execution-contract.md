@@ -1,8 +1,8 @@
 +++
 title = "ADR 0032: The Agent Execution Contract"
-edit_date = "2026-08-13"
+edit_date = "2026-08-14"
 status = "draft"
-summary = "Agents reach Maestro only through a versioned wire contract, so a native Go agent and an adapted external runtime meet the same boundary and neither receives a local path or a database connection. An invocation carries resolved identity — principal, effective work version, model route, prompt pack, capabilities, and fenced resource references — and is immutable for the life of the execution. Events report and the Orchestrator's own records decide, so a fact the Orchestrator could not observe is recorded as reported rather than observed. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate awaiting an operator, and an infrastructure failure stop colliding. A blocked execution consumes no runnable concurrency and does consume resource capacity, which is the accounting that makes ADR 0030's blocking affordable."
+summary = "Agents reach Maestro only through a versioned wire contract, so a native Go agent and an adapted external runtime meet the same boundary and neither receives a local path or a database connection. An invocation is two records with two lifetimes: an immutable, persisted execution configuration that a restart reuses verbatim, and per-incarnation bindings carrying the resource grants and generations a later gate may replace. Events report and the Orchestrator's own records decide, so a fact the Orchestrator could not observe is recorded as reported rather than observed, and every event is identified across restarts so at-least-once delivery is actually idempotent. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. A blocked execution consumes no runnable concurrency and consumes resource capacity only while it retains resources, which is the accounting that makes ADR 0030's blocking affordable."
 +++
 
 # 0032. The Agent Execution Contract
@@ -203,30 +203,62 @@ several principals over one Incubator; one adapter may serve several roles; a
 harness may collapse roles onto one implementation. The contract carries all four
 because collapsing any pair loses a distinction some configuration needs.
 
-### 2. The invocation
+### 2. The invocation is two halves, and only one of them is immutable
 
-**The invocation is resolved, immutable, and complete.** Everything requiring a
-decision is decided before it is sent; the runtime looks nothing up. This follows
-directly from ADR 0019 — resolution is rules, not judgment — and from ADR 0031 §4,
-which fixes pack resolution at dispatch for the same reason.
+**Everything requiring a decision is decided before dispatch; the runtime looks
+nothing up.** That follows from ADR 0019 — resolution is rules, not judgment — and
+from ADR 0031 §4, which fixes pack resolution at dispatch for the same reason.
+
+But "the invocation is immutable and reused verbatim" is **false as a statement
+about the whole message**, and a first draft asserted it while listing two fields
+that contradict it. ADR 0030's gate 3 acquires or replaces a resource *during* an
+execution, so a resource generation is a snapshot rather than a constant; and a
+resume token exists only on the second and later incarnations. Calling that
+structure immutable would have made either the rule or the fields wrong.
+
+So the invocation is **two records with two lifetimes**:
+
+#### The execution configuration — immutable, persisted, reused verbatim
 
 | Field | Why it is here |
 | --- | --- |
-| **Contract version** | Negotiated at handshake (§11); a mismatch fails before any resource is acquired |
-| **Invocation identity** | The correlation key for every event, action, and record belonging to this execution |
+| **Execution identity** | The key every event, action, and record belongs to |
 | **Principal instance** and **role** | ADR 0021's accountable identity; the role names what the work needs, not who implements it |
 | **Work scope and effective version** | Version-bound dispatch ([ADR 0019](0019-orchestrator-boundary.md) as amended). ADR 0030's admission gate compares each action against this |
 | **Seeding artifact references** | The Management artifacts this instance starts with, recorded in `principal_instance_inputs` (ADR 0021). References, never inlined content |
 | **Model route and served identity** | §3 |
-| **Prompt pack** — name, scheme-qualified digest, content reference, installation identity and revision | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §2. The name is a label and is carried for humans and for validation, never dereferenced |
+| **Prompt pack** — name, scheme-qualified digest, content reference, installation identity and revision | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §2. The name is a label, carried for humans and for validation, never dereferenced |
 | **Resolved capability set** | §8. Orchestrator-owned action identities, not the runtime's tool names |
-| **Fenced resource references** — for the Incubator and, where the work requires one, the Habitat: the reference and its **instance generation** | [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §5 and §8. Never a local path |
 | **Budgets and limits** | Token, cost, wall-clock, and iteration bounds. ADR 0030 §10 puts budget enforcement here rather than at its boundary, because an LLM call is not a mediated action |
-| **Operator-responder availability** | ADR 0030 §4: headless is a **declared configuration known at dispatch**, never an observation that nobody answered |
-| **Expected source contract** | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §3, obligation 1: which of the four provenance sources this runtime will report, and by what mechanism. A capability claim, made before there is anything to account for |
+| **Operator-responder availability** | ADR 0030 §4: headless is a **declared configuration known at dispatch**, never an observation that nobody answered. It describes the run, not the moment |
+| **Expected source contract** | §9, and [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §3 obligation 1 |
 
-**What the invocation must never carry**, each because something in the accepted
-set forbids it:
+**It is persisted.** This is what makes "restart reuses the invocation" reachable
+rather than aspirational: a restarted **Orchestrator** must be able to reissue the
+configuration without re-resolving it, and it cannot do that from memory it no
+longer has. Re-resolving would let a configuration edit between the crash and the
+restart move a factory lever mid-Story with nothing recording that it happened.
+
+#### The bindings — per incarnation, refreshed as the execution runs
+
+| Field | Why it is separate |
+| --- | --- |
+| **Epoch** | Identifies this incarnation and orders events across restarts (§4). Assigned by the Orchestrator |
+| **Fenced resource references** — for the Incubator and, where the work requires one, the Habitat: the reference and its **instance generation** | [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §5 and §8. Never a local path — and never immutable, because gate 3 may acquire or replace the resource |
+| **Resume token**, where the runtime declared itself resumable | Opaque to the Orchestrator (§6). Absent on a first incarnation by construction |
+
+**Refreshing a binding is not amending the execution.** A replaced resource is a
+new grant under the same configuration, and the configuration is what a restart
+reuses verbatim. Keeping them in one record would have meant either treating a
+routine reprovision as a new dispatch, or calling something immutable that
+demonstrably changes.
+
+**A change to the configuration is a new dispatch.** ADR 0031 §4 fixes this for
+the pack and gives the reason generally: a lever that changes under a running
+execution is a silent swap with no version behind it.
+
+**What neither half may ever carry**, each because something in the accepted set
+forbids it:
 
 - **A filesystem path into an execution resource.** ADR 0029 §8. A resource
   reference plus a generation is what replaces `RunOptions.WorkDir`.
@@ -238,17 +270,10 @@ set forbids it:
 - **Unresolved selection of any kind** — a pack name to look up, a model name to
   infer a provider from, a capability to be decided later.
 
-**The invocation is immutable for the life of the execution.** A change to any
-resolved value is a new dispatch. ADR 0031 §4 already fixes this for the pack and
-gives the reason generally: a lever that changes under a running execution is a
-silent swap with no version behind it.
-
-**Restart reuses the invocation; it does not re-resolve.** ADR 0029 §2 scopes the
-Incubator to the Story execution rather than the agent principal, so a replacement
-agent resumes the same execution, and ADR 0031 §4 draws the consequence for the
-pack. The same rule covers every resolved field, for the same reason: re-resolving
-would let a configuration edit between the crash and the restart change the
-factory mid-Story with nothing recording that it had happened.
+**Restart reuses the configuration and re-issues the bindings.** ADR 0029 §2
+scopes the Incubator to the Story execution rather than the agent principal, so a
+replacement agent resumes the same execution; ADR 0031 §4 draws the consequence
+for the pack, and the same reasoning covers every configured field.
 
 ### 3. Model identity: the route, the served offering, and the underlying model
 
@@ -336,11 +361,25 @@ The event kinds:
 | `heartbeat` | Liveness, and the runtime's current phase | Separates a working execution from a hung one without inferring either from output volume |
 | `activity` | Human-facing progress | Never load-bearing. v1's `INACTIVITY` signal is an observation of this channel, and §6 keeps liveness off it |
 | `action_request` / `action_result` | A mediated action and its outcome, correlated (§6) | The request is a request. What happens is ADR 0030's, and the result the runtime receives is what that boundary returns |
-| `question` | An agent's question for another principal | A **nonterminal** state, not an outcome — the distinction v1's `QUESTION` signal loses |
-| `usage` | Token axes and, where the runtime knows it, cost | §9 governs whether this is observed or reported |
-| `provenance` | Per-call source bindings and closure status | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §3, obligations 2 and 3 |
+| `usage` | **A call reference**, token axes, cost where known, and the **effective served identity** with its confirmation state | §3 and §9. Without the call reference it joins to nothing |
+| `provenance` | The same call reference, its source bindings, and the closure status drawn from them | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §3, obligations 2 and 3 |
+| `attach` / `attach_ack` | A restarted runtime asks what is outstanding; the Orchestrator answers (§6) | |
 | `warning` | A condition the runtime wants recorded and did not treat as fatal | |
-| `terminal` | The four-axis result (§5) | Exactly one per invocation, and it is a **claim** |
+| `terminal` | The four-axis result (§5) | At most one per execution, and it is a **claim** (§5) |
+
+**Asking another principal a question is an action, not an event.** A first draft
+made it an event, which put a side door around ADR 0030's boundary: routing a
+question changes execution state and invokes Orchestrator message routing, and
+ADR 0022 requires anything that creates decisions or state transitions to pass
+through an action record. As a raw event it would carry no intent record, no
+policy evaluation, and no outcome — the exact hole ADR 0030 exists to close. It is
+`message.ask`, and the waiting it produces is the ordinary wait of an
+outstanding action.
+
+**`usage` and `provenance` are two reports about one model call**, joined by a
+call reference both carry. A first draft gave `usage` no reference at all, which
+left token accounting unattributable to a model and unjoinable to the provenance
+for the same call — two records about a thing neither could name.
 
 **A reported fact and an observed fact are different, and the record says which.**
 The tempting rule — *events are never authoritative* — is false for the case that
@@ -363,9 +402,28 @@ because a runtime that believed it finished is a fact worth having. This is the
 inverse of v1's arrangement, where a side-channel slot corrected the parsed signal
 after the fact (`runner.go:199-206`) with no record that the two had disagreed.
 
-**Delivery is at-least-once and ordered per invocation.** A duplicate event is
-idempotent by its own identity. Ordering across invocations is not promised and
-nothing may depend on it.
+#### Event identity, without which at-least-once means nothing
+
+**Delivery is at-least-once**, so a redelivery must be harmless — and that
+requires an identity the receiver can check. A first draft asserted the property
+and defined no identity, which is a guarantee with no mechanism: the conformance
+slice's sequence counter restarted at 1 with every process, so two different
+messages from two incarnations shared one identity and nothing deduplicated
+either.
+
+**An event's identity is `(execution, epoch, sequence)`.**
+
+- The **epoch** identifies the incarnation and is **assigned by the
+  Orchestrator**, on the bindings (§2). A runtime that minted its own would
+  restart the identity space on every process, which is the defect.
+- The **sequence** is monotonic within an epoch.
+- **The receiver checks it.** A repeat is dropped; ordering holds within an epoch,
+  and epochs order incarnations. Ordering across executions is not promised and
+  nothing may depend on it.
+
+This is what makes the `usage` and `provenance` records safe to persist: a
+redelivered usage event that was counted twice is a corrupted cost figure, not a
+harmless duplicate.
 
 ### 5. The terminal result is four axes
 
@@ -379,7 +437,7 @@ switches over a set whose members are not alternatives to one another.
 | **Execution status** | `completed`, `blocked`, `cancelled`, `timed_out`, `failed` | Always, exactly one |
 | **Completion disposition** | `changed`, `already_satisfied` | Required iff status is `completed` |
 | **Cancellation reason** | `superseded`, `operator_requested`, `shutdown` | Required iff status is `cancelled` |
-| **Failure class** | `retryable_infrastructure`, `non_retryable_agent` | Required iff status is `failed` or `timed_out` |
+| **Failure class** | `retryable_infrastructure`, `non_retryable_agent` | Required iff status is `failed`, and carried by nothing else |
 
 **It is a schema with an applicability rule, not a cross product.** An axis that
 does not apply is absent, not defaulted. A `completed` result with a
@@ -391,10 +449,16 @@ Notes on the axes that are easy to get wrong:
   action and the structured requirement set ADR 0030 §3 already defines. Inventing
   a parallel vocabulary here would duplicate candidate 12's rules in a second
   place and let the two drift.
-- **`timed_out` is a status rather than a failure class** because a deadline is an
-  Orchestrator-observed fact while an error is a runtime-reported one. Collapsing
-  them would lose which party ended the execution, and they are retried
-  differently: a timeout is retried with a larger budget, an error as-is.
+- **`timed_out` is a status, and it carries no failure class.** It is a status
+  because a deadline is an Orchestrator-observed fact while an error is a
+  runtime-reported one, and collapsing them would lose which party ended the
+  execution. It carries no class because **ordinary wall-clock exhaustion is
+  neither** — a slow provider and a looping agent both produce it, and a first
+  draft required a classification while saying in the next breath that a timeout
+  may be retried with a larger budget, which is not what either class means. An
+  axis that must be filled with the least-wrong value records a guess as a fact.
+  If timeouts later need a cause, that is its own axis with its own vocabulary,
+  not a borrowed one.
 - **`already_satisfied` is a completion.** The execution did its job; the work was
   already done. Recording it as a distinct *status* would make a successful
   execution look unsuccessful, which is the reading
@@ -418,7 +482,7 @@ slice exercises this directly.
 
 The other four statuses may be claimed by the runtime and are then subject to
 §4's override. `blocked` is different in kind: it is a fact about a **gate the
-agent cannot see**, established by ADR 0030's boundary and the invocation's
+agent cannot see**, established by ADR 0030's boundary and the configuration's
 declared responder availability. The agent stops; the Orchestrator records.
 
 This fell out of the conformance slice rather than being designed: the headless
@@ -426,6 +490,25 @@ agent reaches a decision it cannot get answered, stops issuing turns, and exits
 **without a terminal event**, and the host composes the result from the
 boundary's own state. An agent that named itself blocked would be asserting
 something it has no way to know.
+
+**So `terminal` is *at most* one event per execution, not exactly one**, and a
+first draft said "exactly". The blocked execution is the standing exception:
+there is no terminal event at all, and the Orchestrator composes the result.
+Stating it as exactly-one would have made the one case this ADR designs for read
+as a protocol violation.
+
+#### A headless block is terminal for the action, not a wait
+
+The action does not sit in `operator_waiting` (§6) — **nothing will ever answer
+it**, and a state named for a responder that does not exist is a false record.
+It settles terminally as `blocked`, **preserving the requirement** so the
+execution's result can reference it.
+
+A first draft got this wrong in a way worth keeping: the boundary returned
+`denied` on the wire, left the action in `operator_waiting`, and recorded the
+execution terminally `blocked` — three descriptions of one event, no two of them
+agreeing. One event, one durable action outcome, one wire result, and the
+requirement carried by all of them.
 
 #### Two things that are not execution statuses
 
@@ -465,7 +548,12 @@ interrupted call, and assigns the vocabulary to this ADR. It is:
 | `open` | Admitted; the effect is being attempted | No |
 | `operator_waiting` | ADR 0030 gate 2 — a human decision is required | No |
 | `resource_waiting` | ADR 0030 gate 3 — provisioning, or queued for capacity ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2) | No |
-| `settled` | An outcome was determined: succeeded, failed, denied, or **unknown** | Yes |
+| `settled` | An outcome was determined: succeeded, failed, denied, **blocked**, or **unknown** | Yes |
+
+`blocked` is an action outcome as well as an execution status, and it is the
+headless case of §5: the gate required an operator, the configuration declares
+none, so nothing can answer and the attempt settles terminally with its
+requirement preserved.
 
 **The two waits stay distinct** — ADR 0030 §8's reason, restated because it is the
 whole point of the vocabulary: different responders, different release rules,
@@ -479,18 +567,32 @@ remove from reappearing one level down — and it is the value the existing
 `tool_calls_finished_check` constraint cannot express, which is why the Phase 3
 migration must replace that constraint rather than only add to the table.
 
-**Reconciliation acts on `open` and on nothing else**, and this is a rule the
-conformance slice had to discover. ADR 0030 §8 states that the *watchdog* leaves
-both waits alone; the **reconciler is a different actor** and no rule was written
-for it. A first implementation settled every attempt that was not already
-settled, which swept up an attempt sitting healthily in `operator_waiting` and
-destroyed the requirement reference a `blocked` result must carry (§5) — so the
-execution reported itself blocked on nothing.
+#### Reconciliation treats all three states, and settles only one
 
-An attempt in a **declared** wait is healthy, not interrupted. That is the whole
-distinction the nonterminal states exist to draw, and the first implementation
-collapsed it one level below where ADR 0030 drew it. Phase 3's reconciler owes
-the same scoping.
+ADR 0030 §8 states that the *watchdog* leaves both waits alone. The
+**reconciler is a different actor** and no rule was written for it, so this ADR
+writes one — and got it wrong twice in opposite directions before arriving here.
+
+The first implementation settled **every** unsettled attempt as `unknown`, which
+swept up an attempt sitting healthily in `operator_waiting` and destroyed the
+requirement a `blocked` result must reference (§5); the execution then reported
+itself blocked on nothing. The correction — *reconciliation acts on `open` and
+nothing else* — over-shot: it left a `resource_waiting` attempt whose
+provisioning operation had died stuck forever, because that operation does not
+survive a restart and nobody was going to restore it.
+
+**The rule is that a declared wait may never be settled `unknown` merely for
+being nonterminal — not that reconciliation ignores it.** Each state has its own
+treatment:
+
+| State | Reconciliation does | Why |
+| --- | --- | --- |
+| `open` | Settles it `unknown` | An intent was recorded and no outcome ever was |
+| `operator_waiting` | **Preserves and validates** it against its requirement | An operator wait is healthy; only an operator can answer it, and destroying it takes the requirement with it. A wait carrying no requirement is a **defect**, surfaced as one rather than settled |
+| `resource_waiting` | **Preserves and hands it back for restoration** | The provisioning or queueing operation does not survive a restart. Leaving it alone strands it exactly as settling it would corrupt it. A wait naming no operation is likewise a defect |
+
+A wait must therefore **name what it is waiting for**, or it is not recoverable —
+only stuck. That is a requirement on the record, not on the reconciler.
 
 **Entering and leaving a wait is a durable transition**, per ADR 0030 §8, not the
 absence of a completion.
@@ -500,22 +602,44 @@ absence of a completion.
 Cancellation is cooperative first and fenced second, and the ordering is
 load-bearing because A5 rests on it.
 
-1. **The Orchestrator requests cancellation** over the contract, with a stated
+1. **Admission closes first.** The boundary stops admitting *new* agent-initiated
+   actions for that execution before cancellation is even asked for. This is
+   [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §7 step 2's own
+   ordering — *revoke the ability to create, then enumerate, then confirm* —
+   applied to attempts rather than containers. Without it the runtime keeps
+   issuing actions throughout the grace period and the drain chases a set the
+   holder is still adding to.
+2. **The Orchestrator requests cancellation** over the contract, with a stated
    deadline.
-2. **The runtime is permitted to reach a safe boundary** — completing an atomic
-   action already in flight — and must issue no further actions.
-3. **On expiry, the resource's domain is fenced** per
-   [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §7, which is the
+3. **The runtime is permitted to reach a safe boundary** — completing an atomic
+   action already **admitted** — and issues no further ones. Closing admission
+   does *not* abort work already admitted: that is what draining means, and a
+   first implementation re-checked closure at gate 3 and thereby killed an
+   in-flight action mid-drain. What bounds an attempt that will not settle is the
+   grace period, not a second refusal.
+4. **On expiry, the resource's domain is fenced** per ADR 0029 §7, which is the
    only thing that actually stops a process. Revoking authorization does not:
    a running process needs none.
-4. **The terminal result is recorded only after a positive receipt.**
+5. **The terminal result is recorded only after a positive receipt.**
    `terminated` or `isolated` both satisfy this; `unconfirmed` does not, and the
    execution stays non-terminal with the resource quarantined.
 
-Step 4 is A5's stated rule and this ADR is where the lifecycle carries it. A
+Step 5 is A5's stated rule and this ADR is where the lifecycle carries it. A
 terminal result written while an unfenced process may still be writing is a false
 record, and downstream work would be dispatched against a resource that is not
 free.
+
+#### The receipt discipline belongs to the category, not to `cancelled`
+
+**Every path on which the Orchestrator forces a stop owes the same positive
+receipt** — cancellation, deadline expiry, and any future forced termination.
+
+A first version attached the rule to the `cancelled` status alone, so a timed-out
+execution recorded `timed_out` even when fencing came back `unconfirmed`: the
+identical false record, reached by a different route. What makes the rule
+necessary is not which status is being written but that **the Orchestrator ended
+an execution whose process it has not confirmed stopped**. A forced stop closes
+admission and fences exactly as cancellation does.
 
 **A cancelled execution's output is retained as attributable draft and Audit
 history.** It is not accepted against the superseded version; that is A5's.
@@ -536,9 +660,10 @@ history.** It is not accepted against the superseded version; that is A5's.
 
 Three different things, and v1 has one mechanism for all of them.
 
-- **Restart** replaces the agent process for the same execution. The invocation is
-  reused unchanged (§2). ADR 0029 §2 makes this possible by scoping the resource
-  to the Story rather than the principal.
+- **Restart** replaces the agent process for the same execution. The **execution
+  configuration** is reused verbatim and the **bindings** are reissued (§2).
+  ADR 0029 §2 makes this possible by scoping the resource to the Story rather
+  than the principal.
 - **Resume** is a runtime capability, declared at the handshake. A runtime that
   can resume its own session (Claude Code's `--resume`, v1's `SessionID`) may be
   offered a resume token that is **opaque to the Orchestrator**; a runtime that
@@ -546,9 +671,7 @@ Three different things, and v1 has one mechanism for all of them.
   already names as the recovery state actually promised.
 - **Re-attach** is transport plumbing. Each action the runtime issues carries a
   **correlation identity**; the Orchestrator's response carries the attempt
-  identity that owns ADR 0030 §3's at-most-once semantics. A runtime rejoining
-  an execution re-announces its outstanding correlation identities and receives
-  their current state.
+  identity that owns ADR 0030 §3's at-most-once semantics.
 
 **Re-attach and restart coincide on the local transport**, and a first draft of
 this section said "after a transport reconnection" as though they were separate.
@@ -558,13 +681,18 @@ live runtime to reconnect to and the only case the local transport presents is a
 retained because a socket or remote transport will need it, and it is now stated
 as what it is — a case Phase 3's transport does not produce.
 
-**A correlation identity must be derivable, not merely chosen.** The runtime
-picks it, but the choice must survive the runtime's own death: a restarted
-runtime cannot re-announce identities it invented and then lost. Deriving them
-from the invocation identity and a step ordinal is sufficient and is what the
-conformance slice does. Without this rule at-most-once holds within a process and
-silently stops holding across a restart, which is precisely the boundary a
-restart crosses.
+**The Orchestrator enumerates what is outstanding; the runtime asks.** A first
+draft had the runtime re-announce its outstanding correlations and required them
+to be *derivable* so it could reproduce them after a restart. That is unsound for
+a **nondeterministic** runtime: step 3 of the second incarnation need not be the
+same logical action as step 3 of the first, so a derived correlation can collide
+with an unrelated attempt — turning at-most-once into at-most-once-for-the-wrong-
+thing.
+
+The durable attempt records are the Orchestrator's, so it is the authority.
+Derivation remains a legitimate strategy for a deterministic runtime; it is not a
+requirement of the contract, and nothing depends on the runtime being able to
+reconstruct anything.
 
 **Re-attach never surfaces approval semantics to the agent.** The runtime learns
 that a call is still outstanding; it does not learn that a human is being asked.
@@ -612,14 +740,24 @@ its in-memory state, nothing more," which is true when the agent is in-process.
 An external-process runtime is not a goroutine: it is a process, and possibly a
 container. So the contract makes the choice explicit rather than assuming either:
 
-- A runtime that **declares itself resumable** may be released while blocked and
-  re-invoked with its resume token on approval.
-- A runtime that does not is **held resident**, and counts against a process
-  budget that is neither of the two limits above.
+- A runtime that **declares itself resumable** may be released as soon as it
+  blocks and re-invoked with its resume token on approval.
+- A runtime that does not is **held for a bounded retention window**, then
+  released and restarted from the last durable workflow artifact when the wait
+  outlasts it. While resident it counts against a process budget that is neither
+  of the two limits above.
 
-Phase 3 owns the budget's value. What this ADR fixes is that holding an external
-process across a human's attention span is a cost someone must have decided to
-pay, not one that arrives by default.
+**Non-resumable does not mean permanently resident**, and a first draft implied
+it did. That would have contradicted §6's own recovery rule — a runtime that
+cannot resume is restarted from the last durable artifact — and created a
+process-capacity deadlock with no stated way out: enough blocked non-resumable
+executions and nothing new can start, indefinitely, waiting on humans. The
+retention window is what bounds it, and the recovery path already exists.
+
+Phase 3 owns the window's length and the budget's value. What this ADR fixes is
+that holding an external process across a human's attention span is a cost
+someone decided to pay for a bounded time, not one that arrives by default and
+never ends.
 
 ### 8. Capabilities, tools, and knowledge
 
@@ -685,13 +823,18 @@ measurable.
 [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §3**, discharged
 here because that ADR deliberately gave them no home:
 
-1. **The expected source contract**, on the invocation (§2). Which of the four
-   sources this runtime will report, and by what mechanism. A claim about
-   capability, made before there is anything to account for.
-2. **Per-call source bindings**, on the `provenance` event: the exact contributing
-   references and digests — the pack identity, the H pair, the seeding-set
-   artifact digests, and references to the specific messages, tool results, and
-   retrievals that entered the call.
+1. **The expected source contract**, on the execution configuration (§2). Which
+   of the four sources this runtime will report **and by what mechanism** — for
+   example fixed at dispatch, observable in the Audit record because the actions
+   are mediated, or reported by the adapter. A first draft carried source *names*
+   alone, which is not a capability claim: "this runtime will report its turn
+   material" says nothing anyone can check, and a declaration that cannot be
+   falsified is not one. The mechanism is what a reviewer holds the adapter to.
+2. **Per-call source bindings**, on the `provenance` event, joined to the `usage`
+   event by a shared **call reference** (§4): the exact contributing references
+   and digests — the pack identity, the H pair, the seeding-set artifact digests,
+   and references to the specific messages, tool results, and retrievals that
+   entered the call.
 3. **The per-call closure status, drawn from those bindings.** A status without
    bindings is not provenance: `closed` asserts everything in the call was
    attributable without saying to what, so nothing can check it. Bindings first;
@@ -841,24 +984,47 @@ when it recorded its own eleven defects rather than quietly repairing them.
 
 ### What was run, and what it changed
 
-**Done**, 2026-08-13:
+**Done**, 2026-08-13/14:
 [`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
-**22 claims, all `PROVEN`**; sixteen spawn a real external process and speak
-newline-delimited JSON to it. **7 of 7 mutations killed for their named reason**,
-under a harness that requires a positive control, refuses to start on residue,
-and verifies restoration by digest.
+**33 claims, all `PROVEN`**; twenty-four spawn a real external process and speak
+newline-delimited JSON to it. **14 of 14 mutations killed for their named
+reason**, under a harness that requires a positive control, refuses to start on
+residue, and verifies restoration by digest.
 
-**Five findings changed this ADR**, and the first is a defect in the design
-rather than in the harness:
+**Findings from running it, in two rounds.** The first round produced five, of
+which the first was a defect in the design rather than in the harness:
 
-1. **Reconciliation must be scoped to `open`** (§6) — it was destroying the
-   requirement set a `blocked` result must reference. Now a permanent mutation.
+1. **Reconciliation was destroying the requirement** a `blocked` result must
+   reference (§6). Now a permanent mutation.
 2. **Re-attach over stdio is restart, not reconnection** (§6).
-3. **Correlation identities must be derivable** (§6), or at-most-once stops
-   holding at exactly the boundary a restart crosses.
-4. **An invalid terminal result is a protocol violation** (§5), not a result to
-   record and reason about later.
+3. Correlation identity had to be reconsidered (§6) — see below, where the first
+   fix turned out to be wrong for a nondeterministic runtime.
+4. **An invalid terminal result is a protocol violation** (§5).
 5. **`blocked` is the Orchestrator's to record** (§5), not the agent's to claim.
+
+The second round, from review, found that several of those fixes were incomplete
+or wrong at one level down — the shape this repository keeps paying for:
+
+- **Reconciliation scoped to `open` over-corrected** (§6). Ignoring declared
+  waits strands a `resource_waiting` attempt whose provisioning operation died.
+  The rule is that a declared wait is never settled `unknown`, not that
+  reconciliation ignores it.
+- **Derivable correlations are unsound for a nondeterministic runtime** (§6).
+  Step 3 of a second incarnation need not be the same logical action as step 3
+  of the first. The Orchestrator enumerates; the runtime asks.
+- **At-most-once covered only settled retries** (§6, ADR 0030 §3). A duplicate
+  for an *in-flight* attempt fell straight back through the gates.
+- **Closing admission at cancellation was implemented at gate 3**, which aborted
+  an action already admitted instead of draining it (§6). The conformance suite
+  caught this one as a knock-on failure of two unrelated scenarios.
+- **The fence-receipt rule was attached to `cancelled` alone**, so a forced
+  timeout wrote a terminal result over an unconfirmed fence (§6).
+- **`timed_out` was forced into a failure class it does not have** (§5).
+- **Events had no durable identity** (§4), so at-least-once delivery was declared
+  idempotent with no mechanism behind it.
+- **The stub emitted a `closed` provenance record for an execution with no model
+  call** — fabricating precisely the coverage the report declares missing. It now
+  emits none, and a claim asserts the absence.
 
 **One mutation initially survived and indicted the assertion rather than the
 mutation** — a claim was checking a consequence before the mechanism, so a
@@ -952,6 +1118,7 @@ final reviewed commit.
 | --- | --- |
 | [ADR backlog](../v2/notes_adr-backlog.md) slot 13 | Mark **RESOLVED**, pointing here. The slot keeps its number, per its own citation rule. Its instruction is explicit: *mark this slot RESOLVED when the contract ADR is Accepted* |
 | [ADR backlog](../v2/notes_adr-backlog.md) slot 16 | **Narrow one clause.** It reads that a retirement date and a lab are "the same kind of fact about a model ID", which is true of their *kind* and false of their *key*: §3 puts retirement on the served identity and lineage on the underlying model. Read strictly, the current wording asks #319 to build one key — the thing D8 already refused |
+| [ADR 0030](0030-tool-execution-policy-hook.md) §8 and its Consequences | **Amend the "additive migration" wording.** §8 asks Phase 3 for an additive migration adding nonterminal states; the Context above establishes that it must also **replace `tool_calls_finished_check`**, because a settled attempt requires a boolean `succeeded` and §8's own `unknown` outcome is neither. Two live ADRs must not knowingly disagree about the same migration, so this lands in the same acceptance commit rather than being left for whoever writes it |
 | [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A4 | Add the RESOLVED banner, in the form A1–A3 use, recording what the ADR settled differently from what the item asked |
 | [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) Track C | #319's dependency on A4 is discharged; the split it waited on is §3 |
 | [Parking lot](../v2/notes_parking-lot.md) | The graduation pointer names the ADR, not only the candidate and the issue |

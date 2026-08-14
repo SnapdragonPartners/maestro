@@ -46,12 +46,20 @@ const (
 	ReasonShutdown          CancellationReason = "shutdown"
 )
 
-// FailureClass is axis 4. Required iff status is failed or timed_out.
+// FailureClass is axis 4. Required iff status is `failed`, and NOT carried by
+// `timed_out`.
 //
-// It applies to timed_out because a timeout is either kind: a slow provider is
-// infrastructure, an agent looping is not. timed_out stays a STATUS rather than
-// becoming a failure class because a deadline is an Orchestrator-observed fact
-// while an error is a runtime-reported one, and they are retried differently.
+// A first version required it for timed_out too, on the reasoning that a
+// timeout is either kind. That forced a false classification: ordinary
+// wall-clock exhaustion is neither a retryable infrastructure fault nor a
+// non-retryable agent defect, and the same draft said a timeout may be retried
+// with a larger budget -- which is not what either class means. An axis that
+// has to be filled in with the least-wrong value is recording a guess as a
+// fact.
+//
+// timed_out remains a STATUS because a deadline is an Orchestrator-observed
+// fact while an error is a runtime-reported one, and collapsing them would lose
+// which party ended the execution.
 type FailureClass string
 
 const (
@@ -127,12 +135,11 @@ func (t *TerminalResult) Validate() error {
 		return fmt.Errorf("cancellation reason %q is not recognized", *t.CancelReason)
 	}
 
-	// Axis 4 -- failure class. Applies to failed AND timed_out.
-	needsClass := t.Status == StatusFailed || t.Status == StatusTimedOut
+	// Axis 4 -- failure class. Applies to `failed` and to nothing else.
 	switch {
-	case needsClass && t.FailureClass == nil:
-		return fmt.Errorf("status %q requires a failure class", t.Status)
-	case !needsClass && t.FailureClass != nil:
+	case t.Status == StatusFailed && t.FailureClass == nil:
+		return fmt.Errorf("status failed requires a failure class")
+	case t.Status != StatusFailed && t.FailureClass != nil:
 		return fmt.Errorf("status %q must not carry a failure class", t.Status)
 	case t.FailureClass != nil && !validClass[*t.FailureClass]:
 		return fmt.Errorf("failure class %q is not one of the two", *t.FailureClass)
@@ -167,9 +174,11 @@ func Failed(c FailureClass, summary string) TerminalResult {
 	return TerminalResult{Status: StatusFailed, FailureClass: &c, Summary: summary}
 }
 
-// TimedOut builds a timed-out result with its required class.
-func TimedOut(c FailureClass, summary string) TerminalResult {
-	return TerminalResult{Status: StatusTimedOut, FailureClass: &c, Summary: summary}
+// TimedOut builds a timed-out result. It carries no failure class: a deadline
+// expiring is neither a retryable infrastructure fault nor a non-retryable
+// agent defect, and forcing one of the two would record a guess as a fact.
+func TimedOut(summary string) TerminalResult {
+	return TerminalResult{Status: StatusTimedOut, Summary: summary}
 }
 
 // Blocked builds a blocked result referencing the requirements that stopped it.

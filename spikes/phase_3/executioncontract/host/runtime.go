@@ -13,8 +13,8 @@ import (
 )
 
 // FenceReceipt is ADR 0029 §7's three-valued receipt. Reproduced here because
-// ADR 0032 §6 makes a positive receipt the precondition for recording a
-// cancelled terminal result.
+// ADR 0032 §6 makes a positive receipt the precondition for recording any
+// FORCED terminal result.
 type FenceReceipt string
 
 const (
@@ -23,9 +23,13 @@ const (
 	FenceUnconfirmed FenceReceipt = "unconfirmed"
 )
 
-// Fencer stops a resource's domain. The spike's default fences by killing the
-// process and confirming it is gone, which is the Docker `terminated` path in
-// miniature.
+// Positive reports whether this receipt permits a terminal result to be
+// recorded. `unconfirmed` does not.
+func (f FenceReceipt) Positive() bool {
+	return f == FenceTerminated || f == FenceIsolated
+}
+
+// Fencer stops a resource's domain.
 type Fencer func(resource contract.ResourceRef) FenceReceipt
 
 // Outcome is what the host records for an execution. It is deliberately NOT
@@ -35,21 +39,25 @@ type Outcome struct {
 	Result contract.TerminalResult
 	// Claimed is the runtime's own terminal event, retained even when the
 	// Orchestrator's observation overrode it -- a runtime that believed it
-	// finished is a fact worth having, and v1 discarded exactly this by
+	// finished is a fact worth having, and v1 discards exactly this by
 	// correcting a parsed signal from a side channel with no record that the
-	// two had disagreed.
+	// two ever disagreed.
 	Claimed *contract.TerminalResult
 	// Overridden says the Orchestrator's observation won.
 	Overridden bool
-	// FenceReceipt is set when cancellation fenced a resource.
+	// Forced says the Orchestrator ended this execution rather than the runtime
+	// reporting its own end. Every forced path owes a positive fence receipt.
+	Forced       bool
 	FenceReceipt FenceReceipt
 
-	Events      []string
-	Usage       []contract.Usage
-	Provenance  []contract.Provenance
-	Questions   []contract.Question
-	Handshake   contract.HelloAck
-	DispatchErr error
+	Events     []string
+	Usage      []contract.Usage
+	Provenance []contract.Provenance
+	Handshake  contract.HelloAck
+	Reconciled ReconcileReport
+	// DuplicateEvents counts messages rejected by event identity (§4).
+	DuplicateEvents int
+	DispatchErr     error
 }
 
 // Runtime supervises one external agent process over the local transport.
@@ -73,18 +81,17 @@ type Runtime struct {
 	// domain is fenced.
 	CancelGrace time.Duration
 
-	// KillAfter simulates a runtime that dies mid-action, for the
-	// reconciliation path.
-	KillAfter time.Duration
+	// OnCancelRequested fires when cancellation is sent, so a scenario can
+	// observe what the transport does afterwards.
+	OnCancelRequested func()
 }
 
 // Run executes one invocation to a terminal result.
 //
-// it would hide the state machine this spike exists to make legible.
-//
-//nolint:gocyclo // The gate and event dispatch is inherently branchy; splitting
+//nolint:gocyclo // The gate and event dispatch is inherently branchy; splitting it would hide the state machine this spike exists to make legible.
 func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	out := Outcome{}
+	id := inv.ID()
 
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
@@ -127,7 +134,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	if len(supported) == 0 {
 		supported = []string{contract.Version}
 	}
-	if err := w.Send("", contract.TypeHello, contract.Hello{Supported: supported}); err != nil {
+	if err := w.Send("", 0, contract.TypeHello, contract.Hello{Supported: supported}); err != nil {
 		out.DispatchErr = fmt.Errorf("send hello: %w", err)
 		return out
 	}
@@ -146,7 +153,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 		return out
 	}
 	out.Handshake = ack
-	if !containsString(supported, ack.Selected) {
+	if !slices.Contains(supported, ack.Selected) {
 		// A version mismatch fails at DISPATCH, before any resource is
 		// acquired (§11). There is no execution and therefore no terminal
 		// result -- a refused invocation is not a sixth execution status (§5).
@@ -155,13 +162,11 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	}
 
 	// ---- the invocation ----
-	if err := w.Send(inv.ID, contract.TypeInvoke, inv); err != nil {
+	if err := w.Send(id, inv.Bindings.Epoch, contract.TypeInvoke, inv); err != nil {
 		out.DispatchErr = fmt.Errorf("send invoke: %w", err)
 		return out
 	}
 
-	// The select loop below is the only goroutine touching these, so they need
-	// no lock. handleEvent is called from it synchronously.
 	started := time.Now()
 	var (
 		cancelRequested bool
@@ -169,18 +174,19 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 		observedTerm    *contract.TerminalResult
 	)
 
-	// Deadline and cancellation timers.
+	// Event identity (§4): (invocation, epoch, seq). A repeat is dropped,
+	// because at-least-once delivery cannot be idempotent without a checked
+	// identity -- and a sequence number alone restarts at 1 with every
+	// incarnation, so two different messages would share one identity.
+	seen := map[uint64]uint64{}
+
 	var deadline <-chan time.Time
-	if inv.Budgets.MaxWallClockMS > 0 {
-		deadline = time.After(time.Duration(inv.Budgets.MaxWallClockMS) * time.Millisecond)
+	if inv.Config.Budgets.MaxWallClockMS > 0 {
+		deadline = time.After(time.Duration(inv.Config.Budgets.MaxWallClockMS) * time.Millisecond)
 	}
 	var cancelAt <-chan time.Time
 	if r.CancelAfter > 0 {
 		cancelAt = time.After(r.CancelAfter)
-	}
-	var killAt <-chan time.Time
-	if r.KillAfter > 0 {
-		killAt = time.After(r.KillAfter)
 	}
 
 	type readItem struct {
@@ -199,20 +205,28 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 		}
 	}()
 
+	// actionDone carries results from actions running OFF this loop, so a wait
+	// never stops the loop from serving cancellation or heartbeats.
+	actionDone := make(chan contract.ActionResult, 16)
 	var graceExpiry <-chan time.Time
+
+	forcedTerminal := func(res contract.TerminalResult) Outcome {
+		out.Forced = true
+		r.fenceAll(inv, &out)
+		out.Result = res
+		observedTerm = &res
+		return r.finish(out)
+	}
 
 	for {
 		select {
 		case <-deadline:
 			// A deadline is an ORCHESTRATOR-observed fact, which is why
-			// timed_out is a status rather than a failure class (§5).
-			cls := contract.ClassNonRetryableAgent
-			res := contract.TimedOut(cls, "wall-clock budget exhausted")
-			observedTerm = &res
-			r.fenceAll(inv, &out)
-			out.Result = res
-			out.Overridden = out.Claimed != nil
-			return r.finish(out, observedTerm)
+			// timed_out is a status rather than a failure class (§5). It is a
+			// forced stop, so it owes a positive receipt exactly as
+			// cancellation does.
+			r.Boundary.CloseAdmission(id)
+			return forcedTerminal(contract.TimedOut("wall-clock budget exhausted"))
 
 		case <-cancelAt:
 			if !cancelRequested {
@@ -221,33 +235,34 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				if cancelReason == "" {
 					cancelReason = contract.ReasonSuperseded
 				}
+				// Close admission FIRST, then ask. ADR 0029 §7 step 2's
+				// ordering -- revoke the ability to create, then drain --
+				// applied to attempts: otherwise the runtime keeps issuing new
+				// actions throughout the grace period, and the drain chases a
+				// set the holder is still adding to.
+				r.Boundary.CloseAdmission(id)
 				grace := r.CancelGrace
 				if grace == 0 {
 					grace = 2 * time.Second
 				}
-				_ = w.Send(inv.ID, contract.TypeCancel, contract.Cancel{
+				_ = w.Send(id, inv.Bindings.Epoch, contract.TypeCancel, contract.Cancel{
 					Reason:     string(cancelReason),
 					DeadlineMS: grace.Milliseconds(),
 				})
 				graceExpiry = time.After(grace)
+				if r.OnCancelRequested != nil {
+					r.OnCancelRequested()
+				}
 			}
 
 		case <-graceExpiry:
-			// Step 3: the grace period expired, so the domain is fenced. This
-			// is the only thing that actually stops a process -- revoking
+			// The grace period expired, so the domain is fenced. This is the
+			// only thing that actually stops a process -- revoking
 			// authorization does not, because a running process needs none.
-			reason := cancelReason
-			r.fenceAll(inv, &out)
-			res := contract.Cancelled(reason, "cancelled; fenced after grace period")
-			observedTerm = &res
-			out.Result = res
-			out.Overridden = out.Claimed != nil
-			return r.finish(out, observedTerm)
+			return forcedTerminal(contract.Cancelled(cancelReason, "cancelled; fenced after grace period"))
 
-		case <-killAt:
-			// Simulates a runtime dying between an attempt's open and its
-			// outcome, so reconciliation has something to settle.
-			_ = cmd.Process.Kill()
+		case res := <-actionDone:
+			_ = w.Send(id, inv.Bindings.Epoch, contract.TypeActionResult, res)
 
 		case it, ok := <-items:
 			if !ok {
@@ -260,41 +275,40 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				var perr *contract.ErrProtocol
 				if errors.As(it.err, &perr) {
 					// §8: a protocol violation is FATAL, unlike a policy denial.
-					res := contract.Failed(contract.ClassNonRetryableAgent, perr.Error())
-					out.Result = res
+					out.Result = contract.Failed(contract.ClassNonRetryableAgent, perr.Error())
 					out.Events = append(out.Events, "protocol-violation: "+perr.Detail)
-					return r.finish(out, &res)
+					return r.finish(out)
 				}
-				res := contract.Failed(contract.ClassRetryableInfrastructure, it.err.Error())
-				out.Result = res
-				return r.finish(out, &res)
+				out.Result = contract.Failed(contract.ClassRetryableInfrastructure, it.err.Error())
+				return r.finish(out)
 			}
-			if done := r.handleEvent(inv, w, it.env, &out); done {
+
+			// Event identity, checked before anything acts on the message.
+			if last, ok := seen[it.env.Epoch]; ok && it.env.Seq <= last {
+				out.DuplicateEvents++
+				continue
+			}
+			seen[it.env.Epoch] = it.env.Seq
+
+			if done := r.handleEvent(inv, w, it.env, &out, actionDone); done {
 				// The runtime claimed a terminal result, and a claim is all it
 				// is (§4). Where the Orchestrator observed something the claim
 				// contradicts, the observation wins and the claim is RETAINED
-				// rather than discarded -- a runtime that believed it finished
-				// is a fact worth having. v1 discards exactly this, correcting
-				// a parsed signal from a side channel with no record that the
-				// two ever disagreed (runner.go:199-206).
+				// rather than discarded.
 				claim := out.Claimed
 				switch {
 				case cancelRequested && claim != nil && claim.Status != contract.StatusCancelled:
-					r.fenceAll(inv, &out)
-					res := contract.Cancelled(cancelReason,
-						"runtime claimed "+string(claim.Status)+" after cancellation was requested")
-					out.Result = res
 					out.Overridden = true
-					observedTerm = &res
+					return forcedTerminal(contract.Cancelled(cancelReason,
+						"runtime claimed "+string(claim.Status)+" after cancellation was requested"))
+				case claim != nil && claim.Status == contract.StatusCancelled:
+					// A cooperative cancellation still fences before the
+					// terminal result is recorded (§6 step 4).
+					return forcedTerminal(*claim)
 				case claim != nil:
 					out.Result = *claim
-					if claim.Status == contract.StatusCancelled {
-						// A cooperative cancellation still fences before the
-						// terminal result is recorded (§6 step 4).
-						r.fenceAll(inv, &out)
-					}
 				}
-				return r.finish(out, observedTerm)
+				return r.finish(out)
 			}
 		}
 	}
@@ -302,38 +316,46 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 
 // onStreamEnd handles the transport closing without a terminal event.
 func (r *Runtime) onStreamEnd(inv *contract.Invocation, out *Outcome, observed *contract.TerminalResult, started time.Time) Outcome {
+	id := inv.ID()
 	if observed != nil {
 		out.Result = *observed
-		return r.finish(*out, observed)
+		return r.finish(*out)
 	}
 	if out.Claimed != nil {
 		out.Result = *out.Claimed
-		return r.finish(*out, nil)
+		return r.finish(*out)
 	}
-	// The runtime went away without a terminal result. Every attempt still
-	// holding an intent and no outcome settles as `unknown` -- ADR 0030 §8's
-	// reconciliation path, and the value Phase 2's tool_calls_finished_check
-	// cannot express.
-	n := r.Boundary.Recorder.Reconcile()
-	out.Events = append(out.Events, fmt.Sprintf("reconciled %d attempt(s) as unknown", n))
 
-	if r.Boundary.IsBlocked(inv.ID) {
-		reqs := r.Boundary.BlockedRequirements(inv.ID)
-		res := contract.Blocked(reqs, "no operator responder for a required decision")
-		out.Result = res
-		return r.finish(*out, &res)
+	// Reconciliation: only `open` attempts settle `unknown`; declared waits are
+	// preserved, validated, and handed back for restoration (§6).
+	out.Reconciled = r.Boundary.Recorder.Reconcile()
+	out.Events = append(out.Events, fmt.Sprintf(
+		"reconciled: %d unknown, %d operator-waits preserved, %d resource-waits to restore, %d invalid",
+		len(out.Reconciled.SettledUnknown), len(out.Reconciled.OperatorWaitsPreserved),
+		len(out.Reconciled.ResourceWaitsToRestore), len(out.Reconciled.Invalid)))
+
+	if r.Boundary.IsBlocked(id) {
+		// §5's exception: `blocked` is composed by the ORCHESTRATOR from the
+		// boundary's own state, because a gate the agent cannot see is not the
+		// agent's to report. This is the one execution whose terminal result
+		// arrives without a terminal event.
+		reqs := r.Boundary.BlockedRequirements(id)
+		out.Result = contract.Blocked(reqs, "a required decision has no responder in this configuration")
+		return r.finish(*out)
 	}
-	res := contract.Failed(contract.ClassRetryableInfrastructure,
-		fmt.Sprintf("adapter closed the transport after %s with no terminal result", time.Since(started).Round(time.Millisecond)))
-	out.Result = res
-	return r.finish(*out, &res)
+	out.Result = contract.Failed(contract.ClassRetryableInfrastructure,
+		fmt.Sprintf("adapter closed the transport after %s with no terminal result",
+			time.Since(started).Round(time.Millisecond)))
+	return r.finish(*out)
 }
 
 // handleEvent processes one agent-to-host message. It returns true when the
 // runtime has claimed a terminal result.
 func (r *Runtime) handleEvent(
 	inv *contract.Invocation, w *contract.Writer, env contract.Envelope, out *Outcome,
+	actionDone chan<- contract.ActionResult,
 ) bool {
+	id := inv.ID()
 	out.Events = append(out.Events, env.Type)
 
 	switch env.Type {
@@ -352,35 +374,26 @@ func (r *Runtime) handleEvent(
 		}
 		return false
 
-	case contract.TypeQuestion:
-		if q, err := contract.Decode[contract.Question](env); err == nil {
-			out.Questions = append(out.Questions, q)
-		}
-		return false
-
 	case contract.TypeAttach:
-		att, err := contract.Decode[contract.Attach](env)
-		if err != nil {
-			return false
-		}
-		ack := contract.AttachAck{States: map[string]contract.AttachState{}}
-		for _, corr := range att.Correlations {
-			a, ok := r.Boundary.Recorder.Lookup(inv.ID, corr)
-			switch {
-			case !ok:
-				ack.States[corr] = contract.AttachUnknown
-			case a.State == StateSettled:
-				ack.States[corr] = contract.AttachSettled
+		// The ORCHESTRATOR enumerates. A restarted runtime cannot be relied on
+		// to reproduce correlations it invented, so it asks rather than tells.
+		ack := contract.AttachAck{}
+		for _, a := range r.Boundary.Recorder.ForInvocation(id) {
+			state := contract.AttachOutstanding
+			if a.State == StateSettled {
+				state = contract.AttachSettled
 				ack.Settled = append(ack.Settled, contract.ActionResult{
-					Correlation: corr, AttemptID: a.ID, Outcome: a.Outcome, Reason: a.Reason,
+					Correlation: a.Correlation, AttemptID: a.ID,
+					Outcome: a.Outcome, Reason: a.Reason, Requirement: a.Requirement,
 				})
-			default:
-				// Deliberately coarse: `outstanding` regardless of WHICH wait.
-				// The runtime must not learn that a human is being asked.
-				ack.States[corr] = contract.AttachOutstanding
 			}
+			// Deliberately coarse: `outstanding` regardless of WHICH wait. The
+			// runtime must not learn that a human is being asked.
+			ack.Actions = append(ack.Actions, contract.OutstandingAction{
+				Correlation: a.Correlation, AttemptID: a.ID, Action: a.Action, State: state,
+			})
 		}
-		_ = w.Send(inv.ID, contract.TypeAttachAck, ack)
+		_ = w.Send(id, inv.Bindings.Epoch, contract.TypeAttachAck, ack)
 		return false
 
 	case contract.TypeActionRequest:
@@ -388,8 +401,10 @@ func (r *Runtime) handleEvent(
 		if err != nil {
 			return false
 		}
-		result := r.Boundary.Execute(inv, req)
-		_ = w.Send(inv.ID, contract.TypeActionResult, result)
+		// Off the event loop. The result comes back on actionDone, so a gate-2
+		// or gate-3 wait cannot stop this loop from serving cancellation,
+		// heartbeats, or re-attachment.
+		r.Boundary.Submit(inv, req, actionDone)
 		return false
 
 	case contract.TypeTerminal:
@@ -400,8 +415,8 @@ func (r *Runtime) handleEvent(
 			return true
 		}
 		if verr := res.Validate(); verr != nil {
-			// A terminal result that violates §5's applicability rule is a
-			// protocol violation, not a result.
+			// A terminal result violating §5's applicability rule is a protocol
+			// violation, not a result.
 			bad := contract.Failed(contract.ClassNonRetryableAgent, "terminal result invalid: "+verr.Error())
 			out.Claimed = &bad
 			return true
@@ -420,7 +435,7 @@ func (r *Runtime) fenceAll(inv *contract.Invocation, out *Outcome) {
 		return
 	}
 	worst := FenceTerminated
-	for _, res := range inv.Resources {
+	for _, res := range inv.Bindings.Resources {
 		got := r.Fencer(res)
 		if got == FenceUnconfirmed {
 			worst = FenceUnconfirmed
@@ -431,20 +446,19 @@ func (r *Runtime) fenceAll(inv *contract.Invocation, out *Outcome) {
 	out.FenceReceipt = worst
 }
 
-// finish applies the one rule that must hold whatever path got here: a terminal
-// result is recorded only after a POSITIVE fence receipt (§6 step 4). A result
-// written while an unfenced process may still be writing is a false record.
-func (r *Runtime) finish(out Outcome, observed *contract.TerminalResult) Outcome {
-	if out.Result.Status == contract.StatusCancelled && out.FenceReceipt == FenceUnconfirmed {
+// finish applies the rule that must hold on every FORCED path: a terminal
+// result is recorded only after a positive fence receipt (§6 step 4).
+//
+// A first version applied it to `cancelled` alone, so a timeout recorded
+// `timed_out` even when fencing came back unconfirmed -- the same false record,
+// reached by a different route. The discipline belongs to the CATEGORY (the
+// Orchestrator forced the stop), not to one status.
+func (r *Runtime) finish(out Outcome) Outcome {
+	if out.Forced && !out.FenceReceipt.Positive() {
 		out.Events = append(out.Events, "terminal withheld: fence unconfirmed")
 		out.Result = contract.TerminalResult{}
-		out.DispatchErr = errors.New("fencing unconfirmed; execution remains non-terminal and the resource is quarantined")
-		return out
+		out.DispatchErr = errors.New(
+			"fencing unconfirmed; execution remains non-terminal and the resource is quarantined")
 	}
-	_ = observed
 	return out
-}
-
-func containsString(hay []string, needle string) bool {
-	return slices.Contains(hay, needle)
 }

@@ -34,7 +34,12 @@ type Writer struct {
 func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
 
 // Send marshals body into an envelope and writes one line.
-func (w *Writer) Send(invocation, msgType string, body any) error {
+//
+// The epoch is supplied by the caller rather than tracked here, because it
+// identifies an INCARNATION and is assigned by the Orchestrator -- a writer
+// that minted its own would restart the identity space on every process, which
+// is the defect the (inv, epoch, seq) triple exists to close.
+func (w *Writer) Send(invocation string, epoch uint64, msgType string, body any) error {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -47,7 +52,34 @@ func (w *Writer) Send(invocation, msgType string, body any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.seq++
-	line, err := json.Marshal(Envelope{V: Version, Type: msgType, Inv: invocation, Seq: w.seq, Body: raw})
+	line, err := json.Marshal(Envelope{
+		V: Version, Type: msgType, Inv: invocation, Epoch: epoch, Seq: w.seq, Body: raw})
+	if err != nil {
+		return fmt.Errorf("marshal %s envelope: %w", msgType, err)
+	}
+	if _, err := w.w.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("write %s: %w", msgType, err)
+	}
+	return nil
+}
+
+// Repeat re-sends a message under the identity already used for the previous
+// one. It models a redelivery -- the case at-least-once delivery permits and
+// event identity has to make harmless. Nothing but a conformance scenario has
+// any business calling it.
+func (w *Writer) Repeat(invocation string, epoch uint64, msgType string, body any) error {
+	var raw json.RawMessage
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("marshal %s body: %w", msgType, err)
+		}
+		raw = b
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	line, err := json.Marshal(Envelope{
+		V: Version, Type: msgType, Inv: invocation, Epoch: epoch, Seq: w.seq, Body: raw})
 	if err != nil {
 		return fmt.Errorf("marshal %s envelope: %w", msgType, err)
 	}
