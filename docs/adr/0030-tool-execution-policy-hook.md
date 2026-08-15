@@ -1,6 +1,6 @@
 +++
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 summary = "All agent requests for Maestro-managed effects pass through one Orchestrator boundary that records intent, validates machine policy, obtains human approval when required, and records the result. Human approval blocks the Story and caller without consuming LLM turns; headless runs instead mark the Story blocked. Expensive resources are acquired only after approval, and all current authorization, work-version, and resource conditions are revalidated immediately before execution. The design centralizes policy and auditing without introducing approval retries, resolution chains, or arbitrary agent checkpointing."
 +++
@@ -294,9 +294,13 @@ binds the record to the exact **substituted** input, which is a narrower claim t
 ### 4. Gate 2 — human approval, which blocks
 
 **The logical tool call does not end.** The **Story** enters `awaiting_resolution`;
-the **tool call** enters the operator-waiting state A4 names (§8). Two levels, two
-vocabularies — this ADR fixes the Story state because dispatch and the watchdog key
-on it, and leaves the record's state to A4, which owns the action vocabulary.
+the **tool call** enters an operator-waiting state distinguishable from a resource
+wait and from an interrupted attempt (§8). Two levels, two vocabularies — this ADR
+fixes the Story state because dispatch and the watchdog key on it, and requires
+only that the record's state be distinguishable. **Naming it is Phase 3's**
+(amended 2026-08-15; it was A4's, and A4 handed the
+vocabulary back — see
+[ADR 0032](0032-agent-execution-contract.md)'s Status Of Decisions).
 
 #### Waiting semantics
 
@@ -622,9 +626,27 @@ situations, and conflating them is precisely the ambiguity §4 sets out to remov
 | Awaiting a resource | Healthy; gate 3 provisioning or queued for capacity ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2) | Watchdog leaves it alone; no operator is involved |
 | Interrupted | The process died between open and completion | Reconciliation; the outcome is `unknown` |
 
-So Phase 3 owes an **additive migration** giving the record explicit nonterminal
-states — **at least operator-waiting and resource-waiting** — and A4 owns the
-vocabulary, since it owns the action and Story states. The two waits are kept
+So Phase 3 owes a **migration** giving the record explicit nonterminal states —
+**at least operator-waiting and resource-waiting**.
+
+**Amended 2026-08-15 (Codex + DR).** This section originally handed the
+vocabulary to A4. A4's own scope correction returns the complete state
+vocabulary to Phase 3, to be settled
+against a real consumer rather than on paper
+([ADR 0032](0032-agent-execution-contract.md), Status Of Decisions). What does
+**not** move is this section's requirement: the record must distinguish a healthy
+operator wait, a healthy resource wait, and an interrupted attempt, because the
+watchdog cannot act correctly without that distinction. The requirement is here;
+only its naming is Phase 3's.
+
+**Amended 2026-08-15 on A4's finding: that migration is not purely additive.**
+`tool_calls` carries
+`CONSTRAINT tool_calls_finished_check CHECK ((finished_at IS NULL) = (succeeded IS NULL))`,
+so settling an attempt requires a boolean `succeeded` — and this section's own
+reconciliation outcome, *attempted, outcome unknown*, is neither true nor false.
+The record cannot express a state this section requires of it, so the migration
+must **replace that constraint** rather than only add columns. See
+[ADR 0032](0032-agent-execution-contract.md). The two waits are kept
 distinct rather than merged into one "waiting" because they have different
 responders, different release rules, and different costs.
 
@@ -719,9 +741,11 @@ granted.
   skipped.
 - **Two writes per executed action, one for a denial, one more per wait entered and
   left, and a data-plane read per action.** No new record *type* — it stays
-  `tool_calls` — but Phase 3 owes an additive migration for the nonterminal states,
-  because Phase 2's in-flight-versus-finished convention cannot tell waiting from
-  interrupted (§8).
+  `tool_calls` — but Phase 3 owes a migration for the nonterminal states, because
+  Phase 2's in-flight-versus-finished convention cannot tell waiting from
+  interrupted (§8). **That migration is not additive**: it must **replace**
+  `tool_calls_finished_check`, since settling an attempt requires a boolean
+  `succeeded` and §8's own `unknown` outcome is neither (§8 as amended).
 - **Audit gains a redaction obligation.** Every action family needs a declared safe
   projection before it can be recorded at all — which is what keeps a `shell` action
   from writing a developer's environment into a queryable, exportable table.
@@ -747,9 +771,10 @@ Recorded because several of the rules above are stated here and owned elsewhere.
 | Item | Owner |
 | --- | --- |
 | The boundary, the three-gate ordering, logical blocking, one decision per action, final revalidation, and the Story's `awaiting_resolution` state | **This ADR** |
-| The tool call's nonterminal state vocabulary (at least operator-waiting and resource-waiting), action states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** (candidate 13) |
+| The `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** ([ADR 0032](0032-agent-execution-contract.md)) |
+| The tool call's nonterminal state vocabulary (at least operator-waiting and resource-waiting), action states, and reconnection and restart behavior. **Reassigned 2026-08-15**: A4 handed these back as design inputs rather than settling them on paper. §8's *requirement* that the three cases be distinguishable is unaffected and stays here | **Phase 3 plan**, against [ADR 0032](0032-agent-execution-contract.md)'s Status Of Decisions |
 | Amendment and cancellation invalidating pending actions and grants | **A5** (ADR 0019 amendment) |
-| Watchdog policy for the waiting states; the additive migration that adds them; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
+| Watchdog policy for the waiting states; the migration that adds them, **which replaces `tool_calls_finished_check` rather than only adding columns**; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
 | Which policies exist, their risks, and which approval scopes each gate exposes | **Candidate 12** |
 
 ## Related Documents

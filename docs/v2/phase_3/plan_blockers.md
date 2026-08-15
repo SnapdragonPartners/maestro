@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -341,6 +341,19 @@ the graph at A4, whose invocation schema carries pack identity.
 
 ### A4. Agent execution contract — [#282](https://github.com/SnapdragonPartners/maestro/issues/282)
 
+> **RESOLVED 2026-08-15 by [ADR 0032: The Agent Execution Contract](../../adr/0032-agent-execution-contract.md)** (Codex + DR), with its conformance executable at `spikes/phase_3/executioncontract` and the [report](spike_execution-contract.md). Eight review rounds. Four things below are narrower than what was decided, and are left in place as the record of what was asked rather than what was settled:
+>
+> 1. **The identity split is three concepts, not two.** Scope decision 3 asks whether the served and underlying identities are one key. They are not — and neither is the **route** (provider, endpoint, model name), which is what the runtime needs to make the call and carries no comparison identity at all. Retirement keys to the served offering; lineage to the underlying model; the reference between them is nullable and its null is ADR 0020's existing `unclassified`.
+> 2. **An invocation carries two lifetimes, not one.** This item speaks of a single immutable invocation. What was resolved for an execution must not silently change, but its **resource grants may be replaced mid-execution**, because gate 3 acquires resources only after approval — so one immutable record was never available. Two lifetimes is the decision; the representation is Phase 3's.
+> 3. **The terminal result gained two rules the four axes do not state.** `rejected` is not an execution status — a reviewer that rejects has *completed*, and its judgment is the work product. And `blocked` is composed by the **Orchestrator**, not claimed by the agent, so `terminal` is *at most* one event per execution rather than exactly one.
+> 4. **The conformance slice is larger than "one executable" implies.** Sixty claims and forty-five mutations, because each review round demanded evidence the previous one had not produced. Where it lands permanently remains a Phase 3 decision, and its `host/` half is implementation to be rewritten rather than contract to be kept.
+>
+> **It also amends an Accepted ADR.** [ADR 0030](../../adr/0030-tool-execution-policy-hook.md) §8 called the `tool_calls` migration "additive"; A4 established that it must also replace `tool_calls_finished_check`, since settling an attempt requires a boolean `succeeded` and §8's own `unknown` outcome is neither. That amendment landed with this acceptance.
+>
+> **SCOPE CORRECTED 2026-08-15, after acceptance** (Codex + DR). A4 overran its own charter. It set out to prove production restart, an execution lifecycle, and reliable delivery **before the v1 agent framework had been inventoried or connected to the data plane** — which cannot be done without starting Phase 3 inside its own entry blocker. The conformance slice is internally rigorous and validates an **isolated contract model**; it is not the standalone review agent, not a reusable agent module, and not an implementation template. ADR 0032 now carries a **Status Of Decisions** section that controls its decision sections, and its binding list is **closed at thirteen items**: the versioned boundary; explicit principal, role, prompt-pack and execution-resource identities; the model's route, served and underlying identities as three concepts; fenced references and capabilities; no data-plane access; mediated actions with durable intent and result records; the four axes **and their applicability rule**; the drain-and-fence precondition; rejection of superseded or fenced authority at every mediated boundary; **two lifetimes** for what was resolved versus what may be replaced mid-execution; the two-limit concurrency accounting, in which a blocked execution consumes resource capacity only while it retains a resource; declared capabilities for **Maestro-mediated** tools and knowledge access, which does **not** extend to runtime-owned actions inside a resource or a runtime reaching the network directly; and the required provenance facts. **Everything else in that ADR is rationale or a Phase 3 design input** — the execution FSM, restart/resume/re-attach and outstanding-action enumeration, epochs and the delivery machinery, the question-wait lifecycle, durable reusable approvals, the event schemas, the retention traversal, and the transport choice — to be settled against real consumers and deliberately not replaced with another speculative design. The closed form is the point: an open list leaves every unnamed mechanism binding by silence, which is the defect being corrected. Item 4 above is amended by that: the slice's size is not the defect — its *reach* was.
+>
+> **Also corrected:** ADR 0032's v1 inventory omitted the agent state machinery entirely. It now records the role FSMs, `BaseStateMachine`, the untyped and non-crash-safe `StateStore`, `proto.StateQuestion`, and `proto.StateSuspend`'s return-to-origin resumption. Development of the spike stopped at acceptance; no further claims, mutations, or review rounds are warranted.
+
 The versioned wire contract: invocation, events, terminal result, lifecycle,
 provenance, transport, and capability-based tool/knowledge access. Finalized
 against A1 (Accepted), A2 and A3.
@@ -623,6 +636,50 @@ Phase 3 gates that must appear in `plan_scope.md` but do not block opening it:
   scheduling blocker: the roadmap now assigns all `drop` dispositions to Phase 3
   retirement. **Close it once its five deletions are copied into the accepted
   Phase 3 plan and exit checklist**, so closing the issue does not lose them.
+
+### Carried forward from A4's scope correction, 2026-08-15
+
+**This belongs in `plan_scope.md`, which does not exist yet.** It is parked here so
+A6 copies it into the scope document rather than rediscovering it. It is
+direction, not a decision: none of it is Accepted, and it is settled against real
+code when Phase 3 writes its scope.
+
+**Do not preserve or replace v1 wholesale.** Classify each area on evidence:
+
+- **Retain and refactor** the role state machines, transition tables, and useful
+  handlers. They encode real distinctions.
+- **Replace `StateStore.Save(id string, value any)`** with explicit, typed durable
+  workflow checkpoints. This one is not a judgment call:
+  `json.MarshalIndent` plus `os.WriteFile`, with no temporary file, rename, or
+  fsync, is not a durable checkpoint.
+- **Retain `QUESTION`** as a concept and map it to artifacts and Story state.
+- **Retire or redesign `SUSPEND`.** Its exact return-to-origin semantics — restore
+  the agent to `KeySuspendedFrom` over a process-local channel — conflict with
+  artifact-level restart.
+- **Refactor the toolloop behind the centralized action boundary**; do not rewrite
+  it without a demonstrated need.
+- **Split `pkg/proto`**: keep the useful domain types internally, replace its
+  process-local messaging as the *external* execution boundary.
+- **Replace the Claude MCP `lastEffect` and signal-correction path** with an
+  adapter.
+- **Replace process-local dispatcher and supervisor authority** as scheduling and
+  lifecycle move into the v2 Orchestrator and data plane.
+
+**Recommended sequence**, which is the part that keeps the demoted items honest:
+
+1. Inventory and classify the existing agent, toolloop, proto, supervisor,
+   dispatcher, and Claude adapter surfaces.
+2. Establish the durable-checkpoint rule: restart from the last committed
+   workflow artifact, never an arbitrary instruction.
+3. Extract and refactor the smallest shared agent core.
+4. Wire that core to the real action boundary and data plane.
+5. Build the real standalone reviewer as a **second** consumer, beside a native
+   agent.
+6. Add the Claude Code adapter.
+7. Add restart, reliable delivery, remote transport, or richer approval
+   persistence **only when one of those consumers demonstrates the requirement**.
+   These are ADR 0032's provisional design inputs, and step 7 is what "settled
+   against real consumers" means in practice.
 
 ---
 
