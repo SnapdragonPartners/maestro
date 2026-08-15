@@ -191,17 +191,27 @@ func (a *agent) readLoop(rd *contract.Reader) {
 			a.readErr <- err
 			return
 		}
+		// A malformed body from the HOST is fatal here, exactly as a malformed
+		// body from the agent is fatal at the boundary (§8). Dropping it
+		// silently -- which a first version did -- leaves the agent waiting on a
+		// result that will never arrive, so a protocol violation surfaces as a
+		// thirty-second timeout with no cause. The rule was applied in one
+		// direction only.
+		var derr error
 		switch env.Type {
 		case contract.TypeActionResult:
-			if res, derr := contract.Decode[contract.ActionResult](env); derr == nil {
+			var res contract.ActionResult
+			if res, derr = contract.Decode[contract.ActionResult](env); derr == nil {
 				a.results <- res
 			}
 		case contract.TypeAttachAck:
-			if ack, derr := contract.Decode[contract.AttachAck](env); derr == nil {
+			var ack contract.AttachAck
+			if ack, derr = contract.Decode[contract.AttachAck](env); derr == nil {
 				a.attach <- ack
 			}
 		case contract.TypeCancel:
-			if c, derr := contract.Decode[contract.Cancel](env); derr == nil {
+			var c contract.Cancel
+			if c, derr = contract.Decode[contract.Cancel](env); derr == nil {
 				a.cancel <- c
 			}
 		case contract.TypeAck:
@@ -209,7 +219,8 @@ func (a *agent) readLoop(rd *contract.Reader) {
 			// durably committed; anything above it this runtime must be
 			// prepared to replay, which is what makes delivery at-least-once
 			// rather than merely deduplicated.
-			if k, derr := contract.Decode[contract.Ack](env); derr == nil {
+			var k contract.Ack
+			if k, derr = contract.Decode[contract.Ack](env); derr == nil {
 				a.mu.Lock()
 				key := ackKey{epoch: k.Epoch, stream: k.Stream}
 				if k.Through > a.ackedThrough[key] {
@@ -230,6 +241,10 @@ func (a *agent) readLoop(rd *contract.Reader) {
 				default:
 				}
 			}
+		}
+		if derr != nil {
+			a.readErr <- fmt.Errorf("malformed %s from the host: %w", env.Type, derr)
+			return
 		}
 	}
 }
