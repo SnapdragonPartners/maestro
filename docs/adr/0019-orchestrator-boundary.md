@@ -2,7 +2,7 @@
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles what happens to work already executing when its record is amended: cancel rather than suspend or complete-then-reconcile, triggered only when the execution's own work version is superseded or DAG re-evaluation leaves it not dependency-ready, and sequenced so admission closes, admitted actions drain to their commit point, the resource is fenced, and only then is the result recorded as cancelled/superseded — with output retained as attributable draft and Audit history, because an amendment revokes acceptance rather than the work."
+summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles what happens to work already executing when its record is amended: cancel rather than suspend or complete-then-reconcile, triggered only when the execution's own work version is superseded or DAG re-evaluation leaves it not dependency-ready, and sequenced so admission closes, admitted actions drain to their commit point, the resource is fenced, and only then is the result recorded as cancelled/superseded — with what already happened left intact — Audit final, drafts still draft, and accepted artifacts still accepted under ADR 0021's own lifecycle — because an amendment changes what the work must satisfy rather than rewriting what happened."
 +++
 
 # 0019. Orchestrator Boundary
@@ -59,9 +59,18 @@ the policy, and the policy is this ADR's business.
 
 Two deterministic tests, either sufficient:
 
-1. The execution's own **work version is superseded**.
-2. **DAG re-evaluation leaves its work no longer dependency-ready** — a new
-   predecessor was inserted, or an edge it depended on was removed.
+1. The execution's **bound effective work version is no longer current.** Stated
+   over the *effective* version rather than over supersession, because
+   [ADR 0021](0021-artifacts-and-principal-instances.md) is explicit that an
+   accepted amendment does **not** supersede the original — it changes the
+   effective view and leaves the original's status alone. A test written on
+   `superseded` would miss every amendment, which is the common case and the one
+   this decision is named for.
+2. **DAG re-evaluation leaves its work no longer dependency-ready** — a
+   predecessor was inserted that is not satisfied, or a formerly satisfied
+   predecessor's own effective version changed so that it no longer is. Removing
+   an edge is not such a case: fewer predecessors can only make work *more*
+   ready.
 
 Both are rules over records. Neither requires inference, so both are the
 Orchestrator's.
@@ -73,55 +82,92 @@ and a long Epic could never be edited while work was in progress. The binding is
 **per work item**. Editing one Story does not disturb its siblings; editing the
 graph disturbs only executions the second test catches.
 
+**The two tests do not share an enforcement mechanism, and assuming they did was
+this draft's first error.** Under test 2 the execution's own work version is
+still current — what changed is the graph around it — so nothing about that
+version can close its admission. Cancellation therefore marks the **execution's
+authority** superseded, which is a fact about the execution rather than about the
+work version, and is what the boundary checks. One mechanism, both triggers.
+
 #### The sequence, and why the order is the decision
 
-1. **Close admission for that execution.** Further mediated actions are rejected.
-   This is not new machinery: ADR 0030's admission stage already refuses a call
-   whose work version has been superseded. The amendment reaches in-flight work
-   by revoking the version, not by inventing a second check.
-2. **Let already-admitted actions drain to their commit point.** Not abort —
-   ADR 0032 requires that admitted actions drain and the resource be fenced
-   before any positive terminal result. **A consequence worth stating plainly:
-   an action admitted before the amendment may commit after it.** A forge push
-   already past its commit point lands. That is the correct behaviour, it is
-   bounded by the grace period, and it must be attributable rather than hidden,
-   because pretending the amendment stopped it is how a record starts lying.
-3. **Invalidate any pending operator decision.** ADR 0030 already holds that an
-   amendment invalidates every prior-version decision unconditionally, so a gate
-   waiting on a human terminates **stale** rather than being answered. The
-   operator is not asked to approve work against a version that no longer exists.
-4. **Release the lease and the retention claim, then fence.** ADR 0029 §7's
-   protocol against the domain the execution was authorized in. `terminated` and
-   `isolated` both satisfy this; only `unconfirmed` blocks, quarantining the
-   resource. **Cancellation does not destroy the environment** — a Habitat
-   instance outlives the executions authorized against it, and what is fenced is
-   the generation, not the instance.
-5. **Only then record the terminal result**: `cancelled`, with reason
-   `superseded`. Never `failed` — the execution did nothing wrong, and a failure
-   class here would feed retry policy with a false signal. A terminal result
-   recorded while an unfenced process may still be writing is a false record, and
-   downstream work dispatched against a resource that is not actually free
-   inherits the lie.
-6. **Re-evaluate the DAG and dispatch the new effective version** — into a **new
-   generation** wherever the receipt was `isolated` or `unconfirmed`, per
-   ADR 0029, never into the quarantined one.
+1. **Mark the execution's authority superseded, and close admission.** Every
+   further mediated action is rejected, on ADR 0032's rule that a request
+   carrying superseded or fenced execution authority is refused at every mediated
+   boundary. ADR 0030 §5's own ordering applies — close admission for the
+   generation *first*, then settle the attempts already registered against it.
+2. **Drain the admitted attempts, which is not "let each one reach its commit
+   point."** ADR 0030 §5 permits a positive receipt only when **every** admitted,
+   unsettled attempt holds one of three dispositions: confirmed **stopped short**
+   of its commit point; **conditionally committed** under a generation predicate,
+   available only where the effect site accepts one (a data-plane write does; a
+   forge push, a container start, and an external call do not); or **confirmed
+   passage into the fenced domain**. An attempt that has *already* passed its
+   commit point needs no disposition — it is settled by that fact, and it is
+   recorded. So an action admitted before the amendment can still land after it,
+   which is correct and must be attributable rather than hidden; what the drain
+   does is establish dispositions, not force outcomes.
+   **An attempt waiting on an operator is stopped stale inside this step**, and
+   its pending decision invalidated there — ADR 0030 already invalidates every
+   prior-version decision unconditionally. Deferring that to a later step would
+   leave the drain waiting on a human, which is the one wait with no bound.
+3. **Revoke authorization immediately; hold capacity until the fence proves
+   non-interference.** The lease only authorizes, and the execution is no longer
+   authorized, so revoking it starts cancellation. The **retention claim is not
+   released yet**: releasing it makes the instance eligible for demand-driven
+   reclamation or reassignment while an unfenced process may still be writing,
+   which hands a successor a resource nothing has proven free.
+4. **Fence every domain the execution held**, per ADR 0029 §7. `terminated` and
+   `isolated` are both positive receipts. `unconfirmed` is neither: that domain
+   stays **quarantined**, and its provider record stays visible, reconciled and
+   flagged as potentially billable under ADR 0029's independent cleanup axis.
+   **Cancellation fences a generation; it does not destroy an instance**, which
+   outlives the executions authorized against it.
+5. **Record the terminal result only once every domain has returned a positive
+   receipt**: `cancelled`, reason `superseded`. Never `failed` — the execution did
+   nothing wrong, and a failure class here would feed retry policy a false signal.
+   **An `unconfirmed` domain leaves the cancellation unresolved**: non-terminal,
+   no result recorded, capacity still held, and nothing dispatched. A terminal
+   result recorded while an unfenced process may still be writing is a false
+   record, and downstream work dispatched against a resource that is not actually
+   free inherits the lie.
+6. **Re-evaluate, then dispatch only if the current effective work is
+   dependency-ready.** Test 2 exists precisely because it may not be: work
+   cancelled for a newly inserted predecessor waits for that predecessor rather
+   than being reissued immediately. A fresh execution is assigned an appropriate
+   **new generation** and is never dispatched into a quarantined domain.
 
-#### What is kept, and what is revoked
+#### What is kept, and what changes
 
-Output already produced is **retained as attributable draft and Audit history**.
-The amendment revokes **acceptance**, not the work: nothing produced against a
-superseded version is ever accepted, and nothing is deleted to make that true.
+**An amendment changes what the work must satisfy. It does not rewrite what
+already happened.** The three artifact populations follow from that, and from
+ADR 0021 rather than from anything decided here:
+
+- **Audit artifacts are born final** and stay. Cancellation adds to the record and
+  removes nothing from it.
+- **Draft Management output stays draft** and non-authoritative. It is simply not
+  accepted against a version that is no longer current.
+- **Management artifacts already Accepted stay Accepted.** ADR 0021's status
+  vocabulary is `draft` → (`invalidated` | `accepted`) → (`superseded` |
+  `archived`) — there is no path back to draft, and immutable accepted history is
+  the point of it. What changes is that their result **no longer satisfies the
+  current effective work version**; correcting that is ADR 0021's
+  amendment-and-supersession lifecycle, not this one's.
 
 **The already-terminal case, which the original deferral did not consider.** An
-execution that completed before the amendment landed has nothing to cancel and
-nothing to fence — but its output was produced against a version that no longer
-exists, so it is not accepted either. It is retained exactly as the cancelled
-case's output is. This is the common case under a fast amendment, and treating it
-as a third outcome rather than the same one would put an accepted artifact behind
-a superseded record.
+execution that completed before the amendment landed **remains historically
+completed**. There is nothing to cancel and nothing to fence, and its record is
+not reopened. The consequence is a separate statement, not a status change: its
+result no longer satisfies the current effective work version, so that version
+still needs work. This is the common case under a fast amendment, and an earlier
+draft got it wrong in the expensive direction — by saying the output reverts to
+draft, which would both misdescribe what happened and use a transition ADR 0021
+does not have.
 
 **Cancellation is idempotent.** A second amendment arriving mid-cancellation
-changes only which version is dispatched afterwards.
+does not restart it; the execution's authority is already superseded and the
+drain already running. What it changes is only which effective version step 6
+evaluates when it gets there.
 
 #### Rejected alternatives
 
@@ -161,7 +207,7 @@ reviewed commit, together with the attribution flip.
 | Location | Change |
 | --- | --- |
 | [ADR backlog](../v2/notes_adr-backlog.md) candidate 3 | Mark **RESOLVED**, pointing here. The slot keeps its number, per its own citation rule. Its framing is accurate and needs no correction — it named the three options and this amendment picks one |
-| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Two things are: the trigger has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), and the **already-terminal case** is a fourth outcome the item did not consider |
+| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger is stated over the **effective work version** rather than supersession, since an accepted amendment does not supersede anything; it has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
 | [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) Track A graph and A6 | A5's dependency on A1 and A4 is discharged; A6 is unblocked and becomes the only open Track A item |
 | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §-on-levers | It says "A5 governs work already executing" — a forward reference to an item, which becomes a citation of this amendment |
 | [ADR README](README.md) | The 0019 row quotes the front-matter summary verbatim; both change together, and the word *proposed* comes out of both |
@@ -190,10 +236,17 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
   not meant to be.** Per-item version binding is what separates the two; a
   whole-graph version would have made every edit a mass cancellation and pushed
   operators toward not amending at all.
-- **Nothing accepted ever sits behind a superseded record**, including work that
-  completed before the amendment arrived. That case costs the most — finished
-  output that will not be accepted — and it is the reason acceptance rather than
-  execution is what the amendment revokes.
+- **The record of what happened is never rewritten to match what is now wanted.**
+  A cancelled execution keeps its Audit, a completed one keeps its completion, and
+  an accepted artifact keeps its acceptance. What an amendment changes is whether
+  a result still satisfies the current effective work version — a separate
+  statement, reconciled through ADR 0021's own amendment and supersession
+  lifecycle rather than by demoting anything.
+- **A cancellation can fail to complete, and that is a state rather than an
+  error.** An `unconfirmed` fence leaves the execution non-terminal with its
+  capacity still held and nothing dispatched. The alternative — recording a
+  terminal result anyway — buys a tidy record by handing a successor a resource
+  nothing has proven free.
 
 ## Related Documents
 
