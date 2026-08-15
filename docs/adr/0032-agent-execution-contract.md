@@ -2,16 +2,18 @@
 title = "ADR 0032: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. An invocation splits into an immutable, persisted execution configuration and per-incarnation bindings, because resource grants and resume tokens change while the configuration must not. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result, and recovery is artifact-level: an agent restarts from the last committed workflow artifact rather than from where it stopped. A post-acceptance amendment fixes which decisions bind -- the boundary, the identities, the four axes with their applicability rule, mediated actions, and the fencing preconditions -- and returns the execution FSM, re-attach, delivery mechanism, question-wait lifecycle and reusable approvals to Phase 3 as design inputs rather than settled requirements."
+summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. What was resolved for an execution must not silently change while its resource grants may be replaced mid-execution, so the two carry different lifetimes; how that is represented is Phase 3's. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result, and recovery is artifact-level: an agent restarts from the last committed workflow artifact rather than from where it stopped. A post-acceptance scope correction, proposed and pending review, closes the list of binding decisions at thirteen -- the boundary, the identities, the four axes with their applicability rule, mediated actions, the fencing preconditions, the two lifetimes, the concurrency accounting and the capability model -- and returns everything else, including the execution FSM, re-attach, the delivery machinery, the question-wait lifecycle and reusable approvals, to Phase 3 as design inputs."
 +++
 
 # 0032. The Agent Execution Contract
 
-Status: **Accepted** (Codex + DR, 2026-08-15), and **amended the same day by a
-scope correction** (Codex + DR). **Read [Status Of Decisions](#status-of-decisions)
-before the decision sections** — it separates what this ADR binds from what it
-hands Phase 3 as a design input, and it controls any conflicting language below
-it. Drafted by Claude 2026-08-13 and revised through eight review rounds. Item A4 of the accepted
+Status: **Accepted** (Codex + DR, 2026-08-15), with a **scope correction
+PROPOSED 2026-08-15 and pending Codex and DR approval** — see
+[Status Of Decisions](#status-of-decisions), which is where the correction lands
+and which **controls the decision sections below it**. Read it first. Attribution
+is restored in the final reviewed commit, on the acceptance discipline this
+repository already applies to ADRs. Drafted by Claude 2026-08-13 and revised
+through eight review rounds. Item A4 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), and the last design
 item on the critical path to phase entry. It consumes
 [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) (Accepted first, by
@@ -200,11 +202,17 @@ not, and saying so is cheaper now than discovering it against a populated table.
 
 ## Status Of Decisions
 
-**Amended 2026-08-15 (Codex + DR), after acceptance.** This section is normative
-and **controls every section below it**. Where a decision section states a
-provisional item in binding terms, that language is superseded here and the item
-is a design input. Nothing below is deleted, so the reasoning remains readable as
-what it is: the argument that produced a proposal.
+**PROPOSED 2026-08-15, after acceptance — pending Codex and DR approval.** Until
+that approval lands this section is a proposal about which decisions bind, and
+saying otherwise would repeat the exact defect it corrects: asserting settlement
+one step ahead of the evidence. Once approved, this line carries the attribution
+and the qualifier goes.
+
+Once approved, this section is normative and **controls every section below it**.
+Where a decision section states a provisional item in binding terms, that
+language is superseded here and the item is a design input. Nothing below is
+deleted, so the reasoning remains readable as what it is: the argument that
+produced a proposal.
 
 **Why.** A4's job was to stop Phase 3 inheriting an undefined boundary. It was not
 to implement Phase 3 in miniature, and parts of it did. The conformance slice
@@ -214,26 +222,50 @@ were written, and is recorded in the Context above only now. Mechanism reasoned
 forward from a model, with no consumer to answer to, is a proposal rather than a
 settled decision.
 
-### Binding
+### Binding — and this list is closed
 
-- A **versioned, language-neutral invocation and terminal-result boundary**.
-- **Explicit identities**: principal, role, prompt pack, execution resource, and
-  the model's **route, served identity, and underlying identity as three distinct
-  concepts** (§3).
-- **Fenced resource references and capabilities**, never a local workspace path.
-- **No agent access to the data plane.**
-- **Centralized mediated actions**, each with a durable intent record and a
-  durable result record.
-- **The four independent terminal-result axes, together with the applicability
-  rule that makes invalid combinations unrepresentable** (§5). The axes without
-  the rule are a cross product, most of whose members are incoherent.
-- **Cancellation requires that admitted actions drain and the resource be fenced
-  before a positive terminal result is recorded** (§6).
-- **A request carrying superseded or fenced execution authority is rejected at
-  every mediated boundary.** The requirement is binding. **Epochs — and any other
-  mechanism for detecting that authority — are not.**
-- **The required provenance facts** (§9), without prescribing a delivery
-  mechanism for them.
+**Thirteen items. Nothing else in this ADR binds.** Everything below is either
+rationale for one of them or a Phase 3 design input — including any mechanism not
+named here, such as the event schemas, the retention traversal, and the transport
+choice. The one exception is a requirement another **Accepted ADR** independently
+imposes, which binds on that ADR's authority rather than on this one's.
+
+The closed form is deliberate. An open list with named exclusions leaves every
+unnamed mechanism in a 1,600-line document binding by silence, which is how this
+ADR came to require machinery nobody had decided on.
+
+1. A **versioned, language-neutral invocation and terminal-result boundary**.
+2. **Explicit identities**: principal, role, prompt pack, and execution resource.
+3. **The model's route, served identity, and underlying identity are three
+   distinct concepts** (§3) — the route to make the call, the served identity
+   carrying retirement, the underlying model carrying lineage.
+4. **Fenced resource references and capabilities**, never a local workspace path.
+5. **No agent access to the data plane.**
+6. **Centralized mediated actions**, each with a durable intent record and a
+   durable result record.
+7. **The four independent terminal-result axes, together with the applicability
+   rule that makes invalid combinations unrepresentable** (§5). The axes without
+   the rule are a cross product, most of whose members are incoherent.
+8. **Cancellation requires that admitted actions drain and the resource be fenced
+   before a positive terminal result is recorded** (§6).
+9. **A request carrying superseded or fenced execution authority is rejected at
+   every mediated boundary.** The requirement is binding. **Epochs — and any
+   other mechanism for detecting that authority — are not.**
+10. **The resolved configuration and the resource grants have different
+    lifetimes** (§2): what was resolved for an execution must not silently
+    change, while grants may be replaced mid-execution, because gate 3 acquires
+    resources after approval. **Two lifetimes is the decision.** How they are
+    represented — one record or two, what a per-incarnation carrier holds, and
+    how any of it persists — is Phase 3's.
+11. **A blocked execution consumes no runnable concurrency and does consume
+    resource capacity** (§7) — two limits in two units, never one number. This is
+    the accounting [ADR 0030](0030-tool-execution-policy-hook.md) assigns here,
+    and it is what makes that ADR's decision to let a gate block affordable.
+12. **Tools and knowledge are reached through declared capabilities** (§8), which
+    is item 4's other half: an agent's reach is what it was granted, not what its
+    process can touch.
+13. **The required provenance facts** (§9), without prescribing a delivery
+    mechanism for them.
 
 ### Provisional design inputs
 
@@ -245,23 +277,25 @@ replaced with another speculative design here.
 - Epochs, acknowledgements, watermarks, and durable sender outboxes.
 - The generic question-wait lifecycle.
 - Durable reusable approvals.
+- **How item 10's two lifetimes are represented** — one record or two, what a
+  per-incarnation carrier holds, and the persistence shape of either. Resume
+  tokens are covered by the restart entry above.
 - Any persistence family implied solely by one of the above.
+- **Everything else this ADR describes and the closed list does not name**, which
+  is most of it: the event schemas, the retention traversal, and the transport
+  choice are the largest examples.
 
-### Not reclassified
+### There is no third category
 
-Anything named in neither list keeps the status it had at acceptance. Three items
-are called out because their omission from both lists is easy to read as a
-demotion and is not one: **§7's two-limit concurrency accounting** for a blocked
-execution, **§8's capability model** beyond the "capabilities, not paths"
-statement already binding above, and **§2's split of the invocation into an
-immutable persisted configuration and per-incarnation bindings** — which rests on
-gate 3 replacing resources *mid-execution*, not on restart, so a single immutable
-record was never available regardless of how recovery works.
+An earlier form of this section kept a *not reclassified* list, holding that
+anything named in neither list kept the status it had at acceptance. **That was
+wrong**, and it defeated the correction it was part of: it left every unnamed
+mechanism in a long document binding by default — the event schemas, the
+retention traversal, the transport choice — which is the failure being corrected,
+restated as a rule. The two items it was protecting, §7's accounting and §8's
+capability model, are now items 11 and 12 above.
 
-That last one needs a boundary drawn inside it: the **split** is binding, while
-two of the things §2 puts in the bindings — the **epoch** and the **resume
-token** — belong to the provisional list and are examples of what bindings might
-carry rather than required fields.
+Binding or provisional. If it is not in the closed list, it does not bind here.
 
 ### What survives the demotion, and why
 
@@ -317,6 +351,13 @@ harness may collapse roles onto one implementation. The contract carries all fou
 because collapsing any pair loses a distinction some configuration needs.
 
 ### 2. The invocation is two halves, and only one of them is immutable
+
+> **Read this section against Status Of Decisions above.** What binds is item 10:
+> **two lifetimes** — what was resolved must not silently change, while resource
+> grants may be replaced mid-execution. The *shape* below — two records, a
+> per-incarnation carrier and its contents, and how either persists — is a
+> Phase 3 design input, and the epoch and resume token are covered by the
+> provisional restart entry.
 
 **Everything requiring a decision is decided before dispatch; the runtime looks
 nothing up.** That follows from ADR 0019 — resolution is rules, not judgment — and
@@ -1568,12 +1609,14 @@ schema claims here were made by reading migrations rather than running them.
 
 ### Deferred
 
-**Demoted to Phase 3 design inputs by the 2026-08-15 amendment:** the complete
-execution FSM; restart, resume, re-attach and outstanding-action enumeration;
-epochs, acknowledgements, watermarks and durable sender outboxes; the generic
-question-wait lifecycle; durable reusable approvals; and any persistence family
-implied solely by those. The Status Of Decisions section is the authority on
-which is which.
+**Returned to Phase 3 as design inputs by the proposed 2026-08-15 scope
+correction:** the complete execution FSM; restart, resume, re-attach and
+outstanding-action enumeration; epochs, acknowledgements, watermarks and durable
+sender outboxes; the generic question-wait lifecycle; durable reusable approvals;
+how item 10's two lifetimes are represented; and **everything else this ADR
+describes that its closed binding list does not name** — the event schemas, the
+retention traversal, and the transport choice among them. The Status Of Decisions
+section is the authority, and the list there is closed rather than illustrative.
 
 **Deferred at acceptance:** policy content (candidate 12); amendment policy (A5); the knowledge base
 (candidate 10); GitHub Actions presentation; `maestro-agent` extraction (Phase 8);
@@ -1587,8 +1630,8 @@ conformance executable lives permanently.
 
 | Item | Owner |
 | --- | --- |
-| The Status Of Decisions section's **binding** list: the versioned boundary, the four axes and their applicability rule, the three model identities, fenced references and capabilities, no data-plane access, mediated actions with durable intent and result records, the drain-and-fence precondition on a positive terminal result, rejection of superseded or fenced authority at every mediated boundary, and the required provenance facts | **This ADR** |
-| The Status Of Decisions section's **provisional** list — the execution FSM, restart/resume/re-attach and outstanding-action enumeration, the delivery mechanism, the question-wait lifecycle, reusable approvals, and any persistence family implied solely by those. Settled against real consumers, not replaced with another speculative design | **Phase 3 plan** |
+| The thirteen items in the Status Of Decisions section's **closed binding list**, and nothing else in this document | **This ADR** |
+| **Everything else this ADR describes**, whether or not the provisional list names it explicitly: the execution FSM, restart/resume/re-attach and outstanding-action enumeration, the delivery machinery, the question-wait lifecycle, reusable approvals, how item 10's two lifetimes are represented, the event schemas, the retention traversal, and the transport choice. Settled against real consumers, not replaced with another speculative design | **Phase 3 plan** |
 | Which policies exist and which approval scopes each gate exposes | **Candidate 12** |
 | When a cancellation is legitimate, and what amendment does to pending actions and grants | **A5** (ADR 0019 amendment) |
 | The `tool_calls` migration including the constraint replacement, **and the durable families §9 requires** — execution configurations, bindings and epochs, resume tokens, event watermarks, operator decisions, response waits, and the attempt's correlation binding and disposition; the reconciler's scoping in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values; whether an answer may reach a live execution; **a durable sender outbox surviving the adapter's own restart**, which §4 requires and the conformance slice implements only in process | **Phase 3 plan** |
@@ -1630,7 +1673,8 @@ the amending commit, the two tracker items through the API on the same day.
 
 | Location | Change |
 | --- | --- |
-| [ADR 0030](0030-tool-execution-policy-hook.md) §8 and its responsibility split | Two edits. §8 handed A4 "the vocabulary"; the vocabulary is now Phase 3's, while §8's own **requirement** — that a healthy operator wait, a healthy resource wait, and an interrupted attempt be distinguishable — stays where it was. The split table's A4 row is divided accordingly |
+| [ADR 0030](0030-tool-execution-policy-hook.md) §8 and its responsibility split | §8 handed A4 "the vocabulary"; the vocabulary is now Phase 3's, while §8's own **requirement** — that a healthy operator wait, a healthy resource wait, and an interrupted attempt be distinguishable — stays where it was. The split table's A4 row is divided accordingly |
+| [ADR 0030](0030-tool-execution-policy-hook.md) §4, its cost list, and the Phase 3 split row | Three stale restatements the first sweep missed, found by re-grepping the concept: §4 still said the record's state was A4's to name, and two later places still called the `tool_calls` migration **additive** after §8 had been amended to say it must replace `tool_calls_finished_check`. A rule changed in one place keeps being asserted in its restatements |
 | [Blocker plan](../v2/phase_3/plan_blockers.md) item A4 | A **SCOPE CORRECTED** banner beneath the RESOLVED one: what overran, what binds, what became a design input, and that the slice's reach rather than its size was the defect |
 | [Blocker plan](../v2/phase_3/plan_blockers.md) "In Phase 3's Plan" | The v1 classification direction and the seven-step sequence, parked explicitly **for `plan_scope.md`, which does not exist yet**, so A6 copies it rather than rediscovering it. Marked direction, not decision |
 | [ADR backlog](../v2/notes_adr-backlog.md) slot 13 | The amendment recorded, and two carry-forward bullets narrowed: the invocation split now rests on gate 3 rather than on restart, and artifact-level recovery is stated as the rule without the `stale` mechanism |

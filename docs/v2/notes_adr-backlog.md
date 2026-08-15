@@ -145,16 +145,17 @@ this slot asked for:
   **served** identity carries retirement and the **underlying** model carries
   lineage, with a nullable reference between them whose null is ADR 0020's
   existing `unclassified`. #319 builds its metadata home against that.
-- **The invocation is two records.** An immutable, persisted execution
-  configuration, beside per-incarnation bindings carrying resource grants and
-  inbound artifact references. Anything calling "the invocation" immutable means
-  the first. The split rests on gate 3 replacing resources mid-execution, not on
-  restart behaviour.
+- **An invocation carries two lifetimes, not one.** What was resolved for an
+  execution must not silently change; its resource grants may be replaced
+  mid-execution, because gate 3 acquires resources after approval. **Two
+  lifetimes is the decision** — how they are represented, and how either
+  persists, is Phase 3's.
 - **Recovery is artifact-level.** An agent restarts from the last committed
   workflow artifact, not from where it stopped. Resuming would require persisting
   the substituted request, which ADR 0030 §3 keeps out of the Audit family.
 
-**Amended 2026-08-15, after acceptance** (Codex + DR). ADR 0032's conformance
+**Scope correction PROPOSED 2026-08-15, after acceptance — pending Codex and DR
+approval.** ADR 0032's conformance
 slice validated an isolated contract model, not integration with v1's agent
 framework, and the ADR now carries a **Status Of Decisions** section separating
 what binds from what Phase 3 settles against a real consumer. Demoted to design
