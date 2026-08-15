@@ -257,13 +257,23 @@ ADR came to require machinery nobody had decided on.
     resources after approval. **Two lifetimes is the decision.** How they are
     represented — one record or two, what a per-incarnation carrier holds, and
     how any of it persists — is Phase 3's.
-11. **A blocked execution consumes no runnable concurrency and does consume
-    resource capacity** (§7) — two limits in two units, never one number. This is
-    the accounting [ADR 0030](0030-tool-execution-policy-hook.md) assigns here,
-    and it is what makes that ADR's decision to let a gate block affordable.
-12. **Tools and knowledge are reached through declared capabilities** (§8), which
-    is item 4's other half: an agent's reach is what it was granted, not what its
-    process can touch.
+11. **A blocked execution consumes no runnable concurrency, and consumes
+    resource capacity for exactly as long as it retains a resource** (§7) — two
+    limits in two units, never one number. The qualification is load-bearing: an
+    execution may hold no resource, or release one during a long wait, and then
+    it consumes neither. This is the accounting
+    [ADR 0030](0030-tool-execution-policy-hook.md) assigns here, and it is what
+    makes that ADR's decision to let a gate block affordable.
+12. **Maestro-mediated tools and knowledge access are reached through declared
+    capabilities** (§8), which is item 4's other half: what an agent can ask
+    *Maestro* to do is what it was granted. **This does not extend to
+    runtime-owned actions.** A runtime's own built-in tools acting inside its
+    resource, and the same runtime reaching the network directly, are outside the
+    mediated boundary by [ADR 0030](0030-tool-execution-policy-hook.md)'s own
+    three-valued effect site — bounded by containment and by what was granted at
+    provisioning, not by a per-action capability check. Reading this item as
+    "process reach is irrelevant" would reinstate the scope invariant that ADR
+    withdrew.
 13. **The required provenance facts** (§9), without prescribing a delivery
     mechanism for them.
 
