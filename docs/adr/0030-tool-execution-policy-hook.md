@@ -623,8 +623,16 @@ situations, and conflating them is precisely the ambiguity §4 sets out to remov
 | Interrupted | The process died between open and completion | Reconciliation; the outcome is `unknown` |
 
 So Phase 3 owes a **migration** giving the record explicit nonterminal states —
-**at least operator-waiting and resource-waiting** — and A4 owns the vocabulary,
-since it owns the action and Story states.
+**at least operator-waiting and resource-waiting**.
+
+**Amended 2026-08-15.** This section originally handed the vocabulary to A4. A4's
+own amendment returns the complete state vocabulary to Phase 3, to be settled
+against a real consumer rather than on paper
+([ADR 0032](0032-agent-execution-contract.md), Status Of Decisions). What does
+**not** move is this section's requirement: the record must distinguish a healthy
+operator wait, a healthy resource wait, and an interrupted attempt, because the
+watchdog cannot act correctly without that distinction. The requirement is here;
+only its naming is Phase 3's.
 
 **Amended 2026-08-15 on A4's finding: that migration is not purely additive.**
 `tool_calls` carries
@@ -757,7 +765,8 @@ Recorded because several of the rules above are stated here and owned elsewhere.
 | Item | Owner |
 | --- | --- |
 | The boundary, the three-gate ordering, logical blocking, one decision per action, final revalidation, and the Story's `awaiting_resolution` state | **This ADR** |
-| The tool call's nonterminal state vocabulary (at least operator-waiting and resource-waiting), action states, reconnection and restart behavior, the `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** (candidate 13) |
+| The `blocked` terminal result, resource-wait behavior over the wire, and whether a blocked execution counts against runnable concurrency | **A4** ([ADR 0032](0032-agent-execution-contract.md)) |
+| The tool call's nonterminal state vocabulary (at least operator-waiting and resource-waiting), action states, and reconnection and restart behavior. **Reassigned 2026-08-15**: A4 handed these back as design inputs rather than settling them on paper. §8's *requirement* that the three cases be distinguishable is unaffected and stays here | **Phase 3 plan**, against [ADR 0032](0032-agent-execution-contract.md)'s Status Of Decisions |
 | Amendment and cancellation invalidating pending actions and grants | **A5** (ADR 0019 amendment) |
 | Watchdog policy for the waiting states; the additive migration that adds them; the headless runner's exit behavior; the retention window and the release rule for a waiting resource | **Phase 3 plan** |
 | Which policies exist, their risks, and which approval scopes each gate exposes | **Candidate 12** |

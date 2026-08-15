@@ -146,13 +146,22 @@ this slot asked for:
   lineage, with a nullable reference between them whose null is ADR 0020's
   existing `unclassified`. #319 builds its metadata home against that.
 - **The invocation is two records.** An immutable, persisted execution
-  configuration a restart reuses verbatim, beside per-incarnation bindings
-  carrying resource grants, the epoch, the resume token, and inbound artifact
-  references. Anything calling "the invocation" immutable means the first.
-- **Recovery is artifact-level.** A wait interrupted by a restart goes `stale`
-  and the action is re-requested; only the operator *decision* is persisted.
-  Resuming would require persisting the substituted request, which ADR 0030 §3
-  keeps out of the Audit family.
+  configuration, beside per-incarnation bindings carrying resource grants and
+  inbound artifact references. Anything calling "the invocation" immutable means
+  the first. The split rests on gate 3 replacing resources mid-execution, not on
+  restart behaviour.
+- **Recovery is artifact-level.** An agent restarts from the last committed
+  workflow artifact, not from where it stopped. Resuming would require persisting
+  the substituted request, which ADR 0030 §3 keeps out of the Audit family.
+
+**Amended 2026-08-15, after acceptance** (Codex + DR). ADR 0032's conformance
+slice validated an isolated contract model, not integration with v1's agent
+framework, and the ADR now carries a **Status Of Decisions** section separating
+what binds from what Phase 3 settles against a real consumer. Demoted to design
+inputs: the execution FSM; restart, resume, re-attach and outstanding-action
+enumeration; epochs, acknowledgements, watermarks and durable outboxes; the
+question-wait lifecycle; and durable reusable approvals. Cite that section, not
+the decision sections, when this slot's resolution is used as authority.
 
 ### 14. Dispatcher/Message Abstraction For Cloud Jobs — v3
 

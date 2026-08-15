@@ -2,7 +2,7 @@
 title = "ADR 0032: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. An invocation splits into an immutable, persisted execution configuration and per-incarnation bindings, because resource grants and resume tokens change while the configuration must not. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result -- and recovery is artifact-level, so a wait interrupted by a restart goes stale rather than resuming."
+summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. An invocation splits into an immutable, persisted execution configuration and per-incarnation bindings, because resource grants and resume tokens change while the configuration must not. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result, and recovery is artifact-level: an agent restarts from the last committed workflow artifact rather than from where it stopped. A post-acceptance amendment fixes which decisions bind -- the boundary, the identities, the four axes with their applicability rule, mediated actions, and the fencing preconditions -- and returns the execution FSM, re-attach, delivery mechanism, question-wait lifecycle and reusable approvals to Phase 3 as design inputs rather than settled requirements."
 +++
 
 # 0032. The Agent Execution Contract
@@ -97,6 +97,38 @@ process facts (`LLMError`, `GracefulShutdown`), a work outcome (`ProcessEffect`)
 and a classified failure (`Blocked`). Each is a real fact; they are not the same
 kind of fact.
 
+**And v1 has agent state machinery, which this ADR does not replace.** The first
+draft's inventory omitted it — which is how §6 came to describe an execution
+lifecycle without noticing what it sat beside. `pkg/proto` defines five generic
+states: `DONE`, `ERROR`, `WAITING`, `QUESTION`, and `SUSPEND`
+(`pkg/proto/message.go:634-644`). Each role FSM extends them with its own
+vocabulary and its own transition table (`pkg/coder/coder_fsm.go`, and the
+equivalents in `pkg/architect` and `pkg/pm`). `BaseStateMachine`
+(`pkg/agent/internal/core/machine.go:81`) holds the current state, an untyped
+`StateData map[string]any`, transition history, a retry count, and an
+instance-local `TransitionTable`.
+
+**Its persistence is untyped and not crash-safe.** `StateStore` (`machine.go:70`)
+is `Save(id string, value any)` and `Load(id string, dest any)`. `Persist()`
+(`machine.go:307`) marshals a four-key map — `current_state`, `state_data`,
+`transitions`, `retry_count` — and the only implementation
+(`pkg/state/store.go:127`) is `json.MarshalIndent` plus `os.WriteFile` at mode
+`0644`, one file per agent ID, with no temporary file, no rename, and no fsync. A
+crash during the write truncates the record it was meant to protect. **This is
+what a typed v2 durable checkpoint replaces**, and it is a better argument for
+one than anything in §6.
+
+**Two of those five states are concepts this contract also names.** `QUESTION` is
+a Coder waiting for the Architect's answer; the Coder FSM redeclares the same
+string locally (`pkg/coder/coder_fsm.go:21`) and routes `PLANNING` and `CODING`
+into it and back out (`:139`, `:146`, `:164`). `SUSPEND` stores its originating
+state under `KeySuspendedFrom`, and `HandleSuspend` (`machine.go:556`) returns the
+agent **to that exact state** on a restore signal, or to `ERROR` after fifteen
+minutes (`DefaultSuspendTimeout`, `machine.go:31`). That is precise
+return-to-origin resumption, over a process-local channel no restart survives —
+the opposite of the artifact-level recovery §6 chose. Phase 3 settles that
+conflict; it must not duplicate it.
+
 **And the transport choice was forced once already.** The MCP server listens on
 TCP rather than a Unix socket because "Unix sockets don't work through Docker
 Desktop's file sharing on macOS" (`server.go:1-6`). §10 owes that constraint an
@@ -161,6 +193,83 @@ not, and saying so is cheaper now than discovering it against a populated table.
   invocation carries pack name, scheme-qualified digest, content reference, and
   installation identity and revision; and this ADR owes four invocation-provenance
   obligations §3 deliberately gave no home.
+
+## Status Of Decisions
+
+**Amended 2026-08-15 (Codex + DR), after acceptance.** This section is normative
+and **controls every section below it**. Where a decision section states a
+provisional item in binding terms, that language is superseded here and the item
+is a design input. Nothing below is deleted, so the reasoning remains readable as
+what it is: the argument that produced a proposal.
+
+**Why.** A4's job was to stop Phase 3 inheriting an undefined boundary. It was not
+to implement Phase 3 in miniature, and parts of it did. The conformance slice
+validated an **isolated contract model**, not integration with Maestro's agent
+framework — whose state machinery had not been inventoried when the sections below
+were written, and is recorded in the Context above only now. Mechanism reasoned
+forward from a model, with no consumer to answer to, is a proposal rather than a
+settled decision.
+
+### Binding
+
+- A **versioned, language-neutral invocation and terminal-result boundary**.
+- **Explicit identities**: principal, role, prompt pack, execution resource, and
+  the model's **route, served identity, and underlying identity as three distinct
+  concepts** (§3).
+- **Fenced resource references and capabilities**, never a local workspace path.
+- **No agent access to the data plane.**
+- **Centralized mediated actions**, each with a durable intent record and a
+  durable result record.
+- **The four independent terminal-result axes, together with the applicability
+  rule that makes invalid combinations unrepresentable** (§5). The axes without
+  the rule are a cross product, most of whose members are incoherent.
+- **Cancellation requires that admitted actions drain and the resource be fenced
+  before a positive terminal result is recorded** (§6).
+- **A request carrying superseded or fenced execution authority is rejected at
+  every mediated boundary.** The requirement is binding. **Epochs — and any other
+  mechanism for detecting that authority — are not.**
+- **The required provenance facts** (§9), without prescribing a delivery
+  mechanism for them.
+
+### Provisional design inputs
+
+Phase 3 settles these against real consumers. They are deliberately **not**
+replaced with another speculative design here.
+
+- The complete execution FSM.
+- Restart, resume, re-attach, and outstanding-action enumeration.
+- Epochs, acknowledgements, watermarks, and durable sender outboxes.
+- The generic question-wait lifecycle.
+- Durable reusable approvals.
+- Any persistence family implied solely by one of the above.
+
+### Not reclassified
+
+Anything named in neither list keeps the status it had at acceptance. Three items
+are called out because their omission from both lists is easy to read as a
+demotion and is not one: **§7's two-limit concurrency accounting** for a blocked
+execution, **§8's capability model** beyond the "capabilities, not paths"
+statement already binding above, and **§2's split of the invocation into an
+immutable persisted configuration and per-incarnation bindings** — which rests on
+gate 3 replacing resources *mid-execution*, not on restart, so a single immutable
+record was never available regardless of how recovery works.
+
+That last one needs a boundary drawn inside it: the **split** is binding, while
+two of the things §2 puts in the bindings — the **epoch** and the **resume
+token** — belong to the provisional list and are examples of what bindings might
+carry rather than required fields.
+
+### What survives the demotion, and why
+
+A **durable tool/action record** remains necessary — for Audit
+([ADR 0022](0022-v2-data-plane.md)'s atomic action unit), for the operator
+decision, for fencing ([ADR 0030](0030-tool-execution-policy-hook.md) §5 cannot
+issue a positive receipt without knowing whether an admitted action passed its
+commit point), and so that a re-requested action does not commit a second effect.
+
+**It is not agent recovery state, and it does not justify a parallel agent FSM.**
+Recovery is artifact-level: an agent restarts from the last committed workflow
+artifact, not from where it stopped.
 
 ## Decision
 
@@ -651,6 +760,14 @@ accepted. Phase 3 must record dispatch failures durably; what it must not do is
 mint a sixth status for an execution that never started.
 
 ### 6. Lifecycle
+
+> **Read this section against Status Of Decisions above.** Most of it is
+> **provisional**: the execution FSM, restart, resume, re-attach, and
+> outstanding-action enumeration are Phase 3 design inputs. Three things here
+> **bind** — the drain-and-fence precondition on a positive terminal result, the
+> rejection of superseded or fenced authority at every mediated boundary, and
+> artifact-level recovery as the rule. Where the text below states a provisional
+> item in binding terms, the Status section wins.
 
 #### The execution's states
 
@@ -1234,6 +1351,21 @@ not let a later reader mistake for something the conformance slice demonstrated.
 
 ## Conformance
 
+**What the slice establishes, and what it does not** (2026-08-15). It exercises an
+**isolated contract model**: a host implementation and a stub agent speaking this
+wire boundary to each other, in one repository, over one transport. It is **not**
+the standalone review agent, **not** a reusable agent module, and **not**
+integration with `pkg/agent`, `pkg/coder`, or the data plane. A claim proven here
+is evidence that the *model* is internally coherent — not that Maestro implements
+it, and not that it survives contact with the framework inventoried in the
+Context.
+
+**The code is historical evidence.** It is unmaintained spike code under the rule
+CLAUDE.md already applies to `spikes/`, and it is **not a Phase 3 implementation
+template**. Its `host/` half in particular is one implementation of machinery the
+Status Of Decisions section no longer binds. Development of it stopped at
+acceptance.
+
 **The contract cannot be proven by inspection**, which is why the blocker plan
 grants it the single bounded exception to *an Accepted ADR and nothing else*. One
 conformance executable is required, living outside `pkg/`, `internal/`, and
@@ -1373,6 +1505,18 @@ schema claims here were made by reading migrations rather than running them.
 
 ## Consequences
 
+- **Phase 3 inherits a defined boundary and an open design space, which is what
+  the blocker was for.** The amendment above keeps the boundary — identities,
+  axes, mediated actions, fencing preconditions — and hands back the lifecycle
+  and delivery mechanism. What Phase 3 must not do is re-derive a replacement on
+  paper: the demoted items are settled by building a consumer, and the first
+  consumer's needs are the evidence.
+- **The v1 agent framework becomes a classification task, not a preservation or
+  replacement decision.** The Context now records what exists — role FSMs,
+  `BaseStateMachine`, an untyped and non-atomic `StateStore`, `QUESTION`, and
+  `SUSPEND`'s return-to-origin resumption. Each of those is retained, refactored,
+  or retired on evidence. The one that is already decided is `StateStore`:
+  `os.WriteFile` of a `map[string]any` is not a durable checkpoint.
 - **Phase 3 gets one boundary instead of two.** A native Go agent and an adapted
   external runtime meet the same contract, so ADR 0030's claim that no tool
   reaches its effect around the boundary becomes demonstrable rather than
@@ -1420,7 +1564,14 @@ schema claims here were made by reading migrations rather than running them.
 
 ### Deferred
 
-Policy content (candidate 12); amendment policy (A5); the knowledge base
+**Demoted to Phase 3 design inputs by the 2026-08-15 amendment:** the complete
+execution FSM; restart, resume, re-attach and outstanding-action enumeration;
+epochs, acknowledgements, watermarks and durable sender outboxes; the generic
+question-wait lifecycle; durable reusable approvals; and any persistence family
+implied solely by those. The Status Of Decisions section is the authority on
+which is which.
+
+**Deferred at acceptance:** policy content (candidate 12); amendment policy (A5); the knowledge base
 (candidate 10); GitHub Actions presentation; `maestro-agent` extraction (Phase 8);
 the #272 routing implementation; the #317 and #280 code fixes; scheduling policy
 including the release rule for a resource held by a blocked execution; remote and
@@ -1432,7 +1583,8 @@ conformance executable lives permanently.
 
 | Item | Owner |
 | --- | --- |
-| The wire contract, the four-axis result, the action and execution state vocabularies, cancellation lifecycle, re-attach, provenance obligations, the model identity split, and the concurrency accounting | **This ADR** |
+| The Status Of Decisions section's **binding** list: the versioned boundary, the four axes and their applicability rule, the three model identities, fenced references and capabilities, no data-plane access, mediated actions with durable intent and result records, the drain-and-fence precondition on a positive terminal result, rejection of superseded or fenced authority at every mediated boundary, and the required provenance facts | **This ADR** |
+| The Status Of Decisions section's **provisional** list — the execution FSM, restart/resume/re-attach and outstanding-action enumeration, the delivery mechanism, the question-wait lifecycle, reusable approvals, and any persistence family implied solely by those. Settled against real consumers, not replaced with another speculative design | **Phase 3 plan** |
 | Which policies exist and which approval scopes each gate exposes | **Candidate 12** |
 | When a cancellation is legitimate, and what amendment does to pending actions and grants | **A5** (ADR 0019 amendment) |
 | The `tool_calls` migration including the constraint replacement, **and the durable families §9 requires** — execution configurations, bindings and epochs, resume tokens, event watermarks, operator decisions, response waits, and the attempt's correlation binding and disposition; the reconciler's scoping in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values; whether an answer may reach a live execution; **a durable sender outbox surviving the adapter's own restart**, which §4 requires and the conformance slice implements only in process | **Phase 3 plan** |
@@ -1465,6 +1617,28 @@ final reviewed commit.
 **benchmark-evidence-reviewer agent** and the missing `accept` verb. That is
 #282's other half, it is Phase 3 work, and this ADR does not build it — so those
 statements stay true.
+
+### Propagation of the 2026-08-15 amendment
+
+Same discipline, run against the **concept** rather than the word. Every location
+that restated a demoted item as a requirement was corrected in the amending
+commit.
+
+| Location | Change |
+| --- | --- |
+| [ADR 0030](0030-tool-execution-policy-hook.md) §8 and its responsibility split | Two edits. §8 handed A4 "the vocabulary"; the vocabulary is now Phase 3's, while §8's own **requirement** — that a healthy operator wait, a healthy resource wait, and an interrupted attempt be distinguishable — stays where it was. The split table's A4 row is divided accordingly |
+| [Blocker plan](../v2/phase_3/plan_blockers.md) item A4 | A **SCOPE CORRECTED** banner beneath the RESOLVED one: what overran, what binds, what became a design input, and that the slice's reach rather than its size was the defect |
+| [Blocker plan](../v2/phase_3/plan_blockers.md) "In Phase 3's Plan" | The v1 classification direction and the seven-step sequence, parked explicitly **for `plan_scope.md`, which does not exist yet**, so A6 copies it rather than rediscovering it. Marked direction, not decision |
+| [ADR backlog](../v2/notes_adr-backlog.md) slot 13 | The amendment recorded, and two carry-forward bullets narrowed: the invocation split now rests on gate 3 rather than on restart, and artifact-level recovery is stated as the rule without the `stale` mechanism |
+| [Spike report](../v2/phase_3/spike_execution-contract.md) | A **What this is evidence of, and what it is not** section, and a front-matter summary that says isolated contract model. A `PROVEN` claim is evidence about the model, not about Maestro |
+| [Phase 3 README](../v2/phase_3/README.md) and [ADR README](README.md) | Both quote a front-matter summary verbatim; both summaries changed, so both were updated |
+| [Issue #282](https://github.com/SnapdragonPartners/maestro/issues/282) | The resolution comment overstated what the slice discharged — it claimed an adapter validated independently of the Maestro factory, and composite/paired provenance the run declared **uncovered**. Corrected in place |
+
+**Not changed, and why:** the [parking lot](../v2/notes_parking-lot.md) pointer
+names the ADR and the resolution without restating any mechanism, so it stays
+true. `docs/archive/` is out of scope by ADR 0017, and its `epoch` is v1's
+failure-recovery scope — a different concept that a word-level sweep would have
+"reconciled" wrongly.
 
 **Corroboration, not conflict:** [ADR 0020](0020-review-invariant-reviewer-vs-partner.md)
 already states that serving is not origin and that "lineage needs its own

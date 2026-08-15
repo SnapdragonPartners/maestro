@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and matching that empty-run check as a substring, so "60 claims:" condemned a fully green run."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. What it validates is an isolated contract model -- a host implementation and a stub agent speaking the wire boundary to each other -- and not integration with Maestro's agent framework, which had not been inventoried when it was built; a post-acceptance amendment returns the execution FSM, re-attach, delivery machinery, question-wait lifecycle and reusable approvals to Phase 3 as design inputs, so the claims covering them stay true about the model and no longer state a requirement. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and matching that empty-run check as a substring, so "60 claims:" condemned a fully green run."
 type = "spike"
 +++
 
@@ -19,6 +19,37 @@ buy: *any real external-process executable driven over the local transport*,
 exercising the wire boundary, capability handling, the event stream,
 cancellation, and the terminal result — and explicitly **not** an in-process
 fake or an echo fixture.
+
+## What this is evidence of, and what it is not
+
+**Added 2026-08-15, with ADR 0032's post-acceptance amendment** (Codex + DR),
+because this report's framing invited a stronger reading than its evidence
+supports.
+
+What was validated is an **isolated contract model** — a host implementation and
+a stub agent speaking the wire boundary to each other, in one module, over one
+transport. It is **not** the standalone review agent, **not** a reusable agent
+module, and **not** integration with `pkg/agent`, `pkg/coder`, or the data plane.
+The v1 agent framework — the role FSMs, `BaseStateMachine`, `StateStore`,
+`QUESTION`, and `SUSPEND` — had not been inventoried when this was built, which is
+how the slice came to carry an execution state vocabulary sitting beside one that
+already exists.
+
+So a `PROVEN` claim below means *this model is internally coherent and this
+implementation obeys it*. It does not mean Maestro implements the property, and it
+does not mean the property survives contact with the framework. ADR 0032's
+**Status Of Decisions** section is the authority on which of the properties
+demonstrated here still bind: the execution FSM, re-attach and outstanding-action
+enumeration, the epoch/acknowledgement/watermark/outbox machinery, the
+question-wait lifecycle, and reusable approvals are now Phase 3 design inputs.
+The claims covering them remain true about the model and no longer state a
+requirement.
+
+**The code is historical evidence**: unmaintained spike code under CLAUDE.md's
+existing `spikes/` rule, and **not a Phase 3 implementation template**. Its
+`host/` half is one implementation of machinery the ADR no longer binds.
+Development stopped at acceptance; no further claims, mutations, or review rounds
+are warranted.
 
 ## What was run
 
