@@ -215,8 +215,8 @@ func newHarness(diff string) *harness {
 		h.mu.Unlock()
 		// Routing OPENS an execution-level wait. The action itself settles now;
 		// what waits is the execution, on another principal (§4).
+		// Opening the durable record IS the guard; there is no second flag.
 		rec.OpenResponseWait(inv.ID(), q.QuestionArtifact)
-		b.SetAwaitingResponse(inv.ID(), true)
 		return json.Marshal(map[string]string{"delivered_to": "architect", "routed": q.QuestionArtifact})
 	}
 	b.CurrentGeneration["inc-1"] = 4

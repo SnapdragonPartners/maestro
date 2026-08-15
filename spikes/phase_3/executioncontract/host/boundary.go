@@ -328,8 +328,8 @@ func (r *Recorder) Reconcile() ReconcileReport {
 			att.Outcome = contract.OutcomeStale
 			att.Reason = "orchestrator restarted while awaiting an operator"
 			att.Disposition = DispositionBeforeCommit
-			r.promoteLocked(att)
 			att.Transitions = append(att.Transitions, StateSettled)
+			r.promoteLocked(att)
 			rep.StaleWaits = append(rep.StaleWaits, att)
 
 		case StateResourceWaiting:
@@ -341,8 +341,8 @@ func (r *Recorder) Reconcile() ReconcileReport {
 			att.Outcome = contract.OutcomeStale
 			att.Reason = "orchestrator restarted while awaiting " + att.ResourceOp
 			att.Disposition = DispositionBeforeCommit
-			r.promoteLocked(att)
 			att.Transitions = append(att.Transitions, StateSettled)
+			r.promoteLocked(att)
 			rep.StaleWaits = append(rep.StaleWaits, att)
 		}
 	}
@@ -402,6 +402,9 @@ func (r *Recorder) AwaitingResponse(invocation string) (*ResponseWait, bool) {
 // DeliverAnswer closes a response wait with the answering artifact. The
 // reference is what the next incarnation carries on its BINDINGS -- the
 // immutable configuration cannot acquire one.
+// Marking it answered is what closes the guard, because the guard reads this
+// record -- one write, not a clear-then-mark whose order could leave the wait
+// open and unguarded.
 func (r *Recorder) DeliverAnswer(invocation, answerArtifact string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -409,8 +412,8 @@ func (r *Recorder) DeliverAnswer(invocation, answerArtifact string) bool {
 	if !ok || w.Answered {
 		return false
 	}
-	w.Answered = true
 	w.AnswerArtifact = answerArtifact
+	w.Answered = true
 	return true
 }
 
@@ -492,6 +495,29 @@ func (r *Recorder) PeekDecision(invocation, binding, canonicalSet string) (appro
 	return d, ok
 }
 
+// SettleStaleAndPromote settles an attempt `stale` before its commit point and
+// promotes its grant, in ONE critical section.
+//
+// Settling and promoting separately leaves a window: a crash between them loses
+// the grant, and a successor arriving in it consumes nothing and re-asks a human
+// who already answered. It also lets a LATE operator response write a grant onto
+// an attempt that has already been settled, promoting an answer to an action
+// that no longer exists.
+func (r *Recorder) SettleStaleAndPromote(att *Attempt, reason string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if att.State == StateSettled {
+		return
+	}
+	att.SettledAfterClose = r.closedAt[att.Invocation]
+	att.State = StateSettled
+	att.Outcome = contract.OutcomeStale
+	att.Reason = reason
+	att.Disposition = DispositionBeforeCommit
+	att.Transitions = append(att.Transitions, StateSettled)
+	r.promoteLocked(att)
+}
+
 // PromoteDecision makes an attempt's grant reusable by a successor. It is called
 // ONLY when that attempt went stale before its commit point: a grant promoted at
 // the moment it was given would apply twice, because the attempt that received
@@ -522,6 +548,41 @@ func (r *Recorder) RecordDecision(invocation, binding string, approved bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.decisions[invocation+"\x00"+binding] = approved
+}
+
+// OpenSettled registers an attempt and settles it terminally in ONE critical
+// section.
+//
+// ADR 0030 §8: a denial is terminal and is opened and completed TOGETHER, in one
+// transaction, with the reason code -- there is no effect to await. Recording no
+// attempt at all loses the observation candidate 12 will be tuned against, and
+// opening one that a separate call must then settle is the unsettled-attempt
+// shape a drain would wait on.
+func (r *Recorder) OpenSettled(
+	invocation string, req contract.ActionRequest,
+	outcome contract.ActionOutcome, reason string, d Disposition,
+) *Attempt {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	att := &Attempt{
+		ID:                fmt.Sprintf("attempt-%03d", r.nextID),
+		Invocation:        invocation,
+		Correlation:       req.Correlation,
+		Action:            req.Action,
+		State:             StateSettled,
+		Outcome:           outcome,
+		Reason:            reason,
+		Disposition:       d,
+		Transitions:       []AttemptState{StateOpen, StateSettled},
+		ArgsDigest:        ArgsDigest(req.Arguments),
+		SettledAfterClose: r.closedAt[invocation],
+	}
+	r.attempts = append(r.attempts, att)
+	// Deliberately NOT registered in byCorrelation: a refusal must not claim the
+	// correlation, or the retry that follows would replay the denial instead of
+	// being admitted once the wait clears.
+	return att
 }
 
 // Lookup finds an attempt by correlation.
@@ -695,15 +756,18 @@ func (b *Boundary) setWaiting(invocationID string, waiting bool) {
 	delete(b.waiting, invocationID)
 }
 
-// SetAwaitingResponse guards an execution waiting on another principal, on the
-// same footing as an operator wait. A first version guarded neither, so a
-// response wait permitted further actions and even a terminal result.
-func (b *Boundary) SetAwaitingResponse(invocationID string, waiting bool) {
-	b.setWaiting(invocationID, waiting)
-}
-
 // IsWaiting reports the guard.
+//
+// The response half is DERIVED from the durable response-wait record rather
+// than mirrored in a second flag. A parallel in-memory flag is lost on restart
+// -- so a restarted Orchestrator would let an execution that is still awaiting
+// an answer issue actions and even claim a terminal result -- and it can be
+// cleared before the record it shadows, which is a window where the wait is
+// open and unguarded.
 func (b *Boundary) IsWaiting(invocationID string) bool {
+	if _, awaiting := b.Recorder.AwaitingResponse(invocationID); awaiting {
+		return true
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.waiting[invocationID] || b.blocked[invocationID]
@@ -716,6 +780,12 @@ func (b *Boundary) IsWaiting(invocationID string) bool {
 func (b *Boundary) recordGrant(att *Attempt, approved bool) {
 	b.Recorder.mu.Lock()
 	defer b.Recorder.mu.Unlock()
+	if att.State == StateSettled {
+		// The attempt was settled while the human was deciding. Writing the
+		// grant now would attach an answer to an action that no longer exists,
+		// and a promotion racing this would publish it.
+		return
+	}
 	att.OperatorApproved = &approved
 }
 
@@ -799,9 +869,8 @@ func (b *Boundary) DrainActions(invocationID string, within time.Duration) (drai
 	for _, a := range b.Recorder.ForInvocation(invocationID) {
 		switch b.Recorder.State(a) {
 		case StateOperatorWaiting, StateResourceWaiting:
-			b.Recorder.Settle(a, contract.OutcomeStale,
-				"stopped before its commit point during the drain", DispositionBeforeCommit)
-			b.Recorder.PromoteDecision(a)
+			b.Recorder.SettleStaleAndPromote(a,
+				"stopped before its commit point during the drain")
 		case StateOpen, StateSettled:
 			// An open attempt may commit at any moment; it must be waited on.
 		}
@@ -848,6 +917,21 @@ func (b *Boundary) CommittedDuringDrain(invocationID string) []*Attempt {
 		}
 	}
 	return out
+}
+
+// ReopenAdmission restores admission for a NEW incarnation of the same
+// execution. Closure ends an incarnation; the Story outlives it, and a
+// successor dispatched afterwards must be admissible or a stale wait could
+// never be recovered from.
+func (b *Boundary) ReopenAdmission(invocationID string) {
+	b.admitMu.Lock()
+	defer b.admitMu.Unlock()
+	b.mu.Lock()
+	delete(b.admissionClosed, invocationID)
+	b.mu.Unlock()
+	b.Recorder.mu.Lock()
+	delete(b.Recorder.closedAt, invocationID)
+	b.Recorder.mu.Unlock()
 }
 
 // AdmissionClosed reports whether admission has been closed.
@@ -919,10 +1003,19 @@ func (b *Boundary) refuseWhileWaiting(inv *contract.Invocation, req contract.Act
 	b.InvariantViolations = append(b.InvariantViolations,
 		fmt.Sprintf("invocation %s issued %s while awaiting resolution", id, req.Action))
 	b.mu.Unlock()
+
+	// Opened and completed together (ADR 0030 §8). An earlier version recorded
+	// NOTHING -- on my reading that rejecting before opening a record meant
+	// opening no record at all. It means never leaving an UNSETTLED one; the
+	// denial itself is exactly the observation policy work is tuned against,
+	// and losing it is not a small loss.
+	const why = "story is awaiting resolution"
+	att := b.Recorder.OpenSettled(id, req, contract.OutcomeDenied, why, DispositionBeforeCommit)
 	return contract.ActionResult{
 		Correlation: req.Correlation,
+		AttemptID:   att.ID,
 		Outcome:     contract.OutcomeDenied,
-		Reason:      "story is awaiting resolution",
+		Reason:      why,
 	}, true
 }
 

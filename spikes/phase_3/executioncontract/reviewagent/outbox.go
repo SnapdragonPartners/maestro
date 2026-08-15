@@ -1,6 +1,10 @@
 package main
 
-import "maestro-spike/phase3/executioncontract/contract"
+import (
+	"time"
+
+	"maestro-spike/phase3/executioncontract/contract"
+)
 
 // retained is one envelope this runtime must be able to replay until it is
 // acknowledged (§4).
@@ -56,5 +60,30 @@ func (a *agent) replayUnacked() {
 	a.mu.Unlock()
 	for _, r := range pending {
 		_ = a.w.SendAs(a.inv.ID(), r.epoch, r.seq, r.stream, r.kind, r.body)
+	}
+}
+
+// waitOutboxDrained waits until every retained envelope has been acknowledged.
+//
+// Waiting for "an acknowledgement" is not the same thing: acknowledgements
+// arrive per stream, so the one that lands first may be the best-effort ack for
+// `started` while the retained report is still outstanding. The condition to
+// wait on is the outbox itself.
+func (a *agent) waitOutboxDrained(within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		a.mu.Lock()
+		n := len(a.outbox)
+		a.mu.Unlock()
+		if n == 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-a.ackArrived:
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }

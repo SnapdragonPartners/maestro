@@ -57,6 +57,9 @@ func boundaryClaims() []boundaryClaim {
 		{"boundary/operator-decision-is-consumed-once",
 			"ADR 0030 §4 — approve_once means once, not permanently",
 			claimOperatorDecisionIsConsumedOnce},
+		{"boundary/drain-stale-promotes-atomically",
+			"§6 — the drain path settles and promotes in one critical section",
+			claimDrainStalePromotesAtomically},
 		{"boundary/decision-does-not-outlive-its-action",
 			"ADR 0030 §4 — a grant must not become reusable merely by being given",
 			claimDecisionDoesNotOutliveItsAction},
@@ -273,6 +276,71 @@ func claimOperatorDecisionIsConsumedOnce(string) (Outcome, string) {
 	return Proven, "consumed exactly once: the recovery skipped the gate, the repetition did not"
 }
 
+// claimDrainStalePromotesAtomically covers the OTHER path that settles a wait
+// stale: the drain, as opposed to reconciliation after a restart.
+//
+// Both must settle and promote in one critical section. A claim exercising only
+// the reconcile path leaves the drain path unprotected -- which is exactly what
+// the mutation harness reported when a mutation aimed at the drain killed
+// nothing.
+func claimDrainStalePromotesAtomically(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-drainstale", true)
+	h.boundary.Policy = requiresOperatorFor(capForge)
+	asked := 0
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool { asked++; return true }
+	args := json.RawMessage(`{"ref":"refs/heads/x"}`)
+
+	// Approved, then parked in gate 3 so the drain finds it before its commit.
+	h.boundary.ResourceDelay[capForge.String()] = 3 * time.Second
+	done := make(chan contract.ActionResult, 1)
+	h.boundary.Submit(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: args}, done)
+
+	deadline := time.Now().Add(3 * time.Second)
+	parked := false
+	for time.Now().Before(deadline) {
+		if a, ok := h.recorder.Lookup(inv.ID(), "c1"); ok &&
+			h.recorder.State(a) == host.StateResourceWaiting {
+			parked = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !parked {
+		return Errored, "the approved attempt never parked in gate 3"
+	}
+	if asked != 1 {
+		return Errored, fmt.Sprintf("the operator was asked %d times", asked)
+	}
+
+	h.boundary.CloseAdmission(inv.ID())
+	drained, outstanding := h.boundary.DrainActions(inv.ID(), 2*time.Second)
+	<-done
+	if !drained {
+		return Errored, fmt.Sprintf("the drain did not settle %d attempt(s)", len(outstanding))
+	}
+	att, _ := h.recorder.Lookup(inv.ID(), "c1")
+	if att.Outcome != contract.OutcomeStale {
+		return Falsified, "the drain settled the wait as " + string(att.Outcome) + " rather than stale"
+	}
+
+	// The successor arrives on a NEW incarnation, after admission reopened --
+	// a drain closes admission for the incarnation it ends, not for the Story.
+	h.boundary.ReopenAdmission(inv.ID())
+	h.boundary.ResourceDelay = map[string]time.Duration{}
+	again := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c2", Action: capForge, Arguments: args})
+	if again.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "the successor settled " + string(again.Outcome) + ": " + again.Reason
+	}
+	if asked != 1 {
+		return Falsified, fmt.Sprintf(
+			"the drain lost the grant, so the recovery re-asked the operator (asked %d)", asked)
+	}
+	return Proven, "the drain settled stale and promoted the grant in one step; the successor consumed it"
+}
+
 // claimDecisionDoesNotOutliveItsAction proves the half consumption alone does
 // not: a grant must not become reusable merely by being given.
 //
@@ -367,10 +435,8 @@ func claimWaitingGuardsBeforeRegistration(string) (Outcome, string) {
 	if !h.boundary.IsWaiting(inv.ID()) {
 		return Falsified, "an interactive operator wait did not guard the Story"
 	}
-	before := len(h.recorder.Attempts())
 	blocked := h.boundary.ExecuteSync(inv, contract.ActionRequest{
 		Correlation: "new", Action: capPublish, Arguments: json.RawMessage(`{}`)})
-	after := len(h.recorder.Attempts())
 
 	close(release)
 	<-done
@@ -378,14 +444,25 @@ func claimWaitingGuardsBeforeRegistration(string) (Outcome, string) {
 	if blocked.Outcome != contract.OutcomeDenied {
 		return Falsified, "a new call was admitted while the Story awaited resolution"
 	}
-	if after != before {
-		return Falsified, "the rejected call left an unsettled attempt behind"
+	// The denial is a RECORD -- opened and completed together (ADR 0030 §8) --
+	// and never an unsettled attempt a drain would wait on.
+	var denial *host.Attempt
+	for _, a := range h.recorder.Attempts() {
+		if a.Correlation == "new" {
+			denial = a
+		}
+	}
+	if denial == nil {
+		return Falsified, "the refusal left no record at all, losing the denial"
+	}
+	if denial.State != host.StateSettled || denial.Outcome != contract.OutcomeDenied {
+		return Falsified, "the denial was left unsettled: " + string(denial.State)
 	}
 	if len(h.boundary.InvariantViolations) != 1 {
 		return Falsified, fmt.Sprintf("%d invariant violations, want 1",
 			len(h.boundary.InvariantViolations))
 	}
-	return Proven, "interactive wait guarded the Story; the new call was refused before any record was opened"
+	return Proven, "interactive wait guarded the Story; the refusal was opened and completed as one denial"
 }
 
 // claimChangedRequirementSetIsStale proves ADR 0030 §5's set comparison.
@@ -779,6 +856,9 @@ func claimQuestionLifecycle(binary string) (Outcome, string) {
 	if first.AwaitingResponse == "" {
 		return Falsified, "routing a question did not leave the execution awaiting an answer"
 	}
+	if !h.boundary.IsWaiting(inv.ID()) {
+		return Falsified, "the response wait did not guard the execution"
+	}
 	if first.Result.Status != "" {
 		return Falsified, "a terminal result was recorded for an execution still awaiting an answer: " +
 			string(first.Result.Status)
@@ -792,9 +872,11 @@ func claimQuestionLifecycle(binary string) (Outcome, string) {
 	}
 
 	// The answer arrives, and reaches the next incarnation on its BINDINGS.
-	h.boundary.SetAwaitingResponse(inv.ID(), false)
 	if !h.recorder.DeliverAnswer(inv.ID(), "art-answer-1") {
 		return Errored, "the answer could not be delivered"
+	}
+	if h.boundary.IsWaiting(inv.ID()) {
+		return Falsified, "delivering the answer did not close the guard"
 	}
 	inv.Bindings.Epoch = 2
 	inv.Bindings.Inbound = []contract.ArtifactRef{{ArtifactID: "art-answer-1", Digest: "sha256:bbbb"}}

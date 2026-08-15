@@ -53,6 +53,9 @@ type agent struct {
 	attach  chan contract.AttachAck
 	cancel  chan contract.Cancel
 	readErr chan error
+	// ackArrived fires on every acknowledgement, so a scenario can wait for one
+	// rather than assuming a duration is long enough.
+	ackArrived chan struct{}
 
 	mu sync.Mutex
 	// ackedThrough is PER EPOCH. A single scalar cannot express two
@@ -79,6 +82,7 @@ func main() {
 		attach:       make(chan contract.AttachAck, 4),
 		cancel:       make(chan contract.Cancel, 1),
 		readErr:      make(chan error, 1),
+		ackArrived:   make(chan struct{}, 64),
 	}
 	if err := a.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", adapterName, err)
@@ -145,7 +149,7 @@ func (a *agent) run() error {
 	}
 	a.inv = &inv
 	// The epoch is the Orchestrator's, carried on the mutable bindings. Every
-	// event this incarnation emits is identified by (invocation, epoch, seq).
+	// event this incarnation emits is identified by (invocation, epoch, stream, seq).
 	a.epoch = inv.Bindings.Epoch
 	// The epoch owns its own sequence space; the handshake's sequences are not
 	// part of it.
@@ -221,6 +225,10 @@ func (a *agent) readLoop(rd *contract.Reader) {
 				}
 				a.outbox = kept
 				a.mu.Unlock()
+				select {
+				case a.ackArrived <- struct{}{}:
+				default:
+				}
 			}
 		}
 	}
@@ -347,6 +355,25 @@ func (a *agent) work() error {
 		time.Sleep(150 * time.Millisecond)
 		return a.terminal(contract.Completed(contract.DispositionChanged, "emitted one usage report"))
 
+	case "retain_across_gap":
+		// A RETAINED report committed beyond a gap. The acknowledgement must
+		// report the watermark -- still 0, because sequence 1 never came -- so
+		// the report stays retained. An ack naming the received sequence would
+		// release it, telling the sender to discard what was never covered.
+		a.mu.Lock()
+		a.outbox = append(a.outbox, retained{epoch: a.epoch, seq: 2,
+			stream: contract.StreamReliable, kind: contract.TypeUsage,
+			body: contract.Usage{CallRef: "call-gap", InputTokens: 1}})
+		a.mu.Unlock()
+		_ = a.w.SendAs(a.inv.ID(), a.epoch, 2, contract.StreamReliable,
+			contract.TypeUsage, contract.Usage{CallRef: "call-gap", InputTokens: 1})
+		time.Sleep(400 * time.Millisecond)
+		a.mu.Lock()
+		held := len(a.outbox)
+		a.mu.Unlock()
+		return a.terminal(contract.Completed(contract.DispositionChanged,
+			"retained "+itoaAgent(held)+" after acknowledgement across a gap"))
+
 	case "replay_beyond_gap":
 		// Commit a report BEYOND a gap: sequence 1 is never sent, so the
 		// watermark cannot advance past 0 while sequence 2 is committed. A
@@ -354,23 +381,33 @@ func (a *agent) work() error {
 		u := contract.Usage{CallRef: "call-gap", InputTokens: 4, OutputTokens: 2,
 			Served: a.inv.Config.Model.Served, ServedConfirmed: true}
 		_ = a.w.SendAs(a.inv.ID(), a.epoch, 2, contract.StreamReliable, contract.TypeUsage, u)
-		time.Sleep(200 * time.Millisecond) // let it commit
+		// Give the host time to commit it. The acknowledgement cannot confirm
+		// this one: it reports the WATERMARK, which is still 0 across the gap at
+		// sequence 1 -- an honest ack that says nothing about sequence 2, which
+		// is precisely the case Committed exists to cover.
+		time.Sleep(300 * time.Millisecond)
 		_ = a.w.SendAs(a.inv.ID(), a.epoch, 2, contract.StreamReliable, contract.TypeUsage, u)
-		time.Sleep(200 * time.Millisecond)
 		return a.terminal(contract.Completed(contract.DispositionChanged,
 			"replayed a report committed beyond a gap"))
 
 	case "replay_before_ack":
-		// A LOST acknowledgement: the report is replayed while still retained,
-		// so an actual retained envelope crosses the wire twice.
+		// A LOST acknowledgement. The host is configured to send NONE, so the
+		// report is provably still retained when it is replayed -- rather than
+		// assuming an acknowledgement cannot arrive before the next statement.
 		_ = a.sendRetained(contract.TypeUsage, contract.Usage{
 			CallRef: "call-1", InputTokens: 7, OutputTokens: 3,
 			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
 		})
-		a.replayUnacked() // no wait: the ack has not arrived
-		time.Sleep(200 * time.Millisecond)
+		a.mu.Lock()
+		retained := len(a.outbox)
+		a.mu.Unlock()
+		if retained != 1 {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"expected the report to be retained; outbox held "+itoaAgent(retained)))
+		}
+		a.replayUnacked()
 		return a.terminal(contract.Completed(contract.DispositionChanged,
-			"replayed a retained report before its acknowledgement"))
+			"replayed a retained report whose acknowledgement never came"))
 
 	case "replay_outbox":
 		// Emit a replay-obligated event, then replay everything unacknowledged
@@ -379,7 +416,10 @@ func (a *agent) work() error {
 			CallRef: "call-1", InputTokens: 10, OutputTokens: 5,
 			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
 		})
-		time.Sleep(150 * time.Millisecond) // let the ack land and release it
+		if !a.waitOutboxDrained(5 * time.Second) {
+			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure,
+				"the retained report was never acknowledged"))
+		}
 		a.replayUnacked()
 		// Anything still retained is replayed under its ORIGINAL identity; an
 		// acknowledged report has already left the outbox, so a healthy run

@@ -312,7 +312,7 @@ func scenarios() []scenario {
 				if out.Result.Status != contract.StatusCompleted {
 					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
 				}
-				return Proven, itoa(out.DuplicateEvents) + " replayed envelope(s) dropped on (inv, epoch, seq)"
+				return Proven, itoa(out.DuplicateEvents) + " replayed envelope(s) dropped on (inv, epoch, stream, seq)"
 			},
 		},
 		{
@@ -510,6 +510,21 @@ func scenarios() []scenario {
 			},
 		},
 		{
+			name:  "events/acknowledgement-never-claims-a-gap",
+			about: "§4 — an ack reports the watermark, not the sequence just received",
+			mode:  "retain_across_gap",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusCompleted {
+					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				}
+				if !strings.Contains(out.Result.Summary, "retained 1 ") {
+					return Falsified, "the acknowledgement released a report across a gap: " +
+						out.Result.Summary
+				}
+				return Proven, "committed past a gap, acknowledged honestly, and still retained"
+			},
+		},
+		{
 			name:  "events/replay-beyond-a-gap-is-deduplicated",
 			about: "§4 — the watermark alone cannot cover what was committed past a gap",
 			mode:  "replay_beyond_gap",
@@ -531,6 +546,9 @@ func scenarios() []scenario {
 			name:  "events/lost-acknowledgement-replays-once",
 			about: "§4 — the retention obligation exercised, not merely declared",
 			mode:  "replay_before_ack",
+			setup: func(_ *harness, rt *host.Runtime, _ *contract.Invocation) {
+				rt.DropAcks = true // the lost acknowledgement, by construction
+			},
 			check: func(_ *harness, out host.Outcome) (Outcome, string) {
 				if out.Result.Status != contract.StatusCompleted {
 					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)

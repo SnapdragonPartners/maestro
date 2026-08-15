@@ -485,8 +485,10 @@ which is half a mechanism: nothing told the sender what to retain, and a crash
 between emission and commit lost the event with nobody the wiser. Three parts
 are required, and all three are the contract's:
 
-- **Acknowledgement.** The Orchestrator returns a **watermark** per epoch:
-  everything at or below it is durably committed. It is sent **after** the
+- **Acknowledgement.** The Orchestrator returns a **watermark** per (epoch, stream):
+  everything at or below it is durably committed, and the acknowledgement carries
+  **the watermark**, never the sequence just received — declaring 2 committed
+  while 1 is missing would tell a sender to discard what never landed. It is sent **after** the
   event's effect is recorded, so an acknowledgement never promises more than was
   committed, and a duplicate is acknowledged too — re-acknowledging a committed
   event is what makes a *lost acknowledgement* recoverable.
@@ -1251,7 +1253,13 @@ review work. The real build-out is Phase 3's.
 makes no model calls leaves the model-call-shaped parts of this contract
 unexercised — `usage` events, per-call provenance bindings, and token accounting.
 The conformance report declares those uncovered rather than emitting invented
-numbers that would make the scenarios look green. That is ADR 0025's
+numbers that would make the scenarios look green.
+
+The delivery scenarios are the one exception, and it is a narrow one: they emit
+a synthetic `usage` envelope as a **transport fixture**, because the retention
+and deduplication machinery needs a message that carries a retention obligation
+in order to move one. Its numbers are invented and nothing concludes anything
+from them — the claims count envelopes, never read them. That is ADR 0025's
 `unavailable`-versus-zero discipline applied to test evidence, and the same
 posture the [Docker fencing spike](../v2/phase_3/spike_docker-fencing.md) took
 when it recorded its own eleven defects rather than quietly repairing them.
@@ -1260,8 +1268,8 @@ when it recorded its own eleven defects rather than quietly repairing them.
 
 **Done**, 2026-08-13/14:
 [`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
-**55 claims, all `PROVEN`** under the race detector; thirty-five spawn a real external process and speak
-newline-delimited JSON to it. **38 of 38 mutations killed for their named
+**57 claims, all `PROVEN`** under the race detector; thirty-seven spawn a real external process and speak
+newline-delimited JSON to it. **42 of 42 mutations killed for their named
 reason**, **every run under the race detector, agent subprocess included**, under a harness that requires a
 positive control and a clean process exit as well as a green summary, refuses to
 start on residue, and verifies restoration by digest.

@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "draft"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with fifty-five claims proven and thirty-eight mutations killed for their named reason, every run under the race detector. Five review rounds, each mostly finding the previous round's fixes wrong one level down — and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was twice wrong itself: it read green from output text alone, and it counted a selector matching no claims as a pass."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with fifty-seven claims proven and forty-two mutations killed for their named reason, every run under the race detector. Five review rounds, each mostly finding the previous round's fixes wrong one level down — and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was twice wrong itself: it read green from output text alone, and it counted a selector matching no claims as a pass."
 type = "spike"
 +++
 
@@ -27,7 +27,7 @@ the [Docker fencing spike](spike_docker-fencing.md). No Docker, no network, no
 API keys, no spend.
 
 - **`reviewagent`** — a real external process speaking newline-delimited JSON
-  over stdin and stdout. Thirty-five of the fifty-five claims spawn it.
+  over stdin and stdout. Thirty-seven of the fifty-seven claims spawn it.
 - **`host`** — the Orchestrator side: [ADR 0030](../../adr/0030-tool-execution-policy-hook.md)'s
   three gates in miniature, an attempt recorder carrying ADR 0032 §6's state
   vocabulary, and process supervision.
@@ -39,7 +39,7 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 55 claims, 55 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 38 of 38 mutations
+**Result: 57 claims, 57 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 42 of 42 mutations
 killed for their named reason, every run under `-race`, agent subprocess
 included.** The suite runs in about
 nine seconds; the mutation harness in about a minute.
@@ -228,9 +228,31 @@ non-discriminating, and separating the streams made `ResetSeq` no longer
 load-bearing. The first was retargeted; the second was **retired**, because a
 mutation that no longer describes a defect is not evidence of anything.
 
+## Round six — truthfulness, atomicity, and a correction I had followed
+
+| Found | Why it mattered |
+| --- | --- |
+| Acknowledgements lied across gaps | Committing 2 while 1 was missing acknowledged `Through: 2`, declaring a 1 that never landed. An ack now reports the **watermark**, the only number that is true |
+| Stale settlement and promotion were not atomic | A crash or a successor between them loses the grant; a late operator answer could write onto an already-settled attempt. One critical section, and a settled attempt refuses a late grant |
+| The response guard was parallel in-memory state | Lost on restart, and cleared before the record it shadowed. It is now **derived** from the durable response-wait record, and delivering the answer is the single write that closes both |
+| Both ACK tests relied on scheduling | "Replay before ack" assumed an ack could not arrive first; release testing slept. The host now has an explicit **drop-acks** hook, and the agent waits on the **outbox draining** rather than on any ack — the first one to arrive may be for the other stream |
+
+**And one correction I had followed into a mistake.** Round five told me to reject
+a call while waiting *before opening a record*; I read that as opening **no**
+record. ADR 0030 §8 requires a denial to be opened and completed **together** —
+the rule is never to leave an *unsettled* attempt, not never to record one. The
+guard now writes a terminal denied record atomically. Denials are the
+observations candidate 12 will be tuned against, so losing them silently was the
+worse failure of the two.
+
+**A mutation aimed at the drain killed nothing**, because the only claim
+exercising stale-promotion went through *reconciliation*. The drain path had no
+coverage at all; it has its own claim now. A mutation that survives because no
+claim reaches its path is the harness reporting a hole, not a false alarm.
+
 ## The claims
 
-Fifty-five. Thirty-five spawn a process; twenty exercise boundary and schema
+Fifty-seven. Thirty-seven spawn a process; twenty exercise boundary and schema
 properties the wire scenarios depend on but cannot isolate, and are labelled
 separately in the code so nothing there is read as evidence about the wire.
 
@@ -286,7 +308,7 @@ loop sent cancellation while the operator gate was still deciding, by timestamp.
 
 ## Defect-shaped verification
 
-`go run ./mutate` restores thirty-eight defects, one per protected property, and
+`go run ./mutate` restores forty-two defects, one per protected property, and
 counts a mutation as evidence only when it falsifies its named claim **for the
 named reason**. A compiler failure, an `ERROR`, or a failure at a neighbouring
 guard does not count. A positive control proves the suite is green before
@@ -354,7 +376,7 @@ of it is fabricated to make a scenario look green — ADR 0025's
 
 | Surface | Why | Discharged by |
 | --- | --- | --- |
-| Model calls, `usage` events, token accounting, per-model-call provenance bindings | The stub makes none, and now emits nothing in their place | Phase 3's real build-out |
+| Model calls, token accounting, per-model-call provenance bindings | The stub makes none. The ordinary path emits nothing in their place; the three delivery scenarios emit a synthetic `usage` **transport fixture** only, and no accounting conclusion is drawn from it — see below | Phase 3's real build-out |
 | Concurrency accounting (§7) | There is no scheduler in the slice, so the claim that a blocked execution consumes no runnable concurrency is **reasoned, not measured** | Phase 3 |
 | Resumable runtimes, the resume token, and the retention window | The stub declares `resumable: false` | Phase 3, with an adapted runtime that can resume |
 | A **durable** sender outbox surviving the adapter's own restart | The spike retains in-process only | Phase 3 |
@@ -362,6 +384,16 @@ of it is fabricated to make a scenario look green — ADR 0025's
 | Composite and paired execution (§9) | One participant only | Phase 5, where heterogeneity is an exit criterion |
 | Any transport but the local one | Only stdio is implemented, and it produces no reconnection case at all | Deferred with [candidate 14](../notes_adr-backlog.md) |
 | The data plane | The recorder is in-memory | Checked instead by reading the migrations — see below |
+
+**One exception, stated because the claim above would otherwise be false.** Three
+delivery scenarios (`replay_before_ack`, `replay_outbox`, `replay_beyond_gap`)
+DO emit a synthetic `usage` envelope. It is a **transport fixture**: the
+retention, acknowledgement and deduplication machinery needs a message carrying
+a retention obligation in order to move one, and `usage` is that type. Its
+numbers are invented and **no accounting or provenance conclusion is drawn from
+them** -- the claims assert only how many envelopes were recorded, never what
+they contained. The ordinary execution path still emits none, which is what
+`result/no-provenance-event-without-a-model-call` asserts.
 
 **The in-memory recorder is the largest honest gap.** What the slice proves is
 the contract and the boundary's state machine, not that Postgres can hold them.

@@ -103,6 +103,11 @@ type Runtime struct {
 	// observe what the transport does afterwards.
 	OnCancelRequested func()
 
+	// DropAcks suppresses every acknowledgement, so a scenario can exercise the
+	// sender's retention obligation deterministically instead of assuming an
+	// acknowledgement cannot arrive before the next statement.
+	DropAcks bool
+
 	// CancelWhen requests cancellation on a SIGNAL rather than a timer. A
 	// timer-based scenario is only as reliable as its margin: under race
 	// instrumentation and load, "cancel at 400ms" can fire before the state it
@@ -207,7 +212,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 		observedTerm    *contract.TerminalResult
 	)
 
-	// Event identity (§4) is (execution, epoch, seq), and the deduplication
+	// Event identity (§4) is (execution, epoch, stream, seq), and the deduplication
 	// state lives on the recorder rather than here, so it survives a restart.
 	// An in-memory watermark would let a replayed usage event be counted twice
 	// after a crash.
@@ -396,8 +401,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				// A duplicate is still acknowledged: the sender must be able to
 				// release it, and re-acknowledging a committed event is exactly
 				// what makes a lost ack recoverable.
-				_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
-					contract.Ack{Epoch: it.env.Epoch, Stream: it.env.Stream, Through: it.env.Seq})
+				r.sendAck(w, inv, it.env)
 				continue
 			}
 
@@ -406,8 +410,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 			// Advance and acknowledge only AFTER the event's effect is recorded,
 			// so an acknowledgement never promises more than was committed.
 			r.Boundary.Recorder.Advance(id, it.env.Epoch, it.env.Seq, it.env.Stream)
-			_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
-				contract.Ack{Epoch: it.env.Epoch, Stream: it.env.Stream, Through: it.env.Seq})
+			r.sendAck(w, inv, it.env)
 
 			if done {
 				// The runtime claimed a terminal result, and a claim is all it
@@ -661,6 +664,25 @@ func (r *Runtime) handleEvent(
 	default:
 		return false
 	}
+}
+
+// sendAck reports the CURRENT WATERMARK, never the sequence just received.
+//
+// Acknowledging the received sequence declares everything below it committed,
+// which is false across a gap: committing 2 while 1 is missing would tell the
+// sender it may discard a 1 that never landed. The watermark is the only number
+// that is true, and a contiguous watermark is exactly the promise the sender
+// needs to act on.
+//
+// DropAcks suppresses it entirely, which is how a scenario exercises the
+// retention obligation without racing the scheduler.
+func (r *Runtime) sendAck(w *contract.Writer, inv *contract.Invocation, env contract.Envelope) {
+	if r.DropAcks {
+		return
+	}
+	mark := r.Boundary.Recorder.Watermark(inv.ID(), env.Epoch, env.Stream)
+	_, _, _ = w.Send(inv.ID(), inv.Bindings.Epoch, contract.TypeAck,
+		contract.Ack{Epoch: env.Epoch, Stream: env.Stream, Through: mark})
 }
 
 // knownAgentTypes is the closed set of agent-to-host message types. An unknown

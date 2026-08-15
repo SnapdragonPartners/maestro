@@ -40,7 +40,7 @@ func NewWriter(w io.Writer) *Writer { return &Writer{w: w, seq: map[string]uint6
 // The epoch is supplied by the caller rather than tracked here, because it
 // identifies an INCARNATION and is assigned by the Orchestrator -- a writer
 // that minted its own would restart the identity space on every process, which
-// is the defect the (inv, epoch, seq) triple exists to close.
+// is the defect the (inv, epoch, stream, seq) identity exists to close.
 // It returns the (stream, sequence) it used, so a sender can retain the
 // envelope under its OWN identity. A first version exposed a LastSeq accessor
 // instead, which another goroutine's write could overtake between send and

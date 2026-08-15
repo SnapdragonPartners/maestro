@@ -33,7 +33,7 @@ directory and spawns it once per scenario.
 `reviewagent` is a **real external process** that speaks the contract over
 stdin and stdout. A4 is explicit that an in-process fake or an echo fixture does
 not discharge it, so every wire scenario spawns a process and exchanges
-newline-delimited JSON with it. Thirty-five of the fifty-five claims do; the
+newline-delimited JSON with it. Thirty-seven of the fifty-seven claims do; the
 remaining twenty exercise boundary and schema properties the wire scenarios depend
 on but cannot isolate, and are labelled separately so nothing there reads as
 evidence about the wire.
@@ -58,12 +58,19 @@ Stated because a suite that is silent about its gaps reads as covering
 everything. None of these is fabricated to make a scenario look green —
 ADR 0025's `unavailable`-versus-zero discipline applied to test evidence.
 
-- **Model calls, usage events, token accounting, and per-model-call provenance
-  bindings.** The stub makes no model calls, so nothing here exercises them —
-  and it emits **nothing in their place**. An earlier version emitted a `closed`
-  provenance record with call reference `no-model-call`, fabricating exactly the
-  coverage this list declares missing; `result/no-provenance-event-without-a-model-call`
-  now asserts the absence.
+- **Model calls, token accounting, and per-model-call provenance bindings.** The
+  stub makes no model calls, so nothing here exercises them. An earlier version
+  emitted a `closed` provenance record with call reference `no-model-call`,
+  fabricating exactly the coverage this list declares missing;
+  `result/no-provenance-event-without-a-model-call` now asserts the absence on
+  the ordinary path.
+
+  **The delivery scenarios are the one exception.** `replay_before_ack`,
+  `replay_outbox` and `replay_beyond_gap` emit a synthetic `usage` envelope as a
+  **transport fixture** — the retention and deduplication machinery needs a
+  message carrying a retention obligation in order to move one. Its numbers are
+  invented, and the claims count envelopes rather than reading them, so nothing
+  concludes anything about usage or provenance from it.
 - **Concurrency accounting** (ADR 0032 §7). There is no scheduler in the slice,
   so its claim that a blocked execution consumes no runnable concurrency is
   reasoned, not measured.
@@ -88,7 +95,7 @@ permanently is a Phase 3 decision.**
 
 ## Mutation harness
 
-`go run ./mutate` restores thirty-eight defects, one per protected property, and
+`go run ./mutate` restores forty-two defects, one per protected property, and
 requires each to falsify its named claim **for the named reason**. A compiler
 failure, an `ERROR`, or a failure at a neighbouring guard is not a killed
 mutation.
