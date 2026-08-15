@@ -7,7 +7,11 @@ summary = "Defines the versioned wire contract every agent reaches Maestro throu
 
 # 0032. The Agent Execution Contract
 
-Status: **Accepted** (Codex + DR, 2026-08-15). Drafted by Claude 2026-08-13 and revised through eight review rounds. Item A4 of the accepted
+Status: **Accepted** (Codex + DR, 2026-08-15), and **amended the same day by a
+scope correction** (Codex + DR). **Read [Status Of Decisions](#status-of-decisions)
+before the decision sections** — it separates what this ADR binds from what it
+hands Phase 3 as a design input, and it controls any conflicting language below
+it. Drafted by Claude 2026-08-13 and revised through eight review rounds. Item A4 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), and the last design
 item on the critical path to phase entry. It consumes
 [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) (Accepted first, by
