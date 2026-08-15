@@ -1005,12 +1005,15 @@ func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest)
 }
 
 // refuseWhileWaiting rejects a genuinely NEW call while the execution awaits a
-// resolution, BEFORE any record is opened.
+// resolution, without ever leaving an UNSETTLED record.
+//
+// It does record the refusal: a denial is opened and completed together
+// (ADR 0030 §8). What it must not do is open an attempt that a separate call
+// then has to settle -- a first version ran the guard after registration, so a
+// rejected call left an unsettled attempt behind for the drain to wait on.
 //
 // An existing correlation is still served: that is a retry or a replay of an
-// action already admitted, and refusing it would break at-most-once. A first
-// version ran this guard after registration, so a rejected new call left an
-// unsettled attempt behind -- one the drain would then wait on.
+// action already admitted, and refusing it would break at-most-once.
 func (b *Boundary) refuseWhileWaiting(inv *contract.Invocation, req contract.ActionRequest) (contract.ActionResult, bool) {
 	id := inv.ID()
 	if !b.IsWaiting(id) {
@@ -1025,10 +1028,11 @@ func (b *Boundary) refuseWhileWaiting(inv *contract.Invocation, req contract.Act
 	b.mu.Unlock()
 
 	// Opened and completed together (ADR 0030 §8). An earlier version recorded
-	// NOTHING -- on my reading that rejecting before opening a record meant
-	// opening no record at all. It means never leaving an UNSETTLED one; the
-	// denial itself is exactly the observation policy work is tuned against,
-	// and losing it is not a small loss.
+	// NOTHING, on a reading of "reject before opening a record" that meant
+	// opening none at all. The rule is that the guard leaves no UNSETTLED
+	// record -- not that it leaves no record; the denial itself is exactly the
+	// observation policy work is tuned against, and losing it is not a small
+	// loss.
 	const why = "story is awaiting resolution"
 	att, _, oerr := b.Recorder.OpenSettled(id, req, contract.OutcomeDenied, why, DispositionBeforeCommit)
 	if oerr != nil {

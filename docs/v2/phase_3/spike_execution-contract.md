@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "draft"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and reporting an anchor missing that revealed a fix which had silently never applied."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and matching that empty-run check as a substring, so "60 claims:" condemned a fully green run."
 type = "spike"
 +++
 
@@ -278,7 +278,12 @@ Both now happen under one lock, through the same `lookupBound` helper `Open`
 uses — and factoring that helper out was itself prompted by the harness, which
 reported six anchors as ambiguous the moment the rule existed in two places.
 
-**The harness had a guard that condemned its own green runs.** The empty-run
+**The harness's third failure — and it is not the anchor report.** Reporting a
+missing anchor was the harness *working*: it is how round seven's silently
+unapplied fix was caught, and how the duplicated correlation rule announced
+itself. The third genuine failure is the one below.
+
+**A guard that condemned its own green runs.** The empty-run
 check added in round four was `strings.Contains(out, "0 claims:")` — which also
 matches `"60 claims:"`, and every other multiple of ten. It had been silently
 wrong since it was written and only fired once the suite reached sixty claims,
