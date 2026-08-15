@@ -1268,8 +1268,8 @@ when it recorded its own eleven defects rather than quietly repairing them.
 
 **Done**, 2026-08-13/14:
 [`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
-**57 claims, all `PROVEN`** under the race detector; thirty-seven spawn a real external process and speak
-newline-delimited JSON to it. **42 of 42 mutations killed for their named
+**59 claims, all `PROVEN`** under the race detector; thirty-nine spawn a real external process and speak
+newline-delimited JSON to it. **44 of 44 mutations killed for their named
 reason**, **every run under the race detector, agent subprocess included**, under a harness that requires a
 positive control and a clean process exit as well as a green summary, refuses to
 start on residue, and verifies restoration by digest.

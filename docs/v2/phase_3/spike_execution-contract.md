@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "draft"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with fifty-seven claims proven and forty-two mutations killed for their named reason, every run under the race detector. Five review rounds, each mostly finding the previous round's fixes wrong one level down — and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was twice wrong itself: it read green from output text alone, and it counted a selector matching no claims as a pass."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with fifty-nine claims proven and forty-four mutations killed for their named reason, every run under the race detector. Five review rounds, each mostly finding the previous round's fixes wrong one level down — and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was twice wrong itself: it read green from output text alone, and it counted a selector matching no claims as a pass."
 type = "spike"
 +++
 
@@ -27,7 +27,7 @@ the [Docker fencing spike](spike_docker-fencing.md). No Docker, no network, no
 API keys, no spend.
 
 - **`reviewagent`** — a real external process speaking newline-delimited JSON
-  over stdin and stdout. Thirty-seven of the fifty-seven claims spawn it.
+  over stdin and stdout. Thirty-nine of the fifty-nine claims spawn it.
 - **`host`** — the Orchestrator side: [ADR 0030](../../adr/0030-tool-execution-policy-hook.md)'s
   three gates in miniature, an attempt recorder carrying ADR 0032 §6's state
   vocabulary, and process supervision.
@@ -39,7 +39,7 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 57 claims, 57 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 42 of 42 mutations
+**Result: 59 claims, 59 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 44 of 44 mutations
 killed for their named reason, every run under `-race`, agent subprocess
 included.** The suite runs in about
 nine seconds; the mutation harness in about a minute.
@@ -250,9 +250,28 @@ exercising stale-promotion went through *reconciliation*. The drain path had no
 coverage at all; it has its own claim now. A mutation that survives because no
 claim reaches its path is the harness reporting a hole, not a false alarm.
 
+## Round seven — and a fix that silently did not apply
+
+Three, all narrow, and the third is the one worth recording.
+
+| Found | Why |
+| --- | --- |
+| A terminal denial did not claim its correlation | Left deliberately unclaimed on the reasoning that a retry should be admitted once the wait cleared. That reasoning *was* the defect: one correlation is one logical action, so leaving it free lets the same key produce a second terminal record, or a denial **and** an effect. Replaying the denial is the correct answer; an intentional later attempt needs a new correlation |
+| The outbox recorded **after** transmission | An acknowledgement processed against an empty outbox strands the entry appended after it — the sender waits forever for a release that already happened. Retention is now registered under the lock the ACK handler takes. A **durable** outbox must go further and persist *before* transmitting; that is Phase 3's |
+| The gap-ACK claim slept | Finding the entry retained after 400ms proves nothing if the acknowledgement was merely late. It now **observes** the reliable-stream ACK and asserts its watermark is zero before inspecting retention |
+
+**The outbox fix silently did not apply.** An earlier `gofmt` had rewrapped the
+line the replacement targeted, so the edit matched nothing — and the claim
+written for it **passed anyway**, because the race is timing-dependent and did
+not happen to occur. What caught it was the mutation harness reporting
+`MUTATION DID NOT APPLY`: the anchor it needed was absent, which could only mean
+the code did not look the way the fix claimed. The mutation now also injects a
+delay, so the mutant exhibits the race deterministically rather than hoping for
+it — a defect a claim can only catch by luck is not protected.
+
 ## The claims
 
-Fifty-seven. Thirty-seven spawn a process; twenty exercise boundary and schema
+Fifty-nine. Thirty-nine spawn a process; twenty exercise boundary and schema
 properties the wire scenarios depend on but cannot isolate, and are labelled
 separately in the code so nothing there is read as evidence about the wire.
 
@@ -308,7 +327,7 @@ loop sent cancellation while the operator gate was still deciding, by timestamp.
 
 ## Defect-shaped verification
 
-`go run ./mutate` restores forty-two defects, one per protected property, and
+`go run ./mutate` restores forty-four defects, one per protected property, and
 counts a mutation as evidence only when it falsifies its named claim **for the
 named reason**. A compiler failure, an `ERROR`, or a failure at a neighbouring
 guard does not count. A positive control proves the suite is green before

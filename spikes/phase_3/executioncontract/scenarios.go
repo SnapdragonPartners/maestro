@@ -510,6 +510,20 @@ func scenarios() []scenario {
 			},
 		},
 		{
+			name:  "events/retention-registered-before-the-ack",
+			about: "§4 — an ack processed against an empty outbox strands the entry forever",
+			mode:  "ack_races_retention",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusCompleted {
+					return Falsified, "stranded by an ack that raced retention: " + errText(out)
+				}
+				if len(out.Usage) != 1 {
+					return Falsified, itoa(len(out.Usage)) + " reports recorded, want 1"
+				}
+				return Proven, "the acknowledgement could not be processed before retention was registered"
+			},
+		},
+		{
 			name:  "events/acknowledgement-never-claims-a-gap",
 			about: "§4 — an ack reports the watermark, not the sequence just received",
 			mode:  "retain_across_gap",
@@ -517,11 +531,15 @@ func scenarios() []scenario {
 				if out.Result.Status != contract.StatusCompleted {
 					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
 				}
-				if !strings.Contains(out.Result.Summary, "retained 1 ") {
+				if !strings.Contains(out.Result.Summary, "watermark 0 across the gap") {
+					return Falsified, "the acknowledgement was not observed to be honest: " +
+						out.Result.Summary
+				}
+				if !strings.Contains(out.Result.Summary, "retained 1") {
 					return Falsified, "the acknowledgement released a report across a gap: " +
 						out.Result.Summary
 				}
-				return Proven, "committed past a gap, acknowledged honestly, and still retained"
+				return Proven, "observed an ack of watermark 0 across the gap, with the report still retained"
 			},
 		},
 		{

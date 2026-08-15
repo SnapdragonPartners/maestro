@@ -57,6 +57,9 @@ func boundaryClaims() []boundaryClaim {
 		{"boundary/operator-decision-is-consumed-once",
 			"ADR 0030 §4 — approve_once means once, not permanently",
 			claimOperatorDecisionIsConsumedOnce},
+		{"boundary/denial-binds-its-correlation",
+			"ADR 0030 §3 — a refusal is one logical action, not a free key",
+			claimDenialBindsItsCorrelation},
 		{"boundary/drain-stale-promotes-atomically",
 			"§6 — the drain path settles and promotes in one critical section",
 			claimDrainStalePromotesAtomically},
@@ -274,6 +277,73 @@ func claimOperatorDecisionIsConsumedOnce(string) (Outcome, string) {
 			"a second repetition reused the decision, so approve_once is permanent (asked %d)", asked)
 	}
 	return Proven, "consumed exactly once: the recovery skipped the gate, the repetition did not"
+}
+
+// claimDenialBindsItsCorrelation proves a refusal is one logical action, not a
+// free key.
+//
+// Leaving the correlation unclaimed -- which an earlier version did on the
+// reasoning that a retry should be admitted once the wait cleared -- lets the
+// same key produce a second terminal record, or a denial AND an effect. The
+// retry replaying the denial is the correct answer; an intentional later
+// attempt is a new logical action and needs a new correlation.
+func claimDenialBindsItsCorrelation(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-denybind", true)
+	h.boundary.Policy = requiresOperatorFor(capForge)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool {
+		once.Do(func() { close(entered) })
+		<-release
+		return true
+	}
+	done := make(chan contract.ActionResult, 1)
+	h.boundary.Submit(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)}, done)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		return Errored, "the operator gate was never entered"
+	}
+
+	req := contract.ActionRequest{Correlation: "blocked-one", Action: capPublish,
+		Arguments: json.RawMessage(`{}`)}
+	first := h.boundary.ExecuteSync(inv, req)
+	if first.Outcome != contract.OutcomeDenied {
+		return Errored, "control failed: the call was not denied"
+	}
+	// A lost-response RETRY of the same logical action.
+	second := h.boundary.ExecuteSync(inv, req)
+
+	close(release)
+	<-done
+
+	n := 0
+	for _, a := range h.recorder.Attempts() {
+		if a.Correlation == "blocked-one" {
+			n++
+		}
+	}
+	if n != 1 {
+		return Falsified, fmt.Sprintf("the retry produced a second record (%d for one correlation)", n)
+	}
+	if second.AttemptID != first.AttemptID {
+		return Falsified, "the retry minted a second attempt identity"
+	}
+	// And once the wait clears, that correlation is spent -- it replays the
+	// denial rather than becoming executable.
+	third := h.boundary.ExecuteSync(inv, req)
+	if third.Outcome != contract.OutcomeDenied {
+		return Falsified, "a spent correlation became executable after the wait cleared: " +
+			string(third.Outcome)
+	}
+	if h.publishedCount() != 0 {
+		return Falsified, "the denied correlation committed an effect"
+	}
+	return Proven, "one record for one correlation; the retry replayed it and it never became executable"
 }
 
 // claimDrainStalePromotesAtomically covers the OTHER path that settles a wait

@@ -312,7 +312,7 @@ func mutations() []mutation {
 			old:   "\tmark := r.Boundary.Recorder.Watermark(inv.ID(), env.Epoch, env.Stream)",
 			new:   "\tmark := env.Seq",
 			claim: "events/acknowledgement-never-claims-a-gap",
-			want:  "released a report across a gap",
+			want:  "claimed watermark 2 across a gap",
 			why:   "acknowledging the sequence just received declares everything below it committed, which is false across a gap -- it tells the sender to discard what never landed",
 		},
 		{
@@ -341,6 +341,24 @@ func mutations() []mutation {
 			claim: "question/execution-waits",
 			want:  "did not guard the execution",
 			why:   "a parallel in-memory flag is lost on restart, so a restarted Orchestrator lets an execution still awaiting an answer act and even claim a terminal result",
+		},
+		{
+			name:  "denial-does-not-claim-its-correlation",
+			file:  "host/boundary.go",
+			old:   "\tr.byCorrelation[correlationKey(invocation, req.Correlation)] = att",
+			new:   "\t_ = correlationKey(invocation, req.Correlation)",
+			claim: "boundary/denial-binds-its-correlation",
+			want:  "produced a second record",
+			why:   "one correlation is one logical action; leaving it unclaimed lets the same key produce two terminal records, or a denial AND an effect once the wait clears",
+		},
+		{
+			name:  "outbox-records-after-transmission",
+			file:  "reviewagent/outbox.go",
+			old:   "\ta.mu.Lock()\n\tdefer a.mu.Unlock()\n\tstream, seq, err := a.w.Send(a.inv.ID(), a.epoch, kind, body)",
+			new:   "\tstream, seq, err := a.w.Send(a.inv.ID(), a.epoch, kind, body)\n\ttime.Sleep(400 * time.Millisecond)\n\ta.mu.Lock()\n\tdefer a.mu.Unlock()",
+			claim: "events/retention-registered-before-the-ack",
+			want:  "stranded by an ack that raced retention",
+			why:   "an acknowledgement processed against an empty outbox leaves the entry appended after it permanently retained -- the sender waits forever for a release that already happened",
 		},
 		{
 			name:  "capability-set-not-enforced",

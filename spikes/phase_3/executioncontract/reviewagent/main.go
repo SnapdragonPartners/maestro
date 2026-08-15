@@ -55,7 +55,7 @@ type agent struct {
 	readErr chan error
 	// ackArrived fires on every acknowledgement, so a scenario can wait for one
 	// rather than assuming a duration is long enough.
-	ackArrived chan struct{}
+	ackArrived chan contract.Ack
 
 	mu sync.Mutex
 	// ackedThrough is PER EPOCH. A single scalar cannot express two
@@ -82,7 +82,7 @@ func main() {
 		attach:       make(chan contract.AttachAck, 4),
 		cancel:       make(chan contract.Cancel, 1),
 		readErr:      make(chan error, 1),
-		ackArrived:   make(chan struct{}, 64),
+		ackArrived:   make(chan contract.Ack, 64),
 	}
 	if err := a.run(); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %v\n", adapterName, err)
@@ -226,7 +226,7 @@ func (a *agent) readLoop(rd *contract.Reader) {
 				a.outbox = kept
 				a.mu.Unlock()
 				select {
-				case a.ackArrived <- struct{}{}:
+				case a.ackArrived <- k:
 				default:
 				}
 			}
@@ -355,24 +355,56 @@ func (a *agent) work() error {
 		time.Sleep(150 * time.Millisecond)
 		return a.terminal(contract.Completed(contract.DispositionChanged, "emitted one usage report"))
 
+	case "ack_races_retention":
+		// The host acknowledges the moment it commits. If retention were
+		// registered AFTER transmission, that ACK could be processed against an
+		// empty outbox and this entry would never clear.
+		if err := a.sendRetained(contract.TypeUsage, contract.Usage{
+			CallRef: "call-race", InputTokens: 2, OutputTokens: 1,
+			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
+		}); err != nil {
+			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
+		}
+		if !a.waitOutboxDrained(5 * time.Second) {
+			a.mu.Lock()
+			stuck := len(a.outbox)
+			a.mu.Unlock()
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"outbox never cleared; "+itoaAgent(stuck)+" entr(ies) stranded by an ack that raced retention"))
+		}
+		return a.terminal(contract.Completed(contract.DispositionChanged,
+			"retention registered before the acknowledgement could be processed"))
+
 	case "retain_across_gap":
 		// A RETAINED report committed beyond a gap. The acknowledgement must
 		// report the watermark -- still 0, because sequence 1 never came -- so
 		// the report stays retained. An ack naming the received sequence would
 		// release it, telling the sender to discard what was never covered.
+		//
+		// The ACK is OBSERVED, not waited out. Sleeping and finding the entry
+		// retained proves nothing if the acknowledgement was merely late.
 		a.mu.Lock()
 		a.outbox = append(a.outbox, retained{epoch: a.epoch, seq: 2,
 			stream: contract.StreamReliable, kind: contract.TypeUsage,
 			body: contract.Usage{CallRef: "call-gap", InputTokens: 1}})
-		a.mu.Unlock()
 		_ = a.w.SendAs(a.inv.ID(), a.epoch, 2, contract.StreamReliable,
 			contract.TypeUsage, contract.Usage{CallRef: "call-gap", InputTokens: 1})
-		time.Sleep(400 * time.Millisecond)
+		a.mu.Unlock()
+
+		ack, ok := a.awaitAck(contract.StreamReliable, 5*time.Second)
+		if !ok {
+			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure,
+				"no reliable-stream acknowledgement arrived"))
+		}
+		if ack.Through != 0 {
+			return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+				"the acknowledgement claimed watermark "+itoaAgent(int(ack.Through))+" across a gap"))
+		}
 		a.mu.Lock()
 		held := len(a.outbox)
 		a.mu.Unlock()
 		return a.terminal(contract.Completed(contract.DispositionChanged,
-			"retained "+itoaAgent(held)+" after acknowledgement across a gap"))
+			"acknowledged watermark 0 across the gap; retained "+itoaAgent(held)))
 
 	case "replay_beyond_gap":
 		// Commit a report BEYOND a gap: sequence 1 is never sent, so the
@@ -807,4 +839,19 @@ func itoaAgent(n int) string {
 		n /= 10
 	}
 	return string(b)
+}
+
+// awaitAck waits for an acknowledgement on a specific stream.
+func (a *agent) awaitAck(stream string, within time.Duration) (contract.Ack, bool) {
+	deadline := time.After(within)
+	for {
+		select {
+		case k := <-a.ackArrived:
+			if k.Stream == stream {
+				return k, true
+			}
+		case <-deadline:
+			return contract.Ack{}, false
+		}
+	}
 }

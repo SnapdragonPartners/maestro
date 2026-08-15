@@ -290,12 +290,12 @@ type ReconcileReport struct {
 //
 //   - open             -> settled `unknown`; an intent was recorded and no
 //     outcome ever was.
-//   - operator_waiting -> preserved and VALIDATED against its requirement.
-//     Nothing else can answer it, and destroying it takes
-//     the requirement a `blocked` result references.
-//   - resource_waiting -> preserved and handed back for RESTORATION. The
-//     operation it waits on does not survive a restart, so
-//     leaving it alone is as wrong as settling it.
+//   - operator_waiting -> settled `stale`, carrying its requirement and any
+//     operator grant forward. Nothing else can answer it,
+//     and it is not `unknown`: a wait is not an outcome
+//     nobody knows.
+//   - resource_waiting -> settled `stale`, carrying the operation it named. The
+//     operation does not survive a restart either.
 func (r *Recorder) Reconcile() ReconcileReport {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -518,20 +518,9 @@ func (r *Recorder) SettleStaleAndPromote(att *Attempt, reason string) {
 	r.promoteLocked(att)
 }
 
-// PromoteDecision makes an attempt's grant reusable by a successor. It is called
-// ONLY when that attempt went stale before its commit point: a grant promoted at
-// the moment it was given would apply twice, because the attempt that received
-// it never consumed it.
-//
-// The key includes the CANONICAL REQUIREMENT SET, so an answer given to one set
-// of gates cannot satisfy a different one -- which is the same rule gate 3
-// enforces within a single attempt, applied across the stale boundary.
-func (r *Recorder) PromoteDecision(att *Attempt) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.promoteLocked(att)
-}
-
+// promoteLocked publishes an attempt's grant for a successor. Callers hold
+// r.mu, so promotion is always in the same critical section as the settlement
+// that made the attempt eligible.
 func (r *Recorder) promoteLocked(att *Attempt) {
 	if att.OperatorApproved == nil || att.Binding == "" {
 		return
@@ -541,13 +530,6 @@ func (r *Recorder) promoteLocked(att *Attempt) {
 
 func decisionKey(invocation, binding, canonicalSet string) string {
 	return invocation + "\x00" + binding + "\x00" + canonicalSet
-}
-
-// RecordDecision persists an operator decision against a logical action.
-func (r *Recorder) RecordDecision(invocation, binding string, approved bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.decisions[invocation+"\x00"+binding] = approved
 }
 
 // OpenSettled registers an attempt and settles it terminally in ONE critical
@@ -579,9 +561,16 @@ func (r *Recorder) OpenSettled(
 		SettledAfterClose: r.closedAt[invocation],
 	}
 	r.attempts = append(r.attempts, att)
-	// Deliberately NOT registered in byCorrelation: a refusal must not claim the
-	// correlation, or the retry that follows would replay the denial instead of
-	// being admitted once the wait clears.
+	// The denial CLAIMS its correlation, in the same critical section.
+	//
+	// A previous version deliberately left it unclaimed, reasoning that a retry
+	// should be admitted once the wait cleared. That reasoning was the defect:
+	// one correlation is one logical action (ADR 0030 §3), so leaving it free
+	// lets the same key produce a second terminal record, or produce a denial
+	// AND an effect. Replaying the denial to a retry is the correct answer --
+	// an intentional later attempt is a new logical action and needs a new
+	// correlation.
+	r.byCorrelation[correlationKey(invocation, req.Correlation)] = att
 	return att
 }
 

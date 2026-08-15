@@ -36,17 +36,17 @@ func replayObligated(kind string) bool {
 // concurrent write could otherwise overtake between the two, retaining this
 // message under another's sequence.
 func (a *agent) sendRetained(kind string, body any) error {
+	if !replayObligated(kind) {
+		return a.send(kind, body)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	stream, seq, err := a.w.Send(a.inv.ID(), a.epoch, kind, body)
 	if err != nil {
 		return err
 	}
-	if !replayObligated(kind) {
-		return nil
-	}
-	a.mu.Lock()
 	a.outbox = append(a.outbox,
 		retained{epoch: a.epoch, seq: seq, stream: stream, kind: kind, body: body})
-	a.mu.Unlock()
 	return nil
 }
 

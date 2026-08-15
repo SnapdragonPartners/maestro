@@ -488,7 +488,7 @@ func (r *Runtime) onStreamEnd(inv *contract.Invocation, out *Outcome, observed *
 	}
 
 	// Reconciliation: only `open` attempts settle `unknown`; declared waits are
-	// settled `stale` with their requirement or operation preserved (§6).
+	// settled `stale`, carrying the requirement or operation they named (§6).
 	out.Reconciled = r.Boundary.Recorder.Reconcile()
 	out.Events = append(out.Events, fmt.Sprintf(
 		"reconciled: %d unknown, %d stale waits, %d invalid",
