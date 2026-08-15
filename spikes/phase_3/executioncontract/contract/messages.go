@@ -399,9 +399,13 @@ type ActionResult struct {
 	Outcome     ActionOutcome   `json:"outcome"`
 	Reason      string          `json:"reason,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
+	// Requirements is the COMPLETE set, and Scopes their intersection. A first
+	// version carried only the first requirement, so a blocked result named one
+	// of several things being asked.
+	Requirements []RequirementRef `json:"requirements,omitempty"`
+	Scopes       []string         `json:"scopes,omitempty"`
 	// Requirement is preserved on a blocked outcome so the terminal result can
 	// reference what was actually being asked (§5).
-	Requirement *RequirementRef `json:"requirement,omitempty"`
 }
 
 // Usage carries one model call's token axes and what was actually served.

@@ -347,6 +347,31 @@ func (a *agent) work() error {
 		time.Sleep(150 * time.Millisecond)
 		return a.terminal(contract.Completed(contract.DispositionChanged, "emitted one usage report"))
 
+	case "replay_beyond_gap":
+		// Commit a report BEYOND a gap: sequence 1 is never sent, so the
+		// watermark cannot advance past 0 while sequence 2 is committed. A
+		// watermark-only check would then accept the replay of 2.
+		u := contract.Usage{CallRef: "call-gap", InputTokens: 4, OutputTokens: 2,
+			Served: a.inv.Config.Model.Served, ServedConfirmed: true}
+		_ = a.w.SendAs(a.inv.ID(), a.epoch, 2, contract.StreamReliable, contract.TypeUsage, u)
+		time.Sleep(200 * time.Millisecond) // let it commit
+		_ = a.w.SendAs(a.inv.ID(), a.epoch, 2, contract.StreamReliable, contract.TypeUsage, u)
+		time.Sleep(200 * time.Millisecond)
+		return a.terminal(contract.Completed(contract.DispositionChanged,
+			"replayed a report committed beyond a gap"))
+
+	case "replay_before_ack":
+		// A LOST acknowledgement: the report is replayed while still retained,
+		// so an actual retained envelope crosses the wire twice.
+		_ = a.sendRetained(contract.TypeUsage, contract.Usage{
+			CallRef: "call-1", InputTokens: 7, OutputTokens: 3,
+			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
+		})
+		a.replayUnacked() // no wait: the ack has not arrived
+		time.Sleep(200 * time.Millisecond)
+		return a.terminal(contract.Completed(contract.DispositionChanged,
+			"replayed a retained report before its acknowledgement"))
+
 	case "replay_outbox":
 		// Emit a replay-obligated event, then replay everything unacknowledged
 		// under its ORIGINAL identity. The receiver must drop the replay.
@@ -403,6 +428,14 @@ func (a *agent) work() error {
 	case "silent_exit":
 		// Ends the transport with no terminal result at all.
 		_ = a.send(contract.TypeActivity, contract.Activity{Message: "leaving without a word"})
+		return nil
+
+	case "lying_stream":
+		// A reliable report claiming the best-effort stream, opting itself out
+		// of the obligations its own type carries.
+		_ = a.w.SendAs(a.inv.ID(), a.epoch, 99, contract.StreamBestEffort,
+			contract.TypeUsage, contract.Usage{CallRef: "c", InputTokens: 1})
+		time.Sleep(2 * time.Second)
 		return nil
 
 	case "bad_epoch":

@@ -57,6 +57,15 @@ func boundaryClaims() []boundaryClaim {
 		{"boundary/operator-decision-is-consumed-once",
 			"ADR 0030 §4 — approve_once means once, not permanently",
 			claimOperatorDecisionIsConsumedOnce},
+		{"boundary/decision-does-not-outlive-its-action",
+			"ADR 0030 §4 — a grant must not become reusable merely by being given",
+			claimDecisionDoesNotOutliveItsAction},
+		{"boundary/operator-sees-the-complete-set",
+			"ADR 0030 §3 — asked once, about everything, at the composed scope",
+			claimOperatorSeesTheCompleteSet},
+		{"boundary/waiting-guards-before-registration",
+			"ADR 0030 §4 — the guard covers interactive waits and opens no record",
+			claimWaitingGuardsBeforeRegistration},
 		{"boundary/changed-requirement-set-is-stale",
 			"ADR 0030 §5 — if the question changed, the answer is void",
 			claimChangedRequirementSetIsStale},
@@ -207,7 +216,7 @@ func claimOperatorDecisionIsConsumedOnce(string) (Outcome, string) {
 	h.boundary.Policy = requiresOperatorFor(capForge)
 
 	asked := 0
-	h.boundary.Operator = func(contract.RequirementRef) bool { asked++; return true }
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool { asked++; return true }
 	args := json.RawMessage(`{"ref":"refs/heads/x"}`)
 
 	// Park in gate 3 after approval, then go stale -- the decision is recorded
@@ -264,6 +273,121 @@ func claimOperatorDecisionIsConsumedOnce(string) (Outcome, string) {
 	return Proven, "consumed exactly once: the recovery skipped the gate, the repetition did not"
 }
 
+// claimDecisionDoesNotOutliveItsAction proves the half consumption alone does
+// not: a grant must not become reusable merely by being given.
+//
+// Promoted at grant time, the decision the successful action received is left
+// lying around, and the NEXT identical action consumes it -- so `approve_once`
+// applies twice. Promotion happens only when the granting attempt goes stale
+// before its commit point.
+func claimDecisionDoesNotOutliveItsAction(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-outlive", true)
+	h.boundary.Policy = requiresOperatorFor(capForge)
+	asked := 0
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool { asked++; return true }
+	args := json.RawMessage(`{"ref":"refs/heads/x"}`)
+
+	first := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: args})
+	if first.Outcome != contract.OutcomeSucceeded || asked != 1 {
+		return Errored, fmt.Sprintf("control failed: %s, asked %d", first.Outcome, asked)
+	}
+	// An ordinary SUCCESS, not a stale. The next identical action is a fresh
+	// logical repetition and must be asked.
+	second := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c2", Action: capForge, Arguments: args})
+	if second.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "the repetition settled " + string(second.Outcome)
+	}
+	if asked != 2 {
+		return Falsified, fmt.Sprintf(
+			"a decision survived the action it was given for, so approve_once applied twice (asked %d)", asked)
+	}
+	return Proven, "a grant did not outlive its own action; the repetition was asked again"
+}
+
+// claimOperatorSeesTheCompleteSet proves the human is asked once, about
+// everything -- and at the composed scope.
+func claimOperatorSeesTheCompleteSet(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-set", true)
+	reqs := []contract.RequirementRef{
+		{GateID: "gate.a", Statement: "A", Scopes: []string{"once", "for_story"}},
+		{GateID: "gate.b", Statement: "B", Scopes: []string{"once"}},
+	}
+	h.boundary.Policy = requiresOperatorWith(capForge, reqs)
+
+	var sawCount int
+	var sawScopes []string
+	h.boundary.Operator = func(got []contract.RequirementRef, scopes []string) bool {
+		sawCount = len(got)
+		sawScopes = scopes
+		return true
+	}
+	res := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)})
+	if res.Outcome != contract.OutcomeSucceeded {
+		return Errored, "control failed: " + res.Reason
+	}
+	if sawCount != 2 {
+		return Falsified, fmt.Sprintf(
+			"the operator was shown %d of 2 requirements, so it answered about part of the question", sawCount)
+	}
+	if len(sawScopes) != 1 || sawScopes[0] != "once" {
+		return Falsified, fmt.Sprintf("effective scopes %v, want the intersection [once]", sawScopes)
+	}
+	return Proven, "the operator saw both requirements at the intersected scope"
+}
+
+// claimWaitingGuardsBeforeRegistration proves ADR 0030 §4's guard covers an
+// INTERACTIVE wait, and rejects a new call without leaving a record behind.
+func claimWaitingGuardsBeforeRegistration(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-guard2", true)
+	h.boundary.Policy = requiresOperatorFor(capForge)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool {
+		once.Do(func() { close(entered) })
+		<-release
+		return true
+	}
+	done := make(chan contract.ActionResult, 1)
+	h.boundary.Submit(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)}, done)
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		return Errored, "the operator gate was never entered"
+	}
+	if !h.boundary.IsWaiting(inv.ID()) {
+		return Falsified, "an interactive operator wait did not guard the Story"
+	}
+	before := len(h.recorder.Attempts())
+	blocked := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "new", Action: capPublish, Arguments: json.RawMessage(`{}`)})
+	after := len(h.recorder.Attempts())
+
+	close(release)
+	<-done
+
+	if blocked.Outcome != contract.OutcomeDenied {
+		return Falsified, "a new call was admitted while the Story awaited resolution"
+	}
+	if after != before {
+		return Falsified, "the rejected call left an unsettled attempt behind"
+	}
+	if len(h.boundary.InvariantViolations) != 1 {
+		return Falsified, fmt.Sprintf("%d invariant violations, want 1",
+			len(h.boundary.InvariantViolations))
+	}
+	return Proven, "interactive wait guarded the Story; the new call was refused before any record was opened"
+}
+
 // claimChangedRequirementSetIsStale proves ADR 0030 §5's set comparison.
 //
 // One decision resolves one logical action. If the collected requirement set
@@ -290,7 +414,7 @@ func claimChangedRequirementSetIsStale(string) (Outcome, string) {
 		}
 		return host.DecisionRequiresOperator, grown
 	}
-	h.boundary.Operator = func(contract.RequirementRef) bool { return true }
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool { return true }
 
 	res := h.boundary.ExecuteSync(inv, contract.ActionRequest{
 		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)})
@@ -325,7 +449,7 @@ func claimScopesComposeByIntersection(string) (Outcome, string) {
 	inv := invocation("inv-scopes", true)
 	h.boundary.Policy = requiresOperatorWith(capForge,
 		[]contract.RequirementRef{strict, disjoint})
-	h.boundary.Operator = func(contract.RequirementRef) bool { return true }
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool { return true }
 
 	res := h.boundary.ExecuteSync(inv, contract.ActionRequest{
 		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)})
@@ -592,7 +716,7 @@ func claimReconcileOperatorWait(string) (Outcome, string) {
 	h.boundary.Policy = requiresOperatorFor(capForge)
 
 	release := make(chan struct{})
-	h.boundary.Operator = func(contract.RequirementRef) bool {
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool {
 		<-release
 		return true
 	}
@@ -668,6 +792,7 @@ func claimQuestionLifecycle(binary string) (Outcome, string) {
 	}
 
 	// The answer arrives, and reaches the next incarnation on its BINDINGS.
+	h.boundary.SetAwaitingResponse(inv.ID(), false)
 	if !h.recorder.DeliverAnswer(inv.ID(), "art-answer-1") {
 		return Errored, "the answer could not be delivered"
 	}

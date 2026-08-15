@@ -386,8 +386,12 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				return forcedTerminal(contract.Failed(contract.ClassNonRetryableAgent, verr.Error()))
 			}
 
-			// Event identity, against the DURABLE watermark.
-			if it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch, it.env.Stream) {
+			// Event identity, against the DURABLE record of what was committed --
+			// not the watermark alone. An event committed BEYOND a gap sits
+			// above the watermark, so a watermark-only check would accept its
+			// replay and apply it twice, which is exactly the double-count the
+			// identity exists to prevent.
+			if r.Boundary.Recorder.Committed(id, it.env.Epoch, it.env.Seq, it.env.Stream) {
 				out.DuplicateEvents++
 				// A duplicate is still acknowledged: the sender must be able to
 				// release it, and re-acknowledging a committed event is exactly
@@ -412,6 +416,13 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				// rather than discarded.
 				claim := out.Claimed
 				switch {
+				case r.Boundary.IsWaiting(id) && claim != nil:
+					// A terminal result while the execution awaits a resolution
+					// is an invariant violation, not an outcome: something let a
+					// waiting caller keep working (ADR 0030 §4).
+					r.Boundary.CloseAdmission(id)
+					return forcedTerminal(contract.Failed(contract.ClassNonRetryableAgent,
+						"runtime claimed "+string(claim.Status)+" while the execution awaited a resolution"))
 				case out.TerminalViolation != "":
 					r.Boundary.CloseAdmission(id)
 					return forcedTerminal(contract.Failed(
@@ -603,7 +614,7 @@ func (r *Runtime) handleEvent(
 				state = contract.AttachSettled
 				ack.Settled = append(ack.Settled, contract.ActionResult{
 					Correlation: a.Correlation, AttemptID: a.ID,
-					Outcome: a.Outcome, Reason: a.Reason, Requirement: a.Requirement,
+					Outcome: a.Outcome, Reason: a.Reason, Requirements: a.Requirements,
 				})
 			}
 			// Deliberately coarse: `outstanding` regardless of WHICH wait. The
@@ -697,6 +708,13 @@ func (r *Runtime) validateEnvelope(inv *contract.Invocation, negotiated string, 
 	}
 	if !knownAgentTypes[env.Type] {
 		return fmt.Errorf("unknown message type %q", env.Type)
+	}
+	// The stream is caller-supplied and must not be trusted: a `usage` claiming
+	// `best_effort` would opt itself out of the retention and replay obligation
+	// its own type carries, and out of the deduplication that protects it.
+	if want := contract.StreamFor(env.Type); env.Stream != want {
+		return fmt.Errorf("%s claims stream %q, but its type belongs to %q",
+			env.Type, env.Stream, want)
 	}
 	if err := validateBody(env); err != nil {
 		return err

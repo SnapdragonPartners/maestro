@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "draft"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with forty-nine claims proven and thirty-three mutations killed for their named reason, every run under the race detector. Four review rounds each found the previous round's fixes wrong one level down, and the last found guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong -- it read green from output text alone -- and fixing it exposed a defer-ordering defect that had the suite waiting five minutes on processes it had already killed."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with fifty-five claims proven and thirty-eight mutations killed for their named reason, every run under the race detector. Five review rounds, each mostly finding the previous round's fixes wrong one level down — and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was twice wrong itself: it read green from output text alone, and it counted a selector matching no claims as a pass."
 type = "spike"
 +++
 
@@ -27,7 +27,7 @@ the [Docker fencing spike](spike_docker-fencing.md). No Docker, no network, no
 API keys, no spend.
 
 - **`reviewagent`** — a real external process speaking newline-delimited JSON
-  over stdin and stdout. Thirty-two of the forty-nine claims spawn it.
+  over stdin and stdout. Thirty-five of the fifty-five claims spawn it.
 - **`host`** — the Orchestrator side: [ADR 0030](../../adr/0030-tool-execution-policy-hook.md)'s
   three gates in miniature, an attempt recorder carrying ADR 0032 §6's state
   vocabulary, and process supervision.
@@ -39,7 +39,7 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 49 claims, 49 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 33 of 33 mutations
+**Result: 55 claims, 55 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 38 of 38 mutations
 killed for their named reason, every run under `-race`, agent subprocess
 included.** The suite runs in about
 nine seconds; the mutation harness in about a minute.
@@ -110,8 +110,10 @@ Five further findings, none of them round-one regressions:
 - **Events had no durable identity.** At-least-once delivery was declared
   idempotent with nothing behind it: the sequence counter restarted at 1 with
   every process, so two messages from two incarnations shared one identity.
-  Identity is now `(execution, epoch, sequence)` with the epoch assigned by the
-  Orchestrator, and the receiver checks it.
+  Identity is now `(execution, epoch, stream, sequence)` — the stream because
+  reliable and best-effort events cannot share a contiguous space, and derived
+  from the message type rather than trusted as supplied — and the receiver
+  checks what was **committed**, not merely the watermark.
 - **The invocation was not one immutable thing.** It carried resource
   generations, which gate 3 replaces, and a resume token, which exists only on a
   restart. It is now an immutable **execution configuration** — persisted, so a
@@ -206,9 +208,29 @@ an action admitted before closure and finishing inside the grace period is the
 ordinary case. What the drain guarantees is that nothing commits *after the
 receipt*; a commit during the drain is recorded, not refused.
 
+## Round five — the fixes that only half applied
+
+Every one of these was a rule the previous round introduced and applied
+incompletely, which is the same shape as round two but one turn further in.
+
+| Introduced | Applied only half-way |
+| --- | --- |
+| `approve_once` is consumed once | The grant was promoted the moment it was **given**, so the action it was given for never consumed it and the next identical action inherited it. It is promoted only when its own attempt goes stale before commit, and keyed by the requirement set |
+| Gate 1 collects the complete requirement set | The set was collapsed again before it reached anyone: the operator saw the first requirement, the blocked result carried the first, and the computed scope intersection went unused |
+| A wait blocks the caller | Only the **headless** block set the guard, so the interactive wait the rule was written for went unguarded — and the guard ran after registration, so a rejected call left an unsettled attempt for the drain to wait on |
+| Reliable and best-effort are separate streams | The stream became part of event identity and nothing said so; the receiver also trusted the caller's stream, so a `usage` could claim `best_effort` |
+| Replay is deduplicated | Against the watermark alone. An event committed **beyond a gap** sits above the watermark, so its replay was accepted and applied twice |
+
+Two of the mutations written for round four stopped killing anything once these
+landed, and both are informative rather than embarrassing: moving deduplication
+from the watermark to the committed set made the *watermark* mutation
+non-discriminating, and separating the streams made `ResetSeq` no longer
+load-bearing. The first was retargeted; the second was **retired**, because a
+mutation that no longer describes a defect is not evidence of anything.
+
 ## The claims
 
-Forty-nine. Thirty-two spawn a process; seventeen exercise boundary and schema
+Fifty-five. Thirty-five spawn a process; twenty exercise boundary and schema
 properties the wire scenarios depend on but cannot isolate, and are labelled
 separately in the code so nothing there is read as evidence about the wire.
 
@@ -264,7 +286,7 @@ loop sent cancellation while the operator gate was still deciding, by timestamp.
 
 ## Defect-shaped verification
 
-`go run ./mutate` restores thirty-three defects, one per protected property, and
+`go run ./mutate` restores thirty-eight defects, one per protected property, and
 counts a mutation as evidence only when it falsifies its named claim **for the
 named reason**. A compiler failure, an `ERROR`, or a failure at a neighbouring
 guard does not count. A positive control proves the suite is green before

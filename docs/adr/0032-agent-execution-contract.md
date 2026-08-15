@@ -456,15 +456,23 @@ slice's sequence counter restarted at 1 with every process, so two different
 messages from two incarnations shared one identity and nothing deduplicated
 either.
 
-**An event's identity is `(execution, epoch, sequence)`.**
+**An event's identity is `(execution, epoch, stream, sequence)`.**
 
 - The **epoch** identifies the incarnation and is **assigned by the
   Orchestrator**, on the bindings (§2). A runtime that minted its own would
   restart the identity space on every process, which is the defect.
-- The **sequence** is monotonic within an epoch.
-- **The receiver checks it.** A repeat is dropped; ordering holds within an epoch,
-  and epochs order incarnations. Ordering across executions is not promised and
-  nothing may depend on it.
+- The **stream** is which of the two spaces below the event belongs to. It is
+  part of the identity because each space has its own sequence and its own
+  watermark — and it is **derived from the message type and validated**, never
+  trusted as supplied: a `usage` claiming `best_effort` would opt itself out of
+  the obligations its own type carries.
+- The **sequence** is monotonic within an (epoch, stream).
+- **The receiver checks what was COMMITTED, not merely the watermark.** An event
+  committed beyond a gap sits above the watermark, so a watermark-only test
+  would accept its replay and apply it twice.
+- Ordering holds within an (epoch, stream); epochs order incarnations. Ordering
+  across executions, or across streams, is not promised and nothing may depend
+  on it.
 
 This is what makes the `usage` and `provenance` records safe to persist: a
 redelivered usage event that was counted twice is a corrupted cost figure, not a
@@ -515,10 +523,16 @@ goes out — a crash between the two would otherwise lose an action the sender h
 already been told it could release. Registration is therefore synchronous even
 though the gates that follow are not.
 
-**A replay legitimately carries the epoch it was first emitted under**, so an
-older epoch is accepted and deduplicated against *that* epoch's watermark. Only
-an epoch **ahead** of the active binding is a violation: it names an incarnation
-the Orchestrator never issued.
+**A replay legitimately carries the epoch and stream it was first emitted
+under**, so an older epoch is accepted and deduplicated against *that* space's
+record. Two restrictions:
+
+- An epoch **ahead** of the active binding is always a violation: it names an
+  incarnation the Orchestrator never issued.
+- An older epoch is admissible **only for the replayable report types**. An
+  `action_request` or a `terminal` from a superseded incarnation is not a
+  replay, it is an **act** — a fenced generation reaching through the boundary,
+  which ADR 0029 §7 requirement 5 exists to prevent.
 
 ### 5. The terminal result is four axes
 
@@ -1062,9 +1076,9 @@ several things around it need a home too:
 | Epoch | **Persisted and monotonic per execution.** Allocated by the Orchestrator; a reused epoch would collide two incarnations' event identities |
 | Bindings — resource references and generations | **Persisted**, and refreshed whenever gate 3 replaces a resource |
 | Resume token | **Persisted opaquely.** Never interpreted, and cleared when the runtime is restarted from an artifact instead |
-| Event watermark per (execution, epoch) | **Persisted** (§4) |
-| Attempt, its correlation binding, disposition and wait | **Persisted** (§6). **Not** the substituted request: ADR 0030 §3 keeps it out of Audit, and §6 needs only artifact-level recovery |
-| Operator decision, against the logical action | **Persisted** (§6), so a re-requested action does not re-ask |
+| Event watermark and committed set per (execution, epoch, stream) | **Persisted** (§4) |
+| Attempt, its correlation binding, requirement set, disposition and wait | **Persisted** (§6). **Not** the substituted request: ADR 0030 §3 keeps it out of Audit, and §6 needs only artifact-level recovery |
+| Operator decision, against the logical action **and its requirement set** | **Persisted** (§6) only when its own attempt went stale before commit — a grant promoted when it is *given* is never consumed by the action it was given for, and applies twice |
 
 Phase 3 owns which of these share a table. What this ADR fixes is that none of
 them may live only in a process, because every one of them is consulted after a
@@ -1246,8 +1260,8 @@ when it recorded its own eleven defects rather than quietly repairing them.
 
 **Done**, 2026-08-13/14:
 [`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
-**49 claims, all `PROVEN`** under the race detector; thirty-two spawn a real external process and speak
-newline-delimited JSON to it. **33 of 33 mutations killed for their named
+**55 claims, all `PROVEN`** under the race detector; thirty-five spawn a real external process and speak
+newline-delimited JSON to it. **38 of 38 mutations killed for their named
 reason**, **every run under the race detector, agent subprocess included**, under a harness that requires a
 positive control and a clean process exit as well as a green summary, refuses to
 start on residue, and verifies restoration by digest.
@@ -1413,7 +1427,7 @@ conformance executable lives permanently.
 | The wire contract, the four-axis result, the action and execution state vocabularies, cancellation lifecycle, re-attach, provenance obligations, the model identity split, and the concurrency accounting | **This ADR** |
 | Which policies exist and which approval scopes each gate exposes | **Candidate 12** |
 | When a cancellation is legitimate, and what amendment does to pending actions and grants | **A5** (ADR 0019 amendment) |
-| The `tool_calls` migration including the constraint replacement, **and the durable families §9 requires** — execution configurations, bindings and epochs, resume tokens, event watermarks, operator decisions, response waits, and the attempt's correlation binding and disposition; the reconciler's scoping in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values; whether an answer may reach a live execution | **Phase 3 plan** |
+| The `tool_calls` migration including the constraint replacement, **and the durable families §9 requires** — execution configurations, bindings and epochs, resume tokens, event watermarks, operator decisions, response waits, and the attempt's correlation binding and disposition; the reconciler's scoping in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values; whether an answer may reach a live execution; **a durable sender outbox surviving the adapter's own restart**, which §4 requires and the conformance slice implements only in process | **Phase 3 plan** |
 | The provenance retention traversal's mechanism, and the evidence-package half | **Phase 4** |
 | The metadata home for served-model lifecycle and underlying-model lineage | **[#319](https://github.com/SnapdragonPartners/maestro/issues/319)**, against §3's split |
 

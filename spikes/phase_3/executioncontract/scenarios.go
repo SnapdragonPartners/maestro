@@ -357,7 +357,7 @@ func scenarios() []scenario {
 			mode:  "escalate",
 			setup: func(h *harness, _ *host.Runtime, inv *contract.Invocation) {
 				h.boundary.Policy = requiresOperatorFor(capForge)
-				h.boundary.Operator = func(contract.RequirementRef) bool { return true }
+				h.boundary.Operator = func([]contract.RequirementRef, []string) bool { return true }
 				inv.Config.OperatorResponder = true
 			},
 			check: func(h *harness, out host.Outcome) (Outcome, string) {
@@ -398,7 +398,7 @@ func scenarios() []scenario {
 					atomic.StoreInt64(&cancelSentAt, time.Now().UnixMicro())
 					close(cancelSent)
 				}
-				h.boundary.Operator = func(contract.RequirementRef) bool {
+				h.boundary.Operator = func([]contract.RequirementRef, []string) bool {
 					atomic.StoreInt64(&operatorEnteredAt, time.Now().UnixMicro())
 					close(cancelNow) // ask for it only once we are demonstrably holding
 					select {
@@ -510,6 +510,42 @@ func scenarios() []scenario {
 			},
 		},
 		{
+			name:  "events/replay-beyond-a-gap-is-deduplicated",
+			about: "§4 — the watermark alone cannot cover what was committed past a gap",
+			mode:  "replay_beyond_gap",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusCompleted {
+					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				}
+				if len(out.Usage) != 1 {
+					return Falsified, itoa(len(out.Usage)) +
+						" usage reports recorded from one call committed beyond a gap"
+				}
+				if out.DuplicateEvents == 0 {
+					return Falsified, "the replay past a gap was accepted as a new event"
+				}
+				return Proven, "a report committed above the watermark was still recognised on replay"
+			},
+		},
+		{
+			name:  "events/lost-acknowledgement-replays-once",
+			about: "§4 — the retention obligation exercised, not merely declared",
+			mode:  "replay_before_ack",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusCompleted {
+					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				}
+				if out.DuplicateEvents == 0 {
+					return Falsified, "the retained replay was accepted as a new event"
+				}
+				if len(out.Usage) != 1 {
+					return Falsified, itoa(len(out.Usage)) +
+						" usage reports recorded from one call, so the replay was counted"
+				}
+				return Proven, "a retained report replayed before its ack was deduplicated; one report recorded"
+			},
+		},
+		{
 			name:  "events/acknowledgement-releases-the-outbox",
 			about: "§4 — the retention obligation, and what discharges it",
 			mode:  "replay_outbox",
@@ -585,6 +621,21 @@ func scenarios() []scenario {
 					return Falsified, "failed for the wrong reason: " + out.Result.Summary
 				}
 				return Proven, "identity mismatch detected: " + out.IdentityError
+			},
+		},
+		{
+			name:  "protocol/stream-must-match-the-message-type",
+			about: "§4 — the stream is caller-supplied and must not be trusted",
+			mode:  "lying_stream",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if !strings.Contains(out.Result.Summary, "claims stream") {
+					return Falsified, "a usage report opted itself out of the reliable stream: " +
+						out.Result.Summary
+				}
+				if len(out.Usage) != 0 {
+					return Falsified, "the mislabelled report was recorded anyway"
+				}
+				return Proven, "a reliable report claiming best_effort was refused"
 			},
 		},
 		{

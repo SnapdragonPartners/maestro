@@ -58,6 +58,11 @@ type Attempt struct {
 	CanonicalSet string
 	// EffectiveScopes is the intersection across those gates.
 	EffectiveScopes []string
+	// OperatorApproved is the answer THIS attempt received, if any. It becomes
+	// a reusable decision only if this attempt then goes stale before commit.
+	OperatorApproved *bool
+	// Binding is the logical action key a decision is scoped to.
+	Binding string
 	// ResourceOp names the provisioning or queueing operation a resource wait
 	// is waiting on. Reconciliation after a restart must be able to restore or
 	// validate it; a resource wait that cannot say what it waits for is not
@@ -323,6 +328,7 @@ func (r *Recorder) Reconcile() ReconcileReport {
 			att.Outcome = contract.OutcomeStale
 			att.Reason = "orchestrator restarted while awaiting an operator"
 			att.Disposition = DispositionBeforeCommit
+			r.promoteLocked(att)
 			att.Transitions = append(att.Transitions, StateSettled)
 			rep.StaleWaits = append(rep.StaleWaits, att)
 
@@ -335,6 +341,7 @@ func (r *Recorder) Reconcile() ReconcileReport {
 			att.Outcome = contract.OutcomeStale
 			att.Reason = "orchestrator restarted while awaiting " + att.ResourceOp
 			att.Disposition = DispositionBeforeCommit
+			r.promoteLocked(att)
 			att.Transitions = append(att.Transitions, StateSettled)
 			rep.StaleWaits = append(rep.StaleWaits, att)
 		}
@@ -466,10 +473,10 @@ func (r *Recorder) Committed(invocation string, epoch, seq uint64, stream string
 // One decision resolves one logical action. A decision that survived its use
 // would make a second, intentional repetition of the same action indistinguish-
 // able from the recovery it was recorded for.
-func (r *Recorder) ConsumeDecision(invocation, binding string) (approved, found bool) {
+func (r *Recorder) ConsumeDecision(invocation, binding, canonicalSet string) (approved, found bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := invocation + "\x00" + binding
+	key := decisionKey(invocation, binding, canonicalSet)
 	d, ok := r.decisions[key]
 	if ok {
 		delete(r.decisions, key)
@@ -478,11 +485,36 @@ func (r *Recorder) ConsumeDecision(invocation, binding string) (approved, found 
 }
 
 // PeekDecision reports a recorded decision without consuming it.
-func (r *Recorder) PeekDecision(invocation, binding string) (approved, found bool) {
+func (r *Recorder) PeekDecision(invocation, binding, canonicalSet string) (approved, found bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	d, ok := r.decisions[invocation+"\x00"+binding]
+	d, ok := r.decisions[decisionKey(invocation, binding, canonicalSet)]
 	return d, ok
+}
+
+// PromoteDecision makes an attempt's grant reusable by a successor. It is called
+// ONLY when that attempt went stale before its commit point: a grant promoted at
+// the moment it was given would apply twice, because the attempt that received
+// it never consumed it.
+//
+// The key includes the CANONICAL REQUIREMENT SET, so an answer given to one set
+// of gates cannot satisfy a different one -- which is the same rule gate 3
+// enforces within a single attempt, applied across the stale boundary.
+func (r *Recorder) PromoteDecision(att *Attempt) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.promoteLocked(att)
+}
+
+func (r *Recorder) promoteLocked(att *Attempt) {
+	if att.OperatorApproved == nil || att.Binding == "" {
+		return
+	}
+	r.decisions[decisionKey(att.Invocation, att.Binding, att.CanonicalSet)] = *att.OperatorApproved
+}
+
+func decisionKey(invocation, binding, canonicalSet string) string {
+	return invocation + "\x00" + binding + "\x00" + canonicalSet
 }
 
 // RecordDecision persists an operator decision against a logical action.
@@ -571,7 +603,13 @@ func IntersectScopes(reqs []contract.RequirementRef) []string {
 
 // OperatorFn is gate 2. It may block for as long as a human takes; the boundary
 // runs it off the transport's event loop precisely so that it can.
-type OperatorFn func(req contract.RequirementRef) (approve bool)
+//
+// It receives the COMPLETE requirement set and the effective scopes, not the
+// first requirement. ADR 0030 §3's whole point is that the operator answers
+// once, having seen everything being asked -- handing over one of several is the
+// deny-and-retry experience arriving by a different route, and it makes the
+// computed scope intersection decorative.
+type OperatorFn func(reqs []contract.RequirementRef, scopes []string) (approve bool)
 
 // Executor is gate 3's effect.
 type Executor func(inv *contract.Invocation, args json.RawMessage) (json.RawMessage, error)
@@ -615,7 +653,9 @@ type Boundary struct {
 	// revoke the ability to create BEFORE draining. Without it a runtime keeps
 	// issuing new actions throughout the grace period and the drain chases a
 	// set the holder is still adding to.
-	admissionClosed     map[string]bool
+	admissionClosed map[string]bool
+	// waiting guards an execution awaiting an operator or another principal.
+	waiting             map[string]bool
 	InvariantViolations []string
 
 	// admitMu linearizes admission closure against attempt registration. Taken
@@ -637,7 +677,46 @@ func NewBoundary(rec *Recorder) *Boundary {
 		CrashAfterOpen:    map[string]bool{},
 		blocked:           map[string]bool{},
 		admissionClosed:   map[string]bool{},
+		waiting:           map[string]bool{},
 	}
+}
+
+// setWaiting marks (or clears) an execution as awaiting a resolution -- an
+// operator decision or another principal's answer. ADR 0030 §4: while it waits,
+// further agent-initiated calls are rejected and a firing of the guard is an
+// invariant violation.
+func (b *Boundary) setWaiting(invocationID string, waiting bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if waiting {
+		b.waiting[invocationID] = true
+		return
+	}
+	delete(b.waiting, invocationID)
+}
+
+// SetAwaitingResponse guards an execution waiting on another principal, on the
+// same footing as an operator wait. A first version guarded neither, so a
+// response wait permitted further actions and even a terminal result.
+func (b *Boundary) SetAwaitingResponse(invocationID string, waiting bool) {
+	b.setWaiting(invocationID, waiting)
+}
+
+// IsWaiting reports the guard.
+func (b *Boundary) IsWaiting(invocationID string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.waiting[invocationID] || b.blocked[invocationID]
+}
+
+// recordGrant stores the operator's answer ON THE ATTEMPT. It is NOT promoted to
+// a reusable decision here: a decision that outlived the action it was given for
+// would apply twice, since the granting attempt itself never consumed it.
+// Promotion happens only when that attempt goes stale before its commit point.
+func (b *Boundary) recordGrant(att *Attempt, approved bool) {
+	b.Recorder.mu.Lock()
+	defer b.Recorder.mu.Unlock()
+	att.OperatorApproved = &approved
 }
 
 // CloseAdmission refuses further agent-initiated actions for an invocation.
@@ -722,6 +801,7 @@ func (b *Boundary) DrainActions(invocationID string, within time.Duration) (drai
 		case StateOperatorWaiting, StateResourceWaiting:
 			b.Recorder.Settle(a, contract.OutcomeStale,
 				"stopped before its commit point during the drain", DispositionBeforeCommit)
+			b.Recorder.PromoteDecision(a)
 		case StateOpen, StateSettled:
 			// An open attempt may commit at any moment; it must be waited on.
 		}
@@ -787,6 +867,10 @@ func (b *Boundary) AdmissionClosed(invocationID string) bool {
 // waited the host could process no cancellation, no heartbeat, and no
 // re-attachment -- which is the detached wait claimed rather than demonstrated.
 func (b *Boundary) Submit(inv *contract.Invocation, req contract.ActionRequest, done chan<- contract.ActionResult) (*Attempt, error) {
+	if res, refused := b.refuseWhileWaiting(inv, req); refused {
+		go func() { done <- res }()
+		return nil, nil
+	}
 	// Registration is SYNCHRONOUS and the gates are not. The caller
 	// acknowledges the event only after this returns, so the intent is durable
 	// before the sender is told it may discard the request -- a crash between
@@ -809,8 +893,37 @@ func (b *Boundary) ExecuteSync(inv *contract.Invocation, req contract.ActionRequ
 }
 
 func (b *Boundary) execute(inv *contract.Invocation, req contract.ActionRequest) contract.ActionResult {
+	if res, refused := b.refuseWhileWaiting(inv, req); refused {
+		return res
+	}
 	att, fresh, err := b.register(inv.ID(), req)
 	return b.executeRegistered(inv, req, att, fresh, err)
+}
+
+// refuseWhileWaiting rejects a genuinely NEW call while the execution awaits a
+// resolution, BEFORE any record is opened.
+//
+// An existing correlation is still served: that is a retry or a replay of an
+// action already admitted, and refusing it would break at-most-once. A first
+// version ran this guard after registration, so a rejected new call left an
+// unsettled attempt behind -- one the drain would then wait on.
+func (b *Boundary) refuseWhileWaiting(inv *contract.Invocation, req contract.ActionRequest) (contract.ActionResult, bool) {
+	id := inv.ID()
+	if !b.IsWaiting(id) {
+		return contract.ActionResult{}, false
+	}
+	if _, known := b.Recorder.Lookup(id, req.Correlation); known {
+		return contract.ActionResult{}, false
+	}
+	b.mu.Lock()
+	b.InvariantViolations = append(b.InvariantViolations,
+		fmt.Sprintf("invocation %s issued %s while awaiting resolution", id, req.Action))
+	b.mu.Unlock()
+	return contract.ActionResult{
+		Correlation: req.Correlation,
+		Outcome:     contract.OutcomeDenied,
+		Reason:      "story is awaiting resolution",
+	}, true
 }
 
 //nolint:gocyclo // The gate sequence is the subject; splitting it hides it.
@@ -819,22 +932,6 @@ func (b *Boundary) executeRegistered(
 	att *Attempt, fresh bool, err error,
 ) contract.ActionResult {
 	id := inv.ID()
-
-	b.mu.Lock()
-	isBlocked := b.blocked[id]
-	b.mu.Unlock()
-
-	if isBlocked {
-		b.mu.Lock()
-		b.InvariantViolations = append(b.InvariantViolations,
-			fmt.Sprintf("invocation %s issued %s while awaiting resolution", id, req.Action))
-		b.mu.Unlock()
-		return contract.ActionResult{
-			Correlation: req.Correlation,
-			Outcome:     contract.OutcomeDenied,
-			Reason:      "story is awaiting resolution",
-		}
-	}
 
 	if err != nil {
 		if att != nil {
@@ -857,12 +954,13 @@ func (b *Boundary) executeRegistered(
 				Outcome: contract.OutcomeOutstanding, Reason: "already in flight as " + string(st)}
 		}
 		return contract.ActionResult{
-			Correlation: req.Correlation,
-			AttemptID:   att.ID,
-			Outcome:     att.Outcome,
-			Reason:      "replayed: " + att.Reason,
-			Result:      att.Result,
-			Requirement: att.Requirement,
+			Correlation:  req.Correlation,
+			AttemptID:    att.ID,
+			Outcome:      att.Outcome,
+			Reason:       "replayed: " + att.Reason,
+			Result:       att.Result,
+			Requirements: att.Requirements,
+			Scopes:       att.EffectiveScopes,
 		}
 	}
 
@@ -923,11 +1021,18 @@ func (b *Boundary) executeRegistered(
 			b.Recorder.Settle(att, contract.OutcomeBlocked, requirement.Statement, DispositionBeforeCommit)
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 				Outcome: contract.OutcomeBlocked, Reason: requirement.Statement,
-				Requirement: requirement}
+				Requirements: att.Requirements, Scopes: att.EffectiveScopes}
 		}
 
 		b.Recorder.Transition(att, StateOperatorWaiting)
-		return b.completeAction(inv, att, req, true)
+		// The Story is awaiting resolution for an INTERACTIVE wait too, not only
+		// a headless block. ADR 0030 §4 blocks the caller so no LLM turn happens
+		// while a gate is open; a first version set the guard only when there
+		// was no responder, so the case the rule was written for went unguarded.
+		b.setWaiting(id, true)
+		res := b.completeAction(inv, att, req, true)
+		b.setWaiting(id, false)
+		return res
 
 	case DecisionAllow:
 		// fall through
@@ -958,7 +1063,8 @@ func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, req co
 		// indistinguishable from a recovery -- one approved push approving
 		// every later push of the same ref.
 		binding := req.Action.String() + "\x00" + att.ArgsDigest
-		if approved, found := b.Recorder.ConsumeDecision(inv.ID(), binding); found {
+		att.Binding = binding
+		if approved, found := b.Recorder.ConsumeDecision(inv.ID(), binding, att.CanonicalSet); found {
 			if !approved {
 				b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied (recorded)", DispositionBeforeCommit)
 				return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
@@ -967,13 +1073,13 @@ func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, req co
 			b.Recorder.Transition(att, StateOpen)
 			goto gate3
 		}
-		if b.Operator == nil || !b.Operator(*requirement) {
-			b.Recorder.RecordDecision(inv.ID(), binding, false)
+		if b.Operator == nil || !b.Operator(att.Requirements, att.EffectiveScopes) {
+			b.recordGrant(att, false)
 			b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied", DispositionBeforeCommit)
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 				Outcome: contract.OutcomeDenied, Reason: "operator denied"}
 		}
-		b.Recorder.RecordDecision(inv.ID(), binding, true)
+		b.recordGrant(att, true)
 	}
 
 gate3:
@@ -1035,6 +1141,8 @@ gate3:
 			nowReqs[i].AttemptID = att.ID
 		}
 		if CanonicalRequirements(nowReqs) != att.CanonicalSet {
+			// Deliberately NOT promoted: the set changed, so the answer given is
+			// void rather than available to a successor.
 			const why = "the requirement set changed after approval; a fresh action is required"
 			b.Recorder.Settle(att, contract.OutcomeStale, why, DispositionBeforeCommit)
 			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
@@ -1114,11 +1222,10 @@ func (b *Boundary) IsBlocked(invocationID string) bool {
 func (b *Boundary) BlockedRequirements(invocationID string) []contract.RequirementRef {
 	var out []contract.RequirementRef
 	for _, att := range b.Recorder.ForInvocation(invocationID) {
-		if att.Requirement == nil {
-			continue
-		}
 		if att.State == StateSettled && att.Outcome == contract.OutcomeBlocked {
-			out = append(out, *att.Requirement)
+			// The COMPLETE set. Reporting the first would tell an operator one
+			// of several things the action is waiting on.
+			out = append(out, att.Requirements...)
 		}
 	}
 	return out
