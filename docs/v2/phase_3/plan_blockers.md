@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -340,6 +340,15 @@ A3 has no dependency on A1 or A2 and is authored in parallel with them. It joins
 the graph at A4, whose invocation schema carries pack identity.
 
 ### A4. Agent execution contract — [#282](https://github.com/SnapdragonPartners/maestro/issues/282)
+
+> **RESOLVED 2026-08-15 by [ADR 0032: The Agent Execution Contract](../../adr/0032-agent-execution-contract.md)** (Codex + DR), with its conformance executable at `spikes/phase_3/executioncontract` and the [report](spike_execution-contract.md). Eight review rounds. Four things below are narrower than what was decided, and are left in place as the record of what was asked rather than what was settled:
+>
+> 1. **The identity split is three concepts, not two.** Scope decision 3 asks whether the served and underlying identities are one key. They are not — and neither is the **route** (provider, endpoint, model name), which is what the runtime needs to make the call and carries no comparison identity at all. Retirement keys to the served offering; lineage to the underlying model; the reference between them is nullable and its null is ADR 0020's existing `unclassified`.
+> 2. **"The invocation" is two records.** This item speaks of one. An immutable, persisted **execution configuration** is reused verbatim across incarnations; per-incarnation **bindings** carry resource grants and generations, the epoch, the resume token, and inbound artifact references. Gate 3 replaces resources mid-execution and a resume token exists only on a restart, so a single immutable record was never available.
+> 3. **The terminal result gained two rules the four axes do not state.** `rejected` is not an execution status — a reviewer that rejects has *completed*, and its judgment is the work product. And `blocked` is composed by the **Orchestrator**, not claimed by the agent, so `terminal` is *at most* one event per execution rather than exactly one.
+> 4. **The conformance slice is larger than "one executable" implies.** Sixty claims and forty-five mutations, because each review round demanded evidence the previous one had not produced. Where it lands permanently remains a Phase 3 decision, and its `host/` half is implementation to be rewritten rather than contract to be kept.
+>
+> **It also amends an Accepted ADR.** [ADR 0030](../../adr/0030-tool-execution-policy-hook.md) §8 called the `tool_calls` migration "additive"; A4 established that it must also replace `tool_calls_finished_check`, since settling an attempt requires a boolean `succeeded` and §8's own `unknown` outcome is neither. That amendment landed with this acceptance.
 
 The versioned wire contract: invocation, events, terminal result, lifecycle,
 provenance, transport, and capability-based tool/knowledge access. Finalized

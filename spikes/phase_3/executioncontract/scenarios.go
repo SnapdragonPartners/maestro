@@ -390,6 +390,14 @@ func scenarios() []scenario {
 				// construction rather than by margin. A timer here was the one
 				// plausible source of an intermittent failure I saw once and
 				// could not reproduce.
+				// Reset first. These are package-level, so a value left by an
+				// earlier run would let the ordering check pass without the
+				// operator gate having run at all in THIS one -- a claim that
+				// can succeed without observing its property.
+				atomic.StoreInt64(&operatorEnteredAt, 0)
+				atomic.StoreInt64(&operatorLeftAt, 0)
+				atomic.StoreInt64(&cancelSentAt, 0)
+
 				cancelNow := make(chan struct{})
 				cancelSent := make(chan struct{})
 				rt.CancelWhen = cancelNow

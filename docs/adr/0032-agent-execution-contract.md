@@ -1,13 +1,13 @@
 +++
 title = "ADR 0032: The Agent Execution Contract"
 edit_date = "2026-08-15"
-status = "draft"
+status = "live"
 summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. An invocation splits into an immutable, persisted execution configuration and per-incarnation bindings, because resource grants and resume tokens change while the configuration must not. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result -- and recovery is artifact-level, so a wait interrupted by a restart goes stale rather than resuming."
 +++
 
 # 0032. The Agent Execution Contract
 
-Status: **Proposed** — drafted by Claude 2026-08-13. Item A4 of the accepted
+Status: **Accepted** (Codex + DR, 2026-08-15). Drafted by Claude 2026-08-13 and revised through eight review rounds. Item A4 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), and the last design
 item on the critical path to phase entry. It consumes
 [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) (Accepted first, by

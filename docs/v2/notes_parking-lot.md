@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Parking Lot"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 type = "notes"
 summary = "Design ideas parked for later consideration — not planned work; an idea graduates to the roadmap or an ADR when picked up."
@@ -189,7 +189,7 @@ The original idea — Docker first, with an interface that could later support r
 
 ### Headless Development Agent Interface — **GRADUATED 2026-08-09**
 
-Picked up as the **Agent Execution Contract** — [backlog candidate 13](notes_adr-backlog.md), [issue #282](https://github.com/SnapdragonPartners/maestro/issues/282), item A4 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md).
+Picked up as the **Agent Execution Contract** and **resolved** by [ADR 0032](../adr/0032-agent-execution-contract.md), Accepted 2026-08-15 — [backlog candidate 13](notes_adr-backlog.md), [issue #282](https://github.com/SnapdragonPartners/maestro/issues/282), item A4 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md).
 
 All three original goals are carried: capturing token usage becomes the contract's usage events and provenance, running other headless agents such as OpenHands becomes the wire contract's adapter direction, and "define interface/contract now, implement later" is precisely the pre-entry split — the contract is Accepted before Phase 3, and only one executable agent is built to prove it. The contract is versioned and wire-level rather than a Go interface, so non-Go executors qualify.
 

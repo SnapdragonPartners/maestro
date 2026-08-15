@@ -1,6 +1,6 @@
 +++
 title = "ADR 0030: The Tool Execution Boundary And Its Policy Hook"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 summary = "All agent requests for Maestro-managed effects pass through one Orchestrator boundary that records intent, validates machine policy, obtains human approval when required, and records the result. Human approval blocks the Story and caller without consuming LLM turns; headless runs instead mark the Story blocked. Expensive resources are acquired only after approval, and all current authorization, work-version, and resource conditions are revalidated immediately before execution. The design centralizes policy and auditing without introducing approval retries, resolution chains, or arbitrary agent checkpointing."
 +++
@@ -622,9 +622,18 @@ situations, and conflating them is precisely the ambiguity §4 sets out to remov
 | Awaiting a resource | Healthy; gate 3 provisioning or queued for capacity ([ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2) | Watchdog leaves it alone; no operator is involved |
 | Interrupted | The process died between open and completion | Reconciliation; the outcome is `unknown` |
 
-So Phase 3 owes an **additive migration** giving the record explicit nonterminal
-states — **at least operator-waiting and resource-waiting** — and A4 owns the
-vocabulary, since it owns the action and Story states. The two waits are kept
+So Phase 3 owes a **migration** giving the record explicit nonterminal states —
+**at least operator-waiting and resource-waiting** — and A4 owns the vocabulary,
+since it owns the action and Story states.
+
+**Amended 2026-08-15 on A4's finding: that migration is not purely additive.**
+`tool_calls` carries
+`CONSTRAINT tool_calls_finished_check CHECK ((finished_at IS NULL) = (succeeded IS NULL))`,
+so settling an attempt requires a boolean `succeeded` — and this section's own
+reconciliation outcome, *attempted, outcome unknown*, is neither true nor false.
+The record cannot express a state this section requires of it, so the migration
+must **replace that constraint** rather than only add columns. See
+[ADR 0032](0032-agent-execution-contract.md). The two waits are kept
 distinct rather than merged into one "waiting" because they have different
 responders, different release rules, and different costs.
 
@@ -721,7 +730,8 @@ granted.
   left, and a data-plane read per action.** No new record *type* — it stays
   `tool_calls` — but Phase 3 owes an additive migration for the nonterminal states,
   because Phase 2's in-flight-versus-finished convention cannot tell waiting from
-  interrupted (§8).
+  interrupted (§8) — and that migration must **replace**
+  `tool_calls_finished_check`, not merely add to the table (§8 as amended).
 - **Audit gains a redaction obligation.** Every action family needs a declared safe
   projection before it can be recorded at all — which is what keeps a `shell` action
   from writing a developer's environment into a queryable, exportable table.

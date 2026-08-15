@@ -1171,10 +1171,6 @@ func (b *Boundary) executeRegistered(
 func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, req contract.ActionRequest, needOperator bool) contract.ActionResult {
 
 	if needOperator {
-		requirement := att.Requirement
-		if requirement == nil {
-			requirement = &contract.RequirementRef{GateID: "unnamed", Statement: "an operator is required"}
-		}
 		// A decision already given for this logical action is consumed rather
 		// than re-asked. That is what makes going stale on restart acceptable:
 		// the action is re-requested, but the human is not.

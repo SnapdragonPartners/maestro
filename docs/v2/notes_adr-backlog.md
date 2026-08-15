@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 ADR Backlog"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 type = "notes"
 summary = "Reconciled, stable-numbered ADR backlog (Phase 0 item 12): candidates resolved in Phase 0 and in later phases with their Accepted ADRs, and open candidates each labelled with the phase it blocks — slot numbers are cited by other documents and never change, so a heading rather than a position in the list is what says when a candidate is due."
@@ -36,6 +36,7 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | Reviewer Heterogeneity Means Distinct Lineage (blocked Phase 5) | [ADR 0020](../adr/0020-review-invariant-reviewer-vs-partner.md) amendment, proposed 2026-08-08 and accepted 2026-08-09 — the rule only; the mechanism is deferred as tracked work |
 | Habitat Execution Boundary (blocked Phase 3) | [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md), Accepted 2026-08-12 as item A1 of the pre-Phase-3 blocker plan — split into the Incubator and the Habitat, with two spike artifacts |
 | Tool Execution Policy Hook (blocked Phase 3) | [ADR 0030](../adr/0030-tool-execution-policy-hook.md), Accepted 2026-08-13 as item A2 — one boundary in three gates, with a human-required call logically blocked rather than denied and retried |
+| Agent Execution Contract (blocked Phase 3) | [ADR 0032](../adr/0032-agent-execution-contract.md), Accepted 2026-08-15 as item A4 — a versioned wire contract, a four-axis terminal result, and the served-versus-underlying model identity split #319 waited on |
 | Prompt Pack Identity, Resolution, And Storage (blocked Phase 3) | [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md), Accepted 2026-08-13 as item A3 — scheme-qualified content identity, immutable content beside a mutable installation, resolution once at dispatch |
 
 ## Candidates, Stable-Numbered
@@ -119,7 +120,7 @@ Two constraints this slot recorded were **sharpened by the spike evidence** and 
 
 The full gating-policy ADR behind the Phase 3 hook: structural gates (role/env/tool allowlists, filesystem scopes), semantic gates (high-risk action summaries checked against policy), and human gates, per the research corpus (Day 4/Day 5).
 
-### 13. Agent Execution Contract — blocks Phase 3 (re-scoped 2026-08-09, was "External Agent Runtime Contract — post-MVP")
+### 13. Agent Execution Contract — RESOLVED by [ADR 0032](../adr/0032-agent-execution-contract.md)
 
 **Re-scoped in place**, per the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md) (item A4) and [issue #282](https://github.com/SnapdragonPartners/maestro/issues/282). The slot keeps its number for the same citation reason as 11.
 
@@ -131,7 +132,27 @@ The original entry asked *whether* Maestro can run Claude Code, OpenHands, or si
 - **It absorbs the contract portion of [#272](https://github.com/SnapdragonPartners/maestro/issues/272)** — explicit provider/model/endpoint identity cannot be deferred past a contract that carries model identity. It must settle whether a provider's *served* model identity (which has a retirement date) and the *underlying* model identity (which has a lineage) are one key; [#319](https://github.com/SnapdragonPartners/maestro/issues/319)'s metadata home depends on the answer.
 - **It is Accepted after candidate 11**, which it consumes. #282 blocks #273's *implementation* completion, not its design ADR.
 
-Mark this slot RESOLVED when the contract ADR is Accepted.
+**Accepted 2026-08-15** (Codex + DR) as item A4, after eight review rounds, with
+its conformance executable at `spikes/phase_3/executioncontract` and the
+[report](phase_3/spike_execution-contract.md). The slot keeps its number for the
+citation reason above.
+
+Three things a reader of the old entry must carry forward, each wider than what
+this slot asked for:
+
+- **The identity split is three concepts, not two.** A **route** (provider,
+  endpoint, model name — explicit, never inferred) is neither identity; the
+  **served** identity carries retirement and the **underlying** model carries
+  lineage, with a nullable reference between them whose null is ADR 0020's
+  existing `unclassified`. #319 builds its metadata home against that.
+- **The invocation is two records.** An immutable, persisted execution
+  configuration a restart reuses verbatim, beside per-incarnation bindings
+  carrying resource grants, the epoch, the resume token, and inbound artifact
+  references. Anything calling "the invocation" immutable means the first.
+- **Recovery is artifact-level.** A wait interrupted by a restart goes `stale`
+  and the action is re-requested; only the operator *decision* is persisted.
+  Resuming would require persisting the substituted request, which ADR 0030 §3
+  keeps out of the Audit family.
 
 ### 14. Dispatcher/Message Abstraction For Cloud Jobs — v3
 
@@ -155,7 +176,7 @@ Raised by DR at Phase 2 exit (2026-08-08) and accepted the next day as an amendm
 
 **What the amendment deliberately did not do is build the mechanism**, which does not exist at any granularity — so a same-*model* pairing goes unflagged today too. Be precise about what is actually absent, because the first draft of this entry overstated it:
 
-- **Model-lineage metadata** — the one genuinely missing input. A property of a model, so it belongs with model metadata (alongside the lifecycle metadata [#319](https://github.com/SnapdragonPartners/maestro/issues/319) wants, since a retirement date and a lab are the same kind of fact about a model ID) — never restated per configuration, or two configurations can disagree about one model.
+- **Model-lineage metadata** — the one genuinely missing input. A property of a model, so it belongs with model metadata (alongside the lifecycle metadata [#319](https://github.com/SnapdragonPartners/maestro/issues/319) wants — the same *kind* of fact, but **not the same key**: [ADR 0032](../adr/0032-agent-execution-contract.md) §3 puts retirement on a provider's **served** identity and lineage on the **underlying** model, so the home is two levels) — never restated per configuration, or two configurations can disagree about one model.
 - **Classification and surfacing** — the computation over an edge and the operator-visible result. A stored classification nothing shows an operator does not satisfy 0020.
 - **The prospective routing contract** — needed *only* to classify a configuration before it runs. An MPH bundle's `[model.roles]` names the cast, not who reviews whom; that edge lives in the target harness and is rewritten by the Phase 3 runtime.
 

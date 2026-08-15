@@ -1,14 +1,14 @@
 +++
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
-status = "draft"
+status = "live"
 summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and matching that empty-run check as a substring, so "60 claims:" condemned a fully green run."
 type = "spike"
 +++
 
 # Conformance Slice: The Agent Execution Contract
 
-Status: **draft** — evidence for [ADR 0032](../../adr/0032-agent-execution-contract.md),
+Status: **live** — evidence for [ADR 0032](../../adr/0032-agent-execution-contract.md),
 item A4 of the [pre-Phase-3 blocker plan](plan_blockers.md). The executable is
 [`spikes/phase_3/executioncontract`](../../../spikes/phase_3/executioncontract/README.md).
 

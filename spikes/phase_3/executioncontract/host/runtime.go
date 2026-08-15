@@ -232,12 +232,20 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 		env contract.Envelope
 		err error
 	}
-	items := make(chan readItem)
+	// Buffered, and it stops when the run does. Unbuffered, the reader blocks
+	// forever on its send whenever Run returns through another branch --
+	// timeout, cancellation, grace expiry -- which leaks the goroutine and can
+	// stall the subprocess once its stdout buffer fills.
+	items := make(chan readItem, 16)
 	go func() {
 		defer close(items)
 		for {
 			e, err := rd.Next()
-			items <- readItem{env: e, err: err}
+			select {
+			case items <- readItem{env: e, err: err}:
+			case <-runCtx.Done():
+				return
+			}
 			if err != nil {
 				return
 			}
