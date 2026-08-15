@@ -701,12 +701,34 @@ func firstLine(s string) string {
 	return s
 }
 
+// spikeModule is the module line this harness must be standing in. Checking for
+// the PRESENCE of a go.mod is not enough: the repository root has one too, so a
+// run from there satisfied the old check, skipped the chdir, and resolved every
+// relative anchor against the wrong tree.
+const spikeModule = "module maestro-spike/phase3/executioncontract"
+
 func init() {
-	// The harness edits files by relative path, so it must run from the module
-	// root regardless of where it was invoked.
-	if _, err := os.Stat("go.mod"); err != nil {
-		if wd, e := os.Getwd(); e == nil {
-			_ = os.Chdir(filepath.Dir(wd))
-		}
+	// The harness edits files by relative path, so it must be standing in the
+	// spike module root. It tries one step up -- which covers being invoked
+	// from mutate/ -- and otherwise REFUSES rather than guessing.
+	if inSpikeModule(".") {
+		return
 	}
+	if inSpikeModule("..") {
+		_ = os.Chdir("..")
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"refusing to start: this harness edits files by relative path and must run\n"+
+			"from the spike module root (%s).\n"+
+			"Run `go run ./mutate` from spikes/phase_3/executioncontract.\n", spikeModule)
+	os.Exit(2)
+}
+
+func inSpikeModule(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), spikeModule)
 }
