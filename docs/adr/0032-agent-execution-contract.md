@@ -1625,8 +1625,8 @@ statements stay true.
 ### Propagation of the 2026-08-15 amendment
 
 Same discipline, run against the **concept** rather than the word. Every location
-that restated a demoted item as a requirement was corrected in the amending
-commit.
+that restated a demoted item as a requirement was corrected — the documents in
+the amending commit, the two tracker items through the API on the same day.
 
 | Location | Change |
 | --- | --- |
@@ -1636,7 +1636,8 @@ commit.
 | [ADR backlog](../v2/notes_adr-backlog.md) slot 13 | The amendment recorded, and two carry-forward bullets narrowed: the invocation split now rests on gate 3 rather than on restart, and artifact-level recovery is stated as the rule without the `stale` mechanism |
 | [Spike report](../v2/phase_3/spike_execution-contract.md) | A **What this is evidence of, and what it is not** section, and a front-matter summary that says isolated contract model. A `PROVEN` claim is evidence about the model, not about Maestro |
 | [Phase 3 README](../v2/phase_3/README.md) and [ADR README](README.md) | Both quote a front-matter summary verbatim; both summaries changed, so both were updated |
-| [Issue #282](https://github.com/SnapdragonPartners/maestro/issues/282) | The resolution comment overstated what the slice discharged — it claimed an adapter validated independently of the Maestro factory, and composite/paired provenance the run declared **uncovered**. Corrected in place |
+| [Issue #282](https://github.com/SnapdragonPartners/maestro/issues/282) | The resolution comment overstated what the slice discharged — it claimed an adapter validated independently of the Maestro factory, and composite/paired provenance the run itself declared **uncovered**. Corrected in place |
+| [Issue #330](https://github.com/SnapdragonPartners/maestro/issues/330) | Filed on DR's challenge to §6, and its defence of the second vocabulary — *"ADR 0032 is Accepted and its decisions do not change"* — is what this amendment reverses. A comment records that its question 4 is genuinely open, that the Context defect it reported is fixed, and what still needs deciding |
 
 **Not changed, and why:** the [parking lot](../v2/notes_parking-lot.md) pointer
 names the ADR and the resolution without restating any mechanism, so it stays
