@@ -57,6 +57,9 @@ func boundaryClaims() []boundaryClaim {
 		{"boundary/operator-decision-is-consumed-once",
 			"ADR 0030 §4 — approve_once means once, not permanently",
 			claimOperatorDecisionIsConsumedOnce},
+		{"boundary/concurrent-denials-produce-one-record",
+			"ADR 0030 §3 — the correlation check and insert are one critical section",
+			claimConcurrentDenialsProduceOneRecord},
 		{"boundary/denial-binds-its-correlation",
 			"ADR 0030 §3 — a refusal is one logical action, not a free key",
 			claimDenialBindsItsCorrelation},
@@ -70,7 +73,7 @@ func boundaryClaims() []boundaryClaim {
 			"ADR 0030 §3 — asked once, about everything, at the composed scope",
 			claimOperatorSeesTheCompleteSet},
 		{"boundary/waiting-guards-before-registration",
-			"ADR 0030 §4 — the guard covers interactive waits and opens no record",
+			"ADR 0030 §4 — the guard covers interactive waits and never leaves an unsettled record",
 			claimWaitingGuardsBeforeRegistration},
 		{"boundary/changed-requirement-set-is-stale",
 			"ADR 0030 §5 — if the question changed, the answer is void",
@@ -277,6 +280,84 @@ func claimOperatorDecisionIsConsumedOnce(string) (Outcome, string) {
 			"a second repetition reused the decision, so approve_once is permanent (asked %d)", asked)
 	}
 	return Proven, "consumed exactly once: the recovery skipped the gate, the repetition did not"
+}
+
+// claimConcurrentDenialsProduceOneRecord proves the uniqueness is ATOMIC.
+//
+// Lookup-then-insert under separate locks lets two concurrent calls with the
+// same new correlation both find it absent, each append a terminal record, and
+// each overwrite the durable mapping. The check and the insert are one critical
+// section; this holds it open and proves a concurrent caller cannot duplicate.
+func claimConcurrentDenialsProduceOneRecord(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-denyrace", true)
+	h.boundary.Policy = requiresOperatorFor(capForge)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var once sync.Once
+	h.boundary.Operator = func([]contract.RequirementRef, []string) bool {
+		once.Do(func() { close(entered) })
+		<-release
+		return true
+	}
+	gateDone := make(chan contract.ActionResult, 1)
+	h.boundary.Submit(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)}, gateDone)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		return Errored, "the operator gate was never entered"
+	}
+
+	// Hold the denial's critical section open while a second caller arrives.
+	inSection := make(chan struct{})
+	holdOff := make(chan struct{})
+	var hookOnce sync.Once
+	h.recorder.InOpenSettled = func() {
+		hookOnce.Do(func() {
+			close(inSection)
+			<-holdOff
+		})
+	}
+
+	req := contract.ActionRequest{Correlation: "same-new", Action: capPublish,
+		Arguments: json.RawMessage(`{}`)}
+	resA := make(chan contract.ActionResult, 1)
+	resB := make(chan contract.ActionResult, 1)
+	go func() { resA <- h.boundary.ExecuteSync(inv, req) }()
+
+	select {
+	case <-inSection:
+	case <-time.After(2 * time.Second):
+		return Errored, "the denial never entered its critical section"
+	}
+	// The second caller is now demonstrably concurrent with the first.
+	go func() { resB <- h.boundary.ExecuteSync(inv, req) }()
+	time.Sleep(100 * time.Millisecond)
+	close(holdOff)
+
+	a, b := <-resA, <-resB
+	close(release)
+	<-gateDone
+
+	n := 0
+	for _, att := range h.recorder.Attempts() {
+		if att.Correlation == "same-new" {
+			n++
+		}
+	}
+	if n != 1 {
+		return Falsified, fmt.Sprintf(
+			"%d records for one correlation: the check and the insert are not atomic", n)
+	}
+	if a.AttemptID != b.AttemptID {
+		return Falsified, "concurrent callers received different attempt identities"
+	}
+	if a.Outcome != contract.OutcomeDenied || b.Outcome != contract.OutcomeDenied {
+		return Falsified, "a concurrent caller was not denied"
+	}
+	return Proven, "two concurrent callers, one denial record, one attempt identity"
 }
 
 // claimDenialBindsItsCorrelation proves a refusal is one logical action, not a

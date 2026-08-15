@@ -121,6 +121,9 @@ type Recorder struct {
 	// makes the semantics at-most-once.
 	byCorrelation map[string]*Attempt
 	nextID        int
+	// InOpenSettled is a test seam, letting a claim hold the critical section
+	// open and prove a concurrent caller cannot duplicate the record.
+	InOpenSettled HookInRegistration
 	// watermarks is the receiver's durable deduplication state, keyed by
 	// (invocation, epoch). See Watermark.
 	watermarks map[string]uint64
@@ -161,6 +164,33 @@ func correlationKey(invocation, correlation string) string {
 	return invocation + "\x00" + correlation
 }
 
+// lookupBound returns the attempt already holding this correlation, or nil.
+//
+// A correlation is bound to its LOGICAL ACTION: the action identity and the
+// digest of its substituted arguments. Reuse matching both is a retry; reuse
+// matching neither is a caller defect. Both Open and OpenSettled go through
+// here, so the two cannot drift -- and duplicating the rule once made six
+// mutation anchors ambiguous, which is the cheapest possible warning that the
+// same thing had been written twice.
+//
+// Callers hold r.mu.
+func (r *Recorder) lookupBound(invocation string, req contract.ActionRequest, digest string) (*Attempt, error) {
+	existing, ok := r.byCorrelation[correlationKey(invocation, req.Correlation)]
+	if !ok {
+		return nil, nil
+	}
+	if existing.Action != req.Action {
+		return nil, &ErrCorrelationMismatch{Detail: fmt.Sprintf(
+			"%q was opened for %s and is being reused for %s",
+			req.Correlation, existing.Action, req.Action)}
+	}
+	if existing.ArgsDigest != digest {
+		return nil, &ErrCorrelationMismatch{Detail: fmt.Sprintf(
+			"%q was opened for %s with different arguments", req.Correlation, existing.Action)}
+	}
+	return existing, nil
+}
+
 // ErrCorrelationMismatch reports a correlation reused for a different logical
 // action. It is a caller defect, not a retry.
 type ErrCorrelationMismatch struct{ Detail string }
@@ -189,18 +219,8 @@ func (r *Recorder) Open(invocation string, req contract.ActionRequest) (att *Att
 	defer r.mu.Unlock()
 
 	digest := ArgsDigest(req.Arguments)
-	key := correlationKey(invocation, req.Correlation)
-	if existing, ok := r.byCorrelation[key]; ok {
-		if existing.Action != req.Action {
-			return nil, false, &ErrCorrelationMismatch{Detail: fmt.Sprintf(
-				"%q was opened for %s and is being reused for %s",
-				req.Correlation, existing.Action, req.Action)}
-		}
-		if existing.ArgsDigest != digest {
-			return nil, false, &ErrCorrelationMismatch{Detail: fmt.Sprintf(
-				"%q was opened for %s with different arguments", req.Correlation, existing.Action)}
-		}
-		return existing, false, nil
+	if existing, lerr := r.lookupBound(invocation, req, digest); lerr != nil || existing != nil {
+		return existing, false, lerr
 	}
 	r.nextID++
 	att = &Attempt{
@@ -213,7 +233,7 @@ func (r *Recorder) Open(invocation string, req contract.ActionRequest) (att *Att
 		ArgsDigest:  digest,
 	}
 	r.attempts = append(r.attempts, att)
-	r.byCorrelation[key] = att
+	r.byCorrelation[correlationKey(invocation, req.Correlation)] = att
 	return att, true, nil
 }
 
@@ -533,7 +553,7 @@ func decisionKey(invocation, binding, canonicalSet string) string {
 }
 
 // OpenSettled registers an attempt and settles it terminally in ONE critical
-// section.
+// section, and is idempotent on its correlation.
 //
 // ADR 0030 §8: a denial is terminal and is opened and completed TOGETHER, in one
 // transaction, with the reason code -- there is no effect to await. Recording no
@@ -543,11 +563,27 @@ func decisionKey(invocation, binding, canonicalSet string) string {
 func (r *Recorder) OpenSettled(
 	invocation string, req contract.ActionRequest,
 	outcome contract.ActionOutcome, reason string, d Disposition,
-) *Attempt {
+) (att *Attempt, fresh bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Existence, binding, and insertion in ONE critical section -- the same
+	// discipline Open follows. A previous version left the caller to Lookup
+	// first under a different lock, so two concurrent calls with the same new
+	// correlation could both find it absent, each append a terminal record, and
+	// each overwrite the durable mapping. One correlation, one record.
+	digest := ArgsDigest(req.Arguments)
+	existing, lerr := r.lookupBound(invocation, req, digest)
+	if lerr != nil || existing != nil {
+		return existing, false, lerr
+	}
+
+	if r.InOpenSettled != nil {
+		r.InOpenSettled()
+	}
+
 	r.nextID++
-	att := &Attempt{
+	att = &Attempt{
 		ID:                fmt.Sprintf("attempt-%03d", r.nextID),
 		Invocation:        invocation,
 		Correlation:       req.Correlation,
@@ -557,21 +593,16 @@ func (r *Recorder) OpenSettled(
 		Reason:            reason,
 		Disposition:       d,
 		Transitions:       []AttemptState{StateOpen, StateSettled},
-		ArgsDigest:        ArgsDigest(req.Arguments),
+		ArgsDigest:        digest,
 		SettledAfterClose: r.closedAt[invocation],
 	}
 	r.attempts = append(r.attempts, att)
-	// The denial CLAIMS its correlation, in the same critical section.
-	//
-	// A previous version deliberately left it unclaimed, reasoning that a retry
-	// should be admitted once the wait cleared. That reasoning was the defect:
-	// one correlation is one logical action (ADR 0030 §3), so leaving it free
-	// lets the same key produce a second terminal record, or produce a denial
-	// AND an effect. Replaying the denial to a retry is the correct answer --
-	// an intentional later attempt is a new logical action and needs a new
-	// correlation.
+	// The denial CLAIMS its correlation. Leaving it free lets the same key
+	// produce a second terminal record, or a denial AND an effect; replaying it
+	// to a retry is the correct answer, and an intentional later attempt is a
+	// new logical action needing a new correlation.
 	r.byCorrelation[correlationKey(invocation, req.Correlation)] = att
-	return att
+	return att, true, nil
 }
 
 // Lookup finds an attempt by correlation.
@@ -999,7 +1030,11 @@ func (b *Boundary) refuseWhileWaiting(inv *contract.Invocation, req contract.Act
 	// denial itself is exactly the observation policy work is tuned against,
 	// and losing it is not a small loss.
 	const why = "story is awaiting resolution"
-	att := b.Recorder.OpenSettled(id, req, contract.OutcomeDenied, why, DispositionBeforeCommit)
+	att, _, oerr := b.Recorder.OpenSettled(id, req, contract.OutcomeDenied, why, DispositionBeforeCommit)
+	if oerr != nil {
+		return contract.ActionResult{Correlation: req.Correlation,
+			Outcome: contract.OutcomeDenied, Reason: oerr.Error()}, true
+	}
 	return contract.ActionResult{
 		Correlation: req.Correlation,
 		AttemptID:   att.ID,

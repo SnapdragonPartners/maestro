@@ -23,6 +23,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -111,8 +113,8 @@ func mutations() []mutation {
 		{
 			name:  "settled-retry-mints-a-second-attempt",
 			file:  "host/boundary.go",
-			old:   "\tif existing, ok := r.byCorrelation[key]; ok {",
-			new:   "\tif existing, ok := r.byCorrelation[key]; ok && false {",
+			old:   "\tif !ok {\n\t\treturn nil, nil\n\t}",
+			new:   "\tif !ok || true {\n\t\treturn nil, nil\n\t}",
 			claim: "boundary/settled-retry",
 			want:  "the effect committed 2 times",
 			why:   "a retry treated as a new action is how an adapted runtime duplicates a forge push",
@@ -327,8 +329,8 @@ func mutations() []mutation {
 		{
 			name:  "denial-leaves-no-record",
 			file:  "host/boundary.go",
-			old:   "\tatt := b.Recorder.OpenSettled(id, req, contract.OutcomeDenied, why, DispositionBeforeCommit)\n\treturn contract.ActionResult{\n\t\tCorrelation: req.Correlation,\n\t\tAttemptID:   att.ID,",
-			new:   "\treturn contract.ActionResult{\n\t\tCorrelation: req.Correlation,",
+			old:   "\tatt, _, oerr := b.Recorder.OpenSettled(id, req, contract.OutcomeDenied, why, DispositionBeforeCommit)",
+			new:   "\tvar att *Attempt = \u0026Attempt{}\n\tvar oerr error",
 			claim: "boundary/waiting-guards-before-registration",
 			want:  "left no record at all",
 			why:   "ADR 0030 §8: a denial is opened and completed together, and denials are the observations candidate 12 will be tuned against -- losing them is not a small loss",
@@ -345,8 +347,8 @@ func mutations() []mutation {
 		{
 			name:  "denial-does-not-claim-its-correlation",
 			file:  "host/boundary.go",
-			old:   "\tr.byCorrelation[correlationKey(invocation, req.Correlation)] = att",
-			new:   "\t_ = correlationKey(invocation, req.Correlation)",
+			old:   "\tif r.InOpenSettled != nil {\n\t\tr.InOpenSettled()\n\t}",
+			new:   "\tif r.InOpenSettled != nil {\n\t\tr.InOpenSettled()\n\t}\n\tdefer delete(r.byCorrelation, correlationKey(invocation, req.Correlation))",
 			claim: "boundary/denial-binds-its-correlation",
 			want:  "produced a second record",
 			why:   "one correlation is one logical action; leaving it unclaimed lets the same key produce two terminal records, or a denial AND an effect once the wait clears",
@@ -361,6 +363,15 @@ func mutations() []mutation {
 			why:   "an acknowledgement processed against an empty outbox leaves the entry appended after it permanently retained -- the sender waits forever for a release that already happened",
 		},
 		{
+			name:  "denial-uniqueness-not-atomic",
+			file:  "host/boundary.go",
+			old:   "\tif r.InOpenSettled != nil {\n\t\tr.InOpenSettled()\n\t}",
+			new:   "\tif r.InOpenSettled != nil {\n\t\tr.mu.Unlock()\n\t\tr.InOpenSettled()\n\t\tr.mu.Lock()\n\t}",
+			claim: "boundary/concurrent-denials-produce-one-record",
+			want:  "records for one correlation",
+			why:   "lookup and insert in separate critical sections let two concurrent callers each append a terminal record and each overwrite the durable mapping -- the mutation reopens exactly that window",
+		},
+		{
 			name:  "capability-set-not-enforced",
 			file:  "host/boundary.go",
 			old:   "\tif !inv.HasCapability(action) {",
@@ -372,8 +383,8 @@ func mutations() []mutation {
 		{
 			name:  "correlation-not-bound-to-its-action",
 			file:  "host/boundary.go",
-			old:   "\t\tif existing.Action != req.Action {",
-			new:   "\t\tif false && existing.Action != req.Action {",
+			old:   "\tif existing.Action != req.Action {",
+			new:   "\tif false && existing.Action != req.Action {",
 			claim: "boundary/correlation-is-bound",
 			want:  "reused for a different action returned",
 			why:   "a key that is not bound to its logical action replays the result of a different one, and the boundary reports success for work it never did",
@@ -381,8 +392,8 @@ func mutations() []mutation {
 		{
 			name:  "correlation-not-bound-to-its-arguments",
 			file:  "host/boundary.go",
-			old:   "\t\tif existing.ArgsDigest != digest {",
-			new:   "\t\tif false && existing.ArgsDigest != digest {",
+			old:   "\tif existing.ArgsDigest != digest {",
+			new:   "\tif false && existing.ArgsDigest != digest {",
 			claim: "boundary/correlation-is-bound",
 			want:  "different arguments returned",
 			why:   "same action, different arguments, same key: the second call receives a result computed for the first",
@@ -563,7 +574,7 @@ func apply(m mutation, originals map[string][]byte, digests map[string]string) r
 		return result{m: m, detail: "INCONCLUSIVE: the suite did not reach its summary " +
 			"(hang, crash, or timeout) -- nothing is established"}
 	}
-	if strings.Contains(out, "0 claims:") {
+	if claimsRun(out) == 0 {
 		return result{m: m, detail: "INCONCLUSIVE: selector " + m.claim +
 			" matched no claim -- the name is stale, and nothing was tested"}
 	}
@@ -596,6 +607,16 @@ func apply(m mutation, originals map[string][]byte, digests map[string]string) r
 // had not actually obtained. That is the "mutation harnesses lie" failure in its
 // own harness.
 func runSuite(only string) (string, bool) {
+	out, err, ok := runSuiteErr(only)
+	if !ok && err != nil {
+		out += "\n[harness] suite process error: " + err.Error() + "\n"
+	}
+	return out, ok
+}
+
+// runSuiteErr is runSuite with the process error kept, so a failure can say WHY
+// rather than only that it happened.
+func runSuiteErr(only string) (string, error, bool) {
 	// -race on EVERY run. A claim can report PROVEN over a data race -- one did,
 	// and review caught it rather than the suite. Race instrumentation is the
 	// cheapest thing that would have caught it here.
@@ -605,21 +626,44 @@ func runSuite(only string) (string, bool) {
 	}
 	out, err := run(5*time.Minute, "go", args...)
 	summaryOK := strings.Contains(out, "0 FALSIFIED, 0 ERROR")
-	// A selector matching NO claims prints "0 claims: 0 PROVEN, 0 FALSIFIED,
-	// 0 ERROR" and exits zero -- which read as green, so a mutation whose claim
-	// name had gone stale survived invisibly rather than being reported as
-	// unrunnable. An empty run establishes nothing.
-	if strings.Contains(out, "0 claims:") {
-		return out, false
+	// A selector matching NO claims prints "0 claims: ..." and exits zero --
+	// which read as green, so a mutation whose claim name had gone stale
+	// survived invisibly rather than being reported as unrunnable. An empty run
+	// establishes nothing.
+	//
+	// Matched on the WHOLE COUNT, not a substring. `strings.Contains(out,
+	// "0 claims:")` also matches "60 claims:" -- and every other multiple of
+	// ten -- so the guard silently condemned a full green run the moment the
+	// suite reached sixty claims. A guard that fires on the thing it is meant
+	// to permit is worse than no guard, because it is read as a real failure.
+	if claimsRun(out) == 0 {
+		return out, err, false
 	}
-	return out, summaryOK && err == nil
+	return out, err, summaryOK && err == nil
 }
+
+// claimsRun extracts the claim count from the suite's summary line, or -1 when
+// there is no summary to read.
+func claimsRun(out string) int {
+	m := claimCountRE.FindStringSubmatch(out)
+	if m == nil {
+		return -1
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+//nolint:gochecknoglobals // compiled once
+var claimCountRE = regexp.MustCompile(`(?m)^(\d+) claims:`)
 
 // suiteRan reports whether the suite reached its own summary line at all. A run
 // killed before printing it establishes nothing, and must not be read as a
 // mutation kill.
 func suiteRan(out string) bool {
-	return strings.Contains(out, " claims: ")
+	return claimsRun(out) >= 0
 }
 
 func claimLine(out, claim string) string {

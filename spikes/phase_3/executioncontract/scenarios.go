@@ -446,7 +446,7 @@ func scenarios() []scenario {
 					return Falsified, "a resource wait was recorded as an operator wait"
 				}
 				if att.ResourceOp == "" {
-					return Falsified, "the resource wait names no operation, so it could not be restored"
+					return Falsified, "the resource wait names no operation, so nothing could tell a stuck wait from a healthy one"
 				}
 				return Proven, "resource_waiting recorded, named, and distinct from operator_waiting"
 			},

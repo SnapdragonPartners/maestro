@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "draft"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with fifty-nine claims proven and forty-four mutations killed for their named reason, every run under the race detector. Five review rounds, each mostly finding the previous round's fixes wrong one level down — and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was twice wrong itself: it read green from output text alone, and it counted a selector matching no claims as a pass."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and reporting an anchor missing that revealed a fix which had silently never applied."
 type = "spike"
 +++
 
@@ -27,7 +27,7 @@ the [Docker fencing spike](spike_docker-fencing.md). No Docker, no network, no
 API keys, no spend.
 
 - **`reviewagent`** — a real external process speaking newline-delimited JSON
-  over stdin and stdout. Thirty-nine of the fifty-nine claims spawn it.
+  over stdin and stdout. Thirty-nine of the sixty claims spawn it.
 - **`host`** — the Orchestrator side: [ADR 0030](../../adr/0030-tool-execution-policy-hook.md)'s
   three gates in miniature, an attempt recorder carrying ADR 0032 §6's state
   vocabulary, and process supervision.
@@ -39,7 +39,7 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 59 claims, 59 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 44 of 44 mutations
+**Result: 60 claims, 60 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 45 of 45 mutations
 killed for their named reason, every run under `-race`, agent subprocess
 included.** The suite runs in about
 nine seconds; the mutation harness in about a minute.
@@ -269,9 +269,36 @@ the code did not look the way the fix claimed. The mutation now also injects a
 delay, so the mutant exhibits the race deterministically rather than hoping for
 it — a defect a claim can only catch by luck is not protected.
 
+## Round eight — one P1, and two defects in the harness itself
+
+The P1: the denial's correlation **lookup and insert were in separate critical
+sections**, so two concurrent callers with the same new correlation could both
+find it absent, each append a terminal record, and each overwrite the mapping.
+Both now happen under one lock, through the same `lookupBound` helper `Open`
+uses — and factoring that helper out was itself prompted by the harness, which
+reported six anchors as ambiguous the moment the rule existed in two places.
+
+**The harness had a guard that condemned its own green runs.** The empty-run
+check added in round four was `strings.Contains(out, "0 claims:")` — which also
+matches `"60 claims:"`, and every other multiple of ten. It had been silently
+wrong since it was written and only fired once the suite reached sixty claims,
+at which point a fully green run was reported as a failed positive control. It
+now parses the count. A guard that fires on the thing it exists to permit is
+worse than no guard, because it reads as a real failure.
+
+**And the harness would not say why.** Its positive-control failure printed the
+suite's output but discarded the process error, so the first diagnosis had to
+come from re-running the suite by hand. It now reports the error.
+
+One claim could not be made to fail through the public path: the outer `Lookup`
+serialises on the same mutex, so with the fix in place there is no window at
+all. Rather than leave a mutation that proves nothing, it now reopens the
+original two-lock shape explicitly — the defect is reproduced rather than
+approximated.
+
 ## The claims
 
-Fifty-nine. Thirty-nine spawn a process; twenty exercise boundary and schema
+Sixty. Thirty-nine spawn a process; twenty-one exercise boundary and schema
 properties the wire scenarios depend on but cannot isolate, and are labelled
 separately in the code so nothing there is read as evidence about the wire.
 
@@ -307,8 +334,10 @@ separately in the code so nothing there is read as evidence about the wire.
 | `boundary/amended-version-rejected-at-admission` | ADR 0019 version-bound dispatch |
 | `boundary/settled-retry-replays-its-result` | ADR 0030 §3 |
 | `boundary/outstanding-retry-re-enters-no-gate` | ADR 0030 §3 — the half the first version missed |
-| `reconcile/preserves-an-operator-wait` | §6 |
-| `reconcile/hands-back-a-resource-wait` | §6 — the half the over-correction missed |
+| `reconcile/declared-wait-goes-stale-not-unknown` | §6 — a wait is not an outcome nobody knows |
+| `boundary/operator-decision-is-consumed-once` | ADR 0030 §4 — `approve_once` means once |
+| `boundary/drain-stale-promotes-atomically` | §6 — the drain path, not only reconciliation |
+| `boundary/concurrent-denials-produce-one-record` | ADR 0030 §3 — check and insert are one critical section |
 | `protocol/unknown-message-type-is-fatal` | §8 — the enumerated fatal list |
 | `protocol/malformed-known-body-is-fatal` | §8 |
 | `protocol/epoch-ahead-of-binding-is-fatal` | §4 — an incarnation never issued |
@@ -327,7 +356,7 @@ loop sent cancellation while the operator gate was still deciding, by timestamp.
 
 ## Defect-shaped verification
 
-`go run ./mutate` restores forty-four defects, one per protected property, and
+`go run ./mutate` restores forty-five defects, one per protected property, and
 counts a mutation as evidence only when it falsifies its named claim **for the
 named reason**. A compiler failure, an `ERROR`, or a failure at a neighbouring
 guard does not count. A positive control proves the suite is green before
