@@ -1,8 +1,8 @@
 +++
 title = "Conformance Slice: The Agent Execution Contract"
-edit_date = "2026-08-14"
+edit_date = "2026-08-15"
 status = "draft"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with forty-two claims proven and twenty-five mutations killed for their named reason, every run under the race detector. Four review rounds each found the previous round's fixes wrong one level down, and the last found guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong -- it read green from output text alone -- and fixing it exposed a defer-ordering defect that had the suite waiting five minutes on processes it had already killed."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with forty-nine claims proven and thirty-three mutations killed for their named reason, every run under the race detector. Four review rounds each found the previous round's fixes wrong one level down, and the last found guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong -- it read green from output text alone -- and fixing it exposed a defer-ordering defect that had the suite waiting five minutes on processes it had already killed."
 type = "spike"
 +++
 
@@ -27,7 +27,7 @@ the [Docker fencing spike](spike_docker-fencing.md). No Docker, no network, no
 API keys, no spend.
 
 - **`reviewagent`** — a real external process speaking newline-delimited JSON
-  over stdin and stdout. Twenty-nine of the forty-two claims spawn it.
+  over stdin and stdout. Thirty-two of the forty-nine claims spawn it.
 - **`host`** — the Orchestrator side: [ADR 0030](../../adr/0030-tool-execution-policy-hook.md)'s
   three gates in miniature, an attempt recorder carrying ADR 0032 §6's state
   vocabulary, and process supervision.
@@ -39,8 +39,9 @@ real build-out is Phase 3's. It is a *code-review* agent because
 [#282](https://github.com/SnapdragonPartners/maestro/issues/282) names one as
 the contract's first external consumer, not because the slice reviews anything.
 
-**Result: 42 claims, 42 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 25 of 25 mutations
-killed for their named reason, every run under `-race`.** The suite runs in about
+**Result: 49 claims, 49 `PROVEN`, 0 `FALSIFIED`, 0 `ERROR`. 33 of 33 mutations
+killed for their named reason, every run under `-race`, agent subprocess
+included.** The suite runs in about
 nine seconds; the mutation harness in about a minute.
 
 ## Round one — five findings
@@ -91,7 +92,7 @@ next defect one level down.
 
 | What round one did | Why it was wrong | What it is now |
 | --- | --- | --- |
-| Scoped reconciliation to `open` and nothing else | Over-corrected. A `resource_waiting` attempt whose provisioning operation died is stranded forever — leaving it alone is as wrong as settling it | Each state gets its own treatment: `open` settles `unknown`, operator waits are preserved **and validated**, resource waits are preserved **and handed back for restoration**. A wait naming nothing it waits for is a defect, surfaced as one |
+| Scoped reconciliation to `open` and nothing else | Over-corrected. A `resource_waiting` attempt whose provisioning operation died is stranded forever — leaving it alone is as wrong as settling it | Each state gets its own treatment: `open` settles `unknown`, and a declared wait settles **`stale`** with its requirement or operation preserved. *(Round four narrowed this further: see below — restoration was itself the wrong answer.)* |
 | Required correlations to be **derivable** so a restarted runtime could re-announce them | Unsound for a **nondeterministic** runtime: step 3 of the second incarnation need not be the same logical action as step 3 of the first, so a derived correlation can collide with an unrelated attempt | The **Orchestrator enumerates** what is outstanding and the runtime asks. Derivation is one legitimate strategy, not a contract requirement |
 | Replayed a settled attempt's result on a duplicate request | Covered only half the case. A duplicate for an attempt still **in flight** fell straight back through policy, operator handling, and resource acquisition — a second pass at one logical action | An in-flight duplicate returns `outstanding` and re-enters no gate |
 | Closed admission on cancellation, re-checked at gate 3 | Aborted work already **admitted** rather than draining it. "Revoke, then drain" means in-flight attempts reach their commit point | Admission closure blocks new attempts only; the grace period is what bounds one that will not settle |
@@ -143,7 +144,7 @@ worse failure, because a stated guarantee reads as a delivered one.
 | Delivery is at-least-once | An identity, and nothing else: no acknowledgement, no sender retention obligation, and deduplication state in memory — reset by exactly the restart it existed to survive | An acknowledged **watermark** per epoch, committed after the effect, with durable receiver state and an explicit sender replay obligation |
 | Protocol violations are fatal | Version, execution identity, epoch, unknown message types and malformed bodies were all silently accepted or ignored | The fatal list is **enumerated** and enforced before anything acts on the message |
 | A correlation is at-most-once | It was keyed on itself alone, so one key could replay the result of a **different action**, or of the same action with different arguments | Bound to the action identity and the substituted-input digest; a mismatched reuse is refused |
-| A preserved operator wait is recovered | The row survived and the in-memory continuation did not. The conformance case kept its goroutine alive, so it demonstrated only that the row survived | The attempt persists its **substituted request**, and the wait is resumed through gate 3 from the record alone |
+| A preserved operator wait is recovered | The row survived and the in-memory continuation did not. The conformance case kept its goroutine alive, so it demonstrated only that the row survived | *(Superseded in round four: persisting the substituted request violated ADR 0030 §3's redaction rule and promised more than §6 offers. A wait now goes **`stale`**; only the operator decision is persisted.)* |
 | A headless block stops the execution | It was composed only when the adapter closed its own stream, so a non-cooperative runtime kept working under a terminal Story | An Orchestrator-driven stop on the same cancel → drain → fence path as any other forced stop |
 
 Two more: **`message.ask` had no response lifecycle** — it now routes and
@@ -207,7 +208,7 @@ receipt*; a commit during the drain is recorded, not refused.
 
 ## The claims
 
-Forty-two. Twenty-nine spawn a process; thirteen exercise boundary and schema
+Forty-nine. Thirty-two spawn a process; seventeen exercise boundary and schema
 properties the wire scenarios depend on but cannot isolate, and are labelled
 separately in the code so nothing there is read as evidence about the wire.
 
@@ -252,7 +253,6 @@ separately in the code so nothing there is read as evidence about the wire.
 | `gate/headless-block-is-orchestrator-driven` | §5 — a runtime that refuses to stop is stopped |
 | `boundary/correlation-is-bound-to-its-logical-action` | ADR 0030 §3 — action and argument digest |
 | `boundary/admission-closure-linearizes-with-registration` | ADR 0029 §7 step 2, deterministically |
-| `reconcile/operator-wait-resumes-from-its-record` | §6 — recovery, not preservation |
 | `events/prior-epoch-replay-deduped-across-restart` | §4 — durable watermark |
 
 **`wait/transport-stays-live-during-an-operator-wait` is the claim that closes
@@ -264,7 +264,7 @@ loop sent cancellation while the operator gate was still deciding, by timestamp.
 
 ## Defect-shaped verification
 
-`go run ./mutate` restores twenty-three defects, one per protected property, and
+`go run ./mutate` restores thirty-three defects, one per protected property, and
 counts a mutation as evidence only when it falsifies its named claim **for the
 named reason**. A compiler failure, an `ERROR`, or a failure at a neighbouring
 guard does not count. A positive control proves the suite is green before
@@ -304,6 +304,19 @@ different message. The claim now asserts the mechanism — a recorded denial, on
 capability grounds — before the consequence. The harness caught it only because
 it required the failure to match a named reason rather than merely to occur.
 
+**One intermittent failure, unreproduced, and what was done about it.** A
+verification run reported a single `FALSIFIED` under `-race` that nine
+subsequent runs could not reproduce, and the command that caught it had not
+captured which claim. Rather than record it as noise, the most plausible cause
+was removed: `wait/transport-stays-live-during-an-operator-wait` requested
+cancellation on a **timer** and asserted an ordering against it, so under race
+instrumentation and load the timer could fire before the state it meant to
+interrupt was reached. It is now **signal-driven** — the gate asks for the
+cancellation once it is demonstrably holding — so the ordering holds by
+construction rather than by margin. Eight further race runs are clean. It is
+recorded because an unreproduced failure that was never explained is not the
+same as one that was, and the difference matters more than the tidiness.
+
 **Residue discipline.** The harness writes `.mutation-in-progress` before
 touching anything and refuses to start while one exists, because a killed harness
 does not run its restore and the next run would layer a second mutation on a tree
@@ -322,6 +335,7 @@ of it is fabricated to make a scenario look green — ADR 0025's
 | Model calls, `usage` events, token accounting, per-model-call provenance bindings | The stub makes none, and now emits nothing in their place | Phase 3's real build-out |
 | Concurrency accounting (§7) | There is no scheduler in the slice, so the claim that a blocked execution consumes no runnable concurrency is **reasoned, not measured** | Phase 3 |
 | Resumable runtimes, the resume token, and the retention window | The stub declares `resumable: false` | Phase 3, with an adapted runtime that can resume |
+| A **durable** sender outbox surviving the adapter's own restart | The spike retains in-process only | Phase 3 |
 | The provenance retention traversal (§9) | No retention runs here | Phase 4, per ADR 0029's deferred list |
 | Composite and paired execution (§9) | One participant only | Phase 5, where heterogeneity is an exit criterion |
 | Any transport but the local one | Only stdio is implemented, and it produces no reconnection case at all | Deferred with [candidate 14](../notes_adr-backlog.md) |

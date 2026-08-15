@@ -93,7 +93,11 @@ func buildAgent() (string, func(), error) {
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	bin := filepath.Join(dir, "reviewagent")
-	cmd := exec.Command("go", "build", "-o", bin, "./reviewagent")
+	// -race on the SUBPROCESS as well. The harness running race-instrumented
+	// says nothing about the agent, which is half the system under test and the
+	// half that is genuinely concurrent (a reader goroutine beside the work
+	// loop).
+	cmd := exec.Command("go", "build", "-race", "-o", bin, "./reviewagent")
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		cleanup()
@@ -196,11 +200,23 @@ func newHarness(diff string) *harness {
 	b.Executors[capForge.String()] = func(_ *contract.Invocation, _ json.RawMessage) (json.RawMessage, error) {
 		return json.Marshal(map[string]string{"ref": "pushed"})
 	}
-	b.Executors[capAsk.String()] = func(_ *contract.Invocation, args json.RawMessage) (json.RawMessage, error) {
+	b.Executors[capAsk.String()] = func(inv *contract.Invocation, args json.RawMessage) (json.RawMessage, error) {
+		// Validate BEFORE recording the routing: an earlier version appended
+		// first, so a refused question still counted as routed.
+		var q struct {
+			QuestionArtifact string `json:"question_artifact"`
+		}
+		_ = json.Unmarshal(args, &q)
+		if q.QuestionArtifact == "" {
+			return nil, fmt.Errorf("ask carries no question artifact; a question is an artifact, not inline text")
+		}
 		h.mu.Lock()
 		h.routed = append(h.routed, args)
 		h.mu.Unlock()
-		return json.Marshal(map[string]string{"delivered_to": "architect"})
+		// Routing OPENS an execution-level wait. The action itself settles now;
+		// what waits is the execution, on another principal (§4).
+		rec.OpenResponseWait(inv.ID(), q.QuestionArtifact)
+		return json.Marshal(map[string]string{"delivered_to": "architect", "routed": q.QuestionArtifact})
 	}
 	b.CurrentGeneration["inc-1"] = 4
 	b.EffectiveVersion = 7
@@ -223,12 +239,21 @@ func (h *harness) routedCount() int {
 // returns *requires an operator* with a structured requirement, and declares
 // nothing else.
 func requiresOperatorFor(action contract.ActionID) host.PolicyHook {
-	return func(_ *contract.Invocation, a contract.ActionID, _ json.RawMessage) (host.Decision, *contract.RequirementRef) {
+	return requiresOperatorWith(action, []contract.RequirementRef{{
+		GateID:    "spike.forge-push",
+		Statement: "pushing a ref requires an operator decision",
+		Scopes:    []string{"once", "for_story"},
+	}})
+}
+
+// requiresOperatorWith returns a COMPLETE requirement set, which is what
+// ADR 0030 §3 collects before anything blocks.
+func requiresOperatorWith(action contract.ActionID, reqs []contract.RequirementRef) host.PolicyHook {
+	return func(_ *contract.Invocation, a contract.ActionID, _ json.RawMessage) (host.Decision, []contract.RequirementRef) {
 		if a == action {
-			return host.DecisionRequiresOperator, &contract.RequirementRef{
-				GateID:    "spike.forge-push",
-				Statement: "pushing a ref requires an operator decision",
-			}
+			out := make([]contract.RequirementRef, len(reqs))
+			copy(out, reqs)
+			return host.DecisionRequiresOperator, out
 		}
 		return host.DecisionAllow, nil
 	}

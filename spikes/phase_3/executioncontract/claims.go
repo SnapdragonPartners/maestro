@@ -54,11 +54,20 @@ func boundaryClaims() []boundaryClaim {
 			"ADR 0030 §3 — a key alone can replay the wrong work", claimCorrelationBinding},
 		{"boundary/admission-closure-linearizes-with-registration",
 			"ADR 0029 §7 step 2 — revoke before drain, with no window between", claimAdmissionRace},
-		{"boundary/operator-decision-is-not-re-asked",
-			"§6 — asked once per logical action, which is what makes stale acceptable",
-			claimOperatorDecisionIsNotReAsked},
+		{"boundary/operator-decision-is-consumed-once",
+			"ADR 0030 §4 — approve_once means once, not permanently",
+			claimOperatorDecisionIsConsumedOnce},
+		{"boundary/changed-requirement-set-is-stale",
+			"ADR 0030 §5 — if the question changed, the answer is void",
+			claimChangedRequirementSetIsStale},
+		{"boundary/scopes-compose-by-intersection",
+			"ADR 0030 §3 — a union would let a permissive gate broaden a strict one",
+			claimScopesComposeByIntersection},
 		{"events/prior-epoch-replay-deduped-across-restart",
 			"§4 — deduplication state must outlive the process", claimDurableWatermark},
+		{"question/execution-waits-for-an-answer-artifact",
+			"§4 — routing opens a durable execution wait; the answer arrives on the bindings",
+			claimQuestionLifecycle},
 		{"restart/does-not-reissue-a-settled-action",
 			"§6 re-attach across a restart; the Orchestrator enumerates", claimRestartNoReissue},
 	}
@@ -183,9 +192,16 @@ func claimAdmissionRace(string) (Outcome, string) {
 	return Proven, "CloseAdmission blocked on an in-flight registration; 100 concurrent rounds all settled"
 }
 
-// claimOperatorDecisionIsNotReAsked proves the half that makes going stale
-// acceptable: the human is asked once per logical action, not once per attempt.
-func claimOperatorDecisionIsNotReAsked(string) (Outcome, string) {
+// claimOperatorDecisionIsConsumedOnce proves the real recovery case, and its
+// limit.
+//
+// An earlier version executed an action and then re-executed the same action
+// under a new correlation. That passed whether or not the decision was ever
+// consumed, so it demonstrated nothing about `approve_once`: an intentional
+// repetition looked exactly like a recovery. The real sequence is a wait that
+// goes STALE before its commit point, then EXACTLY ONE successor consuming the
+// decision -- and a second successor asking again.
+func claimOperatorDecisionIsConsumedOnce(string) (Outcome, string) {
 	h := newHarness(sampleDiff)
 	inv := invocation("inv-decision", true)
 	h.boundary.Policy = requiresOperatorFor(capForge)
@@ -194,36 +210,133 @@ func claimOperatorDecisionIsNotReAsked(string) (Outcome, string) {
 	h.boundary.Operator = func(contract.RequirementRef) bool { asked++; return true }
 	args := json.RawMessage(`{"ref":"refs/heads/x"}`)
 
-	first := h.boundary.ExecuteSync(inv, contract.ActionRequest{
-		Correlation: "c1", Action: capForge, Arguments: args})
-	if first.Outcome != contract.OutcomeSucceeded {
-		return Errored, "control failed: " + first.Reason
+	// Park in gate 3 after approval, then go stale -- the decision is recorded
+	// and the action never committed.
+	h.boundary.ResourceDelay[capForge.String()] = 400 * time.Millisecond
+	done := make(chan contract.ActionResult, 1)
+	h.boundary.Submit(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: args}, done)
+
+	deadline := time.Now().Add(2 * time.Second)
+	parked := false
+	for time.Now().Before(deadline) {
+		if a, ok := h.recorder.Lookup(inv.ID(), "c1"); ok &&
+			h.recorder.State(a) == host.StateResourceWaiting {
+			parked = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !parked {
+		return Errored, "the attempt never reached a declared wait"
+	}
+	rep := h.recorder.Reconcile()
+	<-done
+	if len(rep.StaleWaits) != 1 {
+		return Errored, "the wait did not go stale"
 	}
 	if asked != 1 {
-		return Errored, fmt.Sprintf("the operator was asked %d times on the first action", asked)
+		return Errored, fmt.Sprintf("the operator was asked %d times before the stale", asked)
 	}
 
-	// The SAME logical action, re-requested under a fresh correlation -- which
-	// is exactly what a stale wait forces the runtime to do.
-	second := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+	h.boundary.ResourceDelay = map[string]time.Duration{}
+
+	// Successor 1 consumes the decision: no second question.
+	one := h.boundary.ExecuteSync(inv, contract.ActionRequest{
 		Correlation: "c2", Action: capForge, Arguments: args})
-	if second.Outcome != contract.OutcomeSucceeded {
-		return Falsified, "the re-requested action settled " + string(second.Outcome)
+	if one.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "the successor settled " + string(one.Outcome) + ": " + one.Reason
 	}
 	if asked != 1 {
-		return Falsified, fmt.Sprintf("the operator was asked again (%d times total)", asked)
+		return Falsified, fmt.Sprintf("the recovery re-asked the operator (asked %d)", asked)
 	}
 
-	// A DIFFERENT logical action must still be asked.
-	third := h.boundary.ExecuteSync(inv, contract.ActionRequest{
-		Correlation: "c3", Action: capForge, Arguments: json.RawMessage(`{"ref":"refs/heads/other"}`)})
-	if third.Outcome != contract.OutcomeSucceeded {
-		return Falsified, "a different action settled " + string(third.Outcome)
+	// Successor 2 is an INTENTIONAL REPETITION and must be asked again.
+	two := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c3", Action: capForge, Arguments: args})
+	if two.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "the repetition settled " + string(two.Outcome)
 	}
 	if asked != 2 {
-		return Falsified, fmt.Sprintf("a different logical action reused the decision (asked %d)", asked)
+		return Falsified, fmt.Sprintf(
+			"a second repetition reused the decision, so approve_once is permanent (asked %d)", asked)
 	}
-	return Proven, "asked once per logical action: reuse skipped the gate, different arguments did not"
+	return Proven, "consumed exactly once: the recovery skipped the gate, the repetition did not"
+}
+
+// claimChangedRequirementSetIsStale proves ADR 0030 §5's set comparison.
+//
+// One decision resolves one logical action. If the collected requirement set
+// changes after approval, the answer given is VOID rather than supplemented --
+// otherwise a newly-appeared gate is satisfied by an approval nobody gave it.
+func claimChangedRequirementSetIsStale(string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-reqset", true)
+
+	base := []contract.RequirementRef{
+		{GateID: "gate.a", Statement: "A permits", Scopes: []string{"once"}}}
+	grown := append(append([]contract.RequirementRef{}, base...),
+		contract.RequirementRef{GateID: "gate.b", Statement: "B appeared", Scopes: []string{"once"}})
+
+	calls := 0
+	h.boundary.Policy = func(_ *contract.Invocation, a contract.ActionID, _ json.RawMessage) (host.Decision, []contract.RequirementRef) {
+		if a != capForge {
+			return host.DecisionAllow, nil
+		}
+		calls++
+		// Gate 1 sees one requirement; by gate 3 a second has appeared.
+		if calls == 1 {
+			return host.DecisionRequiresOperator, base
+		}
+		return host.DecisionRequiresOperator, grown
+	}
+	h.boundary.Operator = func(contract.RequirementRef) bool { return true }
+
+	res := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)})
+	if res.Outcome != contract.OutcomeStale {
+		return Falsified, "executed under an approval given for a different requirement set: " +
+			string(res.Outcome)
+	}
+	if !strings.Contains(res.Reason, "requirement set changed") {
+		return Falsified, "stale for the wrong reason: " + res.Reason
+	}
+	return Proven, "the set changed after approval, so the action went stale rather than executing"
+}
+
+// claimScopesComposeByIntersection proves ADR 0030 §3's composition rule, and
+// that an empty intersection fails closed.
+func claimScopesComposeByIntersection(string) (Outcome, string) {
+	strict := contract.RequirementRef{GateID: "gate.strict", Statement: "once only",
+		Scopes: []string{"once"}}
+	loose := contract.RequirementRef{GateID: "gate.loose", Statement: "either",
+		Scopes: []string{"once", "for_story"}}
+	disjoint := contract.RequirementRef{GateID: "gate.other", Statement: "story only",
+		Scopes: []string{"for_story"}}
+
+	got := host.IntersectScopes([]contract.RequirementRef{strict, loose})
+	if len(got) != 1 || got[0] != "once" {
+		return Falsified, fmt.Sprintf(
+			"a strict gate was broadened by a permissive one: %v", got)
+	}
+
+	// Empty intersection must fail closed as a policy defect, not as a denial.
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-scopes", true)
+	h.boundary.Policy = requiresOperatorWith(capForge,
+		[]contract.RequirementRef{strict, disjoint})
+	h.boundary.Operator = func(contract.RequirementRef) bool { return true }
+
+	res := h.boundary.ExecuteSync(inv, contract.ActionRequest{
+		Correlation: "c1", Action: capForge, Arguments: json.RawMessage(`{}`)})
+	if res.Outcome != contract.OutcomeFailed {
+		return Falsified, "gates sharing no permitted scope produced " + string(res.Outcome) +
+			" rather than failing closed as a configuration defect"
+	}
+	if !strings.Contains(res.Reason, "share no permitted scope") {
+		return Falsified, "failed for the wrong reason: " + res.Reason
+	}
+	return Proven, "intersection kept the strict gate's scope; an empty intersection failed closed"
 }
 
 // claimDurableWatermark proves deduplication survives the process.
@@ -239,8 +352,12 @@ func claimDurableWatermark(binary string) (Outcome, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Positive control: the first incarnation runs cleanly.
-	_ = os.Setenv("SPIKE_MODE", "normal")
+	// Positive control: the first incarnation runs cleanly AND commits a
+	// reliable report, so there is something acknowledged to replay. An earlier
+	// version used the plain mode, which emits no usage at all -- so the
+	// "replay" was of an event nothing had ever committed, and accepting it was
+	// correct behaviour the claim mistook for a defect.
+	_ = os.Setenv("SPIKE_MODE", "emit_usage")
 	first := rt.Run(ctx, inv)
 	if first.Result.Status != contract.StatusCompleted {
 		return Errored, "the first run did not complete: " + string(first.Result.Status)
@@ -251,7 +368,7 @@ func claimDurableWatermark(binary string) (Outcome, string) {
 	// non-zero first, so a mutation that emptied the watermark tripped the
 	// precondition and reported ERROR -- inconclusive where the behaviour was
 	// in fact broken and observable.
-	mark := h.recorder.Watermark(inv.ID(), 1)
+	mark := h.recorder.Watermark(inv.ID(), 1, contract.StreamReliable)
 	inv.Bindings.Epoch = 2
 	_ = os.Setenv("SPIKE_MODE", "replay_prior_epoch")
 	second := rt.Run(ctx, inv)
@@ -516,6 +633,58 @@ func claimReconcileOperatorWait(string) (Outcome, string) {
 		return Falsified, "the stale wait lost its requirement, so a blocked result could not reference it"
 	}
 	return Proven, "settled stale, not unknown, with its requirement intact"
+}
+
+// claimQuestionLifecycle demonstrates the wait the ADR asserts.
+//
+// Round three made `message.ask` mediated, which fixed the audit hole and left
+// the HANDOFF undemonstrated: the spike routed a question and ran on to
+// completion, so nothing showed the execution waiting, and nothing showed an
+// answer arriving. This runs both incarnations.
+func claimQuestionLifecycle(binary string) (Outcome, string) {
+	h := newHarness(sampleDiff)
+	inv := invocation("inv-question", false)
+	rt := &host.Runtime{BinaryPath: binary, Boundary: h.boundary,
+		Fencer: func(contract.ResourceRef) host.FenceReceipt { return host.FenceTerminated }}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Incarnation 1 asks, and ends WITHOUT a terminal result.
+	_ = os.Setenv("SPIKE_MODE", "ask")
+	first := rt.Run(ctx, inv)
+	if first.AwaitingResponse == "" {
+		return Falsified, "routing a question did not leave the execution awaiting an answer"
+	}
+	if first.Result.Status != "" {
+		return Falsified, "a terminal result was recorded for an execution still awaiting an answer: " +
+			string(first.Result.Status)
+	}
+	att := attemptFor(h, contract.ActionAsk)
+	if att == nil || att.Outcome != contract.OutcomeSucceeded {
+		return Falsified, "the ask action did not settle as routed"
+	}
+	if h.routedCount() != 1 {
+		return Errored, "the question was not routed"
+	}
+
+	// The answer arrives, and reaches the next incarnation on its BINDINGS.
+	if !h.recorder.DeliverAnswer(inv.ID(), "art-answer-1") {
+		return Errored, "the answer could not be delivered"
+	}
+	inv.Bindings.Epoch = 2
+	inv.Bindings.Inbound = []contract.ArtifactRef{{ArtifactID: "art-answer-1", Digest: "sha256:bbbb"}}
+
+	_ = os.Setenv("SPIKE_MODE", "answered")
+	second := rt.Run(ctx, inv)
+	if second.Result.Status != contract.StatusCompleted {
+		return Falsified, "the resumed incarnation did not complete: " +
+			string(second.Result.Status) + " " + errText(second)
+	}
+	if _, still := h.recorder.AwaitingResponse(inv.ID()); still {
+		return Falsified, "the response wait outlived its answer"
+	}
+	return Proven, "asked and ended non-terminal on " + first.AwaitingResponse +
+		"; the answer arrived on the bindings and the execution completed"
 }
 
 // claimRestartNoReissue is the honest form of re-attach on a stdio transport.

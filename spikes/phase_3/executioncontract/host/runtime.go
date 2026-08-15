@@ -53,6 +53,13 @@ type Outcome struct {
 	// fence was taken (ADR 0030 §5). OutstandingActions is how many did not.
 	ActionsDrained     bool
 	OutstandingActions int
+	// TerminalViolation is set when the terminal EVENT was malformed or its
+	// axes invalid. That is a framing failure and takes the forced path, unlike
+	// a well-formed claim the Orchestrator merely disagrees with.
+	TerminalViolation string
+	// AwaitingResponse names the question artifact an execution is waiting on.
+	// Non-terminal: the incarnation ended, the execution did not.
+	AwaitingResponse string
 	// CommittedDuringDrain counts effects that landed after admission closed.
 	// Permitted, and recorded so a cancellation can say what went out with it.
 	CommittedDuringDrain int
@@ -95,6 +102,13 @@ type Runtime struct {
 	// OnCancelRequested fires when cancellation is sent, so a scenario can
 	// observe what the transport does afterwards.
 	OnCancelRequested func()
+
+	// CancelWhen requests cancellation on a SIGNAL rather than a timer. A
+	// timer-based scenario is only as reliable as its margin: under race
+	// instrumentation and load, "cancel at 400ms" can fire before the state it
+	// meant to interrupt is even reached, and the claim then fails for a reason
+	// that has nothing to do with the property.
+	CancelWhen <-chan struct{}
 }
 
 // Run executes one invocation to a terminal result.
@@ -152,7 +166,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	if len(supported) == 0 {
 		supported = []string{contract.Version}
 	}
-	if err := w.Send("", 0, contract.TypeHello, contract.Hello{Supported: supported}); err != nil {
+	if _, _, err := w.Send("", 0, contract.TypeHello, contract.Hello{Supported: supported}); err != nil {
 		out.DispatchErr = fmt.Errorf("send hello: %w", err)
 		return out
 	}
@@ -180,7 +194,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	}
 
 	// ---- the invocation ----
-	if err := w.Send(id, inv.Bindings.Epoch, contract.TypeInvoke, inv); err != nil {
+	if _, _, err := w.Send(id, inv.Bindings.Epoch, contract.TypeInvoke, inv); err != nil {
 		out.DispatchErr = fmt.Errorf("send invoke: %w", err)
 		return out
 	}
@@ -207,6 +221,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	if r.CancelAfter > 0 {
 		cancelAt = time.After(r.CancelAfter)
 	}
+	cancelSignal := r.CancelWhen
 
 	type readItem struct {
 		env contract.Envelope
@@ -232,6 +247,34 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 	drainWindow := r.CancelGrace
 	if drainWindow == 0 {
 		drainWindow = 2 * time.Second
+	}
+
+	requestCancel := func() {
+		if !cancelRequested {
+			cancelRequested = true
+			cancelReason = r.CancelReasonV
+			if cancelReason == "" {
+				cancelReason = contract.ReasonSuperseded
+			}
+			// Close admission FIRST, then ask. ADR 0029 §7 step 2's
+			// ordering -- revoke the ability to create, then drain --
+			// applied to attempts: otherwise the runtime keeps issuing new
+			// actions throughout the grace period, and the drain chases a
+			// set the holder is still adding to.
+			r.Boundary.CloseAdmission(id)
+			grace := r.CancelGrace
+			if grace == 0 {
+				grace = 2 * time.Second
+			}
+			_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeCancel, contract.Cancel{
+				Reason:     string(cancelReason),
+				DeadlineMS: grace.Milliseconds(),
+			})
+			graceExpiry = time.After(grace)
+			if r.OnCancelRequested != nil {
+				r.OnCancelRequested()
+			}
+		}
 	}
 
 	forcedTerminal := func(res contract.TerminalResult) Outcome {
@@ -271,32 +314,13 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 			r.Boundary.CloseAdmission(id)
 			return forcedTerminal(contract.TimedOut("wall-clock budget exhausted"))
 
+		case <-cancelSignal:
+			cancelSignal = nil
+			requestCancel()
+
 		case <-cancelAt:
-			if !cancelRequested {
-				cancelRequested = true
-				cancelReason = r.CancelReasonV
-				if cancelReason == "" {
-					cancelReason = contract.ReasonSuperseded
-				}
-				// Close admission FIRST, then ask. ADR 0029 §7 step 2's
-				// ordering -- revoke the ability to create, then drain --
-				// applied to attempts: otherwise the runtime keeps issuing new
-				// actions throughout the grace period, and the drain chases a
-				// set the holder is still adding to.
-				r.Boundary.CloseAdmission(id)
-				grace := r.CancelGrace
-				if grace == 0 {
-					grace = 2 * time.Second
-				}
-				_ = w.Send(id, inv.Bindings.Epoch, contract.TypeCancel, contract.Cancel{
-					Reason:     string(cancelReason),
-					DeadlineMS: grace.Milliseconds(),
-				})
-				graceExpiry = time.After(grace)
-				if r.OnCancelRequested != nil {
-					r.OnCancelRequested()
-				}
-			}
+			cancelAt = nil
+			requestCancel()
 
 		case <-graceExpiry:
 			// The grace period expired, so the domain is fenced. This is the
@@ -310,7 +334,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 			return forcedTerminal(contract.Cancelled(cancelReason, "cancelled; fenced after grace period"))
 
 		case res := <-actionDone:
-			_ = w.Send(id, inv.Bindings.Epoch, contract.TypeActionResult, res)
+			_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeActionResult, res)
 
 			if res.Outcome == contract.OutcomeBlocked && !blockedStop {
 				// The Orchestrator knows the Story is blocked NOW. Waiting for
@@ -321,7 +345,7 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				// same cooperative-then-fenced path as any other forced stop.
 				blockedStop = true
 				r.Boundary.CloseAdmission(id)
-				_ = w.Send(id, inv.Bindings.Epoch, contract.TypeCancel, contract.Cancel{
+				_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeCancel, contract.Cancel{
 					Reason:     "blocked",
 					DeadlineMS: drainWindow.Milliseconds(),
 				})
@@ -363,13 +387,13 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 			}
 
 			// Event identity, against the DURABLE watermark.
-			if it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch) {
+			if it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch, it.env.Stream) {
 				out.DuplicateEvents++
 				// A duplicate is still acknowledged: the sender must be able to
 				// release it, and re-acknowledging a committed event is exactly
 				// what makes a lost ack recoverable.
-				_ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
-					contract.Ack{Epoch: it.env.Epoch, Through: it.env.Seq})
+				_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
+					contract.Ack{Epoch: it.env.Epoch, Stream: it.env.Stream, Through: it.env.Seq})
 				continue
 			}
 
@@ -377,9 +401,9 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 
 			// Advance and acknowledge only AFTER the event's effect is recorded,
 			// so an acknowledgement never promises more than was committed.
-			r.Boundary.Recorder.Advance(id, it.env.Epoch, it.env.Seq)
-			_ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
-				contract.Ack{Epoch: it.env.Epoch, Through: it.env.Seq})
+			r.Boundary.Recorder.Advance(id, it.env.Epoch, it.env.Seq, it.env.Stream)
+			_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeAck,
+				contract.Ack{Epoch: it.env.Epoch, Stream: it.env.Stream, Through: it.env.Seq})
 
 			if done {
 				// The runtime claimed a terminal result, and a claim is all it
@@ -388,6 +412,10 @@ func (r *Runtime) Run(ctx context.Context, inv *contract.Invocation) Outcome {
 				// rather than discarded.
 				claim := out.Claimed
 				switch {
+				case out.TerminalViolation != "":
+					r.Boundary.CloseAdmission(id)
+					return forcedTerminal(contract.Failed(
+						contract.ClassNonRetryableAgent, out.TerminalViolation))
 				case blockedStop:
 					// The Story is already blocked. Whatever the runtime claims,
 					// the Orchestrator's own state decides -- and it still owes
@@ -446,12 +474,25 @@ func (r *Runtime) onStreamEnd(inv *contract.Invocation, out *Outcome, observed *
 	}
 
 	// Reconciliation: only `open` attempts settle `unknown`; declared waits are
-	// preserved, validated, and handed back for restoration (§6).
+	// settled `stale` with their requirement or operation preserved (§6).
 	out.Reconciled = r.Boundary.Recorder.Reconcile()
 	out.Events = append(out.Events, fmt.Sprintf(
 		"reconciled: %d unknown, %d stale waits, %d invalid",
 		len(out.Reconciled.SettledUnknown), len(out.Reconciled.StaleWaits),
 		len(out.Reconciled.Invalid)))
+
+	// An execution awaiting another principal's answer is not over: the
+	// INCARNATION ended, and only ending the EXECUTION fences. The actions are
+	// still drained -- nothing should be in flight -- but the resource stays
+	// with the Story and no terminal result is recorded.
+	if w, waiting := r.Boundary.Recorder.AwaitingResponse(id); waiting {
+		drained, outstanding := r.Boundary.DrainActions(id, 2*time.Second)
+		out.ActionsDrained = drained
+		out.OutstandingActions = len(outstanding)
+		out.AwaitingResponse = w.QuestionArtifact
+		out.Events = append(out.Events, "incarnation ended; awaiting an answer to "+w.QuestionArtifact)
+		return *out
+	}
 
 	if r.Boundary.IsBlocked(id) {
 		// §5's exception: `blocked` is composed by the ORCHESTRATOR from the
@@ -477,6 +518,23 @@ func (r *Runtime) onStreamEnd(inv *contract.Invocation, out *Outcome, observed *
 		out.Result = contract.Blocked(r.Boundary.BlockedRequirements(id),
 			"a required decision has no responder in this configuration")
 		return r.finish(*out)
+	}
+	// A transport that closed without a terminal result is the Orchestrator
+	// ending the execution, so it owes the same discipline as any other forced
+	// stop. A first version recorded the failure directly, leaving admitted
+	// actions unsettled and the resource unfenced.
+	out.Forced = true
+	r.Boundary.CloseAdmission(id)
+	window := r.CancelGrace
+	if window == 0 {
+		window = 2 * time.Second
+	}
+	drained, outstanding := r.Boundary.DrainActions(id, window)
+	out.ActionsDrained = drained
+	out.OutstandingActions = len(outstanding)
+	r.fenceAll(inv, out)
+	if !drained {
+		out.FenceReceipt = FenceUnconfirmed
 	}
 	out.Result = contract.Failed(contract.ClassRetryableInfrastructure,
 		fmt.Sprintf("adapter closed the transport after %s with no terminal result",
@@ -554,7 +612,7 @@ func (r *Runtime) handleEvent(
 				Correlation: a.Correlation, AttemptID: a.ID, Action: a.Action, State: state,
 			})
 		}
-		_ = w.Send(id, inv.Bindings.Epoch, contract.TypeAttachAck, ack)
+		_, _, _ = w.Send(id, inv.Bindings.Epoch, contract.TypeAttachAck, ack)
 		return false
 
 	case contract.TypeActionRequest:
@@ -576,15 +634,14 @@ func (r *Runtime) handleEvent(
 	case contract.TypeTerminal:
 		res, err := contract.Decode[contract.TerminalResult](env)
 		if err != nil {
-			bad := contract.Failed(contract.ClassNonRetryableAgent, "terminal event is malformed")
-			out.Claimed = &bad
+			// A malformed terminal is a PROTOCOL violation, not a claim. A first
+			// version turned it into an ordinary claim, which then took the
+			// non-forced path and skipped the drain and the fence.
+			out.TerminalViolation = "terminal event is malformed"
 			return true
 		}
 		if verr := res.Validate(); verr != nil {
-			// A terminal result violating §5's applicability rule is a protocol
-			// violation, not a result.
-			bad := contract.Failed(contract.ClassNonRetryableAgent, "terminal result invalid: "+verr.Error())
-			out.Claimed = &bad
+			out.TerminalViolation = "terminal result invalid: " + verr.Error()
 			return true
 		}
 		out.Claimed = &res
@@ -600,6 +657,15 @@ func (r *Runtime) handleEvent(
 // means a runtime speaking a contract this build does not implement looks
 // healthy right up to the point its work is lost.
 //
+// replayableFromPriorEpoch reports whether a message type may legitimately
+// arrive under an epoch older than the active binding. Only the reports §4
+// gives a retention and replay obligation may: everything else is an ACT, and
+// an act from a superseded incarnation is a stale generation reaching through
+// the boundary.
+func replayableFromPriorEpoch(msgType string) bool {
+	return msgType == contract.TypeUsage || msgType == contract.TypeProvenance
+}
+
 //nolint:gochecknoglobals // a fixed vocabulary
 var knownAgentTypes = map[string]bool{
 	contract.TypeStarted: true, contract.TypeHeartbeat: true, contract.TypeActivity: true,
@@ -615,14 +681,19 @@ func (r *Runtime) validateEnvelope(inv *contract.Invocation, negotiated string, 
 	if env.Inv != inv.ID() {
 		return fmt.Errorf("envelope names execution %q, not %q", env.Inv, inv.ID())
 	}
-	// An epoch from the FUTURE is a violation; an older one is not. A replayed
-	// event from a previous incarnation legitimately carries the epoch it was
-	// first emitted under, and refusing it would make the replay obligation
-	// at-least-once delivery depends on impossible to honour. Older epochs are
-	// admitted and deduplicated against that epoch's own watermark.
+	// An epoch from the FUTURE is always a violation.
 	if env.Epoch > inv.Bindings.Epoch {
 		return fmt.Errorf("envelope carries epoch %d, ahead of the active %d",
 			env.Epoch, inv.Bindings.Epoch)
+	}
+	// An OLDER epoch is admissible only for the types that carry a replay
+	// obligation (§4). A first version admitted every type, which let a fenced
+	// incarnation send an `action_request` or a `terminal` that would then be
+	// handled against the CURRENT bindings -- a stale generation acting through
+	// the boundary, which ADR 0029 §7 requirement 5 exists to prevent.
+	if env.Epoch < inv.Bindings.Epoch && !replayableFromPriorEpoch(env.Type) {
+		return fmt.Errorf("%s carries epoch %d, and only replayable reports may arrive from a prior epoch",
+			env.Type, env.Epoch)
 	}
 	if !knownAgentTypes[env.Type] {
 		return fmt.Errorf("unknown message type %q", env.Type)

@@ -1,6 +1,6 @@
 +++
 title = "ADR 0032: The Agent Execution Contract"
-edit_date = "2026-08-14"
+edit_date = "2026-08-15"
 status = "draft"
 summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. An invocation splits into an immutable, persisted execution configuration and per-incarnation bindings, because resource grants and resume tokens change while the configuration must not. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result -- and recovery is artifact-level, so a wait interrupted by a restart goes stale rather than resuming."
 +++
@@ -442,8 +442,15 @@ after the fact (`runner.go:199-206`) with no record that the two had disagreed.
 
 #### Event identity, without which at-least-once means nothing
 
-**Delivery is at-least-once**, so a redelivery must be harmless — and that
-requires an identity the receiver can check. A first draft asserted the property
+**Delivery is at-least-once for the events that carry a retention obligation,
+and best-effort for the rest** — the narrowing below is part of the guarantee,
+not a qualification bolted onto it. A first draft opened by promising
+at-least-once universally and narrowed it several paragraphs later, which is the
+order in which a reader acquires the wrong belief and then has to be talked out
+of it.
+
+For the events that do carry the obligation, a redelivery must be harmless — and
+that requires an identity the receiver can check. A first draft asserted the property
 and defined no identity, which is a guarantee with no mechanism: the conformance
 slice's sequence counter restarted at 1 with every process, so two different
 messages from two incarnations shared one identity and nothing deduplicated
@@ -687,8 +694,8 @@ treatment:
 | State | Reconciliation does | Why |
 | --- | --- | --- |
 | `open` | Settles it `unknown` | An intent was recorded and no outcome ever was |
-| `operator_waiting` | **Preserves, validates, and restores the continuation** | An operator wait is healthy; only an operator can answer it, and destroying it takes the requirement with it. A wait carrying no requirement is a **defect**, surfaced as one rather than settled |
-| `resource_waiting` | **Preserves and hands it back for restoration** | The provisioning or queueing operation does not survive a restart. Leaving it alone strands it exactly as settling it would corrupt it. A wait naming no operation is likewise a defect |
+| `operator_waiting` | **Settles it `stale`**, preserving the requirement and the operator decision | Only an operator can answer it, and the continuation that would have run gate 3 died with the process. It is not `unknown`: an attempt awaiting an operator is not one whose outcome nobody knows. A wait carrying no requirement is a **defect**, surfaced as one |
+| `resource_waiting` | **Settles it `stale`**, preserving the operation it named | The provisioning or queueing operation does not survive a restart either. A wait naming no operation is likewise a defect |
 
 #### A wait interrupted by a restart goes stale; it does not resume
 
@@ -1239,9 +1246,9 @@ when it recorded its own eleven defects rather than quietly repairing them.
 
 **Done**, 2026-08-13/14:
 [`spikes/phase_3/executioncontract`](../v2/phase_3/spike_execution-contract.md).
-**42 claims, all `PROVEN`**; twenty-nine spawn a real external process and speak
-newline-delimited JSON to it. **25 of 25 mutations killed for their named
-reason**, **every run under the race detector**, under a harness that requires a
+**49 claims, all `PROVEN`** under the race detector; thirty-two spawn a real external process and speak
+newline-delimited JSON to it. **33 of 33 mutations killed for their named
+reason**, **every run under the race detector, agent subprocess included**, under a harness that requires a
 positive control and a clean process exit as well as a green summary, refuses to
 start on residue, and verifies restoration by digest.
 
@@ -1406,7 +1413,7 @@ conformance executable lives permanently.
 | The wire contract, the four-axis result, the action and execution state vocabularies, cancellation lifecycle, re-attach, provenance obligations, the model identity split, and the concurrency accounting | **This ADR** |
 | Which policies exist and which approval scopes each gate exposes | **Candidate 12** |
 | When a cancellation is legitimate, and what amendment does to pending actions and grants | **A5** (ADR 0019 amendment) |
-| The `tool_calls` migration including the constraint replacement, **and the durable families §9 requires** — execution configurations, bindings and epochs, resume tokens, event watermarks, and the attempt's substituted request and correlation binding; the reconciler's scoping and the wait-resumption path in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values; whether an answer may reach a live execution | **Phase 3 plan** |
+| The `tool_calls` migration including the constraint replacement, **and the durable families §9 requires** — execution configurations, bindings and epochs, resume tokens, event watermarks, operator decisions, response waits, and the attempt's correlation binding and disposition; the reconciler's scoping in code; watchdog policy for the waits; the headless runner's exit behavior; the retention window and release rule for a waiting resource; the routing implementation; concurrency limit values; whether an answer may reach a live execution | **Phase 3 plan** |
 | The provenance retention traversal's mechanism, and the evidence-package half | **Phase 4** |
 | The metadata home for served-model lifecycle and underlying-model lineage | **[#319](https://github.com/SnapdragonPartners/maestro/issues/319)**, against §3's split |
 

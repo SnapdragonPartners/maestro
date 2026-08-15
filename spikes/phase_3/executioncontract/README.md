@@ -6,11 +6,15 @@ The written-up evidence is
 this directory is the code.
 
 ```bash
-go run .            # every claim
-go run . -v         # with the event stream per scenario
-go run . -run NAME  # one claim
-go run ./mutate     # defect-shaped verification of the claims themselves
+go run -race .            # every claim
+go run -race . -v         # with the event stream per scenario
+go run -race . -run NAME  # one claim
+go run ./mutate           # defect-shaped verification; race-instruments every run
 ```
+
+**Always `-race`.** A claim once reported `PROVEN` over a data race and the suite
+did not notice; review did. The agent subprocess is built `-race` too, since it
+is half the system under test and the concurrent half.
 
 **Exit code is 0 only when every claim is `PROVEN`.** Outcomes are three-valued,
 following the [Docker fencing spike](../fencing/README.md):
@@ -29,8 +33,8 @@ directory and spawns it once per scenario.
 `reviewagent` is a **real external process** that speaks the contract over
 stdin and stdout. A4 is explicit that an in-process fake or an echo fixture does
 not discharge it, so every wire scenario spawns a process and exchanges
-newline-delimited JSON with it. Twenty-nine of the forty-two claims do; the
-remaining thirteen exercise boundary and schema properties the wire scenarios depend
+newline-delimited JSON with it. Thirty-two of the forty-nine claims do; the
+remaining seventeen exercise boundary and schema properties the wire scenarios depend
 on but cannot isolate, and are labelled separately so nothing there reads as
 evidence about the wire.
 
@@ -84,7 +88,7 @@ permanently is a Phase 3 decision.**
 
 ## Mutation harness
 
-`go run ./mutate` restores twenty-three defects, one per protected property, and
+`go run ./mutate` restores thirty-three defects, one per protected property, and
 requires each to falsify its named claim **for the named reason**. A compiler
 failure, an `ERROR`, or a failure at a neighbouring guard is not a killed
 mutation.

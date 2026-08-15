@@ -34,6 +34,7 @@ const (
 // silently.
 type Ack struct {
 	Epoch   uint64 `json:"epoch"`
+	Stream  string `json:"stream"`
 	Through uint64 `json:"through"`
 }
 
@@ -59,12 +60,35 @@ const (
 // an identity. The EPOCH is assigned by the Orchestrator and is what orders
 // them.
 type Envelope struct {
-	V     string          `json:"v"`
-	Type  string          `json:"type"`
-	Inv   string          `json:"inv,omitempty"`
-	Epoch uint64          `json:"epoch"`
-	Seq   uint64          `json:"seq"`
-	Body  json.RawMessage `json:"body,omitempty"`
+	V     string `json:"v"`
+	Type  string `json:"type"`
+	Inv   string `json:"inv,omitempty"`
+	Epoch uint64 `json:"epoch"`
+	Seq   uint64 `json:"seq"`
+	// Stream separates the RELIABLE sequence space from the best-effort one.
+	//
+	// One shared space cannot work: the watermark is contiguous, so a dropped
+	// best-effort `activity` would permanently block acknowledgement of every
+	// retained `usage` behind it -- a diagnostic message holding accounting
+	// hostage. Each stream is its own monotonic space with its own watermark.
+	Stream string          `json:"stream"`
+	Body   json.RawMessage `json:"body,omitempty"`
+}
+
+// The two sequence spaces (§4).
+const (
+	// StreamReliable carries the events with a retention and replay obligation.
+	StreamReliable = "reliable"
+	// StreamBestEffort carries diagnostics whose loss is tolerable and declared.
+	StreamBestEffort = "best_effort"
+)
+
+// StreamFor reports which space a message type belongs to.
+func StreamFor(msgType string) string {
+	if msgType == TypeUsage || msgType == TypeProvenance {
+		return StreamReliable
+	}
+	return StreamBestEffort
 }
 
 // ---------- handshake ----------

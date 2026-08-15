@@ -74,6 +74,11 @@ type RequirementRef struct {
 	AttemptID string `json:"attempt_id"`
 	GateID    string `json:"gate_id"`
 	Statement string `json:"statement"`
+	// Scopes is what THIS gate permits an operator to answer at (ADR 0030 §4).
+	// The action's effective scopes are the INTERSECTION across every collected
+	// requirement: a union would let a permissive gate broaden a strict one and
+	// install a grant the strict gate never authorized.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // TerminalResult is a SCHEMA WITH AN APPLICABILITY RULE, not a cross product.

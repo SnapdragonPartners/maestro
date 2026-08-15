@@ -25,13 +25,15 @@ func (e *ErrProtocol) Error() string { return "protocol violation: " + e.Detail 
 // goroutine and its work goroutine both write, and interleaved partial lines
 // would be indistinguishable from a malformed message.
 type Writer struct {
-	mu  sync.Mutex
-	w   io.Writer
-	seq uint64
+	mu sync.Mutex
+	w  io.Writer
+	// seq is per STREAM: the reliable and best-effort spaces advance
+	// independently, so a gap in one cannot stall the other's watermark.
+	seq map[string]uint64
 }
 
 // NewWriter wraps an io.Writer.
-func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
+func NewWriter(w io.Writer) *Writer { return &Writer{w: w, seq: map[string]uint64{}} }
 
 // Send marshals body into an envelope and writes one line.
 //
@@ -39,28 +41,36 @@ func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
 // identifies an INCARNATION and is assigned by the Orchestrator -- a writer
 // that minted its own would restart the identity space on every process, which
 // is the defect the (inv, epoch, seq) triple exists to close.
-func (w *Writer) Send(invocation string, epoch uint64, msgType string, body any) error {
+// It returns the (stream, sequence) it used, so a sender can retain the
+// envelope under its OWN identity. A first version exposed a LastSeq accessor
+// instead, which another goroutine's write could overtake between send and
+// record -- retaining one message under another's sequence.
+func (w *Writer) Send(invocation string, epoch uint64, msgType string, body any) (string, uint64, error) {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshal %s body: %w", msgType, err)
+			return "", 0, fmt.Errorf("marshal %s body: %w", msgType, err)
 		}
 		raw = b
 	}
 
+	stream := StreamFor(msgType)
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.seq++
+	w.seq[stream]++
+	seq := w.seq[stream]
 	line, err := json.Marshal(Envelope{
-		V: Version, Type: msgType, Inv: invocation, Epoch: epoch, Seq: w.seq, Body: raw})
+		V: Version, Type: msgType, Inv: invocation, Epoch: epoch,
+		Seq: seq, Stream: stream, Body: raw})
 	if err != nil {
-		return fmt.Errorf("marshal %s envelope: %w", msgType, err)
+		return "", 0, fmt.Errorf("marshal %s envelope: %w", msgType, err)
 	}
 	if _, err := w.w.Write(append(line, '\n')); err != nil {
-		return fmt.Errorf("write %s: %w", msgType, err)
+		return "", 0, fmt.Errorf("write %s: %w", msgType, err)
 	}
-	return nil
+	return stream, seq, nil
 }
 
 // ResetSeq restarts the sequence space. An epoch is its own space (§4), and the
@@ -70,21 +80,13 @@ func (w *Writer) Send(invocation string, epoch uint64, msgType string, body any)
 func (w *Writer) ResetSeq() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.seq = 0
-}
-
-// LastSeq reports the sequence most recently emitted, so a sender can retain an
-// envelope under its own identity.
-func (w *Writer) LastSeq() uint64 {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.seq
+	w.seq = map[string]uint64{}
 }
 
 // SendAs re-emits a message under a SPECIFIC identity. It is how a replay
 // differs from a new event: re-sending under a fresh sequence would be a new
 // event the receiver counts again, which is the opposite of a replay.
-func (w *Writer) SendAs(invocation string, epoch, seq uint64, msgType string, body any) error {
+func (w *Writer) SendAs(invocation string, epoch, seq uint64, stream, msgType string, body any) error {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -96,7 +98,8 @@ func (w *Writer) SendAs(invocation string, epoch, seq uint64, msgType string, bo
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	line, err := json.Marshal(Envelope{
-		V: Version, Type: msgType, Inv: invocation, Epoch: epoch, Seq: seq, Body: raw})
+		V: Version, Type: msgType, Inv: invocation, Epoch: epoch,
+		Seq: seq, Stream: stream, Body: raw})
 	if err != nil {
 		return fmt.Errorf("marshal %s envelope: %w", msgType, err)
 	}
@@ -111,6 +114,7 @@ func (w *Writer) SendAs(invocation string, epoch, seq uint64, msgType string, bo
 // event identity has to make harmless. Nothing but a conformance scenario has
 // any business calling it.
 func (w *Writer) Repeat(invocation string, epoch uint64, msgType string, body any) error {
+	stream := StreamFor(msgType)
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -122,7 +126,8 @@ func (w *Writer) Repeat(invocation string, epoch uint64, msgType string, body an
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	line, err := json.Marshal(Envelope{
-		V: Version, Type: msgType, Inv: invocation, Epoch: epoch, Seq: w.seq, Body: raw})
+		V: Version, Type: msgType, Inv: invocation, Epoch: epoch,
+		Seq: w.seq[stream], Stream: stream, Body: raw})
 	if err != nil {
 		return fmt.Errorf("marshal %s envelope: %w", msgType, err)
 	}

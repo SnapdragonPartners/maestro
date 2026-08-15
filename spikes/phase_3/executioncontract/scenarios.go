@@ -163,10 +163,14 @@ func scenarios() []scenario {
 				if h.routedCount() != 1 {
 					return Falsified, "routed " + itoa(h.routedCount()) + " questions"
 				}
-				if out.Result.Status != contract.StatusCompleted {
-					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				if out.AwaitingResponse == "" {
+					return Falsified, "routing left the execution with no response wait"
 				}
-				return Proven, "the question passed the boundary and left an action record"
+				if out.Result.Status != "" {
+					return Falsified, "a terminal result was recorded while awaiting an answer: " +
+						string(out.Result.Status)
+				}
+				return Proven, "routed as an action, and the execution waits on " + out.AwaitingResponse
 			},
 		},
 		{
@@ -380,18 +384,29 @@ func scenarios() []scenario {
 			setup: func(h *harness, rt *host.Runtime, inv *contract.Invocation) {
 				inv.Config.OperatorResponder = true
 				h.boundary.Policy = requiresOperatorFor(capForge)
-				// The operator takes its time. If the boundary ran on the event
-				// loop, nothing below could happen until it returned.
-				h.boundary.Operator = func(contract.RequirementRef) bool {
-					atomic.StoreInt64(&operatorEnteredAt, time.Now().UnixMicro())
-					time.Sleep(900 * time.Millisecond)
-					atomic.StoreInt64(&operatorLeftAt, time.Now().UnixMicro())
-					return true
-				}
-				rt.CancelAfter = 400 * time.Millisecond
-				rt.CancelGrace = 6 * time.Second
+				// SIGNAL-driven, not timer-driven. The gate itself asks for the
+				// cancellation once it is holding, and releases once the loop
+				// has sent it -- so the ordering this claim asserts holds by
+				// construction rather than by margin. A timer here was the one
+				// plausible source of an intermittent failure I saw once and
+				// could not reproduce.
+				cancelNow := make(chan struct{})
+				cancelSent := make(chan struct{})
+				rt.CancelWhen = cancelNow
+				rt.CancelGrace = 10 * time.Second
 				rt.OnCancelRequested = func() {
 					atomic.StoreInt64(&cancelSentAt, time.Now().UnixMicro())
+					close(cancelSent)
+				}
+				h.boundary.Operator = func(contract.RequirementRef) bool {
+					atomic.StoreInt64(&operatorEnteredAt, time.Now().UnixMicro())
+					close(cancelNow) // ask for it only once we are demonstrably holding
+					select {
+					case <-cancelSent:
+					case <-time.After(5 * time.Second):
+					}
+					atomic.StoreInt64(&operatorLeftAt, time.Now().UnixMicro())
+					return true
 				}
 			},
 			check: func(_ *harness, _ host.Outcome) (Outcome, string) {
@@ -495,6 +510,26 @@ func scenarios() []scenario {
 			},
 		},
 		{
+			name:  "events/acknowledgement-releases-the-outbox",
+			about: "§4 — the retention obligation, and what discharges it",
+			mode:  "replay_outbox",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if out.Result.Status != contract.StatusCompleted {
+					return Falsified, "status " + string(out.Result.Status) + " " + errText(out)
+				}
+				if len(out.Usage) != 1 {
+					return Falsified, itoa(len(out.Usage)) + " usage reports recorded, want 1"
+				}
+				// The replay carried the original identity, so it deduplicated;
+				// and the acknowledgement had already emptied the outbox.
+				if out.DuplicateEvents != 0 {
+					return Falsified, itoa(out.DuplicateEvents) +
+						" replay(s) arrived, so the acknowledgement did not release the outbox"
+				}
+				return Proven, "one report committed; the acknowledgement released it and nothing replayed"
+			},
+		},
+		{
 			name:  "protocol/unknown-message-type-is-fatal",
 			about: "§8 — silently ignoring one lets a runtime look healthy while its work is dropped",
 			mode:  "unknown_type",
@@ -550,6 +585,60 @@ func scenarios() []scenario {
 					return Falsified, "failed for the wrong reason: " + out.Result.Summary
 				}
 				return Proven, "identity mismatch detected: " + out.IdentityError
+			},
+		},
+		{
+			name:  "protocol/prior-epoch-act-is-fatal",
+			about: "§4 — only replayable REPORTS may arrive from a superseded incarnation",
+			mode:  "prior_epoch_act",
+			check: func(h *harness, out host.Outcome) (Outcome, string) {
+				if len(h.recorder.Attempts()) != 0 {
+					return Falsified, "an act from a prior epoch was accepted and admitted"
+				}
+				if out.Result.Status != contract.StatusFailed {
+					return Falsified, "an act from a prior epoch was accepted: " +
+						string(out.Result.Status)
+				}
+				if !strings.Contains(out.Result.Summary, "prior epoch") {
+					return Falsified, "failed for the wrong reason: " + out.Result.Summary
+				}
+				return Proven, "an action_request from a superseded incarnation was refused"
+			},
+		},
+		{
+			name:  "action/inline-question-refused",
+			about: "ADR 0021 — artifacts are the sole agent handoff",
+			mode:  "ask_inline",
+			check: func(h *harness, out host.Outcome) (Outcome, string) {
+				if h.routedCount() != 0 {
+					return Falsified, "inline question text was accepted and routed"
+				}
+				att := attemptFor(h, contract.ActionAsk)
+				if att == nil {
+					return Errored, "the ask was never attempted"
+				}
+				if att.Outcome != contract.OutcomeFailed {
+					return Falsified, "inline question text was accepted: " + string(att.Outcome)
+				}
+				_ = out
+				return Proven, "a question carried inline was refused: " + att.Reason
+			},
+		},
+		{
+			name:  "transport/eof-without-terminal-is-forced",
+			about: "§6 — the Orchestrator ending an execution always drains and fences",
+			mode:  "silent_exit",
+			check: func(_ *harness, out host.Outcome) (Outcome, string) {
+				if !out.Forced {
+					return Falsified, "a transport closing with no terminal result was not treated as a forced stop"
+				}
+				if !out.FenceReceipt.Positive() {
+					return Falsified, "recorded without a positive receipt: " + string(out.FenceReceipt)
+				}
+				if out.Result.Status != contract.StatusFailed {
+					return Falsified, "status " + string(out.Result.Status)
+				}
+				return Proven, "drained and fenced before recording the failure"
 			},
 		},
 		{

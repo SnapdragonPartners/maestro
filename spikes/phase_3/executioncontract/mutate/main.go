@@ -86,8 +86,8 @@ func mutations() []mutation {
 			file:  "host/boundary.go",
 			old:   "\t\tb.Recorder.RecordDecision(inv.ID(), binding, true)",
 			new:   "\t\t_ = binding",
-			claim: "boundary/operator-decision-is-not-re-asked",
-			want:  "the operator was asked again",
+			claim: "boundary/operator-decision-is-consumed-once",
+			want:  "the recovery re-asked the operator",
 			why:   "without a persisted decision, going stale on restart means asking a human the same question a second time -- which is what makes stale unacceptable rather than merely inconvenient",
 		},
 		{
@@ -165,8 +165,8 @@ func mutations() []mutation {
 		{
 			name:  "admission-not-closed-on-cancellation",
 			file:  "host/runtime.go",
-			old:   "\t\t\t\tr.Boundary.CloseAdmission(id)\n\t\t\t\tgrace := r.CancelGrace",
-			new:   "\t\t\t\tgrace := r.CancelGrace",
+			old:   "\t\t\tr.Boundary.CloseAdmission(id)\n\t\t\tgrace := r.CancelGrace",
+			new:   "\t\t\tgrace := r.CancelGrace",
 			claim: "cancel/admission-closes",
 			want:  "an action admitted during the grace period",
 			why:   "ADR 0029 §7 step 2's ordering applied to attempts: without revoke-before-drain the holder keeps creating work the drain must then chase",
@@ -174,8 +174,8 @@ func mutations() []mutation {
 		{
 			name:  "event-identity-not-checked",
 			file:  "host/runtime.go",
-			old:   "\t\t\tif it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch) {",
-			new:   "\t\t\tif it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch) && false {",
+			old:   "\t\t\tif it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch, it.env.Stream) {",
+			new:   "\t\t\tif it.env.Seq <= r.Boundary.Recorder.Watermark(id, it.env.Epoch, it.env.Stream) && false {",
 			claim: "events/duplicate-rejected-by-identity",
 			want:  "a replayed envelope was accepted",
 			why:   "at-least-once delivery cannot be idempotent without a checked identity, and a sequence number alone restarts at 1 with every incarnation",
@@ -188,6 +188,78 @@ func mutations() []mutation {
 			claim: "boundary/stale-generation",
 			want:  "a late call from a stale generation was admitted",
 			why:   "ADR 0029 §7 requirement 5: a call issued by a fenced holder must be rejected at the boundary even when it arrives late",
+		},
+		{
+			name:  "old-epoch-accepted-for-every-type",
+			file:  "host/runtime.go",
+			old:   "\tif env.Epoch < inv.Bindings.Epoch && !replayableFromPriorEpoch(env.Type) {",
+			new:   "\tif false && env.Epoch < inv.Bindings.Epoch && !replayableFromPriorEpoch(env.Type) {",
+			claim: "protocol/prior-epoch-act",
+			want:  "an act from a prior epoch was accepted",
+			why:   "admitting an ACT from a superseded incarnation is a stale generation reaching through the boundary, which ADR 0029 §7 requirement 5 exists to prevent",
+		},
+		{
+			name:  "decision-survives-its-use",
+			file:  "host/boundary.go",
+			old:   "\t\tif approved, found := b.Recorder.ConsumeDecision(inv.ID(), binding); found {",
+			new:   "\t\tif approved, found := b.Recorder.PeekDecision(inv.ID(), binding); found {",
+			claim: "boundary/operator-decision-is-consumed-once",
+			want:  "a second repetition reused the decision",
+			why:   "`approve_once` that survives its use is permanent: one approved push approves every later push of the same ref, and an intentional repetition is indistinguishable from a recovery",
+		},
+		{
+			name:  "requirement-set-not-compared-at-gate-3",
+			file:  "host/boundary.go",
+			old:   "\t\tif CanonicalRequirements(nowReqs) != att.CanonicalSet {",
+			new:   "\t\tif false && CanonicalRequirements(nowReqs) != att.CanonicalSet {",
+			claim: "boundary/changed-requirement-set-is-stale",
+			want:  "executed under an approval given for a different requirement set",
+			why:   "ADR 0030 §5: if the question changed, the answer is void rather than supplemented -- otherwise a newly-appeared gate is satisfied by an approval nobody gave it",
+		},
+		{
+			name:  "scopes-composed-by-union",
+			file:  "host/boundary.go",
+			old:   "\t\tkept := acc[:0]\n\t\tfor _, s := range acc {\n\t\t\tif next[s] {\n\t\t\t\tkept = append(kept, s)\n\t\t\t}\n\t\t}\n\t\tacc = kept",
+			new:   "\t\tfor s := range next {\n\t\t\tif !slicesContains(acc, s) {\n\t\t\t\tacc = append(acc, s)\n\t\t\t}\n\t\t}",
+			claim: "boundary/scopes-compose-by-intersection",
+			want:  "broadened",
+			why:   "ADR 0030 §3: a union lets a permissive gate install a grant the strict gate never authorized -- the UI becoming an authority, arriving through composition",
+		},
+		{
+			name:  "eof-without-terminal-skips-the-fence",
+			file:  "host/runtime.go",
+			old:   "\tout.Forced = true\n\tr.Boundary.CloseAdmission(id)\n\twindow := r.CancelGrace",
+			new:   "\twindow := r.CancelGrace",
+			claim: "transport/eof-without-terminal-is-forced",
+			want:  "was not treated as a forced stop",
+			why:   "a transport that closed without a terminal result is the Orchestrator ending the execution, and it owes the same drain and fence as any other forced stop",
+		},
+		{
+			name:  "routing-a-question-opens-no-wait",
+			file:  "main.go",
+			old:   "\t\trec.OpenResponseWait(inv.ID(), q.QuestionArtifact)",
+			new:   "\t\t_ = q.QuestionArtifact",
+			claim: "question/execution-waits",
+			want:  "did not leave the execution awaiting an answer",
+			why:   "the ADR asserts routing enters a durable execution wait; without one the execution runs on to completion having asked a question nobody will answer",
+		},
+		{
+			name:  "question-may-cross-inline",
+			file:  "main.go",
+			old:   "\t\tif q.QuestionArtifact == \"\" {",
+			new:   "\t\tif false && q.QuestionArtifact == \"\" {",
+			claim: "action/inline-question-refused",
+			want:  "inline question text was accepted",
+			why:   "ADR 0021 makes artifacts the sole agent handoff; inline question text is the direct principal-to-principal payload it forbids, merely routed through a mediated action",
+		},
+		{
+			name:  "settled-retry-loses-its-result",
+			file:  "host/boundary.go",
+			old:   "\t\t\tResult:      att.Result,",
+			new:   "",
+			claim: "question/execution-waits",
+			want:  "did not complete",
+			why:   "replaying the OUTCOME without the payload hands a caller a success with no data -- a different answer wearing the same label",
 		},
 		{
 			name:  "capability-set-not-enforced",
@@ -228,8 +300,8 @@ func mutations() []mutation {
 		{
 			name:  "watermark-does-not-outlive-the-process",
 			file:  "host/boundary.go",
-			old:   "\treturn r.watermarks[fmt.Sprintf(\"%s\\x00%d\", invocation, epoch)]",
-			new:   "\t_ = invocation\n\t_ = epoch\n\treturn 0",
+			old:   "\treturn r.watermarks[wmKey(invocation, epoch, stream)]",
+			new:   "\t_ = invocation\n\t_ = epoch\n\t_ = stream\n\treturn 0",
 			claim: "events/prior-epoch-replay",
 			want:  "replayed prior-epoch event was accepted",
 			why:   "in-memory deduplication is reset by the restart it exists to survive, so a replayed usage event is counted twice",
@@ -392,6 +464,10 @@ func apply(m mutation, originals map[string][]byte, digests map[string]string) r
 		return result{m: m, detail: "INCONCLUSIVE: the suite did not reach its summary " +
 			"(hang, crash, or timeout) -- nothing is established"}
 	}
+	if strings.Contains(out, "0 claims:") {
+		return result{m: m, detail: "INCONCLUSIVE: selector " + m.claim +
+			" matched no claim -- the name is stale, and nothing was tested"}
+	}
 
 	// It failed -- but it must have failed AS the named claim, FALSIFIED rather
 	// than ERROR, and for the stated reason.
@@ -430,6 +506,13 @@ func runSuite(only string) (string, bool) {
 	}
 	out, err := run(5*time.Minute, "go", args...)
 	summaryOK := strings.Contains(out, "0 FALSIFIED, 0 ERROR")
+	// A selector matching NO claims prints "0 claims: 0 PROVEN, 0 FALSIFIED,
+	// 0 ERROR" and exits zero -- which read as green, so a mutation whose claim
+	// name had gone stale survived invisibly rather than being reported as
+	// unrunnable. An empty run establishes nothing.
+	if strings.Contains(out, "0 claims:") {
+		return out, false
+	}
 	return out, summaryOK && err == nil
 }
 

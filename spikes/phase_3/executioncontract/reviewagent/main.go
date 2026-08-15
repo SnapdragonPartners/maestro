@@ -37,6 +37,12 @@ var (
 	actionSecret   = contract.ActionID{Kind: "secret", Verb: "read"}
 )
 
+// ackKey scopes an acknowledgement: each (epoch, stream) is its own space.
+type ackKey struct {
+	epoch  uint64
+	stream string
+}
+
 type agent struct {
 	w     *contract.Writer
 	inv   *contract.Invocation
@@ -52,7 +58,7 @@ type agent struct {
 	// ackedThrough is PER EPOCH. A single scalar cannot express two
 	// incarnations' progress, and Ack carries an epoch precisely because the
 	// sequence spaces are separate.
-	ackedThrough map[uint64]uint64
+	ackedThrough map[ackKey]uint64
 	// outbox retains the envelopes this runtime is obliged to be able to
 	// replay -- only the replay-obligated types (§4), not everything.
 	outbox []retained
@@ -68,7 +74,7 @@ func main() {
 	a := &agent{
 		w:            contract.NewWriter(os.Stdout),
 		mode:         mode,
-		ackedThrough: map[uint64]uint64{},
+		ackedThrough: map[ackKey]uint64{},
 		results:      make(chan contract.ActionResult, 16),
 		attach:       make(chan contract.AttachAck, 4),
 		cancel:       make(chan contract.Cancel, 1),
@@ -81,7 +87,8 @@ func main() {
 }
 
 func (a *agent) send(msgType string, body any) error {
-	return a.w.Send(a.inv.ID(), a.epoch, msgType, body)
+	_, _, err := a.w.Send(a.inv.ID(), a.epoch, msgType, body)
+	return err
 }
 
 func (a *agent) run() error {
@@ -109,7 +116,7 @@ func (a *agent) run() error {
 		return fmt.Errorf("no mutually supported version; offered %v", hello.Supported)
 	}
 
-	if err := a.w.Send("", 0, contract.TypeHelloAck, contract.HelloAck{
+	if _, _, err := a.w.Send("", 0, contract.TypeHelloAck, contract.HelloAck{
 		Selected: selected,
 		// This runtime cannot resume its own session. §7: that does not make it
 		// permanently resident -- after bounded retention it is released and
@@ -200,14 +207,15 @@ func (a *agent) readLoop(rd *contract.Reader) {
 			// rather than merely deduplicated.
 			if k, derr := contract.Decode[contract.Ack](env); derr == nil {
 				a.mu.Lock()
-				if k.Through > a.ackedThrough[k.Epoch] {
-					a.ackedThrough[k.Epoch] = k.Through
+				key := ackKey{epoch: k.Epoch, stream: k.Stream}
+				if k.Through > a.ackedThrough[key] {
+					a.ackedThrough[key] = k.Through
 				}
-				// Released: everything at or below the watermark for that epoch
-				// can leave the outbox.
+				// Released: everything at or below the watermark for that
+				// (epoch, stream) can leave the outbox.
 				kept := a.outbox[:0]
 				for _, r := range a.outbox {
-					if !(r.epoch == k.Epoch && r.seq <= k.Through) {
+					if !(r.epoch == k.Epoch && r.stream == k.Stream && r.seq <= k.Through) {
 						kept = append(kept, r)
 					}
 				}
@@ -329,6 +337,16 @@ func (a *agent) work() error {
 		_ = a.send(contract.TypeActivity, msg)
 		_ = a.w.Repeat(a.inv.ID(), a.epoch, contract.TypeActivity, msg)
 
+	case "emit_usage":
+		// One retained report, so the reliable stream has something committed
+		// and acknowledged for a later incarnation to replay.
+		_ = a.sendRetained(contract.TypeUsage, contract.Usage{
+			CallRef: "call-1", InputTokens: 10, OutputTokens: 5,
+			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
+		})
+		time.Sleep(150 * time.Millisecond)
+		return a.terminal(contract.Completed(contract.DispositionChanged, "emitted one usage report"))
+
 	case "replay_outbox":
 		// Emit a replay-obligated event, then replay everything unacknowledged
 		// under its ORIGINAL identity. The receiver must drop the replay.
@@ -336,24 +354,61 @@ func (a *agent) work() error {
 			CallRef: "call-1", InputTokens: 10, OutputTokens: 5,
 			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
 		})
-		time.Sleep(150 * time.Millisecond) // let the ack land
+		time.Sleep(150 * time.Millisecond) // let the ack land and release it
 		a.replayUnacked()
-		_ = a.send(contract.TypeActivity, contract.Activity{Message: "replayed the outbox"})
+		// Anything still retained is replayed under its ORIGINAL identity; an
+		// acknowledged report has already left the outbox, so a healthy run
+		// replays nothing.
+		a.mu.Lock()
+		remaining := len(a.outbox)
+		a.mu.Unlock()
+		_ = a.send(contract.TypeActivity, contract.Activity{
+			Message: "outbox retained " + itoaAgent(remaining) + " after the ack"})
+		return a.terminal(contract.Completed(contract.DispositionChanged,
+			"outbox drained by acknowledgement"))
 
 	case "replay_prior_epoch":
 		// A restarted runtime replaying an event it emitted under the PREVIOUS
 		// incarnation and never saw acknowledged. The receiver must recognise
 		// it against that epoch's durable watermark -- an in-memory watermark
 		// would have been reset by the restart and would count it twice.
-		_ = a.w.Send(a.inv.ID(), a.epoch-1, contract.TypeUsage, contract.Usage{
+		_, _, _ = a.w.Send(a.inv.ID(), a.epoch-1, contract.TypeUsage, contract.Usage{
 			CallRef: "call-1", InputTokens: 10, OutputTokens: 5,
 			Served: a.inv.Config.Model.Served, ServedConfirmed: true,
 		})
 
+	case "prior_epoch_act":
+		// An ACT, not a report, from a superseded incarnation. Only replayable
+		// reports may arrive from a prior epoch (§4).
+		_, _, _ = a.w.Send(a.inv.ID(), a.epoch-1, contract.TypeActionRequest,
+			contract.ActionRequest{Correlation: "ghost", Action: actionPublish,
+				Arguments: []byte(`{"kind":"review.findings"}`)})
+		time.Sleep(2 * time.Second)
+		return nil
+
+	case "ask_inline":
+		// A question as inline text rather than an artifact reference.
+		res, err := a.request(4, contract.ActionAsk, map[string]any{
+			"text": "should a TODO marker block the candidate?", "to": "architect"})
+		if err != nil {
+			return a.terminal(contract.Failed(contract.ClassRetryableInfrastructure, err.Error()))
+		}
+		if res.Outcome == contract.OutcomeSucceeded {
+			return a.terminal(contract.Completed(contract.DispositionChanged,
+				"inline question accepted"))
+		}
+		return a.terminal(contract.Failed(contract.ClassNonRetryableAgent,
+			"inline question refused: "+res.Reason))
+
+	case "silent_exit":
+		// Ends the transport with no terminal result at all.
+		_ = a.send(contract.TypeActivity, contract.Activity{Message: "leaving without a word"})
+		return nil
+
 	case "bad_epoch":
 		// An epoch ahead of the active binding is a protocol violation: it
 		// claims an incarnation the Orchestrator has not issued.
-		_ = a.w.Send(a.inv.ID(), a.epoch+7, contract.TypeActivity,
+		_, _, _ = a.w.Send(a.inv.ID(), a.epoch+7, contract.TypeActivity,
 			contract.Activity{Message: "from an incarnation that does not exist"})
 		time.Sleep(2 * time.Second)
 		return nil
@@ -519,9 +574,12 @@ func (a *agent) work() error {
 				"ask was not routed: "+res.Reason))
 		}
 		// The result is a DELIVERY ACKNOWLEDGEMENT, not the answer. The answer
-		// arrives as an artifact reference on a later incarnation's bindings.
+		// arrives as an artifact reference on a LATER incarnation's bindings, so
+		// this incarnation ends here -- without a terminal result, because the
+		// execution is not over.
 		_ = a.send(contract.TypeActivity, contract.Activity{
-			Message: "question routed; awaiting an answer artifact"})
+			Message: "question routed; this incarnation ends awaiting an answer"})
+		os.Exit(5)
 	}
 
 	if a.mode == "answered" {
@@ -533,6 +591,8 @@ func (a *agent) work() error {
 		}
 		_ = a.send(contract.TypeActivity, contract.Activity{
 			Message: "answer artifact " + a.inv.Bindings.Inbound[0].ArtifactID + " received"})
+		return a.terminal(contract.Completed(contract.DispositionChanged,
+			"resumed with the answer and finished"))
 	}
 
 	// ---- step 3: publish findings as an artifact ----
@@ -660,4 +720,18 @@ func stubAnalyze(diff string) []map[string]any {
 func mustResource(inv *contract.Invocation, kind string) contract.ResourceRef {
 	r, _ := inv.Resource(kind)
 	return r
+}
+
+// itoaAgent is a tiny local formatter; the agent deliberately imports nothing
+// beyond the contract.
+func itoaAgent(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
 }

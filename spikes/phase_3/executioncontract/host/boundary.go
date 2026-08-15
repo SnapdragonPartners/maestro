@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +51,13 @@ type Attempt struct {
 	// absence of a completion.
 	Transitions []AttemptState
 	Requirement *contract.RequirementRef
+	// Requirements is the COMPLETE set gate 1 collected, and CanonicalSet its
+	// ordering-independent rendering. Gate 3 compares against it: if the set
+	// changed, the answer given is void rather than supplemented (ADR 0030 §5).
+	Requirements []contract.RequirementRef
+	CanonicalSet string
+	// EffectiveScopes is the intersection across those gates.
+	EffectiveScopes []string
 	// ResourceOp names the provisioning or queueing operation a resource wait
 	// is waiting on. Reconciliation after a restart must be able to restore or
 	// validate it; a resource wait that cannot say what it waits for is not
@@ -69,6 +78,10 @@ type Attempt struct {
 	// receipt actually needs. "Settled" alone does not distinguish an action
 	// that stopped before its commit point from one that committed anyway.
 	Disposition Disposition
+	// Result is the effect's payload, retained so a retry replays what the
+	// action actually returned. Replaying the OUTCOME alone hands a caller a
+	// success with no data, which is a different answer wearing the same label.
+	Result json.RawMessage
 	// SettledAfterClose marks an attempt that settled after admission was
 	// closed. Combined with a committed disposition it is the case a receipt
 	// must refuse: an effect that landed inside the drain window.
@@ -115,6 +128,8 @@ type Recorder struct {
 	// closedAt mirrors admission closure, so a settle can record whether it
 	// happened inside the drain window.
 	closedAt map[string]bool
+	// responseWaits are execution-level waits on another principal.
+	responseWaits map[string]*ResponseWait
 }
 
 // MarkAdmissionClosed tells the recorder that admission has closed, so every
@@ -133,6 +148,7 @@ func NewRecorder() *Recorder {
 		committed:     map[string]map[uint64]bool{},
 		decisions:     map[string]bool{},
 		closedAt:      map[string]bool{},
+		responseWaits: map[string]*ResponseWait{},
 	}
 }
 
@@ -210,8 +226,19 @@ func (r *Recorder) Transition(att *Attempt, to AttemptState) {
 // whether an effect can still land, and "settled" alone cannot say. A refused
 // action stopped before its commit point; an executed one committed.
 func (r *Recorder) Settle(att *Attempt, outcome contract.ActionOutcome, reason string, d Disposition) {
+	r.SettleWith(att, outcome, reason, d, nil)
+}
+
+// SettleWith completes an attempt and retains its result payload.
+func (r *Recorder) SettleWith(
+	att *Attempt, outcome contract.ActionOutcome, reason string,
+	d Disposition, result json.RawMessage,
+) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if result != nil {
+		att.Result = result
+	}
 	att.SettledAfterClose = r.closedAt[att.Invocation]
 	att.State = StateSettled
 	att.Outcome = outcome
@@ -335,16 +362,65 @@ func (r *Recorder) ForInvocation(invocation string) []*Attempt {
 	return out
 }
 
+// ResponseWait is a durable execution-level wait on another principal's answer
+// (§4). It is not an ACTION state: the ask action settled when it was routed.
+type ResponseWait struct {
+	Invocation       string
+	QuestionArtifact string
+	Answered         bool
+	AnswerArtifact   string
+}
+
+// OpenResponseWait records that an execution is awaiting an answer. It names
+// the question artifact, because a wait that cannot say what it waits for is
+// not recoverable -- the same rule §6 applies to the action waits.
+func (r *Recorder) OpenResponseWait(invocation, questionArtifact string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.responseWaits[invocation] = &ResponseWait{
+		Invocation: invocation, QuestionArtifact: questionArtifact}
+}
+
+// AwaitingResponse reports an open, unanswered response wait.
+func (r *Recorder) AwaitingResponse(invocation string) (*ResponseWait, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w, ok := r.responseWaits[invocation]
+	if !ok || w.Answered {
+		return nil, false
+	}
+	return w, true
+}
+
+// DeliverAnswer closes a response wait with the answering artifact. The
+// reference is what the next incarnation carries on its BINDINGS -- the
+// immutable configuration cannot acquire one.
+func (r *Recorder) DeliverAnswer(invocation, answerArtifact string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w, ok := r.responseWaits[invocation]
+	if !ok || w.Answered {
+		return false
+	}
+	w.Answered = true
+	w.AnswerArtifact = answerArtifact
+	return true
+}
+
 // Watermark returns the highest event sequence durably committed for an epoch.
 //
 // It lives on the recorder because the receiver's deduplication state must
 // OUTLIVE the process: in-memory dedup means a crash lets a replayed usage
 // event be counted twice, which is a corrupted cost figure rather than a
 // harmless duplicate.
-func (r *Recorder) Watermark(invocation string, epoch uint64) uint64 {
+func (r *Recorder) Watermark(invocation string, epoch uint64, stream string) uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.watermarks[fmt.Sprintf("%s\x00%d", invocation, epoch)]
+	return r.watermarks[wmKey(invocation, epoch, stream)]
+}
+
+func wmKey(invocation string, epoch uint64, stream string) string {
+	return fmt.Sprintf("%s\x00%d\x00%s", invocation, epoch, stream)
 }
 
 // Advance commits an event and moves the watermark over every CONTIGUOUS
@@ -355,10 +431,10 @@ func (r *Recorder) Watermark(invocation string, epoch uint64) uint64 {
 // may discard an event that was never committed. The watermark therefore only
 // moves through an unbroken run, and out-of-order arrivals are held until the
 // gap fills.
-func (r *Recorder) Advance(invocation string, epoch, seq uint64) {
+func (r *Recorder) Advance(invocation string, epoch, seq uint64, stream string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := fmt.Sprintf("%s\x00%d", invocation, epoch)
+	key := wmKey(invocation, epoch, stream)
 	if r.committed[key] == nil {
 		r.committed[key] = map[uint64]bool{}
 	}
@@ -375,18 +451,34 @@ func (r *Recorder) Advance(invocation string, epoch, seq uint64) {
 
 // Committed reports whether a specific sequence was committed, whether or not
 // the watermark has reached it.
-func (r *Recorder) Committed(invocation string, epoch, seq uint64) bool {
+func (r *Recorder) Committed(invocation string, epoch, seq uint64, stream string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := fmt.Sprintf("%s\x00%d", invocation, epoch)
+	key := wmKey(invocation, epoch, stream)
 	return seq <= r.watermarks[key] || r.committed[key][seq]
 }
 
-// Decision returns a persisted operator decision for a logical action, if one
-// was recorded. Keeping the DECISION rather than the request is what lets a
+// ConsumeDecision takes a persisted operator decision for a logical action, and
+// REMOVES it. Keeping the decision rather than the request is what lets a
 // re-requested action skip gate 2 without persisting anything ADR 0030 §3
-// excludes from Audit.
-func (r *Recorder) Decision(invocation, binding string) (approved, found bool) {
+// excludes from Audit; consuming it is what keeps `approve_once` meaning once.
+//
+// One decision resolves one logical action. A decision that survived its use
+// would make a second, intentional repetition of the same action indistinguish-
+// able from the recovery it was recorded for.
+func (r *Recorder) ConsumeDecision(invocation, binding string) (approved, found bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := invocation + "\x00" + binding
+	d, ok := r.decisions[key]
+	if ok {
+		delete(r.decisions, key)
+	}
+	return d, ok
+}
+
+// PeekDecision reports a recorded decision without consuming it.
+func (r *Recorder) PeekDecision(invocation, binding string) (approved, found bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	d, ok := r.decisions[invocation+"\x00"+binding]
@@ -422,11 +514,59 @@ const (
 // PolicyHook is the single extension point. MVP is default-allow and carries no
 // rules; candidate 12 fills it. It is deterministic, performs no side effects,
 // and may not infer -- a semantic gate is an AGENT, not logic inside the hook.
-type PolicyHook func(inv *contract.Invocation, action contract.ActionID, args json.RawMessage) (Decision, *contract.RequirementRef)
+// It returns the COMPLETE set of requirements, not the first: ADR 0030 §3
+// evaluates every applicable gate before anything blocks, so the operator
+// answers once rather than discovering a second gate after clearing the first.
+type PolicyHook func(inv *contract.Invocation, action contract.ActionID, args json.RawMessage) (Decision, []contract.RequirementRef)
 
 // DefaultAllow is the MVP hook.
-func DefaultAllow(*contract.Invocation, contract.ActionID, json.RawMessage) (Decision, *contract.RequirementRef) {
+func DefaultAllow(*contract.Invocation, contract.ActionID, json.RawMessage) (Decision, []contract.RequirementRef) {
 	return DecisionAllow, nil
+}
+
+// CanonicalRequirements renders a requirement set in ADR 0030 §3's canonical,
+// ordering-independent form. Two evaluations that collected the same
+// requirements in a different order are the same set and must compare equal --
+// which is what makes gate 3's comparison well-defined.
+func CanonicalRequirements(reqs []contract.RequirementRef) string {
+	parts := make([]string, 0, len(reqs))
+	for _, r := range reqs {
+		parts = append(parts, r.GateID+"\x1f"+r.Statement+"\x1f"+strings.Join(sortedScopes(r.Scopes), ","))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x1e")
+}
+
+func sortedScopes(s []string) []string {
+	out := append([]string(nil), s...)
+	sort.Strings(out)
+	return out
+}
+
+// IntersectScopes composes the scopes a set of gates permits. ADR 0030 §3:
+// composition is INTERSECTION, because a union would let a permissive gate
+// broaden a strict one and install a grant the strict gate never authorized.
+// An empty intersection fails closed as an invalid policy configuration -- a
+// defect in the rules, not an answer about the action.
+func IntersectScopes(reqs []contract.RequirementRef) []string {
+	if len(reqs) == 0 {
+		return nil
+	}
+	acc := sortedScopes(reqs[0].Scopes)
+	for _, r := range reqs[1:] {
+		next := map[string]bool{}
+		for _, s := range r.Scopes {
+			next[s] = true
+		}
+		kept := acc[:0]
+		for _, s := range acc {
+			if next[s] {
+				kept = append(kept, s)
+			}
+		}
+		acc = kept
+	}
+	return acc
 }
 
 // OperatorFn is gate 2. It may block for as long as a human takes; the boundary
@@ -721,6 +861,7 @@ func (b *Boundary) executeRegistered(
 			AttemptID:   att.ID,
 			Outcome:     att.Outcome,
 			Reason:      "replayed: " + att.Reason,
+			Result:      att.Result,
 			Requirement: att.Requirement,
 		}
 	}
@@ -732,22 +873,39 @@ func (b *Boundary) executeRegistered(
 			Outcome: contract.OutcomeDenied, Reason: err.Error()}
 	}
 
-	decision, requirement := b.Policy(inv, req.Action, req.Arguments)
+	decision, requirements := b.Policy(inv, req.Action, req.Arguments)
 	switch decision {
 	case DecisionDeny:
 		reason := "denied by policy"
-		if requirement != nil {
-			reason = requirement.Statement
+		if len(requirements) > 0 {
+			reason = requirements[0].Statement
 		}
 		b.Recorder.Settle(att, contract.OutcomeDenied, reason, DispositionBeforeCommit)
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeDenied, Reason: reason}
 
 	case DecisionRequiresOperator:
-		if requirement == nil {
-			requirement = &contract.RequirementRef{GateID: "unnamed", Statement: "an operator is required"}
+		if len(requirements) == 0 {
+			requirements = []contract.RequirementRef{
+				{GateID: "unnamed", Statement: "an operator is required", Scopes: []string{"once"}}}
 		}
-		requirement.AttemptID = att.ID
+		for i := range requirements {
+			requirements[i].AttemptID = att.ID
+		}
+		scopes := IntersectScopes(requirements)
+		if len(scopes) == 0 {
+			// ADR 0030 §3: two gates sharing no permitted scope describe an
+			// action no operator can answer. That is a defect in the rules, not
+			// an answer about the action, and it must surface as one.
+			const why = "invalid policy configuration: the collected gates share no permitted scope"
+			b.Recorder.Settle(att, contract.OutcomeFailed, why, DispositionBeforeCommit)
+			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
+				Outcome: contract.OutcomeFailed, Reason: why}
+		}
+		att.Requirements = requirements
+		att.CanonicalSet = CanonicalRequirements(requirements)
+		att.EffectiveScopes = scopes
+		requirement := &requirements[0]
 		att.Requirement = requirement
 
 		// ---- Gate 2: human approval ----
@@ -794,8 +952,13 @@ func (b *Boundary) completeAction(inv *contract.Invocation, att *Attempt, req co
 		// A decision already given for this logical action is consumed rather
 		// than re-asked. That is what makes going stale on restart acceptable:
 		// the action is re-requested, but the human is not.
+		//
+		// It is consumed EXACTLY ONCE. A first version left it in place, so
+		// `approve_once` became permanent and an intentional repetition was
+		// indistinguishable from a recovery -- one approved push approving
+		// every later push of the same ref.
 		binding := req.Action.String() + "\x00" + att.ArgsDigest
-		if approved, found := b.Recorder.Decision(inv.ID(), binding); found {
+		if approved, found := b.Recorder.ConsumeDecision(inv.ID(), binding); found {
 			if !approved {
 				b.Recorder.Settle(att, contract.OutcomeDenied, "operator denied (recorded)", DispositionBeforeCommit)
 				return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
@@ -854,6 +1017,31 @@ gate3:
 			Outcome: att.Outcome, Reason: att.Reason}
 	}
 
+	// ADR 0030 §5: gate 3 re-evaluates every DETERMINISTIC condition, and an
+	// unchanged policy that now denies still denies. It does not re-raise the
+	// operator requirement the decision answered -- but if the canonical
+	// requirement SET is no longer identical to the one gate 1 recorded, the
+	// action is stale and a fresh one is required. The answer is void rather
+	// than supplemented; the action never accumulates approvals.
+	if needOperator {
+		nowDecision, nowReqs := b.Policy(inv, req.Action, req.Arguments)
+		if nowDecision == DecisionDeny {
+			const why = "policy denies on revalidation"
+			b.Recorder.Settle(att, contract.OutcomeDenied, why, DispositionBeforeCommit)
+			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
+				Outcome: contract.OutcomeDenied, Reason: why}
+		}
+		for i := range nowReqs {
+			nowReqs[i].AttemptID = att.ID
+		}
+		if CanonicalRequirements(nowReqs) != att.CanonicalSet {
+			const why = "the requirement set changed after approval; a fresh action is required"
+			b.Recorder.Settle(att, contract.OutcomeStale, why, DispositionBeforeCommit)
+			return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
+				Outcome: contract.OutcomeStale, Reason: why}
+		}
+	}
+
 	// Approval clears the human requirement and nothing else; everything
 	// deterministic is still re-checked immediately before the effect.
 	if err := b.revalidate(inv, req.Action); err != nil {
@@ -875,7 +1063,7 @@ gate3:
 		return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 			Outcome: contract.OutcomeFailed, Reason: err.Error()}
 	}
-	b.Recorder.Settle(att, contract.OutcomeSucceeded, "", DispositionCommitted)
+	b.Recorder.SettleWith(att, contract.OutcomeSucceeded, "", DispositionCommitted, result)
 	return contract.ActionResult{Correlation: req.Correlation, AttemptID: att.ID,
 		Outcome: contract.OutcomeSucceeded, Result: result}
 }
