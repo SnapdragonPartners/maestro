@@ -154,8 +154,7 @@ this slot asked for:
   workflow artifact, not from where it stopped. Resuming would require persisting
   the substituted request, which ADR 0030 §3 keeps out of the Audit family.
 
-**Scope correction PROPOSED 2026-08-15, after acceptance — pending Codex and DR
-approval.** ADR 0032's conformance
+**Scope-corrected 2026-08-15, after acceptance** (Codex + DR). ADR 0032's conformance
 slice validated an isolated contract model, not integration with v1's agent
 framework, and the ADR now carries a **Status Of Decisions** section separating
 what binds from what Phase 3 settles against a real consumer. Demoted to design

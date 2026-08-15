@@ -2,7 +2,7 @@
 title = "Conformance Slice: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. What it validates is an isolated contract model -- a host implementation and a stub agent speaking the wire boundary to each other -- and not integration with Maestro's agent framework, which had not been inventoried when it was built; a post-acceptance scope correction, proposed and pending review, returns the execution FSM, re-attach, delivery machinery, question-wait lifecycle and reusable approvals to Phase 3 as design inputs, so the claims covering them stay true about the model and no longer state a requirement. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and matching that empty-run check as a substring, so "60 claims:" condemned a fully green run."
+summary = "Evidence for ADR 0032: a real external-process agent driven over the local transport, with sixty claims proven and forty-five mutations killed for their named reason, every run under the race detector. What it validates is an isolated contract model -- a host implementation and a stub agent speaking the wire boundary to each other -- and not integration with Maestro's agent framework, which had not been inventoried when it was built; a post-acceptance scope correction (Codex + DR, 2026-08-15) returns the execution FSM, re-attach, delivery machinery, question-wait lifecycle and reusable approvals to Phase 3 as design inputs, so the claims covering them stay true about the model and no longer state a requirement. Eight review rounds, each mostly finding the previous round's fixes wrong one level down, and the later ones finding guarantees the ADR stated with no machinery behind them. The mutation harness was itself wrong three times -- reading green from output text alone, counting a selector that matched no claims as a pass, and matching that empty-run check as a substring, so "60 claims:" condemned a fully green run."
 type = "spike"
 +++
 
@@ -22,8 +22,8 @@ fake or an echo fixture.
 
 ## What this is evidence of, and what it is not
 
-**Added 2026-08-15, with ADR 0032's post-acceptance scope correction — proposed
-and pending Codex and DR approval**,
+**Added 2026-08-15, with ADR 0032's post-acceptance scope correction**
+(Codex + DR),
 because this report's framing invited a stronger reading than its evidence
 supports.
 

@@ -2,18 +2,16 @@
 title = "ADR 0032: The Agent Execution Contract"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. What was resolved for an execution must not silently change while its resource grants may be replaced mid-execution, so the two carry different lifetimes; how that is represented is Phase 3's. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result, and recovery is artifact-level: an agent restarts from the last committed workflow artifact rather than from where it stopped. A post-acceptance scope correction, proposed and pending review, closes the list of binding decisions at thirteen -- the boundary, the identities, the four axes with their applicability rule, mediated actions, the fencing preconditions, the two lifetimes, the concurrency accounting and the capability model -- and returns everything else, including the execution FSM, re-attach, the delivery machinery, the question-wait lifecycle and reusable approvals, to Phase 3 as design inputs."
+summary = "Defines the versioned wire contract every agent reaches Maestro through, so a native Go agent and an adapted external runtime meet one boundary and neither receives a local path or a database connection. What was resolved for an execution must not silently change while its resource grants may be replaced mid-execution, so the two carry different lifetimes; how that is represented is Phase 3's. The terminal result is four independent axes rather than one status list, so an already-satisfied Story, a superseded cancellation, a gate no operator can answer, and an infrastructure failure stop colliding. Every Orchestrator-forced ending closes admission, drains the actions it admitted, fences the resource, and only then records a result, and recovery is artifact-level: an agent restarts from the last committed workflow artifact rather than from where it stopped. A post-acceptance scope correction (Codex + DR, 2026-08-15) closes the list of binding decisions at thirteen -- the boundary, the identities, the four axes with their applicability rule, mediated actions, the fencing preconditions, the two lifetimes, the concurrency accounting and the capability model -- and returns everything else, including the execution FSM, re-attach, the delivery machinery, the question-wait lifecycle and reusable approvals, to Phase 3 as design inputs."
 +++
 
 # 0032. The Agent Execution Contract
 
-Status: **Accepted** (Codex + DR, 2026-08-15), with a **scope correction
-PROPOSED 2026-08-15 and pending Codex and DR approval** — see
-[Status Of Decisions](#status-of-decisions), which is where the correction lands
-and which **controls the decision sections below it**. Read it first. Attribution
-is restored in the final reviewed commit, on the acceptance discipline this
-repository already applies to ADRs. Drafted by Claude 2026-08-13 and revised
-through eight review rounds. Item A4 of the accepted
+Status: **Accepted** (Codex + DR, 2026-08-15), and **scope-corrected the same day**
+(Codex + DR) — see [Status Of Decisions](#status-of-decisions), which is where
+the correction lands and which **controls the decision sections below it**. Read
+it first. Drafted by Claude 2026-08-13 and revised through eight review rounds.
+Item A4 of the accepted
 [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), and the last design
 item on the critical path to phase entry. It consumes
 [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) (Accepted first, by
@@ -202,13 +200,11 @@ not, and saying so is cheaper now than discovering it against a populated table.
 
 ## Status Of Decisions
 
-**PROPOSED 2026-08-15, after acceptance — pending Codex and DR approval.** Until
-that approval lands this section is a proposal about which decisions bind, and
-saying otherwise would repeat the exact defect it corrects: asserting settlement
-one step ahead of the evidence. Once approved, this line carries the attribution
-and the qualifier goes.
+**Amended 2026-08-15 (Codex + DR), after acceptance.** It was carried as a
+proposal until that approval landed, because asserting settlement one step ahead
+of the evidence is the exact defect this section corrects.
 
-Once approved, this section is normative and **controls every section below it**.
+This section is normative and **controls every section below it**.
 Where a decision section states a provisional item in binding terms, that
 language is superseded here and the item is a design input. Nothing below is
 deleted, so the reasoning remains readable as what it is: the argument that
@@ -1619,8 +1615,7 @@ schema claims here were made by reading migrations rather than running them.
 
 ### Deferred
 
-**Returned to Phase 3 as design inputs by the proposed 2026-08-15 scope
-correction:** the complete execution FSM; restart, resume, re-attach and
+**Returned to Phase 3 as design inputs by the 2026-08-15 scope correction:** the complete execution FSM; restart, resume, re-attach and
 outstanding-action enumeration; epochs, acknowledgements, watermarks and durable
 sender outboxes; the generic question-wait lifecycle; durable reusable approvals;
 how item 10's two lifetimes are represented; and **everything else this ADR

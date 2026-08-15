@@ -298,7 +298,7 @@ the **tool call** enters an operator-waiting state distinguishable from a resour
 wait and from an interrupted attempt (§8). Two levels, two vocabularies — this ADR
 fixes the Story state because dispatch and the watchdog key on it, and requires
 only that the record's state be distinguishable. **Naming it is Phase 3's**
-(proposed amendment 2026-08-15, pending approval; it was A4's, and A4 hands the
+(amended 2026-08-15; it was A4's, and A4 handed the
 vocabulary back — see
 [ADR 0032](0032-agent-execution-contract.md)'s Status Of Decisions).
 
@@ -629,9 +629,9 @@ situations, and conflating them is precisely the ambiguity §4 sets out to remov
 So Phase 3 owes a **migration** giving the record explicit nonterminal states —
 **at least operator-waiting and resource-waiting**.
 
-**Proposed amendment 2026-08-15, pending Codex and DR approval.** This section
-originally handed the vocabulary to A4. A4's own scope correction returns the
-complete state vocabulary to Phase 3, to be settled
+**Amended 2026-08-15 (Codex + DR).** This section originally handed the
+vocabulary to A4. A4's own scope correction returns the complete state
+vocabulary to Phase 3, to be settled
 against a real consumer rather than on paper
 ([ADR 0032](0032-agent-execution-contract.md), Status Of Decisions). What does
 **not** move is this section's requirement: the record must distinguish a healthy
