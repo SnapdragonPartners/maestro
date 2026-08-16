@@ -2,7 +2,7 @@
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles the case the first one deferred — what happens to work already executing when the record it was dispatched against changes: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
+summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles the case the first one deferred — what happens to work already executing when any of the records it was dispatched under changes: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
 +++
 
 # 0019. Orchestrator Boundary
@@ -59,13 +59,21 @@ the policy, and the policy is this ADR's business.
 
 Two deterministic tests, either sufficient:
 
-1. The execution's **bound effective work version is no longer current.** Stated
-   over the *effective* version rather than over supersession, because
-   [ADR 0021](0021-artifacts-and-principal-instances.md) is explicit that an
-   accepted amendment does **not** supersede the original — it changes the
-   effective view and leaves the original's status alone. A test written on
-   `superseded` would miss every amendment, which is the common case and the one
-   this decision is named for.
+1. **Any version in the execution's bound governing set is no longer current.**
+   A dispatch binds not to one record but to the **set of effective versions it
+   was dispatched under** — for a Story execution, at least the Story and the
+   Epic that governs it. Test 1 fires when *any* member changes.
+
+   Two things force this shape. First, [ADR 0021](0021-artifacts-and-principal-instances.md)
+   is explicit that an accepted amendment does **not** supersede the original —
+   it changes the effective view and leaves the original's status alone — so a
+   test written on `superseded` would miss every amendment, which is the common
+   case and the one this decision is named for. Second, and this is what an
+   earlier draft got wrong: **a governing Epic can be amended while the Story's
+   own effective version stays current and its DAG readiness stays true.** A
+   trigger reading only the Story would let that fall through — and an Epic
+   amendment reaching work already running is the ordinary case that made this
+   item block phase entry at all.
 2. **DAG re-evaluation leaves its work no longer dependency-ready** — a
    predecessor was inserted that is not satisfied, or a formerly satisfied
    predecessor's own effective version changed so that it no longer is. Removing
@@ -76,11 +84,14 @@ Both are rules over records. Neither requires inference, so both are the
 Orchestrator's.
 
 **An amendment that satisfies neither test does not cancel anything.** This needs
-saying because the obvious implementation is wrong: if a dispatch record bound to
-a whole-graph version, every edit anywhere would cancel every running execution,
-and a long Epic could never be edited while work was in progress. The binding is
-**per work item**. Editing one Story does not disturb its siblings; editing the
-graph disturbs only executions the second test catches.
+saying because the two obvious implementations are wrong in opposite directions.
+Bind a dispatch to a whole-graph version and every edit anywhere cancels every
+running execution, so a long Epic can never be edited while work is in progress.
+Bind it to the single work item and an Epic amendment sails past the Stories
+executing under it. The governing set is what sits between: **editing one Story
+does not disturb its siblings, an Epic amendment does reach every execution
+beneath it — deliberately — and a graph edit disturbs only what the second test
+catches.**
 
 **Two predicates, one enforcement — and conflating the two was this draft's first
 error.** The tests differ in what they detect: test 1 compares versions, test 2
@@ -129,14 +140,18 @@ about the work version, and it is what the boundary already checks.
    would leave the drain waiting on a human, which is the one wait with no bound.
    **A grant bound to the cancelled logical action dies with it.** For a grant
    scoped more widely, ADR 0032 demoting its own approval machinery does not
-   demote ADR 0030's independent rule, and this amendment does not change it: a
-   **Story-scoped grant binds to the effective Story version**, so test 1
-   invalidates it along with every other prior-version decision, and under test 2
-   — where that version is unchanged and the same work will be re-dispatched once
-   its predecessor lands — **it survives**. Re-asking a human for an identical
-   approval because the graph was reordered around them would be gratuitous. This
-   is stated rather than deferred because it is policy, and leaving it to
-   implementation would let the two triggers diverge silently.
+   demote ADR 0030's independent rule, and this amendment does not change it:
+   a **Story-scoped grant is invalidated if and only if its bound effective Story
+   version changes.**
+
+   State it by that predicate and not by which test fired, because once test 1
+   ranges over the whole governing set the two stop coinciding. An Epic-only
+   amendment cancels the execution under test 1 and leaves the Story version
+   untouched, so the grant **survives** — as it does under a DAG-only change,
+   where the same work is re-dispatched once its predecessor lands. Re-asking a
+   human for an identical approval because something above or beside the work
+   moved would be gratuitous. Broadening that binding is possible, but it is an
+   amendment to ADR 0030 and not something this one does silently.
 3. **Revoke authorization immediately; hold capacity until the fence proves
    non-interference.** The lease only authorizes, and the execution is no longer
    authorized, so revoking it starts cancellation. The **retention claim is not
@@ -186,16 +201,18 @@ ADR 0021 rather than from anything decided here:
 - **Management artifacts already Accepted stay Accepted.** ADR 0021's status
   vocabulary is `draft` → (`invalidated` | `accepted`) → (`superseded` |
   `archived`) — there is no path back to draft, and immutable accepted history is
-  the point of it. What changes is that their result **no longer satisfies the
-  current effective work version**; correcting that is ADR 0021's
+  the point of it. What changes is that their result **no longer
+  satisfies the work as it now stands** — measured against the same governing set
+  the trigger reads, since an Epic amendment can leave a Story's own version
+  untouched and still make its result insufficient. Correcting that is ADR 0021's
   amendment-and-supersession lifecycle, not this one's.
 
 **The already-terminal case, which the original deferral did not consider.** An
 execution that completed before the amendment landed **remains historically
 completed**. There is nothing to cancel and nothing to fence, and its record is
 not reopened. The consequence is a separate statement, not a status change: its
-result no longer satisfies the current effective work version, so that version
-still needs work. This is the common case under a fast amendment, and an earlier
+result no longer satisfies the work as it now stands, so the work still needs
+doing. This is the common case under a fast amendment, and an earlier
 draft got it wrong in the expensive direction — by saying the output reverts to
 draft, which would both misdescribe what happened and use a transition ADR 0021
 does not have.
@@ -243,7 +260,7 @@ reviewed commit, together with the attribution flip.
 | Location | Change |
 | --- | --- |
 | [ADR backlog](../v2/notes_adr-backlog.md) candidate 3 | Mark **RESOLVED**, pointing here. The slot keeps its number, per its own citation rule. Its framing is accurate and needs no correction — it named the three options and this amendment picks one |
-| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger is stated over the **effective work version** rather than supersession, since an accepted amendment does not supersede anything; it has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
+| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger reads a **governing set of effective versions** — at least Story and Epic — rather than one record's supersession, since an accepted amendment supersedes nothing and an Epic amendment would otherwise sail past the Stories running under it; it has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
 | [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) Track A graph and A6 | A5's dependency on A1 and A4 is discharged; A6 is unblocked and becomes the only open Track A item |
 | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §-on-levers | It says "A5 governs work already executing" — a forward reference to an item, which becomes a citation of this amendment |
 | [ADR README](README.md) | The 0019 row quotes the front-matter summary verbatim; both change together, and the word *proposed* comes out of both |
@@ -268,15 +285,16 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
   admitted a moment earlier still commits. Both are visible rather than absorbed:
   the spend is recorded against a `cancelled`/`superseded` execution, and the
   committed action is attributable to the version it was admitted under.
-- **Editing a graph while it executes is safe, and editing an executing item is
-  not meant to be.** Per-item version binding is what separates the two; a
-  whole-graph version would have made every edit a mass cancellation and pushed
-  operators toward not amending at all.
+- **Editing a graph while it executes is safe; editing what an execution was
+  dispatched under is not meant to be.** The governing version set is what
+  separates them. A whole-graph version would have made every edit a mass
+  cancellation and pushed operators toward not amending at all; a single-record
+  binding would have let an Epic amendment sail past the Stories running under
+  it, which is the case that made this decision blocking.
 - **The record of what happened is never rewritten to match what is now wanted.**
   A cancelled execution keeps its Audit, a completed one keeps its completion, and
   an accepted artifact keeps its acceptance. What an amendment changes is whether
-  a result still satisfies the current effective work version — a separate
-  statement, reconciled through ADR 0021's own amendment and supersession
+  a result still satisfies the work as it now stands — a separate statement, reconciled through ADR 0021's own amendment and supersession
   lifecycle rather than by demoting anything.
 - **A cancellation can fail to complete, and that is a state rather than an
   error.** An `unconfirmed` fence leaves the execution non-terminal, its claims
