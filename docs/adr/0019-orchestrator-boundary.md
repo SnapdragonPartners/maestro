@@ -61,8 +61,15 @@ Two deterministic tests, either sufficient:
 
 1. **Any version in the execution's bound governing set is no longer current.**
    A dispatch binds not to one record but to the **set of effective versions it
-   was dispatched under** — for a Story execution, at least the Story and the
-   Epic that governs it. Test 1 fires when *any* member changes.
+   was dispatched under**. Test 1 fires when *any* member changes.
+
+   **For a Phase 3 Story execution that set is exactly two members: the effective
+   version of the Story, and the effective version of the Epic that governs it.**
+   Named exactly rather than as a floor, because "at least" is not a rule — one
+   implementation drops a governing input and the Epic case returns, another adds
+   the whole graph and every edit becomes a mass cancellation. A future grain may
+   bind a different set, but only by stating it in that grain's own dispatch
+   contract; nothing is added to this one by implication.
 
    Two things force this shape. First, [ADR 0021](0021-artifacts-and-principal-instances.md)
    is explicit that an accepted amendment does **not** supersede the original —
@@ -109,6 +116,19 @@ about the work version, and it is what the boundary already checks.
    carrying superseded or fenced execution authority is refused at every mediated
    boundary. ADR 0030 §5's own ordering applies — close admission for the
    generation *first*, then settle the attempts already registered against it.
+
+   **This step linearizes with the amendment becoming authoritative, and that is
+   an invariant rather than an implementation note.** Otherwise there is a window
+   in which the new Epic or DAG state is already the effective one while the
+   affected executions still hold usable authority — and inside it ADR 0030's
+   Story-version check passes, because under an ancestor-only or graph-only
+   change the Story version never moved. An action gets admitted against a state
+   that no longer exists. The rule: **the moment the new state is visible, the
+   old authority is already unusable.** Whether that is one transaction or an
+   authoritative recheck at admission is Phase 3's to choose; that it holds is
+   not. This is ADR 0030 §5's own lesson at the next level up — a version read is
+   a snapshot, not a guarantee, so the closure has to linearize with the thing
+   that invalidates it.
 2. **Drain the admitted attempts, which is not "let each one reach its commit
    point."** ADR 0030 §5 permits a positive receipt only when **every** admitted,
    unsettled attempt holds one of three dispositions: confirmed **stopped short**
@@ -260,7 +280,7 @@ reviewed commit, together with the attribution flip.
 | Location | Change |
 | --- | --- |
 | [ADR backlog](../v2/notes_adr-backlog.md) candidate 3 | Mark **RESOLVED**, pointing here. The slot keeps its number, per its own citation rule. Its framing is accurate and needs no correction — it named the three options and this amendment picks one |
-| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger reads a **governing set of effective versions** — at least Story and Epic — rather than one record's supersession, since an accepted amendment supersedes nothing and an Epic amendment would otherwise sail past the Stories running under it; it has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
+| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger reads a **governing set of effective versions** — for a Story execution, exactly its own and its governing Epic's — rather than one record's supersession, since an accepted amendment supersedes nothing and an Epic amendment would otherwise sail past the Stories running under it; it has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
 | [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) Track A graph and A6 | A5's dependency on A1 and A4 is discharged; A6 is unblocked and becomes the only open Track A item |
 | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §-on-levers | It says "A5 governs work already executing" — a forward reference to an item, which becomes a citation of this amendment |
 | [ADR README](README.md) | The 0019 row quotes the front-matter summary verbatim; both change together, and the word *proposed* comes out of both |
