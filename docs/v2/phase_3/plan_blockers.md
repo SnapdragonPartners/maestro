@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-15"
+edit_date = "2026-08-16"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -80,8 +80,9 @@ Track D — engineering runway (#314, #321, #306, #307, #308)         gates the 
 ```
 
 > **Status 2026-08-15:** every dependency edge in the graph above is discharged.
-> A1 (ADR 0029), A2 (0030), A3 (0031), A4 (0032) and A5 (0019's second
-> amendment) are all Accepted. **A6 is the only open Track A item.**
+> A1 (ADR 0029), A2 (ADR 0030), A3 (ADR 0031), A4 (ADR 0032) and A5
+> (ADR 0019's second amendment) are all Accepted. **A6 is the only open Track A
+> item.**
 
 A1, A2 and A3 are drafted concurrently and reviewed as a set for consistency.
 **A1 is Accepted before A4**, because A4 consumes an accepted Habitat contract;
