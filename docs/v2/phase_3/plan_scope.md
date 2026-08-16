@@ -207,7 +207,7 @@ is not done.
 | 0 | `scope-and-plan` | This document, Accepted. Includes the roadmap amendment above. | S |
 | 1 | `agent-inventory` | **Inventory and classify** the existing agent, toolloop, `pkg/proto`, supervisor, dispatcher and Claude adapter surfaces, against the frozen v1 tree, with a disposition per surface: retain, refactor, replace, retire. Authoring work, no code. Reconciles the [port inventory](../phase_0/inventory_v1-port.md) against the real import graph, which is what #298's deletions need in order to be complete rather than approximate. | M |
 | 2 | `schema-work-hierarchy` | The work-hierarchy schema families: work groups, runs, executions, and **dispatch records carrying their dispatch basis** — the governing version set and the incoming dependency basis. Includes the **`tool_calls` migration that replaces `tool_calls_finished_check`** and adds the nonterminal states ADR 0030 §8 requires, so a healthy operator wait, a healthy resource wait and an interrupted attempt are distinguishable. Every table traces to an Accepted ADR and a Phase 3 consumer, as in Phase 2. | M |
-| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point — its **prompt-pack half is item 4's**, which is why packs move into this block rather than sitting behind the execution boundary. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
+| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying **Phase 2** item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point — its **prompt-pack half is item 4's**, which is why packs move into this block rather than sitting behind the execution boundary. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
 | 4 | `prompt-packs` | ADR 0031: immutable content records beside mutable installation records, scheme-qualified content identity, resolution once at dispatch, and **organization provisioning seeding the scoped selector — which completes item 3's provisioning rather than amending it later**. Carries `principal_instances.prompt_pack_id`'s three-roles-in-one-column correction and the `"v1-embedded"` foreign-pack case the benchmark importer writes. Placed in block A because packs are plane storage and dispatch-time resolution; nothing here needs the execution boundary. | M |
 
 > **Checkpoint 1 — the plane holds the work.** An Epic and its Stories are
@@ -258,8 +258,12 @@ is not done.
 | 14 | `phase-exit` | The phase-end conformance runs against the **v2 adapter**, both required by [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s cadence table: **`golden-minimal` at N = 1** — the harness-is-alive smoke check it requires at the end of *every* phase, a few dollars — and **`golden-all` at N = 1, `paired-default`**, the ~$50 conformance run required from Phase 2 onward. Both are the first measurements on the v2 path. Each needs DR's explicit approval for that specific run; phase or plan approval is not reusable. Exit review against the checklist below; backlog reconciliation; this document flips to `archive`. | M |
 
 > **Checkpoint 4 — the instrument survives the transition.** Item 12's adapter
-> drives the suite before item 13 deletes anything. If it cannot, the deletion
-> does not start — that is the whole reason the adapter precedes it.
+> is proven **by contract and integration tests against the v2 path, with no
+> hosted-model spend**, before item 13 deletes anything: the runner's adapter
+> contract exercised end to end, including a story reaching a terminal verdict.
+> **Not a golden run** — the paid conformance runs stay after deletion, in item
+> 14, where the roadmap puts them. If the adapter cannot pass this, the deletion
+> does not start; that is the whole reason it precedes it.
 
 ### Sequencing notes
 
@@ -312,9 +316,12 @@ is not done.
 - [ ] No v1 factory entrypoint remains, every `drop` disposition is complete, and
       the v2 path passes build, test and integration verification. *(Items 1
       and 13.)*
-- [ ] Before the v1 factory path is removed, a **v2 target adapter** exists;
-      after removal, `golden-all` at N = 1 against `paired-default` completes
-      against that adapter. *(Items 12 and 14; checkpoint 4.)*
+- [ ] Before the v1 factory path is removed, a **v2 target adapter** exists and
+      is proven by contract and integration tests without hosted-model spend;
+      after removal, **both** runs ADR 0025's cadence requires complete against
+      it — **`golden-minimal` at N = 1**, required at the end of every phase, and
+      **`golden-all` at N = 1** against `paired-default`. *(Items 12 and 14;
+      checkpoint 4.)*
 - [x] ~~Carried from Phase 2: fix #317, then run `golden-all` against
       v1-as-patched before v1 is removed.~~ **Struck by DR, 2026-08-16** — see
       the amendment above. Recorded struck rather than deleted, so the lost
@@ -351,6 +358,16 @@ is not done.
 - [ ] Configuration and secrets have a live consumer, and the locked-plane path
       is exercised by the Orchestrator rather than only by its own tests.
       *(Item 3.)*
+- [ ] Startup is defined and demonstrated for **all four** not-ready plane
+      states, including **interrupted recovery**, where normal startup must
+      neither bypass nor corrupt Phase 2's recovery protocol — the state whose
+      mishandling destroys a staged key. *(Item 3, checkpoint 1.)*
+- [ ] **Execution-resource routing is by declared requirement, never by contract
+      name**, and **both run kinds exist with different behaviour** — an
+      iteration run redeploys into the existing instance and keeps accumulated
+      state, an evidence-bearing run resets first. Both demonstrated, because a
+      label-based router and a collapsed run kind each satisfy a loosely-worded
+      checkpoint while violating ADR 0029. *(Item 7, checkpoint 2.)*
 - [ ] Each of ADR 0032's five demoted mechanisms is either **built with a named
       consumer** or **recorded as still unbuilt**, and none is built because a
       document said so. *(Item 6.)*
@@ -391,22 +408,27 @@ is not done.
   load; item 1 is the pressure-relief valve, and the block structure gives four
   natural places to pause.
 
-## Reviewer Questions
+## Reviewer Questions — Resolutions
+
+Codex answered all four on 2026-08-16; DR confirmation rides on this document's
+approval.
 
 1. **Is fifteen items in one phase right, or should block D be a subphase
-   (3a)?** This plan keeps one phase with four checkpoints, per DR's direction
-   of 2026-08-16. Block D is separable — it has its own gate, its own risk, and
-   a clean seam at checkpoint 3 — so promoting it later costs little.
+   (3a)?** **Resolved: keep one phase**, per DR's direction of 2026-08-16 and
+   Codex's concurrence. Block D is cohesive and already has a clean checkpoint
+   seam; splitting it now would add release mechanics without reducing technical
+   scope.
 2. **Should item 1 produce a document or a set of dispositions in the plan?**
-   Proposed as a document (`inventory_v1-agent.md`), because #298's deletions
-   need something checkable that outlives this plan's archival.
+   **Resolved: a document** (`inventory_v1-agent.md`), which gives retirement a
+   durable, reviewable basis outliving this plan's archival — which is what
+   #298's deletions need.
 3. **Is Track B's proof a real gate on item 3, or advisory?** **Resolved: a real gate**, exactly as the accepted
    blocker plan states. Item 3 is on the critical path, so a stalled parallel
    authoring effort blocks it.
 4. **Does striking the carried regression run need anything beyond the roadmap
-   amendment?** This plan says no — ADR 0025's cadence is unaffected because the
-   phase-end run still happens. Flagged because it is the one place this plan
-   changes an accepted exit criterion.
+   amendment?** **Resolved: no.** The carried v1 run is a roadmap debt
+   rather than an ADR 0025 cadence requirement, and the accepted
+   adapter-before-deletion and post-deletion conformance ordering is intact.
 
 ## Related Documents
 
