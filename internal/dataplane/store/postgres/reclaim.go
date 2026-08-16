@@ -26,16 +26,53 @@ import (
 // invariant violation instead of degrading to "nothing to do" — degrading
 // would silently stop reclaiming storage that keeps billing.
 func (s *Store) reclaimer() (objects.IncompleteWriteReclaimer, bool, error) {
-	if s.blob.IncompleteWrites() != objects.IncompleteWritesEnumerable {
+	switch s.blob.IncompleteWrites() {
+	case objects.IncompleteWritesProviderReclaimed:
 		return nil, false, nil
+	case objects.IncompleteWritesEnumerable:
+		r, ok := s.blob.(objects.IncompleteWriteReclaimer)
+		if !ok {
+			return nil, false, fmt.Errorf(
+				"object provider declares incomplete writes %q but does not implement the reclaimer: %w",
+				objects.IncompleteWritesEnumerable, store.ErrInvariant)
+		}
+		return r, true, nil
+	default:
+		// Unreachable through New, which rejects this at construction. It
+		// is an error rather than a default-to-provider-reclaimed because
+		// failing open here is what would silently stop reclaiming.
+		return nil, false, unknownIncompleteWrites(s.blob.IncompleteWrites())
 	}
-	r, ok := s.blob.(objects.IncompleteWriteReclaimer)
-	if !ok {
-		return nil, false, fmt.Errorf(
-			"object provider declares incomplete writes %q but does not implement the reclaimer: %w",
-			objects.IncompleteWritesEnumerable, store.ErrInvariant)
+}
+
+// validateIncompleteWrites rejects an adapter whose capability is unknown, or
+// which declares enumeration and cannot enumerate.
+//
+// Both are wiring errors, so they belong at construction: the alternative is
+// a store that comes up fine and stops reclaiming storage the first time a
+// sweep runs, which is the failure mode hardest to notice because it costs
+// money quietly rather than breaking anything.
+func validateIncompleteWrites(blob objects.Store) error {
+	switch blob.IncompleteWrites() {
+	case objects.IncompleteWritesProviderReclaimed:
+		return nil
+	case objects.IncompleteWritesEnumerable:
+		if _, ok := blob.(objects.IncompleteWriteReclaimer); !ok {
+			return fmt.Errorf(
+				"postgres store: object adapter declares incomplete writes %q but does not implement "+
+					"the reclaimer: %w", objects.IncompleteWritesEnumerable, store.ErrInvariant)
+		}
+		return nil
+	default:
+		return unknownIncompleteWrites(blob.IncompleteWrites())
 	}
-	return r, true, nil
+}
+
+func unknownIncompleteWrites(got objects.IncompleteWriteSupport) error {
+	return fmt.Errorf(
+		"postgres store: object adapter reports unknown incomplete-write support %q; expected %q or %q: %w",
+		got, objects.IncompleteWritesEnumerable, objects.IncompleteWritesProviderReclaimed,
+		store.ErrInvariant)
 }
 
 // listUploadsUnder enumerates incomplete writes beneath a prefix, returning

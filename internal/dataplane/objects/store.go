@@ -113,10 +113,13 @@ const (
 	IncompleteWritesProviderReclaimed IncompleteWriteSupport = "provider-reclaimed"
 )
 
-// Compile-time proof that the MinIO adapter satisfies both halves. A
-// provider that stops satisfying the reclaimer while still declaring
-// Enumerable is the failure this catches at build time rather than during a
-// sweep.
+// Compile-time proof that the MinIO adapter satisfies both halves.
+//
+// It proves that and nothing more: it says *Blob implements both interfaces,
+// not that any provider declaring Enumerable implements the reclaimer. That
+// relationship is between a runtime value and a runtime capability, so no
+// assertion here can enforce it for an arbitrary provider — the postgres
+// store validates it at construction instead.
 var (
 	_ Store                    = (*Blob)(nil)
 	_ IncompleteWriteReclaimer = (*Blob)(nil)

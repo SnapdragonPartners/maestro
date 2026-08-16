@@ -121,8 +121,20 @@ func New(
 	if types == nil {
 		return nil, errors.New("postgres store: registry is nil")
 	}
-	if blob == nil {
+	// nilcheck for the same reason the root-key check below gives: this
+	// became an interface when the object seam was extracted, and a plain
+	// comparison admits an interface holding a typed-nil adapter. The panic
+	// would then arrive on the first object read rather than here.
+	if nilcheck.IsNil(blob) {
 		return nil, errors.New("postgres store: object adapter is nil")
+	}
+	// The capability is validated at construction, not at first use. An
+	// unknown value must not fail open: reclaimer() would read anything
+	// that is not "enumerable" as a provider that reclaims its own
+	// incomplete writes, so a typo or a zero value would silently disable
+	// reclamation of storage that keeps billing, and nothing would say so.
+	if err := validateIncompleteWrites(blob); err != nil {
+		return nil, err
 	}
 	// nilcheck, not `rootKey == nil`: an interface holding a typed nil is
 	// not equal to nil, so the plain comparison admits one and the panic
