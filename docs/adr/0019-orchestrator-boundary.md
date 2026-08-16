@@ -2,7 +2,7 @@
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles the case the first one deferred — what happens to work already executing when any of the records it was dispatched under changes: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
+summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles the case the first one deferred — what happens to work already executing when the dispatch basis it was issued under — the governing versions and its own incoming dependencies — stops being the current one: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
 +++
 
 # 0019. Orchestrator Boundary
@@ -57,9 +57,11 @@ the policy, and the policy is this ADR's business.
 
 #### What triggers it, and what does not
 
-Two deterministic tests, either sufficient:
+A dispatch binds to a **dispatch basis** — everything about the work graph that
+was true when it was issued and that the work was issued *because of*. It has two
+halves, and a test on each:
 
-1. **Any version in the execution's bound governing set is no longer current.**
+1. **The governing version set** — any member no longer current.
    A dispatch binds not to one record but to the **set of effective versions it
    was dispatched under**. Test 1 fires when *any* member changes.
 
@@ -81,16 +83,31 @@ Two deterministic tests, either sufficient:
    trigger reading only the Story would let that fall through — and an Epic
    amendment reaching work already running is the ordinary case that made this
    item block phase entry at all.
-2. **DAG re-evaluation leaves its work no longer dependency-ready** — a
-   predecessor was inserted that is not satisfied, or a formerly satisfied
-   predecessor's own effective version changed so that it no longer is. Removing
-   an edge is not such a case: fewer predecessors can only make work *more*
-   ready.
+2. **The incoming dependency basis** — changed in any way. That basis is the
+   work item's **own incoming edges: the identities of its predecessors, together
+   with the effective completions that satisfied them.** Test 2 fires on any
+   change to it: a predecessor inserted, removed, or replaced, and a satisfying
+   completion that is no longer the effective one.
+
+   **Not "no longer dependency-ready", which an earlier draft used and which is
+   too narrow.** Add an *already-satisfied* predecessor to a running Story and it
+   stays ready, its versions stay current, and nothing fires — yet it was
+   dispatched under a different dependency contract than the one now in force.
+   The basis catches that, and it makes removals and replacements deterministic
+   instead of a special case.
+
+   **Any change, without asking whether it was a harmless one.** Deciding that a
+   removed predecessor or a re-satisfied edge does not really affect this work is
+   a judgment about the work, which this ADR's own boundary rule puts with an
+   agent or a human — never with the scheduler. So the scheduler compares the
+   basis and acts on difference.
 
 Both are rules over records. Neither requires inference, so both are the
-Orchestrator's.
+Orchestrator's. **Together they are the dispatch basis**, and one sentence covers
+the trigger: an execution is cancelled when the basis it was dispatched under is
+no longer the current one.
 
-**An amendment that satisfies neither test does not cancel anything.** This needs
+**A change that leaves the whole basis intact cancels nothing.** This needs
 saying because the two obvious implementations are wrong in opposite directions.
 Bind a dispatch to a whole-graph version and every edit anywhere cancels every
 running execution, so a long Epic can never be edited while work is in progress.
@@ -201,9 +218,10 @@ about the work version, and it is what the boundary already checks.
    writing is a false record, and downstream work dispatched against a resource
    that is not actually free inherits the lie.
 6. **Re-evaluate, then dispatch only if the current effective work is
-   dependency-ready.** Test 2 exists precisely because it may not be: work
-   cancelled for a newly inserted predecessor waits for that predecessor rather
-   than being reissued immediately. A fresh execution is assigned an appropriate
+   dependency-ready.** Readiness is the dispatch gate, and a basis change is
+   often exactly what breaks it: work cancelled because an unsatisfied
+   predecessor was inserted waits for that predecessor rather than being reissued
+   immediately. A fresh execution is assigned an appropriate
    **new generation**, is never dispatched into a quarantined domain, and — since
    the released claim proves no deallocation — waits on **genuinely available
    capacity** under ADR 0029 §2 rather than on the release itself.
@@ -222,16 +240,18 @@ ADR 0021 rather than from anything decided here:
   vocabulary is `draft` → (`invalidated` | `accepted`) → (`superseded` |
   `archived`) — there is no path back to draft, and immutable accepted history is
   the point of it. What changes is that their result **no longer
-  satisfies the work as it now stands** — measured against the same governing set
-  the trigger reads, since an Epic amendment can leave a Story's own version
-  untouched and still make its result insufficient. Correcting that is ADR 0021's
-  amendment-and-supersession lifecycle, not this one's.
+  satisfies the current dispatch basis** — measured against the same basis the
+  trigger reads, both halves of it. An Epic amendment can leave a Story's version
+  untouched and still make its result insufficient; so can a change to the
+  dependencies the work was issued under, which moves no version at all.
+  Correcting that is ADR 0021's amendment-and-supersession lifecycle, not
+  this one's.
 
 **The already-terminal case, which the original deferral did not consider.** An
 execution that completed before the amendment landed **remains historically
 completed**. There is nothing to cancel and nothing to fence, and its record is
 not reopened. The consequence is a separate statement, not a status change: its
-result no longer satisfies the work as it now stands, so the work still needs
+result no longer satisfies the current dispatch basis, so the work still needs
 doing. This is the common case under a fast amendment, and an earlier
 draft got it wrong in the expensive direction — by saying the output reverts to
 draft, which would both misdescribe what happened and use a transition ADR 0021
@@ -280,7 +300,7 @@ reviewed commit, together with the attribution flip.
 | Location | Change |
 | --- | --- |
 | [ADR backlog](../v2/notes_adr-backlog.md) candidate 3 | Mark **RESOLVED**, pointing here. The slot keeps its number, per its own citation rule. Its framing is accurate and needs no correction — it named the three options and this amendment picks one |
-| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger reads a **governing set of effective versions** — for a Story execution, exactly its own and its governing Epic's — rather than one record's supersession, since an accepted amendment supersedes nothing and an Epic amendment would otherwise sail past the Stories running under it; it has a **second test** the item never stated (DAG re-evaluation leaving work not dependency-ready), enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
+| [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) item A5 | Add the RESOLVED banner in the form A1–A4 use, recording what was settled differently from what the item asked. Three things are: the trigger reads a **dispatch basis** in two halves — a governing version set that for a Story execution is exactly its own and its governing Epic's, and the work item's own incoming dependency basis — rather than one record's supersession, since an accepted amendment supersedes nothing and an Epic amendment would otherwise sail past the Stories running under it; it has a **second test** the item never stated — the work item's incoming dependency basis changing, which is wider than readiness and catches an already-satisfied predecessor being added — enforced through the execution's **authority** rather than a version comparison; and the **already-terminal case** is a fourth outcome the item did not consider, in which nothing is cancelled and nothing is demoted |
 | [Pre-Phase-3 blockers](../v2/phase_3/plan_blockers.md) Track A graph and A6 | A5's dependency on A1 and A4 is discharged; A6 is unblocked and becomes the only open Track A item |
 | [ADR 0031](0031-prompt-pack-identity-resolution-and-storage.md) §-on-levers | It says "A5 governs work already executing" — a forward reference to an item, which becomes a citation of this amendment |
 | [ADR README](README.md) | The 0019 row quotes the front-matter summary verbatim; both change together, and the word *proposed* comes out of both |
@@ -314,7 +334,7 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
 - **The record of what happened is never rewritten to match what is now wanted.**
   A cancelled execution keeps its Audit, a completed one keeps its completion, and
   an accepted artifact keeps its acceptance. What an amendment changes is whether
-  a result still satisfies the work as it now stands — a separate statement, reconciled through ADR 0021's own amendment and supersession
+  a result still satisfies the current dispatch basis — a separate statement, reconciled through ADR 0021's own amendment and supersession
   lifecycle rather than by demoting anything.
 - **A cancellation can fail to complete, and that is a state rather than an
   error.** An `unconfirmed` fence leaves the execution non-terminal, its claims
