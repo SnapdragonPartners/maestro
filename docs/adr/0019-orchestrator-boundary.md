@@ -2,7 +2,7 @@
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles what happens to work already executing when its record is amended: cancel rather than suspend or complete-then-reconcile, triggered only when the execution's own work version is superseded or DAG re-evaluation leaves it not dependency-ready, and sequenced so admission closes, admitted actions drain to their commit point, the resource is fenced, and only then is the result recorded as cancelled/superseded — with what already happened left intact — Audit final, drafts still draft, and accepted artifacts still accepted under ADR 0021's own lifecycle — because an amendment changes what the work must satisfy rather than rewriting what happened."
+summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles what happens to work already executing when its record is amended: cancel rather than suspend or complete-then-reconcile, triggered when the execution's bound effective work version is no longer current or DAG re-evaluation leaves its work not dependency-ready, enforced in both cases by superseding the execution's own authority, and sequenced so admission closes, every admitted attempt reaches one of ADR 0030's three permitted dispositions and is settled, the resource is fenced, and only then is capacity released and the result recorded as cancelled/superseded — with what already happened left intact — Audit final, drafts still draft, and accepted artifacts still accepted under ADR 0021's own lifecycle — because an amendment changes what the work must satisfy rather than rewriting what happened."
 +++
 
 # 0019. Orchestrator Boundary
@@ -82,12 +82,14 @@ and a long Epic could never be edited while work was in progress. The binding is
 **per work item**. Editing one Story does not disturb its siblings; editing the
 graph disturbs only executions the second test catches.
 
-**The two tests do not share an enforcement mechanism, and assuming they did was
-this draft's first error.** Under test 2 the execution's own work version is
-still current — what changed is the graph around it — so nothing about that
-version can close its admission. Cancellation therefore marks the **execution's
-authority** superseded, which is a fact about the execution rather than about the
-work version, and is what the boundary checks. One mechanism, both triggers.
+**Two predicates, one enforcement — and conflating the two was this draft's first
+error.** The tests differ in what they detect: test 1 compares versions, test 2
+re-evaluates the graph. They must not differ in how they stop the work, and a
+version comparison cannot be that mechanism, because under test 2 the execution's
+own work version is still current — what changed is the graph around it.
+Enforcement is therefore the same in both cases: supersede the **execution's own
+authority** and close admission. That is a fact about the execution rather than
+about the work version, and it is what the boundary already checks.
 
 #### The sequence, and why the order is the decision
 
@@ -103,14 +105,28 @@ work version, and is what the boundary checks. One mechanism, both triggers.
    available only where the effect site accepts one (a data-plane write does; a
    forge push, a container start, and an external call do not); or **confirmed
    passage into the fenced domain**. An attempt that has *already* passed its
-   commit point needs no disposition — it is settled by that fact, and it is
-   recorded. So an action admitted before the amendment can still land after it,
-   which is correct and must be attributable rather than hidden; what the drain
-   does is establish dispositions, not force outcomes.
-   **An attempt waiting on an operator is stopped stale inside this step**, and
-   its pending decision invalidated there — ADR 0030 already invalidates every
-   prior-version decision unconditionally. Deferring that to a later step would
-   leave the drain waiting on a human, which is the one wait with no bound.
+   commit point needs none of the three — but **passing the commit point is not
+   settlement.** It means only that the effect is no longer the Orchestrator's to
+   withhold; the outcome may still be unknown and the record still open. Such an
+   attempt is **settled as committed where its outcome is known, and `unknown`
+   where it is not**, under ADR 0030 §8's record contract. Without that, an
+   execution can reach a terminal result with an action still open, which is the
+   state the fence receipt exists to exclude. (`unknown` is also why the Phase 3
+   migration must replace `tool_calls_finished_check` rather than only add to it,
+   as ADR 0030 §8 records.) So an action admitted before the amendment can still
+   land after it — correct, and attributable rather than hidden. What the drain
+   does is establish dispositions and settle records, not force outcomes.
+   **An attempt waiting on an operator is stopped stale inside this step**, on the
+   ground that its execution authority was superseded — not on version
+   invalidation, which under test 2 does not fire at all, since the Story's
+   effective version is still current. Where test 1 *did* fire, ADR 0030's
+   unconditional invalidation of prior-version decisions applies as well, but the
+   authority is what stops the wait in both cases. Deferring this to a later step
+   would leave the drain waiting on a human, which is the one wait with no bound.
+   **Whether any reusable Story-scoped grant outlives the execution is not decided
+   here**: a decision bound to the cancelled logical action dies with it, and
+   durable reusable approvals are a Phase 3 design input under ADR 0032's Status
+   Of Decisions rather than something this amendment may assume.
 3. **Revoke authorization immediately; hold capacity until the fence proves
    non-interference.** The lease only authorizes, and the execution is no longer
    authorized, so revoking it starts cancellation. The **retention claim is not
@@ -123,14 +139,17 @@ work version, and is what the boundary checks. One mechanism, both triggers.
    flagged as potentially billable under ADR 0029's independent cleanup axis.
    **Cancellation fences a generation; it does not destroy an instance**, which
    outlives the executions authorized against it.
-5. **Record the terminal result only once every domain has returned a positive
-   receipt**: `cancelled`, reason `superseded`. Never `failed` — the execution did
-   nothing wrong, and a failure class here would feed retry policy a false signal.
+5. **Once every domain has returned a positive receipt, release the capacity and
+   record the terminal result** — in that order, or atomically. The retention
+   claim and any remaining ownership hold are released here and nowhere earlier;
+   step 3 held them precisely until this point. The result is `cancelled`, reason
+   `superseded`. Never `failed` — the execution did nothing wrong, and a failure
+   class here would feed retry policy a false signal.
    **An `unconfirmed` domain leaves the cancellation unresolved**: non-terminal,
-   no result recorded, capacity still held, and nothing dispatched. A terminal
-   result recorded while an unfenced process may still be writing is a false
-   record, and downstream work dispatched against a resource that is not actually
-   free inherits the lie.
+   no result recorded, the claim and quarantine still held, and nothing
+   dispatched. A terminal result recorded while an unfenced process may still be
+   writing is a false record, and downstream work dispatched against a resource
+   that is not actually free inherits the lie.
 6. **Re-evaluate, then dispatch only if the current effective work is
    dependency-ready.** Test 2 exists precisely because it may not be: work
    cancelled for a newly inserted predecessor waits for that predecessor rather
