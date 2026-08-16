@@ -181,7 +181,9 @@ func (s *Store) sweepCandidates(ctx context.Context, organizationID uuid.UUID) (
 	if err != nil {
 		return found, fmt.Errorf("list object versions under %s: %w", prefix, err)
 	}
-	uploads, err := s.blob.ListUploadsUnder(ctx, prefix)
+	// See staging.go: an empty set is "none present" for an enumerating
+	// provider and "not observable here" for one that reclaims its own.
+	uploads, err := s.listUploadsUnder(ctx, prefix)
 	if err != nil {
 		return found, fmt.Errorf("list object uploads under %s: %w", prefix, err)
 	}
@@ -422,7 +424,7 @@ func (s *Store) observeResidue(
 		observed.versionIDs = append(observed.versionIDs, versions[i].VersionID)
 	}
 
-	uploads, err := s.blob.ListUploadsForKey(ctx, key)
+	uploads, err := s.listUploadsForKey(ctx, key)
 	if err != nil {
 		return observed, fmt.Errorf("list incomplete uploads on %s: %w", key, err)
 	}
@@ -477,7 +479,10 @@ func (s *Store) executeClaim(ctx context.Context, claim *gen.DeletionClaim) (int
 
 	var aborted int
 	for _, uploadID := range claim.UploadIds {
-		if err := s.blob.AbortUpload(ctx, key, uploadID); err != nil {
+		// A claim can only hold IDs some earlier pass observed, so reaching
+		// this against a non-enumerating provider is an invariant violation
+		// rather than a no-op, and abortUpload reports it as one.
+		if err := s.abortUpload(ctx, key, uploadID); err != nil {
 			return 0, aborted, fmt.Errorf("executing deletion claim %s: %w", claimID, err)
 		}
 		aborted++

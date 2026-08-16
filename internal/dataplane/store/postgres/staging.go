@@ -109,7 +109,12 @@ func (s *Store) collectStagingOrphans(ctx context.Context, organizationID uuid.U
 	if err != nil {
 		return 0, fmt.Errorf("list staging versions under %s: %w", prefix, err)
 	}
-	uploads, err := s.blob.ListUploadsUnder(ctx, prefix)
+	// An empty set is two different facts. Where the provider enumerates
+	// incomplete writes it means none are present; where it reclaims them
+	// itself it means this store cannot see them. Both leave nothing for
+	// the caller to do here, which is why the distinction is not acted on —
+	// it is the sweep's REPORT that must not claim a count it never took.
+	uploads, err := s.listUploadsUnder(ctx, prefix)
 	if err != nil {
 		return 0, fmt.Errorf("list staging uploads under %s: %w", prefix, err)
 	}
@@ -252,12 +257,14 @@ func (s *Store) releaseOneLease(ctx context.Context, organizationID uuid.UUID, s
 // Idempotent by construction, so a version that appears after one pass is
 // removed by the next.
 func (s *Store) emptyStagingKey(ctx context.Context, stagingKey string) error {
-	uploads, err := s.blob.ListUploadsForKey(ctx, stagingKey)
+	// No uploads to abort where the provider reclaims its own; the version
+	// deletion below is then the whole of the work.
+	uploads, err := s.listUploadsForKey(ctx, stagingKey)
 	if err != nil {
 		return fmt.Errorf("list incomplete uploads on %s: %w", stagingKey, err)
 	}
 	for i := range uploads {
-		if abortErr := s.blob.AbortUpload(ctx, stagingKey, uploads[i].UploadID); abortErr != nil {
+		if abortErr := s.abortUpload(ctx, stagingKey, uploads[i].UploadID); abortErr != nil {
 			return fmt.Errorf("abort upload %s on %s: %w", uploads[i].UploadID, stagingKey, abortErr)
 		}
 	}

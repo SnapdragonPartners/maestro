@@ -59,7 +59,7 @@ type Store struct {
 	// optional: ADR 0022 makes object storage part of the data plane, and a
 	// store that satisfied the seam while answering every object operation
 	// with "no backend" would be a nil trap wearing an interface.
-	blob *objects.Blob
+	blob objects.Store
 	// now reads the wall clock for the ONE decision that needs a clock this
 	// side of the database: the sweep's grace period, which judges the age
 	// of storage the object store dated.
@@ -112,7 +112,7 @@ func WithConfigKeys(keys *configkeys.Registry) Option {
 // so a test can register the types it needs without mutating global state
 // that another test observes.
 func New(
-	pool *pgxpool.Pool, types *registry.Registry, blob *objects.Blob,
+	pool *pgxpool.Pool, types *registry.Registry, blob objects.Store,
 	rootKey secret.RootKeyProvider, opts ...Option,
 ) (*Store, error) {
 	if pool == nil {
@@ -149,7 +149,7 @@ func New(
 
 // Open builds a Store from a DSN.
 func Open(
-	ctx context.Context, dsn string, types *registry.Registry, blob *objects.Blob,
+	ctx context.Context, dsn string, types *registry.Registry, blob objects.Store,
 	rootKey secret.RootKeyProvider, opts ...Option,
 ) (*Store, error) {
 	pool, err := pgxpool.New(ctx, dsn)
@@ -179,7 +179,7 @@ type tx struct {
 	// Postgres (design D5). It is safe in that order because the
 	// attachment row already exists and the sweep's reachable set is
 	// exactly the attachment rows.
-	blob *objects.Blob
+	blob objects.Store
 }
 
 // WithTx runs fn inside one transaction.
