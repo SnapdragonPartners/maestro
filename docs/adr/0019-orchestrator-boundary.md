@@ -119,9 +119,10 @@ catches.**
 
 **Two predicates, one enforcement — and conflating the two was this draft's first
 error.** The tests differ in what they detect: test 1 compares versions, test 2
-re-evaluates the graph. They must not differ in how they stop the work, and a
-version comparison cannot be that mechanism, because under test 2 the execution's
-own work version is still current — what changed is the graph around it.
+compares the incoming dependency basis. They must not differ in how they stop the
+work, and a version comparison cannot be that mechanism, because when test 2
+fires alone the execution's own work version is still current — what changed is
+what it was dispatched to run after.
 Enforcement is therefore the same in both cases: supersede the **execution's own
 authority** and close admission. That is a fact about the execution rather than
 about the work version, and it is what the boundary already checks.
@@ -144,8 +145,11 @@ about the work version, and it is what the boundary already checks.
    authority — and inside it ADR 0030's Story-version check passes, because under
    an ancestor-only, graph-only, or completion-only change the Story version
    never moved. An action gets admitted against a basis that no longer exists.
-   The rule: **the moment any new basis component becomes authoritative, the old
-   authority of every execution it affects is already unusable.** Whether that is one transaction or an
+   The rule: **the moment the changed dispatch basis becomes authoritative, the old
+   authority of every execution it affects is already unusable.** Stated over the
+   changed basis rather than over a new component, because removing a predecessor
+   introduces no component at all and still changes what the work was dispatched
+   under. Whether that is one transaction or an
    authoritative recheck at admission is Phase 3's to choose; that it holds is
    not. This is ADR 0030 §5's own lesson at the next level up — a version read is
    a snapshot, not a guarantee, so the closure has to linearize with the thing
@@ -264,10 +268,11 @@ draft got it wrong in the expensive direction — by saying the output reverts t
 draft, which would both misdescribe what happened and use a transition ADR 0021
 does not have.
 
-**Cancellation is idempotent.** A second amendment arriving mid-cancellation
-does not restart it; the execution's authority is already superseded and the
-drain already running. What it changes is only which effective version step 6
-evaluates when it gets there.
+**Cancellation is idempotent.** A further basis transition arriving
+mid-cancellation — a second amendment, but equally a dependency edit or a
+changed satisfying completion — does not restart it: the execution's authority is
+already superseded and the drain already running. What it changes is only that
+step 6 evaluates the **latest current dispatch basis** when it gets there.
 
 #### Rejected alternatives
 
@@ -278,8 +283,9 @@ would force that decision now, on this question's schedule, with no consumer to
 answer to.
 
 **Complete-then-reconcile** — rejected on cost. It lets stale work keep
-progressing against a superseded version, spending model turns and resource time
-on output that cannot be accepted. Recorded explicitly: it is **not** rejected on
+progressing against a dispatch basis that is no longer current — which need not
+involve any superseded version at all, since a dependency edit alone is enough —
+spending model turns and resource time on output that cannot be accepted. Recorded explicitly: it is **not** rejected on
 this ADR's boundary rule. Reconciliation judgment could legitimately be routed to
 an agent, so the boundary is not what rules it out, and citing it would be the
 easy wrong reason.
@@ -333,13 +339,16 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
   not force it, and an attempt stopped short or failing its conditional predicate
   does not. Both costs are visible rather than absorbed:
   the spend is recorded against a `cancelled`/`superseded` execution, and the
-  committed action is attributable to the version it was admitted under.
+  committed action is attributable to the **dispatch basis** it was admitted
+  under, not merely to a version — otherwise a DAG-only change leaves nothing in
+  the record to explain what the action was authorized against.
 - **Editing a graph while it executes is safe; editing what an execution was
-  dispatched under is not meant to be.** The governing version set is what
-  separates them. A whole-graph version would have made every edit a mass
-  cancellation and pushed operators toward not amending at all; a single-record
-  binding would have let an Epic amendment sail past the Stories running under
-  it, which is the case that made this decision blocking.
+  dispatched under is not meant to be.** The **dispatch basis** is what separates
+  them — both halves, since a graph edit can change what an execution was issued
+  under while moving no version. A whole-graph version would have made every edit
+  a mass cancellation and pushed operators toward not amending at all; a
+  single-record binding would have let an Epic amendment sail past the Stories
+  running under it, which is the case that made this decision blocking.
 - **The record of what happened is never rewritten to match what is now wanted.**
   A cancelled execution keeps its Audit, a completed one keeps its completion, and
   an accepted artifact keeps its acceptance. What an amendment changes is whether
