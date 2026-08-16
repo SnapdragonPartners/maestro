@@ -134,14 +134,18 @@ about the work version, and it is what the boundary already checks.
    boundary. ADR 0030 §5's own ordering applies — close admission for the
    generation *first*, then settle the attempts already registered against it.
 
-   **This step linearizes with the amendment becoming authoritative, and that is
-   an invariant rather than an implementation note.** Otherwise there is a window
-   in which the new Epic or DAG state is already the effective one while the
-   affected executions still hold usable authority — and inside it ADR 0030's
-   Story-version check passes, because under an ancestor-only or graph-only
-   change the Story version never moved. An action gets admitted against a state
-   that no longer exists. The rule: **the moment the new state is visible, the
-   old authority is already unusable.** Whether that is one transaction or an
+   **This step linearizes with the new basis becoming authoritative, and that is
+   an invariant rather than an implementation note.** Stated over *any*
+   dispatch-basis transition, not over amendments alone: an Epic or Story
+   amendment, a graph edit, and a predecessor's effective satisfying completion
+   changing all move the basis, and the last of those moves no record anyone
+   would call amended. Otherwise there is a window in which a new basis component
+   is already the effective one while the affected executions still hold usable
+   authority — and inside it ADR 0030's Story-version check passes, because under
+   an ancestor-only, graph-only, or completion-only change the Story version
+   never moved. An action gets admitted against a basis that no longer exists.
+   The rule: **the moment any new basis component becomes authoritative, the old
+   authority of every execution it affects is already unusable.** Whether that is one transaction or an
    authoritative recheck at admission is Phase 3's to choose; that it holds is
    not. This is ADR 0030 §5's own lesson at the next level up — a version read is
    a snapshot, not a guarantee, so the closure has to linearize with the thing
@@ -185,7 +189,8 @@ about the work version, and it is what the boundary already checks.
    ranges over the whole governing set the two stop coinciding. An Epic-only
    amendment cancels the execution under test 1 and leaves the Story version
    untouched, so the grant **survives** — as it does under a DAG-only change,
-   where the same work is re-dispatched once its predecessor lands. Re-asking a
+   where the same work is re-dispatched once the current basis is
+   dependency-ready. Re-asking a
    human for an identical approval because something above or beside the work
    moved would be gratuitous. Broadening that binding is possible, but it is an
    amendment to ADR 0030 and not something this one does silently.
@@ -235,7 +240,9 @@ ADR 0021 rather than from anything decided here:
 - **Audit artifacts are born final** and stay. Cancellation adds to the record and
   removes nothing from it.
 - **Draft Management output stays draft** and non-authoritative. It is simply not
-  accepted against a version that is no longer current.
+  accepted against a dispatch basis that is no longer current — a dependency-basis
+  change can make output insufficient while every governing version is still
+  current.
 - **Management artifacts already Accepted stay Accepted.** ADR 0021's status
   vocabulary is `draft` → (`invalidated` | `accepted`) → (`superseded` |
   `archived`) — there is no path back to draft, and immutable accepted history is
@@ -322,7 +329,9 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
 - Cloud/queue execution (v3) changes where agents run, not what the Orchestrator is.
 - **An amendment is cheap to author and not free to land.** Cancelling running
   work discards model turns already spent, and the drain window means an action
-  admitted a moment earlier still commits. Both are visible rather than absorbed:
+  admitted a moment earlier may still commit — the drain permits that, it does
+  not force it, and an attempt stopped short or failing its conditional predicate
+  does not. Both costs are visible rather than absorbed:
   the spend is recorded against a `cancelled`/`superseded` execution, and the
   committed action is attributable to the version it was admitted under.
 - **Editing a graph while it executes is safe; editing what an execution was
