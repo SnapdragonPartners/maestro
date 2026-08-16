@@ -207,11 +207,13 @@ is not done.
 | 0 | `scope-and-plan` | This document, Accepted. Includes the roadmap amendment above. | S |
 | 1 | `agent-inventory` | **Inventory and classify** the existing agent, toolloop, `pkg/proto`, supervisor, dispatcher and Claude adapter surfaces, against the frozen v1 tree, with a disposition per surface: retain, refactor, replace, retire. Authoring work, no code. Reconciles the [port inventory](../phase_0/inventory_v1-port.md) against the real import graph, which is what #298's deletions need in order to be complete rather than approximate. | M |
 | 2 | `schema-work-hierarchy` | The work-hierarchy schema families: work groups, runs, executions, and **dispatch records carrying their dispatch basis** — the governing version set and the incoming dependency basis. Includes the **`tool_calls` migration that replaces `tool_calls_finished_check`** and adds the nonterminal states ADR 0030 §8 requires, so a healthy operator wait, a healthy resource wait and an interrupted attempt are distinguishable. Every table traces to an Accepted ADR and a Phase 3 consumer, as in Phase 2. | M |
-| 3 | `orchestrator-seam` | Wire the Orchestrator through the persistence seam and establish the **durable-checkpoint rule**: typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
+| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point, which is also where ADR 0031 hangs prompt-pack selector seeding. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
 
 > **Checkpoint 1 — the plane holds the work.** An Epic and its Stories are
-> created, dispatched, and durably checkpointed through the seam, and the
-> Orchestrator recovers its own state across a restart. No agent has run.
+> created, dispatched, and durably checkpointed through the seam; the
+> Orchestrator recovers its own state across a restart; and it starts correctly
+> against a plane that is absent, unmigrated and locked in turn. No agent has
+> run.
 > Reviewed before block B opens, because everything below persists through it.
 
 ### Block B — Execution
@@ -259,6 +261,12 @@ is not done.
 
 ### Sequencing notes
 
+- **Item 3 is where the data plane stops being a library.** Everything from
+  checkpoint 1 onward assumes a running plane, which `make dataplane-up` already
+  provides;
+  [#287](https://github.com/SnapdragonPartners/maestro/issues/287)'s fold-in of
+  `dataplanectl` is single-binary consolidation rather than a prerequisite, and
+  stays in item 13 with the `cmd/maestro` rework it belongs to.
 - **Items 1 → 2 → 3 are a strict chain**, and so are 4 → 5. Items 6 and 7 depend
   on 4 and are independent of each other. Item 8 depends on 2, 4 and 6. Block C
   depends on all of block B. Block D depends on block C, and 12 → 13 → 14 is
@@ -328,6 +336,15 @@ is not done.
       carried forward.)*
 - [ ] `StateStore.Save(id, any)` is gone, and no workflow state persists through
       a non-atomic write. *(Item 3.)*
+- [ ] **`paths.Bootstrap` is not imported from above the seam.** Phase 2's exit
+      record makes this a rule and predicts its violation here by name — "the
+      pressure to import the concrete struct from above the seam will be real in
+      Phase 3, and that is precisely how a local-only assumption hardens into
+      architecture." Checkable by import graph, so it is checked rather than
+      trusted. *(Item 3.)*
+- [ ] Configuration and secrets have a live consumer, and the locked-plane path
+      is exercised by the Orchestrator rather than only by its own tests.
+      *(Item 3.)*
 - [ ] Each of ADR 0032's five demoted mechanisms is either **built with a named
       consumer** or **recorded as still unbuilt**, and none is built because a
       document said so. *(Item 5.)*
