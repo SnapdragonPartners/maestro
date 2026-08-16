@@ -1,17 +1,21 @@
 +++
 title = "Maestro v2 Phase 3: Scope And Plan"
 edit_date = "2026-08-16"
-status = "draft"
-summary = "Proposed Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
+status = "live"
+summary = "Accepted Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
 type = "plan"
 +++
 
 # Phase 3: Minimal Work Hierarchy And Work Group Runtime — Scope And Plan
 
-Status: **draft** — proposed by Claude 2026-08-16, item A6 of the
-[pre-Phase-3 blocker plan](plan_blockers.md). Flips to `live` in the acceptance
-commit, before its own merge, following Phase 2's precedent (Phase 1's plan
-merged still `draft` and needed a follow-up flip PR).
+Status: **live** — Accepted by Codex and DR, 2026-08-16, after four review
+rounds. Item A6 of the [pre-Phase-3 blocker plan](plan_blockers.md), and the
+last item on the critical path to phase entry. Flipped in the acceptance commit
+before its own merge, following Phase 2's precedent (Phase 1's plan merged still
+`draft` and needed a follow-up flip PR).
+
+**This document binds Phase 3.** It carries the roadmap amendment striking the
+carried v1 regression run, which is Accepted with it.
 
 Goal (from the [roadmap](../plan_roadmap.md)): create the smallest real v2
 factory path.
