@@ -2,12 +2,12 @@
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles the case the first one deferred — what happens to work already executing when the dispatch basis it was issued under — the governing versions and its own incoming dependencies — stops being the current one: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
+summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A second amendment settles the case the first one deferred — what happens to work already executing when the dispatch basis it was issued under — the governing versions and its own incoming dependencies — stops being the current one: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
 +++
 
 # 0019. Orchestrator Boundary
 
-Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (work dispatch is Orchestrator machinery at both Epic and Story grain; dispatcher lineage corrected to rework); second amendment **PROPOSED 2026-08-15**, pending Codex and DR approval (amendment versus running work — item A5)
+Status: Accepted (Codex + DR, 2026-07-13); amended 2026-07-14 (work dispatch is Orchestrator machinery at both Epic and Story grain; dispatcher lineage corrected to rework); amended again 2026-08-15 (Codex + DR): amendment versus running work — item A5, after eight review rounds
 
 ## Context
 
@@ -37,10 +37,9 @@ The Orchestrator exposes a dispatch seam consumed by intake and the Workbench en
 
 ### Amendment versus running work
 
-**PROPOSED 2026-08-15 — pending Codex and DR approval.** Item A5 of the accepted
-[pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), resolving
-[backlog candidate 3](../v2/notes_adr-backlog.md). Attribution is restored and
-this qualifier removed in the final reviewed commit.
+**Accepted 2026-08-15 (Codex + DR)**, after eight review rounds. Item A5 of the
+accepted [pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md), resolving
+[backlog candidate 3](../v2/notes_adr-backlog.md).
 
 The dispatch amendment above settled the **pending** case — invalidate
 version-bound dispatch records, re-evaluate the DAG deterministically, reissue —
@@ -305,10 +304,10 @@ whoever authors the amended record, reviewed under
 
 #### Authority reconciliation on acceptance
 
-Established by grepping the **concept**, not the phrase. **None of it is executed
-while this amendment is Proposed** — a live document asserting a decision nobody
-has accepted is the gap an early sweep opens. All of it lands in the final
-reviewed commit, together with the attribution flip.
+Established by grepping the **concept**, not the phrase. **None of it was executed
+while this amendment was Proposed** — a live document asserting a decision nobody
+has accepted is the gap an early sweep opens. All of it landed in the acceptance
+commit, together with the attribution flip.
 
 | Location | Change |
 | --- | --- |

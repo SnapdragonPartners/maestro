@@ -37,6 +37,7 @@ Status: live — reconciled 2026-07-15 (Phase 0 item 12); supersedes the interim
 | Habitat Execution Boundary (blocked Phase 3) | [ADR 0029](../adr/0029-incubator-and-habitat-execution-boundaries.md), Accepted 2026-08-12 as item A1 of the pre-Phase-3 blocker plan — split into the Incubator and the Habitat, with two spike artifacts |
 | Tool Execution Policy Hook (blocked Phase 3) | [ADR 0030](../adr/0030-tool-execution-policy-hook.md), Accepted 2026-08-13 as item A2 — one boundary in three gates, with a human-required call logically blocked rather than denied and retried |
 | Agent Execution Contract (blocked Phase 3) | [ADR 0032](../adr/0032-agent-execution-contract.md), Accepted 2026-08-15 as item A4 — a versioned wire contract, a four-axis terminal result, and the served-versus-underlying model identity split #319 waited on |
+| Amendment Vs Running Work (blocked Phase 3) | [ADR 0019](../adr/0019-orchestrator-boundary.md) second amendment, Accepted 2026-08-15 as item A5 — running work is cancelled when the dispatch basis it was issued under stops being current, and what already happened is never rewritten |
 | Prompt Pack Identity, Resolution, And Storage (blocked Phase 3) | [ADR 0031](../adr/0031-prompt-pack-identity-resolution-and-storage.md), Accepted 2026-08-13 as item A3 — scheme-qualified content identity, immutable content beside a mutable installation, resolution once at dispatch |
 
 ## Candidates, Stable-Numbered
@@ -55,11 +56,17 @@ Accepted 2026-07-24 as Phase 2 item 1; see the Resolved In Later Phases table ab
 
 The cold-backup baseline shipped in ADR 0022 as amended; this candidate is the online upgrade: snapshot/`pg_basebackup`-class backup, restore validation, cross-store consistency across Postgres, object store, and local forge.
 
-### 3. Amendment Vs Running Work — blocks Phase 3; lands as an **ADR 0019 amendment**
+### 3. Amendment Vs Running Work — RESOLVED by [ADR 0019](../adr/0019-orchestrator-boundary.md)'s second amendment
 
-Deferred from ADR 0019's dispatch amendment (2026-07-14): the policy for work already executing when its Epic/Story/DAG record is amended or superseded — cancel, suspend, or complete-then-reconcile. The Work Group runtime cannot ship without it.
+**Accepted 2026-08-15** (Codex + DR) as item A5 of the [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), after eight review rounds. The slot keeps its number because phase plans and session notes cite it.
 
-Sequenced as item A5 of the accepted [pre-Phase-3 blocker plan](phase_3/plan_blockers.md), which fixes two things about it. **It is an amendment to [ADR 0019](../adr/0019-orchestrator-boundary.md), not a new ADR** — it completes a case 0019 itself deferred, concerns 0019's own subject, and its mechanisms are owned by candidates 11 (fencing) and 13 (cancellation lifecycle, terminal result), leaving only the policy. And it is **last** in the design track, because it depends on both.
+Deferred from ADR 0019's dispatch amendment (2026-07-14): the policy for work already executing when its Epic/Story/DAG record is amended or superseded — cancel, suspend, or complete-then-reconcile. **The answer is cancel**, and it landed as an amendment to [ADR 0019](../adr/0019-orchestrator-boundary.md) rather than a new ADR: it completes a case 0019 itself deferred, concerns 0019's own subject, and its mechanisms are owned by candidates 11 (fencing) and 13 (cancellation lifecycle, terminal result), leaving only the policy. It was **last** in the design track because it depends on both.
+
+Three things a reader of the old entry must carry forward, each wider than what this slot asked for:
+
+- **The trigger is not "its record is amended".** A dispatch binds to a **dispatch basis** in two halves: a **governing version set** — for a Story execution, exactly its own effective version and its governing Epic's — and the work item's **incoming dependency basis**, meaning its predecessor identities together with the effective completions that satisfied them. Cancellation fires when either half stops being current. Reading only the Story's own record would let a governing Epic amendment sail past the work running under it, which is the ordinary case that made this candidate blocking.
+- **Enforcement is not a version comparison.** A dependency-only change leaves the Story's version current, so nothing about that version can stop the work. Cancellation supersedes the **execution's own authority**, which ADR 0032 already has the boundary reject, and that closure **linearizes** with the changed basis becoming authoritative — otherwise there is a window in which the new basis is effective and the old authority still admits actions.
+- **An amendment revokes nothing already done.** Audit stays final, drafts stay draft, and accepted artifacts stay accepted — ADR 0021's status vocabulary has no path back to draft. What changes is that a result no longer satisfies the current dispatch basis, which is a separate statement reconciled through 0021's own lifecycle. An execution that completed *before* the change keeps its completion for the same reason.
 
 ### 4. Tool Execution Policy Hook — RESOLVED by [ADR 0030](../adr/0030-tool-execution-policy-hook.md)
 
