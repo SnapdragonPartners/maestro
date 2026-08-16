@@ -45,7 +45,7 @@ enumeration; epochs, acknowledgements, watermarks and durable sender outboxes;
 the generic question-wait lifecycle; and durable reusable approvals. This phase
 is where they are settled — **against a real consumer, not on paper**. That is
 the whole point of the demotion, and re-deriving them as a design document
-before item 5 has a working agent would reproduce exactly what A4 got wrong.
+before item 6 has a working agent would reproduce exactly what A4 got wrong.
 
 ## Scope
 
@@ -177,14 +177,14 @@ Proposed here, ratified by this plan's approval.
    answerable by a consumer instead of by speculation.
 3. **The demoted mechanisms are settled by the first consumer that needs them,
    and not before.** Restart, reliable delivery, remote transport and richer
-   approval persistence are added when item 5 or item 12 demonstrates the
+   approval persistence are added when item 6 or item 12 demonstrates the
    requirement — which is A4's seventh step, and the check that keeps this phase
    from rebuilding the spike.
 4. **One state vocabulary with a stated mapping**
    ([#330](https://github.com/SnapdragonPartners/maestro/issues/330)). The
    agent's role FSM and the Orchestrator's action record answer different
    questions and both survive, but `proto.StateQuestion` and any plane-side
-   response wait must be one concept with one mapping, decided in item 5 rather
+   response wait must be one concept with one mapping, decided in item 6 rather
    than allowed to drift into two.
 5. **The `tool_calls` migration replaces `tool_calls_finished_check`.** ADR 0030
    §8 as amended and ADR 0032 both record this; it lands in item 2 so no later
@@ -207,23 +207,25 @@ is not done.
 | 0 | `scope-and-plan` | This document, Accepted. Includes the roadmap amendment above. | S |
 | 1 | `agent-inventory` | **Inventory and classify** the existing agent, toolloop, `pkg/proto`, supervisor, dispatcher and Claude adapter surfaces, against the frozen v1 tree, with a disposition per surface: retain, refactor, replace, retire. Authoring work, no code. Reconciles the [port inventory](../phase_0/inventory_v1-port.md) against the real import graph, which is what #298's deletions need in order to be complete rather than approximate. | M |
 | 2 | `schema-work-hierarchy` | The work-hierarchy schema families: work groups, runs, executions, and **dispatch records carrying their dispatch basis** — the governing version set and the incoming dependency basis. Includes the **`tool_calls` migration that replaces `tool_calls_finished_check`** and adds the nonterminal states ADR 0030 §8 requires, so a healthy operator wait, a healthy resource wait and an interrupted attempt are distinguishable. Every table traces to an Accepted ADR and a Phase 3 consumer, as in Phase 2. | M |
-| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point, which is also where ADR 0031 hangs prompt-pack selector seeding. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
+| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point — its **prompt-pack half is item 4's**, which is why packs move into this block rather than sitting behind the execution boundary. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
+| 4 | `prompt-packs` | ADR 0031: immutable content records beside mutable installation records, scheme-qualified content identity, resolution once at dispatch, and **organization provisioning seeding the scoped selector — which completes item 3's provisioning rather than amending it later**. Carries `principal_instances.prompt_pack_id`'s three-roles-in-one-column correction and the `"v1-embedded"` foreign-pack case the benchmark importer writes. Placed in block A because packs are plane storage and dispatch-time resolution; nothing here needs the execution boundary. | M |
 
 > **Checkpoint 1 — the plane holds the work.** An Epic and its Stories are
 > created, dispatched, and durably checkpointed through the seam; the
-> Orchestrator recovers its own state across a restart; and it starts correctly
-> against a plane that is absent, unmigrated and locked in turn. No agent has
-> run.
+> Orchestrator recovers its own state across a restart; a fresh organization is
+> provisioned with a resolvable prompt-pack selector; and startup is correct
+> against **all four** not-ready states — absent, unmigrated, locked, and
+> **carrying an interrupted-recovery marker**, where normal startup must neither
+> bypass nor corrupt the recovery protocol. No agent has run.
 > Reviewed before block B opens, because everything below persists through it.
 
 ### Block B — Execution
 
 | # | Branch suffix | Deliverable | Size |
 |---|---|---|---|
-| 4 | `execution-boundary` | ADR 0030's three gates and ADR 0032's binding boundary items: mediated actions with durable intent and result records, capability-scoped tools, the four-axis terminal result **with its applicability rule**, fenced resource references, and rejection of superseded or fenced execution authority at every mediated boundary. The toolloop is refactored behind it. The MCP `lastEffect` and signal-correction path is replaced by an adapter. | L |
-| 5 | `agent-core` | The smallest shared agent core, extracted and refactored from v1's role machinery per item 1's dispositions, wired to item 4's boundary as its **first real consumer**. Settles #330's vocabulary mapping, `QUESTION`'s artifact mapping, and `SUSPEND`'s fate. Whichever of ADR 0032's demoted mechanisms this consumer actually demonstrates a need for is built here; the rest stay unbuilt. | L |
-| 6 | `incubator-habitat` | ADR 0029: Incubator provisioning and Story-scoped lifecycle; Habitat instance, generation-bound lease and retention claim; the fencing protocol returning `terminated`, `isolated` or `unconfirmed`, with quarantine and the independent cleanup axis; reset before evidence-bearing verification and on ownership transfer. Tools target a resource reference. | L |
-| 7 | `prompt-packs` | ADR 0031: resolution once at dispatch, scheme-qualified content identity, immutable content beside the mutable installation record, and organization provisioning seeding the scoped selector. Carries `principal_instances.prompt_pack_id`'s three-roles-in-one-column correction and the `"v1-embedded"` foreign-pack case the benchmark importer writes. | M |
+| 5 | `execution-boundary` | ADR 0030's three gates and ADR 0032's binding boundary items: mediated actions with durable intent and result records, capability-scoped tools, the four-axis terminal result **with its applicability rule**, fenced resource references, and rejection of superseded or fenced execution authority at every mediated boundary. The toolloop is refactored behind it. The MCP `lastEffect` and signal-correction path is replaced by an adapter. | L |
+| 6 | `agent-core` | The smallest shared agent core, extracted and refactored from v1's role machinery per item 1's dispositions, wired to item 5's boundary as its **first real consumer**. Settles #330's vocabulary mapping, `QUESTION`'s artifact mapping, and `SUSPEND`'s fate. Whichever of ADR 0032's demoted mechanisms this consumer actually demonstrates a need for is built here; the rest stay unbuilt. | L |
+| 7 | `incubator-habitat` | ADR 0029: Incubator provisioning and Story-scoped lifecycle; Habitat instance, generation-bound lease and retention claim; the fencing protocol returning `terminated`, `isolated` or `unconfirmed`, with quarantine and the independent cleanup axis; and reset on ownership transfer. **Three decisions the [execution-contract notes](notes_execution-contracts.md) assign to this plan and which have no other owner:** (a) **routing is by declared requirement, never by contract name** — a `test` with no dependencies routes to the Incubator and the same `test` needing a database routes to the Habitat, so a label-based implementation satisfies a loose checkpoint while violating ADR 0029; (b) **both run kinds exist and behave differently** — an *iteration* run redeploys into the existing instance and keeps accumulated state, an *evidence-bearing* run resets first, and collapsing them silently destroys the reset guarantee; (c) the **verb inventory is pruned**, including whether `integration` is a distinct verb or the requirement-routed form of `test`. Tools target a resource reference. | L |
 | 8 | `dispatch-cancellation` | Dispatch against the basis, and ADR 0019's second amendment implemented: authority superseded, admission closed **linearizing with the basis becoming authoritative**, drain to one of ADR 0030 §5's three dispositions, fence, release, record `cancelled`/`superseded`. Watchdog policy for the waits. Includes [#265](https://github.com/SnapdragonPartners/maestro/issues/265)'s single-owner restart, which removes the dual death-observer shape. | L |
 
 > **Checkpoint 2 — one Story executes.** A single Story runs end to end on a
@@ -253,7 +255,7 @@ is not done.
 |---|---|---|---|
 | 12 | `v2-target-adapter` | The **v2 benchmark target adapter**, so the runner has a target that is not v1. Carries #318's dirty-tree preflight and #319's model-lifecycle preflight into the Run Protocol, and answers #323's architect-seat question against the v2 loop. Built and proven **before** anything is deleted — this ordering is the roadmap's and is not this plan's to relax. | L |
 | 13 | `v1-retirement` | Delete the v1 factory path and every `drop` disposition: #298's five deletions, now complete rather than approximate because of item 1; `ProviderPatterns` replaced by explicit provider/model/endpoint declaration (#272's implementation half); `dataplanectl` folded into the main binary with embedded compose assets (#287). No v1 factory entrypoint remains; build, test and integration verification pass on the v2 path alone. | L |
-| 14 | `phase-exit` | The phase-end `golden-all` run, N = 1, `paired-default`, against the **v2 adapter** — the first measurement on the v2 path, recorded in the [conformance log](../notes_conformance-log.md) with its target descriptor. Requires DR's explicit approval for that specific run. Exit review against the checklist below; backlog reconciliation; this document flips to `archive`. | M |
+| 14 | `phase-exit` | The phase-end conformance runs against the **v2 adapter**, both required by [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s cadence table: **`golden-minimal` at N = 1** — the harness-is-alive smoke check it requires at the end of *every* phase, a few dollars — and **`golden-all` at N = 1, `paired-default`**, the ~$50 conformance run required from Phase 2 onward. Both are the first measurements on the v2 path. Each needs DR's explicit approval for that specific run; phase or plan approval is not reusable. Exit review against the checklist below; backlog reconciliation; this document flips to `archive`. | M |
 
 > **Checkpoint 4 — the instrument survives the transition.** Item 12's adapter
 > drives the suite before item 13 deletes anything. If it cannot, the deletion
@@ -267,15 +269,19 @@ is not done.
   [#287](https://github.com/SnapdragonPartners/maestro/issues/287)'s fold-in of
   `dataplanectl` is single-binary consolidation rather than a prerequisite, and
   stays in item 13 with the `cmd/maestro` rework it belongs to.
-- **Items 1 → 2 → 3 are a strict chain**, and so are 4 → 5. Items 6 and 7 depend
-  on 4 and are independent of each other. Item 8 depends on 2, 4 and 6. Block C
-  depends on all of block B. Block D depends on block C, and 12 → 13 → 14 is
-  strict.
+- **Items 1 → 2 → 3 → 4 are a strict chain**, and so are 5 → 6. Item 7 depends
+  on 5; item 8 depends on 2, 5 and 7. Block C depends on all of block B. Block D
+  depends on block C, and 12 → 13 → 14 is strict.
+- **Prompt packs sit in block A, not beside the execution boundary.** ADR 0031
+  makes organization provisioning seed the pack selector, so leaving them until
+  block B would have merged item 3's provisioning in a state ADR 0031 does not
+  permit and amended it afterwards. Packs are plane storage plus dispatch-time
+  resolution; nothing in them needs the boundary.
 - **Item 1 is the designated slack**, as item 1 was in Phase 2 and story
   authoring was in Phase 1: authoring work, reviewable independently, blocking
   only item 2, so it can absorb a stalled review without violating the
   one-branch rule.
-- **Item 5 is the phase's main design risk.** It is where five demoted
+- **Item 6 is the phase's main design risk.** It is where five demoted
   mechanisms either find a consumer or stay unbuilt, and where two state
   vocabularies either reconcile or fork permanently. It is deliberately placed
   after the boundary exists and before anything is built on top of it.
@@ -301,7 +307,7 @@ is not done.
 - [ ] One Epic goes from intake through Story execution to merged Story branches,
       driven by a single Work Group, on a fixture repo. *(Checkpoint 3.)*
 - [ ] Every step emits artifacts to the data plane with correct provenance —
-      principal instance, Epic, Story. *(Items 3–5, 9.)*
+      principal instance, Epic, Story. *(Items 3, 5, 6, 9.)*
 - [ ] The Epic dashboard shows live state for that Epic. *(Item 11.)*
 - [ ] No v1 factory entrypoint remains, every `drop` disposition is complete, and
       the v2 path passes build, test and integration verification. *(Items 1
@@ -317,14 +323,14 @@ is not done.
 ### From the Track A ADRs
 
 - [ ] No tool reaches its effect around the mediated boundary, and this is
-      **demonstrable** rather than asserted (ADR 0030's own standard). *(Item 4.)*
+      **demonstrable** rather than asserted (ADR 0030's own standard). *(Item 5.)*
 - [ ] A positive fence receipt is never issued while an admitted action can still
       commit, and an `unconfirmed` receipt quarantines rather than being rounded
-      up. *(Items 6 and 8.)*
+      up. *(Items 7 and 8.)*
 - [ ] Agents hold no data-plane connection and issue no queries; every artifact,
-      decision and state transition passes through an action record. *(Items 3–5.)*
+      decision and state transition passes through an action record. *(Items 3, 5, 6.)*
 - [ ] Prompt pack identity is resolved once at dispatch and reused verbatim
-      across restarts. *(Item 7.)*
+      across restarts. *(Item 4.)*
 - [ ] Cancellation on a changed dispatch basis is demonstrated end to end,
       including the `unconfirmed` path that leaves it unresolved. *(Item 8;
       checkpoint 2.)*
@@ -347,9 +353,9 @@ is not done.
       *(Item 3.)*
 - [ ] Each of ADR 0032's five demoted mechanisms is either **built with a named
       consumer** or **recorded as still unbuilt**, and none is built because a
-      document said so. *(Item 5.)*
+      document said so. *(Item 6.)*
 - [ ] The state-vocabulary reconciliation (#330) is decided, not deferred again.
-      *(Item 5.)*
+      *(Item 6.)*
 - [ ] The Work Group runtime is tempo-neutral: no lifecycle, gate, or workspace
       decision assumes leading gates. *(Item 9, checked at review.)*
 - [ ] #298's five deletions are complete and the issue is closed against this
@@ -370,7 +376,7 @@ is not done.
   the project. Mitigation is the checkpoints, which are capability
   demonstrations rather than test-suite passes, and the fixture-repo Story at
   checkpoint 2.
-- **Item 5 rebuilds the spike.** The failure A4 was corrected for is
+- **Item 6 rebuilds the spike.** The failure A4 was corrected for is
   specifying mechanism with no consumer to refuse it. The guard is the exit
   checklist item above: a demoted mechanism is built with a *named* consumer or
   recorded as unbuilt.
@@ -394,9 +400,9 @@ is not done.
 2. **Should item 1 produce a document or a set of dispositions in the plan?**
    Proposed as a document (`inventory_v1-agent.md`), because #298's deletions
    need something checkable that outlives this plan's archival.
-3. **Is Track B's proof a real gate on item 3, or advisory?** Treated as a real
-   gate, per the blocker plan. Worth confirming, because item 3 is on the
-   critical path and a stalled parallel authoring effort would block it.
+3. **Is Track B's proof a real gate on item 3, or advisory?** **Resolved: a real gate**, exactly as the accepted
+   blocker plan states. Item 3 is on the critical path, so a stalled parallel
+   authoring effort blocks it.
 4. **Does striking the carried regression run need anything beyond the roadmap
    amendment?** This plan says no — ADR 0025's cadence is unaffected because the
    phase-end run still happens. Flagged because it is the one place this plan
