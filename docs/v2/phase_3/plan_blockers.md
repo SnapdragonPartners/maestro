@@ -1,6 +1,6 @@
 +++
 title = "Pre-Phase-3 Blockers: Scope And Sequencing"
-edit_date = "2026-08-15"
+edit_date = "2026-08-16"
 status = "live"
 summary = "What must be settled before Phase 3 implementation begins: five design decisions — four ADRs (Habitat with its fencing protocol, tool-execution policy hook, prompt-pack identity, agent execution contract) and an ADR 0019 amendment for amendment-vs-running-work — plus a parallel cloud-portability proof gating Orchestrator wiring, benchmark repair for the two runs Phase 3 owes, and the authority cleanup the ADR backlog needs before any of it can be Accepted."
 type = "plan"
@@ -78,6 +78,11 @@ Track B — cloud portability proof (#286)     parallel authoring; gates Orchest
 Track C — benchmark repair (#317, probe, #318, #319, #316)          gates the two paid runs
 Track D — engineering runway (#314, #321, #306, #307, #308)         gates the concurrency work
 ```
+
+> **Status 2026-08-15:** every dependency edge in the graph above is discharged.
+> A1 (ADR 0029), A2 (ADR 0030), A3 (ADR 0031), A4 (ADR 0032) and A5
+> (ADR 0019's second amendment) are all Accepted. **A6 is the only open Track A
+> item.**
 
 A1, A2 and A3 are drafted concurrently and reviewed as a set for consistency.
 **A1 is Accepted before A4**, because A4 consumes an accepted Habitat contract;
@@ -402,6 +407,14 @@ them.
 
 ### A5. Amendment versus running work — [backlog candidate 3](../notes_adr-backlog.md), an **ADR 0019 amendment**
 
+> **RESOLVED 2026-08-15 by [ADR 0019](../../adr/0019-orchestrator-boundary.md)'s second amendment** (Codex + DR), after eight review rounds. Three things below are narrower than what was decided, and are left in place as the record of what was asked rather than what was settled:
+>
+> 1. **The trigger is a dispatch basis, not "its record is amended".** A dispatch binds to two halves: a **governing version set** — for a Story execution, exactly its own effective version and its governing Epic's — and the work item's **incoming dependency basis**, its predecessor identities together with the effective completions that satisfied them. Either half changing cancels. The Epic half is what this item was for and what the first draft missed: a governing Epic can be amended while the Story's own version stays current and its readiness stays true. The dependency half is wider than "no longer dependency-ready", because adding an *already-satisfied* predecessor changes the contract without changing readiness — and no change is classified as harmless, since deciding one was would be a judgment about the work, which ADR 0019 puts with an agent or a human.
+> 2. **Enforcement is the execution's authority, not a version comparison.** A dependency-only change leaves the Story's version current, so the version cannot stop the work. Cancellation supersedes the execution's own authority — which ADR 0032 already has every mediated boundary reject — and that closure **linearizes with the changed basis becoming authoritative**, or an action is admitted inside the window against a basis that no longer exists.
+> 3. **The sequence has an unresolved state and a fourth outcome.** An `unconfirmed` fence leaves cancellation non-terminal with its claims still held and nothing dispatched, rather than recording a tidy result over a resource nothing has proven free. And an execution that *completed* before the change keeps its completion: Audit stays final, drafts stay draft, accepted artifacts stay accepted, and what changes is only that the result no longer satisfies the current basis. This item's "retain as draft/Audit history" would have used a status transition [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) does not have.
+>
+> **Also settled here rather than deferred:** whether a Story-scoped grant survives. ADR 0032 demoting its own approval machinery does not demote ADR 0030's independent binding, so such a grant is invalidated **if and only if its bound effective Story version changes** — surviving an Epic-only amendment and a dependency-only change alike.
+
 **A5 lands as an amendment to [ADR 0019](../../adr/0019-orchestrator-boundary.md),
 not as a fifth ADR.** It completes a decision 0019 itself deferred (its 2026-07-14
 dispatch amendment settled the pending case and explicitly left the in-flight
@@ -456,6 +469,11 @@ Rejected alternatives:
 Depends on A1 and A4; therefore last in Track A.
 
 ### A6. Accept the Phase 3 scope and plan
+
+> **UNBLOCKED 2026-08-15.** A1–A5 are all Accepted, so A6 is the only open item
+> on Track A and the last thing between here and phase entry. It must also carry
+> across the *Carried forward from A4's scope correction* section below, which is
+> parked in this document only because `plan_scope.md` does not exist yet.
 
 Phase entry proper. Written against A1–A5 as Accepted, and carrying the Track
 B/C/D items as scheduled Phase 3 work with their gates named.

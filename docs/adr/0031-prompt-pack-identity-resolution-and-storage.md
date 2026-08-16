@@ -1,6 +1,6 @@
 +++
 title = "ADR 0031: Prompt Pack Identity, Resolution, And Storage"
-edit_date = "2026-08-13"
+edit_date = "2026-08-15"
 status = "live"
 summary = "Gives the MPH signature's P component the minimal contract it has carried informally since Phase 1. A pack version is whole and immutable, identified by a content digest under a named scheme, and comparison never crosses schemes, so an imported v1 identity stays opaque rather than joining a group with a v2 pack. The name is a label, so a selector names exactly one plane-owned version; mutable metadata -- display name, declared version range, declared role coverage -- lives on a separate installation record, because it sits outside the digest that makes content immutable. Resolution happens once at dispatch and is reused on restart. Organization provisioning imports the built-in pack and seeds the selector that makes it resolvable, and there is no run-time fallback to the binary. Compatibility is validated against the running harness rather than asserted by a declared range. P identifies the pack, not the prompt: accounting for a model input is invocation provenance over four sources, whose bindings, closure status, and retention rule belong to the agent execution contract."
 +++
@@ -492,7 +492,7 @@ a lifecycle question here too.
 **A pack change takes effect at the next dispatch.** That is not a limitation to
 work around; it is the amendment path. Version-bound dispatch
 ([ADR 0019](0019-orchestrator-boundary.md) as amended) already re-evaluates and
-reissues on amendment, and A5 governs work already executing. A lever that could
+reissues on amendment, and [ADR 0019's second amendment](0019-orchestrator-boundary.md) governs work already executing. A lever that could
 change under a running execution would be a silent swap with no version behind it.
 
 ### 5. Compatibility is validated against the running harness, and fails closed
