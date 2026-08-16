@@ -156,7 +156,7 @@ preflight) and [#319](https://github.com/SnapdragonPartners/maestro/issues/319)
 check that would have caught the Opus 4.1 retirement seven weeks early.
 [#323](https://github.com/SnapdragonPartners/maestro/issues/323)'s question —
 whether a viable architect model exists — survives and retargets to the **v2**
-architect seat, where it must be answered before item 14's paid run. #316 and
+architect seat, where it must be answered before item 15's paid runs. #316 and
 #317 close with v1, and each leaves a **requirement** behind rather than a fix:
 a terminal tool must be forceable, and sampling parameters must be optional.
 
@@ -245,7 +245,9 @@ is not done.
 > in-process agent and an external-process agent drive the same boundary** — a
 > checkpoint the native agent alone could pass would leave ADR 0032's central
 > claim, one contract for two runtime kinds, untested exactly where it is
-> load-bearing. This is the first point at which the
+> load-bearing. Item 6 is already the contract's first consumer; **this is the
+> first point at which both runtime kinds consume it**, which is the property
+> that matters. This is the first point at which the
 > contract has a consumer, and therefore the first point at which the demoted
 > mechanisms can be judged.
 
@@ -425,11 +427,11 @@ is not done.
   recorded as unbuilt.
 - **The deletion strands something.** #298's dispositions were approximate when
   filed, which is why item 1 reconciles them against the real import graph
-  before item 13 acts on them. The risk is a dependency retained only by deleted
+  before item 14 acts on them. The risk is a dependency retained only by deleted
   code, or a live caller of a package the inventory marked `drop`.
 - **Tempo-neutrality is violated invisibly.** A leading-gate assumption does not
   fail any test in this phase; it fails in Phase 5. Mitigation is a review
-  check, which is weak — worth strengthening if item 9 finds a concrete case.
+  check, which is weak — worth strengthening if item 10 finds a concrete case.
 - **Review bottleneck** (standing risk since Phase 0). Serial PRs bound operator
   load; item 1 is the pressure-relief valve, and the block structure gives four
   natural places to pause.
