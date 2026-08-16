@@ -79,10 +79,10 @@ Track C — benchmark repair (#317, probe, #318, #319, #316)          gates the 
 Track D — engineering runway (#314, #321, #306, #307, #308)         gates the concurrency work
 ```
 
-> **Status 2026-08-15:** every dependency edge in the graph above is discharged.
-> A1 (ADR 0029), A2 (ADR 0030), A3 (ADR 0031), A4 (ADR 0032) and A5
-> (ADR 0019's second amendment) are all Accepted. **A6 is the only open Track A
-> item.**
+> **Status 2026-08-16: Track A is complete and this document has done its job.**
+> A1 (ADR 0029), A2 (ADR 0030), A3 (ADR 0031), A4 (ADR 0032), A5 (ADR 0019's
+> second amendment) and A6 (the [Phase 3 scope and plan](plan_scope.md)) are all
+> Accepted. Phase 3 is open, and `plan_scope.md` binds it from here.
 
 A1, A2 and A3 are drafted concurrently and reviewed as a set for consistency.
 **A1 is Accepted before A4**, because A4 consumes an accepted Habitat contract;
@@ -470,10 +470,14 @@ Depends on A1 and A4; therefore last in Track A.
 
 ### A6. Accept the Phase 3 scope and plan
 
-> **UNBLOCKED 2026-08-15.** A1–A5 are all Accepted, so A6 is the only open item
-> on Track A and the last thing between here and phase entry. It must also carry
-> across the *Carried forward from A4's scope correction* section below, which is
-> parked in this document only because `plan_scope.md` does not exist yet.
+> **RESOLVED 2026-08-16 by the [Phase 3 scope and plan](plan_scope.md)** (Codex + DR), after four review rounds. **Track A is complete and Phase 3 is open.** Four things are worth recording because they were settled differently from what this item implies:
+>
+> 1. **The carried Phase 2 regression run is struck**, by DR, and the roadmap amended in the same commit. #316 and #317 are v1 defects and Phase 3 deletes v1, so patching a target in order to measure it immediately before removing it produces nothing that outlives the phase. **The cost is permanent: there will never be a measured v1-to-v2 comparison point.** The phase-end run consequently becomes the *first* measurement on the v2 path — a baseline rather than a regression check.
+> 2. **The plan carries sixteen items in four blocks, each closed by a checkpoint**, per DR's direction that a phase this large needs a few. A checkpoint is a demonstrated capability, not a document.
+> 3. **A4's carry-forward needed all four consumers, not two.** The first draft delivered the shared agent core and the native agent and stopped; the standalone external-process reviewer and the Claude Code adapter had no owner. They are item 8, and checkpoint 2 does not pass on a native agent alone — ADR 0032's claim is one contract for two runtime kinds, and a single in-process consumer never tests it.
+> 4. **`golden-minimal` is required too.** ADR 0025's cadence table asks for it at the end of *every* phase, alongside `golden-all` from Phase 2 onward. The first draft named only the latter.
+>
+> The *Carried forward from A4's scope correction* section below has been copied into the accepted plan and is now a duplicate kept for provenance, not a live obligation.
 
 Phase entry proper. Written against A1–A5 as Accepted, and carrying the Track
 B/C/D items as scheduled Phase 3 work with their gates named.
