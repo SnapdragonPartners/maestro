@@ -246,10 +246,8 @@ is not done.
 > checkpoint the native agent alone could pass would leave ADR 0032's central
 > claim, one contract for two runtime kinds, untested exactly where it is
 > load-bearing. Item 6 is already the contract's first consumer; **this is the
-> first point at which both runtime kinds consume it**, which is the property
-> that matters. This is the first point at which the
-> contract has a consumer, and therefore the first point at which the demoted
-> mechanisms can be judged.
+> first point at which both runtime kinds consume it**, and therefore the first
+> point at which the demoted mechanisms can be judged.
 
 ### Block C — Surface
 
