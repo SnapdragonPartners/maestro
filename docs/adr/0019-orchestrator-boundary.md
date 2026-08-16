@@ -2,7 +2,7 @@
 title = "ADR 0019: Orchestrator Boundary"
 edit_date = "2026-08-15"
 status = "live"
-summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles what happens to work already executing when its record is amended: cancel rather than suspend or complete-then-reconcile, triggered when the execution's bound effective work version is no longer current or DAG re-evaluation leaves its work not dependency-ready, enforced in both cases by superseding the execution's own authority, and sequenced so admission closes, every admitted attempt reaches one of ADR 0030's three permitted dispositions and is settled, the resource is fenced, and only then is capacity released and the result recorded as cancelled/superseded — with what already happened left intact — Audit final, drafts still draft, and accepted artifacts still accepted under ADR 0021's own lifecycle — because an amendment changes what the work must satisfy rather than rewriting what happened."
+summary = "Defines the v2 Orchestrator as the programmatic, non-agentic layer owning agent lifecycle, tools, routing, forge, persistence, and scheduling — with the no-inference rule as the boundary test. A proposed second amendment settles the case the first one deferred — what happens to work already executing when the record it was dispatched against changes: it is cancelled rather than suspended or completed-then-reconciled, and the cancellation is ordered so that nothing is recorded as finished until the resource it held is proven unable to interfere. What already happened is left intact, because an amendment changes what the work must satisfy rather than rewriting what was done."
 +++
 
 # 0019. Orchestrator Boundary
@@ -107,11 +107,15 @@ about the work version, and it is what the boundary already checks.
    passage into the fenced domain**. An attempt that has *already* passed its
    commit point needs none of the three — but **passing the commit point is not
    settlement.** It means only that the effect is no longer the Orchestrator's to
-   withhold; the outcome may still be unknown and the record still open. Such an
-   attempt is **settled as committed where its outcome is known, and `unknown`
-   where it is not**, under ADR 0030 §8's record contract. Without that, an
-   execution can reach a terminal result with an action still open, which is the
-   state the fence receipt exists to exclude. (`unknown` is also why the Phase 3
+   withhold; the outcome may still be unknown and the record still open. **Two facts have to be
+   recorded, and collapsing them loses one:** that the effect passed its commit
+   point, and what the attempt actually came to. The attempt is completed with
+   its real outcome — **succeeded or failed** where that is known, **`unknown`**
+   where it is not — under ADR 0030 §8's record contract. "Committed" is not an
+   outcome; it is the reason the outcome was no longer the Orchestrator's to
+   decide. Without the completion, an execution can reach a terminal result with
+   an action still open, which is the state the fence receipt exists to
+   exclude. (`unknown` is also why the Phase 3
    migration must replace `tool_calls_finished_check` rather than only add to it,
    as ADR 0030 §8 records.) So an action admitted before the amendment can still
    land after it — correct, and attributable rather than hidden. What the drain
@@ -123,10 +127,16 @@ about the work version, and it is what the boundary already checks.
    unconditional invalidation of prior-version decisions applies as well, but the
    authority is what stops the wait in both cases. Deferring this to a later step
    would leave the drain waiting on a human, which is the one wait with no bound.
-   **Whether any reusable Story-scoped grant outlives the execution is not decided
-   here**: a decision bound to the cancelled logical action dies with it, and
-   durable reusable approvals are a Phase 3 design input under ADR 0032's Status
-   Of Decisions rather than something this amendment may assume.
+   **A grant bound to the cancelled logical action dies with it.** For a grant
+   scoped more widely, ADR 0032 demoting its own approval machinery does not
+   demote ADR 0030's independent rule, and this amendment does not change it: a
+   **Story-scoped grant binds to the effective Story version**, so test 1
+   invalidates it along with every other prior-version decision, and under test 2
+   — where that version is unchanged and the same work will be re-dispatched once
+   its predecessor lands — **it survives**. Re-asking a human for an identical
+   approval because the graph was reordered around them would be gratuitous. This
+   is stated rather than deferred because it is policy, and leaving it to
+   implementation would let the two triggers diverge silently.
 3. **Revoke authorization immediately; hold capacity until the fence proves
    non-interference.** The lease only authorizes, and the execution is no longer
    authorized, so revoking it starts cancellation. The **retention claim is not
@@ -139,14 +149,19 @@ about the work version, and it is what the boundary already checks.
    flagged as potentially billable under ADR 0029's independent cleanup axis.
    **Cancellation fences a generation; it does not destroy an instance**, which
    outlives the executions authorized against it.
-5. **Once every domain has returned a positive receipt, release the capacity and
-   record the terminal result** — in that order, or atomically. The retention
-   claim and any remaining ownership hold are released here and nowhere earlier;
-   step 3 held them precisely until this point. The result is `cancelled`, reason
-   `superseded`. Never `failed` — the execution did nothing wrong, and a failure
-   class here would feed retry policy a false signal.
+5. **Once every domain has returned a positive receipt, release the cancelled
+   execution's retention and ownership claims, and record the terminal result** —
+   in that order, or atomically. Step 3 held those claims precisely until this
+   point. **Releasing a claim is not deallocation, and a positive fence does not
+   prove one**: an `isolated` resource may still be running and still billing,
+   and even a `terminated` one may have cleanup outstanding. The provider record
+   and its cleanup obligation stay governed by ADR 0029's independent cleanup
+   axis until deallocation is confirmed, so what is released here is this
+   execution's hold — not a guarantee that anything was freed. The result is
+   `cancelled`, reason `superseded`. Never `failed` — the execution did nothing
+   wrong, and a failure class here would feed retry policy a false signal.
    **An `unconfirmed` domain leaves the cancellation unresolved**: non-terminal,
-   no result recorded, the claim and quarantine still held, and nothing
+   no result recorded, the claims and quarantine still held, and nothing
    dispatched. A terminal result recorded while an unfenced process may still be
    writing is a false record, and downstream work dispatched against a resource
    that is not actually free inherits the lie.
@@ -154,7 +169,9 @@ about the work version, and it is what the boundary already checks.
    dependency-ready.** Test 2 exists precisely because it may not be: work
    cancelled for a newly inserted predecessor waits for that predecessor rather
    than being reissued immediately. A fresh execution is assigned an appropriate
-   **new generation** and is never dispatched into a quarantined domain.
+   **new generation**, is never dispatched into a quarantined domain, and — since
+   the released claim proves no deallocation — waits on **genuinely available
+   capacity** under ADR 0029 §2 rather than on the release itself.
 
 #### What is kept, and what changes
 
@@ -262,15 +279,15 @@ The Orchestrator is the evolution of v1's runtime kernel, supervisor, and dispat
   statement, reconciled through ADR 0021's own amendment and supersession
   lifecycle rather than by demoting anything.
 - **A cancellation can fail to complete, and that is a state rather than an
-  error.** An `unconfirmed` fence leaves the execution non-terminal with its
-  capacity still held and nothing dispatched. The alternative — recording a
+  error.** An `unconfirmed` fence leaves the execution non-terminal, its claims
+  on the resource still held, and nothing dispatched. The alternative — recording a
   terminal result anyway — buys a tidy record by handing a successor a resource
   nothing has proven free.
 
 ## Related Documents
 
 - [ADR 0018](0018-v2-work-taxonomy.md) (Work Group lifecycle ownership, dispatch contracts), [ADR 0017](0017-v2-documentation-authority-and-lifecycle.md).
-- For the second amendment: [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2 and §7 (leases, retention claims, the fencing protocol and its three-valued receipt), [ADR 0030](0030-tool-execution-policy-hook.md) (the admission stage that refuses a superseded version, and the rule that an amendment invalidates prior-version decisions), [ADR 0032](0032-agent-execution-contract.md) (the drain-and-fence precondition on a positive terminal result, and the `cancelled`/`superseded` axis), [ADR 0021](0021-artifacts-and-principal-instances.md) (what retaining draft and Audit history means), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (who authors and reviews the amendment itself).
+- For the second amendment: [ADR 0029](0029-incubator-and-habitat-execution-boundaries.md) §2 and §7 (leases, retention claims, the fencing protocol and its three-valued receipt), [ADR 0030](0030-tool-execution-policy-hook.md) (the admission stage that refuses a superseded version, and the rule that an amendment invalidates prior-version decisions), [ADR 0032](0032-agent-execution-contract.md) (the drain-and-fence precondition on a positive terminal result, and the `cancelled`/`superseded` axis), [ADR 0021](0021-artifacts-and-principal-instances.md) (the artifact status vocabulary, which has no path back to draft, and what an accepted amendment does *not* supersede), [ADR 0020](0020-review-invariant-reviewer-vs-partner.md) (who authors and reviews the amendment itself).
 - [Pre-Phase-3 blocker plan](../v2/phase_3/plan_blockers.md) item A5; [ADR backlog](../v2/notes_adr-backlog.md) candidate 3.
 - [Roadmap](../v2/plan_roadmap.md) Core Vocabulary (Orchestrator), D2, pillar 15; [ADR backlog](../v2/notes_adr-backlog.md) Orchestrator Boundary entry.
 - Historical notes [0002](0002-local-single-user-runtime-kernel.md) (superseded for v2 by this ADR) and [0004](0004-channel-dispatch-and-typed-agent-protocol.md) (discipline carried forward).
