@@ -267,19 +267,33 @@ finalizing is a different state and is not reclaimable at all — see
 "Interrupted uploads cannot be enumerated" above. Purging a prefix cannot reach
 what no listing reports.
 
-A run killed before its cleanup leaves residue that has to be removed by hand,
-scoped to the prefix in question:
+A run killed before its cleanup leaves residue that has to be removed by hand.
+**Both** prefixes, for the reason above — the organization prefix alone misses
+finalized staged objects, which is precisely the residue a run that died between
+upload and promotion leaves:
 
 ```bash
 CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud storage rm \
-  --all-versions "gs://<bucket>/<organization-uuid>/**" --project=$P
+  --all-versions \
+  "gs://<bucket>/<organization-uuid>/**" \
+  "gs://<bucket>/staging/<organization-uuid>/**" --project=$P
 ```
 
-**Measured 2026-08-17:** that command removed both stranded generations and the
-bucket returned to reporting no listable generations. `--all-versions` is in it
-because the bucket is versioned and the default deletes only the live generation
+**`gcloud storage rm` fails the whole command when a URL matches nothing**
+(**measured 2026-08-17**: `ERROR: (gcloud.storage.rm) The following URLs matched
+no objects or files`). So on a plane with no staging residue — the normal case —
+drop that second URL or pass `--continue-on-error`. A cleanly finished run leaves
+neither prefix populated, and matching nothing is the expected outcome rather
+than a problem to work around.
+
+**Measured 2026-08-17:** the single-prefix form of this command removed both
+stranded generations of a promoted object and the bucket returned to reporting no
+listable generations. `--all-versions` is in it because the bucket is versioned
+and the default deletes only the live generation
 ([Documented](https://docs.cloud.google.com/sdk/gcloud/reference/storage/rm)),
-which would leave the noncurrent ones billed and harder to find than before.
+which would leave the noncurrent ones billed and harder to find than before. The
+staging prefix was **not** exercised by that measurement: it was empty, because
+the run being cleaned up had promoted successfully.
 
 Deletion only reclaims at all because soft delete is off, which is the
 provisioning obligation above. Under the provider default these commands return
@@ -476,7 +490,14 @@ reason a new key is safe against them. See the root-key section above for why th
 same habit destroys a persistent plane.
 
 Each `make test-cloud` run provisions its own empty database per test and drops
-it, and purges its own object prefixes. **Measured 2026-08-17:** two consecutive
-runs left no databases and no listable object generations behind, which is what
-makes the workflow re-runnable rather than merely repeatable. A full run took
-about 40 seconds.
+it, and purges its own object prefixes. **Measured 2026-08-17:** consecutive runs
+left no databases and no listable object generations behind, which is what makes
+the workflow re-runnable rather than merely repeatable. A full run takes about 75
+seconds, most of it provisioning and migrating one database per plane test.
+
+**The database drop is deliberately WITHHELD when the object purge fails**, and
+the failure message names the retained database and the prefixes to clear. That
+is not a bug to tidy up: the retained database's `binary_attachments` rows are
+the only remaining record of which digests the run wrote, so dropping it would
+turn a reported problem into the unattributable storage described above. Clear
+the prefixes with the command in that section, then drop the database by hand.

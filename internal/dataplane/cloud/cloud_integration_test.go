@@ -40,6 +40,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -50,6 +51,8 @@ import (
 	// DATABASE statements that cannot run through the seam.
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"orchestrator/internal/dataplane/benchmarkimport"
+	"orchestrator/internal/dataplane/importslice"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
@@ -96,7 +99,11 @@ func cloudConfig(t *testing.T) Config {
 //
 // It also gives the re-runnable requirement a real meaning: each run provisions
 // its own plane rather than depending on residue from the last one.
-func freshDatabase(t *testing.T, cfg Config) Config {
+//
+// The purge step is the OBJECT store's half of teardown, and may be nil for a
+// test that writes none. See purgeStep for why the drop runs it rather than
+// standing beside it as a second cleanup.
+func freshDatabase(t *testing.T, cfg Config, purge *purgeStep) Config {
 	t.Helper()
 
 	parsed, err := url.Parse(cfg.DSN)
@@ -117,14 +124,31 @@ func freshDatabase(t *testing.T, cfg Config) Config {
 	defer func() { _ = adminDB.Close() }()
 
 	// Identifiers cannot be parameterised, and this one is machine-generated
-	// from a timestamp and a test name reduced to [a-z0-9_] above, so there is
-	// no operator-supplied text in it.
+	// from random bytes and a test name reduced to [a-z0-9_], so there is no
+	// operator-supplied text in it.
 	if _, createErr := adminDB.ExecContext(t.Context(), "CREATE DATABASE "+name); createErr != nil {
 		t.Fatalf("create database %s: %v", name, createErr)
 	}
 	t.Cleanup(func() {
-		// A database left behind holds storage that bills, and the next run
-		// would have to guess whether it mattered.
+		// The OBJECT store first, and the database only if that succeeded.
+		//
+		// A database left behind holds storage that bills, which is why this
+		// drops it. Stranded objects are worse, and the rows dropped here are
+		// the only record of which digests this run wrote — so dropping after a
+		// failed purge converts a reported problem into permanently
+		// unattributable storage. Retaining the database is the cheaper failure,
+		// and the one an operator can still act on.
+		if purge != nil && purge.Run != nil {
+			if purgeErr := purge.Run(); purgeErr != nil {
+				t.Errorf("cleanup: the object purge failed: %v\n"+
+					"RETAINING database %s so the stranded objects stay identifiable: its "+
+					"binary_attachments rows name every digest this run wrote, beneath %s. "+
+					"Purge those prefixes, then drop the database by hand.",
+					purgeErr, name, purge.What)
+				return
+			}
+		}
+
 		cleanup, openErr := sql.Open("pgx", admin.String())
 		if openErr != nil {
 			t.Errorf("cleanup: open administrative connection: %v", openErr)
@@ -199,7 +223,9 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 	t.Logf("bucket provisioned: %+v", report)
 
 	// Stage 2: a database that has never held the schema.
-	cfg := freshDatabase(t, base)
+	// No purge step: this test writes no objects, so there is nothing in the
+	// bucket for the drop to have to sequence itself behind.
+	cfg := freshDatabase(t, base, nil)
 
 	if migrateErr := Migrate(ctx, cfg); migrateErr != nil {
 		t.Fatalf("migrate a cloud plane from empty: %v", migrateErr)
@@ -261,6 +287,14 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 // because the row read back out is compared against it.
 const roundTripMediaType = "application/octet-stream"
 
+// noVocabulary is the registry a plane is opened with when it writes no
+// artifacts. Named so a call site reads as a statement about what the plane
+// accepts rather than as a bare nil.
+//
+// Registering types that nothing writes would imply a coverage the test does not
+// have, which is why this is empty rather than the importer's entries.
+var noVocabulary map[registry.Type]registry.Entry
+
 // migratedCloudPlane provisions the bucket, creates an EMPTY database, migrates
 // it, and opens the seam against both.
 //
@@ -270,7 +304,12 @@ const roundTripMediaType = "application/octet-stream"
 // into a helper would hide what is being asserted. Here they are a
 // precondition, and the only thing worth knowing about a precondition is
 // whether it held.
-func migratedCloudPlane(t *testing.T) (store.Store, Config) {
+//
+// The returned purge step is the object store's half of teardown, unclaimed
+// until a caller that writes objects hands it their organization.
+func migratedCloudPlane(
+	t *testing.T, entries map[registry.Type]registry.Entry,
+) (store.Store, Config, *purgeStep) {
 	t.Helper()
 	base := cloudConfig(t)
 	ctx := t.Context()
@@ -280,14 +319,13 @@ func migratedCloudPlane(t *testing.T) (store.Store, Config) {
 	if _, err := EnsureBucket(ctx, base); err != nil {
 		t.Fatalf("provision the object bucket before any write: %v", err)
 	}
-	cfg := freshDatabase(t, base)
+	purge := &purgeStep{}
+	cfg := freshDatabase(t, base, purge)
 	if err := Migrate(ctx, cfg); err != nil {
 		t.Fatalf("migrate a cloud plane from empty: %v", err)
 	}
 
-	// No artifact vocabulary. The object path below needs none, and registering
-	// types nothing writes would imply a coverage this does not have.
-	types, err := registry.New(nil)
+	types, err := registry.New(entries)
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
@@ -295,30 +333,47 @@ func migratedCloudPlane(t *testing.T) (store.Store, Config) {
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}
+	// The unconditional safety net. A test that writes objects also closes the
+	// seam inside its purge step, where the ordering is visible; Close is
+	// at-most-once, so both running is harmless and neither being forgotten
+	// matters more.
 	t.Cleanup(seam.Close)
-	return seam, cfg
+	return seam, cfg, purge
 }
 
-// insertOrganization writes the one row an attachment's foreign key requires.
+// ownObjectsOf points a plane's teardown at the prefixes one organization owns.
 //
-// Directly, because the seam has no verb for it — tenancy provisioning belongs
-// to the Orchestrator, not to persistence — which is the same reason the local
-// cross-store fixture inserts its organization by hand.
-func insertOrganization(t *testing.T, cfg Config) uuid.UUID {
+// Called by every test that writes objects, and the reason it takes the seam is
+// ordering: the seam is closed here, immediately before the purge, rather than
+// left to a separate cleanup whose position relative to this one is a property
+// of registration order that no reader can see.
+func ownObjectsOf(t *testing.T, purge *purgeStep, seam store.Store, cfg Config, organizationID uuid.UUID) {
 	t.Helper()
-	organizationID := uuid.New()
-	database, err := sql.Open("pgx", cfg.DSN)
+	purge.What = objectPrefixesOf(organizationID)
+	purge.Run = func() error {
+		seam.Close()
+		// Not t.Context(): cleanups run after it is cancelled, and a purge that
+		// cannot issue calls would delete nothing while reporting success.
+		return purgeAndConfirm(context.Background(), cfg, organizationID)
+	}
+}
+
+// bootstrapOrganization creates the tenant an attachment's foreign key requires.
+//
+// Through the seam's own bootstrap verb rather than by inserting a row. An
+// earlier version of this helper inserted directly and said the seam had no verb
+// for it; that was simply false — BootstrapOrganization is on the seam, reachable
+// from the bootstrap command — and a raw insert would have been exercising a
+// plane no supported path could produce.
+func bootstrapOrganization(t *testing.T, seam store.Store) uuid.UUID {
+	t.Helper()
+	organization, err := seam.BootstrapOrganization(t.Context(), store.BootstrapOrganizationInput{
+		Slug: "cloud-round-trip", DisplayName: "Cloud Round Trip",
+	})
 	if err != nil {
-		t.Fatalf("open the plane database: %v", err)
+		t.Fatalf("bootstrap the owning organization: %v", err)
 	}
-	defer func() { _ = database.Close() }()
-	if _, err := database.ExecContext(t.Context(),
-		`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1, $2, $3)`,
-		organizationID, "cloud-round-trip-"+organizationID.String(), "Cloud Round Trip",
-	); err != nil {
-		t.Fatalf("insert the owning organization: %v", err)
-	}
-	return organizationID
+	return organization.Record.OrganizationID
 }
 
 // cloudObjectKey reproduces the layout the seam stores objects at.
@@ -392,28 +447,85 @@ func objectGenerations(t *testing.T, cfg Config, key string) int {
 // Deletion genuinely reclaims here only because the bucket's soft-delete policy
 // is off, which EnsureBucket refused to proceed without. Under the provider
 // default these calls would return success and reclaim nothing for a week.
-func purgeOrganizationObjects(t *testing.T, cfg Config, organizationID uuid.UUID) {
-	t.Helper()
-	// Not t.Context(): see withObjectClient. Cleanups run after it is cancelled.
-	ctx := context.Background()
-	withObjectClient(ctx, t, cfg, func(blob *objects.GCS) {
-		for _, prefix := range []string{
-			organizationID.String() + "/",
-			"staging/" + organizationID.String() + "/",
-		} {
-			versions, listErr := blob.ListVersions(ctx, prefix)
-			if listErr != nil {
-				t.Errorf("cleanup: list versions under %s: %v", prefix, listErr)
-				continue
-			}
-			for i := range versions {
-				if delErr := blob.DeleteVersion(ctx, versions[i].Key, versions[i].VersionID); delErr != nil {
-					t.Errorf("cleanup: delete %s version %s: %v",
-						versions[i].Key, versions[i].VersionID, delErr)
-				}
+func purgeAndConfirm(ctx context.Context, cfg Config, organizationID uuid.UUID) error {
+	blob, err := objects.NewGCS(ctx, objects.GCSConfig{Bucket: cfg.Bucket})
+	if err != nil {
+		return fmt.Errorf("reach the object bucket %s: %w", cfg.Bucket, err)
+	}
+	defer func() { _ = blob.Close() }()
+
+	prefixes := objectPrefixesOf(organizationID)
+	var problems []error
+	for _, prefix := range prefixes {
+		versions, listErr := blob.ListVersions(ctx, prefix)
+		if listErr != nil {
+			problems = append(problems, fmt.Errorf("list versions under %s: %w", prefix, listErr))
+			continue
+		}
+		for i := range versions {
+			if delErr := blob.DeleteVersion(ctx, versions[i].Key, versions[i].VersionID); delErr != nil {
+				problems = append(problems, fmt.Errorf("delete %s version %s: %w",
+					versions[i].Key, versions[i].VersionID, delErr))
 			}
 		}
-	})
+	}
+
+	// RE-LISTED rather than inferred from the deletes returning nil, and this is
+	// the check that makes the caller's decision meaningful. A generation-scoped
+	// delete succeeds and reclaims NOTHING under a soft-delete policy, so a
+	// bucket whose policy came back on would report a clean purge while retaining
+	// everything. Confirming emptiness is the only way to tell those apart, and
+	// the database must not be dropped on the strength of the weaker signal.
+	for _, prefix := range prefixes {
+		remaining, listErr := blob.ListVersions(ctx, prefix)
+		if listErr != nil {
+			problems = append(problems, fmt.Errorf("re-list versions under %s: %w", prefix, listErr))
+			continue
+		}
+		if len(remaining) != 0 {
+			problems = append(problems, fmt.Errorf(
+				"%d generation(s) remain under %s after purging it", len(remaining), prefix))
+		}
+	}
+	return errors.Join(problems...)
+}
+
+// objectPrefixesOf names every prefix one organization's writes can reach.
+//
+// Two, because a single write leaves objects under both: the digest key beneath
+// the organization, and the staging key the upload passed through before being
+// promoted. The seam releases staging on the paths that succeed, so the second
+// matters for runs that die in between — which is exactly when cleanup is doing
+// something rather than confirming nothing.
+//
+// A finalized staged object is what this reaches. An upload interrupted before
+// finalizing is a third state that no listing reports and no prefix purge can
+// touch; the object seam declares that with a capability rather than pretending
+// an empty listing means an empty bucket.
+func objectPrefixesOf(organizationID uuid.UUID) []string {
+	return []string{
+		organizationID.String() + "/",
+		"staging/" + organizationID.String() + "/",
+	}
+}
+
+// purgeStep is a teardown action the database drop must run, and succeed at,
+// before it may proceed.
+//
+// Consulted AT DROP TIME rather than registered as its own t.Cleanup, and that
+// is the entire point. Cleanups run last-in-first-out, so ordering two of them
+// correctly is a property of where each was registered — invisible to a reader,
+// and silently invertible by one edit that moves a line. Worse, t.Errorf does not
+// stop later cleanups, so an independent purge could fail and the drop would
+// still take away the rows that identify what it failed to delete. Here the drop
+// calls the purge, so the sequence is the code and the failure is a decision.
+type purgeStep struct {
+	// Run is nil until a test that writes objects claims them. Nil means there
+	// is nothing to purge, not that purging is optional.
+	Run func() error
+	// What names the prefixes the step owns, for the report a failure leaves an
+	// operator.
+	What []string
 }
 
 // corruptObjectAt writes bytes at a digest key that do not hash to it.
@@ -450,14 +562,14 @@ func corruptObjectAt(t *testing.T, cfg Config, key string) {
 // plane proves it against a provider whose copy semantics, generation
 // numbering and consistency are its own.
 func TestCloudAttachmentRoundTrip(t *testing.T) {
-	seam, cfg := migratedCloudPlane(t)
+	seam, cfg, purge := migratedCloudPlane(t, noVocabulary)
 	ctx := t.Context()
-	organizationID := insertOrganization(t, cfg)
+	organizationID := bootstrapOrganization(t, seam)
 
-	// Registered BEFORE the first write, not after the last one. Every object
-	// below is scoped to this organization's fresh id, and a run that fails
-	// halfway is precisely the run whose residue nothing else will ever find.
-	t.Cleanup(func() { purgeOrganizationObjects(t, cfg, organizationID) })
+	// Claimed BEFORE the first write, not after the last one. Every object below
+	// is scoped to this organization's fresh id, and a run that fails halfway is
+	// precisely the run whose residue nothing else will ever find.
+	ownObjectsOf(t, purge, seam, cfg, organizationID)
 
 	body := []byte("evidence bytes that have to survive a managed object store and come back identical")
 	sum := sha256.Sum256(body)
@@ -634,6 +746,35 @@ func TestCloudAttachmentRoundTrip(t *testing.T) {
 		t.Errorf("reading a corrupt object failed with %v, want a %v — a caller has to distinguish the "+
 			"store contradicting itself from a transport failure", readErr, store.ErrInvariant)
 	}
+}
+
+// TestCloudBenchmarkImportSlice runs the shared portability slice against the
+// managed plane.
+//
+// This is #286's FIRST acceptance criterion, and the one the attachment round
+// trip above does not satisfy: the identical benchmark-import vertical slice must
+// pass against local Docker and one managed cloud configuration. Identical means
+// the same function — importslice.Run — called from here and from the importer's
+// own integration suite, so that a divergence cannot hide in the difference
+// between two hand-written copies.
+//
+// The round trip proves the object contract; this proves the SLICE. They are
+// different claims: an importer can hold a correct object adapter and still
+// depend on the composition through its ledger identity, its transaction
+// boundaries or the queries that read its work back.
+//
+// It is opened with the importer's OWN registry entries, not this package's
+// usual empty vocabulary. The run-record and suite-report payloads are refused
+// by a registry that does not know their types, so the import would fail at the
+// seam rather than reaching the plane.
+func TestCloudBenchmarkImportSlice(t *testing.T) {
+	seam, cfg, purge := migratedCloudPlane(t, benchmarkimport.RegistryEntries())
+
+	// The slice writes the suite's evidence as attachments, so this plane's
+	// objects need claiming exactly as the round trip's do — and the organization
+	// is the slice's to create, which is why it hands the id back.
+	organizationID := importslice.Run(t, seam)
+	ownObjectsOf(t, purge, seam, cfg, organizationID)
 }
 
 // TestCloudOpenRefusesAMissingBucket confirms that a failure to reach the
