@@ -106,6 +106,35 @@ safe": an open pool reconnecting after the change will fail with the old
 credential, and the Auth Proxy does not shield a password change from clients
 that cached one.
 
+### The root key is not rotatable once a vault exists
+
+**Policy, and the most expensive mistake available here.** The Cloud SQL
+password and the root-of-trust key look alike — both are operator-supplied
+secrets — and they behave in opposite ways.
+
+The **password** authenticates a connection. Rotating it is cheap and reversible;
+the procedure above is safe to run at any time before clients open.
+
+The **root key** derives the vault's encryption keys. It does not authenticate
+anything, it *decrypts*. Generating a new one for a database that already holds
+vault data does not lock you out with an error — it produces a plane that starts
+fine and cannot decrypt its own secrets, and there is no recovery except the
+original key.
+
+So:
+
+- **Disposable databases** — the per-run databases the cloud suite creates and
+  drops — may take a freshly generated key every run. They hold no vault data
+  worth keeping, which is the entire reason a fresh key is acceptable there.
+- **Any persistent cloud database must retain and reuse its ORIGINAL
+  operator-provided key.** Storing it is a prerequisite for creating such a
+  database, not a follow-up task: a plane provisioned before its key has a home
+  is already unrecoverable, it just does not know yet.
+
+The asymmetry is worth stating because the safe habit for one secret is the
+destructive habit for the other. "Rotate freely" is right for the password and
+wrong for the root key.
+
 ## Project safety for cloud work
 
 **Rule (Policy): every cloud invocation is scoped explicitly, and `gcloud` is
