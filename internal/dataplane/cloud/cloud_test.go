@@ -3,6 +3,8 @@ package cloud
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
@@ -188,5 +190,79 @@ func TestStabilizationIsAPolicyNotAGuarantee(t *testing.T) {
 			"gives no upper bound on when a soft-delete change takes effect, so waiting exactly the "+
 			"minimum is a bet rather than a conservative choice",
 			SoftDeleteStabilization, documentedMinimumSeconds)
+	}
+}
+
+// maxIdentifier is PostgreSQL's identifier limit in bytes.
+//
+// Names longer than this are TRUNCATED SILENTLY rather than rejected, which is
+// how the first version of this helper worked by accident: it generated 67-byte
+// names, and CREATE and DROP truncated identically so nothing failed. Two test
+// names agreeing in their first 63 bytes would have collided, one run dropping
+// the other's database mid-test.
+const maxIdentifier = 63
+
+// freshDatabaseName builds a unique, bounded database name.
+//
+// Randomness rather than a timestamp: Unix seconds plus a fixed test name
+// collides whenever two runs start in the same second, which is exactly what
+// happens when someone reruns immediately or a workflow fans out. Eight random
+// bytes make that a non-issue without needing coordination.
+//
+// The test name is included for debuggability but TRUNCATED to fit, and the
+// result is asserted against the limit so a future change cannot quietly exceed
+// it again.
+func freshDatabaseName(t *testing.T) string {
+	t.Helper()
+
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatalf("generate a database-name nonce: %v", err)
+	}
+	prefix := "maestro_cloud_" + hex.EncodeToString(nonce)
+
+	slug := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return '_'
+	}, strings.ToLower(t.Name()))
+	if room := maxIdentifier - len(prefix) - 1; room > 0 {
+		if len(slug) > room {
+			slug = slug[:room]
+		}
+		prefix += "_" + slug
+	}
+
+	if len(prefix) > maxIdentifier {
+		t.Fatalf("generated database name is %d bytes, over PostgreSQL's %d-byte limit: it would "+
+			"be truncated silently and could collide with another run", len(prefix), maxIdentifier)
+	}
+	return prefix
+}
+
+// TestFreshDatabaseNameFitsPostgresIdentifierLimit guards the naming rule
+// without needing a cloud plane.
+//
+// PostgreSQL truncates over-long identifiers SILENTLY, so the first version of
+// this generator produced 67-byte names and appeared to work: CREATE and DROP
+// truncated identically. The hazard is two names agreeing in their first 63
+// bytes, where one run would drop another's database mid-test.
+//
+// The test name here is deliberately long, since that is the input that
+// overflowed.
+func TestFreshDatabaseNameFitsPostgresIdentifierLimitAndIsUniqueAcrossCallsInTheSameSecond(t *testing.T) {
+	seen := map[string]bool{}
+	for range 64 {
+		name := freshDatabaseName(t)
+		if len(name) > maxIdentifier {
+			t.Fatalf("name %q is %d bytes, over the %d-byte limit; PostgreSQL would truncate it "+
+				"silently", name, len(name), maxIdentifier)
+		}
+		if seen[name] {
+			t.Fatalf("name %q was generated twice, so two runs starting together would collide "+
+				"and one would drop the other's database", name)
+		}
+		seen[name] = true
 	}
 }

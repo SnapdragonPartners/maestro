@@ -13,9 +13,18 @@
 //
 //	MAESTRO_CLOUD_DSN='postgres://postgres:PW@127.0.0.1:5433/maestro_286?sslmode=disable' \
 //	MAESTRO_GCS_TEST_BUCKET=maestro-objects-286 \
-//	MAESTRO_CLOUD_ROOT_KEY=<32+ bytes> \
+//	MAESTRO_CLOUD_ROOT_KEY=<EXACTLY 32 bytes> \
 //	GOOGLE_CLOUD_QUOTA_PROJECT=<project> \
 //	go test -tags=cloud -count=1 ./internal/dataplane/cloud/
+//
+// The root key must be EXACTLY 32 bytes — the same length a key file must be,
+// because it protects the same vault. Not "at least": 33 bytes is refused, since
+// truncating or hashing over-long material to fit would accept two different
+// inputs as the same key. Prefer plain ASCII so the environment string's byte
+// length is its character count; multi-byte characters make a 32-character value
+// longer than 32 bytes and the refusal then looks arbitrary. For example:
+//
+//	MAESTRO_CLOUD_ROOT_KEY=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
 //
 // `sslmode=disable` in that DSN is correct rather than careless: the Auth Proxy
 // listens on loopback and supplies the TLS, and the instance itself refuses
@@ -27,12 +36,9 @@ package cloud
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"net/url"
 	"os"
-	"strings"
 	"testing"
-	"time"
 
 	// Registers the pgx stdlib driver, for the administrative CREATE/DROP
 	// DATABASE statements that cannot run through the seam.
@@ -94,13 +100,7 @@ func freshDatabase(t *testing.T, cfg Config) Config {
 	admin := *parsed
 	admin.Path = "/postgres"
 
-	name := fmt.Sprintf("maestro_cloud_%d_%s", time.Now().UTC().Unix(), strings.ToLower(t.Name()))
-	name = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
-			return r
-		}
-		return '_'
-	}, name)
+	name := freshDatabaseName(t)
 
 	adminDB, err := sql.Open("pgx", admin.String())
 	if err != nil {
