@@ -30,8 +30,10 @@ What does **not** belong here:
 
 ### How claims here are marked
 
-Every claim carries one of three tags, because this repository has repeatedly
-paid for the difference between observing something and being told it:
+**Material claims about provider behaviour** carry one of three tags, because
+this repository has repeatedly paid for the difference between observing
+something and being told it. Ordinary prose — what a section is for, why an
+ordering matters — is not tagged and does not need to be:
 
 - **Measured** — observed against a real service, with the date. It was true
   then, of that service, and provider behaviour changes.
@@ -40,7 +42,10 @@ paid for the difference between observing something and being told it:
 - **Policy** — a choice Maestro makes. No provider guarantees it and no
   measurement supports it; it is a decision, and it can be revisited.
 
-A claim with no tag has not been checked and should not be relied on.
+An untagged claim **about what a provider does** has not been checked and should
+not be relied on. The rule is scoped to those deliberately: applying it to every
+sentence would make the file condemn its own explanatory text, and a rule that
+is visibly not followed stops being read as a rule.
 
 ## Current cloud resources
 
@@ -58,22 +63,48 @@ appear here or anywhere else in the repository.
 The Cloud SQL root password lives on the **instance**, not in the local file.
 The local `0600` file outside the repository is only a copy for connecting.
 
-**Regenerating the file alone breaks the next connection.** Rotation is:
+**Regenerating the file alone breaks the next connection.** Rotation is one
+fail-fast sequence, not three commands that happen to be adjacent:
 
 ```bash
-python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits+'-_.~') for _ in range(40)))" > "$PWFILE"
-chmod 600 "$PWFILE"
-CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql users set-password postgres \
-  --instance=<name> --project=$P --password="$(cat "$PWFILE")" --quiet
+P=<project>; PWFILE=<path-outside-the-repo>
+( umask 077 && python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits+'-_.~') for _ in range(40)))" > "$PWFILE" ) \
+  && test -s "$PWFILE" \
+  && CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql users set-password postgres \
+       --instance=<name> --project=$P --password="$(cat "$PWFILE")" --quiet
 ```
 
-Both steps, every time, in that order — the file is written first so a failed
-`set-password` leaves a file that does not work rather than a working password
-nobody has a copy of.
+Three details are load-bearing:
+
+- **`umask 077` around the redirection**, not a `chmod` afterwards. Redirection
+  creates the file under the ambient umask, so a later `chmod` leaves a window
+  in which the secret was world-readable. There is no way to narrow that window
+  after the fact; the file has to be created private.
+- **`test -s`**, because an empty file is the failure mode that otherwise
+  propagates: generation failing silently would set the instance password to the
+  empty string, locking out the very account being rotated.
+- **`&&` throughout.** As independent statements, a failed generation or a
+  failed `chmod` does not stop `set-password` from running — which is precisely
+  the ordering that turns a small failure into a locked-out instance.
+
+Known limitation: the password appears in the process arguments of the `gcloud`
+call and is therefore visible to other local users via `ps`. Acceptable on a
+single-operator workstation, and worth replacing with an interactive
+`--prompt-for-password` if this ever runs anywhere shared.
 ([Documented](https://docs.cloud.google.com/sql/docs/postgres/users).)
 
-Nothing depends on the value persisting across sessions, so rotating is always
-safe; forgetting the second step is what is not.
+**Measured 2026-08-17:** this exact sequence was run against the live instance —
+the new credential authenticated and the previous one was rejected, so it
+rotates rather than no-ops. Its three failure guards were exercised separately:
+a failing generator stops the chain before `set-password`, an empty file is
+caught by `test -s`, and the redirection under `umask 077` lands the file
+`-rw-------` with no `chmod` involved.
+
+**Rotate before clients open, not during active work.** Nothing depends on the
+value persisting across sessions, so rotation is cheap — but it is not "always
+safe": an open pool reconnecting after the change will fail with the old
+credential, and the Auth Proxy does not shield a password change from clients
+that cached one.
 
 ## Project safety for cloud work
 
@@ -177,7 +208,7 @@ queryability. Do not write "empty" in a report.
 ### Creating an instance
 
 ```bash
-CLOUDSDK_CORE_PROJECT=$P gcloud sql instances create <name> \
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances create <name> \
   --project=$P \
   --database-version=POSTGRES_18 \
   --edition=ENTERPRISE \
@@ -191,11 +222,16 @@ CLOUDSDK_CORE_PROJECT=$P gcloud sql instances create <name> \
   --quiet
 ```
 
-**`--edition=ENTERPRISE` is required, and omitting it costs money.** PostgreSQL
-18 now defaults to **ENTERPRISE_PLUS**, which rejects `db-g1-small` with
-`Invalid Tier (db-g1-small) for (ENTERPRISE_PLUS) Edition` and whose own tiers
-cost substantially more. The rejection is a hard error rather than a silent
-upgrade, which is the only reason this was caught rather than billed.
+**`--edition=ENTERPRISE` is required for this tier.** PostgreSQL 18 defaults to
+**ENTERPRISE_PLUS** (**measured 2026-08-17**), which rejects `db-g1-small`
+outright: `Invalid Tier (db-g1-small) for (ENTERPRISE_PLUS) Edition`.
+
+Be precise about the risk, because the obvious reading is wrong. With **this**
+tier, omitting the flag **fails hard and bills nothing** — the instance is never
+created. The expensive path is the plausible reaction to that error: switching
+to a tier that *is* valid for Enterprise Plus and creating it successfully, at
+Enterprise Plus pricing. So the failure to guard against is not the error
+message, it is the fix somebody reaches for next.
 
 **`--no-authorized-networks` is not a flag.** Omit it: no authorized networks
 is the default, and that is the state you want.
@@ -209,9 +245,9 @@ is the default, and that is the state you want.
 **Do not re-issue `create`.** Check what is actually happening:
 
 ```bash
-gcloud sql instances list --project=$P
-gcloud sql operations list --instance=<name> --project=$P
-gcloud sql operations wait <operation-id> --project=$P
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances list --project=$P
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql operations list --instance=<name> --project=$P
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql operations wait <operation-id> --project=$P
 ```
 
 ### Connectivity posture
@@ -221,6 +257,8 @@ connection:
 
 ```bash
 cloud-sql-proxy --port 5433 --quota-project $P <project>:<region>:<instance>
+# --quota-project is the proxy's equivalent of GOOGLE_CLOUD_QUOTA_PROJECT; it is
+# an ADC client, so it needs the scoping too.
 ```
 
 The instance keeps a public IP but **no authorized networks**, so direct
