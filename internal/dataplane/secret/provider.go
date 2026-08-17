@@ -212,8 +212,8 @@ var knownBackends = []Backend{
 // known reports whether this is a backend the package defines.
 func (b Backend) known() bool { return slices.Contains(knownBackends, b) }
 
-// Field order is chosen for alignment: the slice header leads so the pointer
-// prefix stays minimal.
+// Field order is chosen for alignment rather than for reading: the string
+// header leads, which keeps the struct's pointer prefix minimal.
 type resolvedKeyProvider struct {
 	source Backend
 	key    []byte

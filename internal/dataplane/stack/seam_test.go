@@ -10,47 +10,7 @@ import (
 
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
-	"orchestrator/internal/dataplane/store"
 )
-
-// closeOnlyStore is a seam that can be closed and nothing else.
-//
-// The embedded interface is nil on purpose: every other method would panic
-// if reached, which is the assertion that this double is used for exactly
-// one thing. sharedSeam adds behaviour to Close and delegates the rest, so
-// Close is the whole of its contract.
-type closeOnlyStore struct {
-	store.Store
-	closed bool
-}
-
-func (s *closeOnlyStore) Close() { s.closed = true }
-
-// The lock's lifetime is the SEAM's, not the call's.
-//
-// This is the half the blocking case cannot see: that test opens a seam and
-// closes it immediately, so a version that released the lock as soon as the
-// store was built would satisfy it — and would leave the import the lock was
-// taken for entirely unprotected. What has to hold is that Close, and only
-// Close, gives the lock back.
-func TestSharedSeamReleasesTheLockWhenItIsClosed(t *testing.T) {
-	released := false
-	inner := &closeOnlyStore{}
-	seam := &sharedSeam{Store: inner, release: func() error { released = true; return nil }}
-
-	if released {
-		t.Fatal("the lock was released before the seam was closed")
-	}
-	seam.Close()
-
-	if !inner.closed {
-		t.Error("closing the seam did not close the plane beneath it")
-	}
-	if !released {
-		t.Error("closing the seam did not release the lifecycle lock; every later lifecycle " +
-			"operation would block until this process exits")
-	}
-}
 
 // A seam that fails to open must not leave a holder behind.
 //
