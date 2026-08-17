@@ -23,6 +23,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
 
 	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
@@ -77,6 +79,7 @@ type Composition struct {
 // `reset` proceed; in cloud mode it is the object client, which holds pooled
 // connections. Neither is reachable from `store.Store`, so nothing else can
 // close them.
+//
 // Field order is chosen for alignment rather than for reading: the func value
 // leads, which keeps the struct's pointer prefix minimal.
 type Owned struct {
@@ -104,10 +107,21 @@ type Owned struct {
 // obligation for its object client, and discovering that separately in each
 // composer is how one of them ends up without it.
 //
-// composition after it has been validated and its resources taken over.
-//
-//nolint:gocritic // hugeParam: by value, so a caller cannot mutate the
+//nolint:gocritic // hugeParam: by value, matching the ownership model below.
 func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
+	// THE OWNERSHIP-TRANSFER BOUNDARY, and it has to copy rather than borrow.
+	//
+	// Passing Composition by value is not enough: Owned is a slice, so its
+	// backing array stays shared with the caller after this returns. A caller
+	// that later reused or amended that slice would be reaching into what this
+	// seam now owns — replacing a closer so the wrong resource is released, or
+	// clearing one so a live resource is leaked while the seam believes it
+	// released everything.
+	//
+	// Cloning is also what makes the by-value signature mean what it says.
+	// Without it the struct is copied and the thing that matters is not.
+	c.Owned = slices.Clone(c.Owned)
+
 	// Released on every path that does not hand ownership to the caller.
 	defer func() {
 		if err != nil {
@@ -205,6 +219,17 @@ func named(what string) string {
 type composedSeam struct {
 	store.Store
 	owned []Owned
+	// once makes closing idempotent, which Owned.Close promises and nothing
+	// previously delivered: a second Close released everything a second time.
+	// That is not harmless. A repeated flock release reports an error from a
+	// descriptor already closed, and a resource whose close is not idempotent
+	// can do worse — the point of the contract is that a resource need not
+	// defend itself against being closed twice.
+	//
+	// Double-close is not an exotic mistake either. It is what a deferred
+	// Close plus an explicit one on an error path produces, in the caller,
+	// which is the ordinary shape of this code.
+	once sync.Once
 }
 
 // Close closes the store and then releases what the composition owns.
@@ -218,9 +243,14 @@ type composedSeam struct {
 // That is the honest limit of the interface's signature, and it is logged
 // rather than dropped: a lock this process never released blocks every later
 // lifecycle operation until it exits.
+// The WHOLE sequence is guarded, not just the release: closing the underlying
+// store twice is the other half of the same mistake, and splitting the guard
+// would leave one of them unprotected.
 func (s *composedSeam) Close() {
-	s.Store.Close()
-	if err := release(s.owned); err != nil {
-		logRelease(err)
-	}
+	s.once.Do(func() {
+		s.Store.Close()
+		if err := release(s.owned); err != nil {
+			logRelease(err)
+		}
+	})
 }

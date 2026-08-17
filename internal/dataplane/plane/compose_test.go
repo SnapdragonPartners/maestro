@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"orchestrator/internal/dataplane/objects"
@@ -56,6 +57,119 @@ func TestComposedSeamReleasesWhatItOwnsWhenClosed(t *testing.T) {
 	if !released {
 		t.Error("closing the seam did not release what it owns; every later lifecycle operation " +
 			"would block until this process exits")
+	}
+}
+
+// TestComposedSeamClosesOnlyOnce enforces the contract Owned.Close states and
+// nothing previously delivered.
+//
+// A second Close used to release everything a second time. That is not
+// harmless: a repeated flock release reports an error from a descriptor
+// already closed, and the whole point of promising at-most-once is that a
+// resource need not defend itself against being closed twice. Nor is
+// double-close exotic — a deferred Close plus an explicit one on an error path
+// produces it, in the caller, which is the ordinary shape of this code.
+func TestComposedSeamClosesOnlyOnce(t *testing.T) {
+	stores, releases := 0, 0
+	seam := &composedSeam{
+		Store: &orderedStore{onClose: func() { stores++ }},
+		owned: []Owned{{What: "lock", Close: func() error { releases++; return nil }}},
+	}
+
+	seam.Close()
+	seam.Close()
+	seam.Close()
+
+	if stores != 1 {
+		t.Errorf("the underlying store was closed %d times, want 1", stores)
+	}
+	if releases != 1 {
+		t.Errorf("the owned resource was released %d times, want 1: a repeated release acts on a "+
+			"handle that is already gone", releases)
+	}
+}
+
+// TestComposedSeamClosesOnlyOnceUnderConcurrency covers the same contract when
+// two goroutines race to close, which is what a shutdown path and an error
+// path doing it at once look like. Run under -race, this also asserts the
+// guard is a synchronisation point rather than merely a flag.
+func TestComposedSeamClosesOnlyOnceUnderConcurrency(t *testing.T) {
+	var mu sync.Mutex
+	releases := 0
+	seam := &composedSeam{
+		Store: &orderedStore{onClose: func() {}},
+		owned: []Owned{{What: "lock", Close: func() error {
+			mu.Lock()
+			defer mu.Unlock()
+			releases++
+			return nil
+		}}},
+	}
+
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			seam.Close()
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if releases != 1 {
+		t.Fatalf("the owned resource was released %d times across concurrent closes, want 1", releases)
+	}
+}
+
+// TestOpenTakesACopyOfTheOwnedSlice covers the ownership-transfer boundary.
+//
+// Composition is passed by value, which copies the struct and NOT the slice's
+// backing array — so without a clone the caller still holds a handle on what
+// the seam now owns, and amending that slice would make the seam release the
+// wrong resource while believing it released the right one.
+//
+// The mutation has to happen WHILE the composition still holds the slice, or
+// the test cannot see it. A first version amended the caller's array after
+// Open had already released everything, which no sharing could affect; it
+// passed with the clone removed. So the amendment is made from inside another
+// closer: releases run in reverse, the second entry rewrites the first, and
+// what gets released next is the whole question.
+func TestOpenTakesACopyOfTheOwnedSlice(t *testing.T) {
+	realReleased, impostorReleased := false, false
+
+	var owned []Owned
+	owned = []Owned{
+		{What: "the real resource", Close: func() error { realReleased = true; return nil }},
+		{What: "the amender", Close: func() error {
+			owned[0] = Owned{
+				What:  "impostor",
+				Close: func() error { impostorReleased = true; return nil },
+			}
+			return nil
+		}},
+	}
+
+	// Fails before the database, because what is under test is the copy rather
+	// than the open.
+	_, err := Open(context.Background(), Composition{
+		DSN:     "",
+		Objects: stubObjects{},
+		RootKey: stubRootKey{},
+		Types:   emptyRegistry(t),
+		Owned:   owned,
+	})
+	if err == nil {
+		t.Fatal("an invalid composition opened")
+	}
+	if impostorReleased {
+		t.Fatal("the composition released a resource substituted through the CALLER's slice: it " +
+			"borrowed the backing array instead of taking a copy, so what it releases is whatever " +
+			"the caller last put there")
+	}
+	if !realReleased {
+		t.Fatal("the resource actually handed over was never released")
 	}
 }
 
