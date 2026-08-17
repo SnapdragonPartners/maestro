@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-gcs test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -60,6 +60,20 @@ test: benchmark-test
 test-integration:
 	@echo "🧪 Running integration tests..."
 	go test -tags=integration -cover -timeout=20m ./...
+
+# Run the GCS adapter tests against a REAL Google Cloud Storage bucket.
+#
+# Deliberately NOT under the `integration` tag: pre-push runs test-integration,
+# and requiring cloud credentials to push would either block anyone without
+# them or skip silently and look green. The bucket must be versioned and have
+# soft delete DISABLED — with soft delete on, these pass while reclaiming
+# nothing, which is the failure recorded on #286.
+test-gcs:
+	@echo "☁️  Running GCS adapter tests against a real bucket..."
+	@echo "   Requires: MAESTRO_GCS_TEST_BUCKET and application default credentials"
+	@test -n "$(MAESTRO_GCS_TEST_BUCKET)" || \
+		(echo "❌ MAESTRO_GCS_TEST_BUCKET is not set; refusing to run and report a green skip" && exit 1)
+	go test -tags=gcs -count=1 -timeout=10m ./internal/dataplane/objects/
 
 # Run E2E tests (full workflow tests requiring Docker, Gitea, real Git operations)
 test-e2e:
