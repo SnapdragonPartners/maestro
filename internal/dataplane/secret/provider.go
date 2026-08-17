@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 
 	"orchestrator/internal/dataplane/paths"
 )
@@ -46,6 +47,22 @@ const (
 	// BackendPassphrase is named but not implemented. It carries a cost the
 	// default cannot: a plane that cannot start unattended.
 	BackendPassphrase Backend = "passphrase"
+
+	// BackendOperatorProvided is material handed to the process from outside
+	// — an environment variable, a flag, or an injected secret — rather than
+	// held on this machine by Maestro.
+	//
+	// It is NOT a fourth way of storing a key locally, and it has no
+	// constructor above for that reason: there is nothing for this package to
+	// read, create or refuse. It exists so a caller that already holds such
+	// material can say where it came from, which is the difference between a
+	// provider naming its source and one inheriting somebody else's.
+	//
+	// This is the route for a plane that does not hold its own key. It is
+	// deliberately not a cloud RootKeyProvider: the seam stays local, and a
+	// cloud implementation of it would have to invent a key it has no use
+	// for, which is the anti-pattern this interface's own comment names.
+	BackendOperatorProvided Backend = "operator-provided"
 )
 
 // ErrBackendNotImplemented reports a root-key backend that is named but not
@@ -153,13 +170,47 @@ func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProv
 // vault's key provenance is exactly what an operator consults when they need
 // to know which key protects the data, and ErrBackendNotImplemented already
 // exists because guessing there is unrecoverable later.
+//
+// BOTH arguments are validated, and the reason is that this constructor
+// returns an error at all. Its whole purpose is to fail where the mistake is
+// made rather than where it surfaces, and checking only one of the two left
+// the other still deferred:
+//
+//   - EMPTY MATERIAL builds a provider that looks usable and fails at the
+//     first vault operation, which is a long way from the caller that passed
+//     nothing. An operator supplying a key by hand — the case this parameter
+//     exists for — is exactly who supplies an empty one by mistake.
+//   - AN UNRECOGNISED SOURCE recreates the defect this parameter removed. A
+//     typo is not caught by requiring non-empty, and a provider reporting
+//     "keyfile" or "operator" would misname the vault's key provenance just as
+//     effectively as the old hardcoded constant did, while looking deliberate.
 func ResolvedKey(key []byte, source Backend) (RootKeyProvider, error) {
-	if source == "" {
-		return nil, errors.New("resolved root key needs the backend that produced it: a provider " +
-			"that cannot name its source makes every diagnostic about the vault's key guess")
+	if len(key) == 0 {
+		return nil, fmt.Errorf("resolved root key was given no material: %w", ErrNoRootKey)
+	}
+	if !source.known() {
+		return nil, fmt.Errorf("resolved root key names backend %q, which is not one of %s: a "+
+			"provider that reports a source nobody configured misdirects the operator who needs to "+
+			"know which key protects the vault", source, knownBackends)
 	}
 	return resolvedKeyProvider{key: bytes.Clone(key), source: source}, nil
 }
+
+// knownBackends is every source a provider may claim. It is the list rather
+// than a range check because Backend is a string: there is no compiler-visible
+// set, so the constants have to be enumerated somewhere, and one place beats
+// each caller guessing.
+//
+//nolint:gochecknoglobals // Immutable set, built once at init.
+var knownBackends = []Backend{
+	BackendKeyFile,
+	BackendKeychain,
+	BackendPassphrase,
+	BackendOperatorProvided,
+}
+
+// known reports whether this is a backend the package defines.
+func (b Backend) known() bool { return slices.Contains(knownBackends, b) }
 
 // Field order is chosen for alignment: the slice header leads so the pointer
 // prefix stays minimal.

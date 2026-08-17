@@ -118,35 +118,72 @@ func TestUnknownBackendIsAConstructionError(t *testing.T) {
 	}
 }
 
-// TestResolvedKeyRequiresItsSource covers the parameter that replaced a
-// hardcoded backend.
+// TestResolvedKeyRejectsAnIncompleteValue covers every way the constructor can
+// be handed something that would fail later instead of here.
 //
-// The old implementation answered BackendKeyFile for every resolved key. That
-// was accurate only because the single caller resolved from the key file — a
-// property of one call path, not of this type — so a caller obtaining material
-// any other way would have made the vault's key provenance name a backend
-// nobody configured. Refusing an unnamed source is what stops that returning
-// as a default.
-func TestResolvedKeyRequiresItsSource(t *testing.T) {
-	if _, err := ResolvedKey([]byte("material"), ""); err == nil {
-		t.Fatal("a resolved key with no named source was accepted; every diagnostic about the " +
-			"vault's key would then be guessing")
+// The point of returning an error at all is to fail where the mistake is made.
+// An earlier revision checked only the source, which left empty material and
+// typo'd backends still deferring to first use — the very thing the error
+// return was added to prevent.
+func TestResolvedKeyRejectsAnIncompleteValue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		key    []byte
+		source Backend
+		is     error
+	}{
+		"no material":       {key: nil, source: BackendKeyFile, is: ErrNoRootKey},
+		"empty material":    {key: []byte{}, source: BackendOperatorProvided, is: ErrNoRootKey},
+		"unnamed source":    {key: []byte("material"), source: ""},
+		"misspelled source": {key: []byte("material"), source: "keyfile"},
+		"invented source":   {key: []byte("material"), source: "gcp-kms"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider, err := ResolvedKey(tc.key, tc.source)
+			if err == nil {
+				t.Fatal("accepted, so the failure is deferred to the first vault operation, a long " +
+					"way from the caller that caused it")
+			}
+			if provider != nil {
+				t.Fatal("a refusal returned a usable provider, which invites the fall-through the " +
+					"refusal exists to prevent")
+			}
+			if tc.is != nil && !errors.Is(err, tc.is) {
+				t.Fatalf("refusal does not wrap %v: %v", tc.is, err)
+			}
+		})
 	}
 }
 
-// TestResolvedKeyReportsTheSourceItWasGiven is the control, and it uses a
-// backend OTHER than the key file on purpose: passing BackendKeyFile would
-// pass just as well against the old hardcoded implementation, so it could not
+// TestResolvedKeyAcceptsEveryNamedBackend is the control for the table above.
+// Without it, the rejections would pass just as well against a constructor
+// that refused everything.
+func TestResolvedKeyAcceptsEveryNamedBackend(t *testing.T) {
+	for _, source := range knownBackends {
+		t.Run(string(source), func(t *testing.T) {
+			provider, err := ResolvedKey([]byte("material"), source)
+			if err != nil {
+				t.Fatalf("named backend %q was refused: %v", source, err)
+			}
+			if got := provider.Backend(); got != source {
+				t.Fatalf("provider reports %q, want %q", got, source)
+			}
+		})
+	}
+}
+
+// TestResolvedKeyReportsTheSourceItWasGiven pins the behaviour the hardcoded
+// constant used to break, using a backend OTHER than the key file on purpose:
+// BackendKeyFile would pass against the old implementation too and could not
 // tell the fix from the defect.
 func TestResolvedKeyReportsTheSourceItWasGiven(t *testing.T) {
-	provider, err := ResolvedKey([]byte("material"), BackendPassphrase)
+	provider, err := ResolvedKey([]byte("material"), BackendOperatorProvided)
 	if err != nil {
 		t.Fatalf("a named source was refused: %v", err)
 	}
-	if got := provider.Backend(); got != BackendPassphrase {
+	if got := provider.Backend(); got != BackendOperatorProvided {
 		t.Fatalf("resolved key reports backend %q, want %q — a provider that renames its own "+
 			"source misdirects the operator who needs to know which key protects the vault",
-			got, BackendPassphrase)
+			got, BackendOperatorProvided)
 	}
 	key, err := provider.RootKey()
 	if err != nil {

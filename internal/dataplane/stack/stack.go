@@ -694,29 +694,6 @@ func syncDir(dir string) error {
 // Emptiness is judged across every service data directory, not just Postgres:
 // the object store's credentials derive from the same key, so a plane holding
 // objects and no cluster is still a plane some earlier key provisioned.
-// resolvedRootKey wraps material rootKeyFor produced, naming the backend that
-// actually produced it.
-//
-// It exists so that correspondence lives in ONE place, immediately beside the
-// function it describes. secret.ResolvedKey takes the source as a parameter
-// because it cannot know it; if each call site answered separately, all three
-// would be asserting something about rootKeyFor's internals from a distance,
-// and a change of backend here would leave them quietly reporting the old one.
-// That is the same defect the parameter was introduced to remove, moved up a
-// level.
-//
-// The answer is BackendKeyFile because rootKeyFor resolves through
-// secret.KeyFile. A plane that obtains its key some other way — one that does
-// not hold its own key at all — must not route through here; it names its own
-// source, which is the whole point of the parameter.
-func resolvedRootKey(rootKey []byte) (secret.RootKeyProvider, error) {
-	provider, err := secret.ResolvedKey(rootKey, secret.BackendKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("wrap the local plane's root key: %w", err)
-	}
-	return provider, nil
-}
-
 func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 	evidence, err := planeEvidence(c)
 	if err != nil {
@@ -769,6 +746,29 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 		"beside the backup, or run the new-key recovery path. The data root is judged non-fresh "+
 		"because of: %s: %w",
 		ErrPlaneLocked, operation, strings.Join(evidence, ", "), wrapped)
+}
+
+// resolvedRootKey wraps material rootKeyFor produced, naming the backend that
+// actually produced it.
+//
+// It exists so that correspondence lives in ONE place, immediately beside the
+// function it describes. secret.ResolvedKey takes the source as a parameter
+// because it cannot know it; if each call site answered separately, all three
+// would be asserting something about rootKeyFor's internals from a distance,
+// and a change of backend here would leave them quietly reporting the old one.
+// That is the same defect the parameter was introduced to remove, moved up a
+// level.
+//
+// The answer is BackendKeyFile because rootKeyFor resolves through
+// secret.KeyFile. A plane that obtains its key some other way — one that does
+// not hold its own key at all — must not route through here; it names its own
+// source, which is the whole point of the parameter.
+func resolvedRootKey(rootKey []byte) (secret.RootKeyProvider, error) {
+	provider, err := secret.ResolvedKey(rootKey, secret.BackendKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("wrap the local plane's root key: %w", err)
+	}
+	return provider, nil
 }
 
 // maxEvidencePaths bounds how many offending paths an error names. A
