@@ -78,14 +78,23 @@ func unknownIncompleteWrites(got objects.IncompleteWriteSupport) error {
 // listUploadsUnder enumerates incomplete writes beneath a prefix, returning
 // none where the provider reclaims them itself.
 //
-// It does NOT yet report which of those two cases produced an empty result,
-// and that omission is deliberate rather than an oversight. Nothing consumes
-// the distinction today, because MinIO is the only provider and it always
-// enumerates; a third return value would be surface built ahead of its
-// consumer, which is the habit ADR 0032's scope correction exists to break.
-// It returns when the GCS adapter and the sweep report that reads it land
-// together (#286), and the capability is already declared on the interface
-// so the answer is available the moment something asks.
+// It does NOT report which of those two cases produced an empty result, and
+// that is a live gap rather than a resolved one. A non-enumerating provider
+// now exists — the GCS adapter (#286) — so the earlier note here, that MinIO
+// was the only provider and the distinction would land alongside GCS, is no
+// longer true on either half.
+//
+// What keeps the present behaviour honest is narrower than reporting the
+// distinction: the sweep's fields count ACTIONS TAKEN, not residue found. A
+// zero abort count says nothing was aborted, which is true of a
+// provider-reclaimed backend and of an enumerating one with nothing to
+// reclaim. It does not assert that anything was enumerated, so no record
+// currently claims a measurement it did not take.
+//
+// That holds only while the consumers stay action-shaped. The moment a sweep
+// report says how much residue was FOUND, or an operator reads a zero as "the
+// bucket is clean", this must carry the capability through — the answer is
+// already on the interface, and it is the callers that are not asking.
 func (s *Store) listUploadsUnder(ctx context.Context, prefix string) ([]objects.Upload, error) {
 	r, ok, err := s.reclaimer()
 	if err != nil || !ok {

@@ -107,9 +107,17 @@ const (
 	IncompleteWritesEnumerable IncompleteWriteSupport = "enumerable"
 
 	// IncompleteWritesProviderReclaimed means interrupted writes are not
-	// enumerable and the provider expires them on its own schedule. The
-	// sweep records the obligation as the provider's rather than reporting
-	// a count it did not measure.
+	// enumerable and the provider expires them on its own schedule.
+	//
+	// The sweep does NOT yet record this anywhere, and an earlier version of
+	// this comment said it did. What holds today is weaker and worth stating
+	// exactly: the sweep's fields count actions taken, so a zero abort count
+	// reports that nothing was aborted and does not assert that anything was
+	// looked for. That keeps the records honest under a non-enumerating
+	// provider without carrying the distinction into them. Reporting it
+	// becomes necessary as soon as a consumer reads an empty result as
+	// evidence about the bucket — see the note in the postgres store's
+	// reclaim.go.
 	IncompleteWritesProviderReclaimed IncompleteWriteSupport = "provider-reclaimed"
 )
 

@@ -62,6 +62,8 @@ func newTestGCS(t *testing.T) (*GCS, string) {
 		}
 	})
 
+	requireSafeBucket(t, adapter, bucket)
+
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		t.Fatalf("generate run nonce: %v", err)
@@ -83,6 +85,45 @@ func newTestGCS(t *testing.T) (*GCS, string) {
 		}
 	})
 	return adapter, prefix
+}
+
+// requireSafeBucket refuses to run against a bucket whose policies would make
+// these tests lie, and it runs BEFORE the first write.
+//
+// Both checks guard a green-but-wrong outcome rather than a crash:
+//
+//   - Without VERSIONING, PutStaged's fence would reject writes outright on
+//     some paths and the listing tests would have no noncurrent generations to
+//     find. The suite would fail confusingly rather than say why.
+//   - With SOFT DELETE ON, every deletion test below still PASSES while
+//     reclaiming nothing: the generations leave the listing exactly as
+//     asserted, and the bytes are retained and billed for the retention
+//     period. Cleanup would appear to work and would not. That is the defect
+//     recorded on #286, so a suite that could be run against such a bucket
+//     would be demonstrating the failure while reporting success.
+//
+// Reading bucket attributes needs a permission the adapter itself deliberately
+// does not exercise, which is why this lives in the test and not in NewGCS.
+func requireSafeBucket(t *testing.T, g *GCS, bucket string) {
+	t.Helper()
+	attrs, err := g.client.Bucket(bucket).Attrs(context.Background())
+	if err != nil {
+		t.Fatalf("read attributes of %s: %v", bucket, err)
+	}
+	if !attrs.VersioningEnabled {
+		t.Fatalf("bucket %s is not versioned; every fence in this adapter names a generation, and "+
+			"the listing tests have nothing to observe without it", bucket)
+	}
+	// A nil policy means soft delete is off. A non-nil one with a zero
+	// retention means it was explicitly disabled, which is how the API
+	// reports the disabled state after a PATCH.
+	if attrs.SoftDeletePolicy != nil && attrs.SoftDeletePolicy.RetentionDuration > 0 {
+		t.Fatalf("bucket %s retains soft-deleted objects for %s. Every deletion test below would "+
+			"still pass while reclaiming nothing, because the generations leave the listing and the "+
+			"bytes keep billing until their hard-delete time. Disable soft delete on this bucket "+
+			"(retention 0) before running: see #286",
+			bucket, attrs.SoftDeletePolicy.RetentionDuration)
+	}
 }
 
 func put(t *testing.T, g *GCS, key, content string) string {
@@ -161,23 +202,57 @@ func TestGCSDeletingLiveObjectAddsNoListingEntry(t *testing.T) {
 		}
 	}
 
-	// Delete the LIVE object by naming its generation — the only delete this
-	// adapter offers. On S3 the equivalent key-level call would add a marker.
+	// The deletion has to be UNQUALIFIED to test anything. An exact-generation
+	// delete removes that generation on both providers and proves nothing
+	// about markers — the listing would drop from two to one either way.
+	//
+	// The divergence is in the KEY-LEVEL delete: on a versioned S3 bucket that
+	// call adds a delete marker, which is why blob.go refuses to offer one at
+	// all and says so in its own comment. Here the same call must leave the
+	// count unchanged, turning the live generation noncurrent while it keeps
+	// its bytes.
+	//
+	// This adapter deliberately exposes no way to issue it, so the test
+	// reaches through to the underlying handle — the same reason
+	// blob_integration_test.go is an internal test package: the states worth
+	// checking are the ones the adapter exists to prevent.
 	live := before[len(before)-1]
-	if err := g.DeleteVersion(ctx, live.Key, live.VersionID); err != nil {
-		t.Fatalf("delete live generation: %v", err)
+	if err := g.client.Bucket(g.bucket).Object(live.Key).Delete(ctx); err != nil {
+		t.Fatalf("unqualified delete of %s: %v", live.Key, err)
 	}
 
 	after, err := g.ListVersions(ctx, prefix)
 	if err != nil {
 		t.Fatalf("list after: %v", err)
 	}
-	if len(after) != 1 {
-		t.Fatalf("after deleting one of two generations the listing holds %d, want 1 — no delete "+
-			"marker should have been added", len(after))
+	if len(after) != 2 {
+		t.Fatalf("an unqualified delete changed the listing from 2 entries to %d. On GCS it must "+
+			"leave the count alone — the live generation becomes noncurrent and keeps its bytes. A "+
+			"count of 3 would mean a delete marker was added, which is S3 behaviour and would make "+
+			"the sweep account for storage that does not exist", len(after))
 	}
-	if after[0].VersionID == live.VersionID {
-		t.Fatal("the deleted generation is still listed")
+	for _, v := range after {
+		if v.IsDeleteMarker {
+			t.Fatalf("version %s is reported as a delete marker after an unqualified delete", v.VersionID)
+		}
+		if v.Size == 0 {
+			t.Fatalf("version %s reports zero bytes after an unqualified delete; the bytes are "+
+				"retained on GCS, and a zero size would hide reclaimable storage from the sweep",
+				v.VersionID)
+		}
+	}
+
+	// The generation that was live must still be nameable, since that is how
+	// the sweep will actually reclaim it.
+	if err := g.DeleteVersion(ctx, live.Key, live.VersionID); err != nil {
+		t.Fatalf("the formerly-live generation could not be deleted by name: %v", err)
+	}
+	remaining, err := g.ListVersions(ctx, prefix)
+	if err != nil {
+		t.Fatalf("list after generation delete: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("naming the formerly-live generation left %d entries, want 1", len(remaining))
 	}
 }
 
@@ -283,21 +358,50 @@ func TestGCSGetReportsMissingKeyImmediately(t *testing.T) {
 // capability split rests on: this adapter declares provider-reclaimed because
 // it genuinely cannot see interrupted writes, not as a convenience.
 //
-// It asserts the claim from the outside — after abandoning a write, no
-// listing surface this adapter offers reports anything — which is the only
-// form available, since the point is that there is no API to ask.
+// The upload MUST cross a chunk boundary before it fails, or the test proves
+// nothing. The pinned client buffers before sending, so an interrupted write
+// smaller than one chunk never opens a resumable session at all — the bytes
+// die in the client, no session is created, and "nothing was listed" is then
+// a statement about a request that was never made. An earlier version of this
+// test failed after 512 KiB against the default 16 MiB buffer and was exactly
+// that vacuous.
+//
+// The chunk size is lowered rather than the body enlarged, so the session is
+// genuinely opened and fed without uploading tens of megabytes on every run.
+// The independent check that this is a real state, not an artefact of the
+// client, is a raw resumable session driven directly against the JSON API:
+// opened, given a 256 KiB chunk, acknowledged with HTTP 308, and then absent
+// from the live, versioned and soft-deleted listings. That measurement is
+// recorded on #286.
 func TestGCSIncompleteWritesAreUnenumerable(t *testing.T) {
 	g, prefix := newTestGCS(t)
 	ctx := context.Background()
 	key := prefix + "abandoned.bin"
 
-	// Abandon a write partway. The reader fails after some bytes, so the
-	// resumable session has received data and is never finalized.
+	// One chunk flushes at 256 KiB, so failing at 512 KiB guarantees the
+	// service has accepted data before the write is abandoned.
+	const chunk = 256 * 1024
+	g.chunkSize = chunk
+
 	interrupted := errors.New("reader failed partway")
-	body := io.MultiReader(bytes.NewReader(make([]byte, 512*1024)), failingReader{interrupted})
-	_, err := g.PutStaged(ctx, key, 1024*1024, body)
+	counted := &countingReader{r: bytes.NewReader(make([]byte, 2*chunk))}
+	body := io.MultiReader(counted, failingReader{interrupted})
+	_, err := g.PutStaged(ctx, key, 8*chunk, body)
 	if err == nil {
 		t.Fatal("an interrupted upload was reported as successful")
+	}
+	// A NECESSARY condition, not a sufficient one, and the distinction is the
+	// whole subject of this test. Consuming more than one chunk means the
+	// client had a full buffer to flush before the reader failed; it does not
+	// prove the service accepted it, and nothing available here can — the
+	// claim under test is that an accepted-but-unfinalized session is
+	// invisible, so there is no listing that could confirm one exists. That
+	// step is established by the raw-session measurement on #286 instead, and
+	// saying so is better than implying this assertion covers it.
+	if counted.n <= chunk {
+		t.Fatalf("the body was consumed only %d bytes, within one %d-byte chunk; the client would "+
+			"have buffered it all and never opened a session, so this test would be asserting the "+
+			"absence of a request that was never made", counted.n, chunk)
 	}
 
 	versions, err := g.ListVersions(ctx, prefix)
@@ -331,3 +435,55 @@ func TestGCSIncompleteWritesAreUnenumerable(t *testing.T) {
 type failingReader struct{ err error }
 
 func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
+
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// TestGCSPutStagedRejectsASizeMismatch covers the check that exists because
+// GCS will not perform it.
+//
+// Writer.Size is inherited from ObjectAttrs, where it is documented read-only:
+// assigning it compiles, passes the client's own attribute validation, and is
+// then ignored. So a body shorter or longer than the caller declared would be
+// stored at whatever length arrived. blob.go's PutObject hands the size to the
+// S3 client, which does enforce it — meaning without this check the two
+// adapters would answer the same seam call differently, one refusing a
+// truncated body and the other accepting it.
+func TestGCSPutStagedRejectsASizeMismatch(t *testing.T) {
+	g, prefix := newTestGCS(t)
+	ctx := context.Background()
+
+	for name, tc := range map[string]struct {
+		declared int64
+		content  string
+	}{
+		"stream shorter than declared": {declared: 64, content: "only a few bytes"},
+		"stream longer than declared":  {declared: 4, content: "considerably more than four"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			key := prefix + "mismatch-" + name + ".txt"
+			_, err := g.PutStaged(ctx, key, tc.declared, bytes.NewReader([]byte(tc.content)))
+			if err == nil {
+				t.Fatalf("a %d-byte body declared as %d bytes was accepted", len(tc.content), tc.declared)
+			}
+			// And it must leave nothing behind: a rejected write that stored
+			// the object anyway would be worse than accepting it, because the
+			// caller is told it failed.
+			exists, existsErr := g.Exists(ctx, key)
+			if existsErr != nil {
+				t.Fatalf("exists: %v", existsErr)
+			}
+			if exists {
+				t.Fatal("the rejected write left a live object at a key the caller was told failed")
+			}
+		})
+	}
+}

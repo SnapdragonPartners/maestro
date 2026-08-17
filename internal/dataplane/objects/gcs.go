@@ -65,6 +65,25 @@ type GCSConfig struct {
 type GCS struct {
 	client *storage.Client
 	bucket string
+	// chunkSize overrides the writer's upload buffer, and it is a field for
+	// the same reason blob.go's copyLimit is one: a test cannot otherwise
+	// reach the behaviour. The pinned client buffers 16 MiB before it sends
+	// anything, so an upload interrupted below that never opens a resumable
+	// session at all — and the state this adapter's central claim is about is
+	// a session that HAS accepted bytes and was then abandoned.
+	//
+	// Zero means the client's default, which is what production uses.
+	//
+	// NOT COVERED BY TEST, stated here rather than left implied. Whether this
+	// override takes effect is unobservable from outside: the only thing it
+	// changes is when the client flushes to a session that, by the very claim
+	// under test, no API will report. Removing the assignment was mutated in
+	// and the suite still passed. The interrupted-upload test asserts only the
+	// necessary condition it can see — that the body was consumed past one
+	// chunk — and the evidence that an accepted-but-unfinalized session really
+	// is invisible comes from a raw resumable session driven against the JSON
+	// API, recorded on #286.
+	chunkSize int
 }
 
 // NewGCS builds an adapter.
@@ -125,9 +144,17 @@ func (g *GCS) object(key string) *storage.ObjectHandle {
 //
 // So the check moves to the far side of the write. The bytes are hashed as
 // they stream past, and the result is compared against the CRC32C the SERVICE
-// computed over what it actually stored — which is a stronger statement than
-// any client-side checksum, because it is the server's own account of the
-// object rather than a restatement of what we believed we sent.
+// computed over what it actually stored.
+//
+// It is worth being exact about what that buys, because it is NOT the same
+// guarantee blob.go's request checksum gives. Detection is equivalent — both
+// catch bytes that changed in flight — but the atomicity is weaker: a
+// server-validated upload checksum makes the service refuse the object, while
+// this one lets it be created and then removes it. What makes that acceptable
+// is where it sits: the object is still STAGED, so nothing has been told it
+// exists, the failure is returned rather than swallowed, and the removal names
+// the exact generation. It is a repair, not a rejection, and it should not be
+// described as stronger.
 //
 // A mismatch DELETES the generation before returning. Leaving it would put an
 // object nobody verified at a key the caller is about to be told does not
@@ -142,14 +169,30 @@ func (g *GCS) PutStaged(ctx context.Context, key string, size int64, body io.Rea
 	defer abandonWrite()
 
 	writer := g.object(key).NewWriter(writeCtx)
-	// Declared so the service can reject a size mismatch of its own accord;
-	// the client does not enforce it.
-	writer.Size = size
+	if g.chunkSize > 0 {
+		writer.ChunkSize = g.chunkSize
+	}
 
 	sent := crc32.New(crc32cTable)
-	if _, err := io.Copy(writer, io.TeeReader(body, sent)); err != nil {
+	written, err := io.Copy(writer, io.TeeReader(body, sent))
+	if err != nil {
 		abandonWrite()
 		return "", fmt.Errorf("upload staging object %s: %w", key, err)
+	}
+	// The declared size is CHECKED HERE because GCS will not check it. Setting
+	// Writer.Size looks like it would: the field exists, assigning it compiles,
+	// and validateWriteAttrs does not object. It is inherited from ObjectAttrs,
+	// where Size is documented read-only, so the value is simply ignored and a
+	// short stream would be stored happily at whatever length arrived.
+	//
+	// blob.go's PutObject takes the size and the S3 client enforces it, so
+	// without this the two adapters would disagree about the seam's contract —
+	// one rejecting a truncated body and the other storing it. That divergence
+	// is precisely what a second provider is supposed to surface.
+	if written != size {
+		abandonWrite()
+		return "", fmt.Errorf("staging object %s was declared as %d bytes and the stream supplied %d; "+
+			"refusing to store a body that does not match what the caller promised", key, size, written)
 	}
 	if err := writer.Close(); err != nil {
 		return "", fmt.Errorf("finalize staging object %s: %w", key, err)
