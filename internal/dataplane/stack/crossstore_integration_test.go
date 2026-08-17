@@ -186,28 +186,39 @@ func seedCrossStore(t *testing.T, cfg *Config) crossStoreSeed {
 	seam := openSeam(t, cfg)
 	ctx := t.Context()
 
+	// OrganizationID is left zero here and filled in by the bootstrap below,
+	// which ALLOCATES it. A placeholder assigned here would be overwritten a
+	// few lines later, and the object key derived from it would then depend on
+	// which of the two a reader believed.
 	seed := crossStoreSeed{
-		Body:           []byte("evidence bytes that must survive the whole round trip"),
-		OrganizationID: uuid.New(),
+		Body: []byte("evidence bytes that must survive the whole round trip"),
 	}
 	sum := sha256.Sum256(seed.Body)
 	seed.Digest = hex.EncodeToString(sum[:])
 
-	// The organization and its user are written directly. The seam has no
-	// verb for either -- tenancy provisioning is the Orchestrator's, not
-	// this seam's -- and every other row here hangs off them.
-	userID := uuid.New()
-	database := openPlane(t, cfg)
-	if _, err := database.ExecContext(ctx,
-		`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1, $2, $3)`,
-		seed.OrganizationID, "backup-fixture", "Backup Fixture"); err != nil {
-		t.Fatalf("insert organization: %v", err)
+	// The organization and its user come from the seam's own bootstrap verbs.
+	//
+	// An earlier version inserted both rows directly and said the seam had no
+	// verb for either. That stopped being true when the benchmark family
+	// landed: BootstrapOrganization and BootstrapUser are on the seam,
+	// reachable from the bootstrap command. Raw inserts would now be building
+	// a fixture through a path no supported caller uses, which is the wrong
+	// starting point for a test about what survives a backup.
+	organization, err := seam.BootstrapOrganization(ctx, store.BootstrapOrganizationInput{
+		Slug: "backup-fixture", DisplayName: "Backup Fixture",
+	})
+	if err != nil {
+		t.Fatalf("bootstrap organization: %v", err)
 	}
-	if _, err := database.ExecContext(ctx,
-		`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1, $2, $3, $4)`,
-		userID, seed.OrganizationID, "fixture", "Fixture"); err != nil {
-		t.Fatalf("insert user: %v", err)
+	seed.OrganizationID = organization.Record.OrganizationID
+	operator, err := seam.BootstrapUser(ctx, store.BootstrapUserInput{
+		Handle: "fixture", DisplayName: "Fixture",
+		OrganizationID: seed.OrganizationID,
+	})
+	if err != nil {
+		t.Fatalf("bootstrap user: %v", err)
 	}
+	userID := operator.Record.UserID
 
 	agentType := "coder"
 	author, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{

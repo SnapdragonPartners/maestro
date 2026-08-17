@@ -549,14 +549,19 @@ func corruptObjectAt(t *testing.T, cfg Config, key string) {
 // TestCloudAttachmentRoundTrip drives the real store.ObjectStore contract
 // against Cloud SQL and Cloud Storage together.
 //
-// This is the last place in #286 where a behavioural divergence could hide, and
-// the reason is the composition rather than the adapter. The GCS adapter's own
-// suite measured each provider operation in isolation; what it could not
-// exercise is the write path the seam actually uses, which spans BOTH stores at
-// once: a staging lease taken and renewed in Postgres, an upload to a staging
-// key, a generation-pinned server-side copy onto the digest key, and a read-back
-// hashed before any row is allowed to reference it — all inside one database
-// transaction that stays open across those remote calls.
+// It is where a divergence in the OBJECT CONTRACT would hide, and the reason is
+// the composition rather than the adapter. The GCS adapter's own suite measured
+// each provider operation in isolation; what it could not exercise is the write
+// path the seam actually uses, which spans BOTH stores at once: a staging lease
+// taken and renewed in Postgres, an upload to a staging key, a generation-pinned
+// server-side copy onto the digest key, and a read-back hashed before any row is
+// allowed to reference it — all inside one database transaction that stays open
+// across those remote calls.
+//
+// It is NOT the last behavioural claim #286 requires. TestCloudBenchmarkImportSlice
+// below carries the acceptance criterion this cannot: an importer can hold a
+// correct object adapter and still depend on the composition through its ledger
+// identity, its transaction boundaries, or the queries that read its work back.
 //
 // The local suite proves that sequence against MinIO. Nothing but a managed
 // plane proves it against a provider whose copy semantics, generation
@@ -771,10 +776,13 @@ func TestCloudBenchmarkImportSlice(t *testing.T) {
 	seam, cfg, purge := migratedCloudPlane(t, benchmarkimport.RegistryEntries())
 
 	// The slice writes the suite's evidence as attachments, so this plane's
-	// objects need claiming exactly as the round trip's do — and the organization
-	// is the slice's to create, which is why it hands the id back.
-	organizationID := importslice.Run(t, seam)
-	ownObjectsOf(t, purge, seam, cfg, organizationID)
+	// objects need claiming exactly as the round trip's do. The claim happens
+	// through a callback DURING the slice rather than after it: the organization
+	// is the slice's to create, and a run that dies partway through has already
+	// written objects while never reaching a line that follows it.
+	importslice.Run(t, seam, func(organizationID uuid.UUID) {
+		ownObjectsOf(t, purge, seam, cfg, organizationID)
+	})
 }
 
 // TestCloudOpenRefusesAMissingBucket confirms that a failure to reach the

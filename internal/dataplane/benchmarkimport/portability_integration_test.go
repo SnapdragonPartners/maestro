@@ -25,9 +25,9 @@ import (
 // It does not replace this package's own suite, which pins the importer's
 // behaviour in detail. Nothing here is a new claim about the importer.
 //
-// No object purge, unlike the cloud caller: planetest gives each test its own
-// bucket and removes it, so the database and the object store are disposed
-// together. The managed plane is where that stops being true.
+// NoCleanup, unlike the cloud caller: planetest gives each test its own bucket
+// and removes it, so the database and the object store are disposed together.
+// The managed plane is where that stops being true.
 func TestImportSliceAgainstTheLocalPlane(t *testing.T) {
-	importslice.Run(t, newPlane(t).store)
+	importslice.Run(t, newPlane(t).store, importslice.NoCleanup)
 }

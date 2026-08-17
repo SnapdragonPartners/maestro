@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Roadmap"
-edit_date = "2026-08-16"
+edit_date = "2026-08-17"
 status = "live"
 summary = "The v2 roadmap: thesis, economic argument, vocabulary, 17 design pillars, phases 0-9 with exit criteria, and decisions D1-D10. Decisions are progressively ratified into ADRs (0017+), which outrank this document."
 type = "plan"
@@ -1026,11 +1026,39 @@ Outputs:
 - Cloud Postgres support.
 - Multi-project dashboard.
 - User attribution in artifact/epic views.
+- **Hosted identity and mediation boundary** (see below).
+
+**Hosted identity and mediation boundary**
+([#334](https://github.com/SnapdragonPartners/maestro/issues/334)). A cloud-hosted Orchestrator/API
+authenticates human and execution workloads, maps them to organization,
+principal, and execution identities, and is the **sole route** to Cloud SQL and
+GCS. Agent runtimes receive short-lived scoped authority, never provider
+credentials. Phase 7 decides whether these logical boundaries require separate
+deployables.
+
+This is the deliverable #286 deliberately did not claim. That proof established
+that the persistence seam composes against managed services; it says nothing
+about who may reach them. Until this lands, "cloud" means a data plane an
+operator reaches with operator credentials, which is not a multi-user trust
+boundary. Stating it as a phase output keeps the boundary from being assumed
+into existence by the fact that the storage already works remotely.
+
+It is deliberately silent on physical topology — one deployable or several is a
+Phase 7 decision, and the exit proof below is written so that either can satisfy
+it.
 
 Exit criteria:
 
 - Two users in one organization can operate distinct Epics against a shared data plane.
 - Auth works in local account mode and at least one federated mode.
+- Those two users operate **through the hosted API**, not against the data plane
+  directly. This strengthens the criterion above rather than repeating it: two
+  users sharing a data plane is satisfiable with two sets of operator
+  credentials, which is the posture this deliverable exists to end.
+- An external runtime performs an allowed mediated action but cannot access
+  Cloud SQL or GCS directly.
+- Cross-organization and stale or fenced authority are rejected and audited.
+- Hosted workloads use attached or federated identity — no long-lived cloud keys.
 
 ### Phase 1B: Benchmark Economics
 

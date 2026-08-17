@@ -12,16 +12,31 @@
 // it covers has no provider surface at all: manifest coherence, path
 // containment, evidence absence and digest identity are all decided before a
 // store is touched. What has to be shown twice is that the same slice over a
-// different composition writes the same thing and then refuses to write it
-// again. Running the whole suite twice would spend managed-service time
-// re-proving logic that Postgres and the object store never see.
+// different composition writes the same thing and then declines to duplicate it.
+// Running the whole suite twice would spend managed-service time re-proving
+// logic that Postgres and the object store never see.
 //
-// The slice is a WRITE followed by a REFUSAL, because those are the two halves
+// The slice is a WRITE followed by a RE-OFFER, because those are the two halves
 // that actually reach the store. The write has to land an attempt whole across
-// the ledger, the Audit artifact and the benchmark run; the refusal has to find
-// that prior work and add nothing. A composition that stored the record digest
-// differently, or committed in a different order, passes the first half and
-// fails the second — which is why a write-only slice would not be enough.
+// the ledger, the Audit artifact and the benchmark run; the re-offer has to find
+// that prior work and add no duplicate of it. A composition that stored the
+// record digest differently, or committed in a different order, passes the first
+// half and fails the second — which is why a write-only slice would not be
+// enough.
+//
+// # What the re-offer does NOT claim
+//
+// It is not "re-import writes nothing", and the difference is worth stating
+// because the stronger sentence is the one a later reader would rely on. Every
+// import invocation opens its own importer principal instance and its own tool
+// call, and completes them, whether or not a single attempt turns out to be new —
+// that is the audit trail of the invocation itself, and recording it is correct.
+//
+// What is asserted is narrower and is what idempotence actually means here: no
+// duplicate ATTEMPT ledger rows, no duplicate run-record artifacts in the suite's
+// scope, no second report, no re-uploaded evidence, and no movement in the record
+// digests already stored. A slice claiming global write-freedom would be false
+// against the local plane too, so it would not even be a portability statement.
 package importslice
 
 import (
@@ -69,33 +84,47 @@ const (
 const corpusControl = "benchmark/testdata/import_corpus/accept_minimal.json"
 
 // Run imports one two-attempt suite through seam, requires the plane to hold it
-// whole, and then requires the same bytes offered again to write nothing.
+// whole, and then requires the same bytes offered again to add no duplicate
+// records.
 //
 // The seam MUST have been opened with benchmarkimport.RegistryEntries(). The
 // importer's payloads are refused by a registry that does not know its types, so
 // a seam carrying any other vocabulary fails here in a way that looks like an
 // import defect rather than the configuration error it is.
 //
-// It returns the organization it imported into, and the caller is expected to use
-// it. A caller whose OBJECT store outlives its database — the managed case — has
-// to purge the prefixes beneath that organization, because a disposable database
-// does not make a persistent bucket disposable: dropping it removes the only rows
-// that name the digests this slice wrote.
-func Run(t *testing.T, seam store.Store) uuid.UUID {
+// claimObjects is called with the organization as soon as it exists and BEFORE
+// anything can write an object. It is a callback rather than a return value on
+// purpose: a returned organization arrives only when the slice SUCCEEDS, and the
+// run that needs cleanup most is the one that dies partway through, having
+// written objects that nothing has claimed. A caller whose object store outlives
+// its database — the managed case — installs its purge here, because dropping
+// that database removes the only rows naming the digests this slice wrote. Use
+// NoCleanup where both stores are disposed together.
+func Run(t *testing.T, seam store.Store, claimObjects func(organizationID uuid.UUID)) {
 	t.Helper()
 	ctx := context.Background()
 
 	organizationID := bootstrapTenant(ctx, t, seam)
+	// Before twoAttemptSuite and before the first import: everything below this
+	// line can fail, and some of it fails after writing to the object store.
+	claimObjects(organizationID)
+
 	dir := twoAttemptSuite(t)
 
 	first := mustImport(ctx, t, seam, dir)
 	assertWroteTheSuiteWhole(ctx, t, seam, organizationID, first)
 	assertPrincipalFamily(ctx, t, seam, organizationID)
 	assertReportCarriesItsEvidence(ctx, t, seam, organizationID, first)
-	assertRefusesToRewrite(ctx, t, seam, organizationID, dir, first)
-
-	return organizationID
+	assertReimportAddsNoDomainRecords(ctx, t, seam, organizationID, dir, first)
 }
+
+// NoCleanup is the claim callback for a caller that needs none.
+//
+// Correct only where the object store is disposed with the database — planetest
+// gives each local test its own bucket and removes it, so nothing outlives the
+// run. It is a named function rather than an inline empty closure so that a call
+// site states this rather than looking like an oversight.
+func NoCleanup(uuid.UUID) {}
 
 // assertWroteTheSuiteWhole requires every family one attempt produces to be
 // present and to refer to the same attempt.
@@ -195,11 +224,19 @@ func assertReportCarriesItsEvidence(
 	assertPinnedEvidenceReadsBack(ctx, t, seam, organizationID, result.Report.ArtifactID)
 }
 
-// assertRefusesToRewrite requires the same bytes offered again to write nothing.
+// assertReimportAddsNoDomainRecords requires the same bytes offered again to
+// duplicate none of the suite's records.
 //
-// Counted before and after, because "wrote nothing" is a claim about the plane
+// DOMAIN records specifically — the attempts, their run-record artifacts, the
+// report and its evidence. A second invocation still opens and completes its own
+// importer principal and tool call, which is the audit trail of the invocation
+// rather than a duplicate of the suite's contents; see the package comment. The
+// artifact count below is scoped to the benchmark run for exactly that reason,
+// so it measures the suite's contents and not everything the plane holds.
+//
+// Counted before and after, because "added nothing" is a claim about the plane
 // and not only about what the importer reported about itself.
-func assertRefusesToRewrite(
+func assertReimportAddsNoDomainRecords(
 	ctx context.Context, t *testing.T, seam store.Store,
 	organizationID uuid.UUID, dir string, first *benchmarkimport.Result,
 ) {
@@ -208,13 +245,15 @@ func assertRefusesToRewrite(
 	second := mustImport(ctx, t, seam, dir)
 
 	if importedCount(second) != 0 {
-		t.Errorf("re-import wrote %d attempts; the same bytes must be a no-op", importedCount(second))
+		t.Errorf("re-import wrote %d attempts; the same bytes must re-ledger none of them",
+			importedCount(second))
 	}
 	if len(second.Attempts) != 2 {
 		t.Errorf("re-import reported %d attempts, want the suite's 2", len(second.Attempts))
 	}
 	if after := auditArtifactCount(ctx, t, seam, organizationID, first.BenchmarkRunID); after != before {
-		t.Errorf("re-import left %d Audit artifacts, was %d; a no-op writes none", after, before)
+		t.Errorf("re-import left %d Audit artifacts in the suite's scope, was %d; the suite's contents "+
+			"must not be written twice", after, before)
 	}
 	if second.Report == nil {
 		t.Error("re-import must still report on the suite's report, which already exists")

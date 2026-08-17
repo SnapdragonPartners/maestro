@@ -352,10 +352,29 @@ Reach the instance through the **Cloud SQL Auth Proxy**, not a public
 connection:
 
 ```bash
-cloud-sql-proxy --port 5433 --quota-project $P <project>:<region>:<instance>
+cloud-sql-proxy --port 5433 --quota-project "$P" "${P}:us-central1:<instance>"
 # --quota-project is the proxy's equivalent of GOOGLE_CLOUD_QUOTA_PROJECT; it is
 # an ADC client, so it needs the scoping too.
 ```
+
+**Brace that variable.** `"$P:us-central1:..."` is wrong **in zsh**, which is the
+default shell on macOS: `:u` is a history-style modifier meaning *uppercase*, so
+zsh reads `$P:u` and leaves `s-central1` behind. **Measured 2026-08-17:**
+
+```text
+unbraced: GEN-LANG-CLIENT-0110204648s-central1:maestro-286
+braced:   gen-lang-client-0110204648:us-central1:maestro-286
+```
+
+Quoting alone does not save you — the modifier applies inside double quotes too.
+`${P}` does.
+
+The failure this produces is the expensive part. The proxy **starts, listens, and
+accepts connections**, then fails every one of them with
+`invalid connection name` in its own log, while clients see
+`connection reset by peer`. Nothing points at the shell. A proxy that is
+listening is not a proxy that is working: when connections reset, read the
+proxy's log before suspecting the instance.
 
 The instance keeps a public IP but **no authorized networks**, so direct
 connections are refused; the proxy authenticates through the Admin API and
