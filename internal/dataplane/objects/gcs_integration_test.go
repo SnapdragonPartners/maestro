@@ -87,20 +87,37 @@ func newTestGCS(t *testing.T) (*GCS, string) {
 	return adapter, prefix
 }
 
+// policyStabilization is how long a bucket must have been settled before its
+// soft-delete configuration can be believed.
+//
+// Google documents that disabling soft delete takes EFFECT up to 30 seconds
+// after the change is accepted, and the attribute read reports the configured
+// value immediately. So there is a window in which the bucket says retention
+// is zero and deletions are still being retained — during which this suite
+// would pass while every delete kept billing, which is precisely the outcome
+// the guard exists to prevent. Doubled for margin, since the documented figure
+// is a minimum.
+const policyStabilization = 60 * time.Second
+
 // requireSafeBucket refuses to run against a bucket whose policies would make
 // these tests lie, and it runs BEFORE the first write.
 //
-// Both checks guard a green-but-wrong outcome rather than a crash:
+// The checks guard a green-but-wrong outcome rather than a crash:
 //
-//   - Without VERSIONING, PutStaged's fence would reject writes outright on
-//     some paths and the listing tests would have no noncurrent generations to
-//     find. The suite would fail confusingly rather than say why.
+//   - Without VERSIONING, an overwrite discards the previous generation
+//     instead of keeping it, so the listing tests have nothing to observe and
+//     the no-delete-marker comparison cannot be made at all. (Versioning is
+//     not what makes generation-specific fencing possible — GCS assigns a
+//     generation to every object either way. What versioning changes is
+//     whether noncurrent generations are PRESERVED.)
 //   - With SOFT DELETE ON, every deletion test below still PASSES while
 //     reclaiming nothing: the generations leave the listing exactly as
 //     asserted, and the bytes are retained and billed for the retention
 //     period. Cleanup would appear to work and would not. That is the defect
 //     recorded on #286, so a suite that could be run against such a bucket
 //     would be demonstrating the failure while reporting success.
+//   - CONFIGURED IS NOT EFFECTIVE. A bucket whose policy was disabled moments
+//     ago reports retention zero and can still retain what it deletes.
 //
 // Reading bucket attributes needs a permission the adapter itself deliberately
 // does not exercise, which is why this lives in the test and not in NewGCS.
@@ -111,8 +128,8 @@ func requireSafeBucket(t *testing.T, g *GCS, bucket string) {
 		t.Fatalf("read attributes of %s: %v", bucket, err)
 	}
 	if !attrs.VersioningEnabled {
-		t.Fatalf("bucket %s is not versioned; every fence in this adapter names a generation, and "+
-			"the listing tests have nothing to observe without it", bucket)
+		t.Fatalf("bucket %s is not versioned, so an overwrite replaces the previous generation "+
+			"rather than keeping it and the listing tests have nothing to observe", bucket)
 	}
 	// A nil policy means soft delete is off. A non-nil one with a zero
 	// retention means it was explicitly disabled, which is how the API
@@ -123,6 +140,16 @@ func requireSafeBucket(t *testing.T, g *GCS, bucket string) {
 			"bytes keep billing until their hard-delete time. Disable soft delete on this bucket "+
 			"(retention 0) before running: see #286",
 			bucket, attrs.SoftDeletePolicy.RetentionDuration)
+	}
+	// The configuration above is only a claim about intent until it has
+	// settled. Refusing here costs a minute; not refusing means a suite that
+	// reports success while deletes retain bytes, which is indistinguishable
+	// from a correct run by anything the suite can see afterwards.
+	if settled := time.Since(attrs.Updated); settled < policyStabilization {
+		t.Fatalf("bucket %s was modified %s ago and soft-delete changes take up to 30s to take "+
+			"effect. Its attributes already report the new policy, so this preflight cannot tell a "+
+			"settled bucket from one still retaining deletions. Wait %s and re-run: see #286",
+			bucket, settled.Round(time.Second), (policyStabilization - settled).Round(time.Second))
 	}
 }
 
@@ -217,8 +244,8 @@ func TestGCSDeletingLiveObjectAddsNoListingEntry(t *testing.T) {
 	// blob_integration_test.go is an internal test package: the states worth
 	// checking are the ones the adapter exists to prevent.
 	live := before[len(before)-1]
-	if err := g.client.Bucket(g.bucket).Object(live.Key).Delete(ctx); err != nil {
-		t.Fatalf("unqualified delete of %s: %v", live.Key, err)
+	if delErr := g.client.Bucket(g.bucket).Object(live.Key).Delete(ctx); delErr != nil {
+		t.Fatalf("unqualified delete of %s: %v", live.Key, delErr)
 	}
 
 	after, err := g.ListVersions(ctx, prefix)
@@ -244,8 +271,8 @@ func TestGCSDeletingLiveObjectAddsNoListingEntry(t *testing.T) {
 
 	// The generation that was live must still be nameable, since that is how
 	// the sweep will actually reclaim it.
-	if err := g.DeleteVersion(ctx, live.Key, live.VersionID); err != nil {
-		t.Fatalf("the formerly-live generation could not be deleted by name: %v", err)
+	if delErr := g.DeleteVersion(ctx, live.Key, live.VersionID); delErr != nil {
+		t.Fatalf("the formerly-live generation could not be deleted by name: %v", delErr)
 	}
 	remaining, err := g.ListVersions(ctx, prefix)
 	if err != nil {
@@ -366,42 +393,54 @@ func TestGCSGetReportsMissingKeyImmediately(t *testing.T) {
 // test failed after 512 KiB against the default 16 MiB buffer and was exactly
 // that vacuous.
 //
-// The chunk size is lowered rather than the body enlarged, so the session is
-// genuinely opened and fed without uploading tens of megabytes on every run.
-// The independent check that this is a real state, not an artefact of the
-// client, is a raw resumable session driven directly against the JSON API:
-// opened, given a 256 KiB chunk, acknowledged with HTTP 308, and then absent
-// from the live, versioned and soft-deleted listings. That measurement is
-// recorded on #286.
+// The failure is injected only after the SERVICE has acknowledged a chunk,
+// which the writer's ProgressFunc reports — it fires after each completed
+// upload request, so it describes bytes GCS took rather than bytes the client
+// consumed. An earlier version counted the source reader instead, which shows
+// only that the client accepted input and would look identical while it
+// buffered everything and sent nothing.
+//
+// The chunk size is lowered rather than the body enlarged, so a session is
+// genuinely opened and fed without uploading tens of megabytes per run.
 func TestGCSIncompleteWritesAreUnenumerable(t *testing.T) {
 	g, prefix := newTestGCS(t)
 	ctx := context.Background()
 	key := prefix + "abandoned.bin"
 
-	// One chunk flushes at 256 KiB, so failing at 512 KiB guarantees the
-	// service has accepted data before the write is abandoned.
 	const chunk = 256 * 1024
 	g.chunkSize = chunk
 
-	interrupted := errors.New("reader failed partway")
-	counted := &countingReader{r: bytes.NewReader(make([]byte, 2*chunk))}
-	body := io.MultiReader(counted, failingReader{interrupted})
+	acknowledged := make(chan int64, 8)
+	g.onUploadProgress = func(uploaded int64) {
+		// Must not block: the client documents that ProgressFunc should
+		// return quickly, and it runs on the upload path.
+		select {
+		case acknowledged <- uploaded:
+		default:
+		}
+	}
+
+	interrupted := errors.New("reader failed once a chunk was acknowledged")
+	body := io.MultiReader(
+		bytes.NewReader(make([]byte, chunk)),
+		// Blocks until GCS confirms it has taken a chunk, then fails. If no
+		// acknowledgement ever arrives — which is what happens if the chunk
+		// size override stops being applied and the client buffers 16 MiB —
+		// this times out and the test reports that rather than asserting the
+		// absence of a request that was never made.
+		&gatedFailingReader{gate: acknowledged, err: interrupted, wait: 90 * time.Second},
+	)
+
 	_, err := g.PutStaged(ctx, key, 8*chunk, body)
 	if err == nil {
 		t.Fatal("an interrupted upload was reported as successful")
 	}
-	// A NECESSARY condition, not a sufficient one, and the distinction is the
-	// whole subject of this test. Consuming more than one chunk means the
-	// client had a full buffer to flush before the reader failed; it does not
-	// prove the service accepted it, and nothing available here can — the
-	// claim under test is that an accepted-but-unfinalized session is
-	// invisible, so there is no listing that could confirm one exists. That
-	// step is established by the raw-session measurement on #286 instead, and
-	// saying so is better than implying this assertion covers it.
-	if counted.n <= chunk {
-		t.Fatalf("the body was consumed only %d bytes, within one %d-byte chunk; the client would "+
-			"have buffered it all and never opened a session, so this test would be asserting the "+
-			"absence of a request that was never made", counted.n, chunk)
+	if errors.Is(err, errNoChunkAcknowledged) {
+		t.Fatalf("no chunk was acknowledged by the service before the write was abandoned, so this "+
+			"test cannot establish that an incomplete write existed at all: %v", err)
+	}
+	if !errors.Is(err, interrupted) {
+		t.Fatalf("the write failed for an unexpected reason: %v", err)
 	}
 
 	versions, err := g.ListVersions(ctx, prefix)
@@ -432,19 +471,27 @@ func TestGCSIncompleteWritesAreUnenumerable(t *testing.T) {
 	}
 }
 
-type failingReader struct{ err error }
+// errNoChunkAcknowledged marks the timeout case, so the test can tell "the
+// service never took a chunk" apart from "the write failed as intended".
+// Without the distinction a vacuous run and a real one look the same.
+var errNoChunkAcknowledged = errors.New("no upload request was acknowledged")
 
-func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
-
-type countingReader struct {
-	r io.Reader
-	n int
+// gatedFailingReader fails the write, but only once the service has
+// acknowledged an upload request — turning the interrupted-upload test from an
+// assertion about client behaviour into one about server state.
+type gatedFailingReader struct {
+	gate <-chan int64
+	err  error
+	wait time.Duration
 }
 
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += n
-	return n, err
+func (g *gatedFailingReader) Read([]byte) (int, error) {
+	select {
+	case <-g.gate:
+		return 0, g.err
+	case <-time.After(g.wait):
+		return 0, errNoChunkAcknowledged
+	}
 }
 
 // TestGCSPutStagedRejectsASizeMismatch covers the check that exists because

@@ -62,9 +62,29 @@ type GCSConfig struct {
 }
 
 // GCS is the Google Cloud Storage adapter.
+// Field order is chosen for alignment, not grouping: the pointer-bearing
+// fields lead so the struct's pointer prefix stays minimal.
 type GCS struct {
 	client *storage.Client
+
+	// onUploadProgress observes acknowledged upload requests, and it is the
+	// signal that makes the interrupted-upload test mean anything.
+	//
+	// The pinned writer invokes ProgressFunc after each completed call to the
+	// service, so it reports bytes the SERVICE took, not bytes the client
+	// consumed. That distinction is the whole test: counting the source
+	// reader only shows the client accepted input, which it would do just as
+	// happily while buffering everything and sending nothing.
+	//
+	// I had recorded this as unobservable. That was wrong in a familiar way —
+	// I checked that no LISTING could see an unfinalized session and concluded
+	// nothing could, without looking at the writer's own callback surface.
+	//
+	// Nil in production, which is every caller outside a test.
+	onUploadProgress func(uploaded int64)
+
 	bucket string
+
 	// chunkSize overrides the writer's upload buffer, and it is a field for
 	// the same reason blob.go's copyLimit is one: a test cannot otherwise
 	// reach the behaviour. The pinned client buffers 16 MiB before it sends
@@ -73,16 +93,6 @@ type GCS struct {
 	// a session that HAS accepted bytes and was then abandoned.
 	//
 	// Zero means the client's default, which is what production uses.
-	//
-	// NOT COVERED BY TEST, stated here rather than left implied. Whether this
-	// override takes effect is unobservable from outside: the only thing it
-	// changes is when the client flushes to a session that, by the very claim
-	// under test, no API will report. Removing the assignment was mutated in
-	// and the suite still passed. The interrupted-upload test asserts only the
-	// necessary condition it can see — that the body was consumed past one
-	// chunk — and the evidence that an accepted-but-unfinalized session really
-	// is invisible comes from a raw resumable session driven against the JSON
-	// API, recorded on #286.
 	chunkSize int
 }
 
@@ -171,6 +181,9 @@ func (g *GCS) PutStaged(ctx context.Context, key string, size int64, body io.Rea
 	writer := g.object(key).NewWriter(writeCtx)
 	if g.chunkSize > 0 {
 		writer.ChunkSize = g.chunkSize
+	}
+	if g.onUploadProgress != nil {
+		writer.ProgressFunc = g.onUploadProgress
 	}
 
 	sent := crc32.New(crc32cTable)
