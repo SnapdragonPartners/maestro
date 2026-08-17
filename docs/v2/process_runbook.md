@@ -10,8 +10,8 @@ type = "process"
 
 Status: draft — started 2026-08-17 during #286 (cloud portability). Not yet
 reviewed, so nothing here has the authority of an accepted decision. It records
-things that were **measured against real services** and that cost time or money
-to discover.
+operational facts that cost time or money to learn, each tagged with where it
+came from.
 
 ## What belongs here
 
@@ -28,8 +28,19 @@ What does **not** belong here:
 - **Secrets, connection strings, or instance IPs.** Names and connection
   identifiers only.
 
-Each entry says whether it was **measured** or **read in documentation**,
-because this repository has repeatedly paid for the difference.
+### How claims here are marked
+
+Every claim carries one of three tags, because this repository has repeatedly
+paid for the difference between observing something and being told it:
+
+- **Measured** — observed against a real service, with the date. It was true
+  then, of that service, and provider behaviour changes.
+- **Documented** — taken from primary provider documentation, with a link. Not
+  observed here, so it may generalise less than it appears to.
+- **Policy** — a choice Maestro makes. No provider guarantees it and no
+  measurement supports it; it is a decision, and it can be revisited.
+
+A claim with no tag has not been checked and should not be relied on.
 
 ## Current cloud resources
 
@@ -42,39 +53,78 @@ appear here or anywhere else in the repository.
 | Cloud SQL instance | `gen-lang-client-0110204648:us-central1:maestro-286` |
 | Object bucket (adapter measurement) | `gs://maestro-objects-286` |
 
-The Cloud SQL root password is generated per session into a `0600` file outside
-the repository. Regenerate it rather than reusing one; nothing depends on its
-value persisting.
+### The root password is persisted server-side, so rotation is two steps
+
+The Cloud SQL root password lives on the **instance**, not in the local file.
+The local `0600` file outside the repository is only a copy for connecting.
+
+**Regenerating the file alone breaks the next connection.** Rotation is:
+
+```bash
+python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits+'-_.~') for _ in range(40)))" > "$PWFILE"
+chmod 600 "$PWFILE"
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql users set-password postgres \
+  --instance=<name> --project=$P --password="$(cat "$PWFILE")" --quiet
+```
+
+Both steps, every time, in that order — the file is written first so a failed
+`set-password` leaves a file that does not work rather than a working password
+nobody has a copy of.
+([Documented](https://docs.cloud.google.com/sql/docs/postgres/users).)
+
+Nothing depends on the value persisting across sessions, so rotating is always
+safe; forgetting the second step is what is not.
 
 ## Project safety for cloud work
 
-**Rule: every `gcloud` invocation carries `CLOUDSDK_CORE_PROJECT=<project>`
-inline *and* `--project=<project>`.**
+**Rule (Policy): every cloud invocation is scoped explicitly, and `gcloud` is
+not the only thing that needs it.**
 
-The environment variable wins over the active configuration (measured), so a
-forgotten `--project` flag cannot fall through to whatever project happens to
-be selected. This is not paranoia about typos — a developer's active project is
-frequently unrelated to Maestro, and the failure mode is a billable or
-destructive operation against someone else's environment, which no test can
-catch and no lint can see.
+```bash
+P=<project>
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud ... --project=$P
+GOOGLE_CLOUD_QUOTA_PROJECT=$P MAESTRO_GCS_TEST_BUCKET=<bucket> make test-gcs
+```
 
-Do not "fix" the situation by changing the developer's active project or ADC
-quota project. Those belong to them and may be load-bearing for other work. Use
-explicit scoping instead.
+`CLOUDSDK_CORE_PROJECT` wins over the active configuration (**measured
+2026-08-17**), so a forgotten `--project` cannot fall through to whatever
+project happens to be selected. This is not paranoia about typos — a
+developer's active project is frequently unrelated to Maestro, and the failure
+mode is a billable or destructive operation against someone else's environment,
+which no test catches and no linter sees.
 
-Related: an ADC quota project pointing at an unrelated project does **not**
-break GCS bucket access (measured), so it is not worth changing for that
-reason alone.
+**`gcloud` scoping does not reach Application Default Credentials.** The Go
+adapter and any ADC client resolve their quota project separately, so they need
+`GOOGLE_CLOUD_QUOTA_PROJECT` — the variable the pinned client libraries
+actually read (**measured** in the pinned source of
+`cloud.google.com/go/auth` and `google.golang.org/api`, 2026-08-17).
+
+An earlier version of this section said an unrelated ADC quota project was "not
+worth changing", on the grounds that GCS access still worked. That conflated two
+things: access working says nothing about **billing and quota attribution**,
+which is what the quota project determines. Requests can succeed while being
+attributed to an unrelated project.
+([Documented](https://docs.cloud.google.com/docs/quotas/set-quota-project).)
+
+Do not "fix" any of this by changing the developer's active project or their
+ADC quota project. Those belong to them and may be load-bearing for other work.
+Scope each invocation instead.
 
 ## Google Cloud Storage
 
 ### Soft delete is on by default and silently defeats deletion
 
-**Measured.** Every new bucket is created with
-`softDeletePolicy.retentionDurationSeconds = 604800` (7 days) whether or not
-anybody asked. Under it, a generation-specific delete returns **204** and the
-object leaves the versioned listing, while the bytes are retained and **billed**
-until their `hardDeleteTime`.
+**Measured 2026-08-17.** A new bucket is created with
+`softDeletePolicy.retentionDurationSeconds = 604800` (7 days) without being
+asked for. That is the **system default**, which applies absent a tag-based
+override at the project or organization level
+([Documented](https://docs.cloud.google.com/storage/docs/use-tags-for-soft-delete))
+— so do not assume the default is what you will get, in either direction.
+Read the policy rather than predicting it.
+
+Under such a policy, a generation-specific delete returns **204** and the object
+leaves the versioned listing, while the bytes are retained and **billed** until
+their `hardDeleteTime`.
 
 The consequence for Maestro: `objects.Store.DeleteVersion` reclaims **nothing**
 on a default bucket. The object sweep issues its deletes, records the storage as
@@ -84,10 +134,11 @@ reclaimed, and the bill does not move for a week.
 
 1. **Disable soft delete before the first object write**
    (`softDeletePolicy.retentionDurationSeconds = 0`).
-2. **Positively verify the effective policy** and refuse to proceed if it is
+2. **Positively verify the CONFIGURED policy** and refuse to proceed if it is
    non-zero — the same discipline `EnsureBucket` already applies to versioning,
    for the same reason: an operator, a restored config or a console click can
-   turn it back on.
+   turn it back on. Note the wording: this reads configuration, which is not
+   the same as effectiveness — see the next point.
 3. **Do not treat a configured policy as an effective one.** Google advises
    waiting **at least** 30 seconds after disabling and gives **no upper bound**.
    Maestro's stabilization policy is 60 seconds against the bucket's `updated`
@@ -100,13 +151,13 @@ reclaimed, and the bill does not move for a week.
 existing residue and makes it *unobservable*: a direct read of a known
 soft-deleted generation then answers
 `400 Soft delete policy is required to request a soft-deleted version` — a
-refusal to answer, not a 404 (measured). So a bucket that already accumulated
-residue cannot be audited after the policy is switched off.
+refusal to answer, not a 404 (**measured 2026-08-17**). So a bucket that already
+accumulated residue cannot be audited after the policy is switched off.
 
 ### Interrupted uploads cannot be enumerated
 
-**Measured.** A resumable upload session that has accepted data and never been
-finalized is invisible to every listing surface: live, versioned, and
+**Measured 2026-08-17.** A resumable upload session that has accepted data and
+never been finalized is invisible to every listing surface: live, versioned, and
 soft-deleted all report nothing. There is no API that enumerates sessions and
 none that aborts one by name; they expire on Google's schedule.
 
@@ -134,6 +185,7 @@ CLOUDSDK_CORE_PROJECT=$P gcloud sql instances create <name> \
   --region=us-central1 \
   --storage-size=10GB --storage-type=SSD \
   --availability-type=zonal \
+  --ssl-mode=ENCRYPTED_ONLY \
   --deletion-protection \
   --root-password="$(cat <path-outside-the-repo>)" \
   --quiet
@@ -150,7 +202,7 @@ is the default, and that is the state you want.
 
 ### Creation outruns short command timeouts, and killing the client changes nothing
 
-**Measured: ~7.5 minutes.** A tool or shell timeout that kills `gcloud` does
+**Measured 2026-08-17: ~7.5 minutes.** A tool or shell timeout that kills `gcloud` does
 **not** cancel the server-side operation — the instance continues to
 `PENDING_CREATE` and then `RUNNABLE`.
 
@@ -173,16 +225,27 @@ cloud-sql-proxy --port 5433 --quota-project $P <project>:<region>:<instance>
 
 The instance keeps a public IP but **no authorized networks**, so direct
 connections are refused; the proxy authenticates through the Admin API and
-always encrypts. Also set `--ssl-mode=ENCRYPTED_ONLY`: it is redundant while
-the authorized-network list is empty, and it is what stops a later addition to
-that list from being unencrypted.
+always encrypts.
+
+`--ssl-mode=ENCRYPTED_ONLY` is in the create command above and belongs there
+rather than in a follow-up patch. It is redundant while the authorized-network
+list is empty, and it is what stops a later addition to that list from being
+unencrypted — so it should never be the thing somebody remembers to add
+afterwards. The default is `ALLOW_UNENCRYPTED_AND_ENCRYPTED` (**measured
+2026-08-17**). To confirm an existing instance, read it back rather than
+assuming the patch landed:
+
+```bash
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances describe <name> \
+  --project=$P --format="value(settings.ipConfiguration.sslMode)"
+```
 
 `psql` and `pg_isready` are at `/opt/homebrew/opt/libpq/bin` on macOS and are
 usually not on `PATH`.
 
 ### Versions and extensions
 
-**Measured on a live instance, not read from documentation:**
+**Measured 2026-08-17 on a live instance, not read from documentation:**
 
 - `POSTGRES_18` reports **PostgreSQL 18.4**, identical to the pinned local
   image, so a cloud-versus-local comparison has no version skew to explain.
@@ -194,11 +257,44 @@ usually not on `PATH`.
 Verify an extension by creating it on the instance. Availability is per-instance
 and the documentation generalises across majors.
 
-### Cost posture between runs
+### Stopping between runs, and how to tell that it worked
 
-**Stop rather than delete.** The acceptance criteria require a re-runnable
-workflow and later migrations need re-proving, so a deleted instance costs more
-to re-establish than a stopped one costs to keep. Keep deletion protection on.
+**Stop rather than delete (Policy).** The acceptance criteria require a
+re-runnable workflow and later migrations need re-proving, so a deleted instance
+costs more to re-establish than a stopped one costs to keep. Keep deletion
+protection on.
+
+Stopping is an **activation policy**, not a state:
+
+```bash
+# Stop
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances patch <name> \
+  --project=$P --activation-policy=NEVER --quiet
+# Start
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances patch <name> \
+  --project=$P --activation-policy=ALWAYS --quiet
+```
+
+**`state` does not tell you whether an instance is stopped.** A running
+instance reports `state = RUNNABLE` with `activationPolicy = ALWAYS`
+(**measured 2026-08-17**), and `RUNNABLE` is not the discriminator. Verify by
+reading the activation policy:
+
+```bash
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances describe <name> \
+  --project=$P --format="value(settings.activationPolicy)"
+```
+
+`NEVER` means stopped. ([Documented](https://docs.cloud.google.com/sql/docs/postgres/start-stop-restart-instance);
+the stopped reading is not yet measured here, because stopping the instance was
+not worth interrupting the work in flight.)
+
+**Stopping does not stop all charges.** Compute charges stop; **storage and any
+reserved IP address continue to bill**
+([Documented](https://docs.cloud.google.com/sql/docs/postgres/start-stop-restart-instance)).
+So "stopped" is cheaper, not free, and a long-idle instance is still a line on
+the bill — which is the number to check before assuming an idle plane costs
+nothing.
 
 ## Local data plane
 
