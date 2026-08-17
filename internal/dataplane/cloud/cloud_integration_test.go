@@ -34,18 +34,26 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"errors"
+	"io"
 	"net/url"
 	"os"
 	"testing"
 
+	"github.com/google/uuid"
 	// Registers the pgx stdlib driver, for the administrative CREATE/DROP
 	// DATABASE statements that cannot run through the seam.
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"orchestrator/internal/dataplane/migrations"
+	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
+	"orchestrator/internal/dataplane/store"
 )
 
 const (
@@ -111,21 +119,21 @@ func freshDatabase(t *testing.T, cfg Config) Config {
 	// Identifiers cannot be parameterised, and this one is machine-generated
 	// from a timestamp and a test name reduced to [a-z0-9_] above, so there is
 	// no operator-supplied text in it.
-	if _, err := adminDB.ExecContext(t.Context(), "CREATE DATABASE "+name); err != nil {
-		t.Fatalf("create database %s: %v", name, err)
+	if _, createErr := adminDB.ExecContext(t.Context(), "CREATE DATABASE "+name); createErr != nil {
+		t.Fatalf("create database %s: %v", name, createErr)
 	}
 	t.Cleanup(func() {
 		// A database left behind holds storage that bills, and the next run
 		// would have to guess whether it mattered.
-		cleanup, err := sql.Open("pgx", admin.String())
-		if err != nil {
-			t.Errorf("cleanup: open administrative connection: %v", err)
+		cleanup, openErr := sql.Open("pgx", admin.String())
+		if openErr != nil {
+			t.Errorf("cleanup: open administrative connection: %v", openErr)
 			return
 		}
 		defer func() { _ = cleanup.Close() }()
-		if _, err := cleanup.ExecContext(context.Background(),
-			"DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
-			t.Errorf("cleanup: drop database %s: %v", name, err)
+		if _, dropErr := cleanup.ExecContext(context.Background(),
+			"DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); dropErr != nil {
+			t.Errorf("cleanup: drop database %s: %v", name, dropErr)
 		}
 	})
 
@@ -193,8 +201,8 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 	// Stage 2: a database that has never held the schema.
 	cfg := freshDatabase(t, base)
 
-	if err := Migrate(ctx, cfg); err != nil {
-		t.Fatalf("migrate a cloud plane from empty: %v", err)
+	if migrateErr := Migrate(ctx, cfg); migrateErr != nil {
+		t.Fatalf("migrate a cloud plane from empty: %v", migrateErr)
 	}
 
 	// The recorded version must be clean. golang-migrate marks dirty BEFORE
@@ -215,8 +223,9 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 
 	// Stage 3: re-running must be a no-op rather than an error, against THIS
 	// database — the one that started empty.
-	if err := Migrate(ctx, cfg); err != nil {
-		t.Fatalf("re-running migrate against an already-migrated cloud plane must be a no-op: %v", err)
+	if rerunErr := Migrate(ctx, cfg); rerunErr != nil {
+		t.Fatalf("re-running migrate against an already-migrated cloud plane must be a no-op: %v",
+			rerunErr)
 	}
 	after, dirtyAfter, err := migrations.Version(cfg.DSN)
 	if err != nil {
@@ -246,6 +255,385 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 	// down — the contract plane enforces, worth confirming through a real
 	// client rather than only a double.
 	seam.Close()
+}
+
+// roundTripMediaType is what the round-trip's attachment declares. Named
+// because the row read back out is compared against it.
+const roundTripMediaType = "application/octet-stream"
+
+// migratedCloudPlane provisions the bucket, creates an EMPTY database, migrates
+// it, and opens the seam against both.
+//
+// It performs the same stages as TestCloudProvisionMigrateFromEmptyThenOpen
+// without duplicating that test's assertions, and the separation is deliberate
+// rather than incidental. There, each stage IS the subject, and folding them
+// into a helper would hide what is being asserted. Here they are a
+// precondition, and the only thing worth knowing about a precondition is
+// whether it held.
+func migratedCloudPlane(t *testing.T) (store.Store, Config) {
+	t.Helper()
+	base := cloudConfig(t)
+	ctx := t.Context()
+
+	// Ahead of anything that could write, for the reason EnsureBucket
+	// documents: the soft-delete obligation cannot be applied retroactively.
+	if _, err := EnsureBucket(ctx, base); err != nil {
+		t.Fatalf("provision the object bucket before any write: %v", err)
+	}
+	cfg := freshDatabase(t, base)
+	if err := Migrate(ctx, cfg); err != nil {
+		t.Fatalf("migrate a cloud plane from empty: %v", err)
+	}
+
+	// No artifact vocabulary. The object path below needs none, and registering
+	// types nothing writes would imply a coverage this does not have.
+	types, err := registry.New(nil)
+	if err != nil {
+		t.Fatalf("build registry: %v", err)
+	}
+	seam, err := OpenSeam(ctx, cfg, types)
+	if err != nil {
+		t.Fatalf("open the seam against a cloud plane: %v", err)
+	}
+	t.Cleanup(seam.Close)
+	return seam, cfg
+}
+
+// insertOrganization writes the one row an attachment's foreign key requires.
+//
+// Directly, because the seam has no verb for it — tenancy provisioning belongs
+// to the Orchestrator, not to persistence — which is the same reason the local
+// cross-store fixture inserts its organization by hand.
+func insertOrganization(t *testing.T, cfg Config) uuid.UUID {
+	t.Helper()
+	organizationID := uuid.New()
+	database, err := sql.Open("pgx", cfg.DSN)
+	if err != nil {
+		t.Fatalf("open the plane database: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	if _, err := database.ExecContext(t.Context(),
+		`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1, $2, $3)`,
+		organizationID, "cloud-round-trip-"+organizationID.String(), "Cloud Round Trip",
+	); err != nil {
+		t.Fatalf("insert the owning organization: %v", err)
+	}
+	return organizationID
+}
+
+// cloudObjectKey reproduces the layout the seam stores objects at.
+//
+// Reproduced rather than exported, exactly as the local cross-store fixture
+// does it: a test that asks the PROVIDER what it holds needs the key the seam
+// would have used. It is not trusted — the round trip requires at least one
+// generation to be present here after a successful write, so a layout that
+// drifted fails loudly instead of quietly listing an empty prefix and
+// concluding nothing happened.
+func cloudObjectKey(organizationID uuid.UUID, digest string) string {
+	return organizationID.String() + "/" + digest[:2] + "/" + digest[2:4] + "/" + digest
+}
+
+// withObjectClient runs fn against a second client on the configured bucket.
+//
+// A second client is the only option: the seam does not expose the object store
+// it composed, and deliberately so. These helpers reach past the seam to ask the
+// provider what it actually holds, which is a question the seam cannot be asked.
+//
+// The context is a parameter rather than `t.Context()` because one caller is a
+// CLEANUP. `t.Context()` is cancelled just before cleanups run, so a cleanup
+// using it could not issue a single call — and a cleanup that silently deletes
+// nothing is worse than none, since it leaves residue while reporting success.
+func withObjectClient(ctx context.Context, t *testing.T, cfg Config, fn func(blob *objects.GCS)) {
+	t.Helper()
+	blob, err := objects.NewGCS(ctx, objects.GCSConfig{Bucket: cfg.Bucket})
+	if err != nil {
+		t.Errorf("reach the object bucket %s: %v", cfg.Bucket, err)
+		return
+	}
+	defer func() {
+		if closeErr := blob.Close(); closeErr != nil {
+			t.Errorf("close the object client: %v", closeErr)
+		}
+	}()
+	fn(blob)
+}
+
+// objectGenerations counts the versions stored at one exact key.
+func objectGenerations(t *testing.T, cfg Config, key string) int {
+	t.Helper()
+	count := -1
+	withObjectClient(t.Context(), t, cfg, func(blob *objects.GCS) {
+		versions, err := blob.ListVersions(t.Context(), key)
+		if err != nil {
+			t.Fatalf("list versions at %s: %v", key, err)
+		}
+		count = len(versions)
+	})
+	return count
+}
+
+// purgeOrganizationObjects deletes every generation a run wrote for one
+// organization.
+//
+// The bucket is REAL and PERSISTENT while each run's database is disposable, and
+// that asymmetry is the whole reason this exists. Dropping the database takes
+// every row that referenced these objects with it, so what is left in the bucket
+// becomes unreachable by the object sweep — the sweep walks the database to
+// decide what is unreferenced, and there is no longer a database to walk. Each
+// run would otherwise add permanently orphaned storage that bills and that no
+// later run can even attribute to itself. `freshDatabase` drops its database for
+// this reason; this is the other store's half of the same obligation.
+//
+// Both prefixes, because one write leaves objects under two: the digest key
+// beneath the organization, and the staging key the upload passed through. The
+// seam releases staging on the paths that succeed — a failed run is exactly when
+// that cannot be relied on.
+//
+// Deletion genuinely reclaims here only because the bucket's soft-delete policy
+// is off, which EnsureBucket refused to proceed without. Under the provider
+// default these calls would return success and reclaim nothing for a week.
+func purgeOrganizationObjects(t *testing.T, cfg Config, organizationID uuid.UUID) {
+	t.Helper()
+	// Not t.Context(): see withObjectClient. Cleanups run after it is cancelled.
+	ctx := context.Background()
+	withObjectClient(ctx, t, cfg, func(blob *objects.GCS) {
+		for _, prefix := range []string{
+			organizationID.String() + "/",
+			"staging/" + organizationID.String() + "/",
+		} {
+			versions, listErr := blob.ListVersions(ctx, prefix)
+			if listErr != nil {
+				t.Errorf("cleanup: list versions under %s: %v", prefix, listErr)
+				continue
+			}
+			for i := range versions {
+				if delErr := blob.DeleteVersion(ctx, versions[i].Key, versions[i].VersionID); delErr != nil {
+					t.Errorf("cleanup: delete %s version %s: %v",
+						versions[i].Key, versions[i].VersionID, delErr)
+				}
+			}
+		}
+	})
+}
+
+// corruptObjectAt writes bytes at a digest key that do not hash to it.
+//
+// Through the object API rather than by editing the row: nothing structural is
+// then wrong — the attachment exists, the object exists, and only the content
+// disagrees with the digest addressing it, which recomputing the hash over the
+// whole stream is the only way to observe. On a versioned bucket this is a newer
+// generation, which is what a read returns.
+func corruptObjectAt(t *testing.T, cfg Config, key string) {
+	t.Helper()
+	corrupt := []byte("these bytes do not hash to the digest that addresses them")
+	withObjectClient(t.Context(), t, cfg, func(blob *objects.GCS) {
+		if _, err := blob.PutStaged(t.Context(), key, int64(len(corrupt)),
+			bytes.NewReader(corrupt)); err != nil {
+			t.Fatalf("write a corrupt generation at %s: %v", key, err)
+		}
+	})
+}
+
+// TestCloudAttachmentRoundTrip drives the real store.ObjectStore contract
+// against Cloud SQL and Cloud Storage together.
+//
+// This is the last place in #286 where a behavioural divergence could hide, and
+// the reason is the composition rather than the adapter. The GCS adapter's own
+// suite measured each provider operation in isolation; what it could not
+// exercise is the write path the seam actually uses, which spans BOTH stores at
+// once: a staging lease taken and renewed in Postgres, an upload to a staging
+// key, a generation-pinned server-side copy onto the digest key, and a read-back
+// hashed before any row is allowed to reference it — all inside one database
+// transaction that stays open across those remote calls.
+//
+// The local suite proves that sequence against MinIO. Nothing but a managed
+// plane proves it against a provider whose copy semantics, generation
+// numbering and consistency are its own.
+func TestCloudAttachmentRoundTrip(t *testing.T) {
+	seam, cfg := migratedCloudPlane(t)
+	ctx := t.Context()
+	organizationID := insertOrganization(t, cfg)
+
+	// Registered BEFORE the first write, not after the last one. Every object
+	// below is scoped to this organization's fresh id, and a run that fails
+	// halfway is precisely the run whose residue nothing else will ever find.
+	t.Cleanup(func() { purgeOrganizationObjects(t, cfg, organizationID) })
+
+	body := []byte("evidence bytes that have to survive a managed object store and come back identical")
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+
+	// Preallocated, the same way an evidence-bearing caller must: a payload
+	// naming an attachment has to be built before the write that creates it.
+	attachmentID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("allocate an attachment id: %v", err)
+	}
+
+	stored, err := seam.PutAttachment(ctx, store.PutAttachmentInput{
+		Body:           bytes.NewReader(body),
+		Digest:         digest,
+		MediaType:      roundTripMediaType,
+		SizeBytes:      int64(len(body)),
+		OrganizationID: organizationID,
+		AttachmentID:   attachmentID,
+	})
+	if err != nil {
+		t.Fatalf("store an attachment on a cloud plane: %v", err)
+	}
+	if stored.AttachmentID != attachmentID {
+		t.Errorf("stored attachment id = %s, want the preallocated %s", stored.AttachmentID, attachmentID)
+	}
+	if stored.Digest != digest {
+		t.Errorf("stored digest = %s, want %s", stored.Digest, digest)
+	}
+	if stored.SizeBytes != int64(len(body)) {
+		t.Errorf("stored size = %d, want %d", stored.SizeBytes, len(body))
+	}
+
+	// What the promote actually created, read from the provider. Both claims
+	// below are measured against this number.
+	key := cloudObjectKey(organizationID, digest)
+	afterFirst := objectGenerations(t, cfg, key)
+	if afterFirst == 0 {
+		t.Fatalf("nothing is stored at %s after a write that reported success: either the promote did "+
+			"not land or this test's idea of the object layout no longer matches the seam's", key)
+	}
+
+	// The round trip proper: the BYTES, drained to EOF.
+	//
+	// Draining is the assertion and not merely how the bytes are obtained.
+	// GetAttachment hashes as it streams and can only compare once the stream
+	// ends, so a body that does not match the digest addressing it fails at EOF —
+	// a sampled read would pass straight over the corruption this exists to
+	// catch.
+	reader, attachment, err := seam.GetAttachment(ctx, organizationID, attachmentID)
+	if err != nil {
+		t.Fatalf("open the stored attachment: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	read, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read the attachment's bytes back through the verifying reader: %v", err)
+	}
+	if !bytes.Equal(read, body) {
+		t.Errorf("attachment body = %q, want %q", read, body)
+	}
+	if attachment.Digest != digest {
+		t.Errorf("attachment digest = %s, want %s", attachment.Digest, digest)
+	}
+	if attachment.MediaType != roundTripMediaType {
+		t.Errorf("attachment media type = %q, want %q", attachment.MediaType, roundTripMediaType)
+	}
+	if attachment.SizeBytes != int64(len(body)) {
+		t.Errorf("attachment size = %d, want %d", attachment.SizeBytes, len(body))
+	}
+
+	// Existence asks the object store, not only the row.
+	exists, err := seam.AttachmentExists(ctx, organizationID, attachmentID)
+	if err != nil {
+		t.Fatalf("check that the attachment exists: %v", err)
+	}
+	if !exists {
+		t.Error("AttachmentExists reported false for an attachment whose bytes just read back")
+	}
+	// An id nothing wrote is an ordinary false with no error. Asserted so the
+	// check above cannot be satisfied by a method that answers true regardless.
+	unknown, err := seam.AttachmentExists(ctx, organizationID, uuid.New())
+	if err != nil {
+		t.Fatalf("check an attachment id nothing ever stored: %v", err)
+	}
+	if unknown {
+		t.Error("AttachmentExists reported true for an id nothing ever stored")
+	}
+
+	// The already-stored branch, which on a content-addressed store is the one
+	// taken most often: a second attachment naming a digest the bucket holds.
+	//
+	// That it SUCCEEDS is only half the claim; that it skipped the transfer is
+	// the other half, and it needs its own evidence. The discriminator is the
+	// generation count — a promote CREATES a generation at the digest key, which
+	// is how the one counted above got there, so a second write that added none
+	// cannot have promoted anything.
+	secondID, err := uuid.NewV7()
+	if err != nil {
+		t.Fatalf("allocate a second attachment id: %v", err)
+	}
+	second, err := seam.PutAttachment(ctx, store.PutAttachmentInput{
+		Body:           bytes.NewReader(body),
+		Digest:         digest,
+		MediaType:      roundTripMediaType,
+		SizeBytes:      int64(len(body)),
+		OrganizationID: organizationID,
+		AttachmentID:   secondID,
+	})
+	if err != nil {
+		t.Fatalf("store a second attachment over an object the bucket already holds: %v", err)
+	}
+	if second.AttachmentID != secondID {
+		t.Errorf("the second write recorded id %s, want %s", second.AttachmentID, secondID)
+	}
+	if afterSecond := objectGenerations(t, cfg, key); afterSecond != afterFirst {
+		t.Errorf("a second write of a digest the bucket already held took %s from %d generation(s) to "+
+			"%d, so it re-uploaded and promoted instead of verifying what was there",
+			key, afterFirst, afterSecond)
+	}
+
+	// And it is a real attachment rather than a call that returned nil error:
+	// its bytes come back through the same verifying path.
+	secondReader, _, err := seam.GetAttachment(ctx, organizationID, secondID)
+	if err != nil {
+		t.Fatalf("open the second attachment: %v", err)
+	}
+	defer func() { _ = secondReader.Close() }()
+	secondRead, err := io.ReadAll(secondReader)
+	if err != nil {
+		t.Fatalf("read the second attachment's bytes: %v", err)
+	}
+	if !bytes.Equal(secondRead, body) {
+		t.Errorf("second attachment body = %q, want %q", secondRead, body)
+	}
+
+	// Last: proof that the cloud read path VERIFIES rather than merely streams.
+	//
+	// Everything above is equally consistent with a seam that hands back
+	// whatever the bucket returns and checks nothing — the bytes were correct,
+	// so a verifying reader and an absent one behave identically. The only way
+	// to tell those apart is to make the object disagree with the digest
+	// addressing it and require the read to fail.
+	//
+	// It runs at the end because it leaves the object corrupt, and it fails the
+	// test if the read SUCCEEDS, which is what makes every assertion above
+	// non-vacuous.
+	corruptObjectAt(t, cfg, key)
+
+	// The generation counter's own sensitivity, established rather than assumed.
+	//
+	// "The second write added no generation" is worth exactly as much as the
+	// measurement's ability to NOTICE one, and nothing above establishes that.
+	// The corruption just written IS a new generation at that same key, so the
+	// count must have moved by one. Without this, an unchanged count would be
+	// equally consistent with a listing that cannot see generations at all —
+	// which would make the skipped-upload claim above vacuous rather than wrong.
+	if afterCorruption := objectGenerations(t, cfg, key); afterCorruption != afterFirst+1 {
+		t.Errorf("a new generation at %s moved the count from %d to %d, want %d: this listing cannot "+
+			"see a version being added, so the unchanged count asserted earlier establishes nothing "+
+			"about the second write skipping its upload", key, afterFirst, afterCorruption, afterFirst+1)
+	}
+
+	corruptReader, _, err := seam.GetAttachment(ctx, organizationID, attachmentID)
+	if err != nil {
+		t.Fatalf("open the attachment after corrupting its object: %v", err)
+	}
+	defer func() { _ = corruptReader.Close() }()
+	switch _, readErr := io.ReadAll(corruptReader); {
+	case readErr == nil:
+		t.Error("reading an object that does not hash to the digest addressing it succeeded, so the " +
+			"cloud read path returns provider bytes without verifying them")
+	case !errors.Is(readErr, store.ErrInvariant):
+		t.Errorf("reading a corrupt object failed with %v, want a %v — a caller has to distinguish the "+
+			"store contradicting itself from a transport failure", readErr, store.ErrInvariant)
+	}
 }
 
 // TestCloudOpenRefusesAMissingBucket confirms that a failure to reach the

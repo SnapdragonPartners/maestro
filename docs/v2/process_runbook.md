@@ -58,6 +58,11 @@ appear here or anywhere else in the repository.
 | Cloud SQL instance | `gen-lang-client-0110204648:us-central1:maestro-286` |
 | Object bucket (adapter measurement) | `gs://maestro-objects-286` |
 
+**The instance is left stopped between sessions (Policy)**, so start it before
+`make test-cloud` and stop it afterwards — see the activation-policy section
+below for both commands and for how to confirm which state it is in. Stopped is
+cheaper, not free.
+
 ### The root password is persisted server-side, so rotation is two steps
 
 The Cloud SQL root password lives on the **instance**, not in the local file.
@@ -232,6 +237,54 @@ It can only be reported as free of **listable generations**. It may still hold
 unenumerable resumable sessions and soft-deleted residue that outlives its own
 queryability. Do not write "empty" in a report.
 
+### Deleting a database orphans its objects beyond the sweep's reach
+
+The object sweep decides what is unreferenced by **walking the database**. So
+deleting a database does not leave *unreferenced* objects behind — it leaves
+objects nothing can classify at all, because the authority that would have
+judged them is gone. They are not reclaimable by any later run; they are only
+findable by an operator who already knows the prefix.
+
+This bites wherever the two stores have different lifetimes, which is the normal
+shape of cloud work: a disposable per-run database against one long-lived
+bucket. Objects outlive the database that referenced them, under an organization
+prefix no later run can attribute, billed indefinitely.
+
+**Measured 2026-08-17:** one suite run that dropped its database left two
+generations of one object stranded in the bucket. Nothing in the data path can
+find them — the rows that named them went with the database.
+
+So anything that creates a disposable cloud database owes a matching cleanup in
+the **object** store. The cloud suite purges its own prefixes for the same reason
+it drops its database, and it purges **two** per organization: the digest key
+under `<organization-uuid>/`, and `staging/<organization-uuid>/`, where a staged
+object waits between its upload and its promotion. The seam releases staging on
+the paths that succeed, so the second prefix matters for runs that die in
+between.
+
+That covers staged objects which were *finalized*. An upload interrupted before
+finalizing is a different state and is not reclaimable at all — see
+"Interrupted uploads cannot be enumerated" above. Purging a prefix cannot reach
+what no listing reports.
+
+A run killed before its cleanup leaves residue that has to be removed by hand,
+scoped to the prefix in question:
+
+```bash
+CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud storage rm \
+  --all-versions "gs://<bucket>/<organization-uuid>/**" --project=$P
+```
+
+**Measured 2026-08-17:** that command removed both stranded generations and the
+bucket returned to reporting no listable generations. `--all-versions` is in it
+because the bucket is versioned and the default deletes only the live generation
+([Documented](https://docs.cloud.google.com/sdk/gcloud/reference/storage/rm)),
+which would leave the noncurrent ones billed and harder to find than before.
+
+Deletion only reclaims at all because soft delete is off, which is the
+provisioning obligation above. Under the provider default these commands return
+success and reclaim nothing for a week.
+
 ## Cloud SQL
 
 ### Creating an instance
@@ -342,19 +395,38 @@ CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances patc
   --project=$P --activation-policy=ALWAYS --quiet
 ```
 
-**`state` does not tell you whether an instance is stopped.** A running
-instance reports `state = RUNNABLE` with `activationPolicy = ALWAYS`
-(**measured 2026-08-17**), and `RUNNABLE` is not the discriminator. Verify by
-reading the activation policy:
+**Read both fields.** **Measured 2026-08-17** on this instance, across one full
+transition:
+
+| | `state` | `settings.activationPolicy` |
+| --- | --- | --- |
+| Running | `RUNNABLE` | `ALWAYS` |
+| Stopped | `STOPPED` | `NEVER` |
 
 ```bash
 CLOUDSDK_CORE_PROJECT=$P GOOGLE_CLOUD_QUOTA_PROJECT=$P gcloud sql instances describe <name> \
-  --project=$P --format="value(settings.activationPolicy)"
+  --project=$P --format="value(state,settings.activationPolicy)"
 ```
 
-`NEVER` means stopped. ([Documented](https://docs.cloud.google.com/sql/docs/postgres/start-stop-restart-instance);
-the stopped reading is not yet measured here, because stopping the instance was
-not worth interrupting the work in flight.)
+An earlier version of this section said `state` does **not** tell you whether an
+instance is stopped, and that `RUNNABLE` is not the discriminator. That was
+wrong, and how it got here is worth keeping: the running reading had been
+measured, the stopped one had not, and the gap was filled with a cautious guess
+that was nonetheless a claim about the provider. `state` does report `STOPPED`,
+and it still read `STOPPED` on a second describe.
+
+Prefer the activation policy when the two disagree, because it is the setting
+being changed while `state` is derived from it. Whether `state` lags *during* the
+transition is **not measured** — both reads here happened after the patch
+operation returned.
+([Documented](https://docs.cloud.google.com/sql/docs/postgres/start-stop-restart-instance).)
+
+**A stopped instance fails as a TIMEOUT, not as a refusal** (**measured
+2026-08-17**). The Auth Proxy goes on listening on loopback and accepts the
+connection, so a client waits and then reports
+`connection to server at "127.0.0.1", port 5433 failed: timeout expired`. That
+reads like a broken proxy or a network fault rather than a backend that is
+switched off, so check the activation policy before debugging connectivity.
 
 **Stopping does not stop all charges.** Compute charges stop; **storage and any
 reserved IP address continue to bill**
@@ -383,6 +455,28 @@ Suites that need external credentials sit behind their **own build tag**, never
 credential requirement there would either block anyone without them or skip
 silently and look green.
 
-`make test-gcs` refuses to run without `MAESTRO_GCS_TEST_BUCKET` rather than
-reporting a green skip. A suite that skips on missing configuration and reports
-success is worse than one that fails.
+There are two, and they are separate because they need different things:
+
+- **`make test-gcs`** — the object adapter alone, against a real bucket. Needs
+  `MAESTRO_GCS_TEST_BUCKET` and application default credentials.
+- **`make test-cloud`** — the composed data plane, against Cloud SQL and Cloud
+  Storage together. Needs `MAESTRO_CLOUD_DSN`, `MAESTRO_GCS_TEST_BUCKET`,
+  `MAESTRO_CLOUD_ROOT_KEY` and `GOOGLE_CLOUD_QUOTA_PROJECT`, **plus a started
+  instance and a running Auth Proxy** — neither of which an environment variable
+  can express, so a run against a stopped instance fails as the timeout above.
+
+Both refuse to run with their configuration missing rather than reporting a green
+skip. A suite that skips on missing configuration and reports success is worse
+than one that fails.
+
+`MAESTRO_CLOUD_ROOT_KEY` must be **exactly 32 bytes** — the same length a key
+file must be, since it protects the same vault. A fresh key each run is correct
+*here* and only here: the suite's databases are disposable, which is the whole
+reason a new key is safe against them. See the root-key section above for why the
+same habit destroys a persistent plane.
+
+Each `make test-cloud` run provisions its own empty database per test and drops
+it, and purges its own object prefixes. **Measured 2026-08-17:** two consecutive
+runs left no databases and no listable object generations behind, which is what
+makes the workflow re-runnable rather than merely repeatable. A full run took
+about 40 seconds.
