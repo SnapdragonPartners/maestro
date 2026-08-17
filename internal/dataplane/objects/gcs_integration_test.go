@@ -87,16 +87,20 @@ func newTestGCS(t *testing.T) (*GCS, string) {
 	return adapter, prefix
 }
 
-// policyStabilization is how long a bucket must have been settled before its
-// soft-delete configuration can be believed.
+// policyStabilization is how long this repository requires a bucket to have
+// been settled before its soft-delete configuration is acted on.
 //
-// Google documents that disabling soft delete takes EFFECT up to 30 seconds
-// after the change is accepted, and the attribute read reports the configured
-// value immediately. So there is a window in which the bucket says retention
-// is zero and deletions are still being retained — during which this suite
-// would pass while every delete kept billing, which is precisely the outcome
-// the guard exists to prevent. Doubled for margin, since the documented figure
-// is a minimum.
+// It is MAESTRO'S POLICY, not a propagation guarantee, and the difference
+// matters. Google advises waiting AT LEAST 30 seconds after disabling soft
+// delete; it does not promise the change is effective by then, and there is no
+// documented upper bound. Meanwhile the attribute read reports the configured
+// value immediately, so a bucket can say retention is zero while deletions are
+// still being retained — during which this suite would pass while every delete
+// kept billing, which is exactly what the guard exists to prevent.
+//
+// Sixty seconds is therefore a conservative choice above a stated minimum, and
+// waiting it out establishes nothing on its own. What it does is stop the
+// preflight from treating a just-changed bucket as verified.
 const policyStabilization = 60 * time.Second
 
 // requireSafeBucket refuses to run against a bucket whose policies would make
@@ -146,9 +150,12 @@ func requireSafeBucket(t *testing.T, g *GCS, bucket string) {
 	// reports success while deletes retain bytes, which is indistinguishable
 	// from a correct run by anything the suite can see afterwards.
 	if settled := time.Since(attrs.Updated); settled < policyStabilization {
-		t.Fatalf("bucket %s was modified %s ago and soft-delete changes take up to 30s to take "+
-			"effect. Its attributes already report the new policy, so this preflight cannot tell a "+
-			"settled bucket from one still retaining deletions. Wait %s and re-run: see #286",
+		t.Fatalf("bucket %s was modified %s ago. Its attributes already report the new policy, but a "+
+			"soft-delete change is not effective when it becomes visible — Google advises waiting at "+
+			"least 30s and does not bound how much longer it may take — so this preflight cannot tell "+
+			"a settled bucket from one still retaining deletions. Waiting %s satisfies this "+
+			"repository's stabilization policy; it does not prove the change has taken effect. "+
+			"See #286",
 			bucket, settled.Round(time.Second), (policyStabilization - settled).Round(time.Second))
 	}
 }
