@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-gcs test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -74,6 +74,21 @@ test-gcs:
 	@test -n "$(MAESTRO_GCS_TEST_BUCKET)" || \
 		(echo "❌ MAESTRO_GCS_TEST_BUCKET is not set; refusing to run and report a green skip" && exit 1)
 	go test -tags=gcs -count=1 -timeout=10m ./internal/dataplane/objects/
+
+# Run the cloud data-plane tests against REAL managed services.
+#
+# Its own tag, separate from both `integration` (local Docker stack) and `gcs`
+# (object adapter alone): this needs credentials AND a running Cloud SQL Auth
+# Proxy, and the pre-push gate must never require either.
+test-cloud:
+	@echo "☁️  Running cloud data-plane tests against Cloud SQL + GCS..."
+	@echo "   Requires: cloud-sql-proxy running, and MAESTRO_CLOUD_DSN,"
+	@echo "             MAESTRO_GCS_TEST_BUCKET, MAESTRO_CLOUD_ROOT_KEY set"
+	@for v in MAESTRO_CLOUD_DSN MAESTRO_GCS_TEST_BUCKET MAESTRO_CLOUD_ROOT_KEY; do \
+		eval "val=\$$$$v"; \
+		test -n "$$val" || { echo "❌ $$v is not set; refusing to run and report a green skip"; exit 1; }; \
+	done
+	go test -tags=cloud -count=1 -timeout=15m ./internal/dataplane/cloud/
 
 # Run E2E tests (full workflow tests requiring Docker, Gitea, real Git operations)
 test-e2e:
