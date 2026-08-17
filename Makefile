@@ -82,9 +82,10 @@ test-gcs:
 # Proxy, and the pre-push gate must never require either.
 test-cloud:
 	@echo "☁️  Running cloud data-plane tests against Cloud SQL + GCS..."
-	@echo "   Requires: cloud-sql-proxy running, and MAESTRO_CLOUD_DSN,"
-	@echo "             MAESTRO_GCS_TEST_BUCKET, MAESTRO_CLOUD_ROOT_KEY set"
-	@for v in MAESTRO_CLOUD_DSN MAESTRO_GCS_TEST_BUCKET MAESTRO_CLOUD_ROOT_KEY; do \
+	@echo "   Requires: cloud-sql-proxy running, plus MAESTRO_CLOUD_DSN,"
+	@echo "             MAESTRO_GCS_TEST_BUCKET, MAESTRO_CLOUD_ROOT_KEY, and"
+	@echo "             GOOGLE_CLOUD_QUOTA_PROJECT (ADC clients are not scoped by gcloud)"
+	@for v in MAESTRO_CLOUD_DSN MAESTRO_GCS_TEST_BUCKET MAESTRO_CLOUD_ROOT_KEY GOOGLE_CLOUD_QUOTA_PROJECT; do \
 		eval "val=\$$$$v"; \
 		test -n "$$val" || { echo "❌ $$v is not set; refusing to run and report a green skip"; exit 1; }; \
 	done

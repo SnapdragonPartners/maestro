@@ -118,6 +118,54 @@ func TestUnknownBackendIsAConstructionError(t *testing.T) {
 	}
 }
 
+// validRootKey is material of exactly the required length. Tests that are not
+// about length must use it, or they assert the length check by accident.
+func validRootKey() []byte { return bytes.Repeat([]byte{0xA5}, paths.RootKeyLen) }
+
+// TestResolvedKeyRejectsMaterialOfTheWrongLength covers the invariant that
+// previously held only by accident.
+//
+// Every key reaching this constructor used to come from paths.LoadKey, which
+// refuses anything that is not exactly RootKeyLen — so the length was satisfied
+// by where the material came from rather than by any check here. Operator-
+// provided material has no such history: a one-byte key derives usable-looking
+// subkeys through HKDF and unlocks the same vault at a fraction of the intended
+// entropy, and DeriveKey only rejects empty input.
+//
+// Long material is refused too. Truncating or hashing it to fit would accept two
+// different inputs as the same key, and an operator who supplied 64 bytes
+// believing all of them mattered would be wrong with nothing reporting it.
+func TestResolvedKeyRejectsMaterialOfTheWrongLength(t *testing.T) {
+	for name, key := range map[string][]byte{
+		"one byte":      {0x01},
+		"one short":     bytes.Repeat([]byte{0x02}, paths.RootKeyLen-1),
+		"one long":      bytes.Repeat([]byte{0x03}, paths.RootKeyLen+1),
+		"double length": bytes.Repeat([]byte{0x04}, paths.RootKeyLen*2),
+		"hex of the right length but wrong byte count": []byte("a5a5a5a5"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider, err := ResolvedKey(key, BackendOperatorProvided)
+			if err == nil {
+				t.Fatalf("%d bytes of material was accepted as a root key", len(key))
+			}
+			if provider != nil {
+				t.Fatal("a refusal returned a usable provider")
+			}
+			if !errors.Is(err, ErrRootKeyLength) {
+				t.Fatalf("a wrong-length key must be distinguishable from a missing one: %v", err)
+			}
+		})
+	}
+}
+
+// TestResolvedKeyAcceptsMaterialOfExactlyTheRightLength is the control for the
+// table above.
+func TestResolvedKeyAcceptsMaterialOfExactlyTheRightLength(t *testing.T) {
+	if _, err := ResolvedKey(validRootKey(), BackendOperatorProvided); err != nil {
+		t.Fatalf("material of exactly %d bytes was refused: %v", paths.RootKeyLen, err)
+	}
+}
+
 // TestResolvedKeyRejectsAnIncompleteValue covers every way the constructor can
 // be handed something that would fail later instead of here.
 //
@@ -133,9 +181,9 @@ func TestResolvedKeyRejectsAnIncompleteValue(t *testing.T) {
 	}{
 		"no material":       {key: nil, source: BackendKeyFile, is: ErrNoRootKey},
 		"empty material":    {key: []byte{}, source: BackendOperatorProvided, is: ErrNoRootKey},
-		"unnamed source":    {key: []byte("material"), source: ""},
-		"misspelled source": {key: []byte("material"), source: "keyfile"},
-		"invented source":   {key: []byte("material"), source: "gcp-kms"},
+		"unnamed source":    {key: validRootKey(), source: ""},
+		"misspelled source": {key: validRootKey(), source: "keyfile"},
+		"invented source":   {key: validRootKey(), source: "gcp-kms"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			provider, err := ResolvedKey(tc.key, tc.source)
@@ -160,7 +208,7 @@ func TestResolvedKeyRejectsAnIncompleteValue(t *testing.T) {
 func TestResolvedKeyAcceptsEveryNamedBackend(t *testing.T) {
 	for _, source := range knownBackends {
 		t.Run(string(source), func(t *testing.T) {
-			provider, err := ResolvedKey([]byte("material"), source)
+			provider, err := ResolvedKey(validRootKey(), source)
 			if err != nil {
 				t.Fatalf("named backend %q was refused: %v", source, err)
 			}
@@ -176,7 +224,7 @@ func TestResolvedKeyAcceptsEveryNamedBackend(t *testing.T) {
 // BackendKeyFile would pass against the old implementation too and could not
 // tell the fix from the defect.
 func TestResolvedKeyReportsTheSourceItWasGiven(t *testing.T) {
-	provider, err := ResolvedKey([]byte("material"), BackendOperatorProvided)
+	provider, err := ResolvedKey(validRootKey(), BackendOperatorProvided)
 	if err != nil {
 		t.Fatalf("a named source was refused: %v", err)
 	}
@@ -189,7 +237,7 @@ func TestResolvedKeyReportsTheSourceItWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("root key: %v", err)
 	}
-	if string(key) != "material" {
-		t.Fatalf("resolved key returned %q, want %q", key, "material")
+	if !bytes.Equal(key, validRootKey()) {
+		t.Fatalf("resolved key returned different material than it was given")
 	}
 }

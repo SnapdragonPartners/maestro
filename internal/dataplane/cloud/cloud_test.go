@@ -1,11 +1,13 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/secret"
 )
 
@@ -17,6 +19,52 @@ import (
 // cloud_integration_test.go, because what it asserts is what the managed
 // services actually do.
 
+// validRootKey is material of exactly the length a root key must be.
+func validRootKey() []byte { return bytes.Repeat([]byte{0x5A}, paths.RootKeyLen) }
+
+// TestConfigRefusesAWrongLengthRootKey pins the invariant at the configuration
+// boundary.
+//
+// A cloud plane's key arrives from outside with no history — nothing has already
+// refused it for being the wrong size, which is what a key file's loader does.
+// Accepting a short one would unlock the same vault at a fraction of the
+// intended entropy, and every derivation downstream would succeed.
+func TestConfigRefusesAWrongLengthRootKey(t *testing.T) {
+	for name, key := range map[string][]byte{
+		"one byte":  {0x01},
+		"one short": bytes.Repeat([]byte{0x02}, paths.RootKeyLen-1),
+		"one long":  bytes.Repeat([]byte{0x03}, paths.RootKeyLen+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := Config{DSN: "postgres://example", Bucket: "b", RootKey: key}
+			err := cfg.validate()
+			if err == nil {
+				t.Fatalf("a %d-byte root key was accepted", len(key))
+			}
+			if !errors.Is(err, secret.ErrRootKeyLength) {
+				t.Fatalf("a wrong-length key must be distinguishable from a missing one: %v", err)
+			}
+		})
+	}
+}
+
+// TestOpenSeamRefusesANilRegistryBeforeBuildingAClient covers the ordering.
+// `plane` refuses a nil registry too, but reaching that costs a network client
+// this function would then have to close — and a resource that only needs
+// closing on an error path is the one that gets leaked.
+func TestOpenSeamRefusesANilRegistryBeforeBuildingAClient(t *testing.T) {
+	_, err := OpenSeam(context.Background(), Config{
+		DSN: "postgres://example", Bucket: "b", RootKey: validRootKey(),
+	}, nil)
+	if err == nil {
+		t.Fatal("OpenSeam accepted a nil registry")
+	}
+	if !strings.Contains(err.Error(), "no artifact registry") {
+		t.Fatalf("the failure should name the registry rather than something downstream, which "+
+			"would mean a client was built first: %v", err)
+	}
+}
+
 // TestConfigRefusesAnIncompleteConfiguration covers each input that cannot open
 // a plane. Each would otherwise fail somewhere further from the cause.
 func TestConfigRefusesAnIncompleteConfiguration(t *testing.T) {
@@ -24,7 +72,7 @@ func TestConfigRefusesAnIncompleteConfiguration(t *testing.T) {
 		return Config{
 			DSN:     "postgres://user:pw@127.0.0.1:5433/maestro?sslmode=disable",
 			Bucket:  "maestro-objects",
-			RootKey: []byte("thirty-two-bytes-of-key-material"),
+			RootKey: validRootKey(),
 		}
 	}
 	for name, breakIt := range map[string]func(*Config){
@@ -52,7 +100,7 @@ func TestConfigAcceptsACompleteConfiguration(t *testing.T) {
 	cfg := Config{
 		DSN:     "postgres://user:pw@127.0.0.1:5433/maestro?sslmode=disable",
 		Bucket:  "maestro-objects",
-		RootKey: []byte("thirty-two-bytes-of-key-material"),
+		RootKey: validRootKey(),
 	}
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("a complete configuration was refused: %v", err)
@@ -108,7 +156,7 @@ func TestMigrateRefusesWithoutADSN(t *testing.T) {
 func TestOpenSeamRefusesBeforeBuildingAnything(t *testing.T) {
 	_, err := OpenSeam(context.Background(), Config{
 		DSN:     "postgres://example",
-		RootKey: []byte("material"),
+		RootKey: validRootKey(),
 	}, nil)
 	if err == nil {
 		t.Fatal("OpenSeam accepted a configuration with no bucket")

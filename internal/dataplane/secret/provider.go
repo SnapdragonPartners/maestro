@@ -76,6 +76,10 @@ const (
 // model of which key protects the vault is wrong.
 var ErrBackendNotImplemented = errors.New("root-key backend is not implemented")
 
+// ErrRootKeyLength reports material that is not a root key's length, so a
+// caller can tell a malformed key from a missing one without matching text.
+var ErrRootKeyLength = fmt.Errorf("root-of-trust key must be exactly %d bytes", paths.RootKeyLen)
+
 // Access says whether a provider may CREATE key material or only load it.
 //
 // The distinction is item 7's D4, and it exists because the root key derives
@@ -187,6 +191,23 @@ func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProv
 func ResolvedKey(key []byte, source Backend) (RootKeyProvider, error) {
 	if len(key) == 0 {
 		return nil, fmt.Errorf("resolved root key was given no material: %w", ErrNoRootKey)
+	}
+	// The LENGTH invariant is enforced here, not only where key files are
+	// read, and that placement is the point. `paths.LoadKey` refuses a file
+	// that is not exactly RootKeyLen bytes, so every key that reached this
+	// constructor used to satisfy it as a side effect of where it came from.
+	// Material handed in from outside has no such history: a one-byte key
+	// would derive perfectly usable-looking subkeys through HKDF and unlock
+	// the same vault seam at a fraction of the intended entropy, and nothing
+	// downstream would object — DeriveKey only rejects empty input.
+	//
+	// Refusing long material as well as short is deliberate. Truncating or
+	// hashing an over-long key to fit would silently accept two different
+	// inputs as the same key, and an operator who supplied 64 bytes believing
+	// all of them mattered would be wrong in a way nothing reports.
+	if len(key) != paths.RootKeyLen {
+		return nil, fmt.Errorf("resolved root key is %d bytes, want exactly %d: %w",
+			len(key), paths.RootKeyLen, ErrRootKeyLength)
 	}
 	if !source.known() {
 		return nil, fmt.Errorf("resolved root key names backend %q, which is not one of %s: a "+

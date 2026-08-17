@@ -41,6 +41,7 @@ import (
 
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
@@ -88,6 +89,14 @@ func (c Config) validate() error {
 			"This package will not generate one: the root key derives the vault's key material, and "+
 			"a key minted here would produce secrets whose provenance nobody can state: %w",
 			secret.ErrNoRootKey)
+	case len(c.RootKey) != paths.RootKeyLen:
+		// The same bar as a key file, checked here so it fails at
+		// configuration rather than at the vault. secret.ResolvedKey enforces
+		// it centrally as well; this one exists so the message names the
+		// configuration that is wrong.
+		return fmt.Errorf("open a cloud data plane: the operator-provided root key is %d bytes, "+
+			"want exactly %d — the same length a key file must be, because it protects the same "+
+			"vault: %w", len(c.RootKey), paths.RootKeyLen, secret.ErrRootKeyLength)
 	}
 	return nil
 }
@@ -105,6 +114,13 @@ func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	// Before the client, deliberately. `plane` refuses a nil registry too, but
+	// reaching that costs a network client this function would then have to
+	// remember to close — and a resource that only needs closing on an error
+	// path is the one that gets leaked.
+	if types == nil {
+		return nil, errors.New("open a cloud data plane: no artifact registry was supplied")
+	}
 
 	blob, err := objects.NewGCS(ctx, objects.GCSConfig{Bucket: cfg.Bucket})
 	if err != nil {
@@ -115,9 +131,10 @@ func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.
 	// belt-and-braces — it is what makes "the seam opened" mean the same thing
 	// in both modes.
 	//
-	// `NewGCS` contacts nothing: it resolves credentials and builds a handle,
-	// so a bucket that does not exist, or that this identity cannot read,
-	// produces a perfectly usable-looking client. The local composer has no
+	// `NewGCS` contacts no BUCKET: it resolves credentials — which may itself
+	// use the network — and builds a handle, so a bucket that does not exist,
+	// or that this identity cannot read, produces a perfectly usable-looking
+	// client. The local composer has no
 	// equivalent gap because its `ensureBucket` talks to the object store on
 	// the way through. Without this, a cloud seam opens against a missing
 	// bucket and fails at the first object read — a long way from the

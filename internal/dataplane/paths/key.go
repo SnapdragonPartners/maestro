@@ -18,8 +18,16 @@ const (
 	// key can never live there; this file is the external anchor.
 	KeyFileName = "root-of-trust.key"
 
-	// keyLen is the raw key length in bytes.
-	keyLen = 32
+	// RootKeyLen is the raw root-of-trust key length in bytes.
+	//
+	// Exported because the invariant is about ROOT KEYS, not about this file
+	// format: material handed to the process from outside must meet the same
+	// bar as material read from disk, and the secret package enforces that
+	// against this constant rather than a second copy of the number.
+	RootKeyLen = 32
+
+	// keyLen is retained as the in-package spelling.
+	keyLen = RootKeyLen
 
 	// keyPerm is the exact mode the key file must have. Anything wider is
 	// treated as a possible exposure rather than something to quietly fix.

@@ -26,8 +26,17 @@ package cloud
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
+	"time"
+
+	// Registers the pgx stdlib driver, for the administrative CREATE/DROP
+	// DATABASE statements that cannot run through the seam.
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/registry"
@@ -61,17 +70,128 @@ func cloudConfig(t *testing.T) Config {
 	return Config{DSN: dsn, Bucket: bucket, RootKey: []byte(key)}
 }
 
-// TestCloudMigrateFromEmptyThenOpen is the sequence that matters: the schema
-// applies to a managed database that has never held it, and the seam then opens
-// against that database and a real bucket together.
+// freshDatabase creates a uniquely named, EMPTY database on the configured
+// instance and returns a Config pointing at it.
 //
-// Migrating from EMPTY is the specific claim. A schema that only ever advances
-// on planes it grew up with proves nothing about portability; the local
-// migration set has to be applicable to an instance provisioned by a provider,
-// with whatever defaults and extensions that provider ships.
-func TestCloudMigrateFromEmptyThenOpen(t *testing.T) {
-	cfg := cloudConfig(t)
+// A unique database per run is what makes "migrate from empty" mean anything.
+// An earlier version of this test reused one database, so after its first run it
+// started at the current version and still reported migrating from empty — which
+// left the suite unable to catch the failure it exists for: a migration set that
+// no longer applies cleanly from zero. A rerun of a passing test proved only
+// that migrating an already-migrated plane is a no-op.
+//
+// It also gives the re-runnable requirement a real meaning: each run provisions
+// its own plane rather than depending on residue from the last one.
+func freshDatabase(t *testing.T, cfg Config) Config {
+	t.Helper()
+
+	parsed, err := url.Parse(cfg.DSN)
+	if err != nil {
+		t.Fatalf("parse %s: %v", dsnEnv, err)
+	}
+	// Administer through the default database: CREATE DATABASE cannot run from
+	// inside the database being created.
+	admin := *parsed
+	admin.Path = "/postgres"
+
+	name := fmt.Sprintf("maestro_cloud_%d_%s", time.Now().UTC().Unix(), strings.ToLower(t.Name()))
+	name = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			return r
+		}
+		return '_'
+	}, name)
+
+	adminDB, err := sql.Open("pgx", admin.String())
+	if err != nil {
+		t.Fatalf("open the administrative connection: %v", err)
+	}
+	defer func() { _ = adminDB.Close() }()
+
+	// Identifiers cannot be parameterised, and this one is machine-generated
+	// from a timestamp and a test name reduced to [a-z0-9_] above, so there is
+	// no operator-supplied text in it.
+	if _, err := adminDB.ExecContext(t.Context(), "CREATE DATABASE "+name); err != nil {
+		t.Fatalf("create database %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		// A database left behind holds storage that bills, and the next run
+		// would have to guess whether it mattered.
+		cleanup, err := sql.Open("pgx", admin.String())
+		if err != nil {
+			t.Errorf("cleanup: open administrative connection: %v", err)
+			return
+		}
+		defer func() { _ = cleanup.Close() }()
+		if _, err := cleanup.ExecContext(context.Background(),
+			"DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+			t.Errorf("cleanup: drop database %s: %v", name, err)
+		}
+	})
+
+	fresh := cfg
+	target := *parsed
+	target.Path = "/" + name
+	fresh.DSN = target.String()
+
+	// The empty precondition is ASSERTED rather than assumed. If a future
+	// change made this reuse a database, the test would go back to reporting a
+	// migration from empty that was nothing of the kind.
+	planeDB, err := sql.Open("pgx", fresh.DSN)
+	if err != nil {
+		t.Fatalf("open %s: %v", name, err)
+	}
+	defer func() { _ = planeDB.Close() }()
+	var tables int
+	if err := planeDB.QueryRowContext(t.Context(),
+		`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'`,
+	).Scan(&tables); err != nil {
+		t.Fatalf("count tables in %s: %v", name, err)
+	}
+	if tables != 0 {
+		t.Fatalf("database %s holds %d tables before migrating, so this run cannot establish that "+
+			"the schema applies from empty", name, tables)
+	}
+	t.Logf("provisioned empty database %s", name)
+	return fresh
+}
+
+// TestCloudProvisionMigrateFromEmptyThenOpen is the sequence that matters, in
+// the order it has to happen.
+//
+// Provisioning comes FIRST and is a real stage rather than a comment. The bucket
+// obligations — versioning, and soft delete disabled — cannot be applied
+// retroactively: disabling soft delete does not release residue already
+// accumulated and makes it unobservable, so a plane that wrote objects before
+// being configured cannot be audited afterwards. Running EnsureBucket here, ahead
+// of anything that could write, is what makes the workflow's ordering claim true
+// instead of documented.
+//
+// Migrating from EMPTY is the second claim. A schema that only ever advances on
+// planes it grew up with proves nothing about portability; the local migration
+// set has to apply to a database a provider just handed us.
+func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
+	base := cloudConfig(t)
 	ctx := context.Background()
+
+	// Stage 1: provisioning. Refusing here is correct and must not be skipped
+	// past — an unsafe bucket makes the object sweep report storage it did not
+	// reclaim, which no later test can detect.
+	report, err := EnsureBucket(ctx, base)
+	if err != nil {
+		t.Fatalf("provision the object bucket before any write (report: %+v): %v", report, err)
+	}
+	if !report.VersioningEnabled {
+		t.Fatalf("EnsureBucket returned no error for an unversioned bucket: %+v", report)
+	}
+	if report.SoftDeleteRetention != 0 {
+		t.Fatalf("EnsureBucket returned no error while soft delete retains for %s: %+v",
+			report.SoftDeleteRetention, report)
+	}
+	t.Logf("bucket provisioned: %+v", report)
+
+	// Stage 2: a database that has never held the schema.
+	cfg := freshDatabase(t, base)
 
 	if err := Migrate(ctx, cfg); err != nil {
 		t.Fatalf("migrate a cloud plane from empty: %v", err)
@@ -93,9 +213,8 @@ func TestCloudMigrateFromEmptyThenOpen(t *testing.T) {
 	}
 	t.Logf("cloud plane migrated from empty to version %d", version)
 
-	// Re-running must be a no-op rather than an error: the acceptance criteria
-	// require a re-runnable workflow, and a migrate that refuses on an
-	// already-migrated plane would make every rerun a manual step.
+	// Stage 3: re-running must be a no-op rather than an error, against THIS
+	// database — the one that started empty.
 	if err := Migrate(ctx, cfg); err != nil {
 		t.Fatalf("re-running migrate against an already-migrated cloud plane must be a no-op: %v", err)
 	}
@@ -108,7 +227,7 @@ func TestCloudMigrateFromEmptyThenOpen(t *testing.T) {
 			version, dirty, after, dirtyAfter)
 	}
 
-	// Now the composition itself, against the migrated database and a real
+	// Stage 4: the composition itself, against the migrated database and a real
 	// bucket. Opening is a genuine assertion: the store validates the object
 	// adapter's capability at construction, so a seam that opens has agreed
 	// with the provider about how interrupted writes are handled.
@@ -124,8 +243,8 @@ func TestCloudMigrateFromEmptyThenOpen(t *testing.T) {
 
 	// Closing twice must be harmless. The composition owns the object client,
 	// and a second Close releasing it again would act on a client already shut
-	// down — which is the contract plane enforces and worth confirming through
-	// a real client rather than only a double.
+	// down — the contract plane enforces, worth confirming through a real
+	// client rather than only a double.
 	seam.Close()
 }
 
