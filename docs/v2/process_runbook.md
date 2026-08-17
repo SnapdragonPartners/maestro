@@ -1,17 +1,23 @@
 +++
 title = "Maestro v2 Operations Runbook"
 edit_date = "2026-08-17"
-status = "draft"
+status = "live"
 summary = "Operational sequences and measured gotchas for running the v2 data plane locally and in the cloud: provider defaults that cost money or silently retain data, commands whose failure modes mislead, and the project-safety rules for cloud work. Command definitions live in the Makefile; design rationale lives in the ADRs."
 type = "process"
 +++
 
 # Maestro v2 Operations Runbook
 
-Status: draft — started 2026-08-17 during #286 (cloud portability). Not yet
-reviewed, so nothing here has the authority of an accepted decision. It records
-operational facts that cost time or money to learn, each tagged with where it
-came from.
+Status: live — accepted 2026-08-17 by Codex and DR, written during #286 (cloud
+portability). It records operational facts that cost time or money to learn,
+each tagged with where it came from.
+
+Acceptance is of the document, not a blanket warrant for every sentence in it.
+The tags below still carry the evidence: **Measured** claims were observed against
+a real service on a date, **Documented** ones were read from the provider and not
+checked here, and **Policy** is a choice Maestro made. An untagged claim about
+provider behaviour has not been verified, and being live does not make it so.
+Provider behaviour also changes — a measurement is a fact about a date.
 
 ## What belongs here
 
