@@ -32,11 +32,24 @@
 // call, and completes them, whether or not a single attempt turns out to be new —
 // that is the audit trail of the invocation itself, and recording it is correct.
 //
-// What is asserted is narrower and is what idempotence actually means here: no
-// duplicate ATTEMPT ledger rows, no duplicate run-record artifacts in the suite's
-// scope, no second report, no re-uploaded evidence, and no movement in the record
-// digests already stored. A slice claiming global write-freedom would be false
-// against the local plane too, so it would not even be a portability statement.
+// What is asserted is narrower, and is exactly what the checks below observe: no
+// attempt is re-ledgered, the count of Audit artifacts in the suite's scope does
+// not move, no second report is created, and the record digests already stored
+// stay put. A slice claiming global write-freedom would be false against the
+// local plane too, so it would not even be a portability statement.
+//
+// It does NOT assert that evidence goes un-re-uploaded. That would be a claim
+// about provider object generations or attachment writes, and nothing here looks
+// at either — this package is handed a store.Store and has no route to the object
+// client underneath it. The report not being re-created is the closest signal
+// available, and it is weaker than "the bytes were not sent again".
+//
+// No caller currently makes the stronger observation for this slice either. The
+// cloud suite counts generations at a digest key, but does that for the
+// attachment round trip, not here. Stating the gap rather than implying it is
+// covered: making the claim would mean plumbing an object store through a seam
+// whose whole point is that callers do not need one, and #286 does not require
+// it — the object contract is proven separately by that round trip.
 package importslice
 
 import (

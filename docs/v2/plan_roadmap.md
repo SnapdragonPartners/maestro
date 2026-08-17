@@ -1029,12 +1029,24 @@ Outputs:
 - **Hosted identity and mediation boundary** (see below).
 
 **Hosted identity and mediation boundary**
-([#334](https://github.com/SnapdragonPartners/maestro/issues/334)). A cloud-hosted Orchestrator/API
-authenticates human and execution workloads, maps them to organization,
-principal, and execution identities, and is the **sole route** to Cloud SQL and
-GCS. Agent runtimes receive short-lived scoped authority, never provider
-credentials. Phase 7 decides whether these logical boundaries require separate
-deployables.
+([#334](https://github.com/SnapdragonPartners/maestro/issues/334)). All product
+access by human users and execution/agent workloads is mediated through the
+hosted Orchestrator/API, which authenticates them and maps them to organization,
+principal, and execution identities. Agent runtimes receive short-lived scoped
+authority, never provider credentials.
+
+Separately authorized **operational** identities may provision, migrate, back up,
+restore, and recover the data plane. Those identities are unavailable to product
+actors and are not an alternative product-access path.
+
+That second paragraph is a boundary, not an exemption. Stating the deliverable as
+"the API is the only route to Cloud SQL and GCS" would have been simpler and
+wrong: it forbids the deployment identity that applies migrations
+([#333](https://github.com/SnapdragonPartners/maestro/issues/333)) and the
+backup, restore and recovery verbs the data plane already ships. What must not
+exist is a product actor holding operational credentials.
+
+Phase 7 decides whether these logical boundaries require separate deployables.
 
 This is the deliverable #286 deliberately did not claim. That proof established
 that the persistence seam composes against managed services; it says nothing
