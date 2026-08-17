@@ -142,16 +142,35 @@ func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProv
 //
 // It carries a decision; it does not make one. There is deliberately no path
 // from this type to the filesystem.
-func ResolvedKey(key []byte) RootKeyProvider {
-	return resolvedKeyProvider{key: bytes.Clone(key)}
+//
+// The SOURCE is a parameter because this type cannot know it and must not
+// guess. It previously reported BackendKeyFile unconditionally, which was
+// accurate only because every caller happened to resolve its key from the key
+// file — a property of the one call path, not of this type. A caller that
+// obtains material some other way, which is what a plane not holding its own
+// key does, would have made every diagnostic name a backend nobody
+// configured. Reporting the wrong source is worse than reporting none: the
+// vault's key provenance is exactly what an operator consults when they need
+// to know which key protects the data, and ErrBackendNotImplemented already
+// exists because guessing there is unrecoverable later.
+func ResolvedKey(key []byte, source Backend) (RootKeyProvider, error) {
+	if source == "" {
+		return nil, errors.New("resolved root key needs the backend that produced it: a provider " +
+			"that cannot name its source makes every diagnostic about the vault's key guess")
+	}
+	return resolvedKeyProvider{key: bytes.Clone(key), source: source}, nil
 }
 
-type resolvedKeyProvider struct{ key []byte }
+// Field order is chosen for alignment: the slice header leads so the pointer
+// prefix stays minimal.
+type resolvedKeyProvider struct {
+	source Backend
+	key    []byte
+}
 
-// Backend reports the source that actually produced the key. A resolved key
-// on this plane came from the key file, and saying otherwise would make
-// diagnostics name a backend nobody configured.
-func (resolvedKeyProvider) Backend() Backend { return BackendKeyFile }
+// Backend reports the source the caller named, which is the only party that
+// knows it.
+func (p resolvedKeyProvider) Backend() Backend { return p.source }
 
 func (p resolvedKeyProvider) RootKey() ([]byte, error) {
 	if len(p.key) == 0 {

@@ -15,7 +15,6 @@ import (
 
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
-	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
 )
@@ -140,7 +139,11 @@ func openSeam(t *testing.T, cfg *Config) *postgres.Store {
 	if err != nil {
 		t.Fatalf("reach the object store: %v", err)
 	}
-	seam, err := postgres.Open(t.Context(), dsn, crossStoreRegistry(t), blob, secret.ResolvedKey(rootKey))
+	keyProvider, err := resolvedRootKey(rootKey)
+	if err != nil {
+		t.Fatalf("wrap the root key: %v", err)
+	}
+	seam, err := postgres.Open(t.Context(), dsn, crossStoreRegistry(t), blob, keyProvider)
 	if err != nil {
 		t.Fatalf("open the persistence seam: %v", err)
 	}

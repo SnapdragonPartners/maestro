@@ -117,3 +117,42 @@ func TestUnknownBackendIsAConstructionError(t *testing.T) {
 		t.Fatal("an unknown backend was accepted")
 	}
 }
+
+// TestResolvedKeyRequiresItsSource covers the parameter that replaced a
+// hardcoded backend.
+//
+// The old implementation answered BackendKeyFile for every resolved key. That
+// was accurate only because the single caller resolved from the key file — a
+// property of one call path, not of this type — so a caller obtaining material
+// any other way would have made the vault's key provenance name a backend
+// nobody configured. Refusing an unnamed source is what stops that returning
+// as a default.
+func TestResolvedKeyRequiresItsSource(t *testing.T) {
+	if _, err := ResolvedKey([]byte("material"), ""); err == nil {
+		t.Fatal("a resolved key with no named source was accepted; every diagnostic about the " +
+			"vault's key would then be guessing")
+	}
+}
+
+// TestResolvedKeyReportsTheSourceItWasGiven is the control, and it uses a
+// backend OTHER than the key file on purpose: passing BackendKeyFile would
+// pass just as well against the old hardcoded implementation, so it could not
+// tell the fix from the defect.
+func TestResolvedKeyReportsTheSourceItWasGiven(t *testing.T) {
+	provider, err := ResolvedKey([]byte("material"), BackendPassphrase)
+	if err != nil {
+		t.Fatalf("a named source was refused: %v", err)
+	}
+	if got := provider.Backend(); got != BackendPassphrase {
+		t.Fatalf("resolved key reports backend %q, want %q — a provider that renames its own "+
+			"source misdirects the operator who needs to know which key protects the vault",
+			got, BackendPassphrase)
+	}
+	key, err := provider.RootKey()
+	if err != nil {
+		t.Fatalf("root key: %v", err)
+	}
+	if string(key) != "material" {
+		t.Fatalf("resolved key returned %q, want %q", key, "material")
+	}
+}

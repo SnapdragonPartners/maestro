@@ -10,7 +10,6 @@ import (
 
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
-	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
 )
@@ -97,7 +96,11 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 	// The key this function already resolved, wrapped — never a second
 	// KeyFile, which would remake the create-versus-load decision outside
 	// rootKeyFor.
-	seam, err := postgres.Open(ctx, dsn, types, blob, secret.ResolvedKey(rootKey))
+	keyProvider, err := resolvedRootKey(rootKey)
+	if err != nil {
+		return nil, err
+	}
+	seam, err := postgres.Open(ctx, dsn, types, blob, keyProvider)
 	if err != nil {
 		return nil, fmt.Errorf("open the persistence seam: %w", err)
 	}

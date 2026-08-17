@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"orchestrator/internal/dataplane/registry"
-	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
 )
@@ -65,7 +64,11 @@ func verifyLocked(ctx context.Context, c *Config) (store.VerifyReport, error) {
 	// The key this function already resolved, wrapped — never a second
 	// KeyFile, which would remake the create-versus-load decision outside
 	// rootKeyFor.
-	seam, openErr := postgres.Open(ctx, dsn, types, blob, secret.ResolvedKey(rootKey))
+	keyProvider, keyErr := resolvedRootKey(rootKey)
+	if keyErr != nil {
+		return store.VerifyReport{}, keyErr
+	}
+	seam, openErr := postgres.Open(ctx, dsn, types, blob, keyProvider)
 	if openErr != nil {
 		return store.VerifyReport{}, fmt.Errorf("open the persistence seam: %w", openErr)
 	}
