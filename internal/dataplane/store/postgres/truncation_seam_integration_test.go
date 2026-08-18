@@ -238,14 +238,30 @@ func TestConcurrentTruncationRetriesOnItsOwnSnapshot(t *testing.T) {
 // Polling pg_stat_activity rather than sleeping, because a sleep long
 // enough to be reliable is also long enough to hide the race it was meant
 // to create.
+// The deadline governs the CALL, not merely the iteration.
+//
+// An earlier version wrapped an unbounded `context.Background()` query in a
+// 30-second loop. That bounds how many times the query is retried, which is not
+// the failure mode: one query that never returns never reaches the next deadline
+// check, so the loop's bound cannot fire. This is called while a writer is
+// deliberately stalled holding a lock, so a hang here deadlocks the test until
+// the package timeout.
 func waitForLockWait(t *testing.T, f *fixture) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	ctx, cancel := context.WithTimeout(context.Background(), barrierTimeout)
+	defer cancel()
+
+	for ctx.Err() == nil {
 		var waiting int
-		if err := f.pool.QueryRow(context.Background(), `
+		if err := f.pool.QueryRow(ctx, `
 			SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
+			// A deadline reached mid-query is this helper's own timeout, not a
+			// database fault, and reporting it as one would send the next reader
+			// looking at Postgres.
+			if ctx.Err() != nil {
+				break
+			}
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
 		if waiting > 0 {
@@ -253,5 +269,6 @@ func waitForLockWait(t *testing.T, f *fixture) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("no backend ever blocked on a lock, so the collision this test depends on never happened")
+	t.Fatalf("no backend blocked on a lock within %s, so the collision this test depends on never "+
+		"happened", barrierTimeout)
 }
