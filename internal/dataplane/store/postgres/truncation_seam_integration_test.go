@@ -256,10 +256,19 @@ func waitForLockWait(t *testing.T, f *fixture) {
 		if err := f.pool.QueryRow(ctx, `
 			SELECT count(*) FROM pg_stat_activity
 			WHERE datname = current_database() AND wait_event_type = 'Lock'`).Scan(&waiting); err != nil {
-			// A deadline reached mid-query is this helper's own timeout, not a
-			// database fault, and reporting it as one would send the next reader
-			// looking at Postgres.
-			if ctx.Err() != nil {
+			// Attributed by the ERROR, not by ambient deadline state.
+			//
+			// A deadline reached mid-query is this helper's own timeout rather
+			// than a database fault, and reporting it as one would send the next
+			// reader looking at Postgres. But asking `ctx.Err() != nil` here
+			// answers a different question: it is true for ANY failure that
+			// happens to coincide with the deadline expiring, so a genuine pool
+			// or database fault arriving in that same instant would be swallowed
+			// and reported below as "no backend ever blocked on a lock" -- the
+			// one message guaranteed to send someone looking in the wrong place.
+			// The window is narrow; the cost of landing in it is a debugging
+			// session against a healthy database.
+			if errors.Is(err, context.DeadlineExceeded) {
 				break
 			}
 			t.Fatalf("read pg_stat_activity: %v", err)
