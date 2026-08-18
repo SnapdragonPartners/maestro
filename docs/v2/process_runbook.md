@@ -78,7 +78,7 @@ Federation** and holds no key. Coordinates, so nobody has to rediscover them:
 | --- | --- |
 | Service account | `maestro-cloud-proof@gen-lang-client-0110204648.iam.gserviceaccount.com` |
 | WIF pool / provider | `github` / `github-actions` (pre-existing, shared) |
-| Custom roles | `maestroCloudProofSql`, `maestroCloudProofBucket` |
+| Custom roles | `maestroCloudProofSql` (instance get/update, users update/list), `maestroCloudProofBucket` (bucket get/update), `maestroCloudProofQuota` (`serviceusage.services.use`) |
 | CI database user | `maestro_ci` (**not** `postgres`) |
 | GitHub environment | `cloud-proof` — reviewer `@SnapdragonPartners/snapdragon`, `main` only, admin bypass disabled |
 
@@ -113,6 +113,23 @@ afterwards. Rotating `postgres` instead would invalidate the local credential
 this runbook's own procedures depend on, breaking somebody's laptop on every CI
 run. **Measured 2026-08-17:** `maestro_ci` has `createdb=true`, `super=false`,
 and the full cloud suite passes as that user.
+
+**`maestroCloudProofQuota` is not spare.** It holds one permission,
+`serviceusage.services.use`, which Google requires of any identity naming a quota
+project — and the workflow sets `GOOGLE_CLOUD_QUOTA_PROJECT` because ADC clients
+are not scoped by `gcloud`
+([Documented](https://docs.cloud.google.com/docs/quotas/set-quota-project)).
+Neither Cloud SQL Client nor the other two custom roles provides it. A
+single-permission role attached to nothing obvious looks like residue during IAM
+reconciliation; removing it breaks the Go client's requests while leaving every
+`gcloud` step in the job working, which is a confusing way to fail.
+
+It was also missed by the first round of verification, for a reason worth
+keeping: those checks impersonated the service account through `gcloud`, and
+`gcloud` does not consume the quota project the way the client libraries do. The
+suite passed because the Go client was using an operator's own credentials at the
+time. Verifying an identity through a different client than the one that will use
+it proves less than it appears to.
 
 **IAM changes take time to propagate.** Fresh bindings returned
 `IAM_PERMISSION_DENIED` for roughly 30 seconds after being created and correct
