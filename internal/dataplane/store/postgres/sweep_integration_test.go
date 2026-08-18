@@ -75,13 +75,31 @@ func (f *fixture) unreferencedObject(t *testing.T, body []byte) string {
 	return digest
 }
 
+// barrierTimeout bounds a single external call made while a test is holding a
+// forced window open.
+//
+// Every such call needs a deadline of its own. A test that stalls a writer
+// inside its transaction and then makes an unbounded call has arranged for one
+// slow response to become a deadlock: the writer cannot proceed, whatever is
+// blocked behind its lock cannot proceed, and the goroutine that would release
+// the stall is the one waiting. Nothing breaks that cycle except the package
+// timeout, which fails the whole suite twenty minutes later and names no cause.
+//
+// Generous on purpose. It is not a performance assertion — a loaded object store
+// legitimately takes seconds — it exists so that "slow" cannot become "never".
+const barrierTimeout = 60 * time.Second
+
 // storedVersions counts what the bucket actually holds for a digest,
 // including delete markers. Zero means the storage is genuinely reclaimed
 // rather than merely hidden behind a marker.
+//
+// Bounded, because this is called inside forced windows: see barrierTimeout.
 func (f *fixture) storedVersions(t *testing.T, digest string) int {
 	t.Helper()
 	key := objectKeyFor(f.organizationID, digest)
-	versions, err := f.blob.ListVersions(context.Background(), key)
+	ctx, cancel := context.WithTimeout(context.Background(), barrierTimeout)
+	defer cancel()
+	versions, err := f.blob.ListVersions(ctx, key)
 	if err != nil {
 		t.Fatalf("list versions of %s: %v", key, err)
 	}
@@ -292,11 +310,7 @@ func TestSweepBlocksOnTheLockAndThenFindsTheReference(t *testing.T) {
 	body := []byte("bytes whose attachment row has not committed yet")
 	digest := digestOf(body)
 
-	stall := &stallAfterPromote{
-		key:     objectKeyFor(f.organizationID, digest),
-		reached: make(chan struct{}),
-		release: make(chan struct{}),
-	}
+	stall := newStallAfterPromote(t, objectKeyFor(f.organizationID, digest))
 	writer := f.storeWithTransport(t, stall)
 
 	written := make(chan error, 1)
@@ -306,7 +320,7 @@ func TestSweepBlocksOnTheLockAndThenFindsTheReference(t *testing.T) {
 	case <-stall.reached:
 	case err := <-written:
 		t.Fatalf("the write finished without ever stalling (%v), so no window was held open", err)
-	case <-time.After(30 * time.Second):
+	case <-time.After(barrierTimeout):
 		t.Fatal("the writer never reached its post-promote read-back")
 	}
 
@@ -332,7 +346,7 @@ func TestSweepBlocksOnTheLockAndThenFindsTheReference(t *testing.T) {
 	// instead would make the test pass whether or not the lock was ever
 	// taken.
 	waitForLockWait(t, f)
-	close(stall.release)
+	stall.free()
 
 	if err := <-written; err != nil {
 		t.Fatalf("the stalled write failed: %v", err)
@@ -371,6 +385,44 @@ type stallAfterPromote struct {
 	release  chan struct{}
 	promoted atomic.Bool
 	once     sync.Once
+	// freed guards the release channel so it can be closed from both the test's
+	// success path and its cleanup. See newStallAfterPromote.
+	freed sync.Once
+}
+
+// newStallAfterPromote builds a stall and registers its release as CLEANUP.
+//
+// The release must happen on every exit path, not only the successful one, and
+// the reason is more specific than a leaked goroutine. The stalled writer holds
+// an ACQUIRED POOLED CONNECTION with an open transaction, and `pgxpool.Close()`
+// waits for acquired connections to be released. So a `t.Fatal` between the
+// stall and its release does not merely strand a goroutine that might collide
+// with a later test — it blocks this fixture's own teardown, forever, every
+// time. That is why the failure presents as a package-wide timeout rather than
+// as one test failing.
+//
+// MEASURED: removing this registration and forcing a failure inside the window
+// reproduces `panic: test timed out after 1m30s`; with it, the same assertion
+// fails in 0.63s.
+//
+// Registering the release here rather than remembering it at each call site is
+// the point: the paths that need it most are the ones nobody writes out.
+func newStallAfterPromote(t *testing.T, key string) *stallAfterPromote {
+	t.Helper()
+	stall := &stallAfterPromote{
+		key:     key,
+		reached: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	t.Cleanup(stall.free)
+	return stall
+}
+
+// free releases the stalled writer, and is safe to call more than once — the
+// test's own success path calls it too, and a cleanup that panicked on a
+// second close would convert a passing test into a failing one.
+func (s *stallAfterPromote) free() {
+	s.freed.Do(func() { close(s.release) })
 }
 
 func (s *stallAfterPromote) RoundTrip(req *http.Request) (*http.Response, error) {

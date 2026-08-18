@@ -57,9 +57,51 @@ test: benchmark-test
 	go test -cover ./...
 
 # Run integration tests only (requires API keys and external services)
+#
+# -count=1 is REQUIRED, not tidiness. These tests depend on mutable external
+# state -- a Postgres cluster, MinIO buckets, containers -- and Go's test cache
+# keys on inputs it can see, which excludes all of it. A cached PASS is a claim
+# about a plane that may since have been reset, migrated or emptied. Measured on
+# #286's branch: a pre-push run that failed was followed by one that passed with
+# 71 packages `(cached)`, including the two heaviest, so the accepting run had
+# executed strictly less than the run it was taken to overrule (#306).
+#
+# -timeout applies PER TEST BINARY, so it is sized by the slowest single
+# package, not by the suite. Measured on macOS (M3) 2026-08-17, from a fully
+# uncached run of this target -- 747s wall clock, zero packages cached:
+#
+#     internal/dataplane/stack           745.1s   <- the long pole
+#     internal/dataplane/store/postgres  292.8s   (187.2s standalone: 1.6x)
+#     tests/integration                  215.8s
+#     internal/dataplane/benchmarkimport  86.9s   (1.5s standalone: ~58x)
+#
+# 40m leaves the long pole better than 3x headroom, and matches what the
+# ubuntu-latest recovery job in ci.yml already uses.
+#
+# The inflation column has TWO causes, not one, which is why its range is so
+# wide. Packages built on `planetest` take a database and a bucket per test on
+# the ALREADY-RUNNING dev stack, so under `./...` they compete for one Postgres
+# and one MinIO -- that is benchmarkimport's ~58x. The stack package instead
+# brings up its own throwaway Compose planes per test, so it is not queueing
+# behind anyone for a shared server; its 1.04x is near-zero for that reason and
+# because, as the long pole, little else is still running near its end. Reading
+# 1.04x as "contention is mild" would be the wrong lesson.
+#
+# Linux is somewhat SLOWER, not faster. On the only subset timed on both, the
+# stack recovery tests take 261-289s on ubuntu-latest in CI against 238.3s here:
+# roughly 1.1-1.2x. Applied to the long pole that is ~900s, still under half the
+# timeout, which is what makes deferring the full Linux measurement safe rather
+# than merely convenient.
+#
+# The full suite has NOT been timed on Linux. It does not run there -- CI's
+# integration job is still the commented-out template at the foot of ci.yml --
+# and standing that up means a paid-API surface and a dispatch trigger that
+# cannot be exercised until it exists on the default branch. #306 was amended to
+# defer it until that job legitimately enters CI, rather than leaving an
+# acceptance criterion nobody could satisfy.
 test-integration:
 	@echo "🧪 Running integration tests..."
-	go test -tags=integration -cover -timeout=20m ./...
+	go test -tags=integration -cover -count=1 -timeout=40m ./...
 
 # Run the GCS adapter tests against a REAL Google Cloud Storage bucket.
 #
