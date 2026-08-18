@@ -110,11 +110,18 @@ func New(seam store.Store) *Importer { return &Importer{store: seam} }
 
 // Import reads one suite run and writes what is not already there.
 //
-// Append-only and idempotent by (suite, attempt) identity: re-importing is a
-// no-op, and a conflicting payload for an existing identity is REJECTED
-// rather than overwritten — run records are append-only on disk and never
-// rewritten, so a differing digest means the file changed, and overwriting
-// would erase the evidence of exactly that.
+// Append-only and idempotent by (suite, attempt) identity: re-importing writes
+// no second copy of an attempt, and a conflicting payload for an existing
+// identity is REJECTED rather than overwritten — run records are append-only on
+// disk and never rewritten, so a differing digest means the file changed, and
+// overwriting would erase the evidence of exactly that.
+//
+// That idempotence is over the ATTEMPTS and what they produce, not over
+// everything the call writes. Every invocation opens and completes its own
+// importer principal instance and its own tool call, whether or not a single
+// attempt turns out to be new: that is the audit record of the invocation
+// itself, and a re-import that left no trace of having been run would be the
+// defect. Callers must not read this as "a re-import writes nothing".
 //
 // Evidence is deliberately NOT uploaded here. Attachments written during a
 // partial import would be held by no artifact — the report is the only pin

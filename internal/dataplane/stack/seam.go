@@ -4,15 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/registry"
-	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
-	"orchestrator/internal/dataplane/store/postgres"
 )
 
 // OpenSeam opens the persistence seam against a running plane.
@@ -97,36 +95,41 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 	// The key this function already resolved, wrapped — never a second
 	// KeyFile, which would remake the create-versus-load decision outside
 	// rootKeyFor.
-	seam, err := postgres.Open(ctx, dsn, types, blob, secret.ResolvedKey(rootKey))
+	keyProvider, err := resolvedRootKey(rootKey)
 	if err != nil {
-		return nil, fmt.Errorf("open the persistence seam: %w", err)
+		return nil, err
 	}
-	return &sharedSeam{Store: seam, release: release}, nil
-}
 
-// sharedSeam is a store that holds the shared lifecycle lock for as long as
-// it is open.
-//
-// The lock's lifetime is the SEAM's, not the call's, because the race is not
-// in opening the plane — it is in using it. A lock released once the store
-// was built would leave the import it was taken for entirely unprotected.
-type sharedSeam struct {
-	store.Store
-	release func() error
-}
+	// Everything above this line is local: a data root, an flock, marker
+	// guards, a key file, a DSN derived from it, and a MinIO bucket. Composing
+	// them is not, so it happens in `plane`, which knows none of it.
+	//
+	// The lock is handed over as an OWNED resource rather than released here,
+	// because its lifetime is the seam's and not this call's: the race is not
+	// in opening the plane but in using it, and a lock released once the store
+	// was built would leave the import it was taken for entirely unprotected.
+	//
+	// Ownership transfers BEFORE the call rather than after it succeeds.
+	// `plane.Open` releases what it owns on its own failure paths, so leaving
+	// this function's deferred release armed would release the same lock
+	// twice — and it would do so on exactly the paths that are already
+	// failing, where the second release reports an error from a descriptor
+	// that is already closed. The deferred release still covers every path
+	// that fails before this point.
+	lock := release
+	release = func() error { return nil }
 
-// Close releases the plane and then the lock, in that order: the lock is
-// what promises no lifecycle operation ran while this store was usable, so
-// it is released once the store no longer is.
-//
-// Store.Close returns nothing, so a failure to release can only be logged.
-// That is the honest limit of this seam's signature, and it is logged at
-// error rather than swallowed: a lock this process never released blocks
-// every later lifecycle operation until it exits.
-func (s *sharedSeam) Close() {
-	s.Store.Close()
-	if err := s.release(); err != nil {
-		slog.Default().Error("could not release the data-plane lifecycle lock; "+
-			"lifecycle operations will block until this process exits", "error", err)
+	seam, err := plane.Open(ctx, plane.Composition{
+		DSN:     dsn,
+		Objects: blob,
+		RootKey: keyProvider,
+		Types:   types,
+		Owned: []plane.Owned{
+			{What: "data-plane lifecycle lock", Close: lock},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open the persistence seam for %s: %w", c.Roots.Data, err)
 	}
+	return seam, nil
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 
 	"orchestrator/internal/dataplane/paths"
 )
@@ -46,6 +47,22 @@ const (
 	// BackendPassphrase is named but not implemented. It carries a cost the
 	// default cannot: a plane that cannot start unattended.
 	BackendPassphrase Backend = "passphrase"
+
+	// BackendOperatorProvided is material handed to the process from outside
+	// — an environment variable, a flag, or an injected secret — rather than
+	// held on this machine by Maestro.
+	//
+	// It is NOT a fourth way of storing a key locally, and it has no
+	// constructor above for that reason: there is nothing for this package to
+	// read, create or refuse. It exists so a caller that already holds such
+	// material can say where it came from, which is the difference between a
+	// provider naming its source and one inheriting somebody else's.
+	//
+	// This is the route for a plane that does not hold its own key. It is
+	// deliberately not a cloud RootKeyProvider: the seam stays local, and a
+	// cloud implementation of it would have to invent a key it has no use
+	// for, which is the anti-pattern this interface's own comment names.
+	BackendOperatorProvided Backend = "operator-provided"
 )
 
 // ErrBackendNotImplemented reports a root-key backend that is named but not
@@ -58,6 +75,10 @@ const (
 // silent at the time and unrecoverable later, because the operator's mental
 // model of which key protects the vault is wrong.
 var ErrBackendNotImplemented = errors.New("root-key backend is not implemented")
+
+// ErrRootKeyLength reports material that is not a root key's length, so a
+// caller can tell a malformed key from a missing one without matching text.
+var ErrRootKeyLength = fmt.Errorf("root-of-trust key must be exactly %d bytes", paths.RootKeyLen)
 
 // Access says whether a provider may CREATE key material or only load it.
 //
@@ -142,16 +163,86 @@ func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProv
 //
 // It carries a decision; it does not make one. There is deliberately no path
 // from this type to the filesystem.
-func ResolvedKey(key []byte) RootKeyProvider {
-	return resolvedKeyProvider{key: bytes.Clone(key)}
+//
+// The SOURCE is a parameter because this type cannot know it and must not
+// guess. It previously reported BackendKeyFile unconditionally, which was
+// accurate only because every caller happened to resolve its key from the key
+// file — a property of the one call path, not of this type. A caller that
+// obtains material some other way, which is what a plane not holding its own
+// key does, would have made every diagnostic name a backend nobody
+// configured. Reporting the wrong source is worse than reporting none: the
+// vault's key provenance is exactly what an operator consults when they need
+// to know which key protects the data, and ErrBackendNotImplemented already
+// exists because guessing there is unrecoverable later.
+//
+// BOTH arguments are validated, and the reason is that this constructor
+// returns an error at all. Its whole purpose is to fail where the mistake is
+// made rather than where it surfaces, and checking only one of the two left
+// the other still deferred:
+//
+//   - EMPTY MATERIAL builds a provider that looks usable and fails at the
+//     first vault operation, which is a long way from the caller that passed
+//     nothing. An operator supplying a key by hand — the case this parameter
+//     exists for — is exactly who supplies an empty one by mistake.
+//   - AN UNRECOGNISED SOURCE recreates the defect this parameter removed. A
+//     typo is not caught by requiring non-empty, and a provider reporting
+//     "keyfile" or "operator" would misname the vault's key provenance just as
+//     effectively as the old hardcoded constant did, while looking deliberate.
+func ResolvedKey(key []byte, source Backend) (RootKeyProvider, error) {
+	if len(key) == 0 {
+		return nil, fmt.Errorf("resolved root key was given no material: %w", ErrNoRootKey)
+	}
+	// The LENGTH invariant is enforced here, not only where key files are
+	// read, and that placement is the point. `paths.LoadKey` refuses a file
+	// that is not exactly RootKeyLen bytes, so every key that reached this
+	// constructor used to satisfy it as a side effect of where it came from.
+	// Material handed in from outside has no such history: a one-byte key
+	// would derive perfectly usable-looking subkeys through HKDF and unlock
+	// the same vault seam at a fraction of the intended entropy, and nothing
+	// downstream would object — DeriveKey only rejects empty input.
+	//
+	// Refusing long material as well as short is deliberate. Truncating or
+	// hashing an over-long key to fit would silently accept two different
+	// inputs as the same key, and an operator who supplied 64 bytes believing
+	// all of them mattered would be wrong in a way nothing reports.
+	if len(key) != paths.RootKeyLen {
+		return nil, fmt.Errorf("resolved root key is %d bytes, want exactly %d: %w",
+			len(key), paths.RootKeyLen, ErrRootKeyLength)
+	}
+	if !source.known() {
+		return nil, fmt.Errorf("resolved root key names backend %q, which is not one of %s: a "+
+			"provider that reports a source nobody configured misdirects the operator who needs to "+
+			"know which key protects the vault", source, knownBackends)
+	}
+	return resolvedKeyProvider{key: bytes.Clone(key), source: source}, nil
 }
 
-type resolvedKeyProvider struct{ key []byte }
+// knownBackends is every source a provider may claim. It is the list rather
+// than a range check because Backend is a string: there is no compiler-visible
+// set, so the constants have to be enumerated somewhere, and one place beats
+// each caller guessing.
+//
+//nolint:gochecknoglobals // Immutable set, built once at init.
+var knownBackends = []Backend{
+	BackendKeyFile,
+	BackendKeychain,
+	BackendPassphrase,
+	BackendOperatorProvided,
+}
 
-// Backend reports the source that actually produced the key. A resolved key
-// on this plane came from the key file, and saying otherwise would make
-// diagnostics name a backend nobody configured.
-func (resolvedKeyProvider) Backend() Backend { return BackendKeyFile }
+// known reports whether this is a backend the package defines.
+func (b Backend) known() bool { return slices.Contains(knownBackends, b) }
+
+// Field order is chosen for alignment rather than for reading: the string
+// header leads, which keeps the struct's pointer prefix minimal.
+type resolvedKeyProvider struct {
+	source Backend
+	key    []byte
+}
+
+// Backend reports the source the caller named, which is the only party that
+// knows it.
+func (p resolvedKeyProvider) Backend() Backend { return p.source }
 
 func (p resolvedKeyProvider) RootKey() ([]byte, error) {
 	if len(p.key) == 0 {

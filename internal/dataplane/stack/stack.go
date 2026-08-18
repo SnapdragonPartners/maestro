@@ -748,6 +748,29 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 		ErrPlaneLocked, operation, strings.Join(evidence, ", "), wrapped)
 }
 
+// resolvedRootKey wraps material rootKeyFor produced, naming the backend that
+// actually produced it.
+//
+// It exists so that correspondence lives in ONE place, immediately beside the
+// function it describes. secret.ResolvedKey takes the source as a parameter
+// because it cannot know it; if each call site answered separately, all three
+// would be asserting something about rootKeyFor's internals from a distance,
+// and a change of backend here would leave them quietly reporting the old one.
+// That is the same defect the parameter was introduced to remove, moved up a
+// level.
+//
+// The answer is BackendKeyFile because rootKeyFor resolves through
+// secret.KeyFile. A plane that obtains its key some other way — one that does
+// not hold its own key at all — must not route through here; it names its own
+// source, which is the whole point of the parameter.
+func resolvedRootKey(rootKey []byte) (secret.RootKeyProvider, error) {
+	provider, err := secret.ResolvedKey(rootKey, secret.BackendKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("wrap the local plane's root key: %w", err)
+	}
+	return provider, nil
+}
+
 // maxEvidencePaths bounds how many offending paths an error names. A
 // provisioned cluster holds thousands; a handful identifies the state.
 const maxEvidencePaths = 5
@@ -883,7 +906,11 @@ func reconcileClaims(ctx context.Context, c *Config, rootKey []byte, blob *objec
 	// second time, outside rootKeyFor, which is the one place allowed to
 	// make it; a structure test enforces that and caught this exact
 	// mistake. The caller already resolved the key under the right rule.
-	seam, err := postgres.Open(ctx, dsn, types, blob, secret.ResolvedKey(rootKey))
+	keyProvider, err := resolvedRootKey(rootKey)
+	if err != nil {
+		return err
+	}
+	seam, err := postgres.Open(ctx, dsn, types, blob, keyProvider)
 	if err != nil {
 		return fmt.Errorf("open the persistence seam: %w", err)
 	}
