@@ -76,16 +76,29 @@ test: benchmark-test
 #     internal/dataplane/benchmarkimport  86.9s   (1.5s standalone: ~58x)
 #
 # 40m leaves the long pole better than 3x headroom, and matches what the
-# ubuntu-latest recovery job in ci.yml already uses. Headroom here absorbs
-# CONTENTION rather than slow tests: `./...` runs packages concurrently against
-# one shared Postgres and one MinIO, and the inflation factors above are what
-# that costs.
+# ubuntu-latest recovery job in ci.yml already uses.
 #
-# Linux is not slower. The recovery subset of the stack suite takes 261-289s on
-# ubuntu-latest in CI against 233s on this machine, so the macOS figures are a
-# reasonable basis for both. The full suite has not been timed on Linux, because
-# it does not run there yet -- CI's integration job is still the commented-out
-# template at the foot of ci.yml.
+# The inflation column has TWO causes, not one, which is why its range is so
+# wide. Packages built on `planetest` take a database and a bucket per test on
+# the ALREADY-RUNNING dev stack, so under `./...` they compete for one Postgres
+# and one MinIO -- that is benchmarkimport's ~58x. The stack package instead
+# brings up its own throwaway Compose planes per test, so it is not queueing
+# behind anyone for a shared server; its 1.04x is near-zero for that reason and
+# because, as the long pole, little else is still running near its end. Reading
+# 1.04x as "contention is mild" would be the wrong lesson.
+#
+# Linux is somewhat SLOWER, not faster. On the only subset timed on both, the
+# stack recovery tests take 261-289s on ubuntu-latest in CI against 238.3s here:
+# roughly 1.1-1.2x. Applied to the long pole that is ~900s, still under half the
+# timeout, which is what makes deferring the full Linux measurement safe rather
+# than merely convenient.
+#
+# The full suite has NOT been timed on Linux. It does not run there -- CI's
+# integration job is still the commented-out template at the foot of ci.yml --
+# and standing that up means a paid-API surface and a dispatch trigger that
+# cannot be exercised until it exists on the default branch. #306 was amended to
+# defer it until that job legitimately enters CI, rather than leaving an
+# acceptance criterion nobody could satisfy.
 test-integration:
 	@echo "🧪 Running integration tests..."
 	go test -tags=integration -cover -count=1 -timeout=40m ./...
