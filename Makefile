@@ -57,9 +57,38 @@ test: benchmark-test
 	go test -cover ./...
 
 # Run integration tests only (requires API keys and external services)
+#
+# -count=1 is REQUIRED, not tidiness. These tests depend on mutable external
+# state -- a Postgres cluster, MinIO buckets, containers -- and Go's test cache
+# keys on inputs it can see, which excludes all of it. A cached PASS is a claim
+# about a plane that may since have been reset, migrated or emptied. Measured on
+# #286's branch: a pre-push run that failed was followed by one that passed with
+# 71 packages `(cached)`, including the two heaviest, so the accepting run had
+# executed strictly less than the run it was taken to overrule (#306).
+#
+# -timeout applies PER TEST BINARY, so it is sized by the slowest single
+# package, not by the suite. Measured on macOS (M3) 2026-08-17, from a fully
+# uncached run of this target -- 747s wall clock, zero packages cached:
+#
+#     internal/dataplane/stack           745.1s   <- the long pole
+#     internal/dataplane/store/postgres  292.8s   (187.2s standalone: 1.6x)
+#     tests/integration                  215.8s
+#     internal/dataplane/benchmarkimport  86.9s   (1.5s standalone: ~58x)
+#
+# 40m leaves the long pole better than 3x headroom, and matches what the
+# ubuntu-latest recovery job in ci.yml already uses. Headroom here absorbs
+# CONTENTION rather than slow tests: `./...` runs packages concurrently against
+# one shared Postgres and one MinIO, and the inflation factors above are what
+# that costs.
+#
+# Linux is not slower. The recovery subset of the stack suite takes 261-289s on
+# ubuntu-latest in CI against 233s on this machine, so the macOS figures are a
+# reasonable basis for both. The full suite has not been timed on Linux, because
+# it does not run there yet -- CI's integration job is still the commented-out
+# template at the foot of ci.yml.
 test-integration:
 	@echo "🧪 Running integration tests..."
-	go test -tags=integration -cover -timeout=20m ./...
+	go test -tags=integration -cover -count=1 -timeout=40m ./...
 
 # Run the GCS adapter tests against a REAL Google Cloud Storage bucket.
 #

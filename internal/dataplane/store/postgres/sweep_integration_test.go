@@ -392,12 +392,18 @@ type stallAfterPromote struct {
 
 // newStallAfterPromote builds a stall and registers its release as CLEANUP.
 //
-// The release must happen on every exit path, not only the successful one. A
-// stalled writer holds an open transaction and a digest lock; if the test fails
-// an assertion between the stall and its release, `t.Fatal` ends the test
-// goroutine while that writer stays blocked forever — leaking a goroutine that
-// holds locks other tests in this package then wait on. One failed assertion
-// becomes a cascade whose root cause is invisible.
+// The release must happen on every exit path, not only the successful one, and
+// the reason is more specific than a leaked goroutine. The stalled writer holds
+// an ACQUIRED POOLED CONNECTION with an open transaction, and `pgxpool.Close()`
+// waits for acquired connections to be released. So a `t.Fatal` between the
+// stall and its release does not merely strand a goroutine that might collide
+// with a later test — it blocks this fixture's own teardown, forever, every
+// time. That is why the failure presents as a package-wide timeout rather than
+// as one test failing.
+//
+// MEASURED: removing this registration and forcing a failure inside the window
+// reproduces `panic: test timed out after 1m30s`; with it, the same assertion
+// fails in 0.63s.
 //
 // Registering the release here rather than remembering it at each call site is
 // the point: the paths that need it most are the ones nobody writes out.
