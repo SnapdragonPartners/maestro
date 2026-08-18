@@ -1,0 +1,260 @@
+# The cloud data-plane portability proof (#286), triggered by hand.
+#
+# #286 requires this proof to be a RE-RUNNABLE manually triggered workflow rather
+# than a one-shot report: Phase 3 adds migrations, and a portability result is
+# stale the moment they land. This is that trigger.
+#
+# It is deliberately not part of default CI. The suite bills Cloud SQL compute and
+# GCS operations against a real project, so it runs when somebody asks for it and
+# a reviewer agrees, never on push.
+#
+# # Why the environment is load-bearing rather than decorative
+#
+# `environment: cloud-proof` is what gates the spend, and it is enforced in GCP
+# rather than here. The service account's impersonation binding names the exact
+# OIDC subject `repo:SnapdragonPartners/maestro:environment:cloud-proof`, so a
+# job that omits the environment gets a token GCP will not accept. Binding to the
+# repository instead would have let any workflow in this repository assume the
+# identity while skipping the reviewer — a gate that reads as enforced in YAML
+# and is not.
+#
+# The environment itself requires review by @SnapdragonPartners/snapdragon and
+# permits deployment only from `main`.
+name: Cloud data-plane proof (#286)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_spend:
+        description: 'Type "spend" to confirm this run bills Cloud SQL compute and GCS operations'
+        required: true
+        type: string
+
+# id-token is what lets the job mint an OIDC token for federation. contents stays
+# read: this workflow proves a plane, it never writes to the repository.
+permissions:
+  contents: read
+  id-token: write
+
+# One run at a time against the shared instance and bucket. Objects are
+# content-addressed, so two concurrent runs storing the same bytes share a key —
+# cross-run interference here is structural rather than unlucky. Queued rather
+# than cancelled, because a cancelled run skips its cleanup.
+concurrency:
+  group: cloud-proof-shared-plane
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: gen-lang-client-0110204648
+  GCP_PROJECT_NUMBER: "931225903244"
+  INSTANCE: maestro-286
+  INSTANCE_CONNECTION: gen-lang-client-0110204648:us-central1:maestro-286
+  BUCKET: maestro-objects-286
+  CI_DB_USER: maestro_ci
+  PROXY_PORT: "5433"
+
+jobs:
+  cloud-proof:
+    runs-on: ubuntu-latest
+    environment: cloud-proof
+    # The suite itself runs in ~80s; the budget is dominated by starting a stopped
+    # Cloud SQL instance, which has taken several minutes.
+    timeout-minutes: 45
+
+    steps:
+      # The input reaches the shell as an ENVIRONMENT VARIABLE, never as
+      # interpolated text. `${{ inputs.confirm_spend }}` inside a `run:` block is
+      # substituted into the script before bash sees it, so a crafted value can
+      # close the quote and execute whatever it likes — in a job that has already
+      # been approved for the environment and holds a federated GCP token. The
+      # comparison below reads a variable bash expands itself, which cannot
+      # restructure the program.
+      - name: Confirm the operator meant to spend
+        env:
+          CONFIRM_SPEND: ${{ inputs.confirm_spend }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRM_SPEND" != "spend" ]; then
+            echo "::error::confirm_spend must be exactly 'spend'"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Federated, never a key. #334's exit proof requires hosted workloads to use
+      # attached or federated identity with no long-lived cloud credentials, and a
+      # service-account JSON in a repository secret would contradict a principle
+      # this repository accepted rather than merely aspires to.
+      - name: Authenticate to Google Cloud by federation
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+          workload_identity_provider: projects/${{ env.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/github/providers/github-actions
+          service_account: maestro-cloud-proof@gen-lang-client-0110204648.iam.gserviceaccount.com
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Start the Cloud SQL instance
+        run: |
+          set -euo pipefail
+          gcloud sql instances patch "$INSTANCE" --project="$GCP_PROJECT" \
+            --activation-policy=ALWAYS --quiet
+          # RUNNABLE is not reached the instant the patch returns; the instance
+          # passes through MAINTENANCE on the way up.
+          for _ in $(seq 1 60); do
+            state=$(gcloud sql instances describe "$INSTANCE" --project="$GCP_PROJECT" --format='value(state)')
+            echo "state=$state"
+            [ "$state" = "RUNNABLE" ] && exit 0
+            sleep 15
+          done
+          echo "::error::instance did not reach RUNNABLE"
+          exit 1
+
+      # A password generated per run, masked, and never stored anywhere.
+      #
+      # Deliberately NOT the `postgres` superuser: rotating that would invalidate
+      # the credential an operator holds locally for the runbook's own procedures,
+      # so every CI run would quietly break somebody's laptop. maestro_ci owns the
+      # disposable databases the suite creates and nothing else.
+      - name: Rotate the CI database user's password
+        id: dbuser
+        run: |
+          set -euo pipefail
+          PW=$(python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits+'-_.~') for _ in range(40)))")
+          test -n "$PW"
+          echo "::add-mask::$PW"
+          gcloud sql users set-password "$CI_DB_USER" --instance="$INSTANCE" \
+            --project="$GCP_PROJECT" --password="$PW" --quiet
+          echo "dsn=postgres://${CI_DB_USER}:${PW}@127.0.0.1:${PROXY_PORT}/postgres?sslmode=disable" >> "$GITHUB_OUTPUT"
+
+      - name: Start the Cloud SQL Auth Proxy
+        env:
+          READINESS_DSN: ${{ steps.dbuser.outputs.dsn }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o cloud-sql-proxy \
+            "https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.1/cloud-sql-proxy.linux.amd64"
+          chmod +x cloud-sql-proxy
+          ./cloud-sql-proxy --port "$PROXY_PORT" --quota-project "$GCP_PROJECT" \
+            "$INSTANCE_CONNECTION" > proxy.log 2>&1 &
+          echo $! > proxy.pid
+
+          command -v psql >/dev/null 2>&1 || {
+            sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+          }
+
+          # A round trip, not a port check. A proxy that is LISTENING is not a
+          # proxy that is WORKING: it binds and accepts before it can serve, and
+          # a misconfigured one accepts connections forever while failing every
+          # single query — measured during #286, where a mangled connection name
+          # produced exactly that and presented to clients as `connection reset
+          # by peer` with nothing pointing at the cause. `select 1` also proves
+          # the rotated credential authenticates, so a bad password fails here
+          # rather than inside the suite.
+          for _ in $(seq 1 40); do
+            if psql "$READINESS_DSN" -tAc 'select 1' >/dev/null 2>&1; then
+              echo "proxy served a query"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::the proxy never served a query"
+          cat proxy.log
+          exit 1
+
+      # The suite provisions its own database per test, migrates from empty, and
+      # purges its own object prefixes. EnsureBucket runs ahead of the first write
+      # in each test, which is the ordering the soft-delete obligation requires:
+      # the policy cannot be applied retroactively.
+      #
+      # The root key is generated per run and discarded. That is correct HERE and
+      # only here, because these databases are disposable; a persistent plane must
+      # retain its original key or its vault becomes unreadable.
+      - name: Run the cloud data-plane suite
+        env:
+          MAESTRO_CLOUD_DSN: ${{ steps.dbuser.outputs.dsn }}
+          MAESTRO_GCS_TEST_BUCKET: ${{ env.BUCKET }}
+          GOOGLE_CLOUD_QUOTA_PROJECT: ${{ env.GCP_PROJECT }}
+        run: |
+          set -euo pipefail
+          # `openssl rand -hex 16` rather than `tr -dc ... | head -c 32`.
+          #
+          # That pipeline cannot work under `set -o pipefail`: head exits once it
+          # has its 32 bytes, tr is killed by SIGPIPE, and the pipeline reports
+          # 141 — so the step fails before the suite starts. MEASURED: exit 141
+          # under bash with pipefail, while succeeding interactively in zsh
+          # without it, which is exactly why it survived being used by hand all
+          # session. 16 random bytes hex-encode to the 32 the vault requires.
+          MAESTRO_CLOUD_ROOT_KEY=$(openssl rand -hex 16)
+          test ${#MAESTRO_CLOUD_ROOT_KEY} -eq 32
+          echo "::add-mask::$MAESTRO_CLOUD_ROOT_KEY"
+          export MAESTRO_CLOUD_ROOT_KEY
+          make test-cloud
+
+      - name: Stop the proxy
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f proxy.pid ]; then kill "$(cat proxy.pid)" 2>/dev/null || true; fi
+
+      # ALWAYS, and verified rather than assumed. A run that fails partway still
+      # leaves compute billing until somebody notices, and `state` alone does not
+      # establish that stopping worked — stopping is an activation policy.
+      - name: Stop the instance and verify it stopped
+        if: always()
+        run: |
+          set -euo pipefail
+          gcloud sql instances patch "$INSTANCE" --project="$GCP_PROJECT" \
+            --activation-policy=NEVER --quiet
+          policy=$(gcloud sql instances describe "$INSTANCE" --project="$GCP_PROJECT" \
+            --format='value(settings.activationPolicy)')
+          echo "activationPolicy=$policy"
+          if [ "$policy" != "NEVER" ]; then
+            echo "::error::instance did not stop; it is still billing compute"
+            exit 1
+          fi
+
+      # The suite purges the object prefixes it wrote, but a job killed mid-run
+      # never reaches its own cleanup, so the bucket is checked independently.
+      #
+      # A FAILED listing and an EMPTY one must not look alike. Discarding stderr
+      # and forcing success would turn an authentication, authorization or
+      # provider failure into "no listable generations remain" — a clean bill of
+      # health issued by a command that never saw the bucket, in the one step
+      # whose entire job is noticing residue.
+      #
+      # Residue FAILS the job rather than warning. A warning is a proof that
+      # passed dirty, and the next run inherits objects it cannot attribute:
+      # these are content-addressed keys under per-run organization ids, so
+      # nothing later can tell whose they were.
+      #
+      # The bucket root is listed without a wildcard on purpose. `gs://b/**`
+      # exits non-zero when it matches nothing, which is the ordinary outcome
+      # here and would be indistinguishable from a real failure.
+      - name: Fail if any object residue remains
+        if: always()
+        run: |
+          set -euo pipefail
+          if ! listing=$(gcloud storage ls --all-versions --recursive \
+                "gs://${BUCKET}/" --project="$GCP_PROJECT" 2>&1); then
+            echo "::error::could not list gs://${BUCKET}; residue is UNKNOWN, not absent"
+            echo "$listing"
+            exit 1
+          fi
+          # The listing echoes the bucket header and any prefix lines; neither is
+          # a stored generation.
+          left=$(printf '%s\n' "$listing" | grep -v ':$' | grep -v '/$' | grep -v '^[[:space:]]*$' || true)
+          if [ -n "$left" ]; then
+            echo "::error::objects remain in gs://${BUCKET}; a run died before its cleanup"
+            printf '%s\n' "$left"
+            exit 1
+          fi
+          echo "listing succeeded and no generations remain"

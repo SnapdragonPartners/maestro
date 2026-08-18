@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Operations Runbook"
-edit_date = "2026-08-17"
+edit_date = "2026-08-18"
 status = "live"
 summary = "Operational sequences and measured gotchas for running the v2 data plane locally and in the cloud: provider defaults that cost money or silently retain data, commands whose failure modes mislead, and the project-safety rules for cloud work. Command definitions live in the Makefile; design rationale lives in the ADRs."
 type = "process"
@@ -68,6 +68,56 @@ appear here or anywhere else in the repository.
 `make test-cloud` and stop it afterwards — see the activation-policy section
 below for both commands and for how to confirm which state it is in. Stopped is
 cheaper, not free.
+
+### CI identity for the dispatchable proof
+
+The `Cloud data-plane proof (#286)` workflow authenticates by **Workload Identity
+Federation** and holds no key. Coordinates, so nobody has to rediscover them:
+
+| Thing | Value |
+| --- | --- |
+| Service account | `maestro-cloud-proof@gen-lang-client-0110204648.iam.gserviceaccount.com` |
+| WIF pool / provider | `github` / `github-actions` (pre-existing, shared) |
+| Custom roles | `maestroCloudProofSql`, `maestroCloudProofBucket` |
+| CI database user | `maestro_ci` (**not** `postgres`) |
+| GitHub environment | `cloud-proof` — reviewer `@SnapdragonPartners/snapdragon`, `main` only, admin bypass disabled |
+
+**Both members of `@SnapdragonPartners/snapdragon` are authorized spend approvers
+(Policy, DR 2026-08-17).** #286 requires DR approval for each run; a team
+reviewer is deliberately broader than a named individual, and that is recorded
+here rather than left to be inferred from the environment's configuration.
+Narrowing it to a single reviewer is a one-line change if the team grows.
+
+**Administrator bypass is disabled.** It defaults to enabled, which would let a
+repository admin dispatch a paid run without review — the approval requirement
+would still appear in the settings while not applying to the people most likely
+to trigger it.
+
+**The environment name is a security control, not a label.** The service
+account's impersonation binding names the exact OIDC subject
+`repo:SnapdragonPartners/maestro:environment:cloud-proof`, so a job that omits
+`environment: cloud-proof` receives a token GCP refuses. Binding to the
+*repository* instead would let any workflow here assume the identity while
+skipping the reviewer — a spend gate that reads as enforced in YAML and is not.
+Renaming the environment breaks authentication until the binding is updated to
+match, which is the intended failure direction.
+
+The shared provider's condition is `assertion.repository_owner ==
+'SnapdragonPartners'`, i.e. **org-wide**. Per-repository restriction therefore
+lives in the service-account binding, never in the provider. Do not read the
+provider and conclude the identity is repo-scoped.
+
+**`maestro_ci` exists so CI never rotates the operator's password.** The workflow
+generates and masks a password for it on every run and leaves it unknowable
+afterwards. Rotating `postgres` instead would invalidate the local credential
+this runbook's own procedures depend on, breaking somebody's laptop on every CI
+run. **Measured 2026-08-17:** `maestro_ci` has `createdb=true`, `super=false`,
+and the full cloud suite passes as that user.
+
+**IAM changes take time to propagate.** Fresh bindings returned
+`IAM_PERMISSION_DENIED` for roughly 30 seconds after being created and correct
+(**measured 2026-08-17**). A denial immediately after granting is not evidence
+the grant is wrong; re-read the policy, then retry before changing anything.
 
 ### The root password is persisted server-side, so rotation is two steps
 
