@@ -24,7 +24,13 @@
 // length is its character count; multi-byte characters make a 32-character value
 // longer than 32 bytes and the refusal then looks arbitrary. For example:
 //
-//	MAESTRO_CLOUD_ROOT_KEY=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+//	MAESTRO_CLOUD_ROOT_KEY=$(openssl rand -hex 16)
+//
+// Sixteen random bytes hex-encode to the thirty-two this requires. The obvious
+// `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32` is avoided deliberately: it
+// works interactively but returns 141 under `set -o pipefail`, because head
+// exits at its byte count and tr dies of SIGPIPE. A script that adopts it fails
+// before reaching these tests.
 //
 // `sslmode=disable` in that DSN is correct rather than careless: the Auth Proxy
 // listens on loopback and supplies the TLS, and the instance itself refuses
