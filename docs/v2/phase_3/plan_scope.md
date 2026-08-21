@@ -14,12 +14,18 @@ last item on the critical path to phase entry. Flipped in the acceptance commit
 before its own merge, following Phase 2's precedent (Phase 1's plan merged still
 `draft` and needed a follow-up flip PR).
 
-Amended 2026-08-21, alongside item 1 and accepted with it: the Track C sentence
-above named #316 and #317 in an order that read positionally as assigning the
-forceable-terminal-tool requirement to #316. That is reversed, and it caused
-item 1's inventory to cite the wrong issue before review caught it. Each
-requirement is now bound to its issue explicitly rather than by position. The
-amendment is narrow and changes no decision.
+**Amendment PROPOSED 2026-08-21, pending review — not yet Accepted.** Carried
+on the Phase 3 item 1 branch and reviewed with it; this notice flips to
+Accepted, with the approving parties named, in the acceptance commit and not
+before. The rest of this document remains `live` and Accepted as of 2026-08-16;
+the amendment's pending status does not suspend it.
+
+The amendment: the Track C sentence below named #316 and #317 in an order that
+read positionally as assigning the forceable-terminal-tool requirement to #316.
+That is reversed, and it caused item 1's inventory to cite the wrong issue
+before review caught it. Each requirement is now bound to its issue explicitly
+rather than by position. The change is narrow and settles no decision that was
+not already settled.
 
 **This document binds Phase 3.** It carries the roadmap amendment striking the
 carried v1 regression run, which is Accepted with it.

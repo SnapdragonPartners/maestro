@@ -37,8 +37,10 @@ answered more simply than it was posed.
   while being part of another valid one. Configurations vary along two axes:
   the **explicit** `//go:build` expressions, and the **implicit** file
   selection Go performs through `GOOS`/`GOARCH` filename suffixes and cgo.
-  Both are checked below; neither is assumed. This follows the binding
-  *Reachability Claims* rule in [the build process](../process_build.md).
+  Both are checked below; neither is assumed. This follows the
+  *Reachability Claims* rule proposed in
+  [the build process](../process_build.md) on this branch — **proposed, not
+  yet Accepted**, and reviewed alongside this document.
 - **Reachability is a proxy.** "Zero importers" supports "nothing imports it",
   not "it is dead". Every retirement below is additionally cross-checked
   textually **across all file types, not only `*.go`**, and the two checks are
@@ -86,23 +88,41 @@ At `ca92bad` every constraint is a **bare single tag** — there are no negated
 (`!tag`) and no compound (`&&`, `||`) expressions.
 
 Configurations also vary **implicitly**, without any `//go:build` line, so that
-axis is checked too:
+axis is checked too — and it is checked by asking the toolchain what it
+*selects*, not by matching text. A filename search or a `grep` for `import "C"`
+measures resemblance: in this repository the obvious grep returns
+`pkg/templates/bootstrap/data.go`, where the string sits inside a comment in a
+`detectCGOUsage` stub at line 393. `go list` reports the selection itself.
+
+**cgo and assembly**, under both settings that matter:
 
 ```bash
-find . -name "*_linux.go" -o -name "*_darwin.go" -o -name "*_windows.go" \
-       -o -name "*_amd64.go" -o -name "*_arm64.go" -o -name "*_unix.go"   # none
-grep -rln 'import "C"' --include="*.go" .                                  # none
+for c in 0 1; do
+  CGO_ENABLED=$c go list \
+    -f '{{if or .CgoFiles .SFiles}}{{.ImportPath}} {{len .CgoFiles}} {{len .SFiles}}{{end}}' ./...
+done
 ```
 
-The repository has **no platform- or architecture-suffixed Go files and no
-cgo**, so `GOOS`, `GOARCH` and `CGO_ENABLED` do not select different files here
-and cannot change reachability. (The one apparent cgo hit,
-`pkg/templates/bootstrap/data.go:393`, is the string `import "C"` inside a
-comment in a `detectCGOUsage` stub.) This matters because
-[ADR 0026](../../adr/0026-multi-architecture-artifacts.md) requires
-`linux/amd64` **and** `linux/arm64`: today both select the same file set, and
-the first platform-suffixed file added silently ends that. **This absence is a
-finding with an expiry date, not a permanent property.**
+Output is empty for `CGO_ENABLED=0` and `CGO_ENABLED=1`: **no package selects a
+cgo or assembly file**, so the cgo dimension cannot change reachability here.
+
+**Platform matrix.** [ADR 0026](../../adr/0026-multi-architecture-artifacts.md)
+requires `linux/amd64` and `linux/arm64`, so both are evaluated (with the
+development host as a third control):
+
+```bash
+GOOS=linux  GOARCH=amd64 go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort | md5
+GOOS=linux  GOARCH=arm64 go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort | md5
+GOOS=darwin GOARCH=arm64 go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort | md5
+```
+
+All three yield 93 packages and the identical digest
+`deaa2d44f48cddbefd8dcafed34a1129` — the same file selection, so `GOOS` and
+`GOARCH` cannot change reachability either.
+
+**This is a finding with an expiry date, not a permanent property.** The first
+platform-suffixed file or cgo import added to the tree ends it silently, which
+is why [#342](https://github.com/SnapdragonPartners/maestro/issues/342) exists.
 
 The five configurations below therefore cover every valid one.
 
@@ -130,9 +150,12 @@ Exported-surface enumeration must exclude test files
 (`grep --exclude='*_test.go'`). An earlier pass of this inventory did not, and
 attributed two test doubles to `internal/supervisor`'s production surface.
 
-The binding form of this rule now lives in
+The general form of this rule is proposed in
 [the build process](../process_build.md) under *Reachability Claims*, where it
-binds reviewers as well as authors.
+would bind reviewers as well as authors. That amendment is **pending review on
+this branch** and carries no authority until Accepted; this document follows it
+because it is this document's own method, not because the rule yet binds
+anyone.
 
 ## Findings That Change The Starting Hypothesis
 

@@ -10,6 +10,8 @@ type = "process"
 
 Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit).
 
+**Amendment PROPOSED 2026-08-21, pending review — not yet Accepted**: the *Reachability Claims* rule, added on the Phase 3 item 1 branch and reviewed with it. This notice flips to Accepted, with the approving parties named, in the acceptance commit and not before. Everything above remains Accepted and in force meanwhile.
+
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 
 ## Scope Of This Document
@@ -76,11 +78,19 @@ contract violation; it does not require mutation testing every routine assertion
 ### Reachability Claims
 
 A claim that code is unreachable, dead, vestigial, or safe to delete is a claim
-about **every valid build configuration**, and it is not proven by an analysis
-run in one of them. Enabling every build tag at once is a single configuration:
-it is not equivalent to the union over valid configurations, because a file
-guarded by a negated or compound constraint can be excluded from the all-on
-build while belonging to another valid one.
+about **every applicable repository configuration across the supported target
+matrix**, and it is not proven by an analysis run in one of them. "Applicable"
+is the operative word: the scope is the configurations this repository declares
+and the platforms it supports — not every configuration the Go toolchain
+admits, which no analysis could enumerate. The supported matrix is
+ADR 0026's (`linux/amd64` and `linux/arm64` at minimum); a claim is bounded by
+that matrix and must say so.
+
+Within that scope the analysis must still be exhaustive. Enabling every build
+tag at once is a single configuration: it is not equivalent to the union over
+applicable configurations, because a file guarded by a negated or compound
+constraint can be excluded from the all-on build while belonging to another
+applicable one.
 
 Configurations vary along two axes, and an analysis must account for both.
 **Explicit** constraints are the `//go:build` expressions declared in the tree.
@@ -94,15 +104,19 @@ A reachability claim counts as evidence only when all of these hold:
 
 - the set of **explicit** build-constraint expressions is **derived at analysis
   time**, not copied from a document or a previous run;
-- the **implicit** axis is addressed rather than ignored: state whether any
-  platform-suffixed or cgo-gated files exist, and evaluate the platform and cgo
-  dimensions **this project actually targets** — at minimum ADR 0026's
-  `linux/amd64` and `linux/arm64` — rather than every configuration Go admits.
-  Where a dimension is absent from the tree, say so; that absence is itself the
-  finding, and it can stop being true;
-- reachability is computed as the **union over the valid configurations** those
-  two axes imply, and any claimed equivalence between that union and a single
-  combined configuration is checked rather than assumed;
+- the **implicit** axis is addressed rather than ignored, across the supported
+  matrix: evaluate the platform and cgo dimensions over ADR 0026's targets at
+  minimum. Where a dimension selects no files, say so; that absence is itself
+  the finding, and it can stop being true;
+- the implicit axis is measured by **what the toolchain selects**, not by what
+  text resembles. `go list`'s `GoFiles`, `CgoFiles` and `SFiles` under the
+  relevant `GOOS`/`GOARCH`/`CGO_ENABLED` settings are evidence; a filename
+  search or a `grep` for `import "C"` is not, because it matches occurrences in
+  comments and strings. **Any command a document records must actually produce
+  the result shown beside it**;
+- reachability is computed as the **union over the applicable configurations**
+  those two axes imply, and any claimed equivalence between that union and a
+  single combined configuration is checked rather than assumed;
 - production consumers and test-only consumers are reported **separately**, and
   a package's own in-package tests are not counted as consumers of it; and
 - the import-graph result is cross-checked textually **across all file types**,
