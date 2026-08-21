@@ -3,7 +3,7 @@ title = "Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire"
 edit_date = "2026-08-21"
 status = "draft"
 type = "inventory"
-summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the tag-complete import graph against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
+summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every valid build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
 +++
 
 # Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire
@@ -106,11 +106,9 @@ Exported-surface enumeration must exclude test files
 (`grep --exclude='*_test.go'`). An earlier pass of this inventory did not, and
 attributed two test doubles to `internal/supervisor`'s production surface.
 
-**Any claim in this repository that code is unreachable must be computed under
-the full tag set, and the tag set must be derived at analysis time rather than
-copied from a list like the one above.** Hand-maintained enumerations have
-already failed three times in this repository's history. The table above is
-documentation of a moment, not a source of truth.
+The binding form of this rule now lives in
+[the build process](../process_build.md) under *Reachability Claims*, where it
+binds reviewers as well as authors.
 
 ## Findings That Change The Starting Hypothesis
 
@@ -267,7 +265,8 @@ Phase 0's principle 6 — "drops need no ceremony but leave a record" — is wha
 ## Issue #298: Making The Deletions Complete
 
 #298 asks for the five `drop` dispositions to be scheduled. Re-derived from the
-tag-complete import graph on `main` at `ca92bad`, rather than carried from the
+import graph unioned over all five build configurations on `main` at `ca92bad`,
+rather than carried from the
 issue:
 
 | Package | Production importers | Test-only importers | Blocked on |
