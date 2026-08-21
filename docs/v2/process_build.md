@@ -82,13 +82,27 @@ it is not equivalent to the union over valid configurations, because a file
 guarded by a negated or compound constraint can be excluded from the all-on
 build while belonging to another valid one.
 
+Configurations vary along two axes, and an analysis must account for both.
+**Explicit** constraints are the `//go:build` expressions declared in the tree.
+**Implicit** constraints select files without any such line: `GOOS`/`GOARCH`
+filename suffixes (`_linux.go`, `_arm64.go`), cgo availability, and the
+compiler, release and architecture-feature tags Go applies on its own. An
+analysis that derives only the explicit axis has surveyed part of the
+configuration space and must not claim to have surveyed it all.
+
 A reachability claim counts as evidence only when all of these hold:
 
-- the set of build-constraint expressions is **derived at analysis time**, not
-  copied from a document or a previous run;
+- the set of **explicit** build-constraint expressions is **derived at analysis
+  time**, not copied from a document or a previous run;
+- the **implicit** axis is addressed rather than ignored: state whether any
+  platform-suffixed or cgo-gated files exist, and evaluate the platform and cgo
+  dimensions **this project actually targets** — at minimum ADR 0026's
+  `linux/amd64` and `linux/arm64` — rather than every configuration Go admits.
+  Where a dimension is absent from the tree, say so; that absence is itself the
+  finding, and it can stop being true;
 - reachability is computed as the **union over the valid configurations** those
-  expressions imply, and any claimed equivalence between that union and a
-  single combined configuration is checked rather than assumed;
+  two axes imply, and any claimed equivalence between that union and a single
+  combined configuration is checked rather than assumed;
 - production consumers and test-only consumers are reported **separately**, and
   a package's own in-package tests are not counted as consumers of it; and
 - the import-graph result is cross-checked textually **across all file types**,
@@ -104,6 +118,10 @@ author nor reviewer should treat it as though it had.
 Mechanical enforcement of this rule — deriving the constraint set in the build
 and failing when an unrecognised one appears — is code, and belongs to its own
 scheduled work rather than to any authoring item that happens to need the rule.
+It is tracked as
+[#342](https://github.com/SnapdragonPartners/maestro/issues/342). Until that
+lands, this rule is enforced by review alone, which is exactly the weakness
+#342 exists to remove.
 
 ## CI Review And Merge
 

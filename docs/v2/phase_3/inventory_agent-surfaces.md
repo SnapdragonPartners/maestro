@@ -34,7 +34,11 @@ answered more simply than it was posed.
   configuration at a time. Enabling every tag at once is a *single*
   configuration and is not generally equivalent to that union — a file guarded
   by a negated or compound constraint can be excluded from the all-on build
-  while being part of another valid one. See the warning below.
+  while being part of another valid one. Configurations vary along two axes:
+  the **explicit** `//go:build` expressions, and the **implicit** file
+  selection Go performs through `GOOS`/`GOARCH` filename suffixes and cgo.
+  Both are checked below; neither is assumed. This follows the binding
+  *Reachability Claims* rule in [the build process](../process_build.md).
 - **Reachability is a proxy.** "Zero importers" supports "nothing imports it",
   not "it is dead". Every retirement below is additionally cross-checked
   textually **across all file types, not only `*.go`**, and the two checks are
@@ -79,8 +83,28 @@ grep -rh "^//go:build" --include="*.go" . | sort -u
 ```
 
 At `ca92bad` every constraint is a **bare single tag** — there are no negated
-(`!tag`) and no compound (`&&`, `||`) expressions. The five configurations
-below therefore cover every valid one.
+(`!tag`) and no compound (`&&`, `||`) expressions.
+
+Configurations also vary **implicitly**, without any `//go:build` line, so that
+axis is checked too:
+
+```bash
+find . -name "*_linux.go" -o -name "*_darwin.go" -o -name "*_windows.go" \
+       -o -name "*_amd64.go" -o -name "*_arm64.go" -o -name "*_unix.go"   # none
+grep -rln 'import "C"' --include="*.go" .                                  # none
+```
+
+The repository has **no platform- or architecture-suffixed Go files and no
+cgo**, so `GOOS`, `GOARCH` and `CGO_ENABLED` do not select different files here
+and cannot change reachability. (The one apparent cgo hit,
+`pkg/templates/bootstrap/data.go:393`, is the string `import "C"` inside a
+comment in a `detectCGOUsage` stub.) This matters because
+[ADR 0026](../../adr/0026-multi-architecture-artifacts.md) requires
+`linux/amd64` **and** `linux/arm64`: today both select the same file set, and
+the first platform-suffixed file added silently ends that. **This absence is a
+finding with an expiry date, not a permanent property.**
+
+The five configurations below therefore cover every valid one.
 
 ```bash
 F='{{.ImportPath}}|{{join .Imports ","}}|{{join .TestImports ","}}|{{join .XTestImports ","}}'
@@ -287,20 +311,9 @@ dependencies that nothing calls.
 
 ## Open Points For Review
 
-1. **A defect in the phase plan, for DR and Codex rather than for this document
-   to fix.** [`plan_scope.md`](plan_scope.md) states: "#316 and #317 close with
-   v1, and each leaves a **requirement** behind rather than a fix: a terminal
-   tool must be forceable, and sampling parameters must be optional." Read
-   positionally that maps #316 to the terminal tool, which is **reversed** —
-   [#317](https://github.com/SnapdragonPartners/maestro/issues/317) is the
-   architect approval loop that cannot force its terminal tool, and
-   [#316](https://github.com/SnapdragonPartners/maestro/issues/316) is
-   `llmadapter` forcing `Temperature` non-nil. This inventory follows the
-   issues. `plan_scope.md` is `live` and Accepted, so the correction is not
-   made here.
-2. Whether the `core.go` stub retirement (finding 2) belongs to item 6 with the
+1. Whether the `core.go` stub retirement (finding 2) belongs to item 6 with the
    test migration, or earlier and standalone with #298's first group.
-3. Whether `SUSPEND` is retired or redesigned is deliberately left to item 6 —
+2. Whether `SUSPEND` is retired or redesigned is deliberately left to item 6 —
    this inventory records only that its current mechanism is process-local and
    conflicts with artifact-level restart.
 
