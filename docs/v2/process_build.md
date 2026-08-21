@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Build Process (Interim)"
-edit_date = "2026-08-07"
+edit_date = "2026-08-21"
 status = "live"
 summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; review cadence, branching, spikes, testing, and merge rules. Command-level mechanics live in CLAUDE.md."
 type = "process"
@@ -72,6 +72,38 @@ Checkpoint notes report the protected defect and why the discriminating test
 failed, not only a count such as “N/N mutations killed.” This rule is deliberately
 scoped to guards and regression tests where a false green would hide a material
 contract violation; it does not require mutation testing every routine assertion.
+
+### Reachability Claims
+
+A claim that code is unreachable, dead, vestigial, or safe to delete is a claim
+about **every valid build configuration**, and it is not proven by an analysis
+run in one of them. Enabling every build tag at once is a single configuration:
+it is not equivalent to the union over valid configurations, because a file
+guarded by a negated or compound constraint can be excluded from the all-on
+build while belonging to another valid one.
+
+A reachability claim counts as evidence only when all of these hold:
+
+- the set of build-constraint expressions is **derived at analysis time**, not
+  copied from a document or a previous run;
+- reachability is computed as the **union over the valid configurations** those
+  expressions imply, and any claimed equivalence between that union and a
+  single combined configuration is checked rather than assumed;
+- production consumers and test-only consumers are reported **separately**, and
+  a package's own in-package tests are not counted as consumers of it; and
+- the import-graph result is cross-checked textually **across all file types**,
+  not only source files, with any surviving references disposed of explicitly —
+  a reference in a `deprecated` or archived document does not block retirement,
+  but silence about it is not the same as its absence.
+
+An import graph answers "nothing imports this," which is a proxy for "this is
+dead." Reviewers hold the claim to the proxy actually measured: an analysis that
+does not state its configurations has not established reachability, and neither
+author nor reviewer should treat it as though it had.
+
+Mechanical enforcement of this rule — deriving the constraint set in the build
+and failing when an unrecognised one appears — is code, and belongs to its own
+scheduled work rather than to any authoring item that happens to need the rule.
 
 ## CI Review And Merge
 
