@@ -94,65 +94,71 @@ measures resemblance: in this repository the obvious grep returns
 `pkg/templates/bootstrap/data.go`, where the string sits inside a comment in a
 `detectCGOUsage` stub at line 393. `go list` reports the selection itself.
 
-The platform and cgo dimensions are not independent — target-specific assembly
-or cgo selection would show up only in a particular combination — so they are
-evaluated as a **cross-product** over
-[ADR 0026](../../adr/0026-multi-architecture-artifacts.md)'s required targets
-and both `CGO_ENABLED` settings:
+The two axes are **crossed, not unioned separately**. A file can carry both a
+custom constraint and a platform suffix, so evaluating tags on one platform and
+platforms under no tags would leave that interaction unmeasured. The measurement
+below runs the full product: five tag selections × two ADR 0026 targets × two
+`CGO_ENABLED` settings = **20 configurations**.
+
+Two properties of the measurement matter:
+
+- It hashes the **graph input itself** — the `Imports`, `TestImports` and
+  `XTestImports` *names* these tables are built from — not file counts. A digest
+  over `len .GoFiles` would collide whenever two configurations select different
+  files in equal number, and so could not establish identity.
+- It uses **no intermediate files**. Fixed paths under `/tmp` are shared
+  last-writer-wins state, which [ADR 0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md)
+  forbids: two reviewers running this at once would silently read each other's
+  output and get plausible mixed evidence.
 
 ```bash
-for t in linux/amd64 linux/arm64; do
-  for c in 0 1; do
-    GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=$c \
-      go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort > /tmp/sel
-    GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=$c \
-      go list -f '{{if or .CgoFiles .SFiles}}{{.ImportPath}}{{end}}' ./... | grep -c . > /tmp/cgo
-    printf '%-12s CGO_ENABLED=%s  %s pkgs  cgo/asm=%s  %s\n' "$t" "$c" \
-      "$(wc -l < /tmp/sel | tr -d ' ')" "$(cat /tmp/cgo)" \
-      "$(md5 -q /tmp/sel 2>/dev/null || md5sum /tmp/sel | cut -d' ' -f1)"
-  done
+G='{{.ImportPath}}|{{join .Imports ","}}|{{join .TestImports ","}}|{{join .XTestImports ","}}'
+S='{{.ImportPath}}|{{join .GoFiles ","}}|{{join .CgoFiles ","}}|{{join .SFiles ","}}'
+digest() { printf '%s\n' "$1" | { md5 -q 2>/dev/null || md5sum | cut -d' ' -f1; }; }
+list() { if [ -z "$1" ]; then GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -f "$5" ./... 2>/dev/null | sort
+         else GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -tags "$1" -f "$5" ./... 2>/dev/null | sort; fi; }
+cgo_total=0
+for tags in "" integration e2e gcs cloud; do
+  ds=""
+  for t in linux/amd64 linux/arm64; do for c in 0 1; do
+    ds="${ds}$(digest "$(list "$tags" "${t%/*}" "${t#*/}" "$c" "$G")")
+"
+    n=$(list "$tags" "${t%/*}" "${t#*/}" "$c" "$S" | awk -F'|' '$3!="" || $4!=""' | grep -c .)
+    cgo_total=$((cgo_total + n))
+  done; done
+  printf '%-12s cells=%s distinct=%s  %s\n' "${tags:-default}" \
+    "$(printf '%s' "$ds" | grep -c .)" "$(printf '%s' "$ds" | sort -u | grep -c .)" \
+    "$(printf '%s' "$ds" | sort -u | tr '\n' ' ')"
 done
+echo "cgo/assembly-selecting packages, summed over all 20 cells: $cgo_total"
 ```
 
 ```text
-linux/amd64  CGO_ENABLED=0  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
-linux/amd64  CGO_ENABLED=1  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
-linux/arm64  CGO_ENABLED=0  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
-linux/arm64  CGO_ENABLED=1  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
+default      cells=4 distinct=1  3f3f4119fe4515ed6199e6eca7f7c369
+integration  cells=4 distinct=1  ec87a40a198e1ebc822d6cabcd373d91
+e2e          cells=4 distinct=1  27891ae9a1fca99f4e35482f48e88faa
+gcs          cells=4 distinct=1  f7f345d46132303ea11e7ed164a71ea7
+cloud        cells=4 distinct=1  6d4da81d83829797c8709f3df149ecb2
+cgo/assembly-selecting packages, summed over all 20 cells: 0
 ```
 
-Every cell selects the same 93 packages with the same digest, and **no package
-selects a cgo or assembly file in any of them**. So neither `GOOS`/`GOARCH` nor
-`CGO_ENABLED` changes reachability here, and no combination of them does either.
+**Within each tag selection the graph is byte-identical across all four
+platform/cgo cells**, and no package anywhere in the 20 selects a cgo or
+assembly file. The implicit axis therefore does not interact with the explicit
+one here, and the union over 20 configurations equals the union over the five
+tag selections — which is what the tables in this document are built from, with
+self-edges removed.
+
+*Positive control*: the five digests differ from each other, so pooling them
+through the same comparison yields `distinct=5`. The `distinct=1` results above
+are a measurement, not a comparison that cannot fail. (An earlier version of
+this block reported `distinct=1` for the wrong reason — zsh does not word-split
+unquoted variables, so `sort -u` was collapsing a single line holding four
+digests. The accumulator is newline-delimited for that reason.)
 
 **This is a finding with an expiry date, not a permanent property.** The first
 platform-suffixed file or cgo import added to the tree ends it silently, which
 is why [#342](https://github.com/SnapdragonPartners/maestro/issues/342) exists.
-
-The five selections below therefore cover **every applicable explicit-tag
-selection**. They are that axis only; the implicit axis is covered by the
-cross-product above, and the two together are what the union is taken over.
-
-```bash
-F='{{.ImportPath}}|{{join .Imports ","}}|{{join .TestImports ","}}|{{join .XTestImports ","}}'
-for tags in "" integration e2e gcs cloud; do
-  if [ -z "$tags" ]; then n=$(go list -f "$F" ./... | wc -l); label=default
-  else n=$(go list -tags "$tags" -f "$F" ./... | wc -l); label=$tags; fi
-  printf '%-12s %s packages\n' "$label" "$(echo $n)"
-done
-```
-
-```text
-default            93 packages
-integration        93 packages
-e2e                94 packages
-gcs                93 packages
-cloud              93 packages
-```
-
-Each configuration yields a production-importer set (`Imports`) and a
-test-importer set (`TestImports` + `XTestImports`) per package; the tables in
-this document are the **union of those five**, with self-edges removed.
 
 Because this repository currently has no negated or compound constraints, that
 union was checked against the single all-tags-on configuration
