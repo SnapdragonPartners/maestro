@@ -1,9 +1,9 @@
 +++
 title = "Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire"
-edit_date = "2026-08-21"
+edit_date = "2026-08-29"
 status = "draft"
 type = "inventory"
-summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every valid build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
+summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every applicable build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
 +++
 
 # Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire
@@ -30,11 +30,11 @@ answered more simply than it was posed.
   a leaf package tested by its own in-package tests would otherwise appear to
   have a consumer.
 - **Build configurations, not a tag union.** The authoritative basis is the
-  **union of reachability over the valid build configurations**, computed one
+  **union of reachability over the applicable build configurations**, computed one
   configuration at a time. Enabling every tag at once is a *single*
   configuration and is not generally equivalent to that union — a file guarded
   by a negated or compound constraint can be excluded from the all-on build
-  while being part of another valid one. Configurations vary along two axes:
+  while being part of another applicable one. Configurations vary along two axes:
   the **explicit** `//go:build` expressions, and the **implicit** file
   selection Go performs through `GOOS`/`GOARCH` filename suffixes and cgo.
   Both are checked below; neither is assumed. This follows the
@@ -94,45 +94,60 @@ measures resemblance: in this repository the obvious grep returns
 `pkg/templates/bootstrap/data.go`, where the string sits inside a comment in a
 `detectCGOUsage` stub at line 393. `go list` reports the selection itself.
 
-**cgo and assembly**, under both settings that matter:
+The platform and cgo dimensions are not independent — target-specific assembly
+or cgo selection would show up only in a particular combination — so they are
+evaluated as a **cross-product** over
+[ADR 0026](../../adr/0026-multi-architecture-artifacts.md)'s required targets
+and both `CGO_ENABLED` settings:
 
 ```bash
-for c in 0 1; do
-  CGO_ENABLED=$c go list \
-    -f '{{if or .CgoFiles .SFiles}}{{.ImportPath}} {{len .CgoFiles}} {{len .SFiles}}{{end}}' ./...
+for t in linux/amd64 linux/arm64; do
+  for c in 0 1; do
+    GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=$c \
+      go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort > /tmp/sel
+    GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=$c \
+      go list -f '{{if or .CgoFiles .SFiles}}{{.ImportPath}}{{end}}' ./... | grep -c . > /tmp/cgo
+    printf '%-12s CGO_ENABLED=%s  %s pkgs  cgo/asm=%s  %s\n' "$t" "$c" \
+      "$(wc -l < /tmp/sel | tr -d ' ')" "$(cat /tmp/cgo)" \
+      "$(md5 -q /tmp/sel 2>/dev/null || md5sum /tmp/sel | cut -d' ' -f1)"
+  done
 done
 ```
 
-Output is empty for `CGO_ENABLED=0` and `CGO_ENABLED=1`: **no package selects a
-cgo or assembly file**, so the cgo dimension cannot change reachability here.
-
-**Platform matrix.** [ADR 0026](../../adr/0026-multi-architecture-artifacts.md)
-requires `linux/amd64` and `linux/arm64`, so both are evaluated (with the
-development host as a third control):
-
-```bash
-GOOS=linux  GOARCH=amd64 go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort | md5
-GOOS=linux  GOARCH=arm64 go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort | md5
-GOOS=darwin GOARCH=arm64 go list -f '{{.ImportPath}} {{len .GoFiles}}' ./... | sort | md5
+```text
+linux/amd64  CGO_ENABLED=0  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
+linux/amd64  CGO_ENABLED=1  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
+linux/arm64  CGO_ENABLED=0  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
+linux/arm64  CGO_ENABLED=1  93 pkgs  cgo/asm=0  deaa2d44f48cddbefd8dcafed34a1129
 ```
 
-All three yield 93 packages and the identical digest
-`deaa2d44f48cddbefd8dcafed34a1129` — the same file selection, so `GOOS` and
-`GOARCH` cannot change reachability either.
+Every cell selects the same 93 packages with the same digest, and **no package
+selects a cgo or assembly file in any of them**. So neither `GOOS`/`GOARCH` nor
+`CGO_ENABLED` changes reachability here, and no combination of them does either.
 
 **This is a finding with an expiry date, not a permanent property.** The first
 platform-suffixed file or cgo import added to the tree ends it silently, which
 is why [#342](https://github.com/SnapdragonPartners/maestro/issues/342) exists.
 
-The five configurations below therefore cover every valid one.
+The five selections below therefore cover **every applicable explicit-tag
+selection**. They are that axis only; the implicit axis is covered by the
+cross-product above, and the two together are what the union is taken over.
 
 ```bash
 F='{{.ImportPath}}|{{join .Imports ","}}|{{join .TestImports ","}}|{{join .XTestImports ","}}'
-go list                -f "$F" ./...    # default      93 packages
-go list -tags integration -f "$F" ./... # integration  93
-go list -tags e2e         -f "$F" ./... # e2e          94
-go list -tags gcs         -f "$F" ./... # gcs          93
-go list -tags cloud       -f "$F" ./... # cloud        93
+for tags in "" integration e2e gcs cloud; do
+  if [ -z "$tags" ]; then n=$(go list -f "$F" ./... | wc -l); label=default
+  else n=$(go list -tags "$tags" -f "$F" ./... | wc -l); label=$tags; fi
+  printf '%-12s %s packages\n' "$label" "$(echo $n)"
+done
+```
+
+```text
+default            93 packages
+integration        93 packages
+e2e                94 packages
+gcs                93 packages
+cloud              93 packages
 ```
 
 Each configuration yields a production-importer set (`Imports`) and a
