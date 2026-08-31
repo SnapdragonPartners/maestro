@@ -8,9 +8,7 @@ type = "process"
 
 # Maestro v2 Build Process (Interim)
 
-Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit).
-
-**Amendment PROPOSED 2026-08-21, pending review — not yet Accepted**: the *Reachability Claims* rule, added on the Phase 3 item 1 branch and reviewed with it. This notice flips to Accepted, with the approving parties named, in the acceptance commit and not before. Everything above remains Accepted and in force meanwhile.
+Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit); amended 2026-08-31 (*Reachability Claims* added — Accepted by Codex and DR alongside Phase 3 item 1).
 
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 

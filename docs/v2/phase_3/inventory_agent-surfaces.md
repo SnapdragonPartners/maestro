@@ -1,14 +1,16 @@
 +++
 title = "Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire"
 edit_date = "2026-08-31"
-status = "draft"
+status = "live"
 type = "inventory"
 summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every applicable build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
 +++
 
 # Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire
 
-Status: draft — Phase 3 item 1. Authoring work; no code changed.
+Status: **live** — Accepted by Codex and DR, 2026-08-31, after seven review
+rounds. Phase 3 item 1. Authoring work; no code changed. Flipped in the
+acceptance commit before its own merge, following the phase plan's precedent.
 
 Phase 0's [v1-port inventory](../phase_0/inventory_v1-port.md) classified whole
 packages as port/rework/rewrite/drop. This document works at **surface grain** —
@@ -46,9 +48,9 @@ hypothesis did not anticipate** — the Claude subprocess *interface*
   the **explicit** `//go:build` expressions, and the **implicit** file
   selection Go performs through `GOOS`/`GOARCH` filename suffixes and cgo.
   Both are checked below; neither is assumed. This follows the
-  *Reachability Claims* rule proposed in
-  [the build process](../process_build.md) on this branch — **proposed, not
-  yet Accepted**, and reviewed alongside this document.
+  *Reachability Claims* rule in
+  [the build process](../process_build.md), Accepted alongside this document
+  (Codex + DR, 2026-08-31).
 - **Reachability is a proxy.** "Zero importers" supports "nothing imports it",
   not "it is dead". Every retirement below is additionally cross-checked
   textually **across all file types, not only `*.go`**, and the two checks are
@@ -215,12 +217,10 @@ Exported-surface enumeration must exclude test files
 (`grep --exclude='*_test.go'`). An earlier pass of this inventory did not, and
 attributed two test doubles to `internal/supervisor`'s production surface.
 
-The general form of this rule is proposed in
+The general form of this rule is now binding, in
 [the build process](../process_build.md) under *Reachability Claims*, where it
-would bind reviewers as well as authors. That amendment is **pending review on
-this branch** and carries no authority until Accepted; this document follows it
-because it is this document's own method, not because the rule yet binds
-anyone.
+binds reviewers as well as authors. Accepted alongside this document
+(Codex + DR, 2026-08-31).
 
 ## Findings That Change The Starting Hypothesis
 

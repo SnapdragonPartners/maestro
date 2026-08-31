@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Phase 3: Scope And Plan"
-edit_date = "2026-08-21"
+edit_date = "2026-08-31"
 status = "live"
 summary = "Accepted Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
 type = "plan"
@@ -14,11 +14,9 @@ last item on the critical path to phase entry. Flipped in the acceptance commit
 before its own merge, following Phase 2's precedent (Phase 1's plan merged still
 `draft` and needed a follow-up flip PR).
 
-**Amendment PROPOSED 2026-08-21, pending review — not yet Accepted.** Carried
-on the Phase 3 item 1 branch and reviewed with it; this notice flips to
-Accepted, with the approving parties named, in the acceptance commit and not
-before. The rest of this document remains `live` and Accepted as of 2026-08-16;
-the amendment's pending status does not suspend it.
+**Amended 2026-08-31, Accepted by Codex and DR**, on the Phase 3 item 1 branch
+and reviewed with it. The rest of this document is unchanged and remains
+Accepted as of 2026-08-16.
 
 The amendment: the Track C sentence below named #316 and #317 in an order that
 read positionally as assigning the forceable-terminal-tool requirement to #316.
