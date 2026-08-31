@@ -1,8 +1,8 @@
 +++
 title = "Phase 3 Artifacts"
-edit_date = "2026-08-29"
+edit_date = "2026-08-31"
 status = "live"
-summary = "Index of Phase 3 working artifacts: the pre-entry blocker plan, and the phase scope and plan once it is written."
+summary = "Index of Phase 3 working artifacts: the Accepted phase scope and plan, the pre-entry blocker plan, the agent-surface inventory that opens the implementation items, the two ADR 0029 fencing spikes, the agent execution contract's conformance slice, and the execution-contract design notes."
 +++
 
 # Phase 3 Artifacts
