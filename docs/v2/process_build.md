@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Build Process (Interim)"
-edit_date = "2026-08-21"
+edit_date = "2026-08-31"
 status = "live"
 summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; review cadence, branching, spikes, testing, and merge rules. Command-level mechanics live in CLAUDE.md."
 type = "process"
@@ -122,7 +122,20 @@ A reachability claim counts as evidence only when all of these hold:
 - the import-graph result is cross-checked textually **across all file types**,
   not only source files, with any surviving references disposed of explicitly —
   a reference in a `deprecated` or archived document does not block retirement,
-  but silence about it is not the same as its absence.
+  but silence about it is not the same as its absence;
+- **a failed measurement cannot be reported as a result.** Any command producing
+  evidence propagates the failure of the tool that produced it — `set -o
+  pipefail`, a checked exit status, and stderr left visible, never
+  `2>/dev/null` piped into something that succeeds regardless. A tool that
+  emits nothing on failure yields an empty result whose digest, count or
+  comparison agrees with itself perfectly; that is the shape of a false green,
+  so guard the degenerate value explicitly; and
+- any **digest or ordering-dependent** figure records the environment needed to
+  reproduce it — at minimum the toolchain version and the collation (`LC_ALL`),
+  because `sort` order is locale-dependent and a digest taken over sorted output
+  is not portable without it. A recorded digest that a reviewer cannot reproduce
+  is not evidence, and the discrepancy is explained before the figure is
+  replaced.
 
 An import graph answers "nothing imports this," which is a proxy for "this is
 dead." Reviewers hold the claim to the proxy actually measured: an analysis that

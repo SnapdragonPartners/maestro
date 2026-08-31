@@ -1,6 +1,6 @@
 +++
 title = "Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire"
-edit_date = "2026-08-29"
+edit_date = "2026-08-31"
 status = "draft"
 type = "inventory"
 summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every applicable build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
@@ -111,20 +111,39 @@ Two properties of the measurement matter:
   forbids: two reviewers running this at once would silently read each other's
   output and get plausible mixed evidence.
 
+**Digests are only comparable within a pinned environment.** They are taken over
+`sort`ed output, and `sort` collation is locale-dependent, so the same graph
+hashes differently under `en_US.UTF-8` and under `C`. The block pins `LC_ALL=C`
+for that reason. Recorded against:
+
+| | |
+| --- | --- |
+| Toolchain | `go1.26.3` |
+| Host | `darwin/arm64` |
+| Collation | `LC_ALL=C` (pinned by the block) |
+| Tree | `main` at `ca92bad`, plus this branch's docs-only commits |
+
 ```bash
+set -o pipefail
+export LC_ALL=C   # sort collation is locale-dependent; digests are not portable without this
 G='{{.ImportPath}}|{{join .Imports ","}}|{{join .TestImports ","}}|{{join .XTestImports ","}}'
 S='{{.ImportPath}}|{{join .GoFiles ","}}|{{join .CgoFiles ","}}|{{join .SFiles ","}}'
-digest() { printf '%s\n' "$1" | { md5 -q 2>/dev/null || md5sum | cut -d' ' -f1; }; }
-list() { if [ -z "$1" ]; then GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -f "$5" ./... 2>/dev/null | sort
-         else GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -tags "$1" -f "$5" ./... 2>/dev/null | sort; fi; }
+md5of() { md5 -q 2>/dev/null || md5sum | cut -d' ' -f1; }
+golist() { if [ -z "$1" ]; then GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -f "$5" ./...
+           else GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -tags "$1" -f "$5" ./...; fi; }
+EMPTY=$(printf '\n' | md5of)
 cgo_total=0
 for tags in "" integration e2e gcs cloud; do
   ds=""
   for t in linux/amd64 linux/arm64; do for c in 0 1; do
-    ds="${ds}$(digest "$(list "$tags" "${t%/*}" "${t#*/}" "$c" "$G")")
+    cell="${tags:-default} $t CGO=$c"
+    out=$(golist "$tags" "${t%/*}" "${t#*/}" "$c" "$G") || { echo "FAIL: go list failed for $cell" >&2; exit 1; }
+    d=$(printf '%s\n' "$out" | sort | md5of)
+    [ "$d" = "$EMPTY" ] && { echo "FAIL: empty graph for $cell" >&2; exit 1; }
+    ds="${ds}${d}
 "
-    n=$(list "$tags" "${t%/*}" "${t#*/}" "$c" "$S" | awk -F'|' '$3!="" || $4!=""' | grep -c .)
-    cgo_total=$((cgo_total + n))
+    sel=$(golist "$tags" "${t%/*}" "${t#*/}" "$c" "$S") || { echo "FAIL: go list failed for $cell" >&2; exit 1; }
+    cgo_total=$(( cgo_total + $(printf '%s\n' "$sel" | awk -F'|' '$3!="" || $4!=""' | grep -c .) ))
   done; done
   printf '%-12s cells=%s distinct=%s  %s\n' "${tags:-default}" \
     "$(printf '%s' "$ds" | grep -c .)" "$(printf '%s' "$ds" | sort -u | grep -c .)" \
@@ -134,13 +153,23 @@ echo "cgo/assembly-selecting packages, summed over all 20 cells: $cgo_total"
 ```
 
 ```text
-default      cells=4 distinct=1  3f3f4119fe4515ed6199e6eca7f7c369
-integration  cells=4 distinct=1  ec87a40a198e1ebc822d6cabcd373d91
-e2e          cells=4 distinct=1  27891ae9a1fca99f4e35482f48e88faa
-gcs          cells=4 distinct=1  f7f345d46132303ea11e7ed164a71ea7
-cloud        cells=4 distinct=1  6d4da81d83829797c8709f3df149ecb2
+default      cells=4 distinct=1  2e871b15b6f91c79f25e70024805bfbf
+integration  cells=4 distinct=1  367115800c4bc3c75c0cc313b03b194f
+e2e          cells=4 distinct=1  6fa7fd2b003d3549e9a916f5d1b63e1e
+gcs          cells=4 distinct=1  2dfa5accce8ada4c0d68bcf91dd0c7e9
+cloud        cells=4 distinct=1  237d57fd2ce488ef3c167d34b7a7d7bc
 cgo/assembly-selecting packages, summed over all 20 cells: 0
 ```
+
+**Failure must not read as agreement.** An earlier version of this block piped
+`go list` into `sort` and discarded stderr, so the function returned `sort`'s
+status. When `go list` failed, every cell produced the digest of an empty line
+(`68b329da9893e34099c7d8ad5cb9c940`), every cell agreed with every other, and
+the block reported `cells=4 distinct=1` for all five selections and exited `0`.
+A wholly failed run was indistinguishable from a clean one — and it was a
+reviewer running it in a sandbox without module access who found that, not this
+document. Hence `set -o pipefail`, the checked exit status on every `go list`,
+the explicit empty-digest guard, and stderr left visible.
 
 **Within each tag selection the graph is byte-identical across all four
 platform/cgo cells**, and no package anywhere in the 20 selects a cgo or
@@ -149,12 +178,19 @@ one here, and the union over 20 configurations equals the union over the five
 tag selections — which is what the tables in this document are built from, with
 self-edges removed.
 
-*Positive control*: the five digests differ from each other, so pooling them
-through the same comparison yields `distinct=5`. The `distinct=1` results above
-are a measurement, not a comparison that cannot fail. (An earlier version of
-this block reported `distinct=1` for the wrong reason — zsh does not word-split
-unquoted variables, so `sort -u` was collapsing a single line holding four
-digests. The accumulator is newline-delimited for that reason.)
+Both controls were run, because `distinct=1` from a comparison that cannot fail
+is worth nothing:
+
+- *Positive*: the five digests differ from each other, so pooling them through
+  the same counting yields `distinct=5`. The comparison discriminates.
+- *Negative*: replacing one target with an invalid `GOARCH` makes this block
+  print `FAIL: go list failed for default linux/nonesuch CGO=0` and exit `1`,
+  with the toolchain's own error left visible. The superseded block, given the
+  identical mutation, printed `cells=4 distinct=1` and exited `0`.
+
+An earlier version also reported `distinct=1` for a third wrong reason — zsh
+does not word-split unquoted variables, so `sort -u` was collapsing a single
+line holding four digests. The accumulator is newline-delimited for that reason.
 
 **This is a finding with an expiry date, not a permanent property.** The first
 platform-suffixed file or cgo import added to the tree ends it silently, which
