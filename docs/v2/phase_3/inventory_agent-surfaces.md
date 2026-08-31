@@ -16,9 +16,17 @@ a named responsibility inside a package — over the six subsystems item 1 names
 using the vocabulary the phase plan fixes: **retain, refactor, replace, retire**.
 
 The plan's ["Decisions This Plan Fixes"](plan_scope.md) §1 supplies a starting
-hypothesis. This inventory's job is to test it against the tree, not to restate
-it. Three of its clauses survive unchanged, two are sharpened, and one is
-answered more simply than it was posed.
+hypothesis of eight clauses. This inventory's job is to test it against the
+tree, not to restate it. **Six survive unchanged** — the role state machines,
+`QUESTION`, the toolloop refactor, the `pkg/proto` split, the Claude
+`lastEffect` replacement, and the dispatcher/supervisor authority replacement.
+**One is answered more simply than it was posed**: `StateStore` is retired
+rather than replaced, because nothing persists through it (finding 1). **One is
+sharpened**: `SUSPEND`'s mechanism and its semantics are separable, and only the
+mechanism is settled here. The inventory also adds **one disposition the
+hypothesis did not anticipate** — the Claude subprocess *interface*
+(`Runner`/`RunOptions`/`Result`) needs refactoring, distinct from the
+`lastEffect` path the plan already named.
 
 ## Method
 
@@ -264,7 +272,7 @@ and orphaned code is removed unless a documented gate retains it — these are
 ### 3. `pkg/agent/middleware/chat` is dead
 
 One file, `injection.go`. **Zero Go consumers**: no production importers and no
-test importers, in any of the five build configurations.
+test importers, in any of the 20 applicable configurations.
 
 It is **not** free of textual references, and an earlier draft of this document
 wrongly said it was — that claim came from a grep restricted to `*.go`. Four
@@ -301,7 +309,7 @@ evidence; no row rests on the plan's hypothesis alone.
 | --- | --- | --- |
 | Role state machines and transition tables (`internal/core`) | **retain + refactor** | 1,127 non-comment lines, 3 files; consumed by `pkg/agent` and `internal/runtime` only. Hypothesis confirmed: the FSM engine is self-contained and does not reach the transport. |
 | `StateStore` interface + `pkg/state` implementation | **retire** | Finding 1. Zero production implementations; all four construction sites pass `nil`. |
-| Public driver stubs in `core.go` (`BaseDriver`, `NewBaseDriver`, `NewShutdownableDriver`, `ShutdownManager`) | **retire** | Finding 2. Parameters discarded; self-described legacy stubs. |
+| Public driver stubs in `core.go` (`BaseDriver`, `NewBaseDriver`, `NewShutdownableDriver`, `ShutdownManager`) | **retire**, in **item 6** | Finding 2. Parameters discarded; self-described legacy stubs. Scheduled with item 6's test migration rather than pulled forward into #298's unblocked group, because the tests these exist for are migrated there. Resolved in review, 2026-08-31. |
 | Driver runtime (`internal/runtime`) | **refactor** | 599 lines, 6 files. The real driver; rewires to item 5's boundary. |
 | LLM boundary (`llm`, `llmerrors`, `internal/llmadapter`) | **retain** | Widest internal fan-in of the agent tree (`llm`: 9 production importers). Phase 0 "port" confirmed; the maestro-llms divergence checklist continues to apply. |
 | `middleware/chat` | **retire** | Finding 3. |
@@ -327,7 +335,7 @@ The plan says split, and the exported type list shows the seam cleanly.
 | Domain enums (`StoryType`, `Priority`, `Confidence`, `ApprovalStatus`/`Type`) | **retain** | Value types with no transport coupling. |
 | `State` + `StateChangeNotification` | **refactor** | `State` is the FSM vocabulary shared with `internal/core`; the notification is process-local transport. Split along that line. |
 | `StateQuestion` (`QUESTION`) | **retain** | Declared `pkg/proto/message.go:641`. Mapped to artifacts and Story state by item 6, per hypothesis. |
-| `StateSuspend` (`SUSPEND`) | **retire or redesign** | Declared `message.go:644`. Return-to-origin resumption is process-local: `internal/supervisor/supervisor.go:331,336` observes the transition pair directly, and `pkg/agent/internal/core/machine.go:533,546` gates it. This conflicts with artifact-level restart (plan decision 2). Item 6 settles it. |
+| `StateSuspend` (`SUSPEND`) | **retire** the mechanism; semantic replacement deferred to item 6 | Declared `message.go:644`. Return-to-origin resumption is process-local: `internal/supervisor/supervisor.go:331,336` observes the transition pair directly, and `pkg/agent/internal/core/machine.go:533,546` gates it. That conflicts with artifact-level restart (plan decision 2), so the current mechanism goes regardless. **Whether the capability it provided — pausing on external-service unavailability — needs a replacement, and in what form, is item 6's**, answered against a real consumer rather than decided here. Resolved in review, 2026-08-31. |
 | Process-local messaging (`AgentMsg`, `MsgType`, `UnifiedRequest`/`Response`, `RequestKind`/`ResponseKind`, and the ~20 `*Payload` types) | **replace** | The external boundary replaces these. Spec/story-flow payloads (`StoryComplete`, `Requeue`, `Hotfix`, `Clarification`) die with their flows under ADR 0024. |
 
 ### Supervisor and dispatcher
@@ -369,7 +377,7 @@ Phase 0's principle 6 — "drops need no ceremony but leave a record" — is wha
 ## Issue #298: Making The Deletions Complete
 
 #298 asks for the five `drop` dispositions to be scheduled. Re-derived from the
-import graph unioned over all five build configurations on `main` at `ca92bad`,
+import graph unioned over all 20 applicable configurations on `main` at `ca92bad`,
 rather than carried from the
 issue:
 
@@ -389,13 +397,23 @@ three are genuinely blocked on live v1 consumers and belong to item 14. Add
 `prometheus/common` in the repository, so its deletion removes two direct
 dependencies that nothing calls.
 
-## Open Points For Review
+## Points Resolved In Review
 
-1. Whether the `core.go` stub retirement (finding 2) belongs to item 6 with the
-   test migration, or earlier and standalone with #298's first group.
-2. Whether `SUSPEND` is retired or redesigned is deliberately left to item 6 —
-   this inventory records only that its current mechanism is process-local and
-   conflicts with artifact-level restart.
+Both open questions this document raised were answered in review on 2026-08-31.
+Recorded here because each schedules work another item inherits.
+
+1. **The `core.go` stub retirement (finding 2) stays in item 6**, with the test
+   migration, rather than being pulled forward into #298's unblocked group.
+   Those stubs exist for tests that item 6 migrates; retiring them earlier would
+   break the tests before their replacement exists.
+2. **`SUSPEND`'s current mechanism is retired; its semantic replacement is
+   deferred to item 6.** The two halves are separable and were being conflated:
+   the process-local return-to-origin resumption conflicts with artifact-level
+   restart and goes regardless, while whether the *capability* — pausing on
+   external-service unavailability — needs any replacement is a question for a
+   real consumer, which is what item 6 provides.
+
+No open points remain.
 
 ## Related Documents
 
