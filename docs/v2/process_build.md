@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Build Process (Interim)"
-edit_date = "2026-08-07"
+edit_date = "2026-08-31"
 status = "live"
 summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; review cadence, branching, spikes, testing, and merge rules. Command-level mechanics live in CLAUDE.md."
 type = "process"
@@ -8,7 +8,7 @@ type = "process"
 
 # Maestro v2 Build Process (Interim)
 
-Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit).
+Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit); amended 2026-08-31 (*Reachability Claims* added — Accepted by Codex and DR alongside Phase 3 item 1).
 
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 
@@ -72,6 +72,81 @@ Checkpoint notes report the protected defect and why the discriminating test
 failed, not only a count such as “N/N mutations killed.” This rule is deliberately
 scoped to guards and regression tests where a false green would hide a material
 contract violation; it does not require mutation testing every routine assertion.
+
+### Reachability Claims
+
+A claim that code is unreachable, dead, vestigial, or safe to delete is a claim
+about **every applicable repository configuration across the supported target
+matrix**, and it is not proven by an analysis run in one of them. "Applicable"
+is the operative word: the scope is the configurations this repository declares
+and the platforms it supports — not every configuration the Go toolchain
+admits, which no analysis could enumerate. The supported matrix is
+ADR 0026's (`linux/amd64` and `linux/arm64` at minimum); a claim is bounded by
+that matrix and must say so.
+
+Within that scope the analysis must still be exhaustive. Enabling every build
+tag at once is a single configuration: it is not equivalent to the union over
+applicable configurations, because a file guarded by a negated or compound
+constraint can be excluded from the all-on build while belonging to another
+applicable one.
+
+Configurations vary along two axes, and an analysis must account for both.
+**Explicit** constraints are the `//go:build` expressions declared in the tree.
+**Implicit** constraints select files without any such line: `GOOS`/`GOARCH`
+filename suffixes (`_linux.go`, `_arm64.go`), cgo availability, and the
+compiler, release and architecture-feature tags Go applies on its own. An
+analysis that derives only the explicit axis has surveyed part of the
+configuration space and must not claim to have surveyed it all.
+
+A reachability claim counts as evidence only when all of these hold:
+
+- the set of **explicit** build-constraint expressions is **derived at analysis
+  time**, not copied from a document or a previous run;
+- the **implicit** axis is addressed rather than ignored, across the supported
+  matrix: evaluate the platform and cgo dimensions over ADR 0026's targets at
+  minimum. Where a dimension selects no files, say so; that absence is itself
+  the finding, and it can stop being true;
+- the implicit axis is measured by **what the toolchain selects**, not by what
+  text resembles. `go list`'s `GoFiles`, `CgoFiles` and `SFiles` under the
+  relevant `GOOS`/`GOARCH`/`CGO_ENABLED` settings are evidence; a filename
+  search or a `grep` for `import "C"` is not, because it matches occurrences in
+  comments and strings. **Any command a document records must actually produce
+  the result shown beside it**;
+- reachability is computed as the **union over the applicable configurations**
+  those two axes imply, and any claimed equivalence between that union and a
+  single combined configuration is checked rather than assumed;
+- production consumers and test-only consumers are reported **separately**, and
+  a package's own in-package tests are not counted as consumers of it; and
+- the import-graph result is cross-checked textually **across all file types**,
+  not only source files, with any surviving references disposed of explicitly —
+  a reference in a `deprecated` or archived document does not block retirement,
+  but silence about it is not the same as its absence;
+- **a failed measurement cannot be reported as a result.** Any command producing
+  evidence propagates the failure of the tool that produced it — `set -o
+  pipefail`, a checked exit status, and stderr left visible, never
+  `2>/dev/null` piped into something that succeeds regardless. A tool that
+  emits nothing on failure yields an empty result whose digest, count or
+  comparison agrees with itself perfectly; that is the shape of a false green,
+  so guard the degenerate value explicitly; and
+- any **digest or ordering-dependent** figure records the environment needed to
+  reproduce it — at minimum the toolchain version and the collation (`LC_ALL`),
+  because `sort` order is locale-dependent and a digest taken over sorted output
+  is not portable without it. A recorded digest that a reviewer cannot reproduce
+  is not evidence, and the discrepancy is explained before the figure is
+  replaced.
+
+An import graph answers "nothing imports this," which is a proxy for "this is
+dead." Reviewers hold the claim to the proxy actually measured: an analysis that
+does not state its configurations has not established reachability, and neither
+author nor reviewer should treat it as though it had.
+
+Mechanical enforcement of this rule — deriving the constraint set in the build
+and failing when an unrecognised one appears — is code, and belongs to its own
+scheduled work rather than to any authoring item that happens to need the rule.
+It is tracked as
+[#342](https://github.com/SnapdragonPartners/maestro/issues/342). Until that
+lands, this rule is enforced by review alone, which is exactly the weakness
+#342 exists to remove.
 
 ## CI Review And Merge
 

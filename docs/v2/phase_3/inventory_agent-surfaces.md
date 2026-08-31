@@ -1,0 +1,433 @@
++++
+title = "Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire"
+edit_date = "2026-08-31"
+status = "live"
+type = "inventory"
+summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every applicable build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
++++
+
+# Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire
+
+Status: **live** — Accepted by Codex and DR, 2026-08-31, after seven review
+rounds. Phase 3 item 1. Authoring work; no code changed. Flipped in the
+acceptance commit before its own merge, following the phase plan's precedent.
+
+Phase 0's [v1-port inventory](../phase_0/inventory_v1-port.md) classified whole
+packages as port/rework/rewrite/drop. This document works at **surface grain** —
+a named responsibility inside a package — over the six subsystems item 1 names,
+using the vocabulary the phase plan fixes: **retain, refactor, replace, retire**.
+
+The plan's ["Decisions This Plan Fixes"](plan_scope.md) §1 supplies a starting
+hypothesis of eight clauses. This inventory's job is to test it against the
+tree, not to restate it. **Six survive unchanged** — the role state machines,
+`QUESTION`, the toolloop refactor, the `pkg/proto` split, the Claude
+`lastEffect` replacement, and the dispatcher/supervisor authority replacement.
+**One is answered more simply than it was posed**: `StateStore` is retired
+rather than replaced, because nothing persists through it (finding 1). **One is
+sharpened**: `SUSPEND`'s mechanism and its semantics are separable, and only the
+mechanism is settled here. The inventory also adds **one disposition the
+hypothesis did not anticipate** — the Claude subprocess *interface*
+(`Runner`/`RunOptions`/`Result`) needs refactoring, distinct from the
+`lastEffect` path the plan already named.
+
+## Method
+
+- **Reference points.** The frozen v1 tree at `v1-freeze` (`d272332`), and
+  `main` at `ca92bad`.
+- **Import graph.** `go list` over `./...`, capturing `Imports`, `TestImports`
+  and `XTestImports` separately, so a package whose only consumers are tests is
+  distinguishable from one with production consumers. Self-edges are excluded:
+  a leaf package tested by its own in-package tests would otherwise appear to
+  have a consumer.
+- **Build configurations, not a tag union.** The authoritative basis is the
+  **union of reachability over the applicable build configurations**, computed one
+  configuration at a time. Enabling every tag at once is a *single*
+  configuration and is not generally equivalent to that union — a file guarded
+  by a negated or compound constraint can be excluded from the all-on build
+  while being part of another applicable one. Configurations vary along two axes:
+  the **explicit** `//go:build` expressions, and the **implicit** file
+  selection Go performs through `GOOS`/`GOARCH` filename suffixes and cgo.
+  Both are checked below; neither is assumed. This follows the
+  *Reachability Claims* rule in
+  [the build process](../process_build.md), Accepted alongside this document
+  (Codex + DR, 2026-08-31).
+- **Reachability is a proxy.** "Zero importers" supports "nothing imports it",
+  not "it is dead". Every retirement below is additionally cross-checked
+  textually **across all file types, not only `*.go`**, and the two checks are
+  reported separately. Documentation references do not prevent retirement, but
+  they must be disposed of explicitly rather than left unmentioned.
+- **Grain.** Following Phase 0's principle 5, a disposition attaches to a
+  responsibility, not a path. Code may move during the port without reopening
+  this inventory; only a disposition change reopens it.
+
+### Warning: build configuration changes the answer
+
+An import-graph analysis run under the default configuration reports **four
+packages as dead that are not**. The repository carries four build tags, and
+three of them guard very few files, which is exactly why an analysis misses
+them:
+
+| Tag | Files guarded |
+| --- | --- |
+| `integration` | 73 |
+| `e2e` | 3 |
+| `gcs` | 1 |
+| `cloud` | 1 |
+
+`internal/dataplane/cloud` is the trap worth naming. It sits behind the `cloud`
+tag — deliberately not `integration`, because the pre-push gate runs the
+integration suite and requiring cloud credentials to push would either block
+contributors without them or skip silently and look green. It therefore has no
+in-repo importer under any ordinary listing, and its own tests are invisible to
+a default `go list`. Nothing about it is dead.
+
+**The tag set above is documentation of a moment, not a source of truth.** It
+must be re-derived at analysis time. Hand-maintained enumerations have already
+failed three times in this repository's history.
+
+### Reproducing the graph
+
+Constraint expressions were enumerated first, because they determine which
+configurations are needed:
+
+```bash
+grep -rh "^//go:build" --include="*.go" . | sort -u
+```
+
+At `ca92bad` every constraint is a **bare single tag** — there are no negated
+(`!tag`) and no compound (`&&`, `||`) expressions.
+
+Configurations also vary **implicitly**, without any `//go:build` line, so that
+axis is checked too — and it is checked by asking the toolchain what it
+*selects*, not by matching text. A filename search or a `grep` for `import "C"`
+measures resemblance: in this repository the obvious grep returns
+`pkg/templates/bootstrap/data.go`, where the string sits inside a comment in a
+`detectCGOUsage` stub at line 393. `go list` reports the selection itself.
+
+The two axes are **crossed, not unioned separately**. A file can carry both a
+custom constraint and a platform suffix, so evaluating tags on one platform and
+platforms under no tags would leave that interaction unmeasured. The measurement
+below runs the full product: five tag selections × two ADR 0026 targets × two
+`CGO_ENABLED` settings = **20 configurations**.
+
+Two properties of the measurement matter:
+
+- It hashes the **graph input itself** — the `Imports`, `TestImports` and
+  `XTestImports` *names* these tables are built from — not file counts. A digest
+  over `len .GoFiles` would collide whenever two configurations select different
+  files in equal number, and so could not establish identity.
+- It uses **no intermediate files**. Fixed paths under `/tmp` are shared
+  last-writer-wins state, which [ADR 0027](../../adr/0027-concurrency-safety-for-shared-local-infrastructure.md)
+  forbids: two reviewers running this at once would silently read each other's
+  output and get plausible mixed evidence.
+
+**Digests are only comparable within a pinned environment.** They are taken over
+`sort`ed output, and `sort` collation is locale-dependent, so the same graph
+hashes differently under `en_US.UTF-8` and under `C`. The block pins `LC_ALL=C`
+for that reason. Recorded against:
+
+| | |
+| --- | --- |
+| Toolchain | `go1.26.3` |
+| Host | `darwin/arm64` |
+| Collation | `LC_ALL=C` (pinned by the block) |
+| Tree | `main` at `ca92bad`, plus this branch's docs-only commits |
+
+```bash
+set -o pipefail
+export LC_ALL=C   # sort collation is locale-dependent; digests are not portable without this
+G='{{.ImportPath}}|{{join .Imports ","}}|{{join .TestImports ","}}|{{join .XTestImports ","}}'
+S='{{.ImportPath}}|{{join .GoFiles ","}}|{{join .CgoFiles ","}}|{{join .SFiles ","}}'
+md5of() { md5 -q 2>/dev/null || md5sum | cut -d' ' -f1; }
+golist() { if [ -z "$1" ]; then GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -f "$5" ./...
+           else GOOS="$2" GOARCH="$3" CGO_ENABLED="$4" go list -tags "$1" -f "$5" ./...; fi; }
+EMPTY=$(printf '\n' | md5of)
+cgo_total=0
+for tags in "" integration e2e gcs cloud; do
+  ds=""
+  for t in linux/amd64 linux/arm64; do for c in 0 1; do
+    cell="${tags:-default} $t CGO=$c"
+    out=$(golist "$tags" "${t%/*}" "${t#*/}" "$c" "$G") || { echo "FAIL: go list failed for $cell" >&2; exit 1; }
+    d=$(printf '%s\n' "$out" | sort | md5of)
+    [ "$d" = "$EMPTY" ] && { echo "FAIL: empty graph for $cell" >&2; exit 1; }
+    ds="${ds}${d}
+"
+    sel=$(golist "$tags" "${t%/*}" "${t#*/}" "$c" "$S") || { echo "FAIL: go list failed for $cell" >&2; exit 1; }
+    cgo_total=$(( cgo_total + $(printf '%s\n' "$sel" | awk -F'|' '$3!="" || $4!=""' | grep -c .) ))
+  done; done
+  printf '%-12s cells=%s distinct=%s  %s\n' "${tags:-default}" \
+    "$(printf '%s' "$ds" | grep -c .)" "$(printf '%s' "$ds" | sort -u | grep -c .)" \
+    "$(printf '%s' "$ds" | sort -u | tr '\n' ' ')"
+done
+echo "cgo/assembly-selecting packages, summed over all 20 cells: $cgo_total"
+```
+
+```text
+default      cells=4 distinct=1  2e871b15b6f91c79f25e70024805bfbf
+integration  cells=4 distinct=1  367115800c4bc3c75c0cc313b03b194f
+e2e          cells=4 distinct=1  6fa7fd2b003d3549e9a916f5d1b63e1e
+gcs          cells=4 distinct=1  2dfa5accce8ada4c0d68bcf91dd0c7e9
+cloud        cells=4 distinct=1  237d57fd2ce488ef3c167d34b7a7d7bc
+cgo/assembly-selecting packages, summed over all 20 cells: 0
+```
+
+**Failure must not read as agreement.** An earlier version of this block piped
+`go list` into `sort` and discarded stderr, so the function returned `sort`'s
+status. When `go list` failed, every cell produced the digest of an empty line
+(`68b329da9893e34099c7d8ad5cb9c940`), every cell agreed with every other, and
+the block reported `cells=4 distinct=1` for all five selections and exited `0`.
+A wholly failed run was indistinguishable from a clean one — and it was a
+reviewer running it in a sandbox without module access who found that, not this
+document. Hence `set -o pipefail`, the checked exit status on every `go list`,
+the explicit empty-digest guard, and stderr left visible.
+
+**Within each tag selection the graph is byte-identical across all four
+platform/cgo cells**, and no package anywhere in the 20 selects a cgo or
+assembly file. The implicit axis therefore does not interact with the explicit
+one here, and the union over 20 configurations equals the union over the five
+tag selections — which is what the tables in this document are built from, with
+self-edges removed.
+
+Both controls were run, because `distinct=1` from a comparison that cannot fail
+is worth nothing:
+
+- *Positive*: the five digests differ from each other, so pooling them through
+  the same counting yields `distinct=5`. The comparison discriminates.
+- *Negative*: replacing one target with an invalid `GOARCH` makes this block
+  print `FAIL: go list failed for default linux/nonesuch CGO=0` and exit `1`,
+  with the toolchain's own error left visible. The superseded block, given the
+  identical mutation, printed `cells=4 distinct=1` and exited `0`.
+
+An earlier version also reported `distinct=1` for a third wrong reason — zsh
+does not word-split unquoted variables, so `sort -u` was collapsing a single
+line holding four digests. The accumulator is newline-delimited for that reason.
+
+**This is a finding with an expiry date, not a permanent property.** The first
+platform-suffixed file or cgo import added to the tree ends it silently, which
+is why [#342](https://github.com/SnapdragonPartners/maestro/issues/342) exists.
+
+Because this repository currently has no negated or compound constraints, that
+union was checked against the single all-tags-on configuration
+(`go list -tags integration,e2e,gcs,cloud`) and found **identical** — zero
+differing packages. That equivalence is a property of the current constraint
+set, **not a general one**: it must be re-checked, not assumed, whenever a
+constraint expression is added.
+
+Exported-surface enumeration must exclude test files
+(`grep --exclude='*_test.go'`). An earlier pass of this inventory did not, and
+attributed two test doubles to `internal/supervisor`'s production surface.
+
+The general form of this rule is now binding, in
+[the build process](../process_build.md) under *Reachability Claims*, where it
+binds reviewers as well as authors. Accepted alongside this document
+(Codex + DR, 2026-08-31).
+
+## Findings That Change The Starting Hypothesis
+
+### 1. `StateStore` is vestigial, not merely non-durable
+
+The plan calls `StateStore.Save(id string, value any)` "the one already decided",
+on the grounds that `json.MarshalIndent` plus `os.WriteFile` with no temporary
+file, rename, or fsync is not a durable checkpoint. That is accurate —
+`pkg/state/store.go:133,140` is exactly that, with no `O_SYNC`, no rename dance,
+and no fsync.
+
+But the durability argument understates the case. The evidence says there is
+**nothing persisting through this seam at runtime at all**:
+
+- The interface is declared at `pkg/agent/internal/core/machine.go:70-76` and
+  re-exported as an alias at `pkg/agent/core.go:55`.
+- Its **only** implementation is `pkg/state`, which has **zero production
+  importers** — its sole consumer is a `pkg/agent` race test.
+- Every production construction passes `nil`: `pkg/pm/driver.go:207`,
+  `pkg/pm/driver.go:255`, `pkg/architect/driver.go:187`,
+  `pkg/coder/driver.go:500`.
+- The one call site that forwards a store rather than `nil`
+  (`pkg/agent/internal/runtime/base_driver.go:25`, via `config.Context.Store`)
+  is never given one: no production code assigns `runtime.Context.Store`.
+
+**Consequence for item 3.** Typed durable checkpoints are a *new build*, not a
+replacement of a working mechanism, and no migration of existing on-disk state
+is owed — there is none. The disposition is **retire**, for the interface and
+its implementation together. This also merges two work items that look separate:
+"replace `StateStore.Save`" and #298's "delete `pkg/state`" are one action seen
+from two sides.
+
+### 2. `pkg/agent`'s public driver surface is test stubs in a production file
+
+`pkg/agent/core.go:135-147` defines `NewShutdownableDriver`, `NewBaseDriver` and
+`BaseDriver` as stubs — `NewBaseDriver(_ *Config, _ proto.State)` discards both
+parameters and returns `&BaseDriver{}`; `ShutdownManager.IsShuttingDown()`
+returns a constant `true`. Their own comments say "legacy test stub" and "to be
+removed after test migration", with no linked issue.
+
+The real driver runtime is `pkg/agent/internal/runtime`. So `pkg/agent`'s
+exported driver surface does not describe the running system, and any port that
+treats it as the agent abstraction would carry a stub across the boundary.
+
+Under CLAUDE.md's standard — critical untracked TODOs are acceptance blockers,
+and orphaned code is removed unless a documented gate retains it — these are
+**retire**, with the test migration they are waiting on scheduled by item 6.
+
+### 3. `pkg/agent/middleware/chat` is dead
+
+One file, `injection.go`. **Zero Go consumers**: no production importers and no
+test importers, in any of the 20 applicable configurations.
+
+It is **not** free of textual references, and an earlier draft of this document
+wrongly said it was — that claim came from a grep restricted to `*.go`. Four
+documents name `pkg/agent/middleware/chat/injection.go`:
+
+| Reference | Status |
+| --- | --- |
+| `docs/MAESTRO_CHAT_SPEC.md:285` | `deprecated` |
+| `docs/MAESTRO_LLMS_MIGRATION.md:168` | `deprecated` |
+| `docs/adr/0015-agent-chat-and-human-in-the-loop-escalation.md:45` | `deprecated` |
+| `docs/wiki/LLM_WIKI.md:1773` | `deprecated` |
+
+All four carry `status = "deprecated"` and therefore no authority; ADR 0015 is
+additionally in the historical 0001–0016 range that CLAUDE.md admits as
+non-binding context only. **They do not block retirement**, and none needs
+editing: each describes a v1 mechanism accurately as of the tree it documents.
+Retirement should note them so a later reader who greps the name finds the
+disposition rather than concluding the inventory missed them.
+
+Phase 0 classified the middleware group **rework** at package grain, which is
+right for `metrics` and `validation` and wrong for this member.
+
+This is a **sixth** drop candidate, absent from the Phase 0 drop list and from
+#298. Disposition: **retire**.
+
+## The Disposition Table
+
+Evidence column cites what was measured. Every row carries surface-level
+evidence; no row rests on the plan's hypothesis alone.
+
+### Agent core
+
+| Surface | Disposition | Evidence |
+| --- | --- | --- |
+| Role state machines and transition tables (`internal/core`) | **retain + refactor** | 1,127 non-comment lines, 3 files; consumed by `pkg/agent` and `internal/runtime` only. Hypothesis confirmed: the FSM engine is self-contained and does not reach the transport. |
+| `StateStore` interface + `pkg/state` implementation | **retire** | Finding 1. Zero production implementations; all four construction sites pass `nil`. |
+| Public driver stubs in `core.go` (`BaseDriver`, `NewBaseDriver`, `NewShutdownableDriver`, `ShutdownManager`) | **retire**, in **item 6** | Finding 2. Parameters discarded; self-described legacy stubs. Scheduled with item 6's test migration rather than pulled forward into #298's unblocked group, because the tests these exist for are migrated there. Resolved in review, 2026-08-31. |
+| Driver runtime (`internal/runtime`) | **refactor** | 599 lines, 6 files. The real driver; rewires to item 5's boundary. |
+| LLM boundary (`llm`, `llmerrors`, `internal/llmadapter`) | **retain** | Widest internal fan-in of the agent tree (`llm`: 9 production importers). Phase 0 "port" confirmed; the maestro-llms divergence checklist continues to apply. |
+| `middleware/chat` | **retire** | Finding 3. |
+| `middleware/metrics` | **refactor** | 3 production importers. Follows the metrics family into the data plane (ADR 0022). Note a live v1→v2 edge: `internal/dataplane/benchmarkimport` imports it in tests. |
+| `middleware/validation` | **refactor** | Single importer (`pkg/agent`); moves behind the boundary with the loop. |
+
+### Toolloop
+
+| Surface | Disposition | Evidence |
+| --- | --- | --- |
+| `ToolLoop`, `Config`, `Outcome` external contract | **retain** | 4 production importers (`supervisor`, `architect`, `coder`, `pm`). Phase 0's rework note preserves this contract precisely so call sites migrate unchanged. |
+| Harness layer — durable audit persistence, escalation, per-tool circuit breaking (`EscalationHandler`, `ToolCircuitBreakerConfig`, `ActivityTracker`) | **refactor** | 3,228 lines, 5 files. The Phase 0 toolloop spike found this layer worth keeping over `llms/toolloop`. Refactored behind item 5's boundary, per the plan — not rewritten. |
+| `TerminalTool[T]` and the one-goal-one-exit rule | **refactor** | Declared `toolloop.go:36`; `Config.TerminalTool` requires exactly one (`:113`) and construction rejects `nil` (`:208`). The loop can *require* a terminal call but cannot *force* one: when the model never calls it, extraction returns `toolloop.ErrNoTerminalTool` (`pkg/architect/toolloop_results.go:28,65,82` for `submit_reply`, `review_complete`, `story_edit`) and the architect escalates. That is [#317](https://github.com/SnapdragonPartners/maestro/issues/317) — the approval loop deadlocks into `ESCALATED`, which is unreachable headlessly. The refactor must make forcing expressible at the boundary. |
+
+### `pkg/proto`
+
+The widest surface in the named set: **16 production importers**, ~3,106 lines.
+The plan says split, and the exported type list shows the seam cleanly.
+
+| Surface | Disposition | Evidence |
+| --- | --- | --- |
+| Failure taxonomy (`FailureKind`, `FailureScope`, `FailureSource`, `FailureOwner`, `FailureAction`, `FailureInfo`, `FailureEvidence`) | **retain** | Self-contained domain vocabulary; Phase 0's "failure taxonomy keeps with rework" confirmed. |
+| Domain enums (`StoryType`, `Priority`, `Confidence`, `ApprovalStatus`/`Type`) | **retain** | Value types with no transport coupling. |
+| `State` + `StateChangeNotification` | **refactor** | `State` is the FSM vocabulary shared with `internal/core`; the notification is process-local transport. Split along that line. |
+| `StateQuestion` (`QUESTION`) | **retain** | Declared `pkg/proto/message.go:641`. Mapped to artifacts and Story state by item 6, per hypothesis. |
+| `StateSuspend` (`SUSPEND`) | **retire** the mechanism; semantic replacement deferred to item 6 | Declared `message.go:644`. Return-to-origin resumption is process-local: `internal/supervisor/supervisor.go:331,336` observes the transition pair directly, and `pkg/agent/internal/core/machine.go:533,546` gates it. That conflicts with artifact-level restart (plan decision 2), so the current mechanism goes regardless. **Whether the capability it provided — pausing on external-service unavailability — needs a replacement, and in what form, is item 6's**, answered against a real consumer rather than decided here. Resolved in review, 2026-08-31. |
+| Process-local messaging (`AgentMsg`, `MsgType`, `UnifiedRequest`/`Response`, `RequestKind`/`ResponseKind`, and the ~20 `*Payload` types) | **replace** | The external boundary replaces these. Spec/story-flow payloads (`StoryComplete`, `Requeue`, `Hotfix`, `Clarification`) die with their flows under ADR 0024. |
+
+### Supervisor and dispatcher
+
+| Surface | Disposition | Evidence |
+| --- | --- | --- |
+| `Supervisor` lifecycle (`RestartPolicy`, `RestartAction`, shutdown handlers) | **replace** | 1,640 lines in a single production file; one importer (`cmd/maestro`). Process-local restart authority moves to the Orchestrator; #265's single-owner restart removes the dual death-observer shape (item 9). |
+| SUSPEND observation (`supervisor.go:331,336`) | **retire** | Dies with the SUSPEND decision above. |
+| `Dispatcher`, `ChannelReceiver`, queue surfaces (`QueueHead`, `QueueInfo`, `AgentInfo`) | **replace** | 3,661 lines, 8 production importers. Phase 0 already reclassified this as-is → rework with a doctrine consequence: dispatching dependency-ready work is rules, not inference, so it is Orchestrator machinery (ADR 0019). Story/hotfix queues, PM interview channels, spec exceptions and Story leases die. |
+| Typed-channel routing discipline (historical note 0004) | **retain** | The discipline ports as a design constraint; the structure does not. |
+
+### Claude adapter
+
+| Surface | Disposition | Evidence |
+| --- | --- | --- |
+| Subprocess **mechanism** — spawning and driving the external Claude Code process, `StreamParser` and the stream event types | **retain** | 3,558 lines, 6 files; single importer (`pkg/coder`). Phase 0's "port" holds for the mechanism: driving the external process keeps working. |
+| Subprocess **interface** — `Runner`, `RunOptions`, `Result` | **refactor** | Cannot be retained as-is; ADR 0032 documents three defects in this surface. `RunOptions.WorkDir` (`types.go:50`) is an **Agent-derived local path**, set from the Coder's own `workDir` (`pkg/coder/claudecode_coding.go:287`, constructor arg at `pkg/coder/driver.go:470`) — prohibited by [ADR 0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md) §8, and the field a **fenced resource reference** replaces (ADR 0032 §424). The outcome is reconstructed after the fact from two channels that can disagree (below). **Neither `RunOptions` nor `Result` carries a protocol version** — the `"version": "1.0.0"` at `server.go:296` is MCP's own `serverInfo`, not Maestro's contract. Item 8 adapts this surface to the versioned contract. |
+| `Installer`, `embedded` | **retain** | Cross-architecture packaging per ADR 0026. |
+| `lastEffect` and signal-correction path (`SignalDetector`, `SignalToolInput`, `Signal`, `Server.ConsumeLastEffect`) | **replace** | A single mutex-guarded slot (`mcpserver/server.go:34`) overwritten by every tool call returning a `ProcessEffect` (`:430`), drained via `ConsumeLastEffect` (`:166`), then used to **correct** the signal the runner's own stdout parser inferred from a tool name (`pkg/coder/claude/runner.go:199-206`). Two channels that can disagree, one retaining only its most recent value. Item 5 removes it; **item 8 builds the real adapter over the contract** — explicitly not a side effect of item 5. |
+| MCP JSON-RPC transport (`Server`, `JSONRPCRequest`/`Response`/`Error`) | **refactor** | 935 lines, one production file, four exported types. The transport itself is sound — loopback listener with token authentication (`Start:66`, `Stop:126`, `Port:152`, `Token:159`, `authenticateConnection:224`) — and is retained in shape; what changes is what crosses it. Tool exposure re-plumbs to v2 tool records (ADR 0022), and `ConsumeLastEffect` leaves the surface with the row above. |
+| `cmd/maestro-mcp-proxy`, `cmd/maestro-mcp-server` | **retain** | Companion binaries. #271's per-arch exec remains open against the proxy. |
+
+## Reconciliation With The Phase 0 Package Inventory
+
+Phase 0's dispositions hold at package grain. The deltas are all refinements
+that only surface grain or the import graph could produce:
+
+| Phase 0 | This inventory | Why |
+| --- | --- | --- |
+| `pkg/agent/middleware/*` — rework (group) | `chat` **retire**; `metrics`, `validation` refactor | Group-grain disposition hid a dead member (finding 3). |
+| `pkg/agent` — port | Port confirmed for the FSM and LLM boundary; **retire** for the `core.go` stub surface | Finding 2: the exported driver surface is not the running system. |
+| `pkg/state` — drop, Phase `—` | **retire**, and it is *the* `StateStore` implementation | Finding 1 gives the drop an owner and a date instead of "dies when its last consumer goes". |
+| `pkg/proto` — rework | Split into four dispositions across one package | The plan's "split" made concrete against the exported type list. |
+
+Phase 0's principle 6 — "drops need no ceremony but leave a record" — is what
+#298 was filed against: the mechanism had no owner. Finding 1 supplies one for
+`pkg/state`.
+
+## Issue #298: Making The Deletions Complete
+
+#298 asks for the five `drop` dispositions to be scheduled. Re-derived from the
+import graph unioned over all 20 applicable configurations on `main` at `ca92bad`,
+rather than carried from the
+issue:
+
+| Package | Production importers | Test-only importers | Blocked on |
+| --- | --- | --- | --- |
+| `pkg/metrics` | none | none | **nothing** |
+| `pkg/state` | none | `pkg/agent` | **nothing but the tests** |
+| `pkg/templates/maintenance` | `pkg/architect` | none | v1 architect (item 14) |
+| `pkg/specs` | `pkg/tools` | none | v1 tools (item 14) |
+| `pkg/specrender` | `pkg/architect`, `pkg/pm` | none | v1 PM + architect (item 14) |
+
+Unchanged since the issue was filed. The first two are deletable now; the other
+three are genuinely blocked on live v1 consumers and belong to item 14. Add
+`pkg/agent/middleware/chat` to the first group — it is blocked on nothing.
+
+`pkg/metrics` is the only importer of `prometheus/client_golang` and
+`prometheus/common` in the repository, so its deletion removes two direct
+dependencies that nothing calls.
+
+## Points Resolved In Review
+
+Both open questions this document raised were answered in review on 2026-08-31.
+Recorded here because each schedules work another item inherits.
+
+1. **The `core.go` stub retirement (finding 2) stays in item 6**, with the test
+   migration, rather than being pulled forward into #298's unblocked group.
+   Those stubs exist for tests that item 6 migrates; retiring them earlier would
+   break the tests before their replacement exists.
+2. **`SUSPEND`'s current mechanism is retired; its semantic replacement is
+   deferred to item 6.** The two halves are separable and were being conflated:
+   the process-local return-to-origin resumption conflicts with artifact-level
+   restart and goes regardless, while whether the *capability* — pausing on
+   external-service unavailability — needs any replacement is a question for a
+   real consumer, which is what item 6 provides.
+
+No open points remain.
+
+## Related Documents
+
+- [Phase 3 scope and plan](plan_scope.md) — item 1; "Decisions This Plan Fixes"
+  §1 supplies the starting hypothesis this document tests.
+- [Phase 0 v1-port inventory](../phase_0/inventory_v1-port.md) — the
+  package-grain dispositions reconciled above.
+- ADRs [0019](../../adr/0019-orchestrator-boundary.md) (Orchestrator boundary),
+  [0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md)
+  (Incubator/Habitat; §8 prohibits the Agent-derived path),
+  [0022](../../adr/0022-v2-data-plane.md) (persistence seam),
+  [0024](../../adr/0024-intake-and-triage-artifact-contract.md) (intake
+  contract), [0030](../../adr/0030-tool-execution-policy-hook.md) (execution
+  boundary), [0032](../../adr/0032-agent-execution-contract.md) (agent execution
+  contract).
+- [#298](https://github.com/SnapdragonPartners/maestro/issues/298) — the five
+  drop dispositions this document makes complete.
