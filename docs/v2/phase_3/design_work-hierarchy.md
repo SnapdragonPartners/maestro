@@ -152,8 +152,15 @@ executions
     FOREIGN KEY (story_id, epic_id, feature_id, product_id, organization_id)
         REFERENCES stories (...) ON DELETE RESTRICT
 
+    -- The constraint that actually excludes an unaccepted dispatch. Without
+    -- this FK the constant column below is decoration.
+    FOREIGN KEY (story_dispatch_id, dispatch_is_accepted, organization_id)
+        REFERENCES story_dispatches (story_dispatch_id, is_accepted, organization_id)
+        ON DELETE RESTRICT
+
     UNIQUE (story_dispatch_id, organization_id)
     CHECK (dispatch_is_accepted)
+    CHECK (authority_state IN ('current', 'superseded'))
     CHECK (authority_state <> 'superseded' OR admission_closed_at IS NOT NULL)
 ```
 
@@ -174,12 +181,15 @@ admission under current authority is therefore a real state; the implication tha
 does hold is the CHECK above.
 
 **`dispatch_is_accepted` makes an execution against an unaccepted dispatch
-unrepresentable.** It is a constant column carrying a `CHECK`, paired with the
-generated column on `story_dispatches` in D5, so the composite foreign key can
-only resolve against a dispatch whose disposition is `accepted`. This is the
+unrepresentable — but only together with its foreign key.** The column is a
+constant carrying a `CHECK`; the exclusion comes from the composite FK above
+resolving against `story_dispatches`'s generated `is_accepted` column, so the
+only dispatch row it can match is one whose disposition is `accepted`. A draft
+of this section described the column as load-bearing while omitting the FK,
+which left the mutation it claims to fail perfectly insertable. This is the
 idiom `management_artifacts_amends_original_fkey` already uses (migration
 000006) to make an amendment-of-an-amendment unrepresentable rather than merely
-checked.
+checked, and it is only ever as good as the key it references.
 
 **Cardinality: one dispatch yields zero or one execution.** A refused invocation
 "produces **no execution and no terminal result** … It is a dispatch failure"
@@ -210,10 +220,11 @@ story_dispatches
     disposition        text NOT NULL   -- 'pending'|'accepted'|'failed'|'invalidated'
     is_accepted        boolean GENERATED ALWAYS AS (disposition = 'accepted') STORED NOT NULL
     settled_at         timestamptz
-    failure_reason     text
+    failure_code       text            -- stable, machine-readable
+    failure_detail     text            -- optional prose, never the discriminator
 
-    story_version_ref  -- D7's triple
-    epic_version_ref   -- D7's triple
+    story_version_ref  -- D7's quadruple
+    epic_version_ref   -- D7's quadruple
 
     FOREIGN KEY (story_id, epic_id, feature_id, product_id, organization_id)
         REFERENCES stories (...) ON DELETE RESTRICT
@@ -221,10 +232,38 @@ story_dispatches
         REFERENCES work_groups (work_group_id, epic_id, feature_id, product_id, organization_id)
         ON DELETE RESTRICT
 
-    UNIQUE (story_dispatch_id, is_accepted, organization_id)
+    -- Two composite keys, each with a consumer. Omitting either makes the
+    -- referring foreign key invalid DDL, not merely unenforced.
+    UNIQUE (story_dispatch_id, is_accepted, organization_id)         -- executions (D4)
+    UNIQUE (story_dispatch_id, epic_id, feature_id,
+            product_id, organization_id)                             -- basis child (D8)
+
+    CHECK (disposition IN ('pending', 'accepted', 'failed', 'invalidated'))
     CHECK ((disposition = 'pending') = (settled_at IS NULL))
-    CHECK ((disposition = 'failed')  = (failure_reason IS NOT NULL))
+    CHECK ((disposition = 'failed')  = (failure_code IS NOT NULL))
+    CHECK (failure_detail IS NULL OR failure_code IS NOT NULL)
 ```
+
+**All three terminal dispositions carry `settled_at`**, which the pending
+equivalence gives directly: `accepted`, `failed` and `invalidated` each record
+when they settled. A failure carries a **stable `failure_code`** plus optional
+detail, so a consumer branches on the code and never parses prose.
+
+**The dispositions are a lifecycle, and the shape constraints do not express
+it.** `pending → accepted | failed | invalidated`, and **every terminal
+disposition is immutable**. Nothing above stops a `failed` row being set back to
+`pending`, which would erase precisely the durable history ADR 0032 requires the
+`failed` disposition to preserve.
+
+Enforcement is **item 3's named conditional transitions** — each an
+`UPDATE … WHERE disposition = 'pending'` that reports zero rows as a rejected
+transition — rather than a generic disposition update. Two reasons for putting it
+there rather than in a trigger: this schema uses no triggers anywhere (twenty
+migrations, zero `CREATE TRIGGER`), so one here would be a new pattern needing
+its own justification; and ADR 0022's access discipline makes the seam the only
+writer, so there is no production path that bypasses the named transitions. The
+obligation is recorded against item 3 in the testing split below rather than
+claimed as an item 2 guarantee.
 
 The Work Group foreign key travels through the whole Epic lineage tuple, so a
 dispatch into another Epic's Work Group is unrepresentable rather than merely
@@ -232,11 +271,11 @@ wrong.
 
 **What SQL enforces and what the seam does.** `UNIQUE (story_dispatch_id,
 organization_id)` on `executions` gives *at most one* execution per dispatch, and
-D4's constant column gives *only for an accepted dispatch*. The remaining half —
-that an `accepted` dispatch has *at least* one execution — is cross-table and is
-a seam invariant, committed in the same transaction that flips the disposition.
-Stated rather than implied, because a reader could otherwise assume the schema
-carries it.
+D4's constant column **together with its foreign key** gives *only for an
+accepted dispatch*. The remaining half — that an `accepted` dispatch has *at
+least* one execution — is cross-table and is a seam invariant, committed in the
+same transaction that flips the disposition. Stated rather than implied, because
+a reader could otherwise assume the schema carries it.
 
 ### D6. Dispatch grains are distinguished by table, not by a discriminator
 
@@ -278,14 +317,43 @@ view the basis was dispatched under.
 The correct precedent is already in the schema. `artifact_reviews` cites a moving
 base with `base_digest` + `base_sequence` (migration 000008 lines 23-24), under a
 `CHECK ((base_digest IS NULL) = (base_sequence IS NULL))`. Each reference here is
-that triple:
+that shape, plus the constant `is_amendment` component:
 
 ```text
     *_artifact_id        uuid NOT NULL   -- the ORIGINAL, never an amendment
     *_is_amendment       boolean NOT NULL DEFAULT false   -- constant, CHECK (NOT ...)
     *_effective_digest   text NOT NULL   -- CHECK (~ '^[0-9a-f]{64}$')
-    *_effective_sequence int  NOT NULL
+    *_effective_sequence int  NOT NULL   -- CHECK (>= 0)
 ```
+
+**Each reference is bound to its own work item, not merely to some artifact.**
+An earlier draft constrained only the completion, leaving a Story version
+reference free to name another Story's artifact and an Epic reference another
+Epic's. All three use the scope column as an FK component:
+
+```text
+-- on story_dispatches
+FOREIGN KEY (story_version_artifact_id, story_version_is_amendment,
+             story_id, organization_id)
+    REFERENCES management_artifacts (artifact_id, is_amendment,
+                                     scope_story_id, organization_id)
+FOREIGN KEY (epic_version_artifact_id, epic_version_is_amendment,
+             epic_id, organization_id)
+    REFERENCES management_artifacts (artifact_id, is_amendment,
+                                     scope_epic_id, organization_id)
+```
+
+**Migration 000021 therefore adds two composite keys to `management_artifacts`**,
+which is otherwise a table this item only reads:
+
+```text
+UNIQUE (artifact_id, is_amendment, scope_story_id, organization_id)
+UNIQUE (artifact_id, is_amendment, scope_epic_id,  organization_id)
+```
+
+Both are additive and neither weakens an existing constraint: `artifact_id` is
+already the primary key, so each is a superset key that adds a referencable
+target without admitting a row the table previously rejected.
 
 **Both halves are load-bearing and the sequence is not redundant.** `verifyReviewedBase`
 says why in the code: "a no-op amendment still advances the chain, and a later
@@ -298,13 +366,14 @@ digest-only reference would miss exactly the amendment ADR 0019 is named for.
 
 | Property | Enforced by |
 | --- | --- |
-| The reference names a real artifact in this organization, and an **original** rather than an amendment | Composite FK against `management_artifacts (artifact_id, is_amendment, organization_id)` |
-| The satisfying completion is **scoped to the predecessor Story** | Composite FK — requires adding `UNIQUE (artifact_id, is_amendment, scope_story_id, organization_id)` to `management_artifacts` in this migration |
-| The digest matches the artifact's current effective view | **Seam** — it is a computed value; a stale reference is the signal, not a violation |
-| The artifact is of the completion / Story-spec / Epic-spec **type** | **Seam** — `artifact_type` (000006 line 13) carries no CHECK vocabulary, and inventing one here would preempt ADR 0028 |
+| The reference names a real artifact in this organization, and an **original** rather than an amendment | Composite FK, via the constant `is_amendment` column |
+| The governing Story version is **scoped to this dispatch's Story**; the Epic version to its Epic; the satisfying completion to its predecessor Story | Composite FK, via the two new scope keys above |
+| The digest matches the artifact's current effective view | **Seam** — it is a computed value, and a stale reference is the *signal* test 1 and test 2 look for, not a violation to reject at write time |
+| The artifact is of the expected **type** | **Seam** — `artifact_type` (000006 line 13) carries no CHECK vocabulary. Per DR's call, validation stays in ADR 0028's code registry and no database vocabulary is introduced |
+| The referenced artifact is **accepted** rather than draft | **Seam** — `status` moves over the row's life (`accepted → superseded`), so a foreign key onto it would either forbid a legal transition or enforce nothing |
 
-The last row is a real gap and is named as one rather than papered over. A status
-column could not substitute:
+The last two rows are real gaps, named as gaps. A status column could not
+substitute for the digest-and-sequence pair either:
 [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) is explicit that
 an accepted amendment does not supersede the original, so a test on `status`
 misses every amendment — "the common case and the one this decision is named
@@ -329,7 +398,7 @@ dispatch_basis_dependencies
     organization_id      uuid NOT NULL
     product_id, feature_id, epic_id  uuid NOT NULL   -- shared with the dispatch
     predecessor_story_id uuid NOT NULL
-    completion_*                                     -- D7's triple, NOT NULL
+    completion_*                                     -- D7's four columns, NOT NULL
 
     PRIMARY KEY (story_dispatch_id, predecessor_story_id)
 
@@ -365,16 +434,39 @@ discipline of referencing a parent by the whole lineage tuple. A polymorphic
 story_dependencies
     organization_id, product_id, feature_id, epic_id    -- shared by both endpoints
     successor_story_id, predecessor_story_id
+
     PRIMARY KEY (organization_id, epic_id, successor_story_id, predecessor_story_id)
     CHECK (successor_story_id <> predecessor_story_id)
+
+    -- Both endpoints, or the shared lineage constrains nothing.
+    FOREIGN KEY (successor_story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES stories (story_id, epic_id, feature_id, product_id, organization_id)
+        ON DELETE RESTRICT
+    FOREIGN KEY (predecessor_story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES stories (story_id, epic_id, feature_id, product_id, organization_id)
+        ON DELETE RESTRICT
+
+epic_dependencies
+    organization_id, product_id, feature_id             -- shared by both endpoints
+    successor_epic_id, predecessor_epic_id
+
+    PRIMARY KEY (organization_id, feature_id, successor_epic_id, predecessor_epic_id)
+    CHECK (successor_epic_id <> predecessor_epic_id)
+
+    FOREIGN KEY (successor_epic_id, feature_id, product_id, organization_id)
+        REFERENCES epics (epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT
+    FOREIGN KEY (predecessor_epic_id, feature_id, product_id, organization_id)
+        REFERENCES epics (epic_id, feature_id, product_id, organization_id) ON DELETE RESTRICT
 ```
 
-Sharing the Epic columns between both endpoints makes a cross-Epic Story edge
-unrepresentable, which is ADR 0024's "within an Epic" carried by the schema
-rather than by a rule someone remembers. `epic_dependencies` has the same shape
-one level up, sharing `feature_id` — **Epic edges stay within one Feature**, and
-a cross-Feature dependency would need its own contract rather than a weakened
-column.
+**Sharing the lineage columns only constrains anything once both endpoints are
+foreign keys through them.** A draft showed the columns, the primary key and the
+self-edge check, and left both foreign keys as prose — under which a cross-Epic
+Story edge stays insertable and the mutation claiming to catch it does not fail.
+With both keys present, ADR 0024's "within an Epic" is carried by the schema
+rather than by a rule someone remembers. **Epic edges likewise stay within one
+Feature**; a cross-Feature dependency would need its own contract rather than a
+weakened column.
 
 **Acyclicity is enforced in the Orchestrator, and a bare check-then-insert is a
 defect.** Two concurrent transactions adding A→B and B→A each observe an acyclic
@@ -445,7 +537,7 @@ keeps it out of Audit." An earlier draft of this document cited the projection
 rule against the requirement set and had it backwards.
 
 ```text
-    requirement_set        jsonb   -- canonical, ordering-independent
+    requirement_set        jsonb   -- a keyed OBJECT, never an array (below)
     requirement_set_digest text    -- CHECK (~ '^[0-9a-f]{64}$'); gate 3's set equality
 
     CHECK ((requirement_set IS NULL) = (requirement_set_digest IS NULL))
@@ -453,18 +545,40 @@ rule against the requirement set and had it backwards.
     CHECK (outcome IS DISTINCT FROM 'blocked' OR requirement_set IS NOT NULL)
 ```
 
-The digest is stored beside the canonical form because gate 3's test is set
-equality against what gate 1 recorded, and a digest makes that comparison cheap
-and total; the canonical JSON is what makes the digest well-defined.
+**"Canonical" here means an encoding decision, not just a serializer.** The
+plane's canonicalizer is RFC 8785 JCS plus SHA-256
+(`internal/dataplane/canonical/canonical.go:72-82`), and **JCS does not make an
+array into a set** — it sorts object *keys* and leaves array order exactly as
+given, so two evaluations collecting the same requirements in different orders
+would digest differently and gate 3's set equality would fail spuriously. ADR
+0030 line 211 requires the stored form to be ordering-independent, so:
 
-**`resource_waiting` carries no reference in item 2.** What such a row needs to
-be actionable is the identity of the provisioning or capacity operation, which is
-ADR 0029's resource reference plus instance generation — item 7's shape, and
-building it here would be the demoted-mechanism error one more time. Until then a
-`resource_waiting` row is distinguishable *as a wait kind*, which is exactly ADR
-0030 §8's binding requirement and no more. ADR 0030 lines 341-344 separately
-assign the release rule for this wait to the Phase 3 plan; item 9 owns it with
-the watchdog policy.
+- The requirement set is stored as a **JSON object keyed by requirement
+  identity** — the gate-owned identity, which ADR 0030 §3 already requires to be
+  a declared field. Ordering becomes structurally irrelevant because JCS sorts
+  keys, and **duplicates become unrepresentable** because an object cannot carry
+  one key twice. Neither property needs a sort convention anyone must remember.
+- The **seam computes the digest** with `canonical.DigestJSON` over that object
+  and never accepts one from a caller. A caller-supplied digest is an assertion
+  about bytes the caller also supplied, which is not evidence of anything.
+
+An array plus a documented sort order would also work and is rejected as the
+weaker option: it puts the set semantics in a convention every writer must
+reproduce, where the object encoding puts it in the data type.
+
+**`resource_waiting` carries no reference in item 2, and a resource reference is
+the wrong field for it anyway.** A provisioning or capacity wait exists *before*
+any resource does — that is what it is waiting for — so ADR 0029's resource
+reference and instance generation are null for exactly the interval the wait
+covers and cannot identify the operation. What item 7 owes is a durable
+**provisioning-or-capacity operation identity**, present from the moment the wait
+opens, with the resulting resource reference and generation populated only once
+one exists. Building either here would be the demoted-mechanism error again.
+
+Until item 7, a `resource_waiting` row is distinguishable *as a wait kind*, which
+is exactly ADR 0030 §8's binding requirement and no more. ADR 0030 lines 341-344
+separately assign the release rule for this wait to the Phase 3 plan; item 9 owns
+it with the watchdog policy.
 
 Replacing the constraint with the equivalence, in both directions:
 
@@ -514,44 +628,79 @@ gets a **defect-shaped mutation** (`process_build.md`): the mutation must
 falsify the named claim for the named reason, and a mutant that dies for another
 reason proves nothing.
 
-| Guard | Mutation that must fail |
+**Item 2 lands schema, so item 2's tests are constraint tests.** A draft listed
+guards this item cannot honestly test — atomic dispatch creation, effective-view
+comparison, canonical requirement handling, serialized graph mutation — all of
+which are application behaviour that does not exist until items 3, 5 and 9. The
+only way to "test" them here would be a raw-SQL reenactment of logic no
+production path executes, which demonstrates that the reenactment agrees with
+itself. They are obligations, and they are recorded against their implementing
+items rather than claimed here.
+
+### Item 2 — constraint tests
+
+Each is an insert or update that the database must reject, run against a real
+ephemeral plane. The defect-shaped requirement is that removing the named
+constraint makes the statement **succeed**.
+
+| Guard | Statement that must be rejected |
 | --- | --- |
-| One Work Group per Epic | Insert a second `work_groups` row for one Epic |
-| Dispatch cannot borrow another Epic's Work Group | Insert a dispatch whose `work_group_id` belongs to a different Epic |
-| Story edge cannot cross Epics | Insert a `story_dependencies` row whose predecessor is in another Epic |
+| One Work Group per Epic | A second `work_groups` row for one Epic |
+| Dispatch cannot borrow another Epic's Work Group | A dispatch whose `work_group_id` belongs to a different Epic |
+| Story edge cannot cross Epics | A `story_dependencies` row whose predecessor is in another Epic |
 | Epic edge cannot cross Features | The same, one level up |
-| No self-edge | Insert an edge with equal endpoints |
-| Superseded implies closed admission | Set `authority_state = 'superseded'` leaving `admission_closed_at` null |
-| One execution per dispatch | Insert a second execution for one `story_dispatch_id` |
-| No execution without an accepted dispatch | Insert an execution against a `pending`, `failed` and `invalidated` dispatch |
-| Dispatch lifecycle | `pending` with `settled_at`; `failed` without `failure_reason` |
-| Basis row cannot cross tenants or lineage | Insert a basis row whose predecessor is in another organization, and one whose completion is scoped to a different Story |
+| No self-edge | An edge with equal endpoints, in both tables |
+| Superseded implies closed admission | `authority_state = 'superseded'` with `admission_closed_at` null |
+| One execution per dispatch | A second execution for one `story_dispatch_id` |
+| No execution without an accepted dispatch | An execution against a `pending`, a `failed`, and an `invalidated` dispatch — three statements, since one passing proves nothing about the others |
+| Dispatch shape | `pending` carrying `settled_at`; a terminal disposition without it; `failed` without `failure_code`; `failure_detail` without `failure_code` |
+| Governing reference bound to its own work | A dispatch whose `story_version_artifact_id` is scoped to another Story; the same for the Epic reference |
+| Basis row cannot cross tenants or lineage | A basis row whose predecessor is in another organization; one whose predecessor is in another Epic; one whose completion is scoped to a different Story |
+| Reference names an original, not an amendment | Any of the three references pointing at an amendment row |
 | Settled iff outcome / iff finished | `settled` with null `outcome`; a non-settled row carrying one; the same pair against `finished_at` |
-| Outcome vocabulary | Insert an outcome outside the six |
-| Requirement set present where required | `operator_waiting` with a null requirement set; `blocked` with one |
-| Basis detects a version move | Accept an amendment to the governing Epic; the stored `epic_effective_digest`/`_sequence` no longer match the effective view |
-| Basis detects a **no-op** amendment | Accept an amendment whose patch leaves the view byte-identical; the digest still matches and only the sequence moves — the test the digest alone would fail |
-| Basis detects an added predecessor | Insert an already-satisfied predecessor edge; the basis set and the current edge set differ |
-| Basis detects a re-satisfied edge | Amend a predecessor's completion; the stored completion reference no longer matches |
-| Acyclicity survives concurrency | Two concurrent transactions inserting A→B and B→A; without the parent lock both commit and a cycle exists. Run under the race detector, with the interleaving forced rather than hoped for |
-| Down migration refuses | Run `down` with each of `denied`, `blocked`, `stale`, `unknown` present; each must abort, not null the column |
+| Outcome vocabulary | An outcome outside the six; a state outside the four |
+| Requirement set present where required | `operator_waiting` with a **null** requirement set; `blocked` with a **null** requirement set. (A draft wrote the second as "`blocked` with one", which is the valid case — the inversion would have made the test assert the opposite of the rule) |
+| Down migration refuses | `down` with each of `denied`, `blocked`, `stale`, `unknown` present — four runs; each must abort rather than null the column |
 
-The concurrency mutation and the three basis mutations are the ones that matter
-most: the basis tests cannot be written at all if the dependency tables are
-absent, which is the argument for building them here, and the acyclicity test is
-the one a single-threaded suite passes while the defect is present.
+### Obligations assigned to later items
 
-## Open questions
+Recorded here because this design creates them, tested where the code lands.
 
-1. **Adding `UNIQUE (artifact_id, is_amendment, scope_story_id, organization_id)`
-   to `management_artifacts`** (D7) touches a table item 2 otherwise only reads.
-   It buys a database-enforced scope check on the completion reference. If a
-   reviewer prefers item 2 not to alter migration 000006's table, the property
-   drops to seam-validated and should be recorded as such rather than assumed.
-2. **`artifact_type` has no CHECK vocabulary** (D7), so "this artifact is a Story
-   completion" is seam-validated. Introducing the vocabulary here would preempt
-   ADR 0028; leaving it is a stated gap. Confirming which is preferred is worth a
-   reviewer's explicit call rather than my assumption.
-3. **Whether `invalidated` and `failed` both need `settled_at`** (D5), or whether
-   `failed` should carry a structured reason code rather than free text. ADR 0032
-   requires the failure recorded durably but does not fix its shape.
+| Obligation | Item | Note |
+| --- | --- | --- |
+| Dispatch creation writes both version references and the **complete** basis in one transaction | 3 | Otherwise the plane can hold a basis that never existed as a set — a partial write is indistinguishable from a real dispatch under a different contract |
+| Terminal dispositions are immutable; only `pending →` transitions succeed | 3 | Named conditional updates; a zero-row result is a rejected transition, not a no-op |
+| Referenced artifact is of the expected type and is accepted | 3 | The two seam-validated rows of D7's table |
+| Seam computes the requirement digest; callers never supply one | 5 | With the keyed-object encoding, so reordering inputs yields an identical digest |
+| Basis detects a version move | 9 | Amend the governing Epic; the stored digest and sequence no longer match the effective view |
+| Basis detects a **no-op** amendment | 9 | An amendment leaving the view byte-identical: the digest still matches and only the sequence moves. This is the case a digest-only reference fails, and the reason D7 keeps both halves |
+| Basis detects an added predecessor and a re-satisfied edge | 9 | An already-satisfied predecessor inserted; a predecessor's completion amended |
+| Acyclicity holds under concurrent opposing writers | 9 | Two transactions inserting A→B and B→A with the interleaving **forced**, not raced. Note this is a database serialization anomaly, not a Go data race: `-race` cannot observe it, and a passing `-race` run is not evidence about it |
+
+The last row is the correction that matters most in this section. A draft
+proposed proving the acyclicity guard "under the race detector", which would have
+produced a green run that says nothing about write skew between two Postgres
+transactions.
+
+## Open questions — resolved
+
+All three were carried to review rather than assumed, and DR settled them.
+Recorded with their answers so a later reader sees a decision rather than a
+silence.
+
+1. **May item 2 add composite keys to `management_artifacts`**, a table it
+   otherwise only reads? **Yes** — migration 000021 adds both the Story-scope and
+   Epic-scope keys (D7). This is what upgrades all three artifact references from
+   seam-validated to database-constrained, and it is why the governing-reference
+   mutations appear in item 2's constraint tests rather than in item 9's
+   obligations.
+2. **Should `artifact_type` gain a database CHECK vocabulary** so "this is a
+   Story completion" is enforceable in SQL? **No** — validation stays in ADR
+   0028's code registry, and no vocabulary is introduced into the schema. The
+   type check is therefore seam-validated by decision rather than by omission,
+   and D7's table says so.
+3. **Do `invalidated` and `failed` both need `settled_at`, and should `failed`
+   carry a structured code?** **Both yes** — every non-pending disposition
+   records `settled_at`, and a failure carries a stable `failure_code` with
+   optional `failure_detail` (D5). Consumers branch on the code; the detail is
+   never the discriminator.
