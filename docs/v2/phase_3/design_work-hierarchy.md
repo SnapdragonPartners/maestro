@@ -52,6 +52,8 @@ Created here:
 | `epic_dependencies` | [0024](../../adr/0024-intake-and-triage-artifact-contract.md) — "intake persists the full Epic dependency graph" | Item 11 (intake writes it); item 9 |
 | `story_dependencies` | [0024](../../adr/0024-intake-and-triage-artifact-contract.md) — the Architect owns "its dependency graph within an Epic"; [0019](../../adr/0019-orchestrator-boundary.md) test 2 | Item 9's comparison; item 10 dispatches dependency-ready Stories |
 
+Altered here, all additive: `management_artifacts` gains two scope keys (D7); `stories`, `epics` and `story_dependencies` gain the current-basis pointers (D13); `tool_calls` gains its state, outcome, correlation and requirement columns and loses `succeeded` (D10, D11).
+
 Deferred, each with the item that first has a caller:
 
 | Family | Required by | Created by |
@@ -61,6 +63,8 @@ Deferred, each with the item that first has a caller:
 | `epic_dispatches` | [0024](../../adr/0024-intake-and-triage-artifact-contract.md) — a dispatch per dependency-ready Epic | Item 10/11 (see D6) |
 | Prompt packs | [0031](../../adr/0031-prompt-pack-identity-resolution-and-storage.md) | Item 4 |
 | Resource reference on a `resource_waiting` attempt | [0029](../../adr/0029-incubator-and-habitat-execution-boundaries.md) §5, §8 | Item 7 (see D10) |
+| **The requirement *identity* vocabulary** — what keys the requirement set | No ADR defines it (see D10) | Item 5, which owns the gates that emit requirements |
+| **`tool_calls.arguments` → ADR 0030 §3's persisted projection** | [0030](../../adr/0030-tool-execution-policy-hook.md) §3 — declared-safe fields, the substituted-input digest, and references for anything large | Item 5, which owns the action schema registry (see D10) |
 
 ### D2. `runs` is deferred to item 10, and this amends the plan
 
@@ -68,7 +72,8 @@ Deferred, each with the item that first has a caller:
 (`work-group-lifecycle`), and that amendment is carried in this branch.
 
 **The reason is the phase's own admission rule**: every table traces to an
-Accepted ADR *and* a Phase 3 consumer. A run has neither.
+Accepted ADR *and* a Phase 3 consumer. A run has an ADR *mention* but no
+definition, and no consumer.
 
 - **No definition.** `run` appears in the Accepted set once, at
   [ADR 0022](../../adr/0022-v2-data-plane.md) line 35, as the bare phrase "Work
@@ -159,6 +164,7 @@ executions
         ON DELETE RESTRICT
 
     UNIQUE (story_dispatch_id, organization_id)
+    UNIQUE (execution_id, organization_id)      -- referenced by tool_calls (D10)
     CHECK (dispatch_is_accepted)
     CHECK (authority_state IN ('current', 'superseded'))
     CHECK (authority_state <> 'superseded' OR admission_closed_at IS NOT NULL)
@@ -536,14 +542,46 @@ line 1250 says so in the same row: "**Not** the substituted request: ADR 0030 §
 keeps it out of Audit." An earlier draft of this document cited the projection
 rule against the requirement set and had it backwards.
 
-```text
-    requirement_set        jsonb   -- a keyed OBJECT, never an array (below)
-    requirement_set_digest text    -- CHECK (~ '^[0-9a-f]{64}$'); gate 3's set equality
+The whole column and constraint set migration 000021 adds to `tool_calls`,
+written out rather than described — an earlier draft left the state and outcome
+columns implicit and the object rule as a comment, which is not a constraint:
 
-    CHECK ((requirement_set IS NULL) = (requirement_set_digest IS NULL))
-    CHECK (state <> 'operator_waiting' OR requirement_set IS NOT NULL)
-    CHECK (outcome IS DISTINCT FROM 'blocked' OR requirement_set IS NOT NULL)
+```text
+ALTER TABLE tool_calls
+    ADD COLUMN state        text  NOT NULL DEFAULT 'open',
+    ADD COLUMN outcome      text,
+    ADD COLUMN execution_id uuid,                  -- D10's correlation
+    ADD COLUMN requirement_set        jsonb,
+    ADD COLUMN requirement_set_digest text;
+
+-- Vocabulary
+CHECK (state IN ('open', 'operator_waiting', 'resource_waiting', 'settled'))
+CHECK (outcome IS NULL OR outcome IN
+       ('succeeded', 'failed', 'denied', 'blocked', 'stale', 'unknown'))
+
+-- Replaces tool_calls_finished_check, in both directions
+CHECK ((state = 'settled') = (outcome     IS NOT NULL))
+CHECK ((state = 'settled') = (finished_at IS NOT NULL))
+
+-- The requirement set is a NON-EMPTY OBJECT or absent. Structure enforced,
+-- not merely intended.
+CHECK ((requirement_set IS NULL) = (requirement_set_digest IS NULL))
+CHECK (requirement_set IS NULL OR jsonb_typeof(requirement_set) = 'object')
+CHECK (requirement_set IS NULL OR requirement_set <> '{}'::jsonb)
+CHECK (requirement_set_digest IS NULL OR requirement_set_digest ~ '^[0-9a-f]{64}$')
+
+-- Applicability
+CHECK (state   <>          'operator_waiting' OR requirement_set IS NOT NULL)
+CHECK (outcome IS DISTINCT FROM 'blocked'     OR requirement_set IS NOT NULL)
+
+FOREIGN KEY (execution_id, organization_id)
+    REFERENCES executions (execution_id, organization_id) ON DELETE RESTRICT
 ```
+
+The empty-object case matters: `{}` is an object and passes `jsonb_typeof`, so
+without the third check an `operator_waiting` row could satisfy "has a
+requirement set" while recording no requirement at all — the applicability rule
+present in form and absent in substance.
 
 **"Canonical" here means an encoding decision, not just a serializer.** The
 plane's canonicalizer is RFC 8785 JCS plus SHA-256
@@ -554,10 +592,17 @@ would digest differently and gate 3's set equality would fail spuriously. ADR
 0030 line 211 requires the stored form to be ordering-independent, so:
 
 - The requirement set is stored as a **JSON object keyed by requirement
-  identity** — the gate-owned identity, which ADR 0030 §3 already requires to be
-  a declared field. Ordering becomes structurally irrelevant because JCS sorts
-  keys, and **duplicates become unrepresentable** because an object cannot carry
-  one key twice. Neither property needs a sort convention anyone must remember.
+  identity**. Ordering becomes structurally irrelevant because JCS sorts keys,
+  and **duplicates become unrepresentable** because an object cannot carry one
+  key twice. Neither property needs a sort convention anyone must remember.
+- **No ADR defines that identity, and this document previously claimed one did.**
+  ADR 0030 §3 requires the set to be persisted in canonical, ordering-independent
+  form (line 211) and never names a per-requirement identity field. Defining the
+  vocabulary belongs to **item 5**, which owns the gates that emit requirements;
+  it is recorded in D1's deferred table rather than invented here. Item 2
+  therefore constrains the *structure* — object, non-empty, digest well-formed —
+  and treats the keys as opaque, which is all the schema can honestly enforce
+  before the vocabulary exists.
 - The **seam computes the digest** with `canonical.DigestJSON` over that object
   and never accepts one from a caller. A caller-supplied digest is an assertion
   about bytes the caller also supplied, which is not evidence of anything.
@@ -565,6 +610,26 @@ would digest differently and gate 3's set equality would fail spuriously. ADR
 An array plus a documented sort order would also work and is rejected as the
 weaker option: it puts the set semantics in a convention every writer must
 reproduce, where the object encoding puts it in the data type.
+
+**`execution_id` correlates the action with the execution that admitted it**, and
+without it two of ADR 0032's binding items are not computable. Today's row names
+a Story and a principal instance, which is neither: draining "the actions this
+execution admitted" (binding item 8) cannot be expressed by Story, because a
+Story has successive executions, and cannot be expressed by principal instance,
+because a replacement principal resumes the same execution (ADR 0029 §2). The
+column is nullable — Orchestrator-initiated work is recorded and is not an
+agent action under an execution (ADR 0030 §10), and every pre-migration row
+predates executions entirely.
+
+**What is *not* fixed here: `arguments` is still a verbatim payload.** ADR 0030
+§3 permits only the persisted projection — the fields the action schema declares
+safe, the digest of the *substituted* input, and references for anything large —
+and `tool_calls.arguments jsonb NOT NULL` (migration 000005) stores whatever it
+is handed. Correcting it needs the code-resident action schema registry that
+declares which fields are safe, which is **item 5's**, so it is deferred there
+explicitly and listed in D1 rather than left as an unscheduled half-migration.
+Item 2 moving the column without that registry would be a redaction rule with
+nothing to consult.
 
 **`resource_waiting` carries no reference in item 2, and a resource reference is
 the wrong field for it anyway.** A provisioning or capacity wait exists *before*
@@ -592,23 +657,38 @@ queries and sqlc output are updated in the same item.
 
 ### D11. Backfill, and a down migration that refuses rather than lies
 
-Existing rows: `succeeded = true → 'succeeded'`, `false → 'failed'`. Rows with
-`succeeded IS NULL` and no `finished_at` are historical in-flight attempts whose
-process is gone. **They are left in `open`, not settled as `unknown`** —
-settling them would assert a reconciliation nobody performed, and `open` in no
-declared wait is precisely what ADR 0030 §8 says a reconciler reads as
-*attempted, outcome unknown*.
+**The backfill sets `state`, not only `outcome`.** The `state` column defaults to
+`'open'`, so without an explicit update every historical finished row would land
+`settled`-in-fact but `open`-in-column and violate the new equivalence on its
+first read:
 
-**The down migration preserves outcome identity, so it aborts on all four new
-values** — `denied`, `blocked`, `stale` and `unknown` — not on three of them. An
-earlier draft singled out three and was inconsistent: `denied` survives a
-round-trip only as `failed`, which asserts that an action the boundary refused
-was attempted and failed.
+```text
+UPDATE tool_calls
+   SET state   = 'settled',
+       outcome = CASE succeeded WHEN true THEN 'succeeded' ELSE 'failed' END
+ WHERE finished_at IS NOT NULL;
+```
 
-The alternative policy is coherent and is rejected deliberately: `denied`,
-`blocked` and `stale` all *could* map to `succeeded = false` as a truthful coarse
-projection, leaving only `unknown` unrepresentable. That loses the distinction
-silently on the way back up, and it fabricates history in the Audit family, which
+Rows with `finished_at IS NULL` keep the default `open`. They are historical
+in-flight attempts whose process is gone, and **they are left `open` rather than
+settled as `unknown`** — settling them would assert a reconciliation nobody
+performed, and `open` in no declared wait is precisely what ADR 0030 §8 says a
+reconciler reads as *attempted, outcome unknown*.
+
+**The down migration preserves identity, so it refuses on every state the old
+shape cannot express — not only on the new outcomes.** Three classes, and an
+earlier draft caught only the first:
+
+| Refuses on | Because the old shape would record |
+| --- | --- |
+| `outcome` in `denied`, `blocked`, `stale`, `unknown` | `denied` round-trips as `failed`, asserting an action the boundary refused was attempted; `unknown` has no boolean image at all |
+| `state` in `operator_waiting`, `resource_waiting` | An indistinguishable legacy in-flight row — the healthy wait and the dead process collapse into the same two nulls, which is the exact ambiguity ADR 0030 §8 created this migration to remove |
+| `requirement_set IS NOT NULL` | Dropping the column erases it. This bites hardest on a **`succeeded`** row, which the outcome guard waves through while its requirement set — the record of what an operator was asked and answered — disappears silently |
+
+The coarse-projection alternative is coherent and is rejected deliberately:
+`denied`, `blocked` and `stale` could all map to `succeeded = false`, leaving only
+`unknown` unrepresentable. That loses the distinction silently on the way back
+up, and it fabricates history in the Audit family, which
 [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) treats as
 evidence. A down migration that corrupts is worse than one that refuses, and
 refusal puts the decision in front of an operator instead of behind a backfill.
@@ -620,6 +700,64 @@ recheck at admission "is Phase 3's to choose." That choice belongs to **item 9**
 which implements the enforcement. Item 2's obligation is to make the comparison
 expressible and to leave both open. Stating the limit here so the boundary is
 not crossed quietly.
+
+### D13. The current basis needs a home, or the snapshot compares against nothing
+
+D7 and D8 store what the dispatch was issued under. Item 9 compares that against
+**the current basis**, and until now nothing in this design said where the
+current basis is read from. The references prove organization, scope, type and
+acceptance — none of which identify *which* artifact is governing right now.
+
+Two associations are missing, and neither is derivable:
+
+1. **Which accepted original is a Story's or an Epic's governing artifact.**
+   Scope plus type plus `accepted` does not name one. Several accepted originals
+   of a type can be scoped to one Story over its life, and ADR 0021 keeps a
+   historical accepted artifact `accepted`.
+2. **Which completion currently satisfies a dependency edge.** Same reason, and
+   sharper: "the accepted completion of the predecessor" is not a function, so
+   ADR 0019's trigger — "a satisfying completion that is no longer the effective
+   one" — has nothing to evaluate.
+
+**Both are explicit pointers.** Item 2 adds them beside the entities they
+describe, scope-bound by the same composite keys D7 introduces:
+
+```text
+ALTER TABLE stories  ADD COLUMN governing_artifact_id uuid, ...   -- scope-bound FK
+ALTER TABLE epics    ADD COLUMN governing_artifact_id uuid, ...   -- scope-bound FK
+ALTER TABLE story_dependencies
+    ADD COLUMN satisfying_completion_artifact_id uuid, ...        -- scoped to the predecessor
+```
+
+Each carries the constant `is_amendment` component, so a pointer to an amendment
+is unrepresentable exactly as in D7. All three are **nullable**: a Story exists
+before its spec is accepted, and an edge exists before its predecessor completes
+— that is what "not yet dependency-ready" *is*.
+
+**A derivation rule is the alternative and is rejected.** "The latest accepted
+original of type X" makes accepting a second artifact silently redefine the
+basis, with no record that anything moved and nothing for a reviewer to inspect.
+ADR 0019's entire mechanism is that basis changes are *detectable*; deriving the
+current basis from a rule that can change under it defeats the detection it
+feeds.
+
+**The snapshot must NOT be constrained to equal the pointer.** No foreign key
+ties `story_dispatches.story_version_artifact_id` to
+`stories.governing_artifact_id`, and none may be added. Divergence between the
+two is the signal — it is precisely what test 1 detects — so a constraint
+forbidding it would make the observable condition unrepresentable and the
+comparison vacuous. Recorded because it is the natural next constraint to reach
+for and it would quietly destroy the mechanism.
+
+**Changing a pointer is a dispatch-basis transition**, not an ordinary update.
+ADR 0019: "the moment the changed dispatch basis becomes authoritative, the old
+authority of every execution it affects is already unusable." So repointing a
+governing artifact or a satisfying completion must linearize with superseding the
+affected executions' authority. Item 2's obligation is to make that reachable:
+each pointer lives on **one row**, so a single-row lock is available to whichever
+mechanism item 9 chooses, and D12's choice between one transaction and an
+authoritative recheck at admission stays open. The linearization itself is item
+9's, and is listed among its obligations rather than claimed here.
 
 ## Testing
 
@@ -660,7 +798,14 @@ constraint makes the statement **succeed**.
 | Settled iff outcome / iff finished | `settled` with null `outcome`; a non-settled row carrying one; the same pair against `finished_at` |
 | Outcome vocabulary | An outcome outside the six; a state outside the four |
 | Requirement set present where required | `operator_waiting` with a **null** requirement set; `blocked` with a **null** requirement set. (A draft wrote the second as "`blocked` with one", which is the valid case — the inversion would have made the test assert the opposite of the rule) |
-| Down migration refuses | `down` with each of `denied`, `blocked`, `stale`, `unknown` present — four runs; each must abort rather than null the column |
+| Requirement set is a non-empty object | An **array**-valued requirement set; an **empty object** `{}`; a `requirement_set` with a null digest and the converse |
+| Digest well-formed | A `requirement_set_digest` that is not 64 lowercase hex — short, uppercase, and non-hex |
+| Action correlates to a real execution | A `tool_calls` row whose `execution_id` names an execution in another organization |
+| Pointer names an original | `stories.governing_artifact_id` set to an amendment row; the same for the Epic and edge pointers |
+| Pointer is scope-bound | `stories.governing_artifact_id` set to an artifact scoped to another Story; the edge's completion pointer to an artifact scoped to a non-predecessor |
+| Snapshot may diverge from the pointer | **Inverse test**: repoint `stories.governing_artifact_id` while a dispatch holds the old snapshot. This must **succeed** — a failure means someone added the constraint D13 forbids, and the detection mechanism is gone |
+| State backfill | After migrating a fixture with finished and unfinished rows, no row violates the settled equivalences: every `finished_at IS NOT NULL` row is `settled` with an outcome, every other row is `open` |
+| Down migration refuses | Seven runs: one per new outcome (`denied`, `blocked`, `stale`, `unknown`), one per declared wait (`operator_waiting`, `resource_waiting`), and one on a **`succeeded`** row carrying a requirement set — the case the outcome guard alone waves through |
 
 ### Obligations assigned to later items
 
@@ -676,6 +821,9 @@ Recorded here because this design creates them, tested where the code lands.
 | Basis detects a **no-op** amendment | 9 | An amendment leaving the view byte-identical: the digest still matches and only the sequence moves. This is the case a digest-only reference fails, and the reason D7 keeps both halves |
 | Basis detects an added predecessor and a re-satisfied edge | 9 | An already-satisfied predecessor inserted; a predecessor's completion amended |
 | Acyclicity holds under concurrent opposing writers | 9 | Two transactions inserting A→B and B→A with the interleaving **forced**, not raced. Note this is a database serialization anomaly, not a Go data race: `-race` cannot observe it, and a passing `-race` run is not evidence about it |
+| Repointing a governing artifact or satisfying completion linearizes with superseding affected executions' authority | 9 | D13. The window to prove absent is the one ADR 0019 names: a basis component already authoritative while an affected execution still holds usable authority |
+| The requirement identity vocabulary, and the digest's invariance under reordering | 5 | Item 5 defines the keys; the test is that two evaluations collecting the same requirements in different orders produce the same digest |
+| `arguments` becomes ADR 0030 §3's persisted projection | 5 | Declared-safe fields plus the substituted-input digest. Until then the column is verbatim and non-conforming, which is recorded rather than silently carried |
 
 The last row is the correction that matters most in this section. A draft
 proposed proving the acyclicity guard "under the race detector", which would have
