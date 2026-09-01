@@ -17,23 +17,13 @@ BEGIN;
 -- are dropped at the bottom of this file.
 ALTER TABLE epics
     DROP CONSTRAINT epics_governing_fkey,
-    DROP CONSTRAINT epics_governing_sequence_check,
-    DROP CONSTRAINT epics_governing_digest_check,
-    DROP CONSTRAINT epics_governing_shape_check,
     DROP CONSTRAINT epics_governing_original_check,
-    DROP COLUMN governing_effective_sequence,
-    DROP COLUMN governing_effective_digest,
     DROP COLUMN governing_is_amendment,
     DROP COLUMN governing_artifact_id;
 
 ALTER TABLE stories
     DROP CONSTRAINT stories_governing_fkey,
-    DROP CONSTRAINT stories_governing_sequence_check,
-    DROP CONSTRAINT stories_governing_digest_check,
-    DROP CONSTRAINT stories_governing_shape_check,
     DROP CONSTRAINT stories_governing_original_check,
-    DROP COLUMN governing_effective_sequence,
-    DROP COLUMN governing_effective_digest,
     DROP COLUMN governing_is_amendment,
     DROP COLUMN governing_artifact_id;
 

@@ -131,18 +131,16 @@ type DispatchBasisDependency struct {
 }
 
 type Epic struct {
-	EpicID                     pgtype.UUID
-	OrganizationID             pgtype.UUID
-	UserID                     pgtype.UUID
-	ProductID                  pgtype.UUID
-	FeatureID                  pgtype.UUID
-	RepositoryID               pgtype.UUID
-	Title                      string
-	CreatedAt                  pgtype.Timestamptz
-	GoverningArtifactID        pgtype.UUID
-	GoverningIsAmendment       bool
-	GoverningEffectiveDigest   *string
-	GoverningEffectiveSequence *int32
+	EpicID               pgtype.UUID
+	OrganizationID       pgtype.UUID
+	UserID               pgtype.UUID
+	ProductID            pgtype.UUID
+	FeatureID            pgtype.UUID
+	RepositoryID         pgtype.UUID
+	Title                string
+	CreatedAt            pgtype.Timestamptz
+	GoverningArtifactID  pgtype.UUID
+	GoverningIsAmendment bool
 }
 
 type EpicDependency struct {
@@ -352,32 +350,28 @@ type StagingLease struct {
 }
 
 type Story struct {
-	StoryID                    pgtype.UUID
-	OrganizationID             pgtype.UUID
-	UserID                     pgtype.UUID
-	ProductID                  pgtype.UUID
-	FeatureID                  pgtype.UUID
-	EpicID                     pgtype.UUID
-	Title                      string
-	CreatedAt                  pgtype.Timestamptz
-	GoverningArtifactID        pgtype.UUID
-	GoverningIsAmendment       bool
-	GoverningEffectiveDigest   *string
-	GoverningEffectiveSequence *int32
+	StoryID              pgtype.UUID
+	OrganizationID       pgtype.UUID
+	UserID               pgtype.UUID
+	ProductID            pgtype.UUID
+	FeatureID            pgtype.UUID
+	EpicID               pgtype.UUID
+	Title                string
+	CreatedAt            pgtype.Timestamptz
+	GoverningArtifactID  pgtype.UUID
+	GoverningIsAmendment bool
 }
 
 type StoryDependency struct {
-	OrganizationID                        pgtype.UUID
-	ProductID                             pgtype.UUID
-	FeatureID                             pgtype.UUID
-	EpicID                                pgtype.UUID
-	SuccessorStoryID                      pgtype.UUID
-	PredecessorStoryID                    pgtype.UUID
-	CreatedAt                             pgtype.Timestamptz
-	SatisfyingCompletionArtifactID        pgtype.UUID
-	SatisfyingCompletionIsAmendment       bool
-	SatisfyingCompletionEffectiveDigest   *string
-	SatisfyingCompletionEffectiveSequence *int32
+	OrganizationID                  pgtype.UUID
+	ProductID                       pgtype.UUID
+	FeatureID                       pgtype.UUID
+	EpicID                          pgtype.UUID
+	SuccessorStoryID                pgtype.UUID
+	PredecessorStoryID              pgtype.UUID
+	CreatedAt                       pgtype.Timestamptz
+	SatisfyingCompletionArtifactID  pgtype.UUID
+	SatisfyingCompletionIsAmendment bool
 }
 
 type StoryDispatch struct {

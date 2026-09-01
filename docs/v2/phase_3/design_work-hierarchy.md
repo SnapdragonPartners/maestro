@@ -823,6 +823,19 @@ FOREIGN KEY (governing_artifact_id, governing_is_amendment,
              scope_story_id, organization_id) ON DELETE RESTRICT
 ```
 
+**A pointer names an artifact and nothing else — no cached digest or sequence.**
+The snapshot in D7 and D8 carries all four columns because it is a point in time
+and must not move; the pointer carries two, because the effective view it implies
+is assembled by `EffectiveView` at read time. Storing a copy here would be
+duplicate state with no defined maintenance, and it would contradict the
+transition list directly: accepting an amendment moves `management_artifacts`
+while leaving a cached digest beside `stories` untouched, so the two would
+disagree and the comparison would read from whichever the implementation
+happened to consult. The asymmetry between snapshot and pointer is the design,
+not an inconsistency. *(The first cut of migration 000021 added the cached
+columns to all three pointer sites, beyond what this section approved; they were
+removed on review.)*
+
 **The pointer is nullable; its discriminator must not be.** A Story exists before
 its spec is accepted and an edge exists before its predecessor completes — that
 is what "not yet dependency-ready" *is* — so `*_artifact_id` is nullable, and a

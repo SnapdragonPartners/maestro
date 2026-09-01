@@ -404,10 +404,16 @@ CREATE TABLE story_dependencies (
     -- dependency-ready" IS. The discriminator is NOT NULL regardless, or a
     -- non-null artifact id beside a null discriminator would skip the
     -- composite foreign key under MATCH SIMPLE.
+    --
+    -- It names the artifact and NOTHING ELSE. No cached digest or sequence:
+    -- the effective view is assembled at read time by EffectiveView, so a
+    -- stored copy here would be duplicate state that an accepted amendment
+    -- moves on one side and not the other. The SNAPSHOT in
+    -- dispatch_basis_dependencies does carry a digest and sequence, and the
+    -- asymmetry is the point -- a snapshot is a point in time and must not
+    -- move, a pointer names something whose view is computed.
     satisfying_completion_artifact_id        uuid,
     satisfying_completion_is_amendment       boolean NOT NULL DEFAULT false,
-    satisfying_completion_effective_digest   text,
-    satisfying_completion_effective_sequence int,
 
     PRIMARY KEY (organization_id, epic_id, successor_story_id, predecessor_story_id),
 
@@ -430,21 +436,7 @@ CREATE TABLE story_dependencies (
         ON DELETE RESTRICT,
 
     CONSTRAINT story_dependencies_completion_original_check
-        CHECK (NOT satisfying_completion_is_amendment),
-
-    -- All three parts of the reference, or none. A partially-filled reference
-    -- would leave the digest or sequence unusable while the pointer reads as
-    -- set.
-    CONSTRAINT story_dependencies_completion_shape_check
-        CHECK (num_nonnulls(satisfying_completion_artifact_id,
-                            satisfying_completion_effective_digest,
-                            satisfying_completion_effective_sequence) IN (0, 3)),
-    CONSTRAINT story_dependencies_completion_digest_check
-        CHECK (satisfying_completion_effective_digest IS NULL
-               OR satisfying_completion_effective_digest ~ '^[0-9a-f]{64}$'),
-    CONSTRAINT story_dependencies_completion_sequence_check
-        CHECK (satisfying_completion_effective_sequence IS NULL
-               OR satisfying_completion_effective_sequence >= 0)
+        CHECK (NOT satisfying_completion_is_amendment)
 );
 
 CREATE INDEX story_dependencies_predecessor_idx ON story_dependencies (predecessor_story_id);
@@ -473,21 +465,11 @@ CREATE INDEX story_dependencies_predecessor_idx ON story_dependencies (predecess
 -- insert the Story, then its artifact, then point at it.
 -- ---------------------------------------------------------------------------
 ALTER TABLE stories
-    ADD COLUMN governing_artifact_id        uuid,
-    ADD COLUMN governing_is_amendment       boolean NOT NULL DEFAULT false,
-    ADD COLUMN governing_effective_digest   text,
-    ADD COLUMN governing_effective_sequence int,
+    ADD COLUMN governing_artifact_id  uuid,
+    ADD COLUMN governing_is_amendment boolean NOT NULL DEFAULT false,
 
     ADD CONSTRAINT stories_governing_original_check
         CHECK (NOT governing_is_amendment),
-    ADD CONSTRAINT stories_governing_shape_check
-        CHECK (num_nonnulls(governing_artifact_id, governing_effective_digest,
-                            governing_effective_sequence) IN (0, 3)),
-    ADD CONSTRAINT stories_governing_digest_check
-        CHECK (governing_effective_digest IS NULL
-               OR governing_effective_digest ~ '^[0-9a-f]{64}$'),
-    ADD CONSTRAINT stories_governing_sequence_check
-        CHECK (governing_effective_sequence IS NULL OR governing_effective_sequence >= 0),
 
     ADD CONSTRAINT stories_governing_fkey
         FOREIGN KEY (governing_artifact_id, governing_is_amendment, story_id, organization_id)
@@ -495,21 +477,11 @@ ALTER TABLE stories
         ON DELETE RESTRICT;
 
 ALTER TABLE epics
-    ADD COLUMN governing_artifact_id        uuid,
-    ADD COLUMN governing_is_amendment       boolean NOT NULL DEFAULT false,
-    ADD COLUMN governing_effective_digest   text,
-    ADD COLUMN governing_effective_sequence int,
+    ADD COLUMN governing_artifact_id  uuid,
+    ADD COLUMN governing_is_amendment boolean NOT NULL DEFAULT false,
 
     ADD CONSTRAINT epics_governing_original_check
         CHECK (NOT governing_is_amendment),
-    ADD CONSTRAINT epics_governing_shape_check
-        CHECK (num_nonnulls(governing_artifact_id, governing_effective_digest,
-                            governing_effective_sequence) IN (0, 3)),
-    ADD CONSTRAINT epics_governing_digest_check
-        CHECK (governing_effective_digest IS NULL
-               OR governing_effective_digest ~ '^[0-9a-f]{64}$'),
-    ADD CONSTRAINT epics_governing_sequence_check
-        CHECK (governing_effective_sequence IS NULL OR governing_effective_sequence >= 0),
 
     ADD CONSTRAINT epics_governing_fkey
         FOREIGN KEY (governing_artifact_id, governing_is_amendment, epic_id, organization_id)
