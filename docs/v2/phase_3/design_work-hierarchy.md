@@ -929,7 +929,7 @@ Recorded here because this design creates them, tested where the code lands.
 | Basis detects a **no-op** amendment | 9 | An amendment leaving the view byte-identical: the digest still matches and only the sequence moves. This is the case a digest-only reference fails, and the reason D7 keeps both halves |
 | Basis detects an added predecessor and a re-satisfied edge | 9 | An already-satisfied predecessor inserted; a predecessor's completion amended |
 | Acyclicity holds under concurrent opposing writers | 9 | Two transactions inserting A→B and B→A with the interleaving **forced**, not raced. Note this is a database serialization anomaly, not a Go data race: `-race` cannot observe it, and a passing `-race` run is not evidence about it |
-| **Every** dispatch-basis transition linearizes with superseding affected executions' authority — all eight paths enumerated below | 9 | D13. Not repoints alone. The window to prove absent is the one ADR 0019 names: a basis component already authoritative while an affected execution still holds usable authority |
+| **Every** dispatch-basis transition linearizes with superseding affected executions' authority — all nine paths enumerated below | 9 | D13. Not repoints alone. The window to prove absent is the one ADR 0019 names: a basis component already authoritative while an affected execution still holds usable authority |
 | The requirement identity vocabulary, and the digest's invariance under reordering | 5 | Item 5 defines the keys; the test is that two evaluations collecting the same requirements in different orders produce the same digest |
 | `arguments` becomes ADR 0030 §3's persisted projection | 5 | Declared-safe fields plus the substituted-input digest. Until then the column is verbatim and non-conforming, which is recorded rather than silently carried |
 
@@ -964,9 +964,11 @@ one and leave the other wide open. A draft combined them, which also made row 8
 inconsistent with rows 1-4, where amendment acceptance and repointing are already
 distinguished for exactly this reason.
 
-Transitions 2, 5, 6, 8 and 9 are the ones most likely to be missed, because none
-of them touches the Story's own record: under each, ADR 0030's Story-version
-check passes while the basis has already moved.
+Transitions 2, 5, 6, 7, 8 and 9 — six of the nine — are the ones most likely to
+be missed, because none of them touches the Story's own record: under each,
+ADR 0030's Story-version check passes while the basis has already moved. Every
+test-2 path is in that set, which is the point: test 2 exists precisely because
+test 1 cannot see any of them.
 
 ## Open questions — resolved
 
