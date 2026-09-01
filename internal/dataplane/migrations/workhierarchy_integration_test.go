@@ -3,7 +3,10 @@
 package migrations_test
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Constraint tests for migration 000021 (docs/v2/phase_3/design_work-hierarchy.md).
@@ -28,21 +31,22 @@ import (
 // rejected" would survive the deletion of the very constraint it exists for.
 
 const (
-	whEpic2         = "30000000-0000-7000-8000-000000000001"
-	whStory2        = "30000000-0000-7000-8000-000000000002"
-	whStorySame     = "30000000-0000-7000-8000-000000000003"
-	whWorkGroup     = "30000000-0000-7000-8000-000000000004"
-	whDispatch      = "30000000-0000-7000-8000-000000000005"
-	whExecution     = "30000000-0000-7000-8000-000000000007"
-	whStory1Plan    = "30000000-0000-7000-8000-000000000010"
-	whEpic1Plan     = "30000000-0000-7000-8000-000000000011"
-	whStory2Plan    = "30000000-0000-7000-8000-000000000012"
-	whEpic2Plan     = "30000000-0000-7000-8000-000000000013"
-	whSiblingPlan   = "30000000-0000-7000-8000-000000000014"
-	whStory1Alt     = "30000000-0000-7000-8000-000000000015"
-	whStory1Amend   = "30000000-0000-7000-8000-000000000016"
-	whOtherFeature  = "30000000-0000-7000-8000-000000000020"
-	whOtherEpic     = "30000000-0000-7000-8000-000000000021"
+	whEpic2        = "30000000-0000-7000-8000-000000000001"
+	whStory2       = "30000000-0000-7000-8000-000000000002"
+	whStorySame    = "30000000-0000-7000-8000-000000000003"
+	whWorkGroup    = "30000000-0000-7000-8000-000000000004"
+	whDispatch     = "30000000-0000-7000-8000-000000000005"
+	whExecution    = "30000000-0000-7000-8000-000000000007"
+	whStory1Plan   = "30000000-0000-7000-8000-000000000010"
+	whEpic1Plan    = "30000000-0000-7000-8000-000000000011"
+	whStory2Plan   = "30000000-0000-7000-8000-000000000012"
+	whEpic2Plan    = "30000000-0000-7000-8000-000000000013"
+	whSiblingPlan  = "30000000-0000-7000-8000-000000000014"
+	whStory1Alt    = "30000000-0000-7000-8000-000000000015"
+	whStory1Amend  = "30000000-0000-7000-8000-000000000016"
+	whOtherFeature = "30000000-0000-7000-8000-000000000020"
+	whOtherEpic    = "30000000-0000-7000-8000-000000000021"
+	whEpic1Amend   = "30000000-0000-7000-8000-000000000023"
 )
 
 type wh struct {
@@ -100,14 +104,59 @@ func seedWorkHierarchy(t *testing.T) *wh {
 	w.epicArtifact(t, whEpic1Plan, f.epic)
 	w.epicArtifact(t, whEpic2Plan, w.epic2)
 
+	// Accepted amendments of both a Story-scoped and an Epic-scoped original.
+	// Accepted rather than draft because an accepted amendment is what moves
+	// an effective view -- the case the original-only rule exists for.
 	if err := f.insertStoryArtifact(whStory1Amend, map[string]any{
 		"amends_artifact_id": whStory1Plan,
 		"scope_story_id":     f.story,
 		"story_id":           f.story,
+		"status":             "accepted",
+		"accepted_at":        "now()",
+		"amendment_sequence": 1,
 	}); err != nil {
-		t.Fatalf("seed amendment: %v", err)
+		t.Fatalf("seed story amendment: %v", err)
+	}
+	// The fixture asserts its own claim. "accepted" is passed as a column
+	// value, so a typo or a status the check constraint tolerates would leave
+	// these drafts while every case still passed -- and a case resting on a
+	// draft original proves nothing about the accepted originals the seam
+	// will actually hold.
+	w.assertAccepted(t, whStory1Plan, whStory1Alt, whStory2Plan, whSiblingPlan, whEpic1Plan, whEpic2Plan)
+
+	if err := f.insertStoryArtifact(whEpic1Amend, map[string]any{
+		"amends_artifact_id": whEpic1Plan,
+		"scope_type":         "epic",
+		"scope_story_id":     nil,
+		"scope_epic_id":      f.epic,
+		"story_id":           nil,
+		"epic_id":            f.epic,
+		"status":             "accepted",
+		"accepted_at":        "now()",
+		"amendment_sequence": 1,
+	}); err != nil {
+		t.Fatalf("seed epic amendment: %v", err)
 	}
 	return w
+}
+
+// assertAccepted fails unless every named artifact is genuinely accepted with
+// an acceptance timestamp.
+func (w *wh) assertAccepted(t *testing.T, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		var status string
+		var acceptedAt *string
+		if err := w.tx.QueryRow(
+			`SELECT status, accepted_at::text FROM management_artifacts WHERE artifact_id=$1`,
+			id).Scan(&status, &acceptedAt); err != nil {
+			t.Fatalf("read seeded artifact %s: %v", id, err)
+		}
+		if status != "accepted" || acceptedAt == nil {
+			t.Fatalf("seeded artifact %s is status=%q accepted_at=%v, but the cases below "+
+				"describe it as an accepted original", id, status, acceptedAt)
+		}
+	}
 }
 
 // The whole lineage tuple must reference a real Story, so the Epic travels
@@ -119,6 +168,8 @@ func (w *wh) storyArtifact(t *testing.T, id, story, epic string) {
 		"scope_story_id": story,
 		"story_id":       story,
 		"epic_id":        epic,
+		"status":         "accepted",
+		"accepted_at":    "now()",
 	}); err != nil {
 		t.Fatalf("seed story artifact %s: %v", id, err)
 	}
@@ -132,8 +183,43 @@ func (w *wh) epicArtifact(t *testing.T, id, epic string) {
 		"scope_epic_id":  epic,
 		"story_id":       nil,
 		"epic_id":        epic,
+		"status":         "accepted",
+		"accepted_at":    "now()",
 	}); err != nil {
 		t.Fatalf("seed epic artifact %s: %v", id, err)
+	}
+}
+
+// rejectsNotNull asserts a statement failed specifically because a NOT NULL
+// column was given null, and names the column.
+//
+// "It was rejected" is not enough here: the discriminator sites are inside
+// composite foreign keys, so a null could also surface as a key violation on
+// a neighbouring column. Asserting 23502 plus the column keeps each case
+// about the NOT NULL that closes the MATCH SIMPLE escape.
+func (w *wh) rejectsNotNull(t *testing.T, column, because, stmt string, args ...any) {
+	t.Helper()
+
+	if _, err := w.tx.Exec("SAVEPOINT not_null_probe"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	_, err := w.tx.Exec(stmt, args...)
+	if err == nil {
+		t.Fatal(because + "; the composite foreign key can now be skipped under MATCH SIMPLE")
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case !errors.As(err, &pgErr):
+		t.Fatalf("%s: wanted a not-null violation on %s, got a non-Postgres error: %v", because, column, err)
+	case pgErr.Code != "23502":
+		t.Fatalf("%s: wanted a not-null violation (23502) on %s, got SQLSTATE %s: %v",
+			because, column, pgErr.Code, err)
+	case pgErr.ColumnName != column:
+		t.Fatalf("%s: wanted column %s, but %s was the null one — the case is not exercising the "+
+			"discriminator it names", because, column, pgErr.ColumnName)
+	}
+	if _, rbErr := w.tx.Exec("ROLLBACK TO SAVEPOINT not_null_probe"); rbErr != nil {
+		t.Fatalf("rollback to savepoint: %v", rbErr)
 	}
 }
 
@@ -278,9 +364,13 @@ func TestDispatchVersionReferencesAreScopeBound(t *testing.T) {
 
 	// An amendment is not an effective view's identity. The discriminator is
 	// constant false, so pointing at an amendment finds no matching row.
+	// BOTH references, because either guard can regress alone.
 	w.rejectsWith(t, "story_dispatches_story_version_fkey",
 		"a dispatch's Story version named an AMENDMENT rather than the original",
 		dispatchInsert, args(whStory1Amend, whEpic1Plan)...)
+	w.rejectsWith(t, "story_dispatches_epic_version_fkey",
+		"a dispatch's Epic version named an AMENDMENT rather than the original",
+		dispatchInsert, args(whStory1Plan, whEpic1Amend)...)
 }
 
 // Three statements: an execution against a pending dispatch passing proves
@@ -488,36 +578,78 @@ func TestGoverningPointersAreScopeBoundAndOriginalOnly(t *testing.T) {
 	w.rejectsWith(t, "epics_governing_fkey",
 		"an Epic's governing pointer named an artifact scoped to a different Epic",
 		`UPDATE epics SET governing_artifact_id=$1 WHERE epic_id=$2`, whEpic2Plan, w.epic)
+	w.rejectsWith(t, "epics_governing_fkey",
+		"an Epic's governing pointer named an AMENDMENT rather than the original",
+		`UPDATE epics SET governing_artifact_id=$1 WHERE epic_id=$2`, whEpic1Amend, w.epic)
 	w.rejectsWith(t, "epics_governing_original_check",
 		"an Epic's governing discriminator was set true",
 		`UPDATE epics SET governing_is_amendment=true WHERE epic_id=$1`, w.epic)
 }
 
-// The discriminator is nullable nowhere. A null one beside a non-null
-// artifact id would skip the whole composite key under MATCH SIMPLE, taking
-// the original-only AND scope claims with it.
-func TestDiscriminatorCannotBeNulled(t *testing.T) {
+// D13's rule at EVERY reference site: the pointer may be null, the
+// discriminator may not. A null discriminator beside a non-null artifact id
+// skips the whole composite key under MATCH SIMPLE, taking the original-only
+// AND scope claims with it -- so the guard is worthless anywhere it is
+// missing, and six sites means six cases.
+func TestDiscriminatorCannotBeNulledAtAnySite(t *testing.T) {
 	w := seedWorkHierarchy(t)
-	for _, tc := range []struct{ because, stmt, arg string }{
-		{"a Story's governing discriminator was nulled",
-			`UPDATE stories SET governing_is_amendment=NULL WHERE story_id=$1`, ""},
-		{"an Epic's governing discriminator was nulled",
-			`UPDATE epics SET governing_is_amendment=NULL WHERE epic_id=$1`, "epic"},
-	} {
-		id := w.story
-		if tc.arg == "epic" {
-			id = w.epic
-		}
-		if _, err := w.tx.Exec("SAVEPOINT null_probe"); err != nil {
-			t.Fatalf("savepoint: %v", err)
-		}
-		if _, err := w.tx.Exec(tc.stmt, id); err == nil {
-			t.Fatal(tc.because + "; the composite foreign key can now be skipped")
-		}
-		if _, err := w.tx.Exec("ROLLBACK TO SAVEPOINT null_probe"); err != nil {
-			t.Fatalf("rollback: %v", err)
-		}
+
+	// The two governing pointers, each with a VALID pointer already set, so
+	// the case is about nulling the discriminator rather than about an empty
+	// row.
+	if _, err := w.tx.Exec(`UPDATE stories SET governing_artifact_id=$1 WHERE story_id=$2`,
+		whStory1Plan, w.story); err != nil {
+		t.Fatalf("seed story pointer: %v", err)
 	}
+	if _, err := w.tx.Exec(`UPDATE epics SET governing_artifact_id=$1 WHERE epic_id=$2`,
+		whEpic1Plan, w.epic); err != nil {
+		t.Fatalf("seed epic pointer: %v", err)
+	}
+	w.rejectsNotNull(t, "governing_is_amendment",
+		"a Story's governing discriminator was nulled beside a live pointer",
+		`UPDATE stories SET governing_is_amendment=NULL WHERE story_id=$1`, w.story)
+	w.rejectsNotNull(t, "governing_is_amendment",
+		"an Epic's governing discriminator was nulled beside a live pointer",
+		`UPDATE epics SET governing_is_amendment=NULL WHERE epic_id=$1`, w.epic)
+
+	// The two dispatch version references.
+	dispatchWithNull := `INSERT INTO story_dispatches (
+	        story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id,
+	        work_group_id, disposition,
+	        story_version_artifact_id, story_version_is_amendment,
+	        story_version_effective_digest, story_version_effective_sequence,
+	        epic_version_artifact_id, epic_version_is_amendment,
+	        epic_version_effective_digest, epic_version_effective_sequence)
+	      VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,0,$11,$12,$13,0)`
+	w.rejectsNotNull(t, "story_version_is_amendment",
+		"a dispatch nulled its Story version discriminator", dispatchWithNull,
+		"30000000-0000-7000-8000-0000000000b1", w.org, w.product, w.feature, w.epic, w.story,
+		w.workGroup, whStory1Plan, nil, digestA, whEpic1Plan, false, digestB)
+	w.rejectsNotNull(t, "epic_version_is_amendment",
+		"a dispatch nulled its Epic version discriminator", dispatchWithNull,
+		"30000000-0000-7000-8000-0000000000b2", w.org, w.product, w.feature, w.epic, w.story,
+		w.workGroup, whStory1Plan, false, digestA, whEpic1Plan, nil, digestB)
+
+	// The basis snapshot's completion.
+	w.insertDispatch(t)
+	w.rejectsNotNull(t, "completion_is_amendment",
+		"a basis row nulled its completion discriminator",
+		`INSERT INTO dispatch_basis_dependencies
+		 (story_dispatch_id, organization_id, product_id, feature_id, epic_id,
+		  predecessor_story_id, completion_artifact_id, completion_is_amendment,
+		  completion_effective_digest, completion_effective_sequence)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0)`,
+		w.dispatch, w.org, w.product, w.feature, w.epic, w.storySameEpic, whSiblingPlan, nil, digestA)
+
+	// The edge's current-completion pointer.
+	w.rejectsNotNull(t, "satisfying_completion_is_amendment",
+		"an edge nulled its completion discriminator",
+		`INSERT INTO story_dependencies
+		 (organization_id, product_id, feature_id, epic_id, successor_story_id,
+		  predecessor_story_id, satisfying_completion_artifact_id,
+		  satisfying_completion_is_amendment)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		w.org, w.product, w.feature, w.epic, w.story, w.storySameEpic, whSiblingPlan, nil)
 }
 
 // The constraint D13 FORBIDS. Divergence between the dispatch snapshot and
