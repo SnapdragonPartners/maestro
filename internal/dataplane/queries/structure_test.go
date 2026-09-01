@@ -238,8 +238,12 @@ var namedCompletions = map[string]bool{
 // creation naming any of them writes a terminal row directly and bypasses
 // the once-only guard -- and unlike a status column, nothing about a call
 // record's shape makes that obvious in review.
+// `state` and `outcome` are tool_calls' half of this since migration 000022;
+// `succeeded` remains llm_calls'. A creation naming `state` is forbidden even
+// though 'open' would be harmless, because the column defaults to it and the
+// only reason to name it at creation is to write something else.
 var outcomeColumns = []string{
-	"finished_at", "succeeded", "error_message",
+	"finished_at", "succeeded", "state", "outcome", "error_message",
 	"input_tokens", "output_tokens", "reasoning_tokens",
 	"cache_read_tokens", "cache_write_tokens", "cost_usd",
 	"result",
@@ -252,7 +256,7 @@ var outcomeColumns = []string{
 // statement that passes the name check. What a call was asked to do is not
 // something ending it can change.
 var completionSetColumns = map[string]bool{
-	"finished_at": true, "succeeded": true, "error_message": true,
+	"finished_at": true, "succeeded": true, "state": true, "outcome": true, "error_message": true,
 	"input_tokens": true, "output_tokens": true, "reasoning_tokens": true,
 	"cache_read_tokens": true, "cache_write_tokens": true, "cost_usd": true, "result": true,
 }

@@ -399,23 +399,27 @@ type StoryDispatch struct {
 }
 
 type ToolCall struct {
-	ToolCallID          pgtype.UUID
-	OrganizationID      pgtype.UUID
-	UserID              pgtype.UUID
-	PrincipalInstanceID pgtype.UUID
-	LlmCallID           pgtype.UUID
-	ProductID           pgtype.UUID
-	FeatureID           pgtype.UUID
-	EpicID              pgtype.UUID
-	StoryID             pgtype.UUID
-	LineageKey          string
-	ToolName            string
-	Arguments           []byte
-	Result              []byte
-	Succeeded           *bool
-	ErrorMessage        *string
-	StartedAt           pgtype.Timestamptz
-	FinishedAt          pgtype.Timestamptz
+	ToolCallID           pgtype.UUID
+	OrganizationID       pgtype.UUID
+	UserID               pgtype.UUID
+	PrincipalInstanceID  pgtype.UUID
+	LlmCallID            pgtype.UUID
+	ProductID            pgtype.UUID
+	FeatureID            pgtype.UUID
+	EpicID               pgtype.UUID
+	StoryID              pgtype.UUID
+	LineageKey           string
+	ToolName             string
+	Arguments            []byte
+	Result               []byte
+	ErrorMessage         *string
+	StartedAt            pgtype.Timestamptz
+	FinishedAt           pgtype.Timestamptz
+	State                string
+	Outcome              *string
+	ExecutionID          pgtype.UUID
+	RequirementSet       []byte
+	RequirementSetDigest *string
 }
 
 type User struct {

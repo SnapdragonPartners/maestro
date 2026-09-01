@@ -78,9 +78,13 @@ type TokenCounts struct {
 }
 
 // ToolCall is ADR 0022's atomic Audit action unit.
+//
+// State and Outcome replace migration 000005's boolean. The pair is one fact
+// with two witnesses and the schema ties them: an outcome is present exactly
+// when the state is settled.
 type ToolCall struct {
 	FinishedAt   *time.Time
-	Succeeded    *bool
+	Outcome      *ToolOutcome
 	ErrorMessage *string
 	Result       json.RawMessage
 	UserID       *uuid.UUID
@@ -89,6 +93,7 @@ type ToolCall struct {
 	Lineage   Lineage
 	StartedAt time.Time
 
+	State     string
 	ToolName  string
 	Arguments json.RawMessage
 
@@ -183,17 +188,51 @@ type CompleteLLMCallInput struct {
 	Succeeded bool
 }
 
+// ToolOutcome is the settled outcome of a mediated action.
+//
+// Six values, and no single ADR carries all six: ADR 0032 gives succeeded,
+// failed, denied, blocked and unknown; ToolOutcomeStale comes from ADR 0030,
+// "the action terminates as stale, and a fresh action is required". The set
+// is the union, and the schema's vocabulary check mirrors exactly this list.
+//
+// The outcome is decided by the CAUSE of the ending, not by the state the
+// attempt was in — a headless block never sits in an operator wait, it is
+// opened and settled terminally in one transaction as a denial is.
+type ToolOutcome string
+
+// The six outcomes, each named by the CAUSE that produced it.
+const (
+	// ToolOutcomeSucceeded is an effect that completed.
+	ToolOutcomeSucceeded ToolOutcome = "succeeded"
+	// ToolOutcomeFailed is an effect that was attempted and did not work.
+	ToolOutcomeFailed ToolOutcome = "failed"
+	// ToolOutcomeDenied is gate 1 or gate 3 refusing it, so no effect occurred.
+	ToolOutcomeDenied ToolOutcome = "denied"
+	// ToolOutcomeBlocked is a valid requirement with no declared responder.
+	ToolOutcomeBlocked ToolOutcome = "blocked"
+	// ToolOutcomeStale is superseded authority, a cancelled wait, or an
+	// interrupted resumable wait.
+	ToolOutcomeStale ToolOutcome = "stale"
+	// ToolOutcomeUnknown is an attempt abandoned mid-execution, whose effect
+	// is unknowable.
+	ToolOutcomeUnknown ToolOutcome = "unknown"
+)
+
 // CompleteToolCallInput records a tool call's outcome.
 type CompleteToolCallInput struct {
 	ErrorMessage *string
 	FinishedAt   *time.Time
 
-	Result json.RawMessage
+	// Outcome is a string, so it carries a pointer and belongs among the
+	// pointer-bearing fields rather than beside the identifiers it reads
+	// with. The order here is fieldalignment's: single-word pointers, then
+	// the string, then the slice, so the GC scan prefix ends as early as it
+	// can.
+	Outcome ToolOutcome
+	Result  json.RawMessage
 
 	OrganizationID uuid.UUID
 	ToolCallID     uuid.UUID
-
-	Succeeded bool
 }
 
 // LLMCompletion reports the result of completing an LLM call: the call as

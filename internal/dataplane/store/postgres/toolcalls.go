@@ -21,9 +21,14 @@ import (
 const provenanceConstraint = "tool_calls_llm_call_fkey"
 
 func toolCallFromRow(row *gen.ToolCall) store.ToolCall {
+	var outcome *store.ToolOutcome
+	if row.Outcome != nil {
+		converted := store.ToolOutcome(*row.Outcome)
+		outcome = &converted
+	}
 	return store.ToolCall{
 		FinishedAt:   fromNullTimestamptz(row.FinishedAt),
-		Succeeded:    row.Succeeded,
+		Outcome:      outcome,
 		ErrorMessage: fromNullString(row.ErrorMessage),
 		Result:       row.Result,
 		UserID:       fromNullUUID(row.UserID),
@@ -37,6 +42,7 @@ func toolCallFromRow(row *gen.ToolCall) store.ToolCall {
 		},
 		StartedAt: fromTimestamptz(row.StartedAt),
 
+		State:     row.State,
 		ToolName:  row.ToolName,
 		Arguments: row.Arguments,
 
@@ -112,7 +118,22 @@ func (t *tx) CompleteToolCall(ctx context.Context, input store.CompleteToolCallI
 		return store.ToolCompletion{Call: toolCallFromRow(&locked.ToolCall), Recorded: false}, nil
 	}
 
-	if outcomeErr := checkOutcomeCoherence(input.Succeeded, input.ErrorMessage); outcomeErr != nil {
+	// Only the two completion outcomes are producible today. The other four
+	// belong to the execution boundary (Phase 3 item 5), and accepting one
+	// here would store a state with no producer and no validation behind it
+	// -- the schema's vocabulary check would pass it, which is exactly why
+	// the refusal has to be here rather than left to the column.
+	switch input.Outcome {
+	case store.ToolOutcomeSucceeded, store.ToolOutcomeFailed:
+	case store.ToolOutcomeDenied, store.ToolOutcomeBlocked,
+		store.ToolOutcomeStale, store.ToolOutcomeUnknown:
+		return store.ToolCompletion{}, fmt.Errorf(
+			"outcome %q is produced by the execution boundary, which has no caller yet", input.Outcome)
+	default:
+		return store.ToolCompletion{}, fmt.Errorf("%q is not a tool-call outcome", input.Outcome)
+	}
+	if outcomeErr := checkOutcomeCoherence(
+		input.Outcome == store.ToolOutcomeSucceeded, input.ErrorMessage); outcomeErr != nil {
 		return store.ToolCompletion{}, outcomeErr
 	}
 	finishedAt := completionInstant(input.FinishedAt, locked.LockedAt)
@@ -125,9 +146,10 @@ func (t *tx) CompleteToolCall(ctx context.Context, input store.CompleteToolCallI
 		return store.ToolCompletion{}, err
 	}
 
+	outcome := string(input.Outcome)
 	affected, err := t.queries.CompleteToolCall(ctx, gen.CompleteToolCallParams{
 		FinishedAt:     toTimestamptz(finishedAt),
-		Succeeded:      &input.Succeeded,
+		Outcome:        &outcome,
 		Result:         result,
 		ErrorMessage:   input.ErrorMessage,
 		ToolCallID:     toUUID(input.ToolCallID),

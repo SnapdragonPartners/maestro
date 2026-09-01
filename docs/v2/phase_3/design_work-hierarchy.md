@@ -586,10 +586,29 @@ migration is therefore five ordered steps:
 4. **Drop `tool_calls_finished_check`.** It stays satisfied throughout steps 1–3,
    since nothing before this touches `succeeded` or `finished_at`.
 5. **Drop `succeeded`.**
+6. **Restore `tool_calls_outcome_coherence_check`, re-expressed over
+   `outcome`.**
 
 Steps 3 and 4 are separate and in this order so the record is never
 unconstrained: the new equivalence is in force before the old one is removed,
 rather than the table passing through a window governed by neither.
+
+**Step 6 exists because step 5 has a side effect nothing announces.** Migration
+000011 added `tool_calls_outcome_coherence_check`, whose predicate reads
+`succeeded`, and Postgres drops a `CHECK` that depends on a dropped column
+**silently**. Without step 6 this migration would delete a live rule as a side
+effect of removing a column — which is exactly the regression 000011's own test
+was strengthened to catch, and did.
+
+The restored constraint keeps its name, so that guard keeps watching the same
+rule, and re-expresses two of its three clauses over `outcome`: a `succeeded`
+action carries no error message, a `failed` one carries a non-blank diagnostic,
+and an unfinished action carries no error message (unchanged, and needing no
+vocabulary). **The other four outcomes are deliberately unconstrained**: whether
+a denial's reason code or a stale attempt belongs in `error_message` is the
+execution boundary's to settle, and binding it now would bind a producer that
+does not exist. The down migration reverses this too, restoring the boolean
+form under the same name.
 
 ```text
 ALTER TABLE tool_calls
@@ -926,6 +945,7 @@ constraint makes the statement **succeed**.
 | Pointer is scope-bound | `stories.governing_artifact_id` set to an artifact scoped to another Story; the edge's completion pointer to an artifact scoped to a non-predecessor |
 | Snapshot may diverge from the pointer | **Inverse test**: repoint `stories.governing_artifact_id` while a dispatch holds the old snapshot. This must **succeed** — a failure means someone added the constraint D13 forbids, and the detection mechanism is gone |
 | State backfill | After migrating a fixture with finished and unfinished rows, no row violates the settled equivalences: every `finished_at IS NOT NULL` row is `settled` with an outcome, every other row is `open` |
+| Coherence survives the column drop | Remove step 6 and confirm `tool_calls_outcome_coherence_check` is absent after migrating — the guard 000011 already carries |
 | Down migration refuses | Eight runs: one per new outcome (`denied`, `blocked`, `stale`, `unknown`), one per declared wait (`operator_waiting`, `resource_waiting`), one on a **`succeeded`** row carrying a requirement set, and one on a **`succeeded`** row carrying an `execution_id` — the last two both pass the outcome guard and still lose identity |
 
 ### Obligations assigned to later items
