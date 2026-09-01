@@ -57,8 +57,16 @@ type wh struct {
 
 // seedWorkHierarchy builds a second Epic with its own Story, a sibling Story
 // in the ORIGINAL Epic, a Work Group, and a correctly-scoped artifact for
-// every one of them -- plus a SECOND accepted original scoped to Story 1 and
-// an amendment of Story 1's plan.
+// every one of them -- plus a SECOND original scoped to Story 1, and an
+// amendment of both a Story-scoped and an Epic-scoped original.
+//
+// NOTHING HERE IS ACCEPTED, deliberately. No constraint 000021 adds reads
+// `status`: the references key on (artifact_id, is_amendment, scope, org),
+// and D7 records acceptance as SEAM-validated precisely because `status`
+// moves over a row's life. Setting status='accepted' by raw insert would also
+// fabricate authority -- ADR 0021 requires a distinct reviewer and a
+// completed review record, and neither exists here -- so these are honest
+// draft originals and draft amendments, and item 3 owns acceptance.
 //
 // The per-entity artifacts are what make the negative cases honest: without
 // them a cross-Epic row fails on the version-scope foreign key before the
@@ -95,8 +103,7 @@ func seedWorkHierarchy(t *testing.T) *wh {
 	}
 
 	// One correctly-scoped artifact per entity, plus a second original for
-	// Story 1 (the divergence case repoints to a real artifact rather than
-	// inventing a digest) and an amendment of Story 1's plan.
+	// Story 1, which the divergence case repoints to.
 	w.storyArtifact(t, whStory1Plan, f.story, f.epic)
 	w.storyArtifact(t, whStory1Alt, f.story, f.epic)
 	w.storyArtifact(t, whStory2Plan, w.story2, w.epic2)
@@ -104,26 +111,17 @@ func seedWorkHierarchy(t *testing.T) *wh {
 	w.epicArtifact(t, whEpic1Plan, f.epic)
 	w.epicArtifact(t, whEpic2Plan, w.epic2)
 
-	// Accepted amendments of both a Story-scoped and an Epic-scoped original.
-	// Accepted rather than draft because an accepted amendment is what moves
-	// an effective view -- the case the original-only rule exists for.
+	// Amendments of a Story-scoped and an Epic-scoped original. What matters
+	// to every case below is only that is_amendment is true -- it is
+	// generated from amends_artifact_id, and no constraint under test reads
+	// status.
 	if err := f.insertStoryArtifact(whStory1Amend, map[string]any{
 		"amends_artifact_id": whStory1Plan,
 		"scope_story_id":     f.story,
 		"story_id":           f.story,
-		"status":             "accepted",
-		"accepted_at":        "now()",
-		"amendment_sequence": 1,
 	}); err != nil {
 		t.Fatalf("seed story amendment: %v", err)
 	}
-	// The fixture asserts its own claim. "accepted" is passed as a column
-	// value, so a typo or a status the check constraint tolerates would leave
-	// these drafts while every case still passed -- and a case resting on a
-	// draft original proves nothing about the accepted originals the seam
-	// will actually hold.
-	w.assertAccepted(t, whStory1Plan, whStory1Alt, whStory2Plan, whSiblingPlan, whEpic1Plan, whEpic2Plan)
-
 	if err := f.insertStoryArtifact(whEpic1Amend, map[string]any{
 		"amends_artifact_id": whEpic1Plan,
 		"scope_type":         "epic",
@@ -131,32 +129,10 @@ func seedWorkHierarchy(t *testing.T) *wh {
 		"scope_epic_id":      f.epic,
 		"story_id":           nil,
 		"epic_id":            f.epic,
-		"status":             "accepted",
-		"accepted_at":        "now()",
-		"amendment_sequence": 1,
 	}); err != nil {
 		t.Fatalf("seed epic amendment: %v", err)
 	}
 	return w
-}
-
-// assertAccepted fails unless every named artifact is genuinely accepted with
-// an acceptance timestamp.
-func (w *wh) assertAccepted(t *testing.T, ids ...string) {
-	t.Helper()
-	for _, id := range ids {
-		var status string
-		var acceptedAt *string
-		if err := w.tx.QueryRow(
-			`SELECT status, accepted_at::text FROM management_artifacts WHERE artifact_id=$1`,
-			id).Scan(&status, &acceptedAt); err != nil {
-			t.Fatalf("read seeded artifact %s: %v", id, err)
-		}
-		if status != "accepted" || acceptedAt == nil {
-			t.Fatalf("seeded artifact %s is status=%q accepted_at=%v, but the cases below "+
-				"describe it as an accepted original", id, status, acceptedAt)
-		}
-	}
 }
 
 // The whole lineage tuple must reference a real Story, so the Epic travels
@@ -168,8 +144,6 @@ func (w *wh) storyArtifact(t *testing.T, id, story, epic string) {
 		"scope_story_id": story,
 		"story_id":       story,
 		"epic_id":        epic,
-		"status":         "accepted",
-		"accepted_at":    "now()",
 	}); err != nil {
 		t.Fatalf("seed story artifact %s: %v", id, err)
 	}
@@ -183,8 +157,6 @@ func (w *wh) epicArtifact(t *testing.T, id, epic string) {
 		"scope_epic_id":  epic,
 		"story_id":       nil,
 		"epic_id":        epic,
-		"status":         "accepted",
-		"accepted_at":    "now()",
 	}); err != nil {
 		t.Fatalf("seed epic artifact %s: %v", id, err)
 	}
@@ -657,8 +629,8 @@ func TestDiscriminatorCannotBeNulledAtAnySite(t *testing.T) {
 // failure means someone constrained them to agree and the comparison has gone
 // vacuous.
 //
-// It repoints to a genuine second accepted original rather than editing a
-// cached digest, because the pointer names an artifact and nothing else: the
+// It repoints to a genuine second original rather than editing a cached
+// digest, because the pointer names an artifact and nothing else: the
 // effective view is assembled by EffectiveView at read time, so there is no
 // duplicate state here to drift.
 func TestSnapshotMayDivergeFromTheCurrentPointer(t *testing.T) {
