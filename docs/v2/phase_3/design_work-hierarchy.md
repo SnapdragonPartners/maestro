@@ -37,6 +37,22 @@ document and an ADR disagree, the ADR wins.
 Item 2 delivers migrations and schema. Typed queries and the seam wiring are
 item 3's; only the table shapes land here.
 
+**Item 2 is an L, not the M the plan sized it.** Six new tables, additive changes
+to four existing ones, a backfill, a refusing down migration, and cross-table
+lineage constraints throughout. It stays **one plan item** — splitting the item
+would put the `tool_calls` record contract in a different review from the
+executions table it correlates to — but implementation lands as **two migrations
+reviewed in sequence**:
+
+| Migration | Contents | Reviewed |
+| --- | --- | --- |
+| `000021_work_hierarchy` | `work_groups`, `executions`, `story_dispatches`, `dispatch_basis_dependencies`, the two dependency graphs, `management_artifacts`'s two scope keys, and D13's current-basis pointers | Before 000022 begins |
+| `000022_tool_call_state` | `tool_calls`: state, outcome, correlation and requirement columns; the constraint replacement; the backfill; the refusing down migration | Before the item closes |
+
+The second depends on the first — `tool_calls.execution_id` references a table
+000021 creates — so the order is forced rather than chosen. The plan's size is
+amended alongside the `runs` move.
+
 ## Decisions
 
 ### D1. What item 2 creates, and what it defers
@@ -159,12 +175,18 @@ executions
 
     -- The constraint that actually excludes an unaccepted dispatch. Without
     -- this FK the constant column below is decoration.
-    FOREIGN KEY (story_dispatch_id, dispatch_is_accepted, organization_id)
-        REFERENCES story_dispatches (story_dispatch_id, is_accepted, organization_id)
+    -- Through the WHOLE Story lineage, not just id + organization. Narrower,
+    -- an execution could carry Story B's lineage while naming an accepted
+    -- dispatch for Story A in the same organization.
+    FOREIGN KEY (story_dispatch_id, dispatch_is_accepted,
+                 story_id, epic_id, feature_id, product_id, organization_id)
+        REFERENCES story_dispatches (story_dispatch_id, is_accepted,
+                 story_id, epic_id, feature_id, product_id, organization_id)
         ON DELETE RESTRICT
 
     UNIQUE (story_dispatch_id, organization_id)
-    UNIQUE (execution_id, organization_id)      -- referenced by tool_calls (D10)
+    UNIQUE (execution_id, story_id, epic_id,
+            feature_id, product_id, organization_id)   -- tool_calls (D10)
     CHECK (dispatch_is_accepted)
     CHECK (authority_state IN ('current', 'superseded'))
     CHECK (authority_state <> 'superseded' OR admission_closed_at IS NOT NULL)
@@ -240,7 +262,8 @@ story_dispatches
 
     -- Two composite keys, each with a consumer. Omitting either makes the
     -- referring foreign key invalid DDL, not merely unenforced.
-    UNIQUE (story_dispatch_id, is_accepted, organization_id)         -- executions (D4)
+    UNIQUE (story_dispatch_id, is_accepted, story_id, epic_id,
+            feature_id, product_id, organization_id)                 -- executions (D4)
     UNIQUE (story_dispatch_id, epic_id, feature_id,
             product_id, organization_id)                             -- basis child (D8)
 
@@ -542,7 +565,7 @@ line 1250 says so in the same row: "**Not** the substituted request: ADR 0030 §
 keeps it out of Audit." An earlier draft of this document cited the projection
 rule against the requirement set and had it backwards.
 
-The whole column and constraint set migration 000021 adds to `tool_calls`,
+The whole column and constraint set migration 000022 adds to `tool_calls`,
 written out rather than described — an earlier draft left the state and outcome
 columns implicit and the object rule as a comment, which is not a constraint:
 
@@ -574,9 +597,26 @@ CHECK (requirement_set_digest IS NULL OR requirement_set_digest ~ '^[0-9a-f]{64}
 CHECK (state   <>          'operator_waiting' OR requirement_set IS NOT NULL)
 CHECK (outcome IS DISTINCT FROM 'blocked'     OR requirement_set IS NOT NULL)
 
-FOREIGN KEY (execution_id, organization_id)
-    REFERENCES executions (execution_id, organization_id) ON DELETE RESTRICT
+-- Correlation through the whole lineage. On this table the lineage columns
+-- are NULLABLE (migration 000005), so MATCH SIMPLE would skip the entire
+-- foreign key whenever any of them is null -- and a partially-filled row is
+-- exactly how a tool call would come to name another Story's execution.
+CHECK (execution_id IS NULL OR
+       (story_id IS NOT NULL AND epic_id    IS NOT NULL AND
+        feature_id IS NOT NULL AND product_id IS NOT NULL))
+FOREIGN KEY (execution_id, story_id, epic_id,
+             feature_id, product_id, organization_id)
+    REFERENCES executions (execution_id, story_id, epic_id,
+             feature_id, product_id, organization_id) ON DELETE RESTRICT
 ```
+
+The `CHECK` is what makes the foreign key inescapable rather than advisory. This
+is the same trap migration 000005 documents against its own lineage columns —
+its comment on `lineage_key` says a composite key over nullable lineage "would
+be SKIPPED whenever any of them is null (MATCH SIMPLE) — which is the common
+case — so the provenance check below would silently not apply." A correlation
+that can name the wrong execution is the failure that table already calls worse
+than none, "because it reads as evidence."
 
 The empty-object case matters: `{}` is an object and passes `jsonb_typeof`, so
 without the third check an `operator_waiting` row could satisfy "has a
@@ -684,6 +724,7 @@ earlier draft caught only the first:
 | `outcome` in `denied`, `blocked`, `stale`, `unknown` | `denied` round-trips as `failed`, asserting an action the boundary refused was attempted; `unknown` has no boolean image at all |
 | `state` in `operator_waiting`, `resource_waiting` | An indistinguishable legacy in-flight row — the healthy wait and the dead process collapse into the same two nulls, which is the exact ambiguity ADR 0030 §8 created this migration to remove |
 | `requirement_set IS NOT NULL` | Dropping the column erases it. This bites hardest on a **`succeeded`** row, which the outcome guard waves through while its requirement set — the record of what an operator was asked and answered — disappears silently |
+| `execution_id IS NOT NULL` | The same shape once more: a `succeeded` or `failed` row passes every guard above and still loses the correlation binding ADR 0032 line 1250 requires persisted. Identity-preservation has to mean *all* the identity the new columns carry, not only the outcome vocabulary |
 
 The coarse-projection alternative is coherent and is rejected deliberately:
 `denied`, `blocked` and `stale` could all map to `succeeded = false`, leaving only
@@ -712,8 +753,11 @@ Two associations are missing, and neither is derivable:
 
 1. **Which accepted original is a Story's or an Epic's governing artifact.**
    Scope plus type plus `accepted` does not name one. Several accepted originals
-   of a type can be scoped to one Story over its life, and ADR 0021 keeps a
-   historical accepted artifact `accepted`.
+   of a type can be scoped to one Story over its life, and under ADR 0021 an
+   accepted **amendment** leaves the original `accepted` — it changes the
+   effective view without changing the original's status. (Supersession is the
+   other path and does mark the old artifact `superseded`; a draft here
+   overstated ADR 0021 by describing both as leaving the original accepted.)
 2. **Which completion currently satisfies a dependency edge.** Same reason, and
    sharper: "the accepted completion of the predecessor" is not a function, so
    ADR 0019's trigger — "a satisfying completion that is no longer the effective
@@ -723,16 +767,38 @@ Two associations are missing, and neither is derivable:
 describe, scope-bound by the same composite keys D7 introduces:
 
 ```text
-ALTER TABLE stories  ADD COLUMN governing_artifact_id uuid, ...   -- scope-bound FK
-ALTER TABLE epics    ADD COLUMN governing_artifact_id uuid, ...   -- scope-bound FK
+ALTER TABLE stories
+    ADD COLUMN governing_artifact_id  uuid,                       -- NULLABLE
+    ADD COLUMN governing_is_amendment boolean NOT NULL DEFAULT false;
+ALTER TABLE epics
+    ADD COLUMN governing_artifact_id  uuid,
+    ADD COLUMN governing_is_amendment boolean NOT NULL DEFAULT false;
 ALTER TABLE story_dependencies
-    ADD COLUMN satisfying_completion_artifact_id uuid, ...        -- scoped to the predecessor
+    ADD COLUMN satisfying_completion_artifact_id  uuid,
+    ADD COLUMN satisfying_completion_is_amendment boolean NOT NULL DEFAULT false;
+
+CHECK (NOT governing_is_amendment)              -- and the edge's equivalent
+FOREIGN KEY (governing_artifact_id, governing_is_amendment,
+             story_id, organization_id)
+    REFERENCES management_artifacts (artifact_id, is_amendment,
+             scope_story_id, organization_id) ON DELETE RESTRICT
 ```
 
-Each carries the constant `is_amendment` component, so a pointer to an amendment
-is unrepresentable exactly as in D7. All three are **nullable**: a Story exists
-before its spec is accepted, and an edge exists before its predecessor completes
-— that is what "not yet dependency-ready" *is*.
+**The pointer is nullable; its discriminator must not be.** A Story exists before
+its spec is accepted and an edge exists before its predecessor completes — that
+is what "not yet dependency-ready" *is* — so `*_artifact_id` is nullable, and a
+null there correctly skips the composite foreign key under `MATCH SIMPLE`.
+
+But the discriminator is `NOT NULL DEFAULT false` with its `CHECK`, because a
+*nullable* one reopens the same skip from the other side: a non-null
+`governing_artifact_id` paired with a null `governing_is_amendment` also skips
+the whole key, and with it both the original-only and the scope claims. The
+constant column only enforces anything while it is guaranteed present.
+
+**This applies to every reference in this design**, not only D13's — D7's two
+version references and the basis child's completion carry the same
+`NOT NULL DEFAULT false` discriminator for the same reason. Stated once here
+rather than four times, and tested once per site.
 
 **A derivation rule is the alternative and is rejected.** "The latest accepted
 original of type X" makes accepting a second artifact silently redefine the
@@ -800,12 +866,15 @@ constraint makes the statement **succeed**.
 | Requirement set present where required | `operator_waiting` with a **null** requirement set; `blocked` with a **null** requirement set. (A draft wrote the second as "`blocked` with one", which is the valid case — the inversion would have made the test assert the opposite of the rule) |
 | Requirement set is a non-empty object | An **array**-valued requirement set; an **empty object** `{}`; a `requirement_set` with a null digest and the converse |
 | Digest well-formed | A `requirement_set_digest` that is not 64 lowercase hex — short, uppercase, and non-hex |
-| Action correlates to a real execution | A `tool_calls` row whose `execution_id` names an execution in another organization |
+| Execution bound to its dispatch's Story | An execution carrying Story B's lineage that references an accepted dispatch for Story A in the same organization |
+| Action correlates to its own Story's execution | A `tool_calls` row whose `execution_id` names an execution in another organization; and one carrying Story B's lineage while naming Story A's execution |
+| Correlation cannot escape through null lineage | A `tool_calls` row with a non-null `execution_id` and a partially-null lineage tuple — the `MATCH SIMPLE` skip |
+| Discriminator cannot escape through null | Set a pointer's `*_is_amendment` to null with a non-null artifact id — rejected by `NOT NULL`, which is what keeps the composite key from being skipped |
 | Pointer names an original | `stories.governing_artifact_id` set to an amendment row; the same for the Epic and edge pointers |
 | Pointer is scope-bound | `stories.governing_artifact_id` set to an artifact scoped to another Story; the edge's completion pointer to an artifact scoped to a non-predecessor |
 | Snapshot may diverge from the pointer | **Inverse test**: repoint `stories.governing_artifact_id` while a dispatch holds the old snapshot. This must **succeed** — a failure means someone added the constraint D13 forbids, and the detection mechanism is gone |
 | State backfill | After migrating a fixture with finished and unfinished rows, no row violates the settled equivalences: every `finished_at IS NOT NULL` row is `settled` with an outcome, every other row is `open` |
-| Down migration refuses | Seven runs: one per new outcome (`denied`, `blocked`, `stale`, `unknown`), one per declared wait (`operator_waiting`, `resource_waiting`), and one on a **`succeeded`** row carrying a requirement set — the case the outcome guard alone waves through |
+| Down migration refuses | Eight runs: one per new outcome (`denied`, `blocked`, `stale`, `unknown`), one per declared wait (`operator_waiting`, `resource_waiting`), one on a **`succeeded`** row carrying a requirement set, and one on a **`succeeded`** row carrying an `execution_id` — the last two both pass the outcome guard and still lose identity |
 
 ### Obligations assigned to later items
 
@@ -838,10 +907,12 @@ silence.
 
 1. **May item 2 add composite keys to `management_artifacts`**, a table it
    otherwise only reads? **Yes** — migration 000021 adds both the Story-scope and
-   Epic-scope keys (D7). This is what upgrades all three artifact references from
-   seam-validated to database-constrained, and it is why the governing-reference
-   mutations appear in item 2's constraint tests rather than in item 9's
-   obligations.
+   Epic-scope keys (D7). This is what makes all three artifact references'
+   **identity, original-not-amendment, and scope** properties
+   database-constrained, and it is why those mutations appear in item 2's
+   constraint tests rather than in item 9's obligations. It does **not** upgrade
+   the whole reference: expected **type**, **acceptance**, and effective-view
+   **currency** remain seam-validated, as D7's table records.
 2. **Should `artifact_type` gain a database CHECK vocabulary** so "this is a
    Story completion" is enforceable in SQL? **No** — validation stays in ADR
    0028's code registry, and no vocabulary is introduced into the schema. The
