@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Phase 3: Scope And Plan"
-edit_date = "2026-08-31"
+edit_date = "2026-09-01"
 status = "live"
 summary = "Accepted Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
 type = "plan"
@@ -24,6 +24,20 @@ That is reversed, and it caused item 1's inventory to cite the wrong issue
 before review caught it. Each requirement is now bound to its issue explicitly
 rather than by position. The change is narrow and settles no decision that was
 not already settled.
+
+**Proposed 2026-09-01 on the Phase 3 item 2 branch — NOT yet Accepted, and
+carrying no authority until Codex and DR approve it in the final reviewed
+commit.** The second amendment moves the `runs` family from item 2 to item 10.
+It is a **sequencing correction, not a new ADR need**: `run` appears in the
+Accepted set only as the bare phrase "Work Groups and runs" in
+[ADR 0022](../../adr/0022-v2-data-plane.md)'s family list, with no definition of
+its lifetime, cardinality, or boundary anywhere, and nothing in items 3 through 9
+consumes one. Under this plan's own rule — every table traces to an Accepted ADR
+**and** a Phase 3 consumer — it has neither, and item 2 defining it would mean a
+schema mini-plan originating a work-taxonomy concept ADR 0018 owns. Item 10
+(`work-group-lifecycle`) is where a run acquires both. `work_groups` itself is
+unaffected: ADR 0018 defines it and item 3 consumes it. See
+[the item 2 design](design_work-hierarchy.md) D2.
 
 **This document binds Phase 3.** It carries the roadmap amendment striking the
 carried v1 regression run, which is Accepted with it.
@@ -236,7 +250,7 @@ is not done.
 |---|---|---|---|
 | 0 | `scope-and-plan` | This document, Accepted. Includes the roadmap amendment above. | S |
 | 1 | `agent-inventory` | **Inventory and classify** the existing agent, toolloop, `pkg/proto`, supervisor, dispatcher and Claude adapter surfaces, against the frozen v1 tree, with a disposition per surface: retain, refactor, replace, retire. Authoring work, no code. Reconciles the [port inventory](../phase_0/inventory_v1-port.md) against the real import graph, which is what #298's deletions need in order to be complete rather than approximate. | M |
-| 2 | `schema-work-hierarchy` | The work-hierarchy schema families: work groups, runs, executions, and **dispatch records carrying their dispatch basis** — the governing version set and the incoming dependency basis. Includes the **`tool_calls` migration that replaces `tool_calls_finished_check`** and adds the nonterminal states ADR 0030 §8 requires, so a healthy operator wait, a healthy resource wait and an interrupted attempt are distinguishable. Every table traces to an Accepted ADR and a Phase 3 consumer, as in Phase 2. | M |
+| 2 | `schema-work-hierarchy` | The work-hierarchy schema families: work groups, executions, **dispatch records carrying their dispatch basis** — the governing version set and the incoming dependency basis — and the **Epic and Story dependency graphs** [ADR 0024](../../adr/0024-intake-and-triage-artifact-contract.md) requires persisted, without which the basis has nothing to be compared against and test 2 cannot be falsified. Executions carry **identity and authority only**; their resolved configuration and per-incarnation bindings are [ADR 0032](../../adr/0032-agent-execution-contract.md) §2's, demoted to a design input and settled in items 5/6 against a real consumer. **`runs` moves to item 10** (see the amendment above). Includes the **`tool_calls` migration that replaces `tool_calls_finished_check`** and adds the nonterminal states ADR 0030 §8 requires, so a healthy operator wait, a healthy resource wait and an interrupted attempt are distinguishable. Every table traces to an Accepted ADR and a Phase 3 consumer, as in Phase 2. | M |
 | 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying **Phase 2** item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point — its **prompt-pack half is item 4's**, which is why packs move into this block rather than sitting behind the execution boundary. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
 | 4 | `prompt-packs` | ADR 0031: immutable content records beside mutable installation records, scheme-qualified content identity, resolution once at dispatch, and **organization provisioning seeding the scoped selector — which completes item 3's provisioning rather than amending it later**. Carries `principal_instances.prompt_pack_id`'s three-roles-in-one-column correction and the `"v1-embedded"` foreign-pack case the benchmark importer writes. Placed in block A because packs are plane storage and dispatch-time resolution; nothing here needs the execution boundary. | M |
 
@@ -274,7 +288,7 @@ is not done.
 
 | # | Branch suffix | Deliverable | Size |
 |---|---|---|---|
-| 10 | `work-group-lifecycle` | The single Work Group lifecycle end to end, and the Epic-level plan workflow: decomposition authored by the Architect, reviewed under ADR 0020, dispatched by the Orchestrator. **Tempo-neutral by construction** — no leading-gate assumption anywhere in the lifecycle. | L |
+| 10 | `work-group-lifecycle` | The single Work Group lifecycle end to end, and the Epic-level plan workflow: decomposition authored by the Architect, reviewed under ADR 0020, dispatched by the Orchestrator. **Tempo-neutral by construction** — no leading-gate assumption anywhere in the lifecycle. Carries the **`runs` family moved from item 2**, which is where a run acquires both a definition — its lifetime, cardinality and boundary, none of which any Accepted ADR states — and its first consumer. | L |
 | 11 | `intake-contract` | Feature intake, **contract-only**: a minimal manual path producing ADR 0024's artifacts with provenance. No form, no triage agent, no provisional Work Groups — those are the pre-Phase-5 spike's, and preempting them here is the failure this item is scoped against. | M |
 | 12 | `dashboard-skeleton` | The Epic dashboard skeleton: live state for one Epic — Stories, their executions, and their artifacts — read through the seam. Skeleton means legible, not designed. | M |
 
