@@ -9,8 +9,10 @@ type = "design"
 # Design: Work-Hierarchy Schema And The Dispatch Basis (Item 2)
 
 Status: **draft** — awaiting Codex and DR approval. Follows the Phase 2 precedent
-of a design mini-plan for M-sized items
+of a design mini-plan preceding the DDL
 ([item 3](../phase_2/design_schema_core.md), [item 4](../phase_2/design_queries_artifacts.md)).
+The plan sized this item M; design review resized it **L**, and the reasoning is
+below.
 
 Implements [Phase 3 plan](plan_scope.md) item 2 under
 [ADR 0019](../../adr/0019-orchestrator-boundary.md) as amended (the dispatch
@@ -68,7 +70,7 @@ Created here:
 | `epic_dependencies` | [0024](../../adr/0024-intake-and-triage-artifact-contract.md) — "intake persists the full Epic dependency graph" | Item 11 (intake writes it); item 9 |
 | `story_dependencies` | [0024](../../adr/0024-intake-and-triage-artifact-contract.md) — the Architect owns "its dependency graph within an Epic"; [0019](../../adr/0019-orchestrator-boundary.md) test 2 | Item 9's comparison; item 10 dispatches dependency-ready Stories |
 
-Altered here, all additive: `management_artifacts` gains two scope keys (D7); `stories`, `epics` and `story_dependencies` gain the current-basis pointers (D13); `tool_calls` gains its state, outcome, correlation and requirement columns and loses `succeeded` (D10, D11).
+Altered here: `management_artifacts` gains two scope keys (D7); `stories`, `epics` and `story_dependencies` gain the current-basis pointers (D13). All of those are additive. **`tool_calls` is not** — it gains the state, outcome, correlation and requirement columns, and it **drops `succeeded` and `tool_calls_finished_check`** (D10, D11), which is the one destructive change in this item and the reason its migration is separated and separately reviewed.
 
 Deferred, each with the item that first has a caller:
 
@@ -567,7 +569,26 @@ rule against the requirement set and had it backwards.
 
 The whole column and constraint set migration 000022 adds to `tool_calls`,
 written out rather than described — an earlier draft left the state and outcome
-columns implicit and the object rule as a comment, which is not a constraint:
+columns implicit and the object rule as a comment, which is not a constraint.
+
+**The statement order is part of the design, not an implementation detail.** The
+constraints below cannot be added before the backfill: every existing finished
+row receives `state = 'open'` from the column default and a null `outcome`, so
+`CHECK ((state = 'settled') = (finished_at IS NOT NULL))` would be violated on
+creation and `ADD CONSTRAINT` would fail against any non-empty database. The up
+migration is therefore five ordered steps:
+
+1. **Add the columns**, with `state` defaulting to `'open'` and the rest
+   nullable.
+2. **Backfill** `state` and `outcome` (D11).
+3. **Add the new constraints** — valid only now that no row contradicts them.
+4. **Drop `tool_calls_finished_check`.** It stays satisfied throughout steps 1–3,
+   since nothing before this touches `succeeded` or `finished_at`.
+5. **Drop `succeeded`.**
+
+Steps 3 and 4 are separate and in this order so the record is never
+unconstrained: the new equivalence is in force before the old one is removed,
+rather than the table passing through a window governed by neither.
 
 ```text
 ALTER TABLE tool_calls
@@ -716,7 +737,7 @@ performed, and `open` in no declared wait is precisely what ADR 0030 §8 says a
 reconciler reads as *attempted, outcome unknown*.
 
 **The down migration preserves identity, so it refuses on every state the old
-shape cannot express — not only on the new outcomes.** Three classes, and an
+shape cannot express — not only on the new outcomes.** Four classes, and an
 earlier draft caught only the first:
 
 | Refuses on | Because the old shape would record |
@@ -733,6 +754,23 @@ up, and it fabricates history in the Audit family, which
 [ADR 0021](../../adr/0021-artifacts-and-principal-instances.md) treats as
 evidence. A down migration that corrupts is worse than one that refuses, and
 refusal puts the decision in front of an operator instead of behind a backfill.
+
+**The down migration is ordered too**, and inverting the up steps naively fails
+for the mirror-image reason — re-adding `tool_calls_finished_check` before
+`succeeded` exists and is populated would violate it on creation:
+
+1. **Refuse** if any row falls in the four classes above, aborting the
+   transaction. Everything after this point may assume only `succeeded` and
+   `failed` outcomes and no declared waits.
+2. **Add `succeeded`**, nullable.
+3. **Backfill** it: `'succeeded' → true`, `'failed' → false`, and `open` rows —
+   which have no outcome — back to null with `finished_at` already null.
+4. **Re-add `tool_calls_finished_check`**, now satisfiable by construction.
+5. **Drop** the new constraints and columns.
+
+Step 1 is what makes steps 3 and 4 total rather than best-effort: without it the
+backfill would have to invent a boolean for a value that has none, which is the
+corruption the refusal exists to prevent.
 
 ### D12. What item 2 must not foreclose
 
@@ -890,7 +928,7 @@ Recorded here because this design creates them, tested where the code lands.
 | Basis detects a **no-op** amendment | 9 | An amendment leaving the view byte-identical: the digest still matches and only the sequence moves. This is the case a digest-only reference fails, and the reason D7 keeps both halves |
 | Basis detects an added predecessor and a re-satisfied edge | 9 | An already-satisfied predecessor inserted; a predecessor's completion amended |
 | Acyclicity holds under concurrent opposing writers | 9 | Two transactions inserting A→B and B→A with the interleaving **forced**, not raced. Note this is a database serialization anomaly, not a Go data race: `-race` cannot observe it, and a passing `-race` run is not evidence about it |
-| Repointing a governing artifact or satisfying completion linearizes with superseding affected executions' authority | 9 | D13. The window to prove absent is the one ADR 0019 names: a basis component already authoritative while an affected execution still holds usable authority |
+| **Every** dispatch-basis transition linearizes with superseding affected executions' authority — all eight paths enumerated below | 9 | D13. Not repoints alone. The window to prove absent is the one ADR 0019 names: a basis component already authoritative while an affected execution still holds usable authority |
 | The requirement identity vocabulary, and the digest's invariance under reordering | 5 | Item 5 defines the keys; the test is that two evaluations collecting the same requirements in different orders produce the same digest |
 | `arguments` becomes ADR 0030 §3's persisted projection | 5 | Declared-safe fields plus the substituted-input digest. Until then the column is verbatim and non-conforming, which is recorded rather than silently carried |
 
@@ -898,6 +936,28 @@ The last row is the correction that matters most in this section. A draft
 proposed proving the acyclicity guard "under the race detector", which would have
 produced a green run that says nothing about write skew between two Postgres
 transactions.
+
+**The eight basis transitions, each owing item 9 a forced-interleaving test.** A
+draft listed only the two pointer repoints, which would have left six paths
+tested for *detection* and none for *linearization* — and ADR 0019 is explicit
+that detection is not the property: "the moment the changed dispatch basis
+becomes authoritative, the old authority of every execution it affects is already
+unusable." A comparison that eventually notices still admits the window.
+
+| # | Transition | Half of the basis |
+| --- | --- | --- |
+| 1 | A Story amendment is accepted | Test 1 — the Story's effective version moves |
+| 2 | A governing **Epic** amendment is accepted | Test 1 — reaches every execution beneath it, the ordinary case ADR 0019 is named for |
+| 3 | `stories.governing_artifact_id` is repointed | Test 1 |
+| 4 | `epics.governing_artifact_id` is repointed | Test 1 |
+| 5 | A predecessor edge is **inserted** — including an already-satisfied one | Test 2 — "any change, without asking whether it was a harmless one" |
+| 6 | A predecessor edge is **removed** | Test 2 — and it introduces no new component, which is why ADR 0019 states the rule over the changed basis rather than over a new one |
+| 7 | A predecessor edge is **replaced** | Test 2 |
+| 8 | A satisfying completion is repointed, or that completion's own effective view moves | Test 2 — "the last of those moves no record anyone would call amended" |
+
+Transitions 2, 5, 6 and 8 are the ones most likely to be missed, because none of
+them touches the Story's own record: under each, ADR 0030's Story-version check
+passes while the basis has already moved.
 
 ## Open questions — resolved
 
