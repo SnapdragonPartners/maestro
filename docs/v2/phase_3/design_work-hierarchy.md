@@ -39,9 +39,10 @@ document and an ADR disagree, the ADR wins.
 Item 2 delivers migrations and schema. Typed queries and the seam wiring are
 item 3's; only the table shapes land here.
 
-**Item 2 is an L, not the M the plan sized it.** Six new tables, additive changes
-to four existing ones, a backfill, a refusing down migration, and cross-table
-lineage constraints throughout. It stays **one plan item** — splitting the item
+**Item 2 is an L, not the M the plan sized it.** Six new tables and changes to
+four existing ones — additive on three, **destructive on `tool_calls`**, which
+drops a column and a constraint — plus a backfill, a refusing down migration, and
+cross-table lineage constraints throughout. It stays **one plan item** — splitting the item
 would put the `tool_calls` record contract in a different review from the
 executions table it correlates to — but implementation lands as **two migrations
 reviewed in sequence**:
@@ -937,8 +938,8 @@ proposed proving the acyclicity guard "under the race detector", which would hav
 produced a green run that says nothing about write skew between two Postgres
 transactions.
 
-**The eight basis transitions, each owing item 9 a forced-interleaving test.** A
-draft listed only the two pointer repoints, which would have left six paths
+**The nine basis transitions, each owing item 9 a forced-interleaving test.** A
+draft listed only the two pointer repoints, which would have left seven paths
 tested for *detection* and none for *linearization* — and ADR 0019 is explicit
 that detection is not the property: "the moment the changed dispatch basis
 becomes authoritative, the old authority of every execution it affects is already
@@ -953,11 +954,19 @@ unusable." A comparison that eventually notices still admits the window.
 | 5 | A predecessor edge is **inserted** — including an already-satisfied one | Test 2 — "any change, without asking whether it was a harmless one" |
 | 6 | A predecessor edge is **removed** | Test 2 — and it introduces no new component, which is why ADR 0019 states the rule over the changed basis rather than over a new one |
 | 7 | A predecessor edge is **replaced** | Test 2 |
-| 8 | A satisfying completion is repointed, or that completion's own effective view moves | Test 2 — "the last of those moves no record anyone would call amended" |
+| 8 | A satisfying completion is **repointed** — a write to the edge row | Test 2 |
+| 9 | An amendment to the satisfying completion is **accepted**, moving its effective view — a write to `management_artifacts` | Test 2 — "the last of those moves no record anyone would call amended" |
 
-Transitions 2, 5, 6 and 8 are the ones most likely to be missed, because none of
-them touches the Story's own record: under each, ADR 0030's Story-version check
-passes while the basis has already moved.
+**Transitions 8 and 9 are separate because they are separate writers.** One
+updates the edge row, the other accepts an artifact — different code paths,
+different rows, different locks — so a single forced-interleaving test can cover
+one and leave the other wide open. A draft combined them, which also made row 8
+inconsistent with rows 1-4, where amendment acceptance and repointing are already
+distinguished for exactly this reason.
+
+Transitions 2, 5, 6, 8 and 9 are the ones most likely to be missed, because none
+of them touches the Story's own record: under each, ADR 0030's Story-version
+check passes while the basis has already moved.
 
 ## Open questions — resolved
 

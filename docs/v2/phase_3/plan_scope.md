@@ -40,8 +40,10 @@ unaffected: ADR 0018 defines it and item 3 consumes it. See
 [the item 2 design](design_work-hierarchy.md) D2.
 
 **The same amendment resizes item 2 from M to L.** Design review established that
-the item is six new tables, additive changes to four existing ones, a backfill, a
-refusing down migration and cross-table lineage constraints throughout — the last
+the item is six new tables and changes to four existing ones — additive on three,
+**destructive on `tool_calls`**, which drops `succeeded` and
+`tool_calls_finished_check` — plus a backfill, a refusing down migration and
+cross-table lineage constraints throughout — the last
 of these because ADR 0019's comparison is not computable without the current-basis
 pointers, which the one-line deliverable did not anticipate. It stays **one item**
 rather than splitting, since the `tool_calls` record contract and the executions
