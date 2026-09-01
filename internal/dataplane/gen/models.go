@@ -117,15 +117,55 @@ type DeletionClaim struct {
 	ClaimedAt       pgtype.Timestamptz
 }
 
+type DispatchBasisDependency struct {
+	StoryDispatchID             pgtype.UUID
+	OrganizationID              pgtype.UUID
+	ProductID                   pgtype.UUID
+	FeatureID                   pgtype.UUID
+	EpicID                      pgtype.UUID
+	PredecessorStoryID          pgtype.UUID
+	CompletionArtifactID        pgtype.UUID
+	CompletionIsAmendment       bool
+	CompletionEffectiveDigest   string
+	CompletionEffectiveSequence int32
+}
+
 type Epic struct {
-	EpicID         pgtype.UUID
-	OrganizationID pgtype.UUID
-	UserID         pgtype.UUID
-	ProductID      pgtype.UUID
-	FeatureID      pgtype.UUID
-	RepositoryID   pgtype.UUID
-	Title          string
-	CreatedAt      pgtype.Timestamptz
+	EpicID                     pgtype.UUID
+	OrganizationID             pgtype.UUID
+	UserID                     pgtype.UUID
+	ProductID                  pgtype.UUID
+	FeatureID                  pgtype.UUID
+	RepositoryID               pgtype.UUID
+	Title                      string
+	CreatedAt                  pgtype.Timestamptz
+	GoverningArtifactID        pgtype.UUID
+	GoverningIsAmendment       bool
+	GoverningEffectiveDigest   *string
+	GoverningEffectiveSequence *int32
+}
+
+type EpicDependency struct {
+	OrganizationID    pgtype.UUID
+	ProductID         pgtype.UUID
+	FeatureID         pgtype.UUID
+	SuccessorEpicID   pgtype.UUID
+	PredecessorEpicID pgtype.UUID
+	CreatedAt         pgtype.Timestamptz
+}
+
+type Execution struct {
+	ExecutionID        pgtype.UUID
+	OrganizationID     pgtype.UUID
+	ProductID          pgtype.UUID
+	FeatureID          pgtype.UUID
+	EpicID             pgtype.UUID
+	StoryID            pgtype.UUID
+	StoryDispatchID    pgtype.UUID
+	DispatchIsAccepted bool
+	AuthorityState     string
+	AdmissionClosedAt  pgtype.Timestamptz
+	CreatedAt          pgtype.Timestamptz
 }
 
 type Feature struct {
@@ -312,14 +352,56 @@ type StagingLease struct {
 }
 
 type Story struct {
-	StoryID        pgtype.UUID
-	OrganizationID pgtype.UUID
-	UserID         pgtype.UUID
-	ProductID      pgtype.UUID
-	FeatureID      pgtype.UUID
-	EpicID         pgtype.UUID
-	Title          string
-	CreatedAt      pgtype.Timestamptz
+	StoryID                    pgtype.UUID
+	OrganizationID             pgtype.UUID
+	UserID                     pgtype.UUID
+	ProductID                  pgtype.UUID
+	FeatureID                  pgtype.UUID
+	EpicID                     pgtype.UUID
+	Title                      string
+	CreatedAt                  pgtype.Timestamptz
+	GoverningArtifactID        pgtype.UUID
+	GoverningIsAmendment       bool
+	GoverningEffectiveDigest   *string
+	GoverningEffectiveSequence *int32
+}
+
+type StoryDependency struct {
+	OrganizationID                        pgtype.UUID
+	ProductID                             pgtype.UUID
+	FeatureID                             pgtype.UUID
+	EpicID                                pgtype.UUID
+	SuccessorStoryID                      pgtype.UUID
+	PredecessorStoryID                    pgtype.UUID
+	CreatedAt                             pgtype.Timestamptz
+	SatisfyingCompletionArtifactID        pgtype.UUID
+	SatisfyingCompletionIsAmendment       bool
+	SatisfyingCompletionEffectiveDigest   *string
+	SatisfyingCompletionEffectiveSequence *int32
+}
+
+type StoryDispatch struct {
+	StoryDispatchID               pgtype.UUID
+	OrganizationID                pgtype.UUID
+	ProductID                     pgtype.UUID
+	FeatureID                     pgtype.UUID
+	EpicID                        pgtype.UUID
+	StoryID                       pgtype.UUID
+	WorkGroupID                   pgtype.UUID
+	DispatchedAt                  pgtype.Timestamptz
+	Disposition                   string
+	IsAccepted                    bool
+	SettledAt                     pgtype.Timestamptz
+	FailureCode                   *string
+	FailureDetail                 *string
+	StoryVersionArtifactID        pgtype.UUID
+	StoryVersionIsAmendment       bool
+	StoryVersionEffectiveDigest   string
+	StoryVersionEffectiveSequence int32
+	EpicVersionArtifactID         pgtype.UUID
+	EpicVersionIsAmendment        bool
+	EpicVersionEffectiveDigest    string
+	EpicVersionEffectiveSequence  int32
 }
 
 type ToolCall struct {
@@ -347,5 +429,14 @@ type User struct {
 	OrganizationID pgtype.UUID
 	Handle         string
 	DisplayName    string
+	CreatedAt      pgtype.Timestamptz
+}
+
+type WorkGroup struct {
+	WorkGroupID    pgtype.UUID
+	OrganizationID pgtype.UUID
+	ProductID      pgtype.UUID
+	FeatureID      pgtype.UUID
+	EpicID         pgtype.UUID
 	CreatedAt      pgtype.Timestamptz
 }
