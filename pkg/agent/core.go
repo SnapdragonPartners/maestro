@@ -51,9 +51,6 @@ type (
 	// LLMConfig represents configuration for LLM clients.
 	LLMConfig = llm.LLMConfig
 
-	// StateStore represents state persistence interface.
-	StateStore = core.StateStore
-
 	// TransitionTable represents state machine transition rules.
 	TransitionTable = core.TransitionTable
 )
@@ -100,8 +97,8 @@ func ValidateAndSanitizeMessages(messages []CompletionMessage) ([]CompletionMess
 }
 
 // NewBaseStateMachine creates a new base state machine.
-func NewBaseStateMachine(agentID string, initialState proto.State, store core.StateStore, table core.TransitionTable) *BaseStateMachine {
-	return core.NewBaseStateMachine(agentID, initialState, store, table)
+func NewBaseStateMachine(agentID string, initialState proto.State, table core.TransitionTable) *BaseStateMachine {
+	return core.NewBaseStateMachine(agentID, initialState, table)
 }
 
 // NewConfig creates a new agent configuration.

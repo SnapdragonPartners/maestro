@@ -36,7 +36,7 @@ func createBasicCoder(t *testing.T) *Coder {
 	})
 
 	// Create BaseStateMachine
-	sm := agent.NewBaseStateMachine(agentConfig.ID, proto.StateWaiting, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine(agentConfig.ID, proto.StateWaiting, CoderTransitions)
 
 	return &Coder{
 		BaseStateMachine: sm,

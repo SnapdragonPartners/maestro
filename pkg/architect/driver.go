@@ -184,7 +184,7 @@ func NewDriver(architectID, _ string, dispatcher *dispatch.Dispatcher, workDir s
 	logger := logx.NewLogger(architectID)
 
 	// Create BaseStateMachine with architect transition table
-	sm := agent.NewBaseStateMachine(architectID, StateWaiting, nil, architectTransitions)
+	sm := agent.NewBaseStateMachine(architectID, StateWaiting, architectTransitions)
 
 	// Create driver-level context for graceful shutdown of background tasks
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())

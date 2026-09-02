@@ -17,7 +17,7 @@ func TestEnterSuspend(t *testing.T) {
 	}
 
 	t.Run("enters suspend from WORKING", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.State("WORKING"), nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.State("WORKING"), testTable)
 		ctx := context.Background()
 
 		err := sm.EnterSuspend(ctx)
@@ -40,7 +40,7 @@ func TestEnterSuspend(t *testing.T) {
 	})
 
 	t.Run("rejects suspend from DONE", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateDone, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateDone, testTable)
 		ctx := context.Background()
 
 		err := sm.EnterSuspend(ctx)
@@ -50,7 +50,7 @@ func TestEnterSuspend(t *testing.T) {
 	})
 
 	t.Run("rejects suspend from ERROR", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateError, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateError, testTable)
 		ctx := context.Background()
 
 		err := sm.EnterSuspend(ctx)
@@ -60,7 +60,7 @@ func TestEnterSuspend(t *testing.T) {
 	})
 
 	t.Run("rejects suspend from SUSPEND", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		ctx := context.Background()
 
 		err := sm.EnterSuspend(ctx)
@@ -79,7 +79,7 @@ func TestHandleSuspend(t *testing.T) {
 	}
 
 	t.Run("returns to originating state on restore signal", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		sm.SetStateData(KeySuspendedFrom, proto.State("WORKING"))
 
 		// Create a restore channel and send signal
@@ -104,7 +104,7 @@ func TestHandleSuspend(t *testing.T) {
 	})
 
 	t.Run("returns ERROR on timeout", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		sm.SetStateData(KeySuspendedFrom, proto.State("WORKING"))
 		sm.SetSuspendTimeout(50 * time.Millisecond) // Very short timeout for test
 
@@ -124,7 +124,7 @@ func TestHandleSuspend(t *testing.T) {
 	})
 
 	t.Run("returns ERROR when no restore channel", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		sm.SetStateData(KeySuspendedFrom, proto.State("WORKING"))
 		// Don't set restore channel
 
@@ -140,7 +140,7 @@ func TestHandleSuspend(t *testing.T) {
 	})
 
 	t.Run("returns ERROR when context cancelled", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		sm.SetStateData(KeySuspendedFrom, proto.State("WORKING"))
 
 		restoreCh := make(chan struct{}, 1)
@@ -160,7 +160,7 @@ func TestHandleSuspend(t *testing.T) {
 	})
 
 	t.Run("returns ERROR when KeySuspendedFrom not set", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		// Don't set KeySuspendedFrom
 
 		restoreCh := make(chan struct{}, 1)
@@ -186,14 +186,14 @@ func TestIsSuspended(t *testing.T) {
 	}
 
 	t.Run("returns true when suspended", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateSuspend, testTable)
 		if !sm.IsSuspended() {
 			t.Error("expected IsSuspended to return true when in SUSPEND state")
 		}
 	})
 
 	t.Run("returns false when not suspended", func(t *testing.T) {
-		sm := NewBaseStateMachine("test-agent", proto.StateWaiting, nil, testTable)
+		sm := NewBaseStateMachine("test-agent", proto.StateWaiting, testTable)
 		if sm.IsSuspended() {
 			t.Error("expected IsSuspended to return false when not in SUSPEND state")
 		}

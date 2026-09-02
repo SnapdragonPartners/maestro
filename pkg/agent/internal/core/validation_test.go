@@ -54,7 +54,7 @@ func TestIsValidTransition(t *testing.T) {
 		proto.State("WORKING"): {proto.StateDone},
 	}
 
-	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, nil, testTable)
+	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, testTable)
 
 	tests := []struct {
 		name   string
@@ -169,7 +169,7 @@ func TestTransitionToWithValidation(t *testing.T) {
 		proto.StateDone:    {proto.StateWaiting},
 	}
 
-	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, nil, testTable)
+	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, testTable)
 	ctx := context.Background()
 
 	// Valid transition
@@ -219,7 +219,7 @@ func TestSuspendStateTransitions(t *testing.T) {
 		proto.StateSuspend:     {}, // Empty - SUSPEND can only return to originating state
 	}
 
-	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, nil, testTable)
+	sm := NewBaseStateMachine("test-agent", proto.StateWaiting, testTable)
 
 	tests := []struct {
 		name   string
@@ -271,7 +271,7 @@ func TestSuspendReturnToOriginatingState(t *testing.T) {
 		proto.StateSuspend:     {}, // Will use special validation
 	}
 
-	sm := NewBaseStateMachine("test-agent", proto.State("WORKING"), nil, testTable)
+	sm := NewBaseStateMachine("test-agent", proto.State("WORKING"), testTable)
 
 	// Set the originating state as if we entered SUSPEND from WORKING
 	sm.SetStateData(KeySuspendedFrom, proto.State("WORKING"))

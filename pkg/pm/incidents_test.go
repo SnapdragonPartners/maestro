@@ -12,7 +12,7 @@ import (
 
 // createIncidentTestDriver creates a minimal PM driver with openIncidents initialized.
 func createIncidentTestDriver() *Driver {
-	sm := agent.NewBaseStateMachine("pm-test", StateWorking, nil, validTransitions)
+	sm := agent.NewBaseStateMachine("pm-test", StateWorking, validTransitions)
 	return &Driver{
 		BaseStateMachine: sm,
 		contextManager:   contextmgr.NewContextManager(),

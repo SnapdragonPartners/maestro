@@ -49,7 +49,7 @@ func TestBudgetReviewOriginStatePersistence(t *testing.T) {
 			logger := logx.NewLogger("coder-test")
 
 			// Create a test state machine
-			sm := agent.NewBaseStateMachine("test-coder", tt.originState, nil, CoderTransitions)
+			sm := agent.NewBaseStateMachine("test-coder", tt.originState, CoderTransitions)
 			sm.SetStateData(KeyStoryID, "test-story-123")
 
 			// Create a minimal coder instance for testing
@@ -169,7 +169,7 @@ func TestBudgetReviewNeedsChangesTransition(t *testing.T) {
 			logger := logx.NewLogger("coder-test")
 
 			// Create a test state machine
-			sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+			sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, CoderTransitions)
 			sm.SetStateData(KeyStoryID, "test-story-123")
 
 			// Set origin state
@@ -207,7 +207,7 @@ func TestBudgetReviewEmptyOrigin(t *testing.T) {
 	logger := logx.NewLogger("coder-test")
 
 	// Create a test state machine
-	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, CoderTransitions)
 	sm.SetStateData(KeyStoryID, "test-story-123")
 
 	// DO NOT set origin - this reproduces the bug
@@ -246,7 +246,7 @@ func TestBudgetReviewContentRendering(t *testing.T) {
 	logger := logx.NewLogger("coder-test")
 
 	// Create a test state machine
-	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder", StateCoding, CoderTransitions)
 	sm.SetStateData(KeyStoryID, "test-story-123")
 
 	// Create a minimal coder instance with context manager and renderer for budget review content
@@ -417,7 +417,7 @@ func TestFormatToolResultSummary_ErrorFlag(t *testing.T) {
 // TestDetectIssuePattern_WithNativeToolCalls verifies detectIssuePattern works with ToolCalls/ToolResults.
 func TestDetectIssuePattern_WithNativeToolCalls(t *testing.T) {
 	logger := logx.NewLogger("coder-test")
-	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder", StateCoding, CoderTransitions)
 	c := &Coder{
 		BaseStateMachine: sm,
 		logger:           logger,
@@ -486,7 +486,7 @@ func TestFormatMessageForBudgetReview_MultipleToolCalls(t *testing.T) {
 // feedback injects the architect's guidance into the coder's context.
 func TestBudgetReviewApproved_NonEmptyFeedbackInjected(t *testing.T) {
 	logger := logx.NewLogger("coder-test")
-	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, CoderTransitions)
 	sm.SetStateData(KeyOrigin, string(StateCoding))
 
 	renderer, rendererErr := templates.NewRenderer()
@@ -550,7 +550,7 @@ func TestBudgetReviewApproved_NonEmptyFeedbackInjected(t *testing.T) {
 // does NOT inject anything into the coder's context.
 func TestBudgetReviewApproved_EmptyFeedbackNoOp(t *testing.T) {
 	logger := logx.NewLogger("coder-test")
-	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, CoderTransitions)
 	sm.SetStateData(KeyOrigin, string(StateCoding))
 
 	renderer, rendererErr := templates.NewRenderer()
@@ -615,7 +615,7 @@ func TestBudgetReviewCompletedAtTimestamp(t *testing.T) {
 	logger := logx.NewLogger("coder-test")
 
 	// Create a test state machine
-	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder", StateBudgetReview, CoderTransitions)
 	sm.SetStateData(KeyOrigin, string(StateCoding))
 
 	// Create minimal coder instance

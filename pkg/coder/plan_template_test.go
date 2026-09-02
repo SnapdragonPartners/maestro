@@ -13,7 +13,7 @@ func TestPlanInclusionInCodingTemplate(t *testing.T) {
 	// Test that plan from PLANNING state is included in CODING template data
 
 	// Create a mock state machine with plan data
-	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil)
 
 	// Store test plan data (simulates PLANNING state storing plan)
 	testPlan := `## Implementation Plan
@@ -107,7 +107,7 @@ func TestPlanInclusionInCodingTemplate(t *testing.T) {
 func TestPlanInclusionWithEmptyPlan(t *testing.T) {
 	// Test behavior when plan is missing or empty
 
-	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil)
 
 	// Set task content but leave plan empty
 	sm.SetStateData(string(stateDataKeyTaskContent), "Test Task")

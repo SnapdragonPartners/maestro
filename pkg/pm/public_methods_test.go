@@ -14,7 +14,7 @@ import (
 // createTestDriver creates a minimal PM driver for testing public methods.
 // Uses NewBaseStateMachine directly to avoid needing all dependencies.
 func createTestDriver(initialState proto.State) *Driver {
-	sm := agent.NewBaseStateMachine("pm-test", initialState, nil, validTransitions)
+	sm := agent.NewBaseStateMachine("pm-test", initialState, validTransitions)
 	return &Driver{
 		BaseStateMachine: sm,
 		contextManager:   contextmgr.NewContextManager(),

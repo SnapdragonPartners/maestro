@@ -13,7 +13,7 @@ func TestDoneToolEffectsLogic(t *testing.T) {
 	// Test the done tool Effects-based logic
 
 	// Create a mock state machine
-	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil)
 
 	// Set up initial state data
 	sm.SetStateData(string(stateDataKeyTaskContent), "Test Task")
@@ -117,7 +117,7 @@ func TestCompletionEffectPriorityLogic(t *testing.T) {
 	// Test that completion effect takes priority over other completion checks
 
 	// Create a mock state machine
-	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil)
 
 	// Set up state to simulate both completion signal and other completion indicators
 	completionResult := &effect.CompletionResult{

@@ -5,7 +5,6 @@ import (
 	"context"
 	"log"
 
-	"orchestrator/pkg/agent/internal/core"
 	"orchestrator/pkg/agent/llm"
 	"orchestrator/pkg/proto"
 )
@@ -46,7 +45,6 @@ type Context struct {
 	Context   context.Context //nolint:containedctx // Shared context container by design
 	Logger    *log.Logger
 	LLMClient llm.LLMClient
-	Store     core.StateStore
 	WorkDir   string
 }
 

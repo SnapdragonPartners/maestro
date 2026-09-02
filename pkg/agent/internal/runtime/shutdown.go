@@ -207,11 +207,6 @@ func (d *ShutdownableDriver) Run(ctx context.Context) error {
 func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
 	// Try to transition to a safe state before shutting down.
 	if d.GetCurrentState() != proto.StateDone && d.GetCurrentState() != proto.StateError {
-		// Attempt to save current work.
-		if err := d.Persist(); err != nil {
-			d.config.Context.Logger.Printf("Warning: failed to persist state during shutdown: %v", err)
-		}
-
 		// Mark state as interrupted for later resume.
 		metadata := map[string]any{
 			"shutdown_reason": "graceful_shutdown",
@@ -229,11 +224,6 @@ func (d *ShutdownableDriver) handleShutdown(ctx context.Context) error {
 
 // Shutdown implements ShutdownComponent interface.
 func (d *ShutdownableDriver) Shutdown(ctx context.Context) error {
-	// Persist final state.
-	if err := d.Persist(); err != nil {
-		return fmt.Errorf("failed to persist final state: %w", err)
-	}
-
 	// Mark as cleanly shutdown.
 	metadata := map[string]any{
 		"shutdown_clean": true,
@@ -280,9 +270,5 @@ func (d *ShutdownableDriver) Resume(_ context.Context) error {
 	baseStateMachine2.SetStateData("shutdown_reason", nil)
 	baseStateMachine2.SetStateData("can_resume", false)
 
-	// Persist the clean state.
-	if err := d.Persist(); err != nil {
-		return fmt.Errorf("failed to persist state after cleanup: %w", err)
-	}
 	return nil
 }

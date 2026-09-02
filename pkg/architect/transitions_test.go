@@ -64,7 +64,7 @@ func TestAllValidTransitions(t *testing.T) {
 		for _, toState := range toStates {
 			t.Run(fromState.String()+"->"+toState.String(), func(t *testing.T) {
 				// Create a minimal architect driver in the source state
-				sm := agent.NewBaseStateMachine("architect-test", fromState, nil, architectTransitions)
+				sm := agent.NewBaseStateMachine("architect-test", fromState, architectTransitions)
 				driver := &Driver{
 					BaseStateMachine: sm,
 				}
@@ -113,7 +113,7 @@ func TestInvalidTransitions(t *testing.T) {
 	for _, tt := range invalidTransitions {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create a minimal architect driver in the source state
-			sm := agent.NewBaseStateMachine("architect-test", tt.from, nil, architectTransitions)
+			sm := agent.NewBaseStateMachine("architect-test", tt.from, architectTransitions)
 			driver := &Driver{
 				BaseStateMachine: sm,
 			}
@@ -166,7 +166,7 @@ func TestTransitionTableCompleteness(t *testing.T) {
 // matches what GetValidStates() returns (catches inconsistencies).
 func TestStateSymmetryWithDocumentation(t *testing.T) {
 	// Create a driver to access GetValidStates()
-	sm := agent.NewBaseStateMachine("architect-test", StateWaiting, nil, architectTransitions)
+	sm := agent.NewBaseStateMachine("architect-test", StateWaiting, architectTransitions)
 	driver := &Driver{
 		BaseStateMachine: sm,
 	}
@@ -199,7 +199,7 @@ func TestStateSymmetryWithDocumentation(t *testing.T) {
 // TestTransitionValidation tests the ValidateState method to ensure it
 // properly accepts valid states and rejects invalid ones.
 func TestTransitionValidation(t *testing.T) {
-	sm := agent.NewBaseStateMachine("architect-test", StateWaiting, nil, architectTransitions)
+	sm := agent.NewBaseStateMachine("architect-test", StateWaiting, architectTransitions)
 	driver := &Driver{
 		BaseStateMachine: sm,
 	}
@@ -302,7 +302,7 @@ func TestCriticalTransitions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sm := agent.NewBaseStateMachine("architect-test", tt.from, nil, architectTransitions)
+			sm := agent.NewBaseStateMachine("architect-test", tt.from, architectTransitions)
 			driver := &Driver{
 				BaseStateMachine: sm,
 			}

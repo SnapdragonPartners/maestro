@@ -204,7 +204,7 @@ func NewPM(
 	}
 
 	// Create BaseStateMachine with PM transition table
-	sm := agent.NewBaseStateMachine(pmID, StateWaiting, nil, validTransitions)
+	sm := agent.NewBaseStateMachine(pmID, StateWaiting, validTransitions)
 
 	// Set initial state data with repository availability
 	sm.SetStateData(StateKeyHasRepository, hasRepository)
@@ -252,7 +252,7 @@ func NewDriver(
 	workDir string,
 ) *Driver {
 	// Create BaseStateMachine with PM transition table
-	sm := agent.NewBaseStateMachine(pmID, StateWaiting, nil, validTransitions)
+	sm := agent.NewBaseStateMachine(pmID, StateWaiting, validTransitions)
 
 	// Set LLM client via BaseStateMachine
 	if llmClient != nil {

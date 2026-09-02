@@ -25,7 +25,7 @@ func newTestChatService() *chat.Service {
 // newTestDriverWithDevChat creates a test driver wired with a dev chat service.
 func newTestDriverWithDevChat(chatSvc *chat.Service) *Driver {
 	persistCh := make(chan<- *persistence.Request, 10)
-	baseSM := agent.NewBaseStateMachine("test-arch", StateWaiting, nil, architectTransitions)
+	baseSM := agent.NewBaseStateMachine("test-arch", StateWaiting, architectTransitions)
 
 	// Create minimal dispatcher with config
 	cfg := &config.Config{

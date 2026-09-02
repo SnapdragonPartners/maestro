@@ -90,7 +90,7 @@ func (m *mockChatService) lastPostCall() *ChatPostRequest {
 
 // TestHandleEscalated_NoChatService verifies error when chat service is not available.
 func TestHandleEscalated_NoChatService(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil)
 	baseSM.SetStateData(StateKeyEscalationOriginState, "REQUEST")
 	baseSM.SetStateData(StateKeyEscalationIterationCount, 10)
 
@@ -109,7 +109,7 @@ func TestHandleEscalated_NoChatService(t *testing.T) {
 
 // TestHandleEscalated_MissingOriginState verifies error when origin state is missing.
 func TestHandleEscalated_MissingOriginState(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil)
 	// Don't set origin state
 	baseSM.SetStateData(StateKeyEscalationIterationCount, 10)
 
@@ -130,7 +130,7 @@ func TestHandleEscalated_MissingOriginState(t *testing.T) {
 
 // TestHandleEscalated_PostsEscalationMessage verifies escalation message is posted.
 func TestHandleEscalated_PostsEscalationMessage(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil)
 	baseSM.SetStateData(StateKeyEscalationOriginState, "REQUEST")
 	baseSM.SetStateData(StateKeyEscalationIterationCount, 16)
 	baseSM.SetStateData(StateKeyEscalationRequestID, "req-123")
@@ -174,7 +174,7 @@ func TestHandleEscalated_PostsEscalationMessage(t *testing.T) {
 
 // TestHandleEscalated_ReceivesReply verifies transition back to REQUEST after receiving reply.
 func TestHandleEscalated_ReceivesReply(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil)
 	baseSM.SetStateData(StateKeyEscalationOriginState, "REQUEST")
 	baseSM.SetStateData(StateKeyEscalationIterationCount, 16)
 	baseSM.SetStateData(StateKeyEscalationRequestID, "req-123")
@@ -223,7 +223,7 @@ func TestHandleEscalated_ReceivesReply(t *testing.T) {
 
 // TestHandleEscalated_PostError verifies error handling when post fails.
 func TestHandleEscalated_PostError(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil)
 	baseSM.SetStateData(StateKeyEscalationOriginState, "REQUEST")
 	baseSM.SetStateData(StateKeyEscalationIterationCount, 16)
 
@@ -247,7 +247,7 @@ func TestHandleEscalated_PostError(t *testing.T) {
 
 // TestHandleEscalated_NoReplyYet verifies staying in ESCALATED when no reply received.
 func TestHandleEscalated_NoReplyYet(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateEscalated, nil)
 	baseSM.SetStateData(StateKeyEscalationOriginState, "REQUEST")
 	baseSM.SetStateData(StateKeyEscalationIterationCount, 16)
 	// Simulate already having posted the escalation message
