@@ -84,25 +84,6 @@ func checkDisplayName(kind, value string) error {
 	return nil
 }
 
-func organizationFromRow(row *gen.Organization) store.Organization {
-	return store.Organization{
-		CreatedAt:      fromTimestamptz(row.CreatedAt),
-		Slug:           row.Slug,
-		DisplayName:    row.DisplayName,
-		OrganizationID: fromUUID(row.OrganizationID),
-	}
-}
-
-func userFromRow(row *gen.User) store.User {
-	return store.User{
-		CreatedAt:      fromTimestamptz(row.CreatedAt),
-		Handle:         row.Handle,
-		DisplayName:    row.DisplayName,
-		UserID:         fromUUID(row.UserID),
-		OrganizationID: fromUUID(row.OrganizationID),
-	}
-}
-
 func benchmarkRunFromRow(row *gen.BenchmarkRun) store.BenchmarkRun {
 	return store.BenchmarkRun{
 		FirstImportedAt: fromTimestamptz(row.FirstImportedAt),
@@ -123,110 +104,6 @@ func benchmarkAttemptFromRow(row *gen.BenchmarkAttempt) store.BenchmarkAttempt {
 		BenchmarkRunID:     fromUUID(row.BenchmarkRunID),
 		AuditArtifactID:    fromUUID(row.AuditArtifactID),
 	}
-}
-
-// GetOrganizationBySlug resolves a tenant by its slug.
-func (t *tx) GetOrganizationBySlug(ctx context.Context, slug string) (*store.Organization, error) {
-	row, err := t.queries.GetOrganizationBySlug(ctx, slug)
-	if err != nil {
-		return nil, notFoundByName(err, "organization", slug)
-	}
-	organization := organizationFromRow(&row)
-	return &organization, nil
-}
-
-// GetUserByHandle resolves an accountable human within one tenant.
-func (t *tx) GetUserByHandle(ctx context.Context, organizationID uuid.UUID, handle string) (*store.User, error) {
-	row, err := t.queries.GetUserByHandle(ctx, gen.GetUserByHandleParams{
-		OrganizationID: toUUID(organizationID),
-		Handle:         handle,
-	})
-	if err != nil {
-		return nil, notFoundByName(err, "user", handle)
-	}
-	user := userFromRow(&row)
-	return &user, nil
-}
-
-// BootstrapOrganization provisions a tenant, idempotently.
-//
-// Insert-or-nothing THEN read, never check-then-insert: two operators running
-// this at once would both observe no row, both insert, and one would receive
-// a raw uniqueness violation — an outcome that is neither "created" nor
-// "already existed" and that leaks a driver error through the seam. Here the
-// unique constraint decides who wins and the read that follows is what both
-// callers compare against, so they converge (ADR 0027: serialize on a key
-// matching the resource, never last-writer-wins).
-func (t *tx) BootstrapOrganization(ctx context.Context, input store.BootstrapOrganizationInput) (store.Bootstrapped[store.Organization], error) {
-	var empty store.Bootstrapped[store.Organization]
-	if err := checkIdentifier("organization slug", input.Slug); err != nil {
-		return empty, err
-	}
-	if err := checkDisplayName("organization", input.DisplayName); err != nil {
-		return empty, err
-	}
-	identifier, err := newIdentifier(uuid.Nil)
-	if err != nil {
-		return empty, err
-	}
-	inserted, err := t.queries.InsertOrganizationIfAbsent(ctx, gen.InsertOrganizationIfAbsentParams{
-		OrganizationID: toUUID(identifier),
-		Slug:           input.Slug,
-		DisplayName:    input.DisplayName,
-	})
-	if err != nil {
-		return empty, fmt.Errorf("insert organization %q: %w", input.Slug, err)
-	}
-	stored, err := t.GetOrganizationBySlug(ctx, input.Slug)
-	if err != nil {
-		return empty, err
-	}
-	// Compared against the STORED row rather than against our own insert:
-	// the row that is there may be the other racer's, and it is that one the
-	// caller must be told about.
-	if stored.DisplayName != input.DisplayName {
-		return empty, &store.BootstrapConflict{
-			Kind: "organization", Key: input.Slug,
-			Stored: stored.DisplayName, Supplied: input.DisplayName,
-		}
-	}
-	return store.Bootstrapped[store.Organization]{Record: *stored, Created: inserted == 1}, nil
-}
-
-// BootstrapUser provisions an accountable human, idempotently. Same shape and
-// same reasoning as BootstrapOrganization.
-func (t *tx) BootstrapUser(ctx context.Context, input store.BootstrapUserInput) (store.Bootstrapped[store.User], error) {
-	var empty store.Bootstrapped[store.User]
-	if err := checkIdentifier("user handle", input.Handle); err != nil {
-		return empty, err
-	}
-	if err := checkDisplayName("user", input.DisplayName); err != nil {
-		return empty, err
-	}
-	identifier, err := newIdentifier(uuid.Nil)
-	if err != nil {
-		return empty, err
-	}
-	inserted, err := t.queries.InsertUserIfAbsent(ctx, gen.InsertUserIfAbsentParams{
-		UserID:         toUUID(identifier),
-		OrganizationID: toUUID(input.OrganizationID),
-		Handle:         input.Handle,
-		DisplayName:    input.DisplayName,
-	})
-	if err != nil {
-		return empty, fmt.Errorf("insert user %q: %w", input.Handle, err)
-	}
-	stored, err := t.GetUserByHandle(ctx, input.OrganizationID, input.Handle)
-	if err != nil {
-		return empty, err
-	}
-	if stored.DisplayName != input.DisplayName {
-		return empty, &store.BootstrapConflict{
-			Kind: "user", Key: input.Handle,
-			Stored: stored.DisplayName, Supplied: input.DisplayName,
-		}
-	}
-	return store.Bootstrapped[store.User]{Record: *stored, Created: inserted == 1}, nil
 }
 
 // EnsureBenchmarkRun returns the suite's row, creating it if absent.

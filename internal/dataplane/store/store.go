@@ -441,6 +441,7 @@ type Reader interface {
 	ConfigurationReader
 	SecretReader
 	BenchmarkReader
+	ProvisioningReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -471,6 +472,7 @@ type Writer interface {
 	ConfigurationWriter
 	SecretWriter
 	BenchmarkWriter
+	ProvisioningWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)

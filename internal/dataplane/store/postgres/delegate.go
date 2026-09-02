@@ -531,3 +531,54 @@ func (s *Store) ClaimSuiteReport(
 	}
 	return *result, nil
 }
+
+// GetProductBySlug resolves a Product within one tenant.
+func (s *Store) GetProductBySlug(ctx context.Context, organizationID uuid.UUID, slug string) (*store.Product, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Product, error) { return t.GetProductBySlug(ctx, organizationID, slug) })
+}
+
+// GetRepositoryBySlug resolves a repository within one tenant.
+func (s *Store) GetRepositoryBySlug(ctx context.Context, organizationID uuid.UUID, slug string) (*store.Repository, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Repository, error) { return t.GetRepositoryBySlug(ctx, organizationID, slug) })
+}
+
+// ProvisionProduct provisions a Product, idempotently.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ProvisionProduct(ctx context.Context, input store.ProvisionProductInput) (store.Bootstrapped[store.Product], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Product], error) {
+		outcome, txErr := t.ProvisionProduct(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Product]{}, err
+	}
+	return *result, nil
+}
+
+// ProvisionRepository provisions a repository and its primary membership in
+// one transaction.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ProvisionRepository(ctx context.Context, input store.ProvisionRepositoryInput) (store.Bootstrapped[store.Repository], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Repository], error) {
+		outcome, txErr := t.ProvisionRepository(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Repository]{}, err
+	}
+	return *result, nil
+}
+
+// AddRepositoryToProduct records a secondary membership, idempotently.
+func (s *Store) AddRepositoryToProduct(ctx context.Context, organizationID, productID, repositoryID uuid.UUID) (store.Bootstrapped[store.Repository], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Repository], error) {
+		outcome, txErr := t.AddRepositoryToProduct(ctx, organizationID, productID, repositoryID)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Repository]{}, err
+	}
+	return *result, nil
+}

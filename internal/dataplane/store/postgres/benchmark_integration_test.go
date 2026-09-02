@@ -86,7 +86,58 @@ func provisioners() []provisioner {
 				return provisioned{ID: row.UserID, DisplayName: row.DisplayName}
 			},
 		},
+		{
+			name: "product",
+			bootstrap: func(t *testing.T, f *fixture, key, display string) (provisioned, error) {
+				t.Helper()
+				out, err := f.store.ProvisionProduct(context.Background(), store.ProvisionProductInput{
+					Slug: key, DisplayName: display, OrganizationID: f.organizationID, UserID: f.userID,
+				})
+				return provisioned{ID: out.Record.ProductID, DisplayName: out.Record.DisplayName, Created: out.Created}, err
+			},
+			stored: func(t *testing.T, f *fixture, key string) provisioned {
+				t.Helper()
+				row, err := f.store.GetProductBySlug(context.Background(), f.organizationID, key)
+				if err != nil {
+					t.Fatalf("read product %q: %v", key, err)
+				}
+				return provisioned{ID: row.ProductID, DisplayName: row.DisplayName}
+			},
+		},
+		{
+			name: "repository",
+			bootstrap: func(t *testing.T, f *fixture, key, display string) (provisioned, error) {
+				t.Helper()
+				product := provisionProduct(t, f, "primary-of-"+key)
+				out, err := f.store.ProvisionRepository(context.Background(), store.ProvisionRepositoryInput{
+					Slug: key, DisplayName: display, OrganizationID: f.organizationID,
+					PrimaryProductID: product, UserID: f.userID,
+				})
+				return provisioned{ID: out.Record.RepositoryID, DisplayName: out.Record.DisplayName, Created: out.Created}, err
+			},
+			stored: func(t *testing.T, f *fixture, key string) provisioned {
+				t.Helper()
+				row, err := f.store.GetRepositoryBySlug(context.Background(), f.organizationID, key)
+				if err != nil {
+					t.Fatalf("read repository %q: %v", key, err)
+				}
+				return provisioned{ID: row.RepositoryID, DisplayName: row.DisplayName}
+			},
+		},
 	}
+}
+
+// provisionProduct is the fixture's product, idempotent so a provisioner can
+// call it on every bootstrap.
+func provisionProduct(t *testing.T, f *fixture, slug string) uuid.UUID {
+	t.Helper()
+	out, err := f.store.ProvisionProduct(context.Background(), store.ProvisionProductInput{
+		Slug: slug, DisplayName: slug, OrganizationID: f.organizationID, UserID: f.userID,
+	})
+	if err != nil {
+		t.Fatalf("provision product %q: %v", slug, err)
+	}
+	return out.Record.ProductID
 }
 
 // TestBootstrapConflictSemantics drives all three outcomes of D10's table,
