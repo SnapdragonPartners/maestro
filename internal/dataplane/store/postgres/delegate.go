@@ -121,6 +121,18 @@ func (s *Store) GetAuditArtifact(ctx context.Context, organizationID, artifactID
 	return s.direct().GetAuditArtifact(ctx, organizationID, artifactID)
 }
 
+// EffectiveBase measures an original's effective view without locking.
+func (s *Store) EffectiveBase(ctx context.Context, organizationID, originalID uuid.UUID) (store.AmendmentBase, error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.AmendmentBase, error) {
+		base, txErr := t.EffectiveBase(ctx, organizationID, originalID)
+		return &base, txErr
+	})
+	if err != nil {
+		return store.AmendmentBase{}, err
+	}
+	return *result, nil
+}
+
 // EffectiveView is the exception among reads: it issues two statements, and
 // an amendment accepted between them would produce a view assembled from
 // two different instants. It therefore runs in a transaction.

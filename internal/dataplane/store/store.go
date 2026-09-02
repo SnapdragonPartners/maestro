@@ -457,6 +457,13 @@ type Reader interface {
 	// lock.
 	AmendmentBase(ctx context.Context, organizationID, originalID uuid.UUID) (AmendmentBase, error)
 
+	// EffectiveBase is AmendmentBase WITHOUT the lock: the same view, digest
+	// and sequence, consistent only within the caller's own snapshot. It
+	// exists for the recovery projection, which reads under REPEATABLE READ
+	// and must not lock (design D9). A reviewer recording a base uses
+	// AmendmentBase; a reader comparing one uses this.
+	EffectiveBase(ctx context.Context, organizationID, originalID uuid.UUID) (AmendmentBase, error)
+
 	ListManagementArtifactsByScope(ctx context.Context, organizationID uuid.UUID, scope Scope) ([]ManagementArtifact, error)
 	ListManagementArtifactsByStory(ctx context.Context, organizationID, storyID uuid.UUID) ([]ManagementArtifact, error)
 	ListAuditArtifactsByScope(ctx context.Context, organizationID uuid.UUID, scope Scope) ([]AuditArtifact, error)
@@ -531,6 +538,7 @@ type Store interface {
 	Reader
 	Writer
 	Maintenance
+	Recovery
 	ObjectStore
 
 	// WithTx runs fn inside one transaction, committing when it returns nil
