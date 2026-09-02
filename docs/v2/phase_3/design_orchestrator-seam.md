@@ -8,8 +8,8 @@ summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review rounds 1–6 (Codex, 2026-09-02:
-thirty-three P1s, all confirmed against the tree or the ADR they turned on; see
+Status: **draft** — revised after review rounds 1–7 (Codex, 2026-09-02:
+thirty-four P1s, all confirmed against the tree or the ADR they turned on; see
 *Points Resolved In Review*). Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
@@ -148,9 +148,11 @@ weaken the guard to direct imports; it is the guard reporting a real leak.
 
 1. **`secret` no longer imports `paths`.** The key-file provider
    (`secret.KeyFile`) is the *local* root-of-trust backend and belongs with the
-   local machinery: it moves to `paths` (or a `paths/keyfile` subpackage —
-   implementation's call, reviewed with the commit), implementing
-   `secret.RootKeyProvider` from below. `RootKeyLen` becomes `secret`'s
+   local machinery: it moves to **`paths` itself**, which already owns the
+   key-file protocol (`EnsureKey`, `LoadKey`, the permission and length
+   checks), implementing `secret.RootKeyProvider` from below. Not a
+   subpackage — round 2 settled that a `paths/keyfile` split buys nothing over
+   the package that already holds the protocol. `RootKeyLen` becomes `secret`'s
    constant, which `paths` imports, reversing the edge. `secret` keeps
    `RootKeyProvider`, `ResolvedKey`, `Value` and the envelope — nothing local.
 2. **`paths` no longer imports `pkg/utils`.** One `SafeAssert` on
@@ -983,9 +985,15 @@ Round 6 (Codex, 2026-09-02). Two P1s, both confirmed.
 Non-blocking, taken: the pairing paragraph asserts the verdict, not "both
 edges", since `basisMatch` reports the first mismatch.
 
+Round 7 (Codex, 2026-09-02). One P1.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | D2 still offered `paths/keyfile` as an alternative after round 2 resolved it | D2 — `paths` itself, the alternative removed |
+
 ## Open Questions
 
-None remain from rounds 1 through 6. What the implementation surfaces is
+None remain from rounds 1 through 7. What the implementation surfaces is
 recorded as it appears.
 
 ## Related Documents
