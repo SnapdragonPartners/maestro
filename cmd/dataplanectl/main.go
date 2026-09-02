@@ -84,7 +84,7 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key|
-                                  bootstrap|provision organization|user|product|repository|benchmark import|benchmark show>
+                                  bootstrap|provision organization|user|product|repository|recover|benchmark import|benchmark show>
 
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
@@ -214,6 +214,9 @@ func runPlaneCommand(ctx context.Context, cfg *stack.Config, command string, opt
 
 	case "provision organization", "provision user", "provision product", "provision repository":
 		return runProvision(ctx, cfg, strings.TrimPrefix(command, "provision "), opts)
+
+	case "recover":
+		return runRecover(ctx, cfg, opts)
 
 	case "benchmark import":
 		return runBenchmarkImport(ctx, cfg, opts)
