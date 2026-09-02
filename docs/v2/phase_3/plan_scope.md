@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Phase 3: Scope And Plan"
-edit_date = "2026-09-01"
+edit_date = "2026-09-02"
 status = "live"
 summary = "Accepted Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
 type = "plan"
@@ -25,9 +25,9 @@ before review caught it. Each requirement is now bound to its issue explicitly
 rather than by position. The change is narrow and settles no decision that was
 not already settled.
 
-**Proposed 2026-09-01 on the Phase 3 item 2 branch — NOT yet Accepted, and
-carrying no authority until Codex and DR approve it in the final reviewed
-commit.** The second amendment moves the `runs` family from item 2 to item 10.
+**Amended 2026-09-02, Accepted by Codex and DR**, on the Phase 3 item 2 branch
+and reviewed with it. The second amendment moves the `runs` family from item 2
+to item 10.
 It is a **sequencing correction, not a new ADR need**: `run` appears in the
 Accepted set only as the bare phrase "Work Groups and runs" in
 [ADR 0022](../../adr/0022-v2-data-plane.md)'s family list, with no definition of

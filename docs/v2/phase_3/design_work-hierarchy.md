@@ -1,15 +1,15 @@
 +++
 title = "Design: Work-Hierarchy Schema And The Dispatch Basis (Item 2)"
 edit_date = "2026-09-02"
-status = "draft"
+status = "live"
 summary = "Mini-plan for Phase 3 item 2: work groups keyed one-per-Epic, Story-scoped executions carrying authority rather than configuration, Story dispatch records with an explicit disposition and ADR 0019's two-part dispatch basis, typed Epic and Story dependency graphs serialized under a stable parent lock, and the tool_calls migration that replaces tool_calls_finished_check with an explicit state, a six-value outcome and the persisted canonical requirement set — plus the deferral of runs to item 10, which amends the phase plan."
 type = "design"
 +++
 
 # Design: Work-Hierarchy Schema And The Dispatch Basis (Item 2)
 
-Status: **draft** — awaiting Codex and DR approval. Follows the Phase 2 precedent
-of a design mini-plan preceding the DDL
+Status: **live** — Accepted by Codex and DR, 2026-09-02, after eleven review
+rounds. Follows the Phase 2 precedent of a design mini-plan preceding the DDL
 ([item 3](../phase_2/design_schema_core.md), [item 4](../phase_2/design_queries_artifacts.md)).
 The plan sized this item M; design review resized it **L**, and the reasoning is
 below.
