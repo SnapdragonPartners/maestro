@@ -26,8 +26,12 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
@@ -134,11 +138,86 @@ func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
 		return nil, err
 	}
 
-	seam, err := postgres.Open(ctx, c.DSN, c.Types, c.Objects, c.RootKey)
+	// The pool is built HERE rather than by postgres.Open, because the probe
+	// below must run on it before a store exists, and the pool is lazy:
+	// pgxpool.New validates the DSN and contacts nothing.
+	pool, err := pgxpool.New(ctx, c.DSN)
 	if err != nil {
+		return nil, fmt.Errorf("open the persistence seam: open data plane pool: %w", err)
+	}
+	if probeErr := probe(ctx, pool); probeErr != nil {
+		// The pool is closed on the path the probe was added to diagnose;
+		// a probe that leaked a connection here would be worse than none.
+		pool.Close()
+		err = probeErr
+		return nil, err
+	}
+	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey)
+	if err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("open the persistence seam: %w", err)
 	}
 	return &composedSeam{Store: seam, owned: c.Owned}, nil
+}
+
+// Neutral remedies. This package does not know how the plane is deployed, so
+// it names the ACTION; a composer that knows the command replaces the remedy
+// with readiness.WithRemedy.
+const (
+	remedyStartDatabase = "start the database the plane was configured with and check the endpoint"
+	remedyInspectSchema = "inspect the plane: a connection was made but its schema version could not be read"
+	remedyMigrate       = "apply this binary's pending migrations to the plane"
+	remedyRepairDirty   = "repair the failed migration by hand, then force the version clean (docs/v2/phase_2/design_schema_core.md); nothing automates this"
+	remedyNewerBinary   = "run a binary built at or after the plane's schema version; never downgrade the plane"
+)
+
+// probe proves the plane is usable from ONE connection, before a seam is
+// handed out (Phase 3 item 3, design D4).
+//
+// Acquiring the connection is what establishes reachability, since the pool
+// is lazy; the schema version is then read ON that connection. Two facts,
+// one connection, so they cannot disagree. Classification follows from which
+// step failed.
+//
+// This is the same reason the cloud composer probes its bucket rather than
+// trusting a constructed handle: it is what makes "the seam opened" mean the
+// same thing in both modes.
+func probe(ctx context.Context, pool *pgxpool.Pool) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return readiness.Refuse(readiness.Unreachable,
+			"the database did not accept a connection", remedyStartDatabase, err)
+	}
+	defer conn.Release()
+
+	version, dirty, err := migrations.VersionOn(ctx, conn.Conn())
+	if err != nil {
+		return readiness.Refuse(readiness.SchemaUnreadable,
+			"the schema version could not be read on an open connection", remedyInspectSchema, err)
+	}
+	embedded, err := migrations.Embedded()
+	if err != nil {
+		// A binary that cannot find its own migrations: not a plane state,
+		// and not a readiness cause.
+		return fmt.Errorf("open the persistence seam: %w", err)
+	}
+	switch {
+	case dirty:
+		// Before the version comparison: a dirty version is the target of
+		// the migration that failed, and its remedy is repair, not migrate.
+		return readiness.Refuse(readiness.SchemaDirty,
+			fmt.Sprintf("schema version %d is marked dirty: a migration to it failed partway", version),
+			remedyRepairDirty, nil)
+	case version < embedded:
+		return readiness.Refuse(readiness.SchemaBehind,
+			fmt.Sprintf("the plane is at schema version %d and this binary needs %d", version, embedded),
+			remedyMigrate, nil)
+	case version > embedded:
+		return readiness.Refuse(readiness.SchemaAhead,
+			fmt.Sprintf("the plane is at schema version %d and this binary knows only %d", version, embedded),
+			remedyNewerBinary, nil)
+	}
+	return nil
 }
 
 // validate refuses a composition that cannot open, before anything is built.

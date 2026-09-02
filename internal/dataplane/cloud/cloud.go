@@ -43,6 +43,7 @@ import (
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/plane"
+	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
@@ -144,7 +145,11 @@ func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.
 	// MEASURED: an integration test opening against a non-existent bucket
 	// succeeded before this existed.
 	if probeErr := probeBucket(ctx, blob); probeErr != nil {
-		return nil, unusableBucket(cfg.Bucket, probeErr, blob)
+		// Crosses the seam as a readiness cause (design D6). The remedy is
+		// neutral because this composer has no lifecycle verbs to name.
+		return nil, unusableBucket(cfg.Bucket, readiness.Refuse(readiness.ObjectStoreUnusable,
+			"the object bucket "+cfg.Bucket+" did not answer a listing",
+			"create the bucket, or grant this identity read access to it", probeErr), blob)
 	}
 
 	// The root key is wrapped as OPERATOR-PROVIDED, which is a claim about

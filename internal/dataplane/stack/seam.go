@@ -76,12 +76,17 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 
 	// UNDER the lock, which is the whole point: the marker state a guard
 	// reads cannot change while this is held.
+	//
+	// Each refusal below crosses the seam as a readiness cause (design D6):
+	// the caller above the seam cannot import this package's sentinels, so
+	// the mapping happens here, where the sentinels are.
 	if guardErr := guardRestoreState(c, lifecycleUse); guardErr != nil {
-		err = guardErr
+		err = classifyLocal(guardErr)
 		return nil, err
 	}
 	rootKey, err := rootKeyFor(c, lifecycleUse)
 	if err != nil {
+		err = classifyLocal(err)
 		return nil, err
 	}
 	dsn, err := c.DSN(rootKey)
@@ -90,6 +95,7 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 	}
 	blob, err := ensureBucket(ctx, c, rootKey)
 	if err != nil {
+		err = objectStoreUnusable(err)
 		return nil, err
 	}
 	// The key this function already resolved, wrapped — never a second
@@ -129,7 +135,8 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open the persistence seam for %s: %w", c.Roots.Data, err)
+		// The probe's remedies are neutral; this deployment has commands.
+		return nil, localizeProbe(fmt.Errorf("open the persistence seam for %s: %w", c.Roots.Data, err))
 	}
 	return seam, nil
 }
