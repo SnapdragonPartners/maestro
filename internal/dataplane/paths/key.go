@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"orchestrator/internal/dataplane/secret"
 )
 
 const (
@@ -18,13 +20,12 @@ const (
 	// key can never live there; this file is the external anchor.
 	KeyFileName = "root-of-trust.key"
 
-	// RootKeyLen is the raw root-of-trust key length in bytes.
-	//
-	// Exported because the invariant is about ROOT KEYS, not about this file
-	// format: material handed to the process from outside must meet the same
-	// bar as material read from disk, and the secret package enforces that
-	// against this constant rather than a second copy of the number.
-	RootKeyLen = 32
+	// RootKeyLen is the raw root-of-trust key length in bytes — the seam's
+	// constant, re-exported for the file format. The invariant is about ROOT
+	// KEYS, not about this file, so `secret` owns the number and this package
+	// imports it; the reverse edge would drag the key-file machinery into
+	// every importer of the seam.
+	RootKeyLen = secret.RootKeyLen
 
 	// keyLen is retained as the in-package spelling.
 	keyLen = RootKeyLen

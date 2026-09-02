@@ -81,12 +81,12 @@ var keyUsingOperations = []string{"up", "Migrate", "ForceVersion"}
 
 // forbiddenKeySources are the ways to obtain a key while bypassing the
 // create-versus-load decision. paths.EnsureKey CREATES; paths.LoadKey and
-// secret.KeyFile each pick an access mode, which is precisely the choice
+// paths.KeyFile each pick an access mode, which is precisely the choice
 // rootKeyFor exists to make in one place.
 var forbiddenKeySources = map[string]string{
 	"EnsureKey": "paths",
 	"LoadKey":   "paths",
-	"KeyFile":   "secret",
+	"KeyFile":   "paths",
 }
 
 // TestOnlyRootKeyForDecidesKeyCreation is item 7's D4 as a source rule, in
@@ -94,7 +94,7 @@ var forbiddenKeySources = map[string]string{
 //
 // Negative: nothing outside rootKeyFor may reach a key source directly.
 // Banning only EnsureKey would leave two other ways to make the same
-// decision somewhere else — LoadKey, and secret.KeyFile with an access mode
+// decision somewhere else — LoadKey, and paths.KeyFile with an access mode
 // chosen on the spot.
 //
 // Positive: each key-using operation must actually CALL rootKeyFor. Without

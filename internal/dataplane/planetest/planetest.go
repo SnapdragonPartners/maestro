@@ -159,7 +159,7 @@ func Blob(t *testing.T, label string) (*objects.Blob, objects.Config) {
 // paths suite, which owns the decision.
 func RootKey(t *testing.T) secret.RootKeyProvider {
 	t.Helper()
-	return secret.KeyFile(t.TempDir(), secret.MayCreate)
+	return paths.KeyFile(t.TempDir(), paths.MayCreate)
 }
 
 // stackConfig resolves the roots and key the running stack was launched with.
