@@ -995,8 +995,28 @@ Round 7 (Codex, 2026-09-02). One P1.
 
 ## Open Questions
 
-None remain from rounds 1 through 7. What the implementation surfaces is
-recorded as it appears.
+None remain from rounds 1 through 7.
+
+## What The Implementation Surfaced
+
+Recorded against the ten-commit sequence, for the code review. None changes a
+decision; each is a place where the code is more specific than the design, or
+where a claim is held by a weaker mechanism than the table above implies and
+the review should know it.
+
+| Where | What |
+| --- | --- |
+| D2 | The Orchestrator's allowed closure is **eight** data-plane packages, not seven: `work` (commit 4) joined `store`, `registry`, `configkeys`, `secret`, `canonical`, `nilcheck`, `readiness`. The seam's own closure stayed at six. Both guards are exact sets and both are mutation-verified. |
+| D3 | `dataplanectl` gained a read-only **`recover`** verb beside the `provision` group: it starts the Orchestrator through the composition root and prints the projection. No Epic, Story or dispatch verb exists, as designed. |
+| D5 | The five local not-ready states are driven through `orchestrator.Start` over the real composition root against a scratch root (`cmd/dataplanectl/startup_test.go`); the six probe states through `plane.Open` (commit 2). No test drives a probe state through `Start` over the local composer, since that needs a stopped or mis-versioned plane the test would have to own; the composition of the two halves is one function call, and the Orchestrator-side classification is the same code either way. |
+| D9 | "The projection never aborts on a concurrent artifact write" is held **structurally** — an AST guard that no call in `recovery.go` reaches `AmendmentBase`, `LockManagementArtifact` or `LockEpic`, and that the snapshot is `REPEATABLE READ` — not by a forced race, which needs an injection hook the seam does not have. The guard is mutation-verified. |
+| D10 | The `AcceptDispatch` guard mutant (drop `AND disposition = 'pending'`) died on the assertion as intended, but the failure underneath was `executions_one_per_dispatch_key` refusing the second execution — the schema's guard behind the removed one. `FailDispatch` and `InvalidateDispatch` have no such second guard; their tests assert the typed `NotPending` rejection, and their mutants were **not** run. |
+| D10 | The type-check mutant was run against the completion path and killed. |
+| D11 | The re-primary conflict reuses `BootstrapConflict` with kind `repository primary product`, carrying the two product ids as its stored and supplied strings, rather than a new error type. |
+| D10, D13 | `story_dependencies` edges and their satisfying pointers are planted by **fixture SQL** in every test — the writer is item 10's — and the restart harness's child does the same through a direct `pgx` connection to the plane it was handed. Production has no such path. |
+| D12 | `core.ErrStateNotFound` stays: it is exported, tested vocabulary with no remaining producer, and retiring it belongs with item 6's FSM refactor rather than being pulled into a mechanical retirement. |
+| D14 | Both `.gitignore` bare rules `work` and `orchestrator` (v1 scratch directory, v1 binary) matched the new packages and gained negations. |
+| Amendment 3 | The forge operation and its test are item 5's, unchanged. Nothing in this branch reads a configuration record or reveals a secret, as designed. |
 
 ## Related Documents
 
