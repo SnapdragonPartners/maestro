@@ -8,8 +8,8 @@ summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review rounds 1–5 (Codex, 2026-09-02:
-thirty-one P1s, all confirmed against the tree or the ADR they turned on; see
+Status: **draft** — revised after review rounds 1–6 (Codex, 2026-09-02:
+thirty-three P1s, all confirmed against the tree or the ADR they turned on; see
 *Points Resolved In Review*). Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
@@ -528,13 +528,21 @@ table. So pairing is tested where the values are unconstrained — the pure
 comparator — with a **stable basis** and **no amendment**: two edges whose
 completion triples are equal *as a multiset* but assigned to opposite
 predecessors in the current side. A pairing-blind comparator, one that matches
-multisets, returns *match*; the correct one returns *diverged* on both edges.
-That is the only assertion that separates the two, and it needs no traversal
-order to hold.
+multisets, returns *match*; the correct one returns *diverged* — `basisMatch`
+reports the first mismatch, so which edge it names depends on traversal, and
+the assertion is on the verdict, not the edge. That is the only assertion that
+separates the two, and it needs no traversal order to hold.
 
 **What the two-predecessor integration fixture proves instead** is that every
-edge is traversed: amend the *second* predecessor's completion, and the mutant
-that reads only the first edge leaves the run `pending_resumable`.
+edge is traversed — and round 6 caught the first form of this mutant passing
+for the wrong reason. Reading only the first edge does not leave the run
+`pending_resumable`: the second predecessor is then absent from the current
+edge set, or present with no base, either of which still diverges or errors.
+So the assertion is the **exact mismatch**: after amending the *second*
+predecessor's completion, the diverged component must be *that predecessor's
+completion, on sequence*. The first-edge mutant then fails with an edge-set or
+missing-base result — a different component, and the test names the
+difference.
 
 Disjoint because the three factors partition the rows; total because every
 selected row has a kind, every K2 row has an authority, and match is a
@@ -581,11 +589,22 @@ belongs. `Start` runs it after the readiness contract (D5) passes.
 **The subprocess proof (D13) traverses real reviewed artifacts**: a Story
 record authored by one principal, reviewed and accepted by another, pointed at
 by `stories.governing_artifact_id`, dispatched; the fresh process must reload
-its effective view and land it `pending_resumable`. Then **five** further runs —
-one per **transition shape** the current side can undergo, which is what an
-end-to-end run can witness; the comparator's own coverage is the unit test's
-(above) — each a single change between the two processes, each landing
-`pending_diverged` for the named reason: an accepted **no-op amendment** of the Story record (Story
+its effective view and land it `pending_resumable`. Then **five** further runs, each a single
+change between the two processes, each landing `pending_diverged` for the
+named reason. These are **representative shapes, not the transition
+inventory**: item 2 enumerates **nine** basis transitions, and these five
+omit four of them — an Epic repoint (#4), an edge removal (#6), an edge
+replacement (#7) and a completion repoint (#8). All nine are item 9's, each
+already owing it a forced-interleaving test for *linearization*, and this
+design does not pretend five subprocess runs discharge that. What five runs
+also cannot show is that `OpenWork` **maps** every field — a projection that
+never copies the current Epic id or a completion id into the comparator's
+input passes all five. So the wiring is proved separately by **row-mapping
+tests**: one per snapshot column and one per current-side field, each a
+fixture where that field alone differs from a neutral value, asserting the
+value `OpenWork` hands the comparator. The comparator test proves the
+comparison; the mapping test proves the plumbing; the runs prove the path.
+The five: an accepted **no-op amendment** of the Story record (Story
 sequence only); a **repoint** of the Story pointer to an accepted twin with
 identical content (Story id only); an accepted no-op amendment of the
 **Epic** record (Epic sequence only); an **added, already-satisfied
@@ -842,10 +861,11 @@ the wrong reason; each row now states the reason the failure must carry.
 | Dispatch inputs cannot move between the reads | Force a pointer repoint to interleave after step 2 | Drop the Epic lock; the interleaved write commits and the basis is stale at creation |
 | A terminal disposition cannot be reopened | Fail a dispatch, then attempt every transition | Widen a `WHERE`; the rejection becomes a success |
 | An accepted dispatch always has an execution | Force a failure between the flip and the insert | Split the transaction |
-| Recovery witnesses each transition shape end to end | Five subprocess runs: no-op Story amendment; Story repoint to an identical twin; no-op Epic amendment; an added already-satisfied predecessor; no-op completion amendment | Bypass the comparator for the changed reference in that run; that run's `pending_diverged` becomes `pending_resumable`. **Not** a per-comparison proof — that is the next row's |
+| Recovery witnesses representative transition shapes end to end | Five subprocess runs: no-op Story amendment; Story repoint to an identical twin; no-op Epic amendment; an added already-satisfied predecessor; no-op completion amendment. Five of item 2's nine; the nine are item 9's | Bypass the comparator for the changed reference in that run; that run's `pending_diverged` becomes `pending_resumable`. **Not** a per-comparison or per-field proof — those are the next rows' |
+| `OpenWork` maps every field into the comparator | One fixture per snapshot column and per current-side field, differing in that field alone | Drop that field's mapping; the comparator receives the neutral value and exactly that fixture fails |
 | `basisMatch` sees every comparison category | Ten unit fixtures, each differing in one category alone; the completion triple's fixture carries two predecessors | Delete that category's comparison; exactly that fixture fails |
 | Completions are paired with their own predecessor | Unit: equal completion multisets cross-assigned between two predecessors, no amendment | Compare completions as a multiset; the fixture returns *match* instead of *diverged* |
-| Every edge is traversed | Integration: two predecessors; amend the second's completion | Read only the first edge; the run stays `pending_resumable` |
+| Every edge is traversed | Integration: two predecessors; amend the second's completion; assert the diverged component is **that predecessor's completion, on sequence** | Read only the first edge; the result is an edge-set or missing-base mismatch, not the asserted one |
 | The projection never aborts on a concurrent artifact write | Update a referenced artifact between `OpenWork`'s snapshot and its base read | Reintroduce the locking base read; the run fails with `40001` |
 | The classes are disjoint and total | Every item-3-producible state, plus a K2 row with its execution deleted by fixture | Remove the K2-without-execution error; the row is silently skipped |
 | Recovery relies on no process-local state | The subprocess test (D13), kill path included | A **cache-only** mutant: serve the projection from a package variable *when populated* and never read the plane in that case — the fresh process, whose variable is empty, then classifies nothing, and the assertion on the committed rows fails. Merely adding a cache beside the read would not fail this, which is why the mutant must bypass the read |
@@ -953,9 +973,19 @@ confirmed.
 Non-blocking, taken: the totality note names item 5's extension beside
 item 9's.
 
+Round 6 (Codex, 2026-09-02). Two P1s, both confirmed.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Five runs omit four of item 2's nine transitions, and cannot see an unmapped field | D9 — the five are representative shapes; the nine stay item 9's; row-mapping tests per field prove the plumbing |
+| 2 | The first-edge mutant still diverges, so the test passes for the wrong reason | D9 — assert the exact mismatch (second predecessor's completion, on sequence); the mutant fails with a different component |
+
+Non-blocking, taken: the pairing paragraph asserts the verdict, not "both
+edges", since `basisMatch` reports the first mismatch.
+
 ## Open Questions
 
-None remain from rounds 1 through 5. What the implementation surfaces is
+None remain from rounds 1 through 6. What the implementation surfaces is
 recorded as it appears.
 
 ## Related Documents
