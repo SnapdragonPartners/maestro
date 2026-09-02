@@ -108,7 +108,9 @@ func provisioners() []provisioner {
 			name: "repository",
 			bootstrap: func(t *testing.T, f *fixture, key, display string) (provisioned, error) {
 				t.Helper()
-				product := provisionProduct(t, f, "primary-of-"+key)
+				// A fixed, valid slug: the key under test may be malformed, and
+				// the primary Product must not fail before the repository does.
+				product := provisionProduct(t, f, "primary")
 				out, err := f.store.ProvisionRepository(context.Background(), store.ProvisionRepositoryInput{
 					Slug: key, DisplayName: display, OrganizationID: f.organizationID,
 					PrimaryProductID: product, UserID: f.userID,

@@ -806,7 +806,7 @@ func TestCloudOpenRefusesAMissingBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(context.Background(), cfg, types)
+	seam, err := OpenSeam(context.Background(), cfg, types, configkeys.MustNew(nil))
 	if err == nil {
 		seam.Close()
 		t.Fatal("opening against a bucket that does not exist succeeded, so the failure would " +
