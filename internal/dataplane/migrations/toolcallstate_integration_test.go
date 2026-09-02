@@ -5,8 +5,11 @@ package migrations_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"orchestrator/internal/dataplane/migrations"
 )
@@ -568,6 +571,124 @@ func TestDownMigrationRefusesASucceededRowCarryingAnExecution(t *testing.T) {
 	if !strings.Contains(err.Error(), "1 tool call(s) carry an execution correlation") {
 		t.Errorf("down refused for the wrong reason: %v", err)
 	}
+}
+
+// The lock ordering, proven by forced interleaving rather than by reading the
+// file.
+//
+// Without LOCK TABLE ahead of the scans, the refusal is a check-then-act
+// across two moments: the scans run in their own snapshot and see nothing,
+// because the offending row is still uncommitted; the first ALTER then blocks
+// on the writer's lock, the writer commits, and the migration -- having
+// already decided there was nothing to refuse -- rewrites the table and
+// destroys the row it would have refused.
+//
+// So the interleaving is arranged deliberately: hold an uncommitted offending
+// INSERT, start the reversal, wait until it is genuinely BLOCKED on the table
+// (observed in pg_locks, not slept for), then let the writer commit. With the
+// lock first, the migration waits before it looks and refuses. Without it, or
+// with it moved below the scans, the migration succeeds and this fails.
+func TestDownMigrationLocksBeforeItScans(t *testing.T) {
+	ctx := context.Background()
+	dsn := disposableDatabase(t)
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	f := seedForBackfill(t, db)
+
+	// The writer: an offending row, held uncommitted.
+	writer, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin writer: %v", err)
+	}
+	defer func() { _ = writer.Rollback() }()
+	// `denied` WITH a diagnostic, chosen deliberately. An `unknown` row has
+	// no error message, so when an unlocked reversal remaps it to
+	// succeeded=false the restored coherence constraint catches it
+	// incidentally -- the migration still fails, but for a reason that has
+	// nothing to do with the race, and the mutant would die telling us
+	// nothing. A denial carrying a diagnostic satisfies every downstream
+	// constraint, so an unlocked reversal COMMITS and silently records an
+	// action the boundary refused as one that was attempted and failed.
+	// That is the corruption the lock exists to prevent, and it is what this
+	// row makes observable.
+	const concurrent = "48000000-0000-7000-8000-000000000001"
+	if _, execErr := writer.ExecContext(ctx, `INSERT INTO tool_calls
+	        (tool_call_id, organization_id, principal_instance_id, tool_name, arguments,
+	         state, outcome, finished_at, error_message)
+	        VALUES ($1,$2,$3,'t','{}'::jsonb,'settled','denied',now(),'policy refused')`,
+		concurrent, f.org, f.principal); execErr != nil {
+		t.Fatalf("writer insert: %v", execErr)
+	}
+
+	// Start the reversal. It must block before observing anything.
+	done := make(chan error, 1)
+	go func() { done <- migrations.To(ctx, dsn, 21) }()
+
+	if waitErr := waitForBlockedLock(t, db, "tool_calls"); waitErr != nil {
+		t.Fatalf("the reversal never blocked on tool_calls, so it did not take the lock before "+
+			"scanning and the interleaving this test arranges cannot occur: %v", waitErr)
+	}
+
+	// Only now does the offending row become visible to anyone.
+	if commitErr := writer.Commit(); commitErr != nil {
+		t.Fatalf("writer commit: %v", commitErr)
+	}
+
+	select {
+	case migrateErr := <-done:
+		if migrateErr == nil {
+			// Name the damage, not just the fact.
+			var succeeded *bool
+			_ = db.QueryRow(`SELECT succeeded FROM tool_calls WHERE tool_call_id=$1`,
+				concurrent).Scan(&succeeded)
+			recorded := "absent"
+			if succeeded != nil {
+				recorded = fmt.Sprintf("%t", *succeeded)
+			}
+			t.Fatalf("the reversal committed while a concurrent writer added a `denied` outcome, and "+
+				"that row now reads succeeded=%s. Its scans ran before the lock, saw an empty table, "+
+				"and an action the boundary REFUSED is recorded as one that was attempted and failed.",
+				recorded)
+		}
+		if !strings.Contains(migrateErr.Error(), "1 tool call(s) hold an outcome no boolean can") {
+			t.Errorf("the reversal failed, but not by observing the concurrent row: %v", migrateErr)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the reversal did not finish after the writer committed")
+	}
+}
+
+// waitForBlockedLock returns once some backend is waiting for a lock on the
+// named relation in this database.
+//
+// Observed rather than slept for: a sleep long enough to be reliable is long
+// enough to hide the very ordering under test, and one too short makes the
+// test flaky in the direction that reports success.
+func waitForBlockedLock(t *testing.T, db *sql.DB, relation string) error {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		var blocked int
+		if err := db.QueryRow(`SELECT count(*) FROM pg_locks l
+		                         JOIN pg_class c ON c.oid = l.relation
+		                        WHERE c.relname = $1
+		                          AND NOT l.granted
+		                          AND l.database = (SELECT oid FROM pg_database
+		                                             WHERE datname = current_database())`,
+			relation).Scan(&blocked); err != nil {
+			return fmt.Errorf("inspect pg_locks: %w", err)
+		}
+		if blocked > 0 {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return errors.New("timed out waiting for a blocked lock")
 }
 
 // Recovering from a refusal takes TWO steps, and resolving the rows is only
