@@ -8,8 +8,8 @@ summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review rounds 1–4 (Codex, 2026-09-02:
-twenty-nine P1s, all confirmed against the tree or the ADR they turned on; see
+Status: **draft** — revised after review rounds 1–5 (Codex, 2026-09-02:
+thirty-one P1s, all confirmed against the tree or the ADR they turned on; see
 *Points Resolved In Review*). Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
@@ -502,24 +502,39 @@ Each row lands in exactly one class, by (kind × authority × match):
 | `execution_diverged` | K2 ∧ current ∧ ¬match | Item 9's cancellation input; reported, untouched — a startup that reconciled would destroy the evidence its cancellation is triggered by |
 | `execution_superseded` | K2 ∧ superseded | Item 9's drain state, whatever the basis says. Item 3 cannot produce it; its run asserts the class is empty |
 
-**The comparison is one pure function, tested at field grain.** `basisMatch`
-takes the snapshot and the current side as two Go values and returns the first
-component that differs, or none. It is unit-tested **per field**: for each of
-the eleven compared facts — three per governing reference, the edge set, three
-per completion — a fixture that differs in that fact alone must return that
-fact, and deleting that one comparison in the function must fail exactly that
-case. Round 4 was right that the five divergence runs, being end-to-end, could
-not see a deleted *digest* comparison or a dropped Epic or completion *id*
-comparison: a whole-system run proves the path, not the comparator.
+**The comparison is one pure function, tested at comparison grain.**
+`basisMatch` takes the snapshot and the current side as two Go values and
+returns the first component that differs, or none. It is unit-tested **per
+comparison category** — there are **ten**: the Story triple (id, digest,
+sequence), the Epic triple, the edge set, and the completion triple, the last
+applied **once per predecessor**, so the concrete field count varies with the
+fixture while the categories do not. For each category a fixture that differs
+in that category alone must return it, and deleting that one comparison in the
+function must fail exactly that fixture. Round 4 was right that end-to-end runs
+cannot see a deleted *digest* comparison or a dropped Epic or completion *id*
+comparison: a whole-system run proves the path, not the comparator. **The unit
+test owns the comparator; the subprocess runs own the path.** They are not
+substitutes and this design no longer describes either as covering the other.
 
-**Pairing is proved with more than one edge.** A single-edge fixture cannot
-tell a completion compared against the *right* predecessor from one compared
-against the wrong one. The integration fixture carries **two predecessors with
-distinct completions**, and the mutant swaps which edge's completion feeds the
-comparator: with the swap, the comparison still finds "some completion" for
-"some edge" and a pairing-blind implementation stays green, so the assertion is
-that the diverged component names the predecessor whose completion actually
-moved.
+**Pairing is a unit property, because the plane cannot represent its
+violation.** Round 4's fixture — two predecessors, amend one, swap the
+association — could pass the mutant for the wrong reason: after the swap
+*both* edges mismatch on completion id, and whichever the traversal reaches
+first is reported, which may still be the amended one. And an integration
+fixture cannot isolate the swap at all: `dispatch_basis_dependencies_completion_fkey`
+and `story_dependencies_completion_fkey` both scope a completion to its
+predecessor Story, so pairing `cB` with `A` is **unrepresentable** in either
+table. So pairing is tested where the values are unconstrained — the pure
+comparator — with a **stable basis** and **no amendment**: two edges whose
+completion triples are equal *as a multiset* but assigned to opposite
+predecessors in the current side. A pairing-blind comparator, one that matches
+multisets, returns *match*; the correct one returns *diverged* on both edges.
+That is the only assertion that separates the two, and it needs no traversal
+order to hold.
+
+**What the two-predecessor integration fixture proves instead** is that every
+edge is traversed: amend the *second* predecessor's completion, and the mutant
+that reads only the first edge leaves the run `pending_resumable`.
 
 Disjoint because the three factors partition the rows; total because every
 selected row has a kind, every K2 row has an authority, and match is a
@@ -567,10 +582,10 @@ belongs. `Start` runs it after the readiness contract (D5) passes.
 record authored by one principal, reviewed and accepted by another, pointed at
 by `stories.governing_artifact_id`, dispatched; the fresh process must reload
 its effective view and land it `pending_resumable`. Then **five** further runs —
-one per independent component of the basis, because a proof that exercises
-three of five lets the other two comparisons be deleted unnoticed — each a
-single change between the two processes, each landing `pending_diverged` for
-the named reason: an accepted **no-op amendment** of the Story record (Story
+one per **transition shape** the current side can undergo, which is what an
+end-to-end run can witness; the comparator's own coverage is the unit test's
+(above) — each a single change between the two processes, each landing
+`pending_diverged` for the named reason: an accepted **no-op amendment** of the Story record (Story
 sequence only); a **repoint** of the Story pointer to an accepted twin with
 identical content (Story id only); an accepted no-op amendment of the
 **Epic** record (Epic sequence only); an **added, already-satisfied
@@ -827,9 +842,10 @@ the wrong reason; each row now states the reason the failure must carry.
 | Dispatch inputs cannot move between the reads | Force a pointer repoint to interleave after step 2 | Drop the Epic lock; the interleaved write commits and the basis is stale at creation |
 | A terminal disposition cannot be reopened | Fail a dispatch, then attempt every transition | Widen a `WHERE`; the rejection becomes a success |
 | An accepted dispatch always has an execution | Force a failure between the flip and the insert | Split the transaction |
-| Recovery compares the whole basis | Five runs, one per component: no-op Story amendment; Story repoint to an identical twin; no-op Epic amendment; an added already-satisfied predecessor; no-op completion amendment | Delete one comparison per run — Story sequence, Story id, the Epic triple, the edge set, the completion triple — and that run's `pending_diverged` becomes `pending_resumable` while the other four stay green |
-| `basisMatch` sees every field | Eleven unit fixtures, each differing in one fact | Delete that fact's comparison; exactly that fixture fails |
-| Completions are paired with their own predecessor | Two predecessors, distinct completions; amend one | Swap the pairing; the diverged component names the wrong predecessor |
+| Recovery witnesses each transition shape end to end | Five subprocess runs: no-op Story amendment; Story repoint to an identical twin; no-op Epic amendment; an added already-satisfied predecessor; no-op completion amendment | Bypass the comparator for the changed reference in that run; that run's `pending_diverged` becomes `pending_resumable`. **Not** a per-comparison proof — that is the next row's |
+| `basisMatch` sees every comparison category | Ten unit fixtures, each differing in one category alone; the completion triple's fixture carries two predecessors | Delete that category's comparison; exactly that fixture fails |
+| Completions are paired with their own predecessor | Unit: equal completion multisets cross-assigned between two predecessors, no amendment | Compare completions as a multiset; the fixture returns *match* instead of *diverged* |
+| Every edge is traversed | Integration: two predecessors; amend the second's completion | Read only the first edge; the run stays `pending_resumable` |
 | The projection never aborts on a concurrent artifact write | Update a referenced artifact between `OpenWork`'s snapshot and its base read | Reintroduce the locking base read; the run fails with `40001` |
 | The classes are disjoint and total | Every item-3-producible state, plus a K2 row with its execution deleted by fixture | Remove the K2-without-execution error; the row is silently skipped |
 | Recovery relies on no process-local state | The subprocess test (D13), kill path included | A **cache-only** mutant: serve the projection from a package variable *when populated* and never read the plane in that case — the fresh process, whose variable is empty, then classifies nothing, and the assertion on the committed rows fails. Merely adding a cache beside the read would not fail this, which is why the mutant must bypass the read |
@@ -837,7 +853,9 @@ the wrong reason; each row now states the reason the failure must carry.
 | Repository provisioning commits with its primary membership | Provision; read `product_repositories` | Split the transaction; the deferred constraint fires at commit and the test asserts **that** constraint's name |
 
 Not claimed: the projection's totality beyond the states item 3 can produce.
-Item 9 adds states item 3 cannot reach, and the projection is re-checked there.
+Item 5 adds terminal results and outstanding-action states and owes `OpenWork`
+its extension (D9, D14's table); item 9 adds the supersession states. The
+projection is re-checked at each.
 
 ## Amendments Carried In This Branch
 
@@ -924,9 +942,20 @@ Round 4 (Codex, 2026-09-02). Five P1s, all confirmed.
 | 4 | The forge assignment pointed at v1 wiring (`pkg/forge/gitea` reaches `pkg/config`, `pkg/mirror`; `internal/orch` is v1) | D7 — item 5 reuses the local Gitea service and harness only, and ports the client behind a v2-neutral seam |
 | 5 | Three amendments called sequencing corrections; two are scope changes | *Amendments* — each characterized: sequencing; scope correction; reassignment plus addition |
 
+Round 5 (Codex, 2026-09-02). Two P1s, both in the verification design, both
+confirmed.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Ten comparison categories, not eleven; "one per component" overstated what the subprocess runs cover | D9 — ten categories, the completion triple per predecessor; unit owns the comparator, subprocess runs own the path; stale claims swept |
+| 2 | The pairing mutant could pass by traversal order after an amendment | D9 — pairing is a unit test over equal multisets cross-assigned with no amendment, since the scope foreign keys make the swap unrepresentable in the plane; the integration fixture proves traversal instead |
+
+Non-blocking, taken: the totality note names item 5's extension beside
+item 9's.
+
 ## Open Questions
 
-None remain from rounds 1 through 4. What the implementation surfaces is
+None remain from rounds 1 through 5. What the implementation surfaces is
 recorded as it appears.
 
 ## Related Documents
