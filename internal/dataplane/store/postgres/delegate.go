@@ -582,3 +582,70 @@ func (s *Store) AddRepositoryToProduct(ctx context.Context, organizationID, prod
 	}
 	return *result, nil
 }
+
+// The work family.
+
+// GetFeature resolves a Feature within one tenant.
+func (s *Store) GetFeature(ctx context.Context, organizationID, featureID uuid.UUID) (*store.Feature, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Feature, error) { return t.GetFeature(ctx, organizationID, featureID) })
+}
+
+// GetEpic resolves an Epic within one tenant.
+func (s *Store) GetEpic(ctx context.Context, organizationID, epicID uuid.UUID) (*store.Epic, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Epic, error) { return t.GetEpic(ctx, organizationID, epicID) })
+}
+
+// GetStory resolves a Story within one tenant.
+func (s *Store) GetStory(ctx context.Context, organizationID, storyID uuid.UUID) (*store.Story, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Story, error) { return t.GetStory(ctx, organizationID, storyID) })
+}
+
+// ListStoriesByEpic lists an Epic's Stories in id order.
+func (s *Store) ListStoriesByEpic(ctx context.Context, organizationID, epicID uuid.UUID) ([]store.Story, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.Story, error) { return t.ListStoriesByEpic(ctx, organizationID, epicID) })
+}
+
+// GetWorkGroupByEpic resolves the Epic's one Work Group.
+func (s *Store) GetWorkGroupByEpic(ctx context.Context, organizationID, epicID uuid.UUID) (*store.WorkGroup, error) {
+	return inTx(ctx, s, func(t *tx) (*store.WorkGroup, error) { return t.GetWorkGroupByEpic(ctx, organizationID, epicID) })
+}
+
+// ListIncomingStoryDependencies returns a Story's incoming edges.
+func (s *Store) ListIncomingStoryDependencies(ctx context.Context, organizationID, storyID uuid.UUID) ([]store.StoryDependency, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.StoryDependency, error) {
+		return t.ListIncomingStoryDependencies(ctx, organizationID, storyID)
+	})
+}
+
+// CreateFeature creates a Feature under a Product.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateFeature(ctx context.Context, input store.CreateFeatureInput) (*store.Feature, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Feature, error) { return t.CreateFeature(ctx, input) })
+}
+
+// CreateEpic creates an Epic, deriving its Product from the Feature.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateEpic(ctx context.Context, input store.CreateEpicInput) (*store.Epic, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Epic, error) { return t.CreateEpic(ctx, input) })
+}
+
+// CreateStory creates a Story, deriving Feature and Product from the Epic.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateStory(ctx context.Context, input store.CreateStoryInput) (*store.Story, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Story, error) { return t.CreateStory(ctx, input) })
+}
+
+// EnsureWorkGroup returns the Epic's Work Group, creating it if absent.
+func (s *Store) EnsureWorkGroup(ctx context.Context, organizationID, epicID uuid.UUID) (store.Bootstrapped[store.WorkGroup], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.WorkGroup], error) {
+		outcome, txErr := t.EnsureWorkGroup(ctx, organizationID, epicID)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.WorkGroup]{}, err
+	}
+	return *result, nil
+}
