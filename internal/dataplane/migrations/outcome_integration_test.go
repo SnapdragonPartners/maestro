@@ -255,26 +255,63 @@ func TestOutcomeConstraintsRejectIncoherentRows(t *testing.T) {
 	db := openDB(t, dsn)
 	seedOpenLLMCall(t, db)
 
-	tables := []struct{ table, id string }{
-		{"llm_calls", llmCallID},
-		{"tool_calls", toolCallID},
-	}
-	incoherent := []struct{ name, update string }{
-		{"success carrying an error", `SET finished_at = now(), succeeded = true, error_message = 'boom'`},
-		{"failure with no diagnostic", `SET finished_at = now(), succeeded = false, error_message = NULL`},
-		{"failure with a blank diagnostic", `SET finished_at = now(), succeeded = false, error_message = '   '`},
-		{"open call carrying an error", `SET error_message = 'boom'`},
-		// btrim() with one argument strips SPACES only, so this passed the
-		// coherence check while being blank to any reader.
-		{"failure whose diagnostic is only whitespace", "SET finished_at = now(), succeeded = false, " +
-			"error_message = E'\t\n  '"},
-		{"finished before it started", `SET finished_at = started_at - interval '1 second', succeeded = true`},
-		{"finished with no outcome", `SET finished_at = now()`},
-		{"outcome with no finish", `SET succeeded = true`},
-	}
-	coherent := []string{
-		`SET finished_at = now(), succeeded = true`,
-		`SET finished_at = now(), succeeded = false, error_message = 'provider timeout'`,
+	// The two call families no longer share a completion vocabulary:
+	// migration 000022 replaced tool_calls.succeeded with a state and a
+	// six-value outcome, while llm_calls keeps its boolean because an LLM
+	// call is not a mediated action (ADR 0030 section 10). So each table
+	// carries its own statements, and the shared ones were quietly wrong for
+	// tool_calls the moment the column went.
+	tables := []struct {
+		table, id  string
+		reset      string
+		incoherent []struct{ name, update string }
+		coherent   []string
+	}{
+		{
+			table: "llm_calls", id: llmCallID,
+			reset: `SET finished_at = NULL, succeeded = NULL, error_message = NULL`,
+			incoherent: []struct{ name, update string }{
+				{"success carrying an error", `SET finished_at = now(), succeeded = true, error_message = 'boom'`},
+				{"failure with no diagnostic", `SET finished_at = now(), succeeded = false, error_message = NULL`},
+				{"failure with a blank diagnostic", `SET finished_at = now(), succeeded = false, error_message = '   '`},
+				{"open call carrying an error", `SET error_message = 'boom'`},
+				// btrim() with one argument strips SPACES only, so this passed
+				// the coherence check while being blank to any reader.
+				{"failure whose diagnostic is only whitespace", "SET finished_at = now(), succeeded = false, " +
+					"error_message = E'\t\n  '"},
+				{"finished before it started", `SET finished_at = started_at - interval '1 second', succeeded = true`},
+				{"finished with no outcome", `SET finished_at = now()`},
+				{"outcome with no finish", `SET succeeded = true`},
+			},
+			coherent: []string{
+				`SET finished_at = now(), succeeded = true`,
+				`SET finished_at = now(), succeeded = false, error_message = 'provider timeout'`,
+			},
+		},
+		{
+			table: "tool_calls", id: toolCallID,
+			reset: `SET finished_at = NULL, state = 'open', outcome = NULL, error_message = NULL`,
+			incoherent: []struct{ name, update string }{
+				{"success carrying an error", `SET finished_at = now(), state = 'settled', ` +
+					`outcome = 'succeeded', error_message = 'boom'`},
+				{"failure with no diagnostic", `SET finished_at = now(), state = 'settled', ` +
+					`outcome = 'failed', error_message = NULL`},
+				{"failure with a blank diagnostic", `SET finished_at = now(), state = 'settled', ` +
+					`outcome = 'failed', error_message = '   '`},
+				{"open call carrying an error", `SET error_message = 'boom'`},
+				{"failure whose diagnostic is only whitespace", `SET finished_at = now(), state = 'settled', ` +
+					"outcome = 'failed', error_message = E'\t\n  '"},
+				{"finished before it started", `SET finished_at = started_at - interval '1 second', ` +
+					`state = 'settled', outcome = 'succeeded'`},
+				{"finished with no outcome", `SET finished_at = now()`},
+				{"outcome with no finish", `SET state = 'settled', outcome = 'succeeded'`},
+			},
+			coherent: []string{
+				`SET finished_at = now(), state = 'settled', outcome = 'succeeded'`,
+				`SET finished_at = now(), state = 'settled', outcome = 'failed', ` +
+					`error_message = 'provider timeout'`,
+			},
+		},
 	}
 
 	for _, target := range tables {
@@ -285,13 +322,13 @@ func TestOutcomeConstraintsRejectIncoherentRows(t *testing.T) {
 			// forward and later cases stop testing what they name.
 			reset := func(t *testing.T) {
 				t.Helper()
-				if _, err := db.Exec(`UPDATE ` + target.table + ` SET finished_at = NULL, succeeded = NULL,
-					error_message = NULL WHERE ` + singularID(target.table) + ` = ` + target.id); err != nil {
+				if _, err := db.Exec(`UPDATE ` + target.table + ` ` + target.reset +
+					` WHERE ` + singularID(target.table) + ` = ` + target.id); err != nil {
 					t.Fatalf("reset: %v", err)
 				}
 			}
 
-			for _, testCase := range incoherent {
+			for _, testCase := range target.incoherent {
 				t.Run(testCase.name, func(t *testing.T) {
 					reset(t)
 					_, err := db.Exec(`UPDATE ` + target.table + ` ` + testCase.update +
@@ -307,7 +344,7 @@ func TestOutcomeConstraintsRejectIncoherentRows(t *testing.T) {
 
 			// The coherent completions must still be accepted, or the
 			// constraints would be satisfied by rejecting everything.
-			for _, update := range coherent {
+			for _, update := range target.coherent {
 				reset(t)
 				if _, err := db.Exec(`UPDATE ` + target.table + ` ` + update +
 					` WHERE ` + singularID(target.table) + ` = ` + target.id); err != nil {

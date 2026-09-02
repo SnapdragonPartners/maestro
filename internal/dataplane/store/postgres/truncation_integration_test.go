@@ -67,9 +67,10 @@ func seedToolCall(t *testing.T, f *fixture, org uuid.UUID, finished bool, llmCal
 	}
 	if _, err := f.pool.Exec(context.Background(), `
 		INSERT INTO tool_calls (tool_call_id, organization_id, principal_instance_id, llm_call_id,
-			tool_name, arguments, started_at, finished_at, succeeded)
+			tool_name, arguments, started_at, finished_at, state, outcome)
 		VALUES ($1, $2, $3, $4, 'shell', '{}'::jsonb, $5, $6,
-			CASE WHEN $6::timestamptz IS NULL THEN NULL ELSE true END)`,
+			CASE WHEN $6::timestamptz IS NULL THEN 'open' ELSE 'settled' END,
+			CASE WHEN $6::timestamptz IS NULL THEN NULL ELSE 'succeeded' END)`,
 		id, org, principal, claims, horizon().Add(-2*time.Hour), finishedAt); err != nil {
 		t.Fatalf("seed tool call: %v", err)
 	}

@@ -806,8 +806,8 @@ func TestTheImportRecordsItsOwnToolCall(t *testing.T) {
 	if call.FinishedAt == nil {
 		t.Error("the import's tool call is still open after the import returned")
 	}
-	if call.Succeeded == nil || !*call.Succeeded {
-		t.Errorf("a successful import left its tool call at succeeded=%v", call.Succeeded)
+	if call.Outcome == nil || *call.Outcome != store.ToolOutcomeSucceeded {
+		t.Errorf("a successful import left its tool call at outcome=%v", call.Outcome)
 	}
 	summary := p.toolCallResult(t, result.ToolCallID)
 	if summary.Attempts != 1 || summary.Imported != 1 || summary.Calls != 1 || !summary.Terminal {
@@ -839,8 +839,8 @@ func TestAFailedImportRecordsItOnTheToolCall(t *testing.T) {
 	if call.FinishedAt == nil {
 		t.Error("the tool call is still open after the import returned")
 	}
-	if call.Succeeded == nil || *call.Succeeded {
-		t.Errorf("a failed import left its tool call at succeeded=%v", call.Succeeded)
+	if call.Outcome == nil || *call.Outcome != store.ToolOutcomeFailed {
+		t.Errorf("a failed import left its tool call at outcome=%v", call.Outcome)
 	}
 	if call.ErrorMessage == nil || !strings.Contains(*call.ErrorMessage, failing) {
 		t.Errorf("the tool call's error is %v; it has to name what failed", call.ErrorMessage)

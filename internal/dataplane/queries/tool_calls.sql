@@ -32,10 +32,15 @@ WHERE tool_call_id    = @tool_call_id
   AND organization_id = @organization_id
 FOR UPDATE;
 
+-- Settling moves the state and the outcome together, because migration
+-- 000022 ties them: (state = 'settled') = (outcome IS NOT NULL), and the
+-- same equivalence against finished_at. Writing one without the others is
+-- refused by the row rather than by this query.
 -- name: CompleteToolCall :execrows
 UPDATE tool_calls
 SET finished_at   = COALESCE(sqlc.narg('finished_at')::timestamptz, now()),
-    succeeded     = @succeeded,
+    state         = 'settled',
+    outcome       = @outcome,
     result        = @result,
     error_message = @error_message
 WHERE tool_call_id    = @tool_call_id

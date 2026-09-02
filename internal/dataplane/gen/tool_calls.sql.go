@@ -14,7 +14,8 @@ import (
 const completeToolCall = `-- name: CompleteToolCall :execrows
 UPDATE tool_calls
 SET finished_at   = COALESCE($1::timestamptz, now()),
-    succeeded     = $2,
+    state         = 'settled',
+    outcome       = $2,
     result        = $3,
     error_message = $4
 WHERE tool_call_id    = $5
@@ -24,17 +25,21 @@ WHERE tool_call_id    = $5
 
 type CompleteToolCallParams struct {
 	FinishedAt     pgtype.Timestamptz
-	Succeeded      *bool
+	Outcome        *string
 	Result         []byte
 	ErrorMessage   *string
 	ToolCallID     pgtype.UUID
 	OrganizationID pgtype.UUID
 }
 
+// Settling moves the state and the outcome together, because migration
+// 000022 ties them: (state = 'settled') = (outcome IS NOT NULL), and the
+// same equivalence against finished_at. Writing one without the others is
+// refused by the row rather than by this query.
 func (q *Queries) CompleteToolCall(ctx context.Context, arg CompleteToolCallParams) (int64, error) {
 	result, err := q.db.Exec(ctx, completeToolCall,
 		arg.FinishedAt,
-		arg.Succeeded,
+		arg.Outcome,
 		arg.Result,
 		arg.ErrorMessage,
 		arg.ToolCallID,
@@ -57,7 +62,7 @@ INSERT INTO tool_calls (
     $5, $6, $7, $8, $9,
     $10, $11, COALESCE($12::timestamptz, now())
 )
-RETURNING tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, succeeded, error_message, started_at, finished_at
+RETURNING tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest
 `
 
 type CreateToolCallParams struct {
@@ -116,16 +121,20 @@ func (q *Queries) CreateToolCall(ctx context.Context, arg CreateToolCallParams) 
 		&i.ToolName,
 		&i.Arguments,
 		&i.Result,
-		&i.Succeeded,
 		&i.ErrorMessage,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.State,
+		&i.Outcome,
+		&i.ExecutionID,
+		&i.RequirementSet,
+		&i.RequirementSetDigest,
 	)
 	return i, err
 }
 
 const getToolCall = `-- name: GetToolCall :one
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, succeeded, error_message, started_at, finished_at FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
 WHERE tool_call_id    = $1
   AND organization_id = $2
 `
@@ -152,16 +161,20 @@ func (q *Queries) GetToolCall(ctx context.Context, arg GetToolCallParams) (ToolC
 		&i.ToolName,
 		&i.Arguments,
 		&i.Result,
-		&i.Succeeded,
 		&i.ErrorMessage,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.State,
+		&i.Outcome,
+		&i.ExecutionID,
+		&i.RequirementSet,
+		&i.RequirementSetDigest,
 	)
 	return i, err
 }
 
 const listToolCallsByPrincipal = `-- name: ListToolCallsByPrincipal :many
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, succeeded, error_message, started_at, finished_at FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
 WHERE organization_id       = $1
   AND principal_instance_id = $2
   AND ($3::timestamptz IS NULL
@@ -207,10 +220,14 @@ func (q *Queries) ListToolCallsByPrincipal(ctx context.Context, arg ListToolCall
 			&i.ToolName,
 			&i.Arguments,
 			&i.Result,
-			&i.Succeeded,
 			&i.ErrorMessage,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -223,7 +240,7 @@ func (q *Queries) ListToolCallsByPrincipal(ctx context.Context, arg ListToolCall
 }
 
 const listToolCallsByStory = `-- name: ListToolCallsByStory :many
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, succeeded, error_message, started_at, finished_at FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
 WHERE organization_id = $1
   AND story_id        = $2
   AND ($3::timestamptz IS NULL
@@ -269,10 +286,14 @@ func (q *Queries) ListToolCallsByStory(ctx context.Context, arg ListToolCallsByS
 			&i.ToolName,
 			&i.Arguments,
 			&i.Result,
-			&i.Succeeded,
 			&i.ErrorMessage,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -285,7 +306,7 @@ func (q *Queries) ListToolCallsByStory(ctx context.Context, arg ListToolCallsByS
 }
 
 const listToolCallsInWindow = `-- name: ListToolCallsInWindow :many
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, succeeded, error_message, started_at, finished_at FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
 WHERE organization_id = $1
   AND started_at     >= $2
   AND started_at      < $3
@@ -334,10 +355,14 @@ func (q *Queries) ListToolCallsInWindow(ctx context.Context, arg ListToolCallsIn
 			&i.ToolName,
 			&i.Arguments,
 			&i.Result,
-			&i.Succeeded,
 			&i.ErrorMessage,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
 		); err != nil {
 			return nil, err
 		}
@@ -350,7 +375,7 @@ func (q *Queries) ListToolCallsInWindow(ctx context.Context, arg ListToolCallsIn
 }
 
 const lockToolCall = `-- name: LockToolCall :one
-SELECT tool_calls.tool_call_id, tool_calls.organization_id, tool_calls.user_id, tool_calls.principal_instance_id, tool_calls.llm_call_id, tool_calls.product_id, tool_calls.feature_id, tool_calls.epic_id, tool_calls.story_id, tool_calls.lineage_key, tool_calls.tool_name, tool_calls.arguments, tool_calls.result, tool_calls.succeeded, tool_calls.error_message, tool_calls.started_at, tool_calls.finished_at, now()::timestamptz AS locked_at
+SELECT tool_calls.tool_call_id, tool_calls.organization_id, tool_calls.user_id, tool_calls.principal_instance_id, tool_calls.llm_call_id, tool_calls.product_id, tool_calls.feature_id, tool_calls.epic_id, tool_calls.story_id, tool_calls.lineage_key, tool_calls.tool_name, tool_calls.arguments, tool_calls.result, tool_calls.error_message, tool_calls.started_at, tool_calls.finished_at, tool_calls.state, tool_calls.outcome, tool_calls.execution_id, tool_calls.requirement_set, tool_calls.requirement_set_digest, now()::timestamptz AS locked_at
 FROM tool_calls
 WHERE tool_call_id    = $1
   AND organization_id = $2
@@ -387,10 +412,14 @@ func (q *Queries) LockToolCall(ctx context.Context, arg LockToolCallParams) (Loc
 		&i.ToolCall.ToolName,
 		&i.ToolCall.Arguments,
 		&i.ToolCall.Result,
-		&i.ToolCall.Succeeded,
 		&i.ToolCall.ErrorMessage,
 		&i.ToolCall.StartedAt,
 		&i.ToolCall.FinishedAt,
+		&i.ToolCall.State,
+		&i.ToolCall.Outcome,
+		&i.ToolCall.ExecutionID,
+		&i.ToolCall.RequirementSet,
+		&i.ToolCall.RequirementSetDigest,
 		&i.LockedAt,
 	)
 	return i, err

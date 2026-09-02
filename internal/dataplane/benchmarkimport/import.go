@@ -573,9 +573,13 @@ func (i *Importer) closeToolCall(ctx context.Context, organizationID, toolCall u
 	if err != nil {
 		return fmt.Errorf("encode import summary: %w", err)
 	}
+	outcome := store.ToolOutcomeSucceeded
+	if importErr != nil {
+		outcome = store.ToolOutcomeFailed
+	}
 	completion := store.CompleteToolCallInput{
 		Result: summary, OrganizationID: organizationID, ToolCallID: toolCall,
-		Succeeded: importErr == nil,
+		Outcome: outcome,
 	}
 	if importErr != nil {
 		message := importErr.Error()

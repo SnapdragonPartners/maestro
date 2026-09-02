@@ -136,7 +136,7 @@ func TestToolCallCompletionReturnsItsResult(t *testing.T) {
 	winner, err := f.store.CompleteToolCall(ctx, store.CompleteToolCallInput{
 		OrganizationID: f.organizationID,
 		ToolCallID:     call.ToolCallID,
-		Succeeded:      true,
+		Outcome:        store.ToolOutcomeSucceeded,
 		Result:         json.RawMessage(`{"exit":0}`),
 	})
 	if err != nil {
@@ -150,7 +150,7 @@ func TestToolCallCompletionReturnsItsResult(t *testing.T) {
 	loser, err := f.store.CompleteToolCall(ctx, store.CompleteToolCallInput{
 		OrganizationID: f.organizationID,
 		ToolCallID:     call.ToolCallID,
-		Succeeded:      false,
+		Outcome:        store.ToolOutcomeFailed,
 		ErrorMessage:   &message,
 	})
 	if err != nil {
@@ -390,17 +390,17 @@ func TestToolCompletionCoherenceCoversBothCallTypes(t *testing.T) {
 	}{
 		{
 			name:  "success carrying an empty error message",
-			input: store.CompleteToolCallInput{Succeeded: true, ErrorMessage: pointerTo("")},
+			input: store.CompleteToolCallInput{Outcome: store.ToolOutcomeSucceeded, ErrorMessage: pointerTo("")},
 			want:  "must not carry an error message at all",
 		},
 		{
 			name:  "success carrying a real error message",
-			input: store.CompleteToolCallInput{Succeeded: true, ErrorMessage: pointerTo("boom")},
+			input: store.CompleteToolCallInput{Outcome: store.ToolOutcomeSucceeded, ErrorMessage: pointerTo("boom")},
 			want:  "must not carry an error message at all",
 		},
 		{
 			name:  "failure whose diagnostic is only whitespace",
-			input: store.CompleteToolCallInput{Succeeded: false, ErrorMessage: pointerTo(" \t ")},
+			input: store.CompleteToolCallInput{Outcome: store.ToolOutcomeFailed, ErrorMessage: pointerTo(" \t ")},
 			want:  "must carry a non-blank diagnostic",
 		},
 	} {
