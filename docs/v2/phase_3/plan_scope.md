@@ -50,6 +50,32 @@ rather than splitting, since the `tool_calls` record contract and the executions
 table it correlates to belong in one review; implementation lands as two
 migrations reviewed in sequence. The size changes, not the scope's substance.
 
+**Amended 2026-09-02, Accepted by Codex and DR**, on the Phase 3 item 3 branch
+and reviewed with it over seven rounds. Three amendments, of three kinds, all
+evidenced from the tree or an Accepted ADR and none adding an ADR need; see
+[the item 3 design](design_orchestrator-seam.md).
+
+1. **Sequencing.** `pkg/persistence`'s deletion moves from item 3 to item 14.
+   At `6c32158` it has 42 live importers spanning the whole v1 factory path —
+   deleting it in item 3 would mean deleting v1 in block A. Phase 2 deferred it
+   at phase grain; the item assignment was never checked against the import
+   graph. Item 3 instead enforces that the Orchestrator's transitive closure
+   cannot reach it.
+2. **Scope correction.** "All four not-ready plane states" becomes "all
+   enumerated not-ready states", which **widens** item 3: four was wrong in
+   both directions — "unmigrated" is three conditions with different remedies,
+   and Phase 2's D4a/D4b added two further marked states after this plan was
+   written. The design enumerates eleven, each with its producer, behaviour
+   and remedy.
+3. **Reassignment plus an addition.** "Configuration and secrets have a live
+   consumer" leaves item 3, which has no honest reader for either:
+   configuration's is **item 4** (ADR 0031 §4 — pack selection reads scoped
+   configuration through the key registry), and a secret's is **item 5**,
+   whose line **gains a deliverable it did not have** — a secret-bearing forge
+   operation against a local Gitea forge, token from the vault per ADR 0030
+   §3, behind a v2-neutral forge seam, with a test. The locked-plane clause
+   stays with item 3.
+
 **This document binds Phase 3.** It carries the roadmap amendment striking the
 carried v1 regression run, which is Accepted with it.
 
@@ -262,15 +288,15 @@ is not done.
 | 0 | `scope-and-plan` | This document, Accepted. Includes the roadmap amendment above. | S |
 | 1 | `agent-inventory` | **Inventory and classify** the existing agent, toolloop, `pkg/proto`, supervisor, dispatcher and Claude adapter surfaces, against the frozen v1 tree, with a disposition per surface: retain, refactor, replace, retire. Authoring work, no code. Reconciles the [port inventory](../phase_0/inventory_v1-port.md) against the real import graph, which is what #298's deletions need in order to be complete rather than approximate. | M |
 | 2 | `schema-work-hierarchy` | The work-hierarchy schema families: work groups, executions, **dispatch records carrying their dispatch basis** — the governing version set and the incoming dependency basis — and the **Epic and Story dependency graphs** [ADR 0024](../../adr/0024-intake-and-triage-artifact-contract.md) requires persisted, without which the basis has nothing to be compared against and test 2 cannot be falsified. Executions carry **identity and authority only**; their resolved configuration and per-incarnation bindings are [ADR 0032](../../adr/0032-agent-execution-contract.md) §2's, demoted to a design input and settled in items 5/6 against a real consumer. **`runs` moves to item 10** (see the amendment above). Includes the **`tool_calls` migration that replaces `tool_calls_finished_check`** and adds the nonterminal states ADR 0030 §8 requires, so a healthy operator wait, a healthy resource wait and an interrupted attempt are distinguishable. Also carries the **current-basis pointers** — which accepted original governs a Story or Epic, and which completion satisfies an edge — without which the snapshot has no counterpart to be compared against. Every table traces to an Accepted ADR and a Phase 3 consumer, as in Phase 2. **Sized L, not M** (see the amendment above); implemented as `000021_work_hierarchy` then `000022_tool_call_state`, reviewed in sequence. | L |
-| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — absent, unmigrated, locked, or carrying **Phase 2** item 8's interrupted-recovery marker are four distinct states with four behaviours, not one crash; (e) **organization, product and repository provisioning** as the real entry point — its **prompt-pack half is item 4's**, which is why packs move into this block rather than sitting behind the execution boundary. Deletes `pkg/persistence`, which Phase 2 deferred here by design. **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
+| 3 | `orchestrator-seam` | **The data plane acquires its caller.** Phase 2 built the seam and its local modules standing alone; this is where the Orchestrator routes through them. Five parts: (a) agent lifecycle, dispatch, artifact and call writes go through the seam; (b) the **durable-checkpoint rule** — typed workflow checkpoints replacing `StateStore.Save(id, any)`, and restart from the last committed artifact; (c) **configuration and secrets acquire their first consumer** — config read through the registry, the vault unlocked by the key-file root of trust at startup, including the locked-plane failure path Phase 2 tested and nothing yet exercised; (d) a **defined startup contract for a plane that is not ready** — every enumerated not-ready state, each with its own cause, behaviour and operator remedy, not one crash (the enumeration is the design's; it includes absent, locked, the three schema states, and **Phase 2** item 8's three marked states); (e) **organization, product and repository provisioning** as the real entry point — its **prompt-pack half is item 4's**, which is why packs move into this block rather than sitting behind the execution boundary. The Orchestrator's transitive closure cannot reach `pkg/persistence`, `pkg/state`, `pkg/config` or any local composer, checked by import graph; **`pkg/persistence`'s deletion is item 14's** (amended 2026-09-02 — it has 42 live v1 importers). **Gated by Track B's portability proof** ([#286](https://github.com/SnapdragonPartners/maestro/issues/286)), authored in parallel. | L |
 | 4 | `prompt-packs` | ADR 0031: immutable content records beside mutable installation records, scheme-qualified content identity, resolution once at dispatch, and **organization provisioning seeding the scoped selector — which completes item 3's provisioning rather than amending it later**. Carries `principal_instances.prompt_pack_id`'s three-roles-in-one-column correction and the `"v1-embedded"` foreign-pack case the benchmark importer writes. Placed in block A because packs are plane storage and dispatch-time resolution; nothing here needs the execution boundary. | M |
 
 > **Checkpoint 1 — the plane holds the work.** An Epic and its Stories are
 > created, dispatched, and durably checkpointed through the seam; the
 > Orchestrator recovers its own state across a restart; a fresh organization is
 > provisioned with a resolvable prompt-pack selector; and startup is correct
-> against **all four** not-ready states — absent, unmigrated, locked, and
-> **carrying an interrupted-recovery marker**, where normal startup must neither
+> against **every enumerated** not-ready state — including locked, each schema
+> state, and **interrupted recovery**, where normal startup must neither
 > bypass nor corrupt the recovery protocol. No agent has run.
 > Reviewed before block B opens, because everything below persists through it.
 
@@ -278,7 +304,7 @@ is not done.
 
 | # | Branch suffix | Deliverable | Size |
 |---|---|---|---|
-| 5 | `execution-boundary` | ADR 0030's three gates and ADR 0032's binding boundary items: mediated actions with durable intent and result records, capability-scoped tools, the four-axis terminal result **with its applicability rule**, fenced resource references, and rejection of superseded or fenced execution authority at every mediated boundary. The toolloop is refactored behind it, and the MCP `lastEffect` and signal-correction path is **removed** — the Claude Code adapter that replaces it is item 8's, not this item's. | L |
+| 5 | `execution-boundary` | ADR 0030's three gates and ADR 0032's binding boundary items: mediated actions with durable intent and result records, capability-scoped tools, the four-axis terminal result **with its applicability rule**, fenced resource references, and rejection of superseded or fenced execution authority at every mediated boundary. The toolloop is refactored behind it, and the MCP `lastEffect` and signal-correction path is **removed** — the Claude Code adapter that replaces it is item 8's, not this item's. **Also carries the vault's first live reader** (amended 2026-09-02): one secret-bearing mediated forge operation — creating or updating a Story pull request on a local Gitea forge, the token resolved from the vault, substituted per ADR 0030 §3 and injected at effect — reusing the local Gitea service and test harness only, with the API client ported behind a v2-neutral forge seam that imports none of `pkg/forge`'s state file, `pkg/config` or `internal/orch`; proven by a test against that forge. | L |
 | 6 | `agent-core` | The smallest shared agent core, extracted and refactored from v1's role machinery per item 1's dispositions, wired to item 5's boundary as its **first real consumer**. Settles #330's vocabulary mapping, `QUESTION`'s artifact mapping, and `SUSPEND`'s fate. Whichever of ADR 0032's demoted mechanisms this consumer actually demonstrates a need for is built here; the rest stay unbuilt. | L |
 | 7 | `incubator-habitat` | ADR 0029: Incubator provisioning and Story-scoped lifecycle; Habitat instance, generation-bound lease and retention claim; the fencing protocol returning `terminated`, `isolated` or `unconfirmed`, with quarantine and the independent cleanup axis; and reset on ownership transfer. **Three decisions the [execution-contract notes](notes_execution-contracts.md) assign to this plan and which have no other owner:** (a) **routing is by declared requirement, never by contract name** — a `test` with no dependencies routes to the Incubator and the same `test` needing a database routes to the Habitat, so a label-based implementation satisfies a loose checkpoint while violating ADR 0029; (b) **both run kinds exist and behave differently** — an *iteration* run redeploys into the existing instance and keeps accumulated state, an *evidence-bearing* run resets first, and collapsing them silently destroys the reset guarantee; (c) the **verb inventory is pruned**, including whether `integration` is a distinct verb or the requirement-routed form of `test`. Tools target a resource reference. | L |
 | 8 | `external-consumers` | **The contract's second and third consumers, both external processes.** (a) The **real standalone reviewer** — an external-process code-review agent that speaks the wire contract, does actual review work, and publishes its findings as artifacts. This is [#282](https://github.com/SnapdragonPartners/maestro/issues/282)'s executable, and it is what A4's conformance slice explicitly was **not**: that slice's backend was a stub proving shape. (b) The **Claude Code execution adapter**, replacing the `lastEffect` and signal-correction path item 5 removed with a real adapter over the contract. GitHub Actions annotation presentation stays deferred. Both consume item 5's boundary and item 7's resources unchanged — **if either needs the boundary widened, that is the finding**, and it is how ADR 0032's demoted mechanisms acquire evidence instead of speculation. | L |
@@ -416,13 +442,16 @@ is not done.
       Phase 3, and that is precisely how a local-only assumption hardens into
       architecture." Checkable by import graph, so it is checked rather than
       trusted. *(Item 3.)*
-- [ ] Configuration and secrets have a live consumer, and the locked-plane path
-      is exercised by the Orchestrator rather than only by its own tests.
-      *(Item 3.)*
-- [ ] Startup is defined and demonstrated for **all four** not-ready plane
-      states, including **interrupted recovery**, where normal startup must
-      neither bypass nor corrupt Phase 2's recovery protocol — the state whose
-      mishandling destroys a staged key. *(Item 3, checkpoint 1.)*
+- [ ] Configuration has a live reader — the pack selector resolved through
+      the key registry — and a secret has one — the forge operation's token
+      from the vault. *(Items 4 and 5; amended 2026-09-02, formerly item 3's.)*
+- [ ] The locked-plane path is exercised by the Orchestrator's own startup
+      rather than only by the plane's tests. *(Item 3.)*
+- [ ] Startup is defined and demonstrated for **every enumerated** not-ready
+      plane state (amended 2026-09-02, formerly "all four"), including
+      **interrupted recovery**, where normal startup must neither bypass nor
+      corrupt Phase 2's recovery protocol — the state whose mishandling
+      destroys a staged key. *(Item 3, checkpoint 1.)*
 - [ ] **Execution-resource routing is by declared requirement, never by contract
       name**, and **both run kinds exist with different behaviour** — an
       iteration run redeploys into the existing instance and keeps accumulated

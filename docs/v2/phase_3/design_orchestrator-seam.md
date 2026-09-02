@@ -1,16 +1,18 @@
 +++
 title = "Design: The Orchestrator Acquires The Data Plane (Item 3)"
 edit_date = "2026-09-02"
-status = "draft"
+status = "live"
 type = "design"
 summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane's caller — a provider-neutral internal/orchestrator handed an opener rather than a composer, whose transitive closure is guarded after the seam's own closure is cut free of paths and v1 config; a startup contract over the enumerated not-ready states, with causes mapped explicitly by each producer and proved behaviourally per state; one probe connection supplying both reachability and schema version because pgxpool.New is lazy and opening a seam proves nothing today; the configuration-key registry threaded through plane.Composition so governed configuration has a writer at all; the first production Management artifact types — Epic record, Story record and Story completion, each carrying only what no row owns — without which no Story can be dispatched; typed durable checkpoints as committed artifacts plus control rows plus a recovery projection that compares effective views by digest and sequence; dispatch creation that derives its basis from authoritative rows under the Epic lock and validates every reference under the artifact lock the transitions themselves take; the named conditional transitions item 2 deferred here; provisioning shaped so item 4's pack selector completes it; and StateStore retired whole. Carries three plan amendments: pkg/persistence's deletion moves to item 14, 'all four not-ready states' becomes the enumerated set, and the live-consumer criterion reassigns to item 4 (configuration, ADR 0031 §4) and item 5 (secrets, ADR 0030 §3)."
 +++
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review rounds 1–7 (Codex, 2026-09-02:
-thirty-four P1s, all confirmed against the tree or the ADR they turned on; see
-*Points Resolved In Review*). Phase 3 item 3.
+Status: **live** — Accepted by Codex and DR, 2026-09-02, after seven review
+rounds (thirty-four P1s, all confirmed against the tree or the ADR they turned
+on; see *Points Resolved In Review*). Its three plan amendments are Accepted
+with it and applied to `plan_scope.md` in the acceptance commit. Flipped in
+that commit before its own merge, following the phase's precedent. Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
 implementation, a local composer, a cloud composer, lifecycle verbs, a vault, a
@@ -884,8 +886,8 @@ projection is re-checked at each.
 Three amendments, and they are **not all the same kind** — round 4 caught an
 earlier draft calling all three "sequencing corrections", which understated
 two of them. Each is evidenced from the tree or an Accepted ADR; none adds an
-ADR need. `plan_scope.md` is edited in the acceptance commit, not before, so no
-live document asserts a decision nobody has accepted.
+ADR need. Applied to `plan_scope.md` in the acceptance commit — not before, so no live
+document asserted a decision nobody had accepted.
 
 1. **Sequencing.** `pkg/persistence`'s deletion moves from item 3 to item 14
    (D1). The item-3 line loses its deletion sentence and gains the closure
