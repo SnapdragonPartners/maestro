@@ -923,7 +923,7 @@ Round 3 (Codex, 2026-09-02). Six P1s, all confirmed.
 | # | Finding | Resolution |
 | --- | --- | --- |
 | 1 | The mutant left the acquire in place, so it died for the expected reason | D4 — the mutant deletes the acquire and reads through the pool |
-| 2 | The whole-basis proof exercised three of five components | D9 — five runs, one per component, each deletable comparison named |
+| 2 | The whole-basis proof exercised three of five components | D9 — five runs, then described as "one per component"; round 5 recharacterized them as one per transition shape, with the comparator's coverage moved to a unit test |
 | 3 | `REPEATABLE READ` + `AmendmentBase`'s `FOR UPDATE` aborts with `40001` | D9 — `OpenWork` seam method: own snapshot, non-locking reads, a non-locking effective-base read |
 | 4 | No concrete secret-bearing action in item 5; item-7 claim wrong | D7 — amendment 3 adds the forge PR operation against the local Gitea forge to item 5; item-7 sentence corrected against ADR 0030's effect-site table |
 | 5 | ADR 0028's evolution rule stated backwards | D14 — optional fields extend the version; required or incompatible ones need a new one |
@@ -937,7 +937,7 @@ Round 4 (Codex, 2026-09-02). Five P1s, all confirmed.
 | # | Finding | Resolution |
 | --- | --- | --- |
 | 1 | The comparison table still routed through `AmendmentBase` after round 3 replaced it | D9 — every reference uses the non-locking effective-base read; the round-1 row annotated |
-| 2 | Five end-to-end runs could not see a deleted digest or id comparison, nor a mis-paired completion | D9 — `basisMatch` unit-tested per field, eleven facts; a two-predecessor fixture with the completions swapped |
+| 2 | Five end-to-end runs could not see a deleted digest or id comparison, nor a mis-paired completion | D9 — `basisMatch` unit-tested per comparison (miscounted as eleven; ten, corrected in round 5); the swapped-completion fixture was itself found unsound in round 5 and replaced |
 | 3 | Item 5's terminal and outstanding-action states would be misfiled as awaiting the boundary | D9 — item 5 obligation to extend `OpenWork`, proved by item 6; recorded in D14's table |
 | 4 | The forge assignment pointed at v1 wiring (`pkg/forge/gitea` reaches `pkg/config`, `pkg/mirror`; `internal/orch` is v1) | D7 — item 5 reuses the local Gitea service and harness only, and ports the client behind a v2-neutral seam |
 | 5 | Three amendments called sequencing corrections; two are scope changes | *Amendments* — each characterized: sequencing; scope correction; reassignment plus addition |
