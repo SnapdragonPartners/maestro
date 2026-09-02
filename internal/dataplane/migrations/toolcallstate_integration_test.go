@@ -272,11 +272,103 @@ func TestToolCallExecutionCorrelation(t *testing.T) {
 		withExecution, "40000000-0000-7000-8000-000000000041", w.org, w.principal,
 		whExecution, w.product, w.feature, w.epic2, w.story2)
 
+	// CROSS-ORGANIZATION. A whole second tenant, with its own chain, and a
+	// tool call in organization A naming organization B's execution.
+	//
+	// Note what this can and cannot isolate. `stories.story_id` is a PRIMARY
+	// KEY, so it is globally unique and two organizations can never hold the
+	// same Story. An execution in another organization therefore always
+	// carries different lineage as well, and no mutation can vary the
+	// organization column ALONE. The column stays in the key as defence in
+	// depth and for consistency with every other composite key here; what is
+	// testable is that a cross-tenant correlation is refused, and that is
+	// what this asserts rather than claiming more.
+	otherOrg := "40000000-0000-7000-8000-0000000000f0"
+	otherExecution := w.seedForeignOrgExecution(t, otherOrg)
+
+	w.rejectsWith(t, "tool_calls_execution_fkey",
+		"a tool call named an execution belonging to a different organization",
+		withExecution, "40000000-0000-7000-8000-000000000043", w.org, w.principal,
+		otherExecution, w.product, w.feature, w.epic, w.story)
+
 	// The well-formed case must be accepted.
 	if _, err := w.tx.Exec(withExecution, "40000000-0000-7000-8000-000000000042", w.org, w.principal,
 		whExecution, w.product, w.feature, w.epic, w.story); err != nil {
 		t.Fatalf("a correctly correlated tool call was rejected: %v", err)
 	}
+}
+
+// seedForeignOrgExecution builds a second tenant with a complete chain and
+// returns its execution id. Inside the fixture transaction, so the deferrable
+// repository/product cycle never has to settle.
+func (w *wh) seedForeignOrgExecution(t *testing.T, org string) string {
+	t.Helper()
+	var (
+		user      = "40000000-0000-7000-8000-0000000000f1"
+		principal = "40000000-0000-7000-8000-0000000000f2"
+		product   = "40000000-0000-7000-8000-0000000000f3"
+		repo      = "40000000-0000-7000-8000-0000000000f4"
+		feature   = "40000000-0000-7000-8000-0000000000f5"
+		epic      = "40000000-0000-7000-8000-0000000000f6"
+		story     = "40000000-0000-7000-8000-0000000000f7"
+		workGroup = "40000000-0000-7000-8000-0000000000f8"
+		dispatch  = "40000000-0000-7000-8000-0000000000f9"
+		execution = "40000000-0000-7000-8000-0000000000fa"
+		storyPlan = "40000000-0000-7000-8000-0000000000fb"
+		epicPlan  = "40000000-0000-7000-8000-0000000000fc"
+	)
+	artifact := `INSERT INTO management_artifacts
+	    (artifact_id, organization_id, user_id, artifact_type, scope_type, scope_story_id, scope_epic_id,
+	     product_id, feature_id, epic_id, story_id, author_instance_id, schema_version, summary,
+	     payload, payload_digest, review_digest)
+	  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,'s','{}'::jsonb,$13,$14)`
+
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,'other','Other')`,
+			[]any{org}},
+		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'u2','U2')`,
+			[]any{user, org}},
+		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
+		  VALUES ($1,$2,'agent','opus','coder')`, []any{principal, org}},
+		{`INSERT INTO products (product_id, organization_id, user_id, slug, display_name)
+		  VALUES ($1,$2,$3,'p2','P2')`, []any{product, org, user}},
+		{`INSERT INTO repositories (repository_id, organization_id, primary_product_id, user_id, slug, display_name)
+		  VALUES ($1,$2,$3,$4,'r2','R2')`, []any{repo, org, product, user}},
+		{`INSERT INTO product_repositories (product_id, repository_id, organization_id)
+		  VALUES ($1,$2,$3)`, []any{product, repo, org}},
+		{`INSERT INTO features (feature_id, organization_id, user_id, product_id, title)
+		  VALUES ($1,$2,$3,$4,'F2')`, []any{feature, org, user, product}},
+		{`INSERT INTO epics (epic_id, organization_id, user_id, product_id, feature_id, repository_id, title)
+		  VALUES ($1,$2,$3,$4,$5,$6,'E')`, []any{epic, org, user, product, feature, repo}},
+		{`INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id, epic_id, title)
+		  VALUES ($1,$2,$3,$4,$5,$6,'S')`, []any{story, org, user, product, feature, epic}},
+		{artifact, []any{storyPlan, org, user, "story_plan", "story", story, nil,
+			product, feature, epic, story, principal, digestA, digestB}},
+		{artifact, []any{epicPlan, org, user, "epic_plan", "epic", nil, epic,
+			product, feature, epic, nil, principal, digestA, digestB}},
+		{`INSERT INTO work_groups (work_group_id, organization_id, product_id, feature_id, epic_id)
+		  VALUES ($1,$2,$3,$4,$5)`, []any{workGroup, org, product, feature, epic}},
+		{`INSERT INTO story_dispatches
+		    (story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id,
+		     disposition, settled_at,
+		     story_version_artifact_id, story_version_effective_digest, story_version_effective_sequence,
+		     epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',now(),$8,$9,0,$10,$11,0)`,
+			[]any{dispatch, org, product, feature, epic, story, workGroup,
+				storyPlan, digestA, epicPlan, digestB}},
+		{`INSERT INTO executions
+		    (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+			[]any{execution, org, product, feature, epic, story, dispatch}},
+	} {
+		if _, err := w.tx.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed foreign-org chain %q: %v", stmt.sql, err)
+		}
+	}
+	return execution
 }
 
 // The backfill, against rows written under the PRE-000022 schema. Applying
@@ -373,17 +465,23 @@ func TestDownMigrationRefusesRatherThanCorrupts(t *testing.T) {
 		args    []any
 		wants   string
 	}{
-		{"denied outcome", "state, outcome, finished_at", "'settled','denied',now()", nil, "no boolean can"},
+		{"denied outcome", "state, outcome, finished_at", "'settled','denied',now()", nil,
+			"1 tool call(s) hold an outcome no boolean can"},
 		{"blocked outcome", "state, outcome, finished_at, requirement_set, requirement_set_digest",
-			"'settled','blocked',now(),'{\"g\":{}}'::jsonb,$4", []any{digestA}, "no boolean can"},
-		{"stale outcome", "state, outcome, finished_at", "'settled','stale',now()", nil, "no boolean can"},
-		{"unknown outcome", "state, outcome, finished_at", "'settled','unknown',now()", nil, "no boolean can"},
+			"'settled','blocked',now(),'{\"g\":{}}'::jsonb,$4", []any{digestA},
+			"1 tool call(s) hold an outcome no boolean can"},
+		{"stale outcome", "state, outcome, finished_at", "'settled','stale',now()", nil,
+			"1 tool call(s) hold an outcome no boolean can"},
+		{"unknown outcome", "state, outcome, finished_at", "'settled','unknown',now()", nil,
+			"1 tool call(s) hold an outcome no boolean can"},
 		{"operator wait", "state, requirement_set, requirement_set_digest",
-			"'operator_waiting','{\"g\":{}}'::jsonb,$4", []any{digestA}, "declared wait"},
-		{"resource wait", "state", "'resource_waiting'", nil, "declared wait"},
+			"'operator_waiting','{\"g\":{}}'::jsonb,$4", []any{digestA},
+			"1 tool call(s) are in a declared wait"},
+		{"resource wait", "state", "'resource_waiting'", nil, "1 tool call(s) are in a declared wait"},
 		{"succeeded row with a requirement set",
 			"state, outcome, finished_at, requirement_set, requirement_set_digest",
-			"'settled','succeeded',now(),'{\"g\":{}}'::jsonb,$4", []any{digestA}, "requirement set"},
+			"'settled','succeeded',now(),'{\"g\":{}}'::jsonb,$4", []any{digestA},
+			"1 tool call(s) carry a requirement set"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dsn := disposableDatabase(t)
@@ -406,8 +504,30 @@ func TestDownMigrationRefusesRatherThanCorrupts(t *testing.T) {
 				t.Fatal("the down migration accepted a row the old shape cannot express, and has " +
 					"silently rewritten it")
 			}
+			// The SUBSTITUTED count, not the bare wording. golang-migrate
+			// echoes the whole migration source in its error, and every
+			// RAISE message lives in that source -- so a phrase match
+			// passes whenever the migration fails for ANY reason,
+			// including a branch this case is not about. Only the
+			// formatted count proves which branch fired. This repository
+			// learned it on 000011 and it is documented there.
 			if !strings.Contains(err.Error(), tc.wants) {
-				t.Errorf("down refused for the wrong reason: wanted a mention of %q, got %v", tc.wants, err)
+				t.Errorf("down refused for the wrong reason: wanted the rendered %q, got %v", tc.wants, err)
+			}
+			// And prove the trap is real rather than theoretical: EVERY
+			// branch's bare wording is present in this error, including
+			// branches that did not fire, because the source is echoed. A
+			// case asserting the bare phrase would pass on any refusal at
+			// all. If this ever stops holding, the rendered-count matching
+			// above is belt without braces and the comment should say so.
+			for _, bare := range []string{"hold an outcome no boolean can",
+				"are in a declared wait", "carry a requirement set",
+				"carry an execution correlation"} {
+				if !strings.Contains(err.Error(), bare) {
+					t.Errorf("expected the echoed migration source to contain every branch's wording, "+
+						"but %q is absent -- the reason this test matches rendered counts no longer "+
+						"applies and should be re-examined", bare)
+				}
 			}
 		})
 	}
@@ -444,14 +564,104 @@ func TestDownMigrationRefusesASucceededRowCarryingAnExecution(t *testing.T) {
 		t.Fatal("the down migration dropped an execution correlation from a succeeded row, which " +
 			"every outcome and wait guard waves straight through")
 	}
-	if !strings.Contains(err.Error(), "execution correlation") {
+	// Rendered count, for the reason the table above documents.
+	if !strings.Contains(err.Error(), "1 tool call(s) carry an execution correlation") {
 		t.Errorf("down refused for the wrong reason: %v", err)
+	}
+}
+
+// Recovering from a refusal takes TWO steps, and resolving the rows is only
+// the first.
+//
+// golang-migrate marks the version before running, so the refusal leaves the
+// recorded version at 21 and dirty while the transaction's rollback leaves
+// the actual schema at 22. A retry from there runs from the wrong place. The
+// whole recovery is walked here because the migration's comment instructs an
+// operator to perform it, and 000011's first such instruction was
+// mechanically wrong -- a recovery nobody executes is a recovery nobody
+// knows is broken.
+func TestRefusalRecoveryNeedsTheVersionForcedBack(t *testing.T) {
+	ctx := context.Background()
+	dsn := disposableDatabase(t)
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	f := seedForBackfill(t, db)
+	const offending = "47000000-0000-7000-8000-000000000001"
+	if _, execErr := db.Exec(`INSERT INTO tool_calls
+	        (tool_call_id, organization_id, principal_instance_id, tool_name, arguments,
+	         state, outcome, finished_at)
+	        VALUES ($1,$2,$3,'t','{}'::jsonb,'settled','unknown',now())`,
+		offending, f.org, f.principal); execErr != nil {
+		t.Fatalf("seed offending row: %v", execErr)
+	}
+
+	if downErr := migrations.To(ctx, dsn, 21); downErr == nil {
+		t.Fatal("the down migration accepted an `unknown` outcome")
+	}
+
+	// The metadata and the schema now DISAGREE, which is the whole point.
+	version, dirty, versionErr := migrations.Version(dsn)
+	if versionErr != nil {
+		t.Fatalf("read version: %v", versionErr)
+	}
+	if !dirty || version != 21 {
+		t.Fatalf("after a refusal the recorded version is %d dirty=%v; the migration's recovery "+
+			"instruction assumes 21 and dirty, so if this changed the instruction is wrong",
+			version, dirty)
+	}
+	// The schema is still at 22 -- the columns 000022 added are present,
+	// because the refusal rolled its transaction back.
+	var hasOutcome bool
+	if scanErr := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
+	                            WHERE table_name='tool_calls' AND column_name='outcome')`).
+		Scan(&hasOutcome); scanErr != nil {
+		t.Fatalf("inspect schema: %v", scanErr)
+	}
+	if !hasOutcome {
+		t.Fatal("the refusal left the schema partially reversed; it must roll back whole")
+	}
+
+	// Step one alone is NOT enough: resolving the rows and retrying still
+	// fails, because the recorded version is dirty.
+	if _, execErr := db.Exec(`DELETE FROM tool_calls WHERE tool_call_id=$1`, offending); execErr != nil {
+		t.Fatalf("resolve the offending row: %v", execErr)
+	}
+	if retryErr := migrations.To(ctx, dsn, 21); retryErr == nil {
+		t.Fatal("reversing succeeded from a dirty version; if that is now allowed, the migration's " +
+			"two-step recovery instruction is over-stated and should be simplified")
+	}
+
+	// Step two: force the metadata back to the version the schema really is.
+	if forceErr := migrations.Force(dsn, 22); forceErr != nil {
+		t.Fatalf("force back to 22: %v", forceErr)
+	}
+	if downErr := migrations.To(ctx, dsn, 21); downErr != nil {
+		t.Fatalf("the documented recovery did not work: %v", downErr)
+	}
+
+	version, dirty, versionErr = migrations.Version(dsn)
+	if versionErr != nil {
+		t.Fatalf("read version after recovery: %v", versionErr)
+	}
+	if dirty || version != 21 {
+		t.Fatalf("after recovery the version is %d dirty=%v, want 21 clean", version, dirty)
 	}
 }
 
 // A plane holding only rows the old shape CAN express must still reverse, or
 // the refusals above would be indistinguishable from a down migration that
 // never works.
+//
+// All THREE expressible cases, because the old shape has three: settled and
+// succeeded, settled and failed, and open. Checking only success would leave
+// a wrong `failed` mapping and a rewritten open row both green -- and the
+// failed case additionally has to keep its diagnostic, which is the column
+// the restored coherence constraint reads.
 func TestDownMigrationSucceedsOnExpressibleRows(t *testing.T) {
 	ctx := context.Background()
 	dsn := disposableDatabase(t)
@@ -463,24 +673,67 @@ func TestDownMigrationSucceedsOnExpressibleRows(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	f := seedForBackfill(t, db)
-	if _, execErr := db.Exec(`INSERT INTO tool_calls
-	        (tool_call_id, organization_id, principal_instance_id, tool_name, arguments,
-	         state, outcome, finished_at)
-	        VALUES ($1,$2,$3,'t','{}'::jsonb,'settled','succeeded',now())`,
-		"43000000-0000-7000-8000-000000000001", f.org, f.principal); execErr != nil {
-		t.Fatalf("seed expressible row: %v", execErr)
+	const (
+		succeededID = "43000000-0000-7000-8000-000000000001"
+		failedID    = "43000000-0000-7000-8000-000000000002"
+		openID      = "43000000-0000-7000-8000-000000000003"
+	)
+	for _, row := range []struct {
+		id, columns, values string
+	}{
+		{succeededID, "state, outcome, finished_at", "'settled','succeeded',now()"},
+		{failedID, "state, outcome, finished_at, error_message", "'settled','failed',now(),'provider timeout'"},
+		{openID, "state", "'open'"},
+	} {
+		if _, execErr := db.Exec(`INSERT INTO tool_calls
+		        (tool_call_id, organization_id, principal_instance_id, tool_name, arguments, `+
+			row.columns+`) VALUES ($1,$2,$3,'t','{}'::jsonb,`+row.values+`)`,
+			row.id, f.org, f.principal); execErr != nil {
+			t.Fatalf("seed %s: %v", row.id, execErr)
+		}
 	}
 
 	if downErr := migrations.To(ctx, dsn, 21); downErr != nil {
 		t.Fatalf("the down migration refused a plane it can express: %v", downErr)
 	}
 
-	var succeeded *bool
-	if scanErr := db.QueryRow(`SELECT succeeded FROM tool_calls WHERE tool_call_id=$1`,
-		"43000000-0000-7000-8000-000000000001").Scan(&succeeded); scanErr != nil {
-		t.Fatalf("read reversed row: %v", scanErr)
-	}
-	if succeeded == nil || !*succeeded {
-		t.Errorf("a settled/succeeded row reversed to succeeded=%v", succeeded)
+	for _, want := range []struct {
+		id         string
+		succeeded  *bool
+		finished   bool
+		diagnostic string
+	}{
+		{succeededID, boolPtr(true), true, ""},
+		{failedID, boolPtr(false), true, "provider timeout"},
+		{openID, nil, false, ""},
+	} {
+		var succeeded *bool
+		var finishedAt *string
+		var errorMessage *string
+		if scanErr := db.QueryRow(
+			`SELECT succeeded, finished_at::text, error_message FROM tool_calls WHERE tool_call_id=$1`,
+			want.id).Scan(&succeeded, &finishedAt, &errorMessage); scanErr != nil {
+			t.Fatalf("read reversed row %s: %v", want.id, scanErr)
+		}
+		switch {
+		case want.succeeded == nil && succeeded != nil:
+			t.Errorf("row %s was open and reversed to succeeded=%v; an open row must stay unfinished "+
+				"with a null boolean, which is the pre-000022 encoding", want.id, *succeeded)
+		case want.succeeded != nil && (succeeded == nil || *succeeded != *want.succeeded):
+			t.Errorf("row %s reversed to succeeded=%v, want %v", want.id, succeeded, *want.succeeded)
+		}
+		if (finishedAt != nil) != want.finished {
+			t.Errorf("row %s reversed with finished_at=%v, want finished=%v", want.id, finishedAt, want.finished)
+		}
+		got := ""
+		if errorMessage != nil {
+			got = *errorMessage
+		}
+		if got != want.diagnostic {
+			t.Errorf("row %s reversed with error_message=%q, want %q -- the failed row's diagnostic is "+
+				"what the restored coherence constraint reads", want.id, got, want.diagnostic)
+		}
 	}
 }
+
+func boolPtr(b bool) *bool { return &b }

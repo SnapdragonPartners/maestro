@@ -1,6 +1,6 @@
 +++
 title = "Design: Work-Hierarchy Schema And The Dispatch Basis (Item 2)"
-edit_date = "2026-09-01"
+edit_date = "2026-09-02"
 status = "draft"
 summary = "Mini-plan for Phase 3 item 2: work groups keyed one-per-Epic, Story-scoped executions carrying authority rather than configuration, Story dispatch records with an explicit disposition and ADR 0019's two-part dispatch basis, typed Epic and Story dependency graphs serialized under a stable parent lock, and the tool_calls migration that replaces tool_calls_finished_check with an explicit state, a six-value outcome and the persisted canonical requirement set — plus the deferral of runs to item 10, which amends the phase plan."
 type = "design"
@@ -577,7 +577,7 @@ constraints below cannot be added before the backfill: every existing finished
 row receives `state = 'open'` from the column default and a null `outcome`, so
 `CHECK ((state = 'settled') = (finished_at IS NOT NULL))` would be violated on
 creation and `ADD CONSTRAINT` would fail against any non-empty database. The up
-migration is therefore five ordered steps:
+migration is therefore six ordered steps:
 
 1. **Add the columns**, with `state` defaulting to `'open'` and the rest
    nullable.

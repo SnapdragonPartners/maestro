@@ -25,7 +25,7 @@
 -- cannot precede the backfill: every existing finished row takes state='open'
 -- from the column default with a null outcome, so the settled equivalence
 -- would be violated on creation and ADD CONSTRAINT would fail against any
--- non-empty database. Five steps, and steps 3 and 4 stay in this order so the
+-- non-empty database. Six steps, and steps 3 and 4 stay in this order so the
 -- record is never governed by neither equivalence.
 BEGIN;
 

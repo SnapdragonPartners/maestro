@@ -30,14 +30,41 @@
 --
 -- ORDER MATTERS HERE TOO, for the mirror-image reason: re-adding
 -- tool_calls_finished_check before `succeeded` exists and is populated would
--- violate it on creation. Refuse, add, backfill, re-add, drop.
+-- violate it on creation. Lock, refuse, add, backfill, re-add coherence, drop.
+--
+-- RECOVERING FROM A REFUSAL. golang-migrate marks the version BEFORE running,
+-- so a refusal here leaves the recorded version at 21 and DIRTY while the
+-- transaction's rollback leaves the actual schema at 22. Resolving the rows
+-- is therefore only half the recovery: the metadata must be forced back to
+-- the version the schema really is, or the retry runs from the wrong place.
+--
+--     make dataplane-force-version VERSION=22 FORCE=1
+--
+-- and only then reverse again. This is walked end to end in the tests, on the
+-- precedent of 000011, whose first recovery instruction was mechanically
+-- wrong and was corrected the same way.
 BEGIN;
 
 -- ---------------------------------------------------------------------------
--- Step 1: refuse. Everything after this may assume only succeeded and failed
--- outcomes, no declared waits, and no new-only state -- which is what makes
--- the backfill total rather than best-effort.
+-- Step 1: take the table, THEN refuse.
+--
+-- The lock is not decoration. Without it the scans below and the first ALTER
+-- are two separate moments: a concurrent INSERT can commit after its class
+-- was counted and before ALTER TABLE takes ACCESS EXCLUSIVE, and the row it
+-- wrote is then dropped by a migration that already decided there was nothing
+-- to refuse. Taking the lock first makes the scan and the rewrite one
+-- indivisible decision -- the same reasoning ADR 0027 applies to shared
+-- state, and the same shape as a check-then-act anywhere else.
+--
+-- ACCESS EXCLUSIVE rather than a weaker mode because that is what the ALTERs
+-- take anyway; acquiring it up front only moves the wait earlier.
+--
+-- Everything after this may assume only succeeded and failed outcomes, no
+-- declared waits, and no new-only state -- which is what makes the backfill
+-- total rather than best-effort.
 -- ---------------------------------------------------------------------------
+LOCK TABLE tool_calls IN ACCESS EXCLUSIVE MODE;
+
 DO $$
 DECLARE
     offending bigint;

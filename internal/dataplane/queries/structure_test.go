@@ -224,11 +224,47 @@ func isInsert(sql string) bool {
 // is an intention until something fails the build.
 var callTables = []string{"llm_calls", "tool_calls"}
 
-// namedCompletions are the only statements permitted to UPDATE a call.
-// Each must carry the once-only guard.
-var namedCompletions = map[string]bool{
-	"CompleteLLMCall":  true,
-	"CompleteToolCall": true,
+// completion is one permitted UPDATE on a call table: the ONE table it may
+// touch, and the exact columns it may assign there.
+type completion struct {
+	table   string
+	columns map[string]bool
+}
+
+// namedCompletions are the only statements permitted to UPDATE a call. Each
+// must carry the once-only guard.
+//
+// Bound to a table and to its own column set, on the same reasoning as
+// namedTruncations: the names are not interchangeable. A union of both
+// families' vocabularies would let CompleteToolCall assign `cost_usd` or
+// CompleteLLMCall assign `outcome` -- columns that do not exist on those
+// tables today, so the statement would fail at runtime rather than at review,
+// and a future column of that name would be silently permitted. Worse, a
+// completion pointed at the other family's table would pass a name-only
+// check entirely.
+//
+// The asymmetry with outcomeColumns below is deliberate: a union there is
+// over-STRICT, banning columns from a creation that could not appear anyway.
+// A union here would be over-PERMISSIVE, which is the direction that admits
+// a defect.
+var namedCompletions = map[string]completion{
+	"CompleteLLMCall": {
+		table: "llm_calls",
+		columns: map[string]bool{
+			"finished_at": true, "succeeded": true, "error_message": true,
+			"input_tokens": true, "output_tokens": true, "reasoning_tokens": true,
+			"cache_read_tokens": true, "cache_write_tokens": true, "cost_usd": true,
+		},
+	},
+	"CompleteToolCall": {
+		table: "tool_calls",
+		columns: map[string]bool{
+			// `succeeded` is absent since migration 000022: settling a tool
+			// call moves state and outcome together.
+			"finished_at": true, "state": true, "outcome": true,
+			"error_message": true, "result": true,
+		},
+	},
 }
 
 // outcomeColumns must never appear in a call's INSERT column list.
@@ -247,18 +283,6 @@ var outcomeColumns = []string{
 	"input_tokens", "output_tokens", "reasoning_tokens",
 	"cache_read_tokens", "cache_write_tokens", "cost_usd",
 	"result",
-}
-
-// completionSetColumns are the ONLY columns a completion may assign.
-//
-// An allow-listed completion could otherwise rewrite the request side --
-// provider, model, arguments -- or the lineage, mutating history through a
-// statement that passes the name check. What a call was asked to do is not
-// something ending it can change.
-var completionSetColumns = map[string]bool{
-	"finished_at": true, "succeeded": true, "state": true, "outcome": true, "error_message": true,
-	"input_tokens": true, "output_tokens": true, "reasoning_tokens": true,
-	"cache_read_tokens": true, "cache_write_tokens": true, "cost_usd": true, "result": true,
 }
 
 // bornFinalTables are written once and never updated. The asymmetry with
@@ -574,10 +598,17 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 
 		case strings.Contains(strings.ToUpper(stmt.sql), "UPDATE "):
 			updates++
-			if !namedCompletions[stmt.name] {
+			allowed, named := namedCompletions[stmt.name]
+			if !named {
 				t.Errorf("%s: %q updates %s but is not a named completion. There is no generic update on a "+
 					"call record; add a completion to namedCompletions here only if it genuinely is one.",
 					stmt.file, stmt.name, table)
+				continue
+			}
+			if allowed.table != table {
+				t.Errorf("%s: %q is the completion for %s but updates %s. A completion pointed at the "+
+					"other call family would apply that family's lifecycle to this one while passing a "+
+					"name-only check.", stmt.file, stmt.name, allowed.table, table)
 				continue
 			}
 			// The guard must be in the WHERE clause, not merely somewhere in
@@ -593,10 +624,11 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 			// And it may only assign outcome columns.
 			setClause := between(stmt.sql, strings.ToUpper(stmt.sql), "SET", "WHERE")
 			for _, assigned := range assignedColumns(setClause) {
-				if !completionSetColumns[assigned] {
+				if !allowed.columns[assigned] {
 					t.Errorf("%s: %q assigns %s while completing %s. A completion records what the call "+
 						"LEARNED by ending; rewriting the request side or the lineage mutates history "+
-						"through a statement that passed the name check.",
+						"through a statement that passed the name check, and a column belonging to the "+
+						"other call family is not this one's to assign.",
 						stmt.file, stmt.name, assigned, table)
 				}
 			}
