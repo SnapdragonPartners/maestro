@@ -8,8 +8,8 @@ summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review rounds 1–3 (Codex, 2026-09-02:
-twenty-four P1s, all confirmed against the tree or the ADR they turned on; see
+Status: **draft** — revised after review rounds 1–4 (Codex, 2026-09-02:
+twenty-nine P1s, all confirmed against the tree or the ADR they turned on; see
 *Points Resolved In Review*). Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
@@ -400,10 +400,22 @@ inference, not an assignment.
 So amendment 3 adds to item 5's deliverable **one concrete secret-bearing
 mediated action and its test**: a **forge operation** — ADR 0030's effect-site
 table lists forge operations as Orchestrator-side mediated — creating or
-updating a Story pull request on the **airplane-mode Gitea forge** the tree
-already runs (`pkg/forge/gitea`, `internal/orch/airplane.go`), with the forge
-token resolved from the vault by `RevealSecret`, substituted per §3 before the
-digest, and injected at effect. That is Phase 2's "forge binding, where a forge
+updating a Story pull request on a **local Gitea forge**, with the forge token
+resolved from the vault by `RevealSecret`, substituted per §3 before the
+digest, and injected at effect.
+
+**What item 5 may reuse for that, and what it may not.** The tree's Gitea
+wiring is v1's: `pkg/forge/gitea`'s closure reaches `pkg/config` and
+`pkg/mirror`, and `internal/orch/airplane.go` is the v1 startup lifecycle. Both
+are outside D2's closure, and the live port inventory already draws the line —
+`pkg/forge/gitea` is *rework*: "the Gitea API client ports; the lifecycle does
+not", and `pkg/forge`'s "plaintext forge token" is named as the v1 assumption a
+port must not smuggle. So item 5 **reuses the local Gitea service and its test
+harness only**, and **ports or re-cuts the API client behind a v2-neutral forge
+seam** with no import of the v1 factory, `pkg/forge`'s state file, `pkg/config`
+or `internal/orch`. The token comes from the vault, the repository binding from
+the repository record — which is what the inventory's own row says
+`forge_state.json` dies into. That is Phase 2's "forge binding, where a forge
 token stops being a v1 file and becomes a vault row", made a line item with a
 test against a real local forge. Item 7 is not the assignment: ADR 0030 classes
 resource lifecycle as mediated too, so it *could* carry one, but nothing in
@@ -457,15 +469,19 @@ every reference item 2's snapshot carries:
 
 | Reference | Snapshot columns | Current side | Equal iff |
 | --- | --- | --- | --- |
-| Story version | `story_version_artifact_id`, `_effective_digest`, `_effective_sequence` | `stories.governing_artifact_id`; `AmendmentBase` on it | **id** and digest and sequence all equal |
-| Epic version | the `epic_version_*` triple | `epics.governing_artifact_id`; `AmendmentBase` on it | id and digest and sequence |
+| Story version | `story_version_artifact_id`, `_effective_digest`, `_effective_sequence` | `stories.governing_artifact_id`; the **non-locking effective-base read** on it | **id** and digest and sequence all equal |
+| Epic version | the `epic_version_*` triple | `epics.governing_artifact_id`; the non-locking effective-base read on it | id and digest and sequence |
 | Incoming edges | the set of `predecessor_story_id` in `dispatch_basis_dependencies` | the set of `predecessor_story_id` in `story_dependencies` where this Story is successor | the two sets are identical |
-| Each completion | `completion_artifact_id`, `_effective_digest`, `_effective_sequence` | the edge's `satisfying_completion_artifact_id`; `AmendmentBase` on it | id and digest and sequence; a null current pointer is *diverged* |
+| Each completion | `completion_artifact_id`, `_effective_digest`, `_effective_sequence` | the edge's `satisfying_completion_artifact_id`; the non-locking effective-base read on it | id and digest and sequence; a null current pointer is *diverged* |
 
 Id **and** digest **and** sequence, every time. Id alone misses amendments;
 digest alone misses no-op amendments; digest and sequence without id miss a
 repoint to an identical twin. Item 2 kept all three halves for exactly this
-comparison.
+comparison. `AmendmentBase` is **not** used here — it locks, and this is a read
+under a snapshot (below); the effective-base read is the same computation
+without the lock. Round 4 found this table still naming it after round 3 had
+replaced it, which is the *grep the concept at edit time* failure this
+repository has already paid for once.
 
 **The row kinds selected, and the predicates.** Terminal dispatches are not
 open work and are not read. The projection reads:
@@ -486,11 +502,43 @@ Each row lands in exactly one class, by (kind × authority × match):
 | `execution_diverged` | K2 ∧ current ∧ ¬match | Item 9's cancellation input; reported, untouched — a startup that reconciled would destroy the evidence its cancellation is triggered by |
 | `execution_superseded` | K2 ∧ superseded | Item 9's drain state, whatever the basis says. Item 3 cannot produce it; its run asserts the class is empty |
 
+**The comparison is one pure function, tested at field grain.** `basisMatch`
+takes the snapshot and the current side as two Go values and returns the first
+component that differs, or none. It is unit-tested **per field**: for each of
+the eleven compared facts — three per governing reference, the edge set, three
+per completion — a fixture that differs in that fact alone must return that
+fact, and deleting that one comparison in the function must fail exactly that
+case. Round 4 was right that the five divergence runs, being end-to-end, could
+not see a deleted *digest* comparison or a dropped Epic or completion *id*
+comparison: a whole-system run proves the path, not the comparator.
+
+**Pairing is proved with more than one edge.** A single-edge fixture cannot
+tell a completion compared against the *right* predecessor from one compared
+against the wrong one. The integration fixture carries **two predecessors with
+distinct completions**, and the mutant swaps which edge's completion feeds the
+comparator: with the swap, the comparison still finds "some completion" for
+"some edge" and a pairing-blind implementation stays green, so the assertion is
+that the diverged component names the predecessor whose completion actually
+moved.
+
 Disjoint because the three factors partition the rows; total because every
 selected row has a kind, every K2 row has an authority, and match is a
 predicate over columns that exist. An unclassifiable row — a K2 without an
 execution, an `authority_state` outside the vocabulary — is an error, never a
 skipped line.
+
+**The classes are complete for what item 3 can write, and not beyond.**
+`execution_awaiting_boundary` is every accepted dispatch with current authority
+and a matching basis, because in item 3 nothing else can be true of one. Item 5
+changes that: it adds terminal execution results and outstanding-action states,
+after which a *completed* execution would still land here unless `OpenWork` is
+extended to read them. That is **item 5's obligation**, recorded in the table
+at D14 — extend the selection and the predicates the moment a state exists that
+this classification would misfile — and **item 6 proves it** through the first
+real agent, which is the first thing that can produce such a state. Item 9 is
+not the only later item that adds states, and a design that only remembered
+item 9 would ship item 5 with a recovery that reads a finished execution as one
+still waiting to begin.
 
 **What the projection does after classifying: nothing.** The plane wins. The
 Orchestrator reports the classes and holds; item 9 owns every transition out of
@@ -728,6 +776,7 @@ creates them:
 | Obligation | Item |
 | --- | --- |
 | Set `satisfying_completion_artifact_id` only after the Story→Epic merge succeeds; amend the completion first if conflict resolution moved the head | 10 |
+| Extend `OpenWork`'s selection and predicates when executions gain terminal results and outstanding-action states, so a finished execution is never `execution_awaiting_boundary` | 5, proved by 6 |
 | Keep the lock order — Epic row, then artifact rows ascending — in every repoint and edge write | 9, 10, 11 |
 | The secret-bearing forge operation and its test against the local forge | 5 (amendment 3) |
 | Register `work.feature_record` when intake authors it | 11 |
@@ -779,6 +828,8 @@ the wrong reason; each row now states the reason the failure must carry.
 | A terminal disposition cannot be reopened | Fail a dispatch, then attempt every transition | Widen a `WHERE`; the rejection becomes a success |
 | An accepted dispatch always has an execution | Force a failure between the flip and the insert | Split the transaction |
 | Recovery compares the whole basis | Five runs, one per component: no-op Story amendment; Story repoint to an identical twin; no-op Epic amendment; an added already-satisfied predecessor; no-op completion amendment | Delete one comparison per run — Story sequence, Story id, the Epic triple, the edge set, the completion triple — and that run's `pending_diverged` becomes `pending_resumable` while the other four stay green |
+| `basisMatch` sees every field | Eleven unit fixtures, each differing in one fact | Delete that fact's comparison; exactly that fixture fails |
+| Completions are paired with their own predecessor | Two predecessors, distinct completions; amend one | Swap the pairing; the diverged component names the wrong predecessor |
 | The projection never aborts on a concurrent artifact write | Update a referenced artifact between `OpenWork`'s snapshot and its base read | Reintroduce the locking base read; the run fails with `40001` |
 | The classes are disjoint and total | Every item-3-producible state, plus a K2 row with its execution deleted by fixture | Remove the K2-without-execution error; the row is silently skipped |
 | Recovery relies on no process-local state | The subprocess test (D13), kill path included | A **cache-only** mutant: serve the projection from a package variable *when populated* and never read the plane in that case — the fresh process, whose variable is empty, then classifies nothing, and the assertion on the committed rows fails. Merely adding a cache beside the read would not fail this, which is why the mutant must bypass the read |
@@ -790,20 +841,25 @@ Item 9 adds states item 3 cannot reach, and the projection is re-checked there.
 
 ## Amendments Carried In This Branch
 
-All three are sequencing corrections with evidence from the tree or an Accepted
-ADR, in the shape item 2 established. None changes what Phase 3 delivers.
-`plan_scope.md` is edited in the acceptance commit, not before, so no live
-document asserts a decision nobody has accepted.
+Three amendments, and they are **not all the same kind** — round 4 caught an
+earlier draft calling all three "sequencing corrections", which understated
+two of them. Each is evidenced from the tree or an Accepted ADR; none adds an
+ADR need. `plan_scope.md` is edited in the acceptance commit, not before, so no
+live document asserts a decision nobody has accepted.
 
-1. **`pkg/persistence`'s deletion moves from item 3 to item 14** (D1). The
-   item-3 line loses its deletion sentence and gains the closure rule.
-2. **"All four not-ready states" becomes "all enumerated not-ready states"**
-   (D5), in the item-3 line and the exit checklist.
-3. **Configuration's live consumer is item 4 (ADR 0031 §4); a secret's is
-   item 5, whose line gains the forge PR operation against the local forge,
-   token from the vault, as a named deliverable with a test** (D7). The exit
-   criterion splits: the live-consumer clause moves, the locked-plane clause
-   stays with item 3.
+1. **Sequencing.** `pkg/persistence`'s deletion moves from item 3 to item 14
+   (D1). The item-3 line loses its deletion sentence and gains the closure
+   rule. Existing work, moved.
+2. **Scope correction.** "All four not-ready states" becomes "all enumerated
+   not-ready states" (D5), in the item-3 line and the exit checklist. This
+   **widens** what item 3 must demonstrate, from four states to the eleven
+   D5 enumerates, because four was wrong in both directions.
+3. **Reassignment plus a scope addition.** The exit criterion "Configuration
+   and secrets have a live consumer" is reassigned — configuration to item 4
+   (ADR 0031 §4), a secret to item 5 — and **item 5's line gains a concrete
+   deliverable it did not have**: the forge PR operation on a local Gitea
+   forge, token from the vault, behind a v2-neutral forge seam, with a test
+   (D7). The locked-plane clause stays with item 3.
 
 ## Points Resolved In Review
 
@@ -818,7 +874,7 @@ before the design moved; the confirmations are recorded in the decisions above.
 | 4 | Startup ownership contradictory | D3 — the Orchestrator is handed an `Opener`; `Start` owns classification |
 | 5 | No live config or secret consumer | D7 — no production key registered here; amendment 3 per ADR 0031 §4 |
 | 6 | Basis neither coherent nor complete; type/status check omitted | D10 — derived under the Epic lock; unready and draft/wrong-type rejected |
-| 7 | Projection did not recover the checkpoint it defined | D9 — `AmendmentBase` digest and sequence; executions classified; D14 names the types; the no-op amendment run |
+| 7 | Projection did not recover the checkpoint it defined | D9 — effective-base digest and sequence (locking in that revision; made non-locking in round 3); executions classified; D14 names the types; the no-op amendment run |
 | 8 | Repository cannot bootstrap independently | D11 — primary membership in one transaction; secondary separate; re-primary is a conflict |
 | 9 | `StateStore` narrowing declined | D12 — retired whole |
 
@@ -858,9 +914,19 @@ Round 3 (Codex, 2026-09-02). Six P1s, all confirmed.
 Non-blocking, taken: the recovery claim is narrowed to "relies on no
 process-local state", and its mutant is cache-only.
 
+Round 4 (Codex, 2026-09-02). Five P1s, all confirmed.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | The comparison table still routed through `AmendmentBase` after round 3 replaced it | D9 — every reference uses the non-locking effective-base read; the round-1 row annotated |
+| 2 | Five end-to-end runs could not see a deleted digest or id comparison, nor a mis-paired completion | D9 — `basisMatch` unit-tested per field, eleven facts; a two-predecessor fixture with the completions swapped |
+| 3 | Item 5's terminal and outstanding-action states would be misfiled as awaiting the boundary | D9 — item 5 obligation to extend `OpenWork`, proved by item 6; recorded in D14's table |
+| 4 | The forge assignment pointed at v1 wiring (`pkg/forge/gitea` reaches `pkg/config`, `pkg/mirror`; `internal/orch` is v1) | D7 — item 5 reuses the local Gitea service and harness only, and ports the client behind a v2-neutral seam |
+| 5 | Three amendments called sequencing corrections; two are scope changes | *Amendments* — each characterized: sequencing; scope correction; reassignment plus addition |
+
 ## Open Questions
 
-None remain from rounds 1 and 2. What the implementation will surface is
+None remain from rounds 1 through 4. What the implementation surfaces is
 recorded as it appears.
 
 ## Related Documents
