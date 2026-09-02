@@ -8,8 +8,8 @@ summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review rounds 1 and 2 (Codex, 2026-09-02:
-nine P1s each, all confirmed against the tree or the ADR they turned on; see
+Status: **draft** — revised after review rounds 1–3 (Codex, 2026-09-02:
+twenty-four P1s, all confirmed against the tree or the ADR they turned on; see
 *Points Resolved In Review*). Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
@@ -66,7 +66,7 @@ Deferred, each to the item that first has a consumer:
 | --- | --- | --- |
 | Prompt-pack content, installation records and the scoped selector | Item 4 | ADR 0031. Provisioning is shaped so item 4 **completes** it (D11) |
 | **Configuration's live reader** | Item 4 | ADR 0031 §4 names it (D7, amendment 3) |
-| **A secret's live reader** | Item 5 | ADR 0030 §3's substitution and injection (D7, amendment 3) |
+| **A secret's live reader** | Item 5 | The forge PR operation added to its line by amendment 3 (D7) |
 | `pkg/persistence`'s deletion | Item 14 | D1 — it has 42 live v1 importers |
 | Execution configuration, per-incarnation bindings, agent restart | Items 5/6 | ADR 0032 §2, under that ADR's own demotion |
 | Writing `epic_dependencies` / `story_dependencies` edges | Items 10/11 | Item 2's consumer table. Item 3 **reads** them under the same lock (D10) |
@@ -249,13 +249,17 @@ Classification follows from which step failed on that connection: acquire →
 unreadable**; version, dirty flag and comparison → the three schema states of
 D5.
 
-**The defect-shaped mutation is executable.** The first revision's — "skip the
-acquire and call `VersionOn`" — was not, since there is no connection to call
-it on. The real one: read the version **through the pool** (`pool` satisfies the
-querier interface `VersionOn` takes) instead of through the acquired
-connection. A connection failure then surfaces from the version query and is
+**The defect-shaped mutation is executable, and it removes the acquire.** Two
+earlier forms were not: "skip the acquire and call `VersionOn`" had no
+connection to call it on, and "read through the pool" left the preceding
+acquire in place, so a stopped service still failed there, as *unreachable*,
+and the mutant died for the reason the test already expected. The real mutant
+**deletes the explicit acquire and reads the version through the pool** —
+`pool` satisfies the querier interface `VersionOn` takes, and connects lazily
+inside the query. A stopped service then surfaces as a query error and is
 classified *schema unreadable*; the test asserting *unreachable* fails on the
-cause. That is the mutation, and it is one line.
+cause. The mutant is recorded with the test so the next reviewer can see it
+removes the step the claim is about.
 
 **Cleanup on every failure path.** `postgres.Open` already closes the pool when
 `New` fails; the probe's failure must do the same, and `plane.Open` already
@@ -384,16 +388,27 @@ resolution "falls back through scoped configuration … through the Phase 2
 configuration records and their key registry (`internal/dataplane/configkeys`).
 … Pack selection registers a key there." It is in block A, and checkpoint 1
 checks it — "a fresh organization is provisioned with a resolvable prompt-pack
-selector". For a **secret**, the first reader is **item 5**, and an Accepted ADR fixes it:
-ADR 0030 §3 has the boundary replace every secret in a mediated action's input
-with a **version-pinned reference** — "Phase 2's `secrets.version` is already
-part of the key-derivation context" — and inject the value at effect. That is
-the "forge binding" Phase 2's D8 named as the first caller, seen from the
-consumer's side: a forge token stops being a v1 file and becomes a vault row
-the boundary reveals. Item 7 is not the reader: it provisions resources and performs no mediated
-action, and a credential issued *into* a resource is the unmediated external
-path ADR 0030's effect-site table bounds "only by what was granted" — the case
-the boundary exists to avoid.
+selector". For a **secret**, the first reader is **item 5**, and the amendment names the
+action rather than trusting the ADR to imply one. ADR 0030 §3 specifies what
+happens *when* a mediated action carries a secret — the boundary replaces it
+with a **version-pinned reference** ("Phase 2's `secrets.version` is already
+part of the key-derivation context") and injects the value at effect — but it
+does not guarantee item 5 contains such an action, and the plan's item 5 line
+names no forge binding. Round 3 was right that "item 5, by ADR 0030" was an
+inference, not an assignment.
+
+So amendment 3 adds to item 5's deliverable **one concrete secret-bearing
+mediated action and its test**: a **forge operation** — ADR 0030's effect-site
+table lists forge operations as Orchestrator-side mediated — creating or
+updating a Story pull request on the **airplane-mode Gitea forge** the tree
+already runs (`pkg/forge/gitea`, `internal/orch/airplane.go`), with the forge
+token resolved from the vault by `RevealSecret`, substituted per §3 before the
+digest, and injected at effect. That is Phase 2's "forge binding, where a forge
+token stops being a v1 file and becomes a vault row", made a line item with a
+test against a real local forge. Item 7 is not the assignment: ADR 0030 classes
+resource lifecycle as mediated too, so it *could* carry one, but nothing in
+item 7 needs a forge credential and the forge operation is the action that
+does.
 
 **This amends the plan** (amendment 3): the exit criterion "Configuration and
 secrets have a live consumer" is reassigned — configuration to item 4, a secret
@@ -481,20 +496,39 @@ skipped line.
 Orchestrator reports the classes and holds; item 9 owns every transition out of
 a diverged class.
 
-**Startup order.** The projection runs in `Start` after the readiness contract
-(D5) passes, in one `REPEATABLE READ` transaction, because it is a read of a
-*consistent* picture and item 9's writers may be moving rows underneath a
-restart.
+**The reads are one consistent, non-locking snapshot.** The first revision had
+`Start` run the projection in a `REPEATABLE READ` transaction and compute bases
+with `AmendmentBase`. Round 3 caught the combination: `AmendmentBase` takes
+`LockManagementArtifact`'s `SELECT … FOR UPDATE`, and under `REPEATABLE READ`
+a `FOR UPDATE` on a row a concurrent transaction updated after the snapshot
+aborts with `40001` — PostgreSQL's documented behaviour, and one the
+application must retry whole. A projection that is *only a read* has no reason
+to lock anything.
+
+So the projection's reads are **one seam method**, `OpenWork`, which opens its
+own `REPEATABLE READ` transaction the way `Maintenance`'s truncation already
+does, reads every row D9 names **without locks**, and computes each reference's
+current base with a **non-locking** effective-base read — `EffectiveView`
+(`artifacts.go:640`) already reads without the lock `AmendmentBase` takes; the
+digest-and-sequence form of it is the same read returning the triple. The
+snapshot makes the picture consistent; the absence of locks makes it
+non-aborting; and classification stays in Go, above the seam, where D8 says it
+belongs. `Start` runs it after the readiness contract (D5) passes.
 
 **The subprocess proof (D13) traverses real reviewed artifacts**: a Story
 record authored by one principal, reviewed and accepted by another, pointed at
 by `stories.governing_artifact_id`, dispatched; the fresh process must reload
-its effective view and land it `pending_resumable`. Then three further runs,
-each a single change between the two processes, each landing
-`pending_diverged` for the named reason: an accepted **no-op amendment** of the
-Story record (sequence only); a **repoint** of the governing pointer to an
-accepted twin with identical content (id only); an accepted no-op amendment of
-a **predecessor's completion** (completion sequence only).
+its effective view and land it `pending_resumable`. Then **five** further runs —
+one per independent component of the basis, because a proof that exercises
+three of five lets the other two comparisons be deleted unnoticed — each a
+single change between the two processes, each landing `pending_diverged` for
+the named reason: an accepted **no-op amendment** of the Story record (Story
+sequence only); a **repoint** of the Story pointer to an accepted twin with
+identical content (Story id only); an accepted no-op amendment of the
+**Epic** record (Epic sequence only); an **added, already-satisfied
+predecessor** edge (edge set only — the case item 2 names as wider than
+readiness); an accepted no-op amendment of a **predecessor's completion**
+(completion sequence only).
 
 ### D10. Dispatch derives its basis under two locks; named transitions guard the dispositions
 
@@ -647,11 +681,26 @@ prevented a reviewed payload and its row from disagreeing.
 | --- | --- | --- | --- |
 | `work.epic_record` | `epics.governing_artifact_id` | `intent` (text, required); `mode` (`workbench` \| `factory`, required) | ADR 0024's Epic record: intent content, and the triage output the row lacks. `repository` and `dependencies` — the other two triage outputs — **are rows** (`epics.repository_id`, `epic_dependencies`) and are not repeated |
 | `work.story_record` | `stories.governing_artifact_id` | `intent` (text, required) | ADR 0024: the Architect-owned decomposition unit; ADR 0018: a PR-sized chunk. `title` is the row's |
-| `work.story_completion` | `story_dependencies.satisfying_completion_*`, and the basis | `head_commit` (40-hex SHA, required) | ADR 0023 *Merge policy*: a Story completes when "the Architect's review record completes after final code review" and the Story branch merges. The branch name is derived from the Story id (ADR 0023 *Branch naming*), so it is not repeated; the merge commit follows acceptance and is Audit data, so it is not here |
+| `work.story_completion` | `story_dependencies.satisfying_completion_*`, and the basis | `head_commit` (40-hex SHA, required) | ADR 0023 *Merge policy*: the Architect's review record after final code review is the gate for the Story→Epic merge. The branch name is derived from the Story id (ADR 0023 *Branch naming*), so it is not repeated; the merge commit follows and is Audit data, so it is not here |
 
 **One authority per fact.** Title, repository, lineage and dependencies are
 rows; intent, mode and the reviewed head are payload. No field appears in both,
 so there is no equality to enforce and no way for the two to disagree.
+
+**A completion's acceptance is necessary and not sufficient; the pointer is
+bound to the merge.** Round 3 caught the chronology: the completion is accepted
+*before* the Story→Epic merge, and ADR 0023 lets that merge conflict and return
+to the Coder. An edge satisfied on acceptance alone would let a successor
+dispatch against a predecessor whose work is not in the Epic branch. So
+`story_dependencies.satisfying_completion_artifact_id` is set **only after the
+Story→Epic merge succeeds**, by the writer that performs the merge — **item 10**,
+recorded as its obligation in the table below — and D10's check that the
+completion is an accepted `work.story_completion` is the seam's half of a
+two-part condition whose other half is that the pointer exists at all. If a
+conflict resolution moves the Story branch head, the merged head is not the
+accepted one, and the completion is **amended** to name it before the pointer is
+set; `head_commit` is the reviewed head that merged, which is why the field
+exists.
 
 **How version 1 stays usable, forever.** Round 2 was right that planning
 version bumps before the first workflow exists creates the compatibility debt
@@ -659,12 +708,29 @@ ADR 0028 makes permanent — every historical version supported or explicitly
 refused. So version 1 is **not** "what item 3 needs, to be completed later".
 It is the ADR 0024 / ADR 0023 contract minus the fields rows own, which is the
 whole contract those ADRs state. Items 10 and 11 consume version 1 as it stands.
-If either ever needs a field no Accepted ADR names today, that is a new version
-whose validator is **additive** and whose predecessor stays readable — the rule
-ADR 0028 already imposes, not a plan this design is making.
+
+Round 3 caught this design stating ADR 0028's evolution rule backwards. The
+accepted rule (ADR 0028, *"Within a version, changes are additive only"*):
+**a new optional field extends the existing version**; a new version is
+required only for a removed, renamed, retyped or re-meant field, or a **newly
+required** one — and even then the ADR says the honest move is often a new
+type. So if item 10 or 11 needs an optional field no ADR names today, version 1
+gains it and nothing else changes; only a field those items would make
+*required* forces a version 2, and that is a decision they make against ADR
+0028's cost, not one this design pre-authorises.
 
 The `work.` prefix follows the importer's `benchmark.` convention; round 2
 accepted the naming.
+
+**Obligations this design assigns to later items**, recorded here because it
+creates them:
+
+| Obligation | Item |
+| --- | --- |
+| Set `satisfying_completion_artifact_id` only after the Story→Epic merge succeeds; amend the completion first if conflict resolution moved the head | 10 |
+| Keep the lock order — Epic row, then artifact rows ascending — in every repoint and edge write | 9, 10, 11 |
+| The secret-bearing forge operation and its test against the local forge | 5 (amendment 3) |
+| Register `work.feature_record` when intake authors it | 11 |
 
 ## Implementation And Review Sequence
 
@@ -698,7 +764,7 @@ the wrong reason; each row now states the reason the failure must carry.
 | --- | --- | --- |
 | The seam's closure is six packages, none local, none v1 | `go list -deps` assertion | Reintroduce `secret → paths`; the guard names `paths` |
 | The Orchestrator cannot reach a composer | Import-closure test over the applicable configurations | Add a real `stack` import; the guard names `stack` |
-| An unreachable plane is reported as **unreachable** | Stop the service; `Start` | Read the version through the pool instead of the acquired connection; the connection failure arrives as a query error and is classified *schema unreadable* — the test asserts the cause |
+| An unreachable plane is reported as **unreachable** | Stop the service; `Start` | Delete the explicit acquire and read the version through the pool; the connection failure arrives as a query error and is classified *schema unreadable* — the test asserts the cause |
 | A never-migrated cluster is **schema behind**, not an error | Open against a cluster with no `schema_migrations` | Map `undefined_table` to *schema unreadable*; the remedy assertion (`dataplane-migrate`) fails |
 | A behind / dirty / ahead schema is refused with its own cause | Migrate down one; force dirty; force a version above the embedded max | Remove the comparison; the open succeeds |
 | The probe leaks nothing on failure | Inject a failing version read after acquire | Drop the pool close on that path; the leak is observed |
@@ -712,9 +778,10 @@ the wrong reason; each row now states the reason the failure must carry.
 | Dispatch inputs cannot move between the reads | Force a pointer repoint to interleave after step 2 | Drop the Epic lock; the interleaved write commits and the basis is stale at creation |
 | A terminal disposition cannot be reopened | Fail a dispatch, then attempt every transition | Widen a `WHERE`; the rejection becomes a success |
 | An accepted dispatch always has an execution | Force a failure between the flip and the insert | Split the transaction |
-| Recovery compares the whole basis | Three runs: a no-op Story amendment; a repoint to an identical twin; a no-op completion amendment | Drop the sequence compare; drop the id compare; compare completions by id only — each run's `pending_diverged` becomes `pending_resumable` for its own reason |
+| Recovery compares the whole basis | Five runs, one per component: no-op Story amendment; Story repoint to an identical twin; no-op Epic amendment; an added already-satisfied predecessor; no-op completion amendment | Delete one comparison per run — Story sequence, Story id, the Epic triple, the edge set, the completion triple — and that run's `pending_diverged` becomes `pending_resumable` while the other four stay green |
+| The projection never aborts on a concurrent artifact write | Update a referenced artifact between `OpenWork`'s snapshot and its base read | Reintroduce the locking base read; the run fails with `40001` |
 | The classes are disjoint and total | Every item-3-producible state, plus a K2 row with its execution deleted by fixture | Remove the K2-without-execution error; the row is silently skipped |
-| Recovery reads only the plane | The subprocess test (D13), kill path included | Cache the projection in a package variable; the fresh process passes only if it read the plane |
+| Recovery relies on no process-local state | The subprocess test (D13), kill path included | A **cache-only** mutant: serve the projection from a package variable *when populated* and never read the plane in that case — the fresh process, whose variable is empty, then classifies nothing, and the assertion on the committed rows fails. Merely adding a cache beside the read would not fail this, which is why the mutant must bypass the read |
 | Nothing persists through `StateStore` | The symbols are gone; `go build ./...` | Reintroduce `Persist`; a structural check names it |
 | Repository provisioning commits with its primary membership | Provision; read `product_repositories` | Split the transaction; the deferred constraint fires at commit and the test asserts **that** constraint's name |
 
@@ -733,8 +800,10 @@ document asserts a decision nobody has accepted.
 2. **"All four not-ready states" becomes "all enumerated not-ready states"**
    (D5), in the item-3 line and the exit checklist.
 3. **Configuration's live consumer is item 4 (ADR 0031 §4); a secret's is
-   item 5 (ADR 0030 §3)** (D7). The exit criterion splits: the live-consumer
-   clause moves, the locked-plane clause stays with item 3.
+   item 5, whose line gains the forge PR operation against the local forge,
+   token from the vault, as a named deliverable with a test** (D7). The exit
+   criterion splits: the live-consumer clause moves, the locked-plane clause
+   stays with item 3.
 
 ## Points Resolved In Review
 
@@ -774,6 +843,20 @@ Accepted ADR it turned on.
 
 Calls taken: the key-file provider lands in `paths` itself; the `work.*_record`
 naming stands.
+
+Round 3 (Codex, 2026-09-02). Six P1s, all confirmed.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | The mutant left the acquire in place, so it died for the expected reason | D4 — the mutant deletes the acquire and reads through the pool |
+| 2 | The whole-basis proof exercised three of five components | D9 — five runs, one per component, each deletable comparison named |
+| 3 | `REPEATABLE READ` + `AmendmentBase`'s `FOR UPDATE` aborts with `40001` | D9 — `OpenWork` seam method: own snapshot, non-locking reads, a non-locking effective-base read |
+| 4 | No concrete secret-bearing action in item 5; item-7 claim wrong | D7 — amendment 3 adds the forge PR operation against the local Gitea forge to item 5; item-7 sentence corrected against ADR 0030's effect-site table |
+| 5 | ADR 0028's evolution rule stated backwards | D14 — optional fields extend the version; required or incompatible ones need a new one |
+| 6 | Completion accepted before the merge; acceptance alone satisfied the edge | D14 — the pointer binds to merge success, an item-10 obligation; amend the completion if the head moved |
+
+Non-blocking, taken: the recovery claim is narrowed to "relies on no
+process-local state", and its mutant is cache-only.
 
 ## Open Questions
 
