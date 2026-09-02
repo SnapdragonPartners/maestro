@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
@@ -68,6 +69,19 @@ type Composition struct {
 	// Types is the CALLER's registry: what payloads are readable is a
 	// property of the caller's job rather than of the plane.
 	Types *registry.Registry
+
+	// Keys is the caller's configuration-key registry, with Types's
+	// semantics: what keys are writable is a property of the caller's job.
+	//
+	// It was absent until Phase 3 item 3 (design D7), and its absence was
+	// not a default but a hole: postgres.New falls back to an empty,
+	// fail-closed registry, so no caller reaching the plane through a
+	// composer could write a governed configuration record at all. It is
+	// required rather than defaulted for the same reason Types is — a caller
+	// that writes no configuration says so with configkeys.MustNew(nil), and
+	// is refused if it then tries, which is the existing behaviour reached
+	// deliberately instead of by omission.
+	Keys *configkeys.Registry
 
 	// Owned are resources whose lifetime is the SEAM's, released when it
 	// closes and — the part that is easy to get wrong — also released if this
@@ -152,7 +166,7 @@ func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
 		err = probeErr
 		return nil, err
 	}
-	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey)
+	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey, postgres.WithConfigKeys(c.Keys))
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("open the persistence seam: %w", err)
@@ -239,6 +253,9 @@ func (c Composition) validate() error {
 		return errors.New("compose a data plane: no root-key provider was supplied")
 	case c.Types == nil:
 		return errors.New("compose a data plane: no artifact registry was supplied")
+	case c.Keys == nil:
+		return errors.New("compose a data plane: no configuration-key registry was supplied; a caller " +
+			"that writes no configuration declares that with an empty one")
 	}
 	for i, owned := range c.Owned {
 		if owned.Close == nil {

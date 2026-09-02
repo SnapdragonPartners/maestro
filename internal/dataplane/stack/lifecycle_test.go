@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
 )
@@ -122,7 +123,7 @@ func TestLifecycleOperationsTakeTheLock(t *testing.T) {
 				t.Fatalf("build registry: %v", err)
 			}
 			return func(ctx context.Context) error {
-				seam, openErr := OpenSeam(ctx, cfg, types)
+				seam, openErr := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
 				if openErr == nil {
 					seam.Close()
 				}

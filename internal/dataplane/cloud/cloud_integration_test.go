@@ -58,6 +58,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"orchestrator/internal/dataplane/benchmarkimport"
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/importslice"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
@@ -276,7 +277,7 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(ctx, cfg, types)
+	seam, err := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}
@@ -335,7 +336,7 @@ func migratedCloudPlane(
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(ctx, cfg, types)
+	seam, err := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}

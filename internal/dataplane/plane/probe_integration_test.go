@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/planetest"
@@ -28,7 +29,8 @@ func composition(t *testing.T, dsn string) plane.Composition {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return plane.Composition{DSN: dsn, Objects: blob, RootKey: planetest.RootKey(t), Types: types}
+	return plane.Composition{DSN: dsn, Objects: blob, RootKey: planetest.RootKey(t), Types: types,
+		Keys: configkeys.MustNew(nil)}
 }
 
 func expectCause(t *testing.T, err error, want readiness.Cause, remedyFragment string) {

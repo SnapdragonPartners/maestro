@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"time"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
@@ -111,9 +112,12 @@ func (c Config) validate() error {
 // only one of the two adapters needs it — so nothing except the composition can
 // close it. `plane.Open` releases it on every failure path and the returned
 // store releases it on Close.
-func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.Store, error) {
+func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry, keys *configkeys.Registry) (store.Store, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+	if keys == nil {
+		return nil, errors.New("open a cloud data plane: no configuration-key registry was supplied")
 	}
 	// Before the client, deliberately. `plane` refuses a nil registry too, but
 	// reaching that costs a network client this function would then have to
@@ -168,6 +172,7 @@ func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.
 		Objects: blob,
 		RootKey: keyProvider,
 		Types:   types,
+		Keys:    keys,
 		Owned: []plane.Owned{
 			{What: "cloud object client for " + cfg.Bucket, Close: blob.Close},
 		},

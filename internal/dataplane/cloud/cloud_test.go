@@ -9,7 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
 )
 
@@ -57,7 +59,7 @@ func TestConfigRefusesAWrongLengthRootKey(t *testing.T) {
 func TestOpenSeamRefusesANilRegistryBeforeBuildingAClient(t *testing.T) {
 	_, err := OpenSeam(context.Background(), Config{
 		DSN: "postgres://example", Bucket: "b", RootKey: validRootKey(),
-	}, nil)
+	}, nil, configkeys.MustNew(nil))
 	if err == nil {
 		t.Fatal("OpenSeam accepted a nil registry")
 	}
@@ -159,7 +161,7 @@ func TestOpenSeamRefusesBeforeBuildingAnything(t *testing.T) {
 	_, err := OpenSeam(context.Background(), Config{
 		DSN:     "postgres://example",
 		RootKey: validRootKey(),
-	}, nil)
+	}, nil, configkeys.MustNew(nil))
 	if err == nil {
 		t.Fatal("OpenSeam accepted a configuration with no bucket")
 	}
@@ -264,5 +266,25 @@ func TestFreshDatabaseNameFitsPostgresIdentifierLimitAndIsUniqueAcrossCallsInThe
 				"and one would drop the other's database", name)
 		}
 		seen[name] = true
+	}
+}
+
+// TestOpenSeamRefusesANilKeyRegistryBeforeBuildingAClient is the sibling of
+// the artifact-registry case for the registry item 3 threaded through: a
+// caller that writes no configuration declares that with an empty registry,
+// and nil is a mistake refused before any client is built.
+func TestOpenSeamRefusesANilKeyRegistryBeforeBuildingAClient(t *testing.T) {
+	types, err := registry.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = OpenSeam(context.Background(), Config{
+		DSN: "postgres://example", Bucket: "b", RootKey: validRootKey(),
+	}, types, nil)
+	if err == nil {
+		t.Fatal("OpenSeam accepted a nil configuration-key registry")
+	}
+	if !strings.Contains(err.Error(), "configuration-key registry") {
+		t.Fatalf("the failure should name the key registry: %v", err)
 	}
 }
