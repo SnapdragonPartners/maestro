@@ -134,17 +134,26 @@ func (t *tx) SetEpicGoverningArtifact(ctx context.Context, organizationID, epicI
 // CreateDispatch derives the basis and writes it whole (design D10).
 func (t *tx) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*store.StoryDispatch, error) {
 	const operation = "CreateDispatch"
-	story, err := t.GetStory(ctx, organizationID, storyID)
+	// The Story is read once to learn its Epic, and AGAIN under the Epic
+	// lock. A pointer repoint takes the Epic lock first (D10's order), so one
+	// can commit while this transaction waits for the lock; a dispatch built
+	// from the pre-lock row would then record a pointer that is no longer
+	// current. Every input below comes from the locked read.
+	located, err := t.GetStory(ctx, organizationID, storyID)
 	if err != nil {
 		return nil, err
 	}
 	// 1. The Epic lock: every input below is read under it, and every writer
 	//    of those inputs takes it first, so READ COMMITTED suffices.
-	epicRow, err := t.queries.LockEpic(ctx, gen.LockEpicParams{OrganizationID: toUUID(organizationID), EpicID: toUUID(story.EpicID)})
+	epicRow, err := t.queries.LockEpic(ctx, gen.LockEpicParams{OrganizationID: toUUID(organizationID), EpicID: toUUID(located.EpicID)})
 	if err != nil {
-		return nil, notFound(err, "epic", story.EpicID)
+		return nil, notFound(err, "epic", located.EpicID)
 	}
 	epic := epicFromRow(&epicRow)
+	story, err := t.GetStory(ctx, organizationID, storyID)
+	if err != nil {
+		return nil, err
+	}
 	group, err := t.GetWorkGroupByEpic(ctx, organizationID, story.EpicID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

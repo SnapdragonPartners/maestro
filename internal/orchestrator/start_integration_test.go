@@ -58,6 +58,13 @@ func TestStartRefusesANotReadyPlaneWithCauseAndRemedy(t *testing.T) {
 	if refused.Remedy == "" || !strings.Contains(err.Error(), "remedy:") {
 		t.Fatalf("the refusal does not render a remedy: %v", err)
 	}
+	// The producer's diagnostic -- the endpoint and the driver's refusal --
+	// is rendered, not only unwrap-able. THE MUTANT: drop Err from Error().
+	for _, want := range []string{"detail:", addr, "connection refused"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("rendering lacks %q:\n%s", want, err)
+		}
+	}
 }
 
 // TestStartResolvesIdentityBeforeRecovering: an unprovisioned organization

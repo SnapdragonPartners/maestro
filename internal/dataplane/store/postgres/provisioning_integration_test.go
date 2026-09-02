@@ -52,6 +52,41 @@ func TestRepositoryCommitsWithItsPrimaryMembership(t *testing.T) {
 	}
 }
 
+// TestReprovisioningUnderAnotherUserIsAConflict: the accountable human is
+// persisted lineage and part of what was supplied, so a retry under a
+// different user -- even one that does not exist -- is a typed conflict
+// that changes nothing. THE MUTANT: compare only the display name.
+func TestReprovisioningUnderAnotherUserIsAConflict(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	primary := provisionProduct(t, f, "core")
+	repo, err := f.store.ProvisionRepository(ctx, store.ProvisionRepositoryInput{
+		Slug: "api", DisplayName: "API", OrganizationID: f.organizationID, PrimaryProductID: primary, UserID: f.userID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger := uuid.New()
+
+	if _, err := f.store.ProvisionProduct(ctx, store.ProvisionProductInput{
+		Slug: "core", DisplayName: "core", OrganizationID: f.organizationID, UserID: stranger,
+	}); !errors.Is(err, store.ErrBootstrapConflict) {
+		t.Fatalf("a product re-provisioned under another user: %v, want a conflict", err)
+	}
+	if stored, _ := f.store.GetProductBySlug(ctx, f.organizationID, "core"); stored.UserID != f.userID {
+		t.Fatalf("the refused re-provisioning changed the product's user to %s", stored.UserID)
+	}
+
+	if _, err := f.store.ProvisionRepository(ctx, store.ProvisionRepositoryInput{
+		Slug: "api", DisplayName: "API", OrganizationID: f.organizationID, PrimaryProductID: primary, UserID: stranger,
+	}); !errors.Is(err, store.ErrBootstrapConflict) {
+		t.Fatalf("a repository re-provisioned under another user: %v, want a conflict", err)
+	}
+	if stored, _ := f.store.GetRepositoryBySlug(ctx, f.organizationID, "api"); stored.UserID != repo.Record.UserID {
+		t.Fatalf("the refused re-provisioning changed the repository's user to %s", stored.UserID)
+	}
+}
+
 // TestRepositoryPrimaryCannotBeChangedByReprovisioning: re-provisioning an
 // existing repository with a different primary Product is a conflict, not a
 // silent redesignation — changing the primary is a decision someone makes.

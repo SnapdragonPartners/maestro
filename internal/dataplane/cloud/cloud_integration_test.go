@@ -50,6 +50,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -62,6 +63,7 @@ import (
 	"orchestrator/internal/dataplane/importslice"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 )
@@ -811,5 +813,13 @@ func TestCloudOpenRefusesAMissingBucket(t *testing.T) {
 		seam.Close()
 		t.Fatal("opening against a bucket that does not exist succeeded, so the failure would " +
 			"arrive at the first object read instead")
+	}
+	// And it crosses the seam as the typed cause with a remedy (design D6),
+	// not as a bare listing error.
+	if cause, ok := readiness.CauseOf(err); !ok || cause != readiness.ObjectStoreUnusable {
+		t.Fatalf("cause %q (%v), want %q: %v", cause, ok, readiness.ObjectStoreUnusable, err)
+	}
+	if remedy, _ := readiness.RemedyOf(err); !strings.Contains(remedy, "bucket") {
+		t.Fatalf("remedy %q does not name the bucket", remedy)
 	}
 }

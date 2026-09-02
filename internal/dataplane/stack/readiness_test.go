@@ -7,12 +7,14 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 )
@@ -197,6 +199,38 @@ func TestOpenSeamRefusesAnInterruptedRecoveryWithoutTouchingIt(t *testing.T) {
 		if _, statErr := os.Stat(path); statErr != nil {
 			t.Fatalf("ordinary startup disturbed the recovery protocol: %s is gone", filepath.Base(path))
 		}
+	}
+}
+
+// TestOpenSeamRefusesAnUnusableObjectStore is the local half of D5's
+// object-store row: a provisioned plane whose key is present, so every guard
+// passes and the DSN is built, but whose object store answers nothing. No
+// service is needed: the endpoint is a port nothing listens on.
+func TestOpenSeamRefusesAnUnusableObjectStore(t *testing.T) {
+	cfg := planeAt(t)
+	populate(t, cfg, paths.ServicePostgres)
+	if _, err := paths.EnsureKey(cfg.Roots.Config); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address %T is not TCP", listener.Addr())
+	}
+	port := addr.Port
+	_ = listener.Close()
+	cfg.MinIOPort = port
+
+	got, ok := readiness.CauseOf(openRefusal(t, cfg))
+	if !ok || got != readiness.ObjectStoreUnusable {
+		t.Fatalf("cause %q (%v), want %q", got, ok, readiness.ObjectStoreUnusable)
+	}
+	remedy, _ := readiness.RemedyOf(openRefusal(t, cfg))
+	if !strings.Contains(remedy, "dataplane-up") {
+		t.Fatalf("remedy %q does not name the local command", remedy)
 	}
 }
 

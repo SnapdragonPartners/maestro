@@ -7,12 +7,11 @@ import (
 	"testing"
 )
 
-// TestRecoveryReadLocksNothing is the deterministic form of design D9's
-// "the projection never aborts on a concurrent artifact write". The
-// timing-dependent form — a write racing the snapshot — cannot be forced
-// without an injection hook, so the property is held structurally: no call
-// in recovery.go reaches a locking primitive, and the snapshot is
-// REPEATABLE READ. THE MUTANT this kills is reintroducing AmendmentBase (or
+// TestRecoveryReadLocksNothing is the structural half of design D9's
+// lock-free read: no call in recovery.go reaches a locking primitive, and
+// BeginTx itself asks for REPEATABLE READ. The behavioural half --
+// TestOpenWorkDoesNotWaitOnAHeldArtifactLock -- holds a governing record's
+// row lock across OpenWork and is what catches a lock taken transitively. THE MUTANT this kills is reintroducing AmendmentBase (or
 // LockManagementArtifact, or LockEpic) in recovery.go, which under
 // REPEATABLE READ is exactly the 40001.
 //
@@ -33,9 +32,19 @@ func TestRecoveryReadLocksNothing(t *testing.T) {
 				t.Errorf("recovery.go calls %s at %s; the projection's read must not lock (design D9)",
 					sel.Sel.Name, fileSet.Position(n.Pos()))
 			}
-		case *ast.SelectorExpr:
-			if n.Sel.Name == "RepeatableRead" {
-				repeatableRead = true
+		}
+		// The isolation is asserted ON the BeginTx call, not anywhere in the
+		// file: a stray RepeatableRead selector elsewhere must not satisfy it.
+		if call, ok := node.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "BeginTx" {
+				for _, arg := range call.Args {
+					ast.Inspect(arg, func(inner ast.Node) bool {
+						if s, ok := inner.(*ast.SelectorExpr); ok && s.Sel.Name == "RepeatableRead" {
+							repeatableRead = true
+						}
+						return true
+					})
+				}
 			}
 		}
 		return true

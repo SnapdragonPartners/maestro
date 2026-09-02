@@ -73,8 +73,15 @@ type StartupRefused struct {
 }
 
 func (e *StartupRefused) Error() string {
-	return fmt.Sprintf("orchestrator cannot start: the data plane is not ready (%s).\n  observed: %s\n  remedy:   %s",
+	message := fmt.Sprintf("orchestrator cannot start: the data plane is not ready (%s).\n  observed: %s\n  remedy:   %s",
 		e.Cause, e.Detail, e.Remedy)
+	// The producer's own diagnostic is rendered, not only unwrap-able: for
+	// an unreachable or unreadable plane it carries the endpoint, the driver
+	// error or the version read that failed, which D5 owes the operator.
+	if e.Err != nil {
+		message += "\n  detail:   " + e.Err.Error()
+	}
+	return message
 }
 
 // Unwrap keeps the producer's chain reachable.

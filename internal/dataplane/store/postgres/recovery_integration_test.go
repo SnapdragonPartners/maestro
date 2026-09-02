@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -196,4 +197,145 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 			t.Fatalf("an accepted dispatch without an execution: %v, want ErrInvariant", err)
 		}
 	})
+}
+
+// amendContent accepts an amendment that CHANGES the view: digest and
+// sequence both move, the id does not.
+func (f *fixture) amendContent(t *testing.T, original *store.ManagementArtifact, scope store.Scope, lineage store.Lineage, patch string) {
+	t.Helper()
+	ctx := context.Background()
+	base, err := f.store.AmendmentBase(ctx, f.organizationID, original.ArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amendment, err := f.store.CreateManagementArtifact(ctx, store.CreateManagementArtifactInput{
+		Payload: json.RawMessage(patch), Type: original.Type, Summary: "content", Scope: scope, Lineage: lineage,
+		AmendsArtifactID: &original.ArtifactID, OrganizationID: f.organizationID, UserID: f.userID, AuthorInstanceID: f.author,
+	})
+	if err != nil {
+		t.Fatalf("create amendment: %v", err)
+	}
+	review := f.review(t, amendment.ArtifactID, amendment.ReviewDigest, store.DecisionAccepted, f.reviewer, &base)
+	if err := f.store.AcceptAmendment(ctx, f.organizationID, amendment.ArtifactID, review.ReviewID); err != nil {
+		t.Fatalf("accept amendment: %v", err)
+	}
+}
+
+// TestOpenWorkMapsTheRemainingFields covers the fields the first table did
+// not move independently: Story digest, Epic id, Epic digest, completion id,
+// completion digest. A mutant that reuses the snapshot's value for any of
+// them is caught by exactly one subtest.
+func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("story digest moves on a content amendment", func(t *testing.T) {
+		f := newFixture(t)
+		g := provisionGoverned(t, f)
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+			t.Fatal(err)
+		}
+		f.amendContent(t, g.storyRecord, storyScope(g.story.StoryID), storyLineage(g.hierarchy, g.story.StoryID), `{"intent":"changed"}`)
+		row := openOne(t, f)
+		cur, snap := row.Current.StoryVersion, row.Dispatch.StoryVersion
+		if cur.ArtifactID != snap.ArtifactID || cur.Digest == snap.Digest || cur.Sequence != snap.Sequence+1 {
+			t.Fatalf("current %+v vs snapshot %+v: digest and sequence should move, id not", cur, snap)
+		}
+	})
+
+	t.Run("epic id moves on a repoint to a twin", func(t *testing.T) {
+		f := newFixture(t)
+		g := provisionGoverned(t, f)
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+			t.Fatal(err)
+		}
+		twin := f.acceptedRecord(t, work.TypeEpicRecord, epicScope(g.epic.EpicID), epicLineage(g.hierarchy), `{"intent":"flags","mode":"factory"}`)
+		if err := f.store.SetEpicGoverningArtifact(ctx, f.organizationID, g.epic.EpicID, twin.ArtifactID); err != nil {
+			t.Fatal(err)
+		}
+		row := openOne(t, f)
+		cur, snap := row.Current.EpicVersion, row.Dispatch.EpicVersion
+		if cur.ArtifactID != twin.ArtifactID || cur.ArtifactID == snap.ArtifactID || cur.Digest != snap.Digest || cur.Sequence != snap.Sequence {
+			t.Fatalf("current %+v vs snapshot %+v: only the id should move", cur, snap)
+		}
+	})
+
+	t.Run("epic digest moves on a content amendment", func(t *testing.T) {
+		f := newFixture(t)
+		g := provisionGoverned(t, f)
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+			t.Fatal(err)
+		}
+		f.amendContent(t, g.epicRecord, epicScope(g.epic.EpicID), epicLineage(g.hierarchy), `{"intent":"changed"}`)
+		row := openOne(t, f)
+		cur, snap := row.Current.EpicVersion, row.Dispatch.EpicVersion
+		if cur.ArtifactID != snap.ArtifactID || cur.Digest == snap.Digest || cur.Sequence != snap.Sequence+1 {
+			t.Fatalf("current %+v vs snapshot %+v", cur, snap)
+		}
+	})
+
+	t.Run("completion id moves on a repoint to a twin completion", func(t *testing.T) {
+		f := newFixture(t)
+		g := provisionGoverned(t, f)
+		p, c := f.addPredecessor(t, g, "p", true)
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+			t.Fatal(err)
+		}
+		twin := f.acceptedRecord(t, work.TypeStoryCompletion, storyScope(p.StoryID), storyLineage(g.hierarchy, p.StoryID), `{"head_commit":"`+testSHA+`"}`)
+		f.satisfyEdge(t, g, p.StoryID, twin.ArtifactID)
+		row := openOne(t, f)
+		cur, snap := row.Current.Edges[0].Completion, row.Dispatch.Basis[0].Completion
+		if cur.ArtifactID != twin.ArtifactID || cur.ArtifactID == c.ArtifactID || cur.Digest != snap.Digest || cur.Sequence != snap.Sequence {
+			t.Fatalf("current %+v vs snapshot %+v: only the id should move", cur, snap)
+		}
+	})
+
+	t.Run("completion digest moves on a content amendment", func(t *testing.T) {
+		f := newFixture(t)
+		g := provisionGoverned(t, f)
+		p, c := f.addPredecessor(t, g, "p", true)
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+			t.Fatal(err)
+		}
+		f.amendContent(t, c, storyScope(p.StoryID), storyLineage(g.hierarchy, p.StoryID), `{"head_commit":"fedcba9876543210fedcba9876543210fedcba98"}`)
+		row := openOne(t, f)
+		cur, snap := row.Current.Edges[0].Completion, row.Dispatch.Basis[0].Completion
+		if cur.ArtifactID != snap.ArtifactID || cur.Digest == snap.Digest || cur.Sequence != snap.Sequence+1 {
+			t.Fatalf("current %+v vs snapshot %+v", cur, snap)
+		}
+	})
+}
+
+// TestOpenWorkDoesNotWaitOnAHeldArtifactLock is design D9's concurrent-write
+// proof without an injection hook: another transaction holds the governing
+// record's row lock -- exactly what an in-flight amendment acceptance or
+// supersession holds -- for the whole of OpenWork. A read that locks would
+// BLOCK behind it; the non-locking read returns from its snapshot.
+//
+// THE MUTANT: reintroduce AmendmentBase (or any FOR UPDATE) in recovery.go;
+// this test then fails on the deadline instead of returning.
+func TestOpenWorkDoesNotWaitOnAHeldArtifactLock(t *testing.T) {
+	f := newFixture(t)
+	g := provisionGoverned(t, f)
+	ctx := context.Background()
+	if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, "SELECT 1 FROM management_artifacts WHERE artifact_id = $1 FOR UPDATE", g.storyRecord.ArtifactID); err != nil {
+		t.Fatal(err)
+	}
+
+	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	open, err := f.store.OpenWork(bounded, f.organizationID)
+	if err != nil {
+		t.Fatalf("OpenWork waited on a held artifact lock (or failed): %v", err)
+	}
+	if len(open.Pending) != 1 {
+		t.Fatalf("open work %+v", open)
+	}
 }

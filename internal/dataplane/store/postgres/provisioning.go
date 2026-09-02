@@ -233,6 +233,13 @@ func (t *tx) ProvisionProduct(ctx context.Context, input store.ProvisionProductI
 			Kind: "product", Key: input.Slug, Stored: stored.DisplayName, Supplied: input.DisplayName,
 		}
 	}
+	// The accountable human is persisted lineage (ADR 0022) and part of
+	// what was supplied; a retry under another user is a different request.
+	if stored.UserID != input.UserID {
+		return empty, &store.BootstrapConflict{
+			Kind: "product user", Key: input.Slug, Stored: stored.UserID.String(), Supplied: input.UserID.String(),
+		}
+	}
 	return store.Bootstrapped[store.Product]{Record: *stored, Created: inserted == 1}, nil
 }
 
@@ -289,6 +296,11 @@ func (t *tx) ProvisionRepository(ctx context.Context, input store.ProvisionRepos
 		return empty, &store.BootstrapConflict{
 			Kind: "repository primary product", Key: input.Slug,
 			Stored: stored.String(), Supplied: input.PrimaryProductID.String(),
+		}
+	}
+	if stored := fromUUID(row.UserID); stored != input.UserID {
+		return empty, &store.BootstrapConflict{
+			Kind: "repository user", Key: input.Slug, Stored: stored.String(), Supplied: input.UserID.String(),
 		}
 	}
 	// The primary membership, idempotently: on a fresh insert it is what

@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,13 +41,10 @@ var allowedClosure = []string{
 	seamPackage,
 }
 
-// forbiddenByName are v1 packages outside internal/dataplane that the closure
-// must not reach either; the exact set above only governs the data plane.
-var forbiddenByName = []string{
-	"orchestrator/pkg/persistence",
-	"orchestrator/pkg/state",
-	"orchestrator/pkg/config",
-}
+// Named because the design names them: pkg/persistence, pkg/state and
+// pkg/config are the v1 packages the closure rule exists to keep out, and
+// they are refused by the exact set above like every other in-module
+// package not on it -- not by a deny-list that would let pkg/agent through.
 
 // TestOrchestratorClosureReachesNothingLocalOrV1 is the exit criterion
 // "paths.Bootstrap is not imported from above the seam", checked at the
@@ -59,21 +57,27 @@ var forbiddenByName = []string{
 // enumerations have failed three times in this repository.
 func TestOrchestratorClosureReachesNothingLocalOrV1(t *testing.T) {
 	root := moduleRoot(t)
-	for _, tags := range buildConfigurations(t, root) {
-		t.Run("tags="+strings.Join(tags, ","), func(t *testing.T) {
-			deps := listDeps(t, root, tags)
+	configs := buildConfigurations(t, root)
+	if len(configs) < 20 {
+		t.Fatalf("%d configurations; the crossed matrix over four tags is 20", len(configs))
+	}
+	for _, c := range configs {
+		t.Run(c.String(), func(t *testing.T) {
+			deps := listDeps(t, root, c)
 			var offending []string
 			for _, dep := range deps {
-				local := strings.HasPrefix(dep, "orchestrator/internal/dataplane/") && !slices.Contains(allowedClosure, dep)
-				if local || slices.Contains(forbiddenByName, dep) {
+				// Every in-module dependency must be on the list: an exact
+				// set, not a deny-list, so pkg/agent or internal/supervisor
+				// is refused the same way stack is.
+				if strings.HasPrefix(dep, "orchestrator/") && !slices.Contains(allowedClosure, dep) {
 					offending = append(offending, dep)
 				}
 			}
 			if len(offending) != 0 {
 				t.Fatalf("the Orchestrator reaches %v.\n"+
-					"Its data-plane closure must be exactly %v and it must not reach %v: it sees store.Store "+
-					"and nothing below it, and is handed an Opener rather than a composer (design D2, D3).",
-					offending, allowedClosure, forbiddenByName)
+					"Its in-module closure must be exactly %v: it sees store.Store and nothing below it, "+
+					"nothing of v1, and is handed an Opener rather than a composer (design D2, D3).",
+					offending, allowedClosure)
 			}
 			for _, want := range allowedClosure {
 				if !slices.Contains(deps, want) {
@@ -85,12 +89,30 @@ func TestOrchestratorClosureReachesNothingLocalOrV1(t *testing.T) {
 	}
 }
 
-// buildConfigurations returns the tag sets to evaluate: none, then each bare
-// tag the tree declares, one at a time. At the time of writing every
-// //go:build expression in the repository is a single bare tag; a negated or
-// compound expression would need the crossing item 1 describes, and this
-// function fails loudly rather than evaluating it wrong.
-func buildConfigurations(t *testing.T, root string) [][]string {
+// configuration is one point in the crossed matrix process_build.md's
+// Reachability Claims rule requires: an explicit tag selection, a supported
+// target (ADR 0026's linux/amd64 and linux/arm64), and a cgo setting. The
+// axes are CROSSED, not evaluated separately, because a file can carry both
+// a tag and a platform suffix.
+type configuration struct {
+	tags   []string
+	goos   string
+	goarch string
+	cgo    string
+}
+
+func (c configuration) String() string {
+	return fmt.Sprintf("tags=%s/%s-%s/cgo=%s", strings.Join(c.tags, ","), c.goos, c.goarch, c.cgo)
+}
+
+// buildConfigurations enumerates the matrix. The tag axis is re-derived from
+// the tree rather than listed, since hand-maintained enumerations have failed
+// three times in this repository: no tags, then each bare tag the tree
+// declares, one at a time. At the time of writing every //go:build
+// expression is a single bare tag; a negated or compound expression would
+// need the crossing item 1 describes, and this fails loudly rather than
+// evaluating it wrong.
+func buildConfigurations(t *testing.T, root string) []configuration {
 	t.Helper()
 	out, err := exec.Command("grep", "-rh", "--include=*.go", "^//go:build", root).Output()
 	if err != nil {
@@ -102,7 +124,7 @@ func buildConfigurations(t *testing.T, root string) [][]string {
 	}
 	bare := regexp.MustCompile(`^//go:build ([A-Za-z0-9_]+)$`)
 	seen := map[string]bool{}
-	configs := [][]string{nil}
+	tagSets := [][]string{nil}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
@@ -114,28 +136,40 @@ func buildConfigurations(t *testing.T, root string) [][]string {
 		}
 		if !seen[m[1]] {
 			seen[m[1]] = true
-			configs = append(configs, []string{m[1]})
+			tagSets = append(tagSets, []string{m[1]})
 		}
 	}
-	sort.Slice(configs[1:], func(i, j int) bool { return configs[i+1][0] < configs[j+1][0] })
+	sort.Slice(tagSets[1:], func(i, j int) bool { return tagSets[i+1][0] < tagSets[j+1][0] })
+
+	var configs []configuration
+	for _, tags := range tagSets {
+		for _, target := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}} {
+			for _, cgo := range []string{"0", "1"} {
+				configs = append(configs, configuration{tags: tags, goos: target[0], goarch: target[1], cgo: cgo})
+			}
+		}
+	}
 	return configs
 }
 
-// listDeps is `go list -deps` for the seam under one tag set.
-func listDeps(t *testing.T, root string, tags []string) []string {
+// listDeps is `go list -deps` for the package under one configuration.
+// Cross-listing needs no toolchain for the target: `go list` resolves file
+// selection and imports without compiling.
+func listDeps(t *testing.T, root string, c configuration) []string {
 	t.Helper()
 	args := []string{"list", "-deps"}
-	if len(tags) != 0 {
-		args = append(args, "-tags", strings.Join(tags, ","))
+	if len(c.tags) != 0 {
+		args = append(args, "-tags", strings.Join(c.tags, ","))
 	}
 	args = append(args, seamPackage)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "GOOS="+c.goos, "GOARCH="+c.goarch, "CGO_ENABLED="+c.cgo)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("go %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
+		t.Fatalf("go %s under %s: %v\n%s", strings.Join(args, " "), c, err, stderr.String())
 	}
 	return strings.Split(strings.TrimSpace(string(out)), "\n")
 }
