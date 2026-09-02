@@ -649,3 +649,66 @@ func (s *Store) EnsureWorkGroup(ctx context.Context, organizationID, epicID uuid
 	}
 	return *result, nil
 }
+
+// The dispatch family.
+
+// SetStoryGoverningArtifact points a Story at an accepted story record.
+func (s *Store) SetStoryGoverningArtifact(ctx context.Context, organizationID, storyID, artifactID uuid.UUID) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.SetStoryGoverningArtifact(ctx, organizationID, storyID, artifactID)
+	})
+	return err
+}
+
+// SetEpicGoverningArtifact points an Epic at an accepted epic record.
+func (s *Store) SetEpicGoverningArtifact(ctx context.Context, organizationID, epicID, artifactID uuid.UUID) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.SetEpicGoverningArtifact(ctx, organizationID, epicID, artifactID)
+	})
+	return err
+}
+
+// CreateDispatch derives a Story's basis and writes the dispatch whole.
+func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) { return t.CreateDispatch(ctx, organizationID, storyID) })
+}
+
+// AcceptDispatch flips pending to accepted and creates the execution.
+func (s *Store) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Execution, error) { return t.AcceptDispatch(ctx, organizationID, dispatchID) })
+}
+
+// FailDispatch flips pending to failed.
+func (s *Store) FailDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, failureCode, failureDetail string) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.FailDispatch(ctx, organizationID, dispatchID, failureCode, failureDetail)
+	})
+	return err
+}
+
+// InvalidateDispatch flips pending to invalidated.
+func (s *Store) InvalidateDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.InvalidateDispatch(ctx, organizationID, dispatchID)
+	})
+	return err
+}
+
+// GetDispatch reads a dispatch with its basis.
+func (s *Store) GetDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) { return t.GetDispatch(ctx, organizationID, dispatchID) })
+}
+
+// ListDispatchesByDisposition lists an organization's dispatches in one disposition.
+func (s *Store) ListDispatchesByDisposition(ctx context.Context, organizationID uuid.UUID, disposition store.Disposition) ([]store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.StoryDispatch, error) {
+		return t.ListDispatchesByDisposition(ctx, organizationID, disposition)
+	})
+}
+
+// GetExecutionByDispatch reads the execution an accepted dispatch created.
+func (s *Store) GetExecutionByDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Execution, error) {
+		return t.GetExecutionByDispatch(ctx, organizationID, dispatchID)
+	})
+}
