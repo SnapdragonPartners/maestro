@@ -3,13 +3,14 @@ title = "Design: The Orchestrator Acquires The Data Plane (Item 3)"
 edit_date = "2026-09-02"
 status = "draft"
 type = "design"
-summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane's caller — a provider-neutral internal/orchestrator handed an opener rather than a composer, whose transitive closure is guarded after the seam's own closure is cut free of paths and v1 config; a startup contract over the enumerated not-ready states, with causes mapped explicitly by each producer and proved behaviourally per state; one probe connection supplying both reachability and schema version because pgxpool.New is lazy and opening a seam proves nothing today; the configuration-key registry threaded through plane.Composition so governed configuration has a writer at all; the first production Management artifact types, without which no Story can be dispatched; typed durable checkpoints as committed artifacts plus control rows plus a recovery projection that compares effective views by digest and sequence; dispatch creation that derives its basis from authoritative rows under the Epic lock; the named conditional transitions item 2 deferred here; provisioning shaped so item 4's pack selector completes it; and StateStore retired whole. Carries three plan amendments: pkg/persistence's deletion moves to item 14, 'all four not-ready states' becomes the enumerated set, and configuration's live consumer is item 4 per ADR 0031 §4."
+summary = "Mini-plan for Phase 3 item 3: the Orchestrator becomes the data plane's caller — a provider-neutral internal/orchestrator handed an opener rather than a composer, whose transitive closure is guarded after the seam's own closure is cut free of paths and v1 config; a startup contract over the enumerated not-ready states, with causes mapped explicitly by each producer and proved behaviourally per state; one probe connection supplying both reachability and schema version because pgxpool.New is lazy and opening a seam proves nothing today; the configuration-key registry threaded through plane.Composition so governed configuration has a writer at all; the first production Management artifact types — Epic record, Story record and Story completion, each carrying only what no row owns — without which no Story can be dispatched; typed durable checkpoints as committed artifacts plus control rows plus a recovery projection that compares effective views by digest and sequence; dispatch creation that derives its basis from authoritative rows under the Epic lock and validates every reference under the artifact lock the transitions themselves take; the named conditional transitions item 2 deferred here; provisioning shaped so item 4's pack selector completes it; and StateStore retired whole. Carries three plan amendments: pkg/persistence's deletion moves to item 14, 'all four not-ready states' becomes the enumerated set, and the live-consumer criterion reassigns to item 4 (configuration, ADR 0031 §4) and item 5 (secrets, ADR 0030 §3)."
 +++
 
 # Design: The Orchestrator Acquires The Data Plane (Item 3)
 
-Status: **draft** — revised after review round 1 (Codex, 2026-09-02: nine P1s,
-all confirmed against the tree; see *Points Resolved In Review*). Phase 3 item 3.
+Status: **draft** — revised after review rounds 1 and 2 (Codex, 2026-09-02:
+nine P1s each, all confirmed against the tree or the ADR they turned on; see
+*Points Resolved In Review*). Phase 3 item 3.
 
 Phase 2 built the persistence seam standing alone: `store.Store` has an
 implementation, a local composer, a cloud composer, lifecycle verbs, a vault, a
@@ -51,7 +52,7 @@ Built here:
 | The startup contract over the enumerated not-ready states | Plan item 3(d), and an exit criterion |
 | One probe connection supplying reachability and schema version | Without it "the seam opened" asserts nothing (D4) |
 | The configuration-key registry threaded through the composition | Nothing can write governed configuration today (D7) |
-| The first production Management artifact types | A dispatch requires an accepted governing artifact; none can exist (D14) |
+| The first production Management artifact types: Epic record, Story record, Story completion | A dispatch requires an accepted governing artifact and validates each completion; none can exist (D14) |
 | Provisioning: organization, user, product, repository | Plan item 3(e) |
 | Work-hierarchy writers and readers on the seam | Nothing can create a Feature, Epic, Story or Work Group today |
 | Dispatch creation deriving its basis, and the named conditional transitions | Plan item 3(a); item 2's three obligations |
@@ -65,11 +66,11 @@ Deferred, each to the item that first has a consumer:
 | --- | --- | --- |
 | Prompt-pack content, installation records and the scoped selector | Item 4 | ADR 0031. Provisioning is shaped so item 4 **completes** it (D11) |
 | **Configuration's live reader** | Item 4 | ADR 0031 §4 names it (D7, amendment 3) |
-| **A secret's live reader** | The first item resolving a repository credential — item 7 on the current plan | No item before it reads one (D7, amendment 3) |
+| **A secret's live reader** | Item 5 | ADR 0030 §3's substitution and injection (D7, amendment 3) |
 | `pkg/persistence`'s deletion | Item 14 | D1 — it has 42 live v1 importers |
 | Execution configuration, per-incarnation bindings, agent restart | Items 5/6 | ADR 0032 §2, under that ADR's own demotion |
 | Writing `epic_dependencies` / `story_dependencies` edges | Items 10/11 | Item 2's consumer table. Item 3 **reads** them under the same lock (D10) |
-| Full content schemas for the work records | Items 10/11 | Item 3 defines what a governing reference needs; the Architect's and intake's content arrive as payload versions (D14) |
+| `work.feature_record` | Item 11 | No item-3 consumer; no governing pointer wants it (D14) |
 | Cancellation, supersession, drain and fence | Item 9 | The whole of ADR 0019's second amendment's enforcement |
 | `tool_calls.arguments` as ADR 0030 §3's projection | Item 5 | Item 2's deferred table |
 
@@ -224,34 +225,43 @@ version. There is no `Ping` call anywhere in `internal/dataplane/plane` or
 Postgres, and against a database three migrations behind, and reports the same
 success either way.
 
-The first draft proposed `Ping` followed by `migrations.Version`, and a mutation
-test that removed the `Ping`. Review caught that the mutation is **false**:
-`migrations.Version` opens its own `database/sql` handle and connects, so an
-unreachable plane still fails the open — at the version step, misclassified. A
-mutation that leaves the test green is not evidence; a mutation that fails the
-test for a *different* reason is not either.
-
-**Resolved: one probe, one connection.** `plane.Open` acquires a single
-connection from the pool — the act that establishes reachability, since the pool
-is lazy — and reads the schema version **on that connection** through a new
+**One probe, one connection.** `plane.Open` acquires a single connection from
+the pool — the act that establishes reachability, since the pool is lazy — and
+reads the schema version **on that connection** through a new
 `migrations.VersionOn(ctx, conn)`, which owns the `schema_migrations` table
-knowledge (`version bigint not null primary key, dirty boolean not null`;
-verified against the pinned `golang-migrate/migrate/v4 v4.19.1` source,
-`database/postgres/postgres.go:481`). The embedded maximum comes from
-`migrations.FS`. Reachability and version are not two operations that might
-disagree; they are one connection's two facts.
+knowledge. The embedded maximum comes from `migrations.FS`. Reachability and
+version are not two operations that might disagree; they are one connection's
+two facts.
 
-Classification follows from which step failed on that connection: acquire fails
-→ **unreachable**; the version read fails → **schema unreadable** (a plane that
-answers but has no `schema_migrations`, which is a fresh cluster nobody
-migrated); version, dirty flag and comparison → the three schema states of D5.
+**An absent `schema_migrations` table is version 0, not an error.** Round 2
+caught the first revision misclassifying it as "schema unreadable". The pinned
+driver (`golang-migrate/migrate/v4 v4.19.1`, `database/postgres/postgres.go:393-399`)
+deliberately maps both `sql.ErrNoRows` and `undefined_table` to `NilVersion`,
+and `migrations.Version` already maps that to `0, clean`. `VersionOn` preserves
+exactly that contract, so a fresh cluster nobody has migrated is **schema
+behind** — the remedy is `make dataplane-migrate`, which is true — and "schema
+unreadable" is reserved for a read that fails for any *other* reason on a
+connection that was just acquired: permission, a mid-query drop, a table with
+an unexpected shape.
+
+Classification follows from which step failed on that connection: acquire →
+**unreachable**; version read (other than the two nil cases) → **schema
+unreadable**; version, dirty flag and comparison → the three schema states of
+D5.
+
+**The defect-shaped mutation is executable.** The first revision's — "skip the
+acquire and call `VersionOn`" — was not, since there is no connection to call
+it on. The real one: read the version **through the pool** (`pool` satisfies the
+querier interface `VersionOn` takes) instead of through the acquired
+connection. A connection failure then surfaces from the version query and is
+classified *schema unreadable*; the test asserting *unreachable* fails on the
+cause. That is the mutation, and it is one line.
 
 **Cleanup on every failure path.** `postgres.Open` already closes the pool when
 `New` fails; the probe's failure must do the same, and `plane.Open` already
-releases every `Owned` resource on failure. The test for this is a failure
-injected *after* acquire — a version read forced to fail — with the pool's
-close observed, because a probe that leaks a connection on exactly the path it
-was added to diagnose is worse than no probe.
+releases every `Owned` resource on failure. The test injects a failing version
+read *after* acquire and observes the pool's close, because a probe that leaks a
+connection on exactly the path it was added to diagnose is worse than no probe.
 
 `plane` is the right layer for the same reason the cloud composer already probes
 its bucket rather than trusting a constructed handle: *"it is what makes 'the
@@ -285,8 +295,8 @@ from the pointer.
 | **Interrupted recovery** | `stack.ErrRecoveryInterrupted` — `.maestro-recovery-in-progress` | Refuse — an orphaned postmaster may still own the data root | Finish `recover-key`, or `reset` |
 | **Object store unusable** | `stack.ensureBucket` / cloud's bucket probe fails | Refuse, name the endpoint | Start the plane; check credentials |
 | **Unreachable** | D4's acquire fails | Refuse, report the endpoint and driver error | Start the plane |
-| **Schema unreadable** | D4's version read fails on a reachable plane | Refuse | `make dataplane-migrate` |
-| **Schema behind** | version < embedded max | Refuse. **Never self-migrate** | `make dataplane-migrate` |
+| **Schema unreadable** | D4's version read fails on a reachable plane for a reason other than the two nil cases | Refuse, report the read error | Inspect the plane; not a migration problem |
+| **Schema behind** | version < embedded max — **including version 0**, the absent-table case | Refuse. **Never self-migrate** | `make dataplane-migrate` |
 | **Schema dirty** | `dirty` set | Refuse, name the failed version | The manual repair Phase 2 deliberately left unautomated |
 | **Schema ahead** | version > embedded max | Refuse, name both versions | Run a newer binary; never downgrade the plane |
 
@@ -374,13 +384,20 @@ resolution "falls back through scoped configuration … through the Phase 2
 configuration records and their key registry (`internal/dataplane/configkeys`).
 … Pack selection registers a key there." It is in block A, and checkpoint 1
 checks it — "a fresh organization is provisioned with a resolvable prompt-pack
-selector". For a **secret**, no item before the one that resolves a repository
-credential reads one; on the current plan that is item 7, and review of that
-item confirms or moves it.
+selector". For a **secret**, the first reader is **item 5**, and an Accepted ADR fixes it:
+ADR 0030 §3 has the boundary replace every secret in a mediated action's input
+with a **version-pinned reference** — "Phase 2's `secrets.version` is already
+part of the key-derivation context" — and inject the value at effect. That is
+the "forge binding" Phase 2's D8 named as the first caller, seen from the
+consumer's side: a forge token stops being a v1 file and becomes a vault row
+the boundary reveals. Item 7 is not the reader: it provisions resources and performs no mediated
+action, and a credential issued *into* a resource is the unmediated external
+path ADR 0030's effect-site table bounds "only by what was granted" — the case
+the boundary exists to avoid.
 
 **This amends the plan** (amendment 3): the exit criterion "Configuration and
 secrets have a live consumer" is reassigned — configuration to item 4, a secret
-to item 7 provisionally — while "the locked-plane path is exercised by the
+to item 5 — while "the locked-plane path is exercised by the
 Orchestrator rather than only by its own tests" stays item 3's and is met
 through D5/D6. Item 3's own claim is narrow and true: the registry has a writer,
 and the vault's failure path is the Orchestrator's startup failure.
@@ -409,54 +426,81 @@ any agent runs. ADR 0032's persisted execution configuration, per-incarnation
 bindings, epochs, re-attach and agent restart are demoted design inputs owned by
 items 5 and 6.
 
-### D9. The recovery projection compares effective views, not pointers
+### D9. The recovery projection compares the whole basis, and its classes are disjoint
 
-The first draft compared "snapshot and current side" and left what that meant to
-the reader. Review named the gap: pointer equality misses an accepted amendment —
-including a **no-op** amendment, where the view is byte-identical, the digest
-unchanged, and only the sequence moves. That is exactly the case item 2's D7
-keeps both halves of the reference for.
+Round 1 named the first gap — pointer equality misses an accepted amendment,
+including a **no-op** one where only the sequence moves. Round 2 named two more:
+the first revision loaded governing artifact ids and then compared only digest
+and sequence, so a repoint to a *different original with identical content* was
+missed; and it compared completions by id alone, so an accepted completion
+amendment — no-op included — was missed. And its classes were neither disjoint
+nor total: it selected only current executions and then had a "superseded"
+class, and a matching accepted dispatch satisfied two classes at once.
 
-The projection, run by `Start` after the readiness contract passes:
+**What "the basis matches" means**, for one dispatch, is a conjunction over
+every reference item 2's snapshot carries:
 
-1. **Identity.** Resolve the organization and the acting principal from what
-   the composition root supplied and the provisioning records. Nothing is
-   created; a startup that provisions a tenant is the defect item 9's design
-   already names.
-2. **Open work.** `story_dispatches` with `disposition = 'pending'`, and
-   `executions` with `authority_state = 'current'`, each with its dispatch.
-3. **The snapshot.** Per dispatch: the two version references — artifact id,
-   digest, sequence — and its `dispatch_basis_dependencies` rows as a set.
-4. **The current side, read the way item 2 defines it.** For the Story and its
-   governing Epic: the governing pointer, then `AmendmentBase` on that original
-   — which returns the effective view's **digest and sequence read at one instant
-   under the original's lock**. For the incoming edges: `story_dependencies`
-   where this Story is the successor, with each `satisfying_completion_*`.
-5. **Classification, total.** Every open row lands in exactly one class:
-   - **resumable** — both governing digests *and* sequences equal the snapshot,
-     the predecessor set is identical, and every completion pointer names the
-     snapshot's artifact;
-   - **basis-diverged** — any of those differ. The plane wins and nothing is
-     repaired: the row is reported and left exactly as it is. Item 9 owns what
-     happens next, and a startup that reconciled would destroy the evidence its
-     cancellation is triggered by;
-   - **execution current, no consumer** — an accepted dispatch's execution with
-     `authority_state = 'current'`, which item 3 creates (D10) and nothing in
-     item 3 can drive. Reported as awaiting item 5's boundary; not an error;
-   - **execution superseded** — item 9's; reported, untouched.
+| Reference | Snapshot columns | Current side | Equal iff |
+| --- | --- | --- | --- |
+| Story version | `story_version_artifact_id`, `_effective_digest`, `_effective_sequence` | `stories.governing_artifact_id`; `AmendmentBase` on it | **id** and digest and sequence all equal |
+| Epic version | the `epic_version_*` triple | `epics.governing_artifact_id`; `AmendmentBase` on it | id and digest and sequence |
+| Incoming edges | the set of `predecessor_story_id` in `dispatch_basis_dependencies` | the set of `predecessor_story_id` in `story_dependencies` where this Story is successor | the two sets are identical |
+| Each completion | `completion_artifact_id`, `_effective_digest`, `_effective_sequence` | the edge's `satisfying_completion_artifact_id`; `AmendmentBase` on it | id and digest and sequence; a null current pointer is *diverged* |
 
-   An unclassifiable row is an error, not a skipped line.
+Id **and** digest **and** sequence, every time. Id alone misses amendments;
+digest alone misses no-op amendments; digest and sequence without id miss a
+repoint to an identical twin. Item 2 kept all three halves for exactly this
+comparison.
 
-**The subprocess proof (D13) traverses a real reviewed artifact**: a Story
+**The row kinds selected, and the predicates.** Terminal dispatches are not
+open work and are not read. The projection reads:
+
+- **K1** — `story_dispatches` with `disposition = 'pending'`;
+- **K2** — `story_dispatches` with `disposition = 'accepted'`, joined to their
+  execution **regardless of `authority_state`**. D10's seam invariant says the
+  join finds exactly one row; a K2 dispatch with none is a projection **error**,
+  not a class.
+
+Each row lands in exactly one class, by (kind × authority × match):
+
+| Class | Predicate | Meaning |
+| --- | --- | --- |
+| `pending_resumable` | K1 ∧ match | Awaiting acceptance under a basis that is still current |
+| `pending_diverged` | K1 ∧ ¬match | ADR 0019's pending-dispatch case: to be invalidated and reissued — item 9's; reported, untouched |
+| `execution_awaiting_boundary` | K2 ∧ current ∧ match | Item 3 can create this (D10) and nothing in item 3 can drive it; awaits item 5 |
+| `execution_diverged` | K2 ∧ current ∧ ¬match | Item 9's cancellation input; reported, untouched — a startup that reconciled would destroy the evidence its cancellation is triggered by |
+| `execution_superseded` | K2 ∧ superseded | Item 9's drain state, whatever the basis says. Item 3 cannot produce it; its run asserts the class is empty |
+
+Disjoint because the three factors partition the rows; total because every
+selected row has a kind, every K2 row has an authority, and match is a
+predicate over columns that exist. An unclassifiable row — a K2 without an
+execution, an `authority_state` outside the vocabulary — is an error, never a
+skipped line.
+
+**What the projection does after classifying: nothing.** The plane wins. The
+Orchestrator reports the classes and holds; item 9 owns every transition out of
+a diverged class.
+
+**Startup order.** The projection runs in `Start` after the readiness contract
+(D5) passes, in one `REPEATABLE READ` transaction, because it is a read of a
+*consistent* picture and item 9's writers may be moving rows underneath a
+restart.
+
+**The subprocess proof (D13) traverses real reviewed artifacts**: a Story
 record authored by one principal, reviewed and accepted by another, pointed at
-by `stories.governing_artifact_id`, dispatched; then the fresh process must
-reload its effective view and land it *resumable* — and, in a second run, an
-accepted no-op amendment between the two processes must land it
-*basis-diverged* on sequence alone.
+by `stories.governing_artifact_id`, dispatched; the fresh process must reload
+its effective view and land it `pending_resumable`. Then three further runs,
+each a single change between the two processes, each landing
+`pending_diverged` for the named reason: an accepted **no-op amendment** of the
+Story record (sequence only); a **repoint** of the governing pointer to an
+accepted twin with identical content (id only); an accepted no-op amendment of
+a **predecessor's completion** (completion sequence only).
 
-### D10. Dispatch derives its basis; named transitions guard the dispositions
+### D10. Dispatch derives its basis under two locks; named transitions guard the dispositions
 
-Item 2 assigned three obligations here. The first draft met one and a half.
+Item 2 assigned three obligations here. Round 1 found the first draft met one
+and a half; round 2 found the revision validated status **before** taking the
+artifact lock, and never validated completions at all.
 
 **Dispatch creation derives the basis from authoritative rows; the caller
 supplies a Story and nothing else.** A caller-supplied basis can omit a
@@ -464,22 +508,38 @@ predecessor and still commit atomically, and several `READ COMMITTED`
 statements can observe different states of the graph. So `CreateDispatch`,
 inside one transaction:
 
-1. Locks the Epic row (`SELECT … FOR UPDATE`). This is the **stable parent
-   item 2 chose** for serializing Story-graph mutations under ADR 0027, so
+1. **Lock the Epic row** (`SELECT … FOR UPDATE`). This is the stable parent
+   item 2 chose for serializing Story-graph mutations under ADR 0027, so
    item 9's and item 10's graph writes, the governing-pointer repoints, and
-   dispatch creation all queue on one row. Under that lock, `READ COMMITTED` is
-   sufficient: no writer of any input can commit between the reads below.
-2. Reads the Story's incoming edges. Any edge with a null
-   `satisfying_completion_artifact_id` means **not dependency-ready** — a typed
+   dispatch creation all queue on one row.
+2. **Read the Story's incoming edges** under that lock. Any edge with a null
+   `satisfying_completion_artifact_id` is **not dependency-ready** — a typed
    rejection, never a dispatch with a hole in its basis.
-3. Reads both governing pointers and **validates each artifact through the
-   registry**: the expected type (D14) and `status = accepted`. Item 2's D7
-   assigns both checks to the seam by name, and its obligations table lists
-   them against item 3. A pointer at a draft, or at the wrong type, is a typed
-   rejection.
-4. Computes both effective views with `AmendmentBase` and each completion's
-   with the same call, and writes the dispatch row, its two version references
-   and every `dispatch_basis_dependencies` row **in that transaction**.
+3. **Lock every referenced artifact, then validate it under its lock.** The
+   Epic lock serializes the *work graph*; it does not block `AcceptArtifact`,
+   `SupersedeArtifact` or `ArchiveArtifact`, which take only the artifact's own
+   row (`LockManagementArtifact`, `FOR UPDATE`). So an artifact validated as
+   accepted at one statement can be superseded before the next and still enter
+   the dispatch. The order is therefore: for the Story's governing artifact,
+   the Epic's, and each edge's completion — **in ascending artifact id** —
+   take the same row lock the transitions take, and *under it* read type and
+   status, validate, and compute the effective view's digest and sequence. One
+   locked read per reference; nothing is validated on an unlocked row.
+4. **Validation, per reference**, all through the registry (D14):
+   the Story's governing artifact is a `work.story_record`; the Epic's is a
+   `work.epic_record`; **each completion is a `work.story_completion`** — the
+   check item 2 named "this is a Story completion" and assigned to the seam;
+   every one of them has `status = accepted`. Scope-to-the-right-work-item is
+   already the composite foreign key's. A draft, a wrong type, or a superseded
+   row is a typed rejection naming which reference failed.
+5. **Write** the dispatch row, both version references and every
+   `dispatch_basis_dependencies` row, in that transaction.
+
+**Lock order is a rule for every writer, stated so item 9 can keep it:** the
+Epic row before any artifact row, and artifact rows in ascending id. The
+artifact transitions take an artifact lock and never an Epic lock afterwards,
+so no cycle exists today; a repoint in item 9 that took the artifact first would
+create one, and that is the sentence it must read before it does.
 
 **Disposition changes are named conditional transitions** — `AcceptDispatch`,
 `FailDispatch`, `InvalidateDispatch` — each an
@@ -490,7 +550,8 @@ makes the immutability unenforceable.
 
 **Accepting a dispatch and creating its execution commit together.** The schema
 gives *at most one*; the *at least one* half is cross-table and item 2 states
-it is the seam's.
+it is the seam's. D9's projection treats its absence as an error for the same
+reason.
 
 ### D11. Provisioning, shaped so item 4 completes it
 
@@ -570,25 +631,40 @@ benchmark importer's two. And item 2's schema makes `story_version_artifact_id`
 accepted governing artifact of a known type.** That is a consumer, and it is
 item 3's.
 
-Item 3 registers three types, named for ADR 0024's record shapes:
+Round 2 corrected the first revision on three counts, and each changed what
+lands. A `work.feature_record` was registered with no item-3 consumer — its own
+table said it governed nothing — and is **deferred to item 11**, where intake
+authors it; a Feature *row* exists without a governing artifact, and migration
+000021 added governing pointers to `stories` and `epics` only, so nothing in the
+schema wants one. The **completion** type, which item 3 *does* consume (D10
+step 4), was missing. And the payloads duplicated `title` and `repository`,
+which migration 000003 already holds as authoritative columns, so nothing
+prevented a reviewed payload and its row from disagreeing.
 
-| Type | ADR 0024 shape | Scope | Governs |
+**Three types land, and each payload carries only what no row owns:**
+
+| Type | Governs / satisfies | Version 1 payload | Source of every field |
 | --- | --- | --- | --- |
-| `work.feature_record` | "A Feature record — the highest-level ask, carrying its intent content and provenance" | feature | — |
-| `work.epic_record` | "Epic records, each carrying the three triage outputs: mode, repository, dependencies" | epic | `epics.governing_artifact_id` |
-| `work.story_record` | The Architect-owned decomposition unit ("the Architect owns the Story decomposition") | story | `stories.governing_artifact_id` |
+| `work.epic_record` | `epics.governing_artifact_id` | `intent` (text, required); `mode` (`workbench` \| `factory`, required) | ADR 0024's Epic record: intent content, and the triage output the row lacks. `repository` and `dependencies` — the other two triage outputs — **are rows** (`epics.repository_id`, `epic_dependencies`) and are not repeated |
+| `work.story_record` | `stories.governing_artifact_id` | `intent` (text, required) | ADR 0024: the Architect-owned decomposition unit; ADR 0018: a PR-sized chunk. `title` is the row's |
+| `work.story_completion` | `story_dependencies.satisfying_completion_*`, and the basis | `head_commit` (40-hex SHA, required) | ADR 0023 *Merge policy*: a Story completes when "the Architect's review record completes after final code review" and the Story branch merges. The branch name is derived from the Story id (ADR 0023 *Branch naming*), so it is not repeated; the merge commit follows acceptance and is Audit data, so it is not here |
 
-**Payload version 1 carries what a governing reference needs and no more**:
-title and intent for all three; mode and repository for the Epic record, since
-ADR 0024 names them as triage outputs and item 10's dispatch reads mode. The
-full content schemas — intake's triage detail, the Architect's decomposition —
-arrive as **payload version bumps** in items 11 and 10, which is what the
-registry's per-version validators exist for. Item 3 does not guess at content it
-has no author for.
+**One authority per fact.** Title, repository, lineage and dependencies are
+rows; intent, mode and the reviewed head are payload. No field appears in both,
+so there is no equality to enforce and no way for the two to disagree.
 
-The `work.` prefix follows the importer's `benchmark.` convention. Naming is a
-reviewable point; the *existence* of a Story-governing type is not, because
-without it checkpoint 1's "dispatched" cannot happen.
+**How version 1 stays usable, forever.** Round 2 was right that planning
+version bumps before the first workflow exists creates the compatibility debt
+ADR 0028 makes permanent — every historical version supported or explicitly
+refused. So version 1 is **not** "what item 3 needs, to be completed later".
+It is the ADR 0024 / ADR 0023 contract minus the fields rows own, which is the
+whole contract those ADRs state. Items 10 and 11 consume version 1 as it stands.
+If either ever needs a field no Accepted ADR names today, that is a new version
+whose validator is **additive** and whose predecessor stays readable — the rule
+ADR 0028 already imposes, not a plan this design is making.
+
+The `work.` prefix follows the importer's `benchmark.` convention; round 2
+accepted the naming.
 
 ## Implementation And Review Sequence
 
@@ -601,10 +677,10 @@ it, and the guard cannot be written before the closure it guards exists.
 | 1 | `closure` | `secret`'s key-file provider moves below; `paths` drops `pkg/utils`; the seam's closure asserted |
 | 2 | `readiness` | The neutral vocabulary; `migrations.VersionOn`; the single-connection probe in `plane.Open` with failure-path cleanup; explicit producer mappings; the two-table sentinel guard |
 | 3 | `config-registry` | `plane.Composition.Keys`, both composers, `dataplanectl`'s registry kept distinct |
-| 4 | `artifact-types` | The three `work.*` types, version 1 validators and extractors |
+| 4 | `artifact-types` | `work.epic_record`, `work.story_record`, `work.story_completion`: version 1 validators and extractors |
 | 5 | `provisioning` | The `Provisioning` family; org/user moved off `BenchmarkWriter`; product; repository with primary membership in one transaction; secondary membership; `dataplanectl provision` |
 | 6 | `work-queries` | Queries and seam methods for features, epics, stories, work groups, governing pointers, and the edge and pointer reads D10 needs |
-| 7 | `dispatch` | `CreateDispatch` deriving its basis under the Epic lock; type and status validation; the three named transitions; accept-creates-execution |
+| 7 | `dispatch` | `CreateDispatch` deriving its basis under the Epic lock and per-artifact locks; type and status validation of every reference, completions included; the three named transitions; accept-creates-execution |
 | 8 | `orchestrator` | `Start(opener)`, the startup contract, the recovery projection, the seam-routed writes |
 | 9 | `state-retirement` | `StateStore` gone: interface, field, parameter, runtime slot, `Persist`, `pkg/state`, the two race tests |
 | 10 | `proofs` | The subprocess restart test with the no-op amendment run; the import-closure guard with its planted violation; the per-state readiness suite |
@@ -622,7 +698,8 @@ the wrong reason; each row now states the reason the failure must carry.
 | --- | --- | --- |
 | The seam's closure is six packages, none local, none v1 | `go list -deps` assertion | Reintroduce `secret → paths`; the guard names `paths` |
 | The Orchestrator cannot reach a composer | Import-closure test over the applicable configurations | Add a real `stack` import; the guard names `stack` |
-| An unreachable plane is reported as **unreachable** | Stop the service; `Start` | Skip the acquire and go straight to the version read; the cause changes to *schema unreadable* — the test asserts the cause, not the failure |
+| An unreachable plane is reported as **unreachable** | Stop the service; `Start` | Read the version through the pool instead of the acquired connection; the connection failure arrives as a query error and is classified *schema unreadable* — the test asserts the cause |
+| A never-migrated cluster is **schema behind**, not an error | Open against a cluster with no `schema_migrations` | Map `undefined_table` to *schema unreadable*; the remedy assertion (`dataplane-migrate`) fails |
 | A behind / dirty / ahead schema is refused with its own cause | Migrate down one; force dirty; force a version above the embedded max | Remove the comparison; the open succeeds |
 | The probe leaks nothing on failure | Inject a failing version read after acquire | Drop the pool close on that path; the leak is observed |
 | Each not-ready state produces its own cause **and remedy** | One test per D5 row, plane put into that state | Merge two mappings; the remedy assertion fails |
@@ -630,10 +707,13 @@ the wrong reason; each row now states the reason the failure must carry.
 | Governed configuration is writable only for registered keys | Write a registered key through the Orchestrator's registry; write an unregistered one | Drop `Keys` from the composition; the registered write is refused |
 | A dispatch cannot be created dependency-unready | Leave one edge unsatisfied | Skip the null check; a dispatch commits with a missing predecessor |
 | A dispatch cannot reference a draft or wrong-type governing artifact | Point the Story at a draft; at a `work.epic_record` | Skip the registry check; the dispatch commits |
+| A completion must be an accepted `work.story_completion` | Satisfy an edge with a draft; with an accepted `work.story_record` | Skip the completion check; the dispatch commits with a non-completion in its basis |
+| Status is validated under the artifact lock | Force a supersession to interleave between the Epic lock and the artifact read | Validate before locking; the superseded artifact enters the dispatch |
 | Dispatch inputs cannot move between the reads | Force a pointer repoint to interleave after step 2 | Drop the Epic lock; the interleaved write commits and the basis is stale at creation |
 | A terminal disposition cannot be reopened | Fail a dispatch, then attempt every transition | Widen a `WHERE`; the rejection becomes a success |
 | An accepted dispatch always has an execution | Force a failure between the flip and the insert | Split the transaction |
-| Recovery compares views, not pointers | Accept a **no-op** amendment between the two processes | Compare artifact ids only; the row lands *resumable* instead of *basis-diverged* |
+| Recovery compares the whole basis | Three runs: a no-op Story amendment; a repoint to an identical twin; a no-op completion amendment | Drop the sequence compare; drop the id compare; compare completions by id only — each run's `pending_diverged` becomes `pending_resumable` for its own reason |
+| The classes are disjoint and total | Every item-3-producible state, plus a K2 row with its execution deleted by fixture | Remove the K2-without-execution error; the row is silently skipped |
 | Recovery reads only the plane | The subprocess test (D13), kill path included | Cache the projection in a package variable; the fresh process passes only if it read the plane |
 | Nothing persists through `StateStore` | The symbols are gone; `go build ./...` | Reintroduce `Persist`; a structural check names it |
 | Repository provisioning commits with its primary membership | Provision; read `product_repositories` | Split the transaction; the deferred constraint fires at commit and the test asserts **that** constraint's name |
@@ -652,9 +732,9 @@ document asserts a decision nobody has accepted.
    item-3 line loses its deletion sentence and gains the closure rule.
 2. **"All four not-ready states" becomes "all enumerated not-ready states"**
    (D5), in the item-3 line and the exit checklist.
-3. **Configuration's live consumer is item 4; a secret's is item 7
-   provisionally** (D7). The exit criterion splits: the live-consumer clause
-   moves, the locked-plane clause stays with item 3.
+3. **Configuration's live consumer is item 4 (ADR 0031 §4); a secret's is
+   item 5 (ADR 0030 §3)** (D7). The exit criterion splits: the live-consumer
+   clause moves, the locked-plane clause stays with item 3.
 
 ## Points Resolved In Review
 
@@ -677,14 +757,28 @@ Open-question calls taken as review gave them: `readiness` is its own package;
 `provision` is a command group with `bootstrap` as a shortcut; D1, no second
 entrypoint, and fresh-process restart stand.
 
+Round 2 (Codex, 2026-09-02). Nine P1s, each confirmed against the tree or the
+Accepted ADR it turned on.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Absent `schema_migrations` misclassified; the mutation was not executable | D4 — nil version is 0/clean, hence *schema behind*; the mutation is "read through the pool" |
+| 2 | Governing ids not compared; completions compared by id only | D9 — id ∧ digest ∧ sequence for every reference, completions included |
+| 3 | Classes neither disjoint nor total | D9 — K1/K2 × authority × match; K2 without execution is an error |
+| 4 | Status validated before the artifact lock | D10 — lock each artifact with the transitions' own `FOR UPDATE`, validate under it; lock order stated |
+| 5 | Completions never validated; no completion type | D10 step 4; D14's `work.story_completion` |
+| 6 | `work.feature_record` had no consumer | D14 — deferred to item 11 |
+| 7 | Planned version bumps create permanent debt | D14 — v1 is the ADR contract minus row-owned fields; consumed as-is; any later version is additive under ADR 0028's existing rule |
+| 8 | Payloads duplicated relational fields | D14 — one authority per fact; nothing appears in both |
+| 9 | Amendment 3's secret owner was provisional | D7 — item 5, by ADR 0030 §3's substitution rule; item 7 performs no mediated action |
+
+Calls taken: the key-file provider lands in `paths` itself; the `work.*_record`
+naming stands.
+
 ## Open Questions
 
-1. **Type names** (D14): `work.feature_record` / `work.epic_record` /
-   `work.story_record`, or a prefix item 11 would rather own.
-2. **Where the key-file provider lands** (D2): `paths` itself, or a
-   `paths/keyfile` subpackage. Either satisfies the closure rule.
-3. **Amendment 3's secret consumer**: item 7 is the first plausible reader on
-   the current plan; confirmed or moved when that item is designed.
+None remain from rounds 1 and 2. What the implementation will surface is
+recorded as it appears.
 
 ## Related Documents
 
