@@ -2,7 +2,7 @@
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
 edit_date = "2026-09-03"
 status = "draft"
-summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L."
+summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L."
 type = "design"
 +++
 
@@ -19,8 +19,8 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
 
-**Two review rounds (Codex, 2026-09-03) found nine and then eight P1s, and this
-revision carries all seventeen.** Each is recorded under
+**Three review rounds (Codex, 2026-09-03) found nine, eight and then six P1s,
+and this revision carries all twenty-three.** Each is recorded under
 [Points Resolved In Review](#points-resolved-in-review) with what was wrong and
 where the fix landed. The first draft was M-shaped; the fixes make it L, and
 that is amendment 5.
@@ -332,28 +332,85 @@ says so in its own comment, and its forced-interleaving test proves why. Without
 it an old writer can insert between the scan and the `ALTER`: an agent principal
 with no hash after the totality guard has approved, or a `story_dispatches` row
 after the dispatch guard (D8) has found the table empty, leaving exactly the
-row the guard exists to refuse. golang-migrate's own advisory lock serializes
-migrations against each other and does nothing against application writers.
+row the guard exists to refuse.
 
-The up migration locks, in order: `principal_instances`, `story_dispatches`.
-The down (below) locks, in order: `principal_instances`,
-`prompt_pack_installations`, `dispatch_prompt_resolutions`,
-`configuration_records`. Both orders are stated so the lock-ordering test can
-assert them rather than infer them.
+**Whom the lock defends against, stated precisely, because round 2 overstated
+it.** On the local stack, seam writers *cannot* overlap a migration:
+`stack.Migrate` takes the lifecycle lock exclusive (`stack/stack.go:942`) and
+`OpenSeam` holds it shared for the seam's lifetime (`stack/seam.go:27`), which
+item 3 established. What the lifecycle lock does not cover is everything that
+never takes it — a direct database writer through `psql`, an integration test
+calling `migrations.Up` on a DSN, and any composer without the local flock,
+which is what the cloud composer is. The table lock is the guarantee that holds
+regardless of how the database was reached; the lifecycle lock is a property
+of one composer. golang-migrate's own advisory lock serializes migrations
+against each other and nothing else.
 
-- **Backfilled**: every `kind = 'agent'` row with `prompt_pack_id` and
-  `prompt_hash` both present gets `origin = 'foreign'`,
-  `scheme = 'v1-manifest-sha256'`, and `name = prompt_pack_id`. Digest bytes are
-  never rewritten.
-- **Refused**: any `kind = 'agent'` row with either absent. There is no honest
-  backfill — the row records a run whose P was never captured — and the
-  migration will not invent one. This branch is reachable only by rows no
-  current writer produces: the importer's validator requires both
-  (`benchmarkimport/validate.go:186-189`), and nothing else writes agent
-  principals today. It is a guard against a writer that does not exist, which
-  is what a total migration has to be.
-- **Non-agent rows** must carry none of the fields, which is already the case
-  for every writer.
+**One global lock order for the whole family, used by both directions.** Round
+2 gave the up and the down different orders, and orders that reverse each other
+on shared tables admit a deadlock between a migration and any concurrent locker
+of the same tables. The order is parent before child along the family's
+reference chain:
+
+```
+prompt_pack_contents
+prompt_pack_installations
+configuration_records
+story_dispatches
+dispatch_prompt_resolutions
+principal_instances
+```
+
+Each direction locks the tables it inspects or alters, in that order, skipping
+none it touches. The up locks `principal_instances` and `story_dispatches`; the
+down locks `prompt_pack_installations`, `configuration_records`,
+`dispatch_prompt_resolutions` and `principal_instances`. The lock-ordering test
+asserts the sequence each direction takes against this list rather than
+inferring it.
+
+The guard classifies every row into exactly one of the classes below, and the
+classes are exhaustive over what the pre-000023 schema **permits**, not over
+what today's writers **produce** — round 2 enumerated the second and review
+was right that the schema admits more. Today nothing ties `prompt_pack_id` or
+`prompt_hash` to the kind, and `text` admits the empty string, so a system
+principal carrying a pack name and an agent carrying a blank hash are both
+legal rows the guard has to meet.
+
+- **Converted**: a `kind = 'agent'` row whose `prompt_pack_id` is non-blank
+  after trimming and whose `prompt_hash` matches the legacy content-identity
+  form `^sha256:[0-9a-f]{64}$` — the importer's own `contentIDPattern`
+  (`benchmarkimport/validate.go:15`), which is the only form any writer has
+  ever stored. It gets `origin = 'foreign'`, `scheme = 'v1-manifest-sha256'`,
+  and `name = prompt_pack_id`. Digest bytes are never rewritten.
+- **Refused, agent with a missing or invalid identity**: a `kind = 'agent'` row
+  with either field NULL, a blank name, or a hash not in that form. There is no
+  honest backfill — the row records a run whose P was never captured, or was
+  captured as something no scheme names — and the migration will not invent
+  one.
+- **Refused, non-agent carrying prompt fields**: a `human` or `system` row with
+  any of `prompt_pack_id`, `prompt_hash` non-NULL. Nulling them would be a
+  silent conversion of a row that says something the new shape cannot say;
+  refusing makes someone look.
+
+The two refusal classes are counted separately and the message reports each
+count with its own remedy, so an operator knows which kind of row to find.
+Both are reachable only by rows no current writer produces — the importer
+validates the hash form and writes no prompt fields on its system principal —
+which is the point: a total migration guards against the schema, not against
+the writers that happen to exist.
+
+**The legacy scheme's storage form keeps its prefix.** Under
+`v1-manifest-sha256` the stored digest is the `sha256:`-prefixed string the
+run record carried, because bytes are never rewritten; under
+`pack-jcs-sha256-v1` it is the bare 64-hex `canonical.Digest` returns. The
+prefix is data *under* the legacy scheme, not a scheme marker — D4's rule that
+nothing parses a digest to discover its scheme still holds, because the scheme
+column says which form to expect. A **per-scheme format check** on
+`principal_instances` and on `prompt_pack_contents` makes it a constraint:
+`scheme = 'v1-manifest-sha256'` ⇒ `^sha256:[0-9a-f]{64}$`, and
+`scheme = 'pack-jcs-sha256-v1'` ⇒ `^[0-9a-f]{64}$`. A blank or malformed digest
+under either scheme is refused at the row, which is also what keeps the
+converted class above from being the last time the form is checked.
 
 #### The down migration refuses rather than discards
 
@@ -408,7 +465,37 @@ and principals: unreferenced content may go; referenced content cannot.
 **`prompt_pack_installations`** — references a content row and carries
 everything mutable: display name, declared Maestro version range as `min`
 (inclusive) and `max` (exclusive) semver strings, declared role coverage,
-installer identity, and a **monotonic revision**.
+installer identity, **the Maestro version the gate last validated it against**,
+and a revision.
+
+**The revision's invariant, named.** `CHECK (revision >= 1)`, matching
+`configuration_records_version_check` (`000015:85`). A new installation starts
+at 1. **The next value is seam-derived** — the update statement sets
+`revision = revision + 1` under `WHERE revision = $expected` — so no caller
+supplies a revision, and a direct write of 0 or a negative is refused by the
+row. "Monotonic" is those two facts together, and tests write 0 and −1 directly
+to prove the check rather than the seam is what refuses them.
+
+**Declared role coverage is a set, and it is stored as one.** A `text[]` or a
+JSON array would let `["architect","coder"]` and `["coder","architect"]` — or
+`["coder","coder"]` — compare unequal while declaring the same thing, and D6's
+idempotency (*identical metadata returns the existing installation*) and D8's
+snapshot would both silently depend on input order. So coverage is a **jsonb
+object keyed by role name** with the value `true`: object keys are unique by
+construction, jsonb normalizes key order on storage, and jsonb equality is
+therefore set equality with nothing left to canonicalize. The seam builds the
+object from whatever the caller passes; a check constraint requires
+`jsonb_typeof = 'object'`. Tests install with reordered and duplicated role
+lists and assert one stored value, one identity, and `Created = false` on the
+second call.
+
+**The validation version is persisted on every install and update.** Round 2
+had dispatch re-running parse and render "when the harness version has moved"
+with nothing recording what version the installation had been validated
+against, so the claim had no evidence to consult. `InstallPromptPack` and
+`UpdatePromptPackInstallation` both write the running `Config.MaestroVersion`
+into `validated_maestro_version` beside the result of the gate they ran; D8
+reads it.
 
 **The range has a write invariant of its own, independent of any runtime
 version.** D8 skips the *comparison* under a development build; round 1 let that
@@ -557,7 +644,7 @@ D1's slot rule refuses.
 | Unresolved selector: names no plane-owned version in this organization | **Yes** | Reachable and tested — a digest from another organization, or a content id that does not exist |
 | Declared range incompatible with the running Maestro version | **Yes** | Reachable and tested under an injected semver; `not-evaluated` under `"dev"` |
 | Execution's roles outside the declared coverage | **No — no subject** | Item 6's (D11). `store.Execution` carries identity and authority only; resolved configuration is items 5/6's |
-| Harness-contract re-run fails after a version move | Structurally, yes | Runs at dispatch; **vacuous over the empty built-in**, so its non-vacuous proof comes from D2's fixture packs through the same path |
+| Harness-contract re-run fails after a version move | **Yes**, with the evidence D6 now stores | Re-run when `validated_maestro_version` differs from the running version, **or when either is not valid semver** — a development build cannot claim nothing moved, exactly as D8's restart rule says. Under a real semver pair that match, skipped and recorded as such. **Vacuous over the empty built-in**, so its non-vacuous proof comes from D2's fixture packs through the same path |
 
 #### Where the resolution is persisted, and what it records
 
@@ -758,8 +845,9 @@ verification depends on the one before it.
 3. **Migration `000023`**: the totality guard and the dispatch-rows guard, the
    two pack tables with the anti-update trigger and composite keys, the
    `dispatch_prompt_resolutions` table, the `principal_instances` split with its
-   origin discriminator and three checks, the legacy backfill, the scheme index,
-   and the refusing down. sqlc regeneration.
+   origin discriminator and single shape constraint, the per-scheme format
+   checks, the classified guard, the scheme index, and the refusing down. sqlc
+   regeneration.
 4. **The pack family on the seam**: `InstallPromptPack` with the gate reached
    through the contract, `UpdatePromptPackInstallation` under the revision, the
    reads, and the `MPHQuery` rewrite (D4, D6).
@@ -770,8 +858,9 @@ verification depends on the one before it.
 7. **Resolution in `CreateDispatch`** with the semver comparator, the three
    typed refusals, the `not-evaluated` branch, and the resolution row; the
    dispatch readers joining it (D8).
-8. **`CreateDispatchedPrincipalInstance`** and the refusal of `resolved` on the
-   general path (D5).
+8. **The three principal writers** (D5): the general path's refusal of agents,
+   `RecordForeignAgentPrincipal` requiring a recorded lifetime, and
+   `CreateDispatchedPrincipalInstance` copying the resolution.
 9. **`ProvisionOrganizationPromptPack`** and `select-builtin` (D9, D11), with
    the `dataplanectl` verbs.
 10. **The importer's origin and legacy scheme** (D5).
@@ -790,11 +879,17 @@ report; the protected defect is.
 | Drop the scheme from the MPH query so it filters on hex alone | A `v1-manifest-sha256` identity groups with a `pack-jcs-sha256-v1` pack — arithmetic on unrelated hashes |
 | Include the pack name in the digest projection | Two organizations holding identical content compute different identities; correcting a typo mints a new pack |
 | Drop the anti-update trigger, then `UPDATE` a content row's entries and digest through raw pgx | A content record rewritten in place under its original primary key |
-| Relax the resolved/foreign check so the four reference columns are independently nullable | A row records which installation governed without recording what it said |
-| Let the general `CreatePrincipalInstance` accept `origin = 'resolved'` | A live principal whose pack fields were caller-supplied and never checked against its dispatch |
-| Have `CreateDispatchedPrincipalInstance` take pack fields from its input instead of the resolution | Same defect from the other side: the copy becomes a claim |
+| Let the general `CreatePrincipalInstance` accept `kind = 'agent'` | An agent principal created by a path that derives no origin — the partition has a fourth door |
+| Let `RecordForeignAgentPrincipal` accept a nil `RecordedLifetime` | A live agent recorded as foreign: ADR 0031 §2's *only for imports* violated by the verb that exists to honour it |
+| Have `CreateDispatchedPrincipalInstance` take pack fields from its input instead of the resolution | The copy becomes a claim; a live principal can disagree with its dispatch |
 | Remove the totality guard; **seed** an agent row with a null `prompt_hash` **before** migrating; assert the guard's distinct count and remedy text | The guard itself. Round 1 had this mutant dying at the later constraint, which proves the constraint and leaves the guard wholly untested — and contradicts lock-first ordering, since nothing can be planted after the lock |
-| Relax the shape constraint; insert a system principal carrying a pack name, and a foreign agent carrying one reference | The constraint itself, separately: each of the "anything else" rows above must be refused by the disjunction and not by a neighbouring rule |
+| Relax the shape disjunction; insert a system principal carrying a pack name, a foreign agent carrying one reference, and an agent with a NULL origin | The constraint itself, separately: each stray shape must be refused by the disjunction and not by a neighbouring rule, and the NULL-origin row is the one a biconditional would have passed |
+| Remove a per-scheme format check; insert a bare-hex digest under the legacy scheme | A digest whose form its scheme does not admit |
+| Seed a system principal carrying `prompt_pack_id` before migrating | The guard's second refusal class, with its own count and remedy — not the first class's message |
+| Seed an agent whose `prompt_hash` is `''` before migrating | The first refusal class on a non-NULL value: a blank passes an `IS NOT NULL` test and must not pass the guard |
+| Write `revision = 0` directly | The check, not the seam |
+| Install with `["coder","architect","coder"]` after `["architect","coder"]` | Set semantics: one stored value, `Created = false` |
+| Skip writing `validated_maestro_version` on update | Dispatch cannot tell a moved harness from an unmoved one and re-runs nothing |
 | Remove the dispatch-rows guard; seed a dispatch before migrating; assert the refusal | A dispatch with no resolution row that every reader must then special-case |
 | Remove the up migration's `LOCK TABLE`; interleave an old-shape insert between scan and `ALTER` by forced ordering, on `000022`'s test pattern | The guard approves a table the writer then poisons |
 | Same for the down: interleave a `prompt.pack` configuration write after the scan | The down approves deletion of state that commits a moment later |
@@ -901,6 +996,31 @@ after verification.**
    seed before migration and assert the guard's count and remedy; separately
    relax the constraint and assert the disjunction refuses each stray shape.
 
+**Round 3 — Codex, 2026-09-03. Six P1s, all accepted after verification.**
+
+1. *The guard still missed legal old states*: non-agents with prompt fields and
+   agents with blank or malformed values are admissible today. → The guard is
+   classified over what the schema permits, with two refusal classes counted
+   and reported separately; per-scheme digest format checks make the form a
+   row constraint (D5). Verified `contentIDPattern` is the only form ever
+   stored.
+2. *Dispatch could not know whether the harness had moved since install.* →
+   `validated_maestro_version` is written on every install and update, and the
+   re-run rule reads it, treating any non-semver side as moved (D6, D8).
+3. *The lock rationale contradicted item 3*: `Migrate` holds the lifecycle
+   lock exclusive and `OpenSeam` shared. → Stated precisely whom the table
+   lock defends — direct writers and lock-less composers — and one global
+   parent-before-child order for both directions (D5).
+4. *Role coverage had set semantics and no canonical form.* → A jsonb object
+   keyed by role, so equality is set equality by construction, with reorder
+   and duplicate tests (D6).
+5. *"Monotonic revision" named no invariant.* → `CHECK (revision >= 1)` on
+   `000015`'s precedent, seam-derived `revision + 1`, and direct-write tests
+   (D6).
+6. *The verification plan targeted superseded mechanisms.* → Every mutant and
+   sequence step now names the single disjunction and the three-verb
+   partition; new mutants cover each new mechanism above.
+
 Both open questions closed by Codex: the anti-update trigger is acceptable
 (idempotent insertion is `ON CONFLICT DO NOTHING`; the down drops the
 function), and `golang.org/x/mod/semver` **v0.37.0** is suitable — Codex
@@ -910,7 +1030,7 @@ not live in a review transcript.
 
 ## Open Questions
 
-None outstanding after round 2. The two the first draft carried — the trigger
+None outstanding after round 3. The two the first draft carried — the trigger
 as the schema's first, and the semver comparator — are closed above.
 
 ## Related Documents
