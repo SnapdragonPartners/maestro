@@ -19,8 +19,8 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
 
-**Seven review rounds (Codex, 2026-09-03) found nine, eight, six, four, two,
-three and then two P1s, and this revision carries all thirty-four.** Each is recorded under
+**Eight review rounds (Codex, 2026-09-03) found nine, eight, six, four, two,
+three, two and then one P1, and this revision carries all thirty-five.** Each is recorded under
 [Points Resolved In Review](#points-resolved-in-review) with what was wrong and
 where the fix landed. The first draft was M-shaped; the fixes make it L, and
 that is amendment 5.
@@ -854,7 +854,7 @@ What that buys, each a refused statement rather than a convention:
 | Insert a dispatch with no resolution and commit | The deferred FK at commit |
 | Old-code insert with no `prompt_resolution_id` at all | `NOT NULL`, immediately — the column it does not know is the one it cannot omit |
 | Delete a resolution that a dispatch names | The **reciprocal** FK from `story_dispatches`: the resolution is its referenced row, and the referencing dispatch still stands. The `RESTRICT` on the resolution's own reference is the other direction — it stops a dispatch being deleted from under its resolution |
-| Re-point a resolution at another dispatch | The composite pair no longer matches the dispatch's own `story_dispatch_id`, so the FK from the dispatch fails on update of its target |
+| Change a resolution's identity from under its dispatch — a new `resolution_id`, or a different `story_dispatch_id` | The composite pair the dispatch names no longer exists, so the reciprocal FK fails on update of its referenced row. (Moving onto *another* dispatch is refused earlier still, by the uniqueness on dispatch, since that dispatch already has its own resolution) |
 
 The round 5 constraint trigger is **withdrawn**: the FK does everything it did
 and the steady-state half it did not, with no function to maintain, and the
@@ -1076,7 +1076,7 @@ report; the protected defect is.
 | Open a seam with a zero `Composition.Harness` | `plane.Open` refuses a composition with no validated version, as it refuses one with no registry |
 | Make `prompt_resolution_id` nullable and drop the reciprocal deferred FK; insert a `story_dispatches` row through raw pgx with no resolution; commit | An old-code write succeeds after cutover, leaving the row every reader was promised could not exist |
 | Drop the **reciprocal** FK — not the `RESTRICT`, which round 6 named and which does not govern this case; delete a valid resolution that a dispatch names | The steady-state orphan the insert-time check could not see. Dropping `RESTRICT` instead leaves the reciprocal FK still refusing the delete, and the mutant survives for the wrong reason |
-| Drop the **reciprocal** FK; re-point a valid resolution's `story_dispatch_id` at a **second dispatch of the same Story**, so the full-lineage FK on the resolution's own reference is satisfied and only the reciprocal pair diverges | The composite pair diverges from the dispatch that names it — and dies there, not at the lineage FK, which an arbitrary target dispatch would trip first |
+| Drop the **reciprocal** FK; update a valid resolution's `resolution_id` to a fresh UUID, in place, on its own dispatch | The dispatch now names a `(story_dispatch_id, resolution_id)` pair that does not exist, and the mutant commits it. Round 7 aimed this at re-pointing onto a second dispatch of the same Story, which review showed is confounded twice over: the uniqueness on dispatch refuses it first, because that dispatch already has its own resolution, and before that an arbitrary target trips the lineage FK. Changing the resolution's own id touches neither — no other row references it, its dispatch and lineage are unchanged — so on the unmodified schema it fails **on the reciprocal constraint by name**, and on the mutant it commits. The delete-the-other-resolution-then-re-point variant is also valid and is not used, because it has two statements where one will do |
 | Open a bare pgx connection with no `application_name`; run the runbook's cutover query | The first cutover's check must list a session that predates the label, or it cannot detect the connection it was written for |
 | Write `{"coder": 1}` directly | The value constraint: identical keys, unequal objects |
 | Seed a system principal carrying `prompt_pack_id` before migrating | The guard's second refusal class, with its own count and remedy — not the first class's message |
@@ -1271,6 +1271,16 @@ taken.**
    filtered to client backends under Maestro's `application_name`, which the
    seam now sets.
 
+**Round 8 — Codex, 2026-09-03. One P1, accepted.**
+
+1. *The re-point mutant was still confounded*: the resolution is unique on
+   dispatch, so the second dispatch already holds its own and the move is
+   refused by uniqueness before the reciprocal FK is reached. → The mutant
+   changes the resolution's own `resolution_id` in place, which no other row
+   references, so the unmodified schema fails on the reciprocal constraint by
+   name and the mutant commits. The refusal table's re-point row now says the
+   same.
+
 **Round 7 — Codex, 2026-09-03. Two P1s, both accepted.**
 
 1. *The cutover query filtered on a label old-code seams do not carry*, so it
@@ -1295,7 +1305,7 @@ not live in a review transcript.
 
 ## Open Questions
 
-None outstanding after round 7. The two the first draft carried — the trigger
+None outstanding after round 8. The two the first draft carried — the trigger
 as the schema's first, and the semver comparator — are closed above.
 
 ## Related Documents
