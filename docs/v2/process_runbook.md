@@ -543,10 +543,9 @@ nothing.
 
 ### Schema migration cutover
 
-**Amendment status: PROPOSED** — drafted 2026-09-03 with the
-[Phase 3 item 4 design](phase_3/design_prompt-packs.md) (D5), pending Codex and
-DR acceptance. The rest of this document remains Accepted as of 2026-08-17. This
-line is replaced with the acceptance date and parties in the acceptance commit.
+**Amendment Accepted by Codex and DR, 2026-09-03**, drafted with the
+[Phase 3 item 4 design](phase_3/design_prompt-packs.md) (D5) and reviewed with
+it. The rest of this document remains Accepted as of 2026-08-17.
 
 **Every old-code seam is terminated before a migration starts, and none is
 opened until the new code is the only code running** (**Policy**, Phase 3 item

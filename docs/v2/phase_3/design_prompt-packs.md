@@ -1,7 +1,7 @@
 +++
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
 edit_date = "2026-09-03"
-status = "draft"
+status = "live"
 summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L. The harness version is an opaque validated type supplied through the composition, so no root can open a seam with a malformed one, and a reciprocal deferred foreign key makes a dispatch without its resolution — or a resolution later deleted or re-pointed — a refused statement even for a writer that predates the schema."
 type = "design"
 +++
@@ -18,6 +18,10 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 `orchestrator.Keys()` returns `configkeys.MustNew(nil)` because *"a key
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
+
+Status: **live** — Accepted by Codex and DR, 2026-09-03, at `404b3a2` after
+eight review rounds; flipped in the acceptance commit, following item 3's
+precedent.
 
 **Eight review rounds (Codex, 2026-09-03) found nine, eight, six, four, two,
 three, two and then one P1, and this revision carries all thirty-five.** Each is recorded under
@@ -1009,8 +1013,8 @@ cost the plan under-estimated.
 **One amendment to another live document.** The
 [operations runbook](../process_runbook.md#schema-migration-cutover) gains the
 schema-migration cutover procedure (D5). The runbook is live and Accepted, so
-the section is marked **PROPOSED** in place and carries this design's date; the
-acceptance commit flips it to Accepted with the date and parties, following the
+the section was marked **PROPOSED** in place through review and is flipped to
+Accepted, with the date and parties, in this acceptance commit — following the
 plan's own precedent for in-place amendment.
 
 ## Implementation And Review Sequence
@@ -1271,16 +1275,6 @@ taken.**
    filtered to client backends under Maestro's `application_name`, which the
    seam now sets.
 
-**Round 8 — Codex, 2026-09-03. One P1, accepted.**
-
-1. *The re-point mutant was still confounded*: the resolution is unique on
-   dispatch, so the second dispatch already holds its own and the move is
-   refused by uniqueness before the reciprocal FK is reached. → The mutant
-   changes the resolution's own `resolution_id` in place, which no other row
-   references, so the unmodified schema fails on the reciprocal constraint by
-   name and the mutant commits. The refusal table's re-point row now says the
-   same.
-
 **Round 7 — Codex, 2026-09-03. Two P1s, both accepted.**
 
 1. *The cutover query filtered on a label old-code seams do not carry*, so it
@@ -1295,6 +1289,16 @@ taken.**
    the same Story so only the reciprocal pair diverges. "Either order" was
    wrong — insertion is parent-first, because only the dispatch's side is
    deferred (D8).
+
+**Round 8 — Codex, 2026-09-03. One P1, accepted.**
+
+1. *The re-point mutant was still confounded*: the resolution is unique on
+   dispatch, so the second dispatch already holds its own and the move is
+   refused by uniqueness before the reciprocal FK is reached. → The mutant
+   changes the resolution's own `resolution_id` in place, which no other row
+   references, so the unmodified schema fails on the reciprocal constraint by
+   name and the mutant commits. The refusal table's re-point row now says the
+   same.
 
 Both open questions closed by Codex: the anti-update trigger is acceptable
 (idempotent insertion is `ON CONFLICT DO NOTHING`; the down drops the
