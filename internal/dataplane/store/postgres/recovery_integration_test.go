@@ -221,6 +221,25 @@ func (f *fixture) amendContent(t *testing.T, original *store.ManagementArtifact,
 	}
 }
 
+// assertMeasures asserts a reference carries the artifact's ACTUAL effective
+// base, not merely a value that differs from the snapshot's. "The digest
+// moved" passes for any unrelated digest -- a mapping that returned another
+// artifact's, or a constant -- so every case reads the expected base back
+// and compares all three halves.
+func assertMeasures(t *testing.T, f *fixture, what string, ref *store.VersionRef, artifactID uuid.UUID) {
+	t.Helper()
+	base, err := f.store.EffectiveBase(context.Background(), f.organizationID, artifactID)
+	if err != nil {
+		t.Fatalf("%s: read the expected base: %v", what, err)
+	}
+	if ref == nil {
+		t.Fatalf("%s: no reference, want %s at digest %s sequence %d", what, artifactID, base.Digest, base.Sequence)
+	}
+	if ref.ArtifactID != artifactID || ref.Digest != base.Digest || ref.Sequence != base.Sequence {
+		t.Fatalf("%s: reference %+v, want id %s digest %s sequence %d", what, ref, artifactID, base.Digest, base.Sequence)
+	}
+}
+
 // TestOpenWorkMapsTheRemainingFields covers the fields the first table did
 // not move independently: Story digest, Epic id, Epic digest, completion id,
 // completion digest. A mutant that reuses the snapshot's value for any of
@@ -240,6 +259,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		if cur.ArtifactID != snap.ArtifactID || cur.Digest == snap.Digest || cur.Sequence != snap.Sequence+1 {
 			t.Fatalf("current %+v vs snapshot %+v: digest and sequence should move, id not", cur, snap)
 		}
+		assertMeasures(t, f, "story version", cur, g.storyRecord.ArtifactID)
 	})
 
 	t.Run("epic id moves on a repoint to a twin", func(t *testing.T) {
@@ -257,6 +277,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		if cur.ArtifactID != twin.ArtifactID || cur.ArtifactID == snap.ArtifactID || cur.Digest != snap.Digest || cur.Sequence != snap.Sequence {
 			t.Fatalf("current %+v vs snapshot %+v: only the id should move", cur, snap)
 		}
+		assertMeasures(t, f, "epic version", cur, twin.ArtifactID)
 	})
 
 	t.Run("epic digest moves on a content amendment", func(t *testing.T) {
@@ -271,6 +292,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		if cur.ArtifactID != snap.ArtifactID || cur.Digest == snap.Digest || cur.Sequence != snap.Sequence+1 {
 			t.Fatalf("current %+v vs snapshot %+v", cur, snap)
 		}
+		assertMeasures(t, f, "epic version", cur, g.epicRecord.ArtifactID)
 	})
 
 	t.Run("completion id moves on a repoint to a twin completion", func(t *testing.T) {
@@ -287,6 +309,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		if cur.ArtifactID != twin.ArtifactID || cur.ArtifactID == c.ArtifactID || cur.Digest != snap.Digest || cur.Sequence != snap.Sequence {
 			t.Fatalf("current %+v vs snapshot %+v: only the id should move", cur, snap)
 		}
+		assertMeasures(t, f, "completion", cur, twin.ArtifactID)
 	})
 
 	t.Run("completion digest moves on a content amendment", func(t *testing.T) {
@@ -302,6 +325,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		if cur.ArtifactID != snap.ArtifactID || cur.Digest == snap.Digest || cur.Sequence != snap.Sequence+1 {
 			t.Fatalf("current %+v vs snapshot %+v", cur, snap)
 		}
+		assertMeasures(t, f, "completion", cur, c.ArtifactID)
 	})
 }
 
@@ -311,8 +335,14 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 // supersession holds -- for the whole of OpenWork. A read that locks would
 // BLOCK behind it; the non-locking read returns from its snapshot.
 //
-// THE MUTANT: reintroduce AmendmentBase (or any FOR UPDATE) in recovery.go;
-// this test then fails on the deadline instead of returning.
+// THE MUTANT: reintroduce AmendmentBase (or any FOR UPDATE) in recovery.go.
+// OBSERVED: it does not fail on the deadline. The snapshot is opened
+// READ-ONLY, so PostgreSQL refuses the locking read outright -- "cannot
+// execute SELECT FOR UPDATE in a read-only transaction" -- and OpenWork
+// returns that error immediately. That is a stronger refusal than waiting,
+// and it is what this test asserts on: an error, not a timeout. A version
+// without the read-only mode would instead wait here, and then abort with
+// 40001 the moment the holder committed its update.
 func TestOpenWorkDoesNotWaitOnAHeldArtifactLock(t *testing.T) {
 	f := newFixture(t)
 	g := provisionGoverned(t, f)

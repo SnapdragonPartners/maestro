@@ -580,6 +580,14 @@ aborts with `40001` — PostgreSQL's documented behaviour, and one the
 application must retry whole. A projection that is *only a read* has no reason
 to lock anything.
 
+**In the built form the `40001` is unreachable, and that is worth stating
+precisely** (code review round 2). `OpenWork`'s transaction is opened
+`READ ONLY` as well as `REPEATABLE READ`, so a locking read inside it is
+refused at the statement — *"cannot execute SELECT FOR UPDATE in a read-only
+transaction"* — rather than waiting and then aborting. The `40001` above
+describes what a read-write version of the same mistake would do; it is not
+what the guard observes, and no proof below claims it.
+
 So the projection's reads are **one seam method**, `OpenWork`, which opens its
 own `REPEATABLE READ` transaction the way `Maintenance`'s truncation already
 does, reads every row D9 names **without locks**, and computes each reference's
@@ -870,7 +878,7 @@ the wrong reason; each row now states the reason the failure must carry.
 | `basisMatch` sees every comparison category | Ten unit fixtures, each differing in one category alone; the completion triple's fixture carries two predecessors | Delete that category's comparison; exactly that fixture fails |
 | Completions are paired with their own predecessor | Unit: equal completion multisets cross-assigned between two predecessors, no amendment | Compare completions as a multiset; the fixture returns *match* instead of *diverged* |
 | Every edge is traversed | Integration: two predecessors; amend the second's completion; assert the diverged component is **that predecessor's completion, on sequence** | Read only the first edge; the result is an edge-set or missing-base mismatch, not the asserted one |
-| The projection never aborts on a concurrent artifact write | Update a referenced artifact between `OpenWork`'s snapshot and its base read | Reintroduce the locking base read; the run fails with `40001` |
+| The projection neither waits nor aborts on a concurrently locked artifact | Hold a governing record's row lock in another transaction for the whole of `OpenWork`; it returns from its snapshot | Reintroduce the locking base read; the run fails immediately with *"cannot execute SELECT FOR UPDATE in a read-only transaction"*, since the snapshot is `READ ONLY` — **not** with `40001`, which is what a read-write version of the mistake would produce |
 | The classes are disjoint and total | Every item-3-producible state, plus a K2 row with its execution deleted by fixture | Remove the K2-without-execution error; the row is silently skipped |
 | Recovery relies on no process-local state | The subprocess test (D13), kill path included | A **cache-only** mutant: serve the projection from a package variable *when populated* and never read the plane in that case — the fresh process, whose variable is empty, then classifies nothing, and the assertion on the committed rows fails. Merely adding a cache beside the read would not fail this, which is why the mutant must bypass the read |
 | Nothing persists through `StateStore` | The symbols are gone; `go build ./...` | Reintroduce `Persist`; a structural check names it |
@@ -948,7 +956,7 @@ Round 3 (Codex, 2026-09-02). Six P1s, all confirmed.
 | --- | --- | --- |
 | 1 | The mutant left the acquire in place, so it died for the expected reason | D4 — the mutant deletes the acquire and reads through the pool |
 | 2 | The whole-basis proof exercised three of five components | D9 — five runs, then described as "one per component"; round 5 recharacterized them as one per transition shape, with the comparator's coverage moved to a unit test |
-| 3 | `REPEATABLE READ` + `AmendmentBase`'s `FOR UPDATE` aborts with `40001` | D9 — `OpenWork` seam method: own snapshot, non-locking reads, a non-locking effective-base read |
+| 3 | `REPEATABLE READ` + `AmendmentBase`'s `FOR UPDATE` aborts with `40001` | D9 — `OpenWork` seam method: own snapshot, non-locking reads, a non-locking effective-base read. (The finding's `40001` was correct about the design as it then stood; the built form opens the snapshot `READ ONLY`, where the same mistake is refused at the statement instead — corrected in code review round 2.) |
 | 4 | No concrete secret-bearing action in item 5; item-7 claim wrong | D7 — amendment 3 adds the forge PR operation against the local Gitea forge to item 5; item-7 sentence corrected against ADR 0030's effect-site table |
 | 5 | ADR 0028's evolution rule stated backwards | D14 — optional fields extend the version; required or incompatible ones need a new one |
 | 6 | Completion accepted before the merge; acceptance alone satisfied the edge | D14 — the pointer binds to merge success, an item-10 obligation; amend the completion if the head moved |
@@ -1006,11 +1014,13 @@ the review should know it.
 
 | Where | What |
 | --- | --- |
+| D2 | Round 2: every matrix cell yields the same closure for both guarded packages, so a guard that stopped passing `GOOS`/`GOARCH`/`CGO_ENABLED` would have stayed green. `internal/dataplane/closurefixture` is the **positive control**: a package nothing imports, whose import set differs per cell by filename suffix and by the cgo constraint. Both guards list it beside the package under test and assert the selection moved; dropping the environment fails the wrong cells by name. |
 | D2 | Round 1: the Orchestrator guard rejected only unknown data-plane packages and three named v1 ones, so `pkg/agent` passed; it now refuses **every** in-module dependency outside the exact set, and both guards run the crossed matrix — five tag selections × `linux/amd64`, `linux/arm64` × `CGO_ENABLED` 0/1, twenty configurations each — that *Reachability Claims* requires, rather than the host's. |
 | D2 | The Orchestrator's allowed closure is **eight** data-plane packages, not seven: `work` (commit 4) joined `store`, `registry`, `configkeys`, `secret`, `canonical`, `nilcheck`, `readiness`. The seam's own closure stayed at six. Both guards are exact sets and both are mutation-verified. |
 | D3 | `dataplanectl` gained a read-only **`recover`** verb beside the `provision` group: it starts the Orchestrator through the composition root and prints the projection. No Epic, Story or dispatch verb exists, as designed. |
 | D5 | Round 1: `StartupRefused` rendered cause, detail and remedy but not the producer's error, so an unreachable plane's endpoint and driver refusal were unwrap-able and invisible; it now renders them, and the test asserts the endpoint and "connection refused". The object-store row had no cause-and-remedy test on either composer; both now assert `ObjectStoreUnusable` and the remedy, the local one against a port nothing listens on. |
 | D5 | The five local not-ready states are driven through `orchestrator.Start` over the real composition root against a scratch root (`cmd/dataplanectl/startup_test.go`); the six probe states through `plane.Open` (commit 2). No test drives a probe state through `Start` over the local composer, since that needs a stopped or mis-versioned plane the test would have to own; the composition of the two halves is one function call, and the Orchestrator-side classification is the same code either way. |
+| D9 | Round 2: the three digest fixtures asserted only that the digest **moved**, which any unrelated value satisfies. Every reference is now compared against the artifact's actual `EffectiveBase` — id, digest and sequence — and a mutant that reports a plausible but wrong digest is named. |
 | D9 | "The projection never aborts on a concurrent artifact write" is held two ways after code review round 1: behaviourally — another transaction holds a governing record's row lock across `OpenWork`, which must return from its snapshot rather than wait — and structurally, by an AST guard on `recovery.go` and on `BeginTx`'s own isolation. The snapshot is also opened **read-only**, so a locking read cannot even execute inside it: the reintroduced-`AmendmentBase` mutant dies on PostgreSQL's "cannot execute SELECT FOR UPDATE in a read-only transaction" before it can wait, which is a stronger guarantee than the one the design asked for and is recorded as the reason the mutant died. |
 | D10 | Code review round 1 found `CreateDispatch` building the dispatch from a Story row read **before** the Epic lock, so a repoint committed while it waited was recorded stale. The Story is now re-read under the lock, and a forced-interleaving test holds the lock, repoints, commits, and asserts the dispatch carries the new pointer; the pre-lock mutant records the old one. |
 | D10 | The `AcceptDispatch` guard mutant (drop `AND disposition = 'pending'`) died on the assertion as intended, but the failure underneath was `executions_one_per_dispatch_key` refusing the second execution — the schema's guard behind the removed one. `FailDispatch` and `InvalidateDispatch` have no such second guard; their tests assert the typed `NotPending` rejection, and their mutants were **not** run. |

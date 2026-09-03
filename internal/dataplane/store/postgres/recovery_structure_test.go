@@ -11,7 +11,14 @@ import (
 // lock-free read: no call in recovery.go reaches a locking primitive, and
 // BeginTx itself asks for REPEATABLE READ. The behavioural half --
 // TestOpenWorkDoesNotWaitOnAHeldArtifactLock -- holds a governing record's
-// row lock across OpenWork and is what catches a lock taken transitively. THE MUTANT this kills is reintroducing AmendmentBase (or
+// row lock across OpenWork and is what catches a lock taken transitively.
+//
+// What a reintroduced lock actually does, observed rather than assumed: the
+// snapshot is opened READ-ONLY, so PostgreSQL refuses the locking read at the
+// statement -- "cannot execute SELECT FOR UPDATE in a read-only transaction".
+// The 40001 this design was originally written against is what a read-write
+// version of the same mistake would produce once the concurrent update
+// committed; it is not what the mutant here reaches. THE MUTANT this kills is reintroducing AmendmentBase (or
 // LockManagementArtifact, or LockEpic) in recovery.go, which under
 // REPEATABLE READ is exactly the 40001.
 //

@@ -63,7 +63,8 @@ func TestOrchestratorClosureReachesNothingLocalOrV1(t *testing.T) {
 	}
 	for _, c := range configs {
 		t.Run(c.String(), func(t *testing.T) {
-			deps := listDeps(t, root, c)
+			assertMatrixReachesTheToolchain(t, root, c)
+			deps := listDeps(t, root, c, seamPackage)
 			var offending []string
 			for _, dep := range deps {
 				// Every in-module dependency must be on the list: an exact
@@ -122,7 +123,7 @@ func buildConfigurations(t *testing.T, root string) []configuration {
 			t.Fatalf("enumerate build constraints: %v", err)
 		}
 	}
-	bare := regexp.MustCompile(`^//go:build ([A-Za-z0-9_]+)$`)
+	bare := regexp.MustCompile(`^//go:build (!?)([A-Za-z0-9_]+)$`)
 	seen := map[string]bool{}
 	tagSets := [][]string{nil}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -134,9 +135,19 @@ func buildConfigurations(t *testing.T, root string) []configuration {
 			t.Fatalf("build constraint %q is not a single bare tag; this test evaluates one tag at a "+
 				"time and must be extended before it can claim to cover it", line)
 		}
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			tagSets = append(tagSets, []string{m[1]})
+		// `cgo` is the toolchain's constraint, not a repository tag: the
+		// matrix varies it through CGO_ENABLED, and passing it as -tags
+		// would force it on regardless. The positive-control fixture is
+		// what declares it.
+		if m[2] == "cgo" {
+			continue
+		}
+		if m[1] == "!" {
+			t.Fatalf("build constraint %q is negated; only the toolchain's cgo constraint may be", line)
+		}
+		if !seen[m[2]] {
+			seen[m[2]] = true
+			tagSets = append(tagSets, []string{m[2]})
 		}
 	}
 	sort.Slice(tagSets[1:], func(i, j int) bool { return tagSets[i+1][0] < tagSets[j+1][0] })
@@ -155,13 +166,13 @@ func buildConfigurations(t *testing.T, root string) []configuration {
 // listDeps is `go list -deps` for the package under one configuration.
 // Cross-listing needs no toolchain for the target: `go list` resolves file
 // selection and imports without compiling.
-func listDeps(t *testing.T, root string, c configuration) []string {
+func listDeps(t *testing.T, root string, c configuration, pkg string) []string {
 	t.Helper()
 	args := []string{"list", "-deps"}
 	if len(c.tags) != 0 {
 		args = append(args, "-tags", strings.Join(c.tags, ","))
 	}
-	args = append(args, seamPackage)
+	args = append(args, pkg)
 	cmd := exec.Command("go", args...)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOOS="+c.goos, "GOARCH="+c.goarch, "CGO_ENABLED="+c.cgo)
@@ -172,6 +183,33 @@ func listDeps(t *testing.T, root string, c configuration) []string {
 		t.Fatalf("go %s under %s: %v\n%s", strings.Join(args, " "), c, err, stderr.String())
 	}
 	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
+
+// fixturePackage has a different import set per matrix cell, selected by
+// filename suffix and by the cgo constraint. Listing it proves the cell's
+// environment reached the toolchain: without it every cell resolves to the
+// host, and a guard that dropped the environment would stay green because
+// the guarded package's closure happens to be identical across cells today.
+const fixturePackage = "orchestrator/internal/dataplane/closurefixture"
+
+// assertMatrixReachesTheToolchain is the positive control for one cell.
+// THE MUTANT: drop the GOOS/GOARCH/CGO_ENABLED assignment in listDeps; every
+// cell then reports the host's selection and the wrong cells fail here.
+func assertMatrixReachesTheToolchain(t *testing.T, root string, c configuration) {
+	t.Helper()
+	deps := listDeps(t, root, c, fixturePackage)
+	want := map[string]bool{
+		"encoding/base32":  c.goarch == "amd64",
+		"encoding/ascii85": c.goarch == "arm64",
+		"hash/adler32":     c.cgo == "1",
+		"hash/fnv":         c.cgo == "0",
+	}
+	for pkg, present := range want {
+		if slices.Contains(deps, pkg) != present {
+			t.Fatalf("under %s the fixture %s reach %s; the configuration did not reach the toolchain, "+
+				"so this cell's closure is the host's, not the one it claims", c, map[bool]string{true: "should", false: "should not"}[present], pkg)
+		}
+	}
 }
 
 // moduleRoot walks up from the test's directory to go.mod.
