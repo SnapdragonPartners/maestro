@@ -543,6 +543,11 @@ nothing.
 
 ### Schema migration cutover
 
+**Amendment status: PROPOSED** — drafted 2026-09-03 with the
+[Phase 3 item 4 design](phase_3/design_prompt-packs.md) (D5), pending Codex and
+DR acceptance. The rest of this document remains Accepted as of 2026-08-17. This
+line is replaced with the acceptance date and parties in the acceptance commit.
+
 **Every old-code seam is terminated before a migration starts, and none is
 opened until the new code is the only code running** (**Policy**, Phase 3 item
 4). Locally this is enforced: `dataplane-migrate` takes the lifecycle lock
@@ -557,15 +562,30 @@ migration, idle **through** it, that writes **after** the locks release with
 code that predates the schema. Such a write satisfies every constraint its
 code knows about and violates one it does not: the first case is a
 `story_dispatches` row written by pre-000023 code with no
-`dispatch_prompt_resolutions` child. The schema refuses that commit by a
-deferred constraint trigger, so the outcome is a failed write rather than a
-corrupt plane — but a failed write in an Orchestrator that believed it was
+`dispatch_prompt_resolutions` child. The schema refuses that statement — the
+column the old code cannot supply is NOT NULL, and a reciprocal deferred
+foreign key holds the pair in steady state — so the outcome is a failed write
+rather than a corrupt plane — but a failed write in an Orchestrator that believed it was
 current is an incident, and the procedure exists so it is never reached.
 
 The sequence, for a cloud plane:
 
 1. Stop every Orchestrator and every `dataplanectl` session against the
-   plane. Confirm nothing holds a connection.
+   plane. Confirm no **Maestro** session remains — system and background
+   workers are not the concern, and the migration's own session and the Auth
+   Proxy's will be present — with:
+
+   ```sql
+   SELECT pid, usename, application_name, state, backend_start
+     FROM pg_stat_activity
+    WHERE backend_type = 'client backend'
+      AND application_name LIKE 'maestro%'
+      AND pid <> pg_backend_pid();
+   ```
+
+   The seam sets `application_name` on every connection it opens (Phase 3
+   item 4), so an empty result means no seam is open. A non-empty one names
+   the session to terminate.
 2. Run the migration.
 3. Deploy the new code.
 4. Start Orchestrators on the new code only.
