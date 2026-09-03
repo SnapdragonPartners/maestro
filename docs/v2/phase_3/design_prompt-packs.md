@@ -19,8 +19,8 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
 
-**Six review rounds (Codex, 2026-09-03) found nine, eight, six, four, two and
-then three P1s, and this revision carries all thirty-two.** Each is recorded under
+**Seven review rounds (Codex, 2026-09-03) found nine, eight, six, four, two,
+three and then two P1s, and this revision carries all thirty-four.** Each is recorded under
 [Points Resolved In Review](#points-resolved-in-review) with what was wrong and
 where the fix landed. The first draft was M-shaped; the fixes make it L, and
 that is amendment 5.
@@ -836,9 +836,13 @@ column. So:
 - `story_dispatches` gains `prompt_resolution_id uuid NOT NULL`, with a
   composite reference `(story_dispatch_id, prompt_resolution_id)` →
   `dispatch_prompt_resolutions (story_dispatch_id, resolution_id)`,
-  **`DEFERRABLE INITIALLY DEFERRED`**, so the pair is checked at commit and the
-  seam can write the dispatch and its resolution in either order within the
-  transaction.
+  **`DEFERRABLE INITIALLY DEFERRED`**, so the pair is checked at commit.
+  **Insertion is parent-first: the dispatch row, then the resolution.** The
+  deferral is on the *dispatch's* reference, which is what lets the dispatch
+  be inserted before the resolution it names exists; the resolution's
+  reference back to the dispatch is *not* deferred, so it needs its dispatch
+  present at the moment it is written. "Either order" was round 6's wording
+  and it was true only if both sides deferred, which they do not.
 - `dispatch_prompt_resolutions` references its dispatch the other way, with
   the full lineage tuple, `ON DELETE RESTRICT`, and gains
   `UNIQUE (story_dispatch_id, resolution_id)` to be the target above.
@@ -849,7 +853,7 @@ What that buys, each a refused statement rather than a convention:
 | --- | --- |
 | Insert a dispatch with no resolution and commit | The deferred FK at commit |
 | Old-code insert with no `prompt_resolution_id` at all | `NOT NULL`, immediately — the column it does not know is the one it cannot omit |
-| Delete a resolution that a dispatch names | The FK, `NO ACTION` on the referenced side |
+| Delete a resolution that a dispatch names | The **reciprocal** FK from `story_dispatches`: the resolution is its referenced row, and the referencing dispatch still stands. The `RESTRICT` on the resolution's own reference is the other direction — it stops a dispatch being deleted from under its resolution |
 | Re-point a resolution at another dispatch | The composite pair no longer matches the dispatch's own `story_dispatch_id`, so the FK from the dispatch fails on update of its target |
 
 The round 5 constraint trigger is **withdrawn**: the FK does everything it did
@@ -1070,9 +1074,10 @@ report; the protected defect is.
 | Construct `harness.Parse("2.0.0")` | Fail closed on a malformed version rather than falling into the development exception |
 | Run `select-builtin` with a mis-stamped version | The operator path refuses before opening the plane — the check is at a boundary every root crosses, not at `Start` |
 | Open a seam with a zero `Composition.Harness` | `plane.Open` refuses a composition with no validated version, as it refuses one with no registry |
-| Make `prompt_resolution_id` nullable and drop the deferred FK; insert a `story_dispatches` row through raw pgx with no resolution; commit | An old-code write succeeds after cutover, leaving the row every reader was promised could not exist |
-| Drop the `RESTRICT`; delete a valid resolution that a dispatch names | The steady-state orphan the insert-time check could not see |
-| Re-point a valid resolution's `story_dispatch_id` at another dispatch | The composite pair diverges from the dispatch that names it |
+| Make `prompt_resolution_id` nullable and drop the reciprocal deferred FK; insert a `story_dispatches` row through raw pgx with no resolution; commit | An old-code write succeeds after cutover, leaving the row every reader was promised could not exist |
+| Drop the **reciprocal** FK — not the `RESTRICT`, which round 6 named and which does not govern this case; delete a valid resolution that a dispatch names | The steady-state orphan the insert-time check could not see. Dropping `RESTRICT` instead leaves the reciprocal FK still refusing the delete, and the mutant survives for the wrong reason |
+| Drop the **reciprocal** FK; re-point a valid resolution's `story_dispatch_id` at a **second dispatch of the same Story**, so the full-lineage FK on the resolution's own reference is satisfied and only the reciprocal pair diverges | The composite pair diverges from the dispatch that names it — and dies there, not at the lineage FK, which an arbitrary target dispatch would trip first |
+| Open a bare pgx connection with no `application_name`; run the runbook's cutover query | The first cutover's check must list a session that predates the label, or it cannot detect the connection it was written for |
 | Write `{"coder": 1}` directly | The value constraint: identical keys, unequal objects |
 | Seed a system principal carrying `prompt_pack_id` before migrating | The guard's second refusal class, with its own count and remedy — not the first class's message |
 | Seed an agent whose `prompt_hash` is `''` before migrating | The first refusal class on a non-NULL value: a blank passes an `IS NOT NULL` test and must not pass the guard |
@@ -1266,6 +1271,21 @@ taken.**
    filtered to client backends under Maestro's `application_name`, which the
    seam now sets.
 
+**Round 7 — Codex, 2026-09-03. Two P1s, both accepted.**
+
+1. *The cutover query filtered on a label old-code seams do not carry*, so it
+   could return empty with the very connection it exists to find still open.
+   → The runbook's first-cutover check inspects every client backend on the
+   Maestro database, with the `application_name` filter demoted to later
+   cutovers; proven by an unnamed pgx connection.
+2. *The reciprocal-FK mutants targeted the wrong constraints*: dropping
+   `RESTRICT` leaves the reciprocal FK blocking the delete, and re-pointing at
+   an arbitrary dispatch trips the lineage FK first. → Both mutants drop the
+   reciprocal FK specifically, and the re-point target is a second dispatch of
+   the same Story so only the reciprocal pair diverges. "Either order" was
+   wrong — insertion is parent-first, because only the dispatch's side is
+   deferred (D8).
+
 Both open questions closed by Codex: the anti-update trigger is acceptable
 (idempotent insertion is `ON CONFLICT DO NOTHING`; the down drops the
 function), and `golang.org/x/mod/semver` **v0.37.0** is suitable — Codex
@@ -1275,7 +1295,7 @@ not live in a review transcript.
 
 ## Open Questions
 
-None outstanding after round 6. The two the first draft carried — the trigger
+None outstanding after round 7. The two the first draft carried — the trigger
 as the schema's first, and the semver comparator — are closed above.
 
 ## Related Documents

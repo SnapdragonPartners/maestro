@@ -572,20 +572,27 @@ The sequence, for a cloud plane:
 
 1. Stop every Orchestrator and every `dataplanectl` session against the
    plane. Confirm no **Maestro** session remains — system and background
-   workers are not the concern, and the migration's own session and the Auth
-   Proxy's will be present — with:
+   workers are not the concern, and the migration's own session will be
+   present — with:
 
    ```sql
-   SELECT pid, usename, application_name, state, backend_start
+   SELECT pid, usename, application_name, client_addr, state, backend_start
      FROM pg_stat_activity
     WHERE backend_type = 'client backend'
-      AND application_name LIKE 'maestro%'
+      AND datname = current_database()
       AND pid <> pg_backend_pid();
    ```
 
-   The seam sets `application_name` on every connection it opens (Phase 3
-   item 4), so an empty result means no seam is open. A non-empty one names
-   the session to terminate.
+   **This lists every client session on the Maestro database, deliberately
+   unfiltered by name.** The seam sets `application_name` on the connections
+   it opens from Phase 3 item 4 onward, but the session this check exists to
+   find at the **first** cutover is one opened by code that predates the
+   label, and a filter on the label would return empty with that session
+   still open. Read every row; anything that is not the migration's own
+   session is a session to terminate. For cutovers after item 4 is running
+   everywhere, `AND application_name LIKE 'maestro%'` narrows the list to
+   Maestro's own sessions, and an empty result then means no seam is open —
+   but only then.
 2. Run the migration.
 3. Deploy the new code.
 4. Start Orchestrators on the new code only.
