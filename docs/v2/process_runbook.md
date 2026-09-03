@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Operations Runbook"
-edit_date = "2026-08-18"
+edit_date = "2026-09-03"
 status = "live"
 summary = "Operational sequences and measured gotchas for running the v2 data plane locally and in the cloud: provider defaults that cost money or silently retain data, commands whose failure modes mislead, and the project-safety rules for cloud work. Command definitions live in the Makefile; design rationale lives in the ADRs."
 type = "process"
@@ -540,6 +540,40 @@ reserved IP address continue to bill**
 So "stopped" is cheaper, not free, and a long-idle instance is still a line on
 the bill — which is the number to check before assuming an idle plane costs
 nothing.
+
+### Schema migration cutover
+
+**Every old-code seam is terminated before a migration starts, and none is
+opened until the new code is the only code running** (**Policy**, Phase 3 item
+4). Locally this is enforced: `dataplane-migrate` takes the lifecycle lock
+exclusive and an open seam holds it shared, so the command waits. In cloud
+mode nothing enforces it, and the failure it prevents is not the one the
+migration's own locks cover.
+
+A migration that scans and then alters takes its table locks before scanning,
+so no row slips in between — that much holds regardless of what else is
+running. What the locks cannot cover is a seam opened **before** the
+migration, idle **through** it, that writes **after** the locks release with
+code that predates the schema. Such a write satisfies every constraint its
+code knows about and violates one it does not: the first case is a
+`story_dispatches` row written by pre-000023 code with no
+`dispatch_prompt_resolutions` child. The schema refuses that commit by a
+deferred constraint trigger, so the outcome is a failed write rather than a
+corrupt plane — but a failed write in an Orchestrator that believed it was
+current is an incident, and the procedure exists so it is never reached.
+
+The sequence, for a cloud plane:
+
+1. Stop every Orchestrator and every `dataplanectl` session against the
+   plane. Confirm nothing holds a connection.
+2. Run the migration.
+3. Deploy the new code.
+4. Start Orchestrators on the new code only.
+
+If a migration deadlocks against a session step 1 missed, Postgres aborts one
+side; if that is the migration, the recorded version is dirty and the
+migration's own message names the `dataplane-force-version` recovery. Do step 1
+properly and retry.
 
 ## Local data plane
 

@@ -2,7 +2,7 @@
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
 edit_date = "2026-09-03"
 status = "draft"
-summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L."
+summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L. The harness version is an opaque validated type supplied through the composition, so no root can open a seam with a malformed one, and a deferred constraint trigger makes a dispatch without its resolution a refused commit even for a writer that predates the schema."
 type = "design"
 +++
 
@@ -19,8 +19,8 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
 
-**Four review rounds (Codex, 2026-09-03) found nine, eight, six and then four
-P1s, and this revision carries all twenty-seven.** Each is recorded under
+**Five review rounds (Codex, 2026-09-03) found nine, eight, six, four and then
+two P1s, and this revision carries all twenty-nine.** Each is recorded under
 [Points Resolved In Review](#points-resolved-in-review) with what was wrong and
 where the fix landed. The first draft was M-shaped; the fixes make it L, and
 that is amendment 5.
@@ -184,18 +184,42 @@ So the contract is **consumer-owned**: `store.PromptContract` is declared in
 slots exist is a property of the caller's job.* Every pack write consults it;
 the plane never names the implementation.
 
-**The harness version travels the same way.** `pkg/version.Version` is the
-binary's version — `"dev"` unless goreleaser's ldflags set it — and
-`pkg/version` imports nothing, so the composition root reads it and supplies it
-through `orchestrator.Config.MaestroVersion`. The Orchestrator never imports
-`pkg/version`; the value arrives as configuration, which also lets tests inject a
-real semver so D8's range check is exercised rather than skipped.
+**The harness version travels the same way — as an opaque, already-validated
+value.** `pkg/version.Version` is the binary's version — `"dev"` unless
+goreleaser's ldflags set it — and `pkg/version` imports nothing, so the
+composition root reads it. Round 4 had the root pass the *string* and
+`orchestrator.Start` validate it, and review showed that check was bypassable:
+provisioning and `dataplanectl prompt-pack select-builtin` open the seam
+directly and never cross `Start`, so an install could write a version the rule
+never saw. The same argument this decision makes about the import gate — a
+check the seam does not cross is advisory — applied to the version.
+
+So the version is a **type, not a string**: `harness.Version`, in a new neutral
+vocabulary package `internal/dataplane/harness` of the same class as
+`configkeys`, constructed only by `harness.Parse`, which admits exactly D8's
+two forms and nothing else, and whose zero value is invalid. It is supplied
+through **`plane.Composition.Harness`**, beside `Types`, `Keys` and the prompt
+contract, and `plane.Open` refuses a zero value the way it refuses a missing
+registry. Every composition root must construct it to open a seam at all; the
+seam's install, update and resolution paths take it from the composition and
+never from a caller. `orchestrator.Config` carries the same type, so `Start`
+receives a value that cannot be malformed and re-decides nothing. Tests
+construct it from a real semver so D8's range check is exercised rather than
+skipped, and one test drives an invalid string through the **operator path** —
+`select-builtin` with a mis-stamped version — and asserts refusal before the
+plane is touched.
+
+`harness` also owns the comparator: `Compare`, `IsDev` and `InRange` over
+`golang.org/x/mod/semver`, so the range check has one implementation and the
+ladder test lives beside it.
 
 Both closure guards are **exact sets** rather than deny-lists
 (`internal/dataplane/store/closure_test.go`, `internal/orchestrator/closure_test.go`),
 so each addition is a deliberate edit to a named list. Under this shape `store`'s
-set is unchanged and the Orchestrator's gains `internal/prompt`. **The resulting
-counts are re-derived from the built API rather than asserted here**: what
+set gains `internal/dataplane/harness` — a vocabulary package, the class
+`configkeys` already is — and the Orchestrator's gains that and
+`internal/prompt`. **The resulting counts are re-derived from the built API
+rather than asserted here**: what
 `internal/prompt` itself imports decides the number, and a count written into a
 design before the package exists is a prediction, not a measurement.
 
@@ -390,15 +414,25 @@ So the claims are separated:
   until the lock is held. That is the guarantee `000022.down` states and it
   does not depend on order.
 - **Freedom from deadlock is a quiescence requirement, not an ordering
-  guarantee.** Locally it is *enforced*: `stack.Migrate` holds the lifecycle
-  lock exclusive, so no seam is open. In cloud mode it is an **operational
-  precondition** — migrate with no Orchestrator running — recorded in the
-  portability runbook, since nothing in the cloud composer can enforce it.
-- **If the precondition is violated, a deadlock may abort the migration**, and
-  that is a refused migration with the same dirty version and the same
-  documented recovery as any other refusal. It is not silent and it is not
-  corrupting; it is a retry after the operator does what the precondition
-  asked.
+  guarantee — and the quiescence has to cover the whole cutover, not the
+  migration.** Locally it is *enforced*: `stack.Migrate` holds the lifecycle
+  lock exclusive, so no seam is open. In cloud mode nothing in the composer
+  can enforce it, so it is an **operational procedure**, and round 4 stated it
+  too narrowly as "migrate with no Orchestrator running". The scan-to-`ALTER`
+  guarantee says nothing about a seam that was open *before* the migration,
+  stayed idle through it, and writes *after* the locks release with code that
+  predates the schema. The procedure is therefore: **every old-code seam is
+  terminated before the migration starts, and none is opened until the new
+  code is the only code running.** It is recorded in the
+  [operations runbook](../process_runbook.md#schema-migration-cutover) as
+  Policy, in this branch, because a rule that lives only in a design is not
+  one an operator will find.
+- **If the procedure is violated, two things can happen and both are
+  refusals.** A deadlock may abort the migration — a refused migration with
+  the same dirty version and the same documented recovery as any other. Or an
+  old-code write may reach the new schema afterwards, and D8's constraint
+  trigger refuses its commit. Neither is silent and neither corrupts; both
+  are a retry after the operator does what the procedure asked.
 
 Within that, both directions still take one fixed order, so that two
 *migrations* can never deadlock each other and so the ordering test has
@@ -694,17 +728,20 @@ its value is the string `"dev"`. So:
   verification survives the transcript.
 - **The built-in declares the Phase 3 band**: `[v2.0.0-phase.3.0.0, v2.0.0-phase.4.0.0)`.
   Bounded, real, and the range a tagged Phase 3 binary satisfies.
-- **Exactly two forms are admitted, and they are checked once, at `Start`.**
-  `Config.MaestroVersion` is either the **exact sentinel `"dev"`** —
-  `pkg/version`'s unset default — or a **valid semver with its leading `v`**,
-  which is what `golang.org/x/mod/semver` requires and what goreleaser stamps.
-  Anything else — a release built as `2.0.0` without the `v`, an empty string,
-  a stray suffix — is **malformed configuration and refuses startup**, typed,
-  naming the value and the two forms. Round 3 let every invalid string fall
-  into the development exception, so a mis-stamped release would have bypassed
-  every range in the plane while reporting nothing wrong. Checking at `Start`
-  rather than at dispatch means dispatch, install and update only ever see
-  the two forms, and none of them re-decides the question.
+- **Exactly two forms are admitted, and they are checked at construction,
+  which every path crosses.** `harness.Parse` (D3) accepts either the **exact
+  sentinel `"dev"`** — `pkg/version`'s unset default — or a **valid semver with
+  its leading `v`**, which is what `golang.org/x/mod/semver` requires and what
+  goreleaser stamps. Anything else — a release built as `2.0.0` without the
+  `v`, an empty string, a stray suffix — is **malformed configuration and
+  refuses to construct**, typed, naming the value and the two forms; a
+  composition without a constructed value cannot open a seam. Round 3 let
+  every invalid string fall into the development exception, so a mis-stamped
+  release would have bypassed every range in the plane while reporting nothing
+  wrong; round 4 moved the check to `Start`, which the operator verbs never
+  cross. Checking at construction means dispatch, install and update only ever
+  see the two forms, whichever root opened the seam, and none of them
+  re-decides the question.
 - **The sentinel is not compared.** Under `"dev"` the range check records
   `not-evaluated` on the resolution beside the version string. It does not
   pass and it does not refuse: a pass would assert a comparison that never
@@ -713,7 +750,9 @@ its value is the string `"dev"`. So:
   undispatchable.
 - **Tests inject a real semver**, so the refuse branch and the pass branch are
   both exercised; a third test proves that `"dev"` records `not-evaluated`
-  rather than either; and a fourth proves that `"2.0.0"` refuses `Start`.
+  rather than either; a fourth proves that `"2.0.0"` refuses `harness.Parse`;
+  and a fifth drives it through `select-builtin` and asserts the verb refuses
+  before opening the plane.
 
 **The declared range can refuse and never authorize.** A pack declaring itself
 compatible has made a claim, not passed a check.
@@ -730,7 +769,7 @@ D1's slot rule refuses.
 | Unresolved selector: names no plane-owned version in this organization | **Yes** | Reachable and tested — a digest from another organization, or a content id that does not exist |
 | Declared range incompatible with the running Maestro version | **Yes** | Reachable and tested under an injected semver; `not-evaluated` under `"dev"` |
 | Execution's roles outside the declared coverage | **No — no subject** | Item 6's (D11). `store.Execution` carries identity and authority only; resolved configuration is items 5/6's |
-| Harness-contract re-run fails after a version move | **Yes**, with the evidence D6 now stores | Re-run when `validated_maestro_version` differs from the running version, **or when either is the `"dev"` sentinel** — a development build cannot claim nothing moved, exactly as D8's restart rule says; no other non-semver value can reach this point, because `Start` refused it. Under a real semver pair that match, skipped and recorded as such. **Vacuous over the empty built-in**, so its non-vacuous proof comes from D2's fixture packs through the same path |
+| Harness-contract re-run fails after a version move | **Yes**, with the evidence D6 now stores | Re-run when `validated_maestro_version` differs from the running version, **or when either is the `"dev"` sentinel** — a development build cannot claim nothing moved, exactly as D8's restart rule says; no other non-semver value can reach this point, because `harness.Parse` refused it. Under a real semver pair that match, skipped and recorded as such. **Vacuous over the empty built-in**, so its non-vacuous proof comes from D2's fixture packs through the same path |
 
 #### Where the resolution is persisted, and what it records
 
@@ -773,6 +812,21 @@ to create a dispatch without it. A seam-enforced 1:1 is the existing pattern:
 `AcceptDispatch` flips the disposition and creates the execution in one
 transaction because *"an accepted dispatch has at least one execution, which is
 the seam's half of item 2's invariant."*
+
+**Here the schema holds the other half too, because a seam is not the only
+writer.** Review's round 5 named the writer the seam rule cannot reach: an
+old-code seam, opened before the migration and idle through it, that writes a
+dispatch afterwards. Old code does not know the resolution table exists, so its
+write satisfies every constraint round 4 had and leaves exactly the row the
+readers were promised could not exist. A `CONSTRAINT TRIGGER` on
+`story_dispatches`, `AFTER INSERT`, `DEFERRABLE INITIALLY DEFERRED`, checks at
+commit that a resolution row exists for the new dispatch and raises if not.
+Postgres can express "a child must exist by commit" only this way, and it is
+the second trigger in the schema for the same reason the first was worth it:
+without it the invariant is a convention, and a convention is what an
+old-code writer does not follow. The seam still writes both rows itself; the
+trigger converts a violation from a silent success into a refused commit.
+It is dropped by the down beside the others.
 
 #### Pre-000023 dispatches are refused by the migration
 
@@ -974,7 +1028,10 @@ report; the protected defect is.
 | Insert a content row under `v1-manifest-sha256`, and a foreign principal under `pack-jcs-sha256-v1` | Cross-scheme rows: a pack the plane claims to own and could not have digested; a plane-owned identity with no references |
 | Insert any row under a third scheme string | The enumeration, not a conditional: an unknown scheme must be refused, not passed through |
 | Relax the composite key; give a resolved principal content A with digest B, then installation C of other content | The identity–reference agreement ADR 0031 §2 requires, which organization-only keys never checked |
-| Start with `MaestroVersion = "2.0.0"` | Fail closed on a malformed version rather than falling into the development exception |
+| Construct `harness.Parse("2.0.0")` | Fail closed on a malformed version rather than falling into the development exception |
+| Run `select-builtin` with a mis-stamped version | The operator path refuses before opening the plane — the check is at a boundary every root crosses, not at `Start` |
+| Open a seam with a zero `Composition.Harness` | `plane.Open` refuses a composition with no validated version, as it refuses one with no registry |
+| Drop the deferred constraint trigger; insert a `story_dispatches` row through raw pgx with no resolution; commit | An old-code write succeeds after cutover, leaving the row every reader was promised could not exist |
 | Write `{"coder": 1}` directly | The value constraint: identical keys, unequal objects |
 | Seed a system principal carrying `prompt_pack_id` before migrating | The guard's second refusal class, with its own count and remedy — not the first class's message |
 | Seed an agent whose `prompt_hash` is `''` before migrating | The first refusal class on a non-NULL value: a blank passes an `IS NOT NULL` test and must not pass the guard |
@@ -1133,6 +1190,20 @@ after verification.**
 5. *`jsonb_typeof` did not enforce the constant values.* → An immutable
    helper function in the check (D6).
 
+**Round 5 — Codex, 2026-09-03. Two P1s, both accepted.**
+
+1. *Version validation at `Start` was bypassable* by provisioning and
+   `select-builtin`, which open the seam directly. → `harness.Version`, an
+   opaque type constructed only by `harness.Parse`, supplied through
+   `plane.Composition` and refused at zero by `plane.Open`; tested through the
+   operator path (D3, D8).
+2. *Cloud quiescence covered only scan-to-`ALTER`*: an idle old-code seam can
+   write a dispatch without its resolution after the locks release. → The
+   procedure covers the whole cutover and is recorded in the operations
+   runbook in this branch; a deferred constraint trigger on `story_dispatches`
+   makes the 1:1 a refused commit rather than a convention an old writer
+   cannot know (D5, D8).
+
 Both open questions closed by Codex: the anti-update trigger is acceptable
 (idempotent insertion is `ON CONFLICT DO NOTHING`; the down drops the
 function), and `golang.org/x/mod/semver` **v0.37.0** is suitable — Codex
@@ -1142,7 +1213,7 @@ not live in a review transcript.
 
 ## Open Questions
 
-None outstanding after round 4. The two the first draft carried — the trigger
+None outstanding after round 5. The two the first draft carried — the trigger
 as the schema's first, and the semver comparator — are closed above.
 
 ## Related Documents
