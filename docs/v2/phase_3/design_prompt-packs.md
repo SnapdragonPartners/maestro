@@ -2,7 +2,7 @@
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
 edit_date = "2026-09-03"
 status = "draft"
-summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total migration with an origin discriminator, the scheme-qualified MPH query, the importer's legacy-scheme backfill, and five amendments — including the size, which review re-cut from M to L."
+summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L."
 type = "design"
 +++
 
@@ -19,10 +19,11 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
 
-**Round 1 (Codex, 2026-09-03) found nine P1s and this revision carries all of
-them.** Each is recorded under [Points Resolved In Review](#points-resolved-in-review)
-with what was wrong and where the fix landed. The first draft was M-shaped; the
-fixes make it L, and that is amendment 5.
+**Two review rounds (Codex, 2026-09-03) found nine and then eight P1s, and this
+revision carries all seventeen.** Each is recorded under
+[Points Resolved In Review](#points-resolved-in-review) with what was wrong and
+where the fix landed. The first draft was M-shaped; the fixes make it L, and
+that is amendment 5.
 
 ## What Binds This Item
 
@@ -263,39 +264,59 @@ to remember which case it is in and make the case a column:
 | `prompt_pack_installation_revision` | Which revision governed |
 | `prompt_pack_metadata_snapshot` | Every metadata value that affected the decision |
 
-Three check constraints:
+**One check constraint, three exhaustive shapes, and no NULL can slip
+through it.** Round 1 wrote three biconditionals, and review showed they did not
+partition the rows: a non-agent could carry *some* prompt fields, because
+"not all present" admits "partially present"; and a SQL `CHECK` whose operand
+is NULL evaluates to NULL and **passes**, so `origin = 'resolved'` on a row with
+a NULL origin refused nothing. The constraint is instead a disjunction of the
+three shapes a row may have, each stated positively over every one of the
+eight columns, with `num_nulls`/`num_nonnulls` so that no comparison against a
+NULL is ever what decides:
 
-1. **Agent-ness**: `(kind = 'agent') = (origin, name, hash and scheme are all NOT NULL)`.
-   Today's schema ties only `agent_type` to the kind (`000004:51`), so an agent
-   principal may carry partial or absent MPH fields; ADR 0031 §2 says name and
-   digest are *always present for an agent principal*, and this is where that
-   becomes true.
-2. **Resolved**: `origin = 'resolved'` ⇔ the four reference columns are all
-   NOT NULL.
-3. **Foreign**: `origin = 'foreign'` ⇔ the four reference columns are all NULL.
+| Shape | `kind` | `origin` | name, hash, scheme | the four references |
+| --- | --- | --- | --- | --- |
+| Non-agent | human or system | NULL | all NULL | all NULL |
+| Foreign agent | agent | `foreign` | all NOT NULL | all NULL |
+| Resolved agent | agent | `resolved` | all NOT NULL | all NOT NULL |
 
-Together they say what the first draft only promised: a row either carries the
-whole plane-owned reference set or none of it, and which one is stated on the
-row rather than inferred from who wrote it. The references are composite on
-`organization_id` (000003's whole-tuple rule), so a resolved principal cannot
-name another organization's installation.
+Anything else — a system principal with a name, a foreign agent with one
+reference, an agent with no origin — matches no disjunct and is refused. Today's
+schema ties only `agent_type` to the kind (`000004:51`), so an agent principal
+may carry partial or absent MPH fields; ADR 0031 §2 says name and digest are
+*always present for an agent principal*, and this is where that becomes true.
+The references are composite on `organization_id` (000003's whole-tuple rule),
+so a resolved principal cannot name another organization's installation.
 
-#### The two writers, and why they are two
+#### Three writers, one per shape, and no caller chooses the origin
 
-- **`CreatePrincipalInstance`** — the general path — **refuses `origin = 'resolved'`**.
-  It writes humans, system principals, and foreign agent principals. That is
-  what the importer uses, and it now sets `origin = 'foreign'` and
-  `scheme = 'v1-manifest-sha256'` on what it writes (`benchmarkimport/import.go:700`).
+Round 1 let the general writer accept `origin = 'foreign'` from its caller,
+which review was right to refuse: ADR 0031 §2 permits missing references *only
+for imports*, and a discriminator a caller can set is a discriminator a caller
+can set wrong. So the origin is never an input. It is **derived from which verb
+was called**, and the verbs partition the three shapes:
+
+- **`CreatePrincipalInstance`** — humans and system principals only. It
+  **refuses `kind = 'agent'`** outright. Every agent principal has a pack, and
+  which kind of pack is decided by the path that creates it, so there is no
+  general agent path.
+- **`RecordForeignAgentPrincipal`** — the import path. It requires a
+  `RecordedLifetime` — a closed, historical lifetime, which is what an import
+  is and what a live agent is not — and takes a `ForeignPromptPack{Name, Scheme, Digest}`.
+  It writes `origin = 'foreign'` itself. The importer moves to this verb
+  (`benchmarkimport/import.go:697`, the only production writer of agent
+  principals today), setting `scheme = 'v1-manifest-sha256'` on what it writes.
   ADR 0031 is explicit that the importer stops being unchanged.
-- **`CreateDispatchedPrincipalInstance`** — the dispatch-bound path — takes an
+- **`CreateDispatchedPrincipalInstance`** — the live path. It takes an
   execution identity, **loads the persisted resolution** (D8) for that
   execution's dispatch, and **copies** its name, scheme, digest, content id,
-  installation id, revision and snapshot onto the principal. The caller cannot
-  supply those fields; they are not in its input. So a live principal cannot
-  disagree with the dispatch it runs under, because it never had the chance to.
+  installation id, revision and snapshot onto the principal, writing
+  `origin = 'resolved'` itself. The caller cannot supply those fields; they are
+  not in its input. So a live principal cannot disagree with the dispatch it
+  runs under, because it never had the chance to.
 
-Item 6 is the first caller of the second verb; item 4 builds it, because it is
-the only way the `resolved` origin can be written and the schema's whole point is
+Item 6 is the first caller of the third verb; item 4 builds it, because it is
+the only way the `resolved` shape can be written and the schema's whole point is
 that it cannot be written any other way. Its test runs it against a fixture
 dispatch and proves the copy.
 
@@ -303,8 +324,22 @@ dispatch and proves the copy.
 
 A migration that backfills the legacy scheme on some rows and leaves others in a
 state the new constraints forbid does not apply. `000023` therefore follows
-`000011`'s pattern — a `DO` block that counts the rows it cannot honestly
-convert and raises with the remedy — and only then alters the table:
+`000022.down`'s pattern, which is `000011`'s with the lock it was missing: **lock
+every inspected table `ACCESS EXCLUSIVE`, in a fixed order, before any scan**,
+then a `DO` block that counts the rows it cannot honestly convert and raises
+with the remedy, and only then alter. The lock is not decoration — `000022.down`
+says so in its own comment, and its forced-interleaving test proves why. Without
+it an old writer can insert between the scan and the `ALTER`: an agent principal
+with no hash after the totality guard has approved, or a `story_dispatches` row
+after the dispatch guard (D8) has found the table empty, leaving exactly the
+row the guard exists to refuse. golang-migrate's own advisory lock serializes
+migrations against each other and does nothing against application writers.
+
+The up migration locks, in order: `principal_instances`, `story_dispatches`.
+The down (below) locks, in order: `principal_instances`,
+`prompt_pack_installations`, `dispatch_prompt_resolutions`,
+`configuration_records`. Both orders are stated so the lock-ordering test can
+assert them rather than infer them.
 
 - **Backfilled**: every `kind = 'agent'` row with `prompt_pack_id` and
   `prompt_hash` both present gets `origin = 'foreign'`,
@@ -328,7 +363,30 @@ convert and raises with the remedy — and only then alters the table:
 the `prompt.pack` key (D7). Each is a reference the pre-000023 schema cannot
 hold, and a down migration that dropped them would leave either dangling
 selectors or principals whose P silently reverted to a name. With none present
-it collapses the columns back into `prompt_pack_id` and drops the tables.
+it collapses the columns back into `prompt_pack_id`, drops the tables, and
+**drops the trigger function** with them — a function left behind is the
+reversal's own residue.
+
+#### Refusal recovery, both directions, documented and tested
+
+A refused migration leaves golang-migrate's recorded version **dirty**, and
+fixing the offending rows alone does not let it retry: the version has to be
+forced back first. `000022.down` documents this in its own refusal message and
+`TestRefusalRecoveryNeedsTheVersionForcedBack` proves the instruction is still
+true. `000023` does the same in **both** directions:
+
+- **Up refused** — the version is `23` and dirty. Remedy in the message:
+  `make dataplane-force-version VERSION=22 FORCE=1`, resolve or delete the
+  offending rows (or `make dataplane-reset FORCE=1` on a local plane), then
+  `make dataplane-migrate`.
+- **Down refused** — the version is `22` and dirty. Remedy:
+  `make dataplane-force-version VERSION=23 FORCE=1`, then either remove the
+  plane-owned state deliberately or stop reversing.
+
+Each direction has a test that provokes the refusal, asserts the recorded
+version and dirty flag the message assumes, proves a bare retry fails, then
+forces and retries successfully. If the driver's dirty semantics ever change,
+the test — not an operator — is what finds the instruction wrong.
 
 ### D6. Immutable content by trigger, a mutable installation with a governed installer, and one atomic install
 
@@ -349,9 +407,22 @@ and principals: unreferenced content may go; referenced content cannot.
 
 **`prompt_pack_installations`** — references a content row and carries
 everything mutable: display name, declared Maestro version range as `min`
-(inclusive) and `max` (exclusive) semver strings (D8 gives them their
-semantics), declared role coverage, installer identity, and a **monotonic
-revision**.
+(inclusive) and `max` (exclusive) semver strings, declared role coverage,
+installer identity, and a **monotonic revision**.
+
+**The range has a write invariant of its own, independent of any runtime
+version.** D8 skips the *comparison* under a development build; round 1 let that
+skip reach the *write*, so a malformed or inverted range could be installed on
+any local plane and never noticed until a tagged build met it. Install and
+metadata update therefore each require, before anything else: `min` and `max`
+are valid semver, and `min` sorts strictly below `max`. That is a property of
+the declaration, checkable with no harness at all. Whether the running version
+falls inside it is a separate evaluation, made at dispatch, and is the only part
+D8 declines to make under `"dev"`.
+
+**Idempotent insertion is `ON CONFLICT DO NOTHING`, then a read** — never
+`ON CONFLICT DO UPDATE`, which would fire the anti-update trigger on the very
+path that is supposed to be a no-op.
 
 **At most one installation per `(organization_id, content_id)`**, as a unique
 constraint. Without it a selector naming a digest becomes ambiguous the moment
@@ -453,10 +524,11 @@ its value is the string `"dev"`. So:
   stored as strings on the installation, compared under semver precedence
   including prerelease ordering — which the phase ladder needs, since
   `v2.0.0-phase.3.0.0` must sort below `v2.0.0-phase.4.0.0`. No range DSL.
-  The comparator is a library whose prerelease behaviour is **verified against
-  the pinned version's source before it enters code**, per the verification
-  discipline; `golang.org/x/mod/semver` is the candidate, and `go.mod` carries
-  no semver dependency today.
+  The comparator is `golang.org/x/mod/semver` at **v0.37.0**, whose prerelease
+  ordering Codex verified against that version's source and tests in review
+  (2026-09-03); `go.mod` carries no semver dependency today, so this pins a new
+  one. An in-tree test asserts the ladder's ordering under it, so the
+  verification survives the transcript.
 - **The built-in declares the Phase 3 band**: `[v2.0.0-phase.3.0.0, v2.0.0-phase.4.0.0)`.
   Bounded, real, and the range a tagged Phase 3 binary satisfies.
 - **A development build is not compared.** A version that is not valid semver —
@@ -496,14 +568,32 @@ thing that decided it: a **`dispatch_prompt_resolutions`** row, unique on the
 dispatch, carrying the full dispatch lineage tuple as its composite key, the
 resolved name, scheme, digest, content id, installation id, revision, the
 metadata snapshot, **the Maestro version it was validated against**, and the
-range check's result (`passed`, `refused`, `not-evaluated`). Every reference is
-composite on `organization_id`.
+range check's result — **`passed` or `not-evaluated`, and nothing else**. Every
+reference is composite on `organization_id`.
+
+Round 1 listed `refused` as a third result, and it cannot exist: every
+`CreateDispatch` refusal returns before the dispatch row is written
+(`postgres/dispatch.go`'s `rejectDispatch` returns an error and the transaction
+rolls back), so there is no parent for a refused resolution to hang from. A
+refused range check is a `DispatchRejected` returned to the caller with nothing
+persisted — which is exactly how item 3's other typed refusals already behave.
+Persisting refused *attempts* would be an Audit record with its own design; it
+is deferred, and named here so the absence is a decision rather than a gap.
 
 Recording the validated-against version is what makes restart detection
-possible without re-resolving P: a replacement agent compares the running
-version with the recorded one and, if they differ, **re-runs parse and the
-variable contract** — never resolution. Item 6 owns that re-check (D11); item 4
-records what it needs.
+possible without re-resolving P. **The restart rule, which item 6 implements
+(D11) and item 4 records for:**
+
+- **A tagged build whose version differs from the recorded one** re-runs the
+  **declared range check** *and* parse and the variable contract. Round 1
+  omitted the range, and a harness moving out of a pack's declared band is the
+  one thing the range exists to catch.
+- **A development build revalidates on every restart.** `"dev" == "dev"` says
+  nothing — two local binaries built an hour apart both say it — so an
+  unversioned harness cannot use the recorded version as evidence that nothing
+  moved, and does not. Parse and the variable contract run; the range stays
+  `not-evaluated`.
+- **Never resolution.** P is fixed at dispatch in every case.
 
 It is written **in the same transaction as the dispatch**, and the seam refuses
 to create a dispatch without it. A seam-enforced 1:1 is the existing pattern:
@@ -611,7 +701,7 @@ this repository has paid for. Each of the rest is named:
 | --- | --- | --- |
 | The first native slots and the **first executable built-in version** | **Item 6** (`agent-core`) | It is where the first native model call site exists, so it is the first item that can register a slot under D1's rule |
 | The dispatch check that an execution's roles fall **within the declared coverage** | **Item 6** | It has the subject: before it, an execution carries no roles |
-| The **restart-time compatibility re-check** — compare the running version with the resolution's recorded one; on a move, re-run parse and the variable contract without re-resolving P | **Item 6** | It is agent start; item 4 records what it reads (D8) |
+| The **restart-time compatibility re-check** under D8's rule — a moved tagged version re-runs the range, parse and the variable contract; a development build revalidates on every restart; P is never re-resolved | **Item 6** | It is agent start; item 4 records what it reads (D8) |
 | Standalone-reviewer and Claude Code adapter slots, for prompt material Maestro actually supplies | **Item 8** (`external-consumers`) | `pkg/templates/claude/*` is that adapter's content, and item 8 is where the adapter lands |
 | Epic-planning and Architect slots | **Item 10** (`work-group-lifecycle`) | The Epic-level plan workflow is item 10's |
 
@@ -703,8 +793,12 @@ report; the protected defect is.
 | Relax the resolved/foreign check so the four reference columns are independently nullable | A row records which installation governed without recording what it said |
 | Let the general `CreatePrincipalInstance` accept `origin = 'resolved'` | A live principal whose pack fields were caller-supplied and never checked against its dispatch |
 | Have `CreateDispatchedPrincipalInstance` take pack fields from its input instead of the resolution | Same defect from the other side: the copy becomes a claim |
-| Remove the migration's totality guard and plant an agent row with a null `prompt_hash` | The migration applies and the new agent-ness constraint is violated by a row it left behind — **the mutant must die at the constraint, not at the guard**, so the planted row goes in *after* the guard would have run |
-| Remove the dispatch-rows guard and plant a pre-migration dispatch | A dispatch with no resolution row that every reader must then special-case |
+| Remove the totality guard; **seed** an agent row with a null `prompt_hash` **before** migrating; assert the guard's distinct count and remedy text | The guard itself. Round 1 had this mutant dying at the later constraint, which proves the constraint and leaves the guard wholly untested — and contradicts lock-first ordering, since nothing can be planted after the lock |
+| Relax the shape constraint; insert a system principal carrying a pack name, and a foreign agent carrying one reference | The constraint itself, separately: each of the "anything else" rows above must be refused by the disjunction and not by a neighbouring rule |
+| Remove the dispatch-rows guard; seed a dispatch before migrating; assert the refusal | A dispatch with no resolution row that every reader must then special-case |
+| Remove the up migration's `LOCK TABLE`; interleave an old-shape insert between scan and `ALTER` by forced ordering, on `000022`'s test pattern | The guard approves a table the writer then poisons |
+| Same for the down: interleave a `prompt.pack` configuration write after the scan | The down approves deletion of state that commits a moment later |
+| Provoke each refusal, retry without forcing, then force and retry | The documented recovery sequence, in both directions; asserted against the recorded version and dirty flag the message names |
 | Split `InstallPromptPack` into two transactions and fail between | Committed content with no installation: a row nothing can select |
 | Let the seam create a dispatch without the resolution row | A dispatch exists whose P is unrecoverable |
 | Make provisioning's three writes three transactions | An organization with content and installation but no selector: unresolvable, reached by an ordinary retry |
@@ -712,15 +806,17 @@ report; the protected defect is.
 | Accept a bare name as a selector value | A selector that cannot deterministically identify one version |
 | Skip the contract on installation **update** | An installation valid when written is unusable after an edit |
 | Make `"dev"` pass the range check instead of recording `not-evaluated` | A comparison asserted that never ran |
+| Skip the range write invariant under `"dev"` and install `min > max` | A malformed declaration on every local plane, discovered by the first tagged build |
+| Suppress restart revalidation when both versions read `"dev"` | Two different local binaries treated as one harness |
 | Have resolution re-resolve on restart | One Story spans two P values |
 | Route the fixture packs around the production loader | The binary-carries-it-and-provisioning-imports-it path is never exercised over content |
 
 The last row is the mutation this design most wants run, because it is the one
 D1 creates: it is the check that D2 actually holds, and if it passes with the
 fixtures diverted then every other green in this item is over an empty set. The
-totality-guard row is the one most likely to be proven for the wrong reason —
-this repository has shipped a mutant that died on a neighbouring check before —
-so its note about *where* it must die is part of the plan, not commentary.
+guard and constraint rows are two mutants, not one, because round 1 had written
+them as one and it proved the wrong half: a guard whose removal is only detected
+by a later constraint has never been tested at all.
 
 **Positive controls.** Each refusal test is paired with a valid pack that
 resolves through the same path, so a refusal caused by an unrelated validation
@@ -776,18 +872,46 @@ Codex's calls on the first draft's open questions, all taken: keep
 development-version behaviour; all three configuration scopes now. The repeated
 clause in D6 is gone, and the size is amendment 5.
 
+**Round 2 — Codex, 2026-09-03. Eight P1s on the round 1 fixes, all accepted
+after verification.**
+
+1. *The three origin checks did not partition valid rows*: non-agents could
+   carry partial fields, and a SQL biconditional over a NULL passes. → One
+   constraint as a disjunction of three exhaustive, null-safe shapes (D5).
+2. *`foreign` was caller-selectable.* → The origin is never an input; three
+   verbs partition the three shapes and each writes its own. The general path
+   refuses agents; `RecordForeignAgentPrincipal` requires a recorded lifetime.
+   Verified the importer is the only production writer of agent principals, so
+   the move orphans nothing (D5).
+3. *The range had no write invariant*, so `"dev"` could install malformed
+   bounds. → Valid semver and `min < max` required at install and update,
+   independent of the runtime version (D6).
+4. *A resolution cannot be `refused`*: refusals return before the dispatch
+   exists. → Vocabulary is `passed | not-evaluated`; refused attempts are not
+   persisted and their Audit design is named as deferred (D8).
+5. *Restart revalidation omitted the range and treated `"dev" == "dev"` as
+   unmoved.* → The rule now covers both, and item 6's row says so (D8, D11).
+6. *Neither migration direction locked before scanning.* → `000022.down`'s
+   lock-first pattern in both directions with a fixed table order, and the
+   forced-interleaving test (D5).
+7. *Refusal recovery was unspecified.* → Both directions document the
+   force-version sequence and test it on `TestRefusalRecoveryNeedsTheVersionForcedBack`'s
+   pattern (D5).
+8. *The totality mutant proved the constraint, not the guard.* → Two mutants:
+   seed before migration and assert the guard's count and remedy; separately
+   relax the constraint and assert the disjunction refuses each stray shape.
+
+Both open questions closed by Codex: the anti-update trigger is acceptable
+(idempotent insertion is `ON CONFLICT DO NOTHING`; the down drops the
+function), and `golang.org/x/mod/semver` **v0.37.0** is suitable — Codex
+verified its source and tests and its prerelease ordering matches the phase
+ladder. An in-tree test asserts the ladder's ordering anyway, so the claim does
+not live in a review transcript.
+
 ## Open Questions
 
-1. **Is a trigger acceptable as the immutability mechanism, given it is the
-   schema's first?** D6 argues the alternative — convention, as
-   `management_artifacts` has today — is what review just rejected. If the
-   answer is no, the honest fallback is a seam-only guarantee stated as
-   uncovered, not a `UNIQUE` dressed as one.
-2. **`golang.org/x/mod/semver` as the comparator**, subject to the source
-   verification D8 requires before it enters code. If its prerelease ordering
-   does not match the phase ladder, the fallback is a small in-tree comparator
-   over the ladder's fixed shape — which is less code than it sounds and more
-   code than anyone wants to own.
+None outstanding after round 2. The two the first draft carried — the trigger
+as the schema's first, and the semver comparator — are closed above.
 
 ## Related Documents
 
