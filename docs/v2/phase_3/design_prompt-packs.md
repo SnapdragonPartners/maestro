@@ -19,8 +19,8 @@ item 4 must migrate"* ([item 3 design](design_orchestrator-seam.md), D11), and
 registered without a reader is a guess about a future caller"* (D7). Neither is
 a stub to replace; both are absences to complete.
 
-**Three review rounds (Codex, 2026-09-03) found nine, eight and then six P1s,
-and this revision carries all twenty-three.** Each is recorded under
+**Four review rounds (Codex, 2026-09-03) found nine, eight, six and then four
+P1s, and this revision carries all twenty-seven.** Each is recorded under
 [Points Resolved In Review](#points-resolved-in-review) with what was wrong and
 where the fix landed. The first draft was M-shaped; the fixes make it L, and
 that is amendment 5.
@@ -285,8 +285,35 @@ reference, an agent with no origin — matches no disjunct and is refused. Today
 schema ties only `agent_type` to the kind (`000004:51`), so an agent principal
 may carry partial or absent MPH fields; ADR 0031 §2 says name and digest are
 *always present for an agent principal*, and this is where that becomes true.
-The references are composite on `organization_id` (000003's whole-tuple rule),
-so a resolved principal cannot name another organization's installation.
+**The references bind the identity, not only the tenant.** Round 3's references
+were composite on `organization_id` alone (000003's whole-tuple rule), which
+stops a principal naming another organization's installation and stops nothing
+else: content A with digest B, or installation C of some other content, both
+satisfied it. ADR 0031 §2 says a live principal's references *"MUST agree with
+the recorded name, digest, and organization"*, so the agreement is a key:
+
+- `prompt_pack_contents` gains `UNIQUE (content_id, organization_id, scheme, digest)`
+  — redundant with its primary key as a uniqueness fact, present so it can be
+  a **foreign-key target**. A resolved principal's
+  `(content_id, organization_id, scheme, digest)` references it, so the
+  recorded scheme and digest cannot disagree with the content row they name.
+- `prompt_pack_installations` gains `UNIQUE (installation_id, organization_id, content_id)`,
+  and a resolved principal's `(installation_id, organization_id, content_id)`
+  references it, so the installation named is an installation *of that
+  content*.
+- `dispatch_prompt_resolutions` carries the same two composite references, so
+  a resolution is bound the same way and the dispatched-principal verb copies
+  from a row that was already bound.
+
+**What stays seam-enforced, and why it must.** Name, revision and the metadata
+snapshot are **historical**: they record what the installation said at
+resolution, and after a later `UpdatePromptPackInstallation` they legitimately
+differ from the installation row. A key that tied them to the current row would
+either forbid the update or rewrite history, and ADR 0031 §1 wants neither — a
+correction *"cannot make a past run's dispatch look like it was decided on
+facts that did not yet exist."* So those three are copied by the seam from the
+resolution row, never from the installation, and their agreement with the
+dispatch is what `CreateDispatchedPrincipalInstance`'s copy test proves.
 
 #### Three writers, one per shape, and no caller chooses the origin
 
@@ -346,11 +373,36 @@ regardless of how the database was reached; the lifecycle lock is a property
 of one composer. golang-migrate's own advisory lock serializes migrations
 against each other and nothing else.
 
-**One global lock order for the whole family, used by both directions.** Round
-2 gave the up and the down different orders, and orders that reverse each other
-on shared tables admit a deadlock between a migration and any concurrent locker
-of the same tables. The order is parent before child along the family's
-reference chain:
+**One lock order for both migration directions — and an honest statement of
+what ordering can and cannot buy.** Round 3 claimed a global order would
+prevent deadlock, and review showed it cannot: the family's own writers do not
+share an access order. `CreateDispatch` reads `configuration_records` before
+`prompt_pack_installations`; provisioning writes contents, then installations,
+then configuration. No single migration order agrees with both, and a reader
+under `REPEATABLE READ` holds `ACCESS SHARE` on every table it has touched, so
+a cloud seam mid-dispatch and a migration locking in the opposite order can
+each wait on the other. Postgres detects that and aborts one of them.
+
+So the claims are separated:
+
+- **Correctness is the table lock's, unconditionally.** Whoever wins, no row is
+  inserted between a scan and its `ALTER`, because the scan does not begin
+  until the lock is held. That is the guarantee `000022.down` states and it
+  does not depend on order.
+- **Freedom from deadlock is a quiescence requirement, not an ordering
+  guarantee.** Locally it is *enforced*: `stack.Migrate` holds the lifecycle
+  lock exclusive, so no seam is open. In cloud mode it is an **operational
+  precondition** — migrate with no Orchestrator running — recorded in the
+  portability runbook, since nothing in the cloud composer can enforce it.
+- **If the precondition is violated, a deadlock may abort the migration**, and
+  that is a refused migration with the same dirty version and the same
+  documented recovery as any other refusal. It is not silent and it is not
+  corrupting; it is a retry after the operator does what the precondition
+  asked.
+
+Within that, both directions still take one fixed order, so that two
+*migrations* can never deadlock each other and so the ordering test has
+something definite to assert:
 
 ```
 prompt_pack_contents
@@ -361,12 +413,12 @@ dispatch_prompt_resolutions
 principal_instances
 ```
 
-Each direction locks the tables it inspects or alters, in that order, skipping
-none it touches. The up locks `principal_instances` and `story_dispatches`; the
-down locks `prompt_pack_installations`, `configuration_records`,
+Each direction locks every table it scans, alters **or drops**, in that order.
+The up locks `principal_instances` and `story_dispatches`. The down locks
+`prompt_pack_contents` — round 3 omitted it while dropping it —
+`prompt_pack_installations`, `configuration_records`,
 `dispatch_prompt_resolutions` and `principal_instances`. The lock-ordering test
-asserts the sequence each direction takes against this list rather than
-inferring it.
+asserts the sequence each direction takes against this list.
 
 The guard classifies every row into exactly one of the classes below, and the
 classes are exhaustive over what the pre-000023 schema **permits**, not over
@@ -405,11 +457,27 @@ run record carried, because bytes are never rewritten; under
 `pack-jcs-sha256-v1` it is the bare 64-hex `canonical.Digest` returns. The
 prefix is data *under* the legacy scheme, not a scheme marker — D4's rule that
 nothing parses a digest to discover its scheme still holds, because the scheme
-column says which form to expect. A **per-scheme format check** on
-`principal_instances` and on `prompt_pack_contents` makes it a constraint:
-`scheme = 'v1-manifest-sha256'` ⇒ `^sha256:[0-9a-f]{64}$`, and
-`scheme = 'pack-jcs-sha256-v1'` ⇒ `^[0-9a-f]{64}$`. A blank or malformed digest
-under either scheme is refused at the row, which is also what keeps the
+column says which form to expect. Round 3 wrote the format checks as
+conditionals, and a conditional over a scheme it does not name **passes** on an
+unknown scheme, so the constraints are stated as **closed enumerations per
+table, each scheme paired with its form, and nothing else admitted**:
+
+| Table | Admitted schemes | Form |
+| --- | --- | --- |
+| `prompt_pack_contents` | **`pack-jcs-sha256-v1` only** | `^[0-9a-f]{64}$` |
+| `principal_instances`, foreign shape | **`v1-manifest-sha256` only** | `^sha256:[0-9a-f]{64}$` |
+| `principal_instances`, resolved shape | **`pack-jcs-sha256-v1` only** | `^[0-9a-f]{64}$` — and bound to the content row by the composite key above, so this is belt to that key's braces |
+| `dispatch_prompt_resolutions` | `pack-jcs-sha256-v1` only | as resolved |
+
+Contents admit only the plane's own scheme because the legacy scheme is *never
+computed by the plane* (D4) and exists only for foreign imports; a legacy-scheme
+content row would be a pack the plane claims to own and could not have
+digested. The foreign shape admits only the legacy scheme because ADR 0031 §2
+defines a foreign pack as *"recorded by name and legacy-scheme digest"*; a
+foreign row under the plane's scheme would be a plane-owned identity with no
+references, which is the nullable-in-general hole by another door. A row under
+any third string matches no enumeration and is refused. A blank or malformed
+digest under either scheme is refused at the row, which is also what keeps the
 converted class above from being the last time the form is checked.
 
 #### The down migration refuses rather than discards
@@ -483,11 +551,19 @@ idempotency (*identical metadata returns the existing installation*) and D8's
 snapshot would both silently depend on input order. So coverage is a **jsonb
 object keyed by role name** with the value `true`: object keys are unique by
 construction, jsonb normalizes key order on storage, and jsonb equality is
-therefore set equality with nothing left to canonicalize. The seam builds the
-object from whatever the caller passes; a check constraint requires
-`jsonb_typeof = 'object'`. Tests install with reordered and duplicated role
-lists and assert one stored value, one identity, and `Created = false` on the
-second call.
+therefore set equality — **provided every value is the constant `true`**, which
+`jsonb_typeof = 'object'` alone does not enforce: `{"coder": true}` and
+`{"coder": 1}` have identical keys and compare unequal. So the check is
+`jsonb_typeof(declared_roles) = 'object' AND prompt_pack_roles_canonical(declared_roles)`,
+where the second is a small `IMMUTABLE` SQL function — a `CHECK` may not
+contain a subquery, and it may call an immutable function — that returns true
+only when every key is non-empty and every value is the jsonb `true`. It is
+dropped by the down beside the trigger function. The seam builds the object
+from whatever the caller passes; the constraint is what makes the
+representation canonical rather than conventionally so. Tests install with
+reordered and duplicated role lists and assert one stored value, one identity,
+and `Created = false` on the second call; a direct write of `{"coder": 1}` is
+refused by the row.
 
 **The validation version is persisted on every install and update.** Round 2
 had dispatch re-running parse and render "when the harness version has moved"
@@ -618,16 +694,26 @@ its value is the string `"dev"`. So:
   verification survives the transcript.
 - **The built-in declares the Phase 3 band**: `[v2.0.0-phase.3.0.0, v2.0.0-phase.4.0.0)`.
   Bounded, real, and the range a tagged Phase 3 binary satisfies.
-- **A development build is not compared.** A version that is not valid semver —
-  `"dev"` — makes the range check `not-evaluated`, recorded as such on the
-  resolution beside the version string. It does not pass and it does not
-  refuse: a pass would assert a comparison that never ran, which is
-  [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s
+- **Exactly two forms are admitted, and they are checked once, at `Start`.**
+  `Config.MaestroVersion` is either the **exact sentinel `"dev"`** —
+  `pkg/version`'s unset default — or a **valid semver with its leading `v`**,
+  which is what `golang.org/x/mod/semver` requires and what goreleaser stamps.
+  Anything else — a release built as `2.0.0` without the `v`, an empty string,
+  a stray suffix — is **malformed configuration and refuses startup**, typed,
+  naming the value and the two forms. Round 3 let every invalid string fall
+  into the development exception, so a mis-stamped release would have bypassed
+  every range in the plane while reporting nothing wrong. Checking at `Start`
+  rather than at dispatch means dispatch, install and update only ever see
+  the two forms, and none of them re-decides the question.
+- **The sentinel is not compared.** Under `"dev"` the range check records
+  `not-evaluated` on the resolution beside the version string. It does not
+  pass and it does not refuse: a pass would assert a comparison that never
+  ran, which is [ADR 0025](../../adr/0025-golden-stories-and-benchmark-runner.md)'s
   reported-as-zero mistake, and a refusal would make every local build
   undispatchable.
 - **Tests inject a real semver**, so the refuse branch and the pass branch are
-  both exercised, and a third test proves that `"dev"` records `not-evaluated`
-  rather than either.
+  both exercised; a third test proves that `"dev"` records `not-evaluated`
+  rather than either; and a fourth proves that `"2.0.0"` refuses `Start`.
 
 **The declared range can refuse and never authorize.** A pack declaring itself
 compatible has made a claim, not passed a check.
@@ -644,7 +730,7 @@ D1's slot rule refuses.
 | Unresolved selector: names no plane-owned version in this organization | **Yes** | Reachable and tested — a digest from another organization, or a content id that does not exist |
 | Declared range incompatible with the running Maestro version | **Yes** | Reachable and tested under an injected semver; `not-evaluated` under `"dev"` |
 | Execution's roles outside the declared coverage | **No — no subject** | Item 6's (D11). `store.Execution` carries identity and authority only; resolved configuration is items 5/6's |
-| Harness-contract re-run fails after a version move | **Yes**, with the evidence D6 now stores | Re-run when `validated_maestro_version` differs from the running version, **or when either is not valid semver** — a development build cannot claim nothing moved, exactly as D8's restart rule says. Under a real semver pair that match, skipped and recorded as such. **Vacuous over the empty built-in**, so its non-vacuous proof comes from D2's fixture packs through the same path |
+| Harness-contract re-run fails after a version move | **Yes**, with the evidence D6 now stores | Re-run when `validated_maestro_version` differs from the running version, **or when either is the `"dev"` sentinel** — a development build cannot claim nothing moved, exactly as D8's restart rule says; no other non-semver value can reach this point, because `Start` refused it. Under a real semver pair that match, skipped and recorded as such. **Vacuous over the empty built-in**, so its non-vacuous proof comes from D2's fixture packs through the same path |
 
 #### Where the resolution is persisted, and what it records
 
@@ -885,6 +971,11 @@ report; the protected defect is.
 | Remove the totality guard; **seed** an agent row with a null `prompt_hash` **before** migrating; assert the guard's distinct count and remedy text | The guard itself. Round 1 had this mutant dying at the later constraint, which proves the constraint and leaves the guard wholly untested — and contradicts lock-first ordering, since nothing can be planted after the lock |
 | Relax the shape disjunction; insert a system principal carrying a pack name, a foreign agent carrying one reference, and an agent with a NULL origin | The constraint itself, separately: each stray shape must be refused by the disjunction and not by a neighbouring rule, and the NULL-origin row is the one a biconditional would have passed |
 | Remove a per-scheme format check; insert a bare-hex digest under the legacy scheme | A digest whose form its scheme does not admit |
+| Insert a content row under `v1-manifest-sha256`, and a foreign principal under `pack-jcs-sha256-v1` | Cross-scheme rows: a pack the plane claims to own and could not have digested; a plane-owned identity with no references |
+| Insert any row under a third scheme string | The enumeration, not a conditional: an unknown scheme must be refused, not passed through |
+| Relax the composite key; give a resolved principal content A with digest B, then installation C of other content | The identity–reference agreement ADR 0031 §2 requires, which organization-only keys never checked |
+| Start with `MaestroVersion = "2.0.0"` | Fail closed on a malformed version rather than falling into the development exception |
+| Write `{"coder": 1}` directly | The value constraint: identical keys, unequal objects |
 | Seed a system principal carrying `prompt_pack_id` before migrating | The guard's second refusal class, with its own count and remedy — not the first class's message |
 | Seed an agent whose `prompt_hash` is `''` before migrating | The first refusal class on a non-NULL value: a blank passes an `IS NOT NULL` test and must not pass the guard |
 | Write `revision = 0` directly | The check, not the seam |
@@ -1021,6 +1112,27 @@ after verification.**
    sequence step now names the single disjunction and the three-verb
    partition; new mutants cover each new mechanism above.
 
+**Round 4 — Codex, 2026-09-03. Four P1s and one correction, all accepted.**
+
+1. *The recorded identity was not bound to its references.* → Composite
+   identity keys on contents and installations, referenced by resolved
+   principals and by resolutions; name, revision and snapshot named as the
+   historical fields the seam copies from the resolution (D5).
+2. *Scheme constraints were conditionals, so an unknown scheme passed, and
+   contents admitted the legacy scheme.* → Closed per-table enumerations:
+   contents and the resolved shape admit only the plane's scheme; the foreign
+   shape only the legacy one (D5).
+3. *The development exception was too broad.* → Exactly `"dev"` or valid
+   `v`-prefixed semver, checked once at `Start`; anything else refuses
+   startup (D8).
+4. *The lock-order claim overreached*: the family's own writers disagree on
+   access order, and the down dropped a table it did not lock. → Correctness
+   as the lock's, deadlock-freedom as a quiescence requirement enforced
+   locally and operational in cloud, an aborted migration as an ordinary
+   refusal; `prompt_pack_contents` added to the down's set (D5).
+5. *`jsonb_typeof` did not enforce the constant values.* → An immutable
+   helper function in the check (D6).
+
 Both open questions closed by Codex: the anti-update trigger is acceptable
 (idempotent insertion is `ON CONFLICT DO NOTHING`; the down drops the
 function), and `golang.org/x/mod/semver` **v0.37.0** is suitable — Codex
@@ -1030,7 +1142,7 @@ not live in a review transcript.
 
 ## Open Questions
 
-None outstanding after round 3. The two the first draft carried — the trigger
+None outstanding after round 4. The two the first draft carried — the trigger
 as the schema's first, and the semver comparator — are closed above.
 
 ## Related Documents
