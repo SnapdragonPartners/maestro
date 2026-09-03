@@ -48,3 +48,25 @@ func TestEmbeddedIsTheHighestUpMigration(t *testing.T) {
 		t.Fatalf("Embedded = %d, but item 2 landed migration 000022", got)
 	}
 }
+
+// TestParseMigrationVersionIsBounded is the CodeQL finding PR #346's scan
+// raised: an unbounded parse feeding a uint conversion truncates on a 32-bit
+// platform, so a binary would believe its own schema were older than it is.
+//
+// It drives the helper rather than strconv, so it is a claim about this
+// package: THE MUTANT is widening the bound back to 64, which makes the
+// oversized case parse successfully and this test fail on any platform --
+// including the 64-bit ones where the truncation itself cannot be observed.
+func TestParseMigrationVersionIsBounded(t *testing.T) {
+	const beyond32Bits = "4294967296" // MaxUint32 + 1
+	if _, err := parseMigrationVersion(beyond32Bits); err == nil {
+		t.Errorf("%s parsed; a version beyond a 32-bit uint would truncate on a 32-bit platform", beyond32Bits)
+	}
+	if _, err := parseMigrationVersion("4294967295"); err != nil {
+		t.Errorf("MaxUint32 was refused: %v", err)
+	}
+	got, err := parseMigrationVersion("000022")
+	if err != nil || got != 22 {
+		t.Errorf("parseMigrationVersion(\"000022\") = %d, %v; want 22", got, err)
+	}
+}

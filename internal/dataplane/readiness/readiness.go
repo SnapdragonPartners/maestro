@@ -136,6 +136,18 @@ func RemedyOf(err error) (string, bool) {
 //
 // A new error is returned rather than the found one mutated: the original
 // may be shared, and rewriting it would change what an earlier holder sees.
+//
+// The result carries the PRODUCER's diagnostic, not the error it was handed.
+// Handed `err` it would carry a chain that already contains the readiness
+// error, and rendering walks that chain -- so the operator read the whole
+// refusal twice, with the SUPERSEDED remedy last, which is the one thing a
+// re-remedy exists to prevent. Keeping `r.Err` renders once and still lets a
+// caller errors.Is the producer's own sentinel.
+//
+// The cost is that a composer's wrapping text between the producer and here
+// is not rendered. That is deliberate: a composer with context to add puts it
+// in the Detail, which is the field the operator reads, rather than in a
+// wrapper this function would have to unpick.
 func WithRemedy(err error, remedy string) error {
 	var r *Error
 	if !errors.As(err, &r) {
@@ -144,5 +156,5 @@ func WithRemedy(err error, remedy string) error {
 	if remedy == "" {
 		panic(fmt.Sprintf("readiness: cause %s re-remedied with an empty remedy", r.Cause))
 	}
-	return &Error{Cause: r.Cause, Detail: r.Detail, Remedy: remedy, Err: err}
+	return &Error{Cause: r.Cause, Detail: r.Detail, Remedy: remedy, Err: r.Err}
 }

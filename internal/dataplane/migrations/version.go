@@ -60,6 +60,24 @@ func isUndefinedTable(err error) bool {
 // migrationName matches an embedded up migration and captures its version.
 var migrationName = regexp.MustCompile(`^(\d+)_.+\.up\.sql$`)
 
+// parseMigrationVersion converts a filename's version digits to the type the
+// schema version is carried in.
+//
+// Bounded at 32 bits, not 64: the result is a uint, which is 32 bits on a
+// 32-bit platform, so an unbounded parse there would truncate a large version
+// into a small one silently -- and a binary that believed its own schema were
+// older than it is would refuse a plane it should accept, or accept one it
+// should not. Bounding the PARSE makes the conversion total on every platform
+// Go builds for, and a version beyond it is refused by name rather than
+// wrapping. Raised by CodeQL on PR #346.
+func parseMigrationVersion(digits string) (uint, error) {
+	version, err := strconv.ParseUint(digits, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("migration version %q: %w", digits, err)
+	}
+	return uint(version), nil
+}
+
 // Embedded returns the highest migration version this binary carries — the
 // version a plane must be at for this binary to use it.
 //
@@ -77,13 +95,13 @@ func Embedded() (uint, error) {
 		if m == nil {
 			continue
 		}
-		version, parseErr := strconv.ParseUint(m[1], 10, 64)
+		version, parseErr := parseMigrationVersion(m[1])
 		if parseErr != nil {
 			return 0, fmt.Errorf("embedded migration %s: %w", entry.Name(), parseErr)
 		}
 		found = true
-		if uint(version) > highest {
-			highest = uint(version)
+		if version > highest {
+			highest = version
 		}
 	}
 	if !found {

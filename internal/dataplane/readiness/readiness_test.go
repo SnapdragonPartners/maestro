@@ -85,3 +85,36 @@ func expectPanic(t *testing.T, what string, fn func()) {
 	}()
 	fn()
 }
+
+// TestWithRemedyRendersTheRefusalOnce is the defect PR #346's review found:
+// carrying the handed error meant rendering walked a chain that already
+// contained the readiness error, so the operator read the whole refusal
+// twice -- and the SUPERSEDED remedy came last, which is the one outcome a
+// re-remedy exists to prevent.
+//
+// THE MUTANT: carry `err` instead of `r.Err`. Both counts become 2 and the
+// stale remedy reappears.
+func TestWithRemedyRendersTheRefusalOnce(t *testing.T) {
+	producer := errors.New("dial tcp 127.0.0.1:5432: connect: connection refused")
+	neutral := Refuse(SchemaBehind, "the plane is at 3 and this binary needs 5", "apply the pending migrations", producer)
+	// A composer wraps, then re-remedies -- the real local path.
+	local := WithRemedy(fmt.Errorf("open the persistence seam for /data: %w", neutral), "run `make dataplane-migrate`")
+
+	rendered := local.Error()
+	if n := strings.Count(rendered, "data plane not ready"); n != 1 {
+		t.Errorf("the refusal renders %d times, want once:\n%s", n, rendered)
+	}
+	if n := strings.Count(rendered, "the plane is at 3"); n != 1 {
+		t.Errorf("the detail renders %d times, want once:\n%s", n, rendered)
+	}
+	if strings.Contains(rendered, "apply the pending migrations") {
+		t.Errorf("the superseded remedy is still rendered:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "run `make dataplane-migrate`") {
+		t.Errorf("the new remedy is not rendered:\n%s", rendered)
+	}
+	// The producer's diagnostic survives, in the text and in the chain.
+	if !strings.Contains(rendered, "connection refused") || !errors.Is(local, producer) {
+		t.Errorf("the producer's diagnostic was lost:\n%s", rendered)
+	}
+}
