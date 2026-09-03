@@ -115,7 +115,7 @@ func (m *mockGitHubMergeClient) failCreatePRWith(err error) {
 
 // TestHandleMergeRequest_MissingTypedPayload verifies error when typed payload is missing.
 func TestHandleMergeRequest_MissingTypedPayload(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 
 	driver := &Driver{
 		BaseStateMachine: baseSM,
@@ -135,7 +135,7 @@ func TestHandleMergeRequest_MissingTypedPayload(t *testing.T) {
 
 // TestHandleMergeRequest_NoPROrBranch verifies error when neither PR URL nor branch is provided.
 func TestHandleMergeRequest_NoPROrBranch(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 
 	driver := &Driver{
@@ -170,7 +170,7 @@ func TestHandleMergeRequest_NoPROrBranch(t *testing.T) {
 
 // TestHandleMergeRequest_MergeSuccess verifies successful merge with PR URL.
 func TestHandleMergeRequest_MergeSuccess(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 
 	driver := &Driver{
@@ -210,7 +210,7 @@ func TestHandleMergeRequest_MergeSuccess(t *testing.T) {
 
 // TestHandleMergeRequest_MergeWithBranch_ExistingPR verifies merge with existing PR for branch.
 func TestHandleMergeRequest_MergeWithBranch_ExistingPR(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 	mockGH.returnExistingPR(42, "feature-branch")
 
@@ -257,7 +257,7 @@ func TestHandleMergeRequest_MergeWithBranch_ExistingPR(t *testing.T) {
 
 // TestHandleMergeRequest_MergeWithBranch_CreatesPR verifies PR creation when none exists.
 func TestHandleMergeRequest_MergeWithBranch_CreatesPR(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 	// Default behavior: no existing PRs
 
@@ -305,7 +305,7 @@ func TestHandleMergeRequest_MergeWithBranch_CreatesPR(t *testing.T) {
 
 // TestHandleMergeRequest_MergeConflict verifies handling of merge conflicts.
 func TestHandleMergeRequest_MergeConflict(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 	mockGH.returnMergeConflict("CONFLICT in src/main.go: content differs\nCONFLICT in README.md: content differs")
 
@@ -344,7 +344,7 @@ func TestHandleMergeRequest_MergeConflict(t *testing.T) {
 
 // TestHandleMergeRequest_KnowledgeGraphConflict verifies special handling for knowledge.dot conflicts.
 func TestHandleMergeRequest_KnowledgeGraphConflict(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 	mockGH.returnMergeConflict("CONFLICT in .maestro/knowledge.dot: content differs")
 
@@ -383,7 +383,7 @@ func TestHandleMergeRequest_KnowledgeGraphConflict(t *testing.T) {
 
 // TestHandleMergeRequest_MergeError verifies handling of merge errors.
 func TestHandleMergeRequest_MergeError(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 	mockGH.failMergeWith(assert.AnError)
 
@@ -420,7 +420,7 @@ func TestHandleMergeRequest_MergeError(t *testing.T) {
 
 // TestHandleMergeRequest_CreatePRError verifies handling of PR creation errors.
 func TestHandleMergeRequest_CreatePRError(t *testing.T) {
-	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil, nil)
+	baseSM := agent.NewBaseStateMachine("test-architect", StateRequest, nil)
 	mockGH := newMockGitHubClient()
 	mockGH.failCreatePRWith(assert.AnError)
 

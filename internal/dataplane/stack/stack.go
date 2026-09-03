@@ -716,12 +716,12 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 			"which is the only operation that provisions one", ErrNoPlane, c.Roots.Data, operation)
 	}
 
-	access := secret.LoadOnly
+	access := paths.LoadOnly
 	if operation == lifecycleUp && fresh {
-		access = secret.MayCreate
+		access = paths.MayCreate
 	}
 
-	key, keyErr := secret.KeyFile(c.Roots.Config, access).RootKey()
+	key, keyErr := paths.KeyFile(c.Roots.Config, access).RootKey()
 	if keyErr == nil {
 		return key, nil
 	}
@@ -760,7 +760,7 @@ func rootKeyFor(c *Config, operation lifecycle) ([]byte, error) {
 // level.
 //
 // The answer is BackendKeyFile because rootKeyFor resolves through
-// secret.KeyFile. A plane that obtains its key some other way — one that does
+// paths.KeyFile. A plane that obtains its key some other way — one that does
 // not hold its own key at all — must not route through here; it names its own
 // source, which is the whole point of the parameter.
 func resolvedRootKey(rootKey []byte) (secret.RootKeyProvider, error) {

@@ -121,6 +121,18 @@ func (s *Store) GetAuditArtifact(ctx context.Context, organizationID, artifactID
 	return s.direct().GetAuditArtifact(ctx, organizationID, artifactID)
 }
 
+// EffectiveBase measures an original's effective view without locking.
+func (s *Store) EffectiveBase(ctx context.Context, organizationID, originalID uuid.UUID) (store.AmendmentBase, error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.AmendmentBase, error) {
+		base, txErr := t.EffectiveBase(ctx, organizationID, originalID)
+		return &base, txErr
+	})
+	if err != nil {
+		return store.AmendmentBase{}, err
+	}
+	return *result, nil
+}
+
 // EffectiveView is the exception among reads: it issues two statements, and
 // an amendment accepted between them would produce a view assembled from
 // two different instants. It therefore runs in a transaction.
@@ -530,4 +542,185 @@ func (s *Store) ClaimSuiteReport(
 		return store.Bootstrapped[store.SuiteReportClaim]{}, err
 	}
 	return *result, nil
+}
+
+// GetProductBySlug resolves a Product within one tenant.
+func (s *Store) GetProductBySlug(ctx context.Context, organizationID uuid.UUID, slug string) (*store.Product, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Product, error) { return t.GetProductBySlug(ctx, organizationID, slug) })
+}
+
+// GetRepositoryBySlug resolves a repository within one tenant.
+func (s *Store) GetRepositoryBySlug(ctx context.Context, organizationID uuid.UUID, slug string) (*store.Repository, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Repository, error) { return t.GetRepositoryBySlug(ctx, organizationID, slug) })
+}
+
+// ProvisionProduct provisions a Product, idempotently.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ProvisionProduct(ctx context.Context, input store.ProvisionProductInput) (store.Bootstrapped[store.Product], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Product], error) {
+		outcome, txErr := t.ProvisionProduct(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Product]{}, err
+	}
+	return *result, nil
+}
+
+// ProvisionRepository provisions a repository and its primary membership in
+// one transaction.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ProvisionRepository(ctx context.Context, input store.ProvisionRepositoryInput) (store.Bootstrapped[store.Repository], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Repository], error) {
+		outcome, txErr := t.ProvisionRepository(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Repository]{}, err
+	}
+	return *result, nil
+}
+
+// AddRepositoryToProduct records a secondary membership, idempotently.
+func (s *Store) AddRepositoryToProduct(ctx context.Context, organizationID, productID, repositoryID uuid.UUID) (store.Bootstrapped[store.Repository], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.Repository], error) {
+		outcome, txErr := t.AddRepositoryToProduct(ctx, organizationID, productID, repositoryID)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.Repository]{}, err
+	}
+	return *result, nil
+}
+
+// The work family.
+
+// GetFeature resolves a Feature within one tenant.
+func (s *Store) GetFeature(ctx context.Context, organizationID, featureID uuid.UUID) (*store.Feature, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Feature, error) { return t.GetFeature(ctx, organizationID, featureID) })
+}
+
+// GetEpic resolves an Epic within one tenant.
+func (s *Store) GetEpic(ctx context.Context, organizationID, epicID uuid.UUID) (*store.Epic, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Epic, error) { return t.GetEpic(ctx, organizationID, epicID) })
+}
+
+// GetStory resolves a Story within one tenant.
+func (s *Store) GetStory(ctx context.Context, organizationID, storyID uuid.UUID) (*store.Story, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Story, error) { return t.GetStory(ctx, organizationID, storyID) })
+}
+
+// ListStoriesByEpic lists an Epic's Stories in id order.
+func (s *Store) ListStoriesByEpic(ctx context.Context, organizationID, epicID uuid.UUID) ([]store.Story, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.Story, error) { return t.ListStoriesByEpic(ctx, organizationID, epicID) })
+}
+
+// GetWorkGroupByEpic resolves the Epic's one Work Group.
+func (s *Store) GetWorkGroupByEpic(ctx context.Context, organizationID, epicID uuid.UUID) (*store.WorkGroup, error) {
+	return inTx(ctx, s, func(t *tx) (*store.WorkGroup, error) { return t.GetWorkGroupByEpic(ctx, organizationID, epicID) })
+}
+
+// ListIncomingStoryDependencies returns a Story's incoming edges.
+func (s *Store) ListIncomingStoryDependencies(ctx context.Context, organizationID, storyID uuid.UUID) ([]store.StoryDependency, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.StoryDependency, error) {
+		return t.ListIncomingStoryDependencies(ctx, organizationID, storyID)
+	})
+}
+
+// CreateFeature creates a Feature under a Product.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateFeature(ctx context.Context, input store.CreateFeatureInput) (*store.Feature, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Feature, error) { return t.CreateFeature(ctx, input) })
+}
+
+// CreateEpic creates an Epic, deriving its Product from the Feature.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateEpic(ctx context.Context, input store.CreateEpicInput) (*store.Epic, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Epic, error) { return t.CreateEpic(ctx, input) })
+}
+
+// CreateStory creates a Story, deriving Feature and Product from the Epic.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) CreateStory(ctx context.Context, input store.CreateStoryInput) (*store.Story, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Story, error) { return t.CreateStory(ctx, input) })
+}
+
+// EnsureWorkGroup returns the Epic's Work Group, creating it if absent.
+func (s *Store) EnsureWorkGroup(ctx context.Context, organizationID, epicID uuid.UUID) (store.Bootstrapped[store.WorkGroup], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.WorkGroup], error) {
+		outcome, txErr := t.EnsureWorkGroup(ctx, organizationID, epicID)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.WorkGroup]{}, err
+	}
+	return *result, nil
+}
+
+// The dispatch family.
+
+// SetStoryGoverningArtifact points a Story at an accepted story record.
+func (s *Store) SetStoryGoverningArtifact(ctx context.Context, organizationID, storyID, artifactID uuid.UUID) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.SetStoryGoverningArtifact(ctx, organizationID, storyID, artifactID)
+	})
+	return err
+}
+
+// SetEpicGoverningArtifact points an Epic at an accepted epic record.
+func (s *Store) SetEpicGoverningArtifact(ctx context.Context, organizationID, epicID, artifactID uuid.UUID) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.SetEpicGoverningArtifact(ctx, organizationID, epicID, artifactID)
+	})
+	return err
+}
+
+// CreateDispatch derives a Story's basis and writes the dispatch whole.
+func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) { return t.CreateDispatch(ctx, organizationID, storyID) })
+}
+
+// AcceptDispatch flips pending to accepted and creates the execution.
+func (s *Store) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Execution, error) { return t.AcceptDispatch(ctx, organizationID, dispatchID) })
+}
+
+// FailDispatch flips pending to failed.
+func (s *Store) FailDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, failureCode, failureDetail string) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.FailDispatch(ctx, organizationID, dispatchID, failureCode, failureDetail)
+	})
+	return err
+}
+
+// InvalidateDispatch flips pending to invalidated.
+func (s *Store) InvalidateDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) error {
+	_, err := inTx(ctx, s, func(t *tx) (struct{}, error) {
+		return struct{}{}, t.InvalidateDispatch(ctx, organizationID, dispatchID)
+	})
+	return err
+}
+
+// GetDispatch reads a dispatch with its basis.
+func (s *Store) GetDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) { return t.GetDispatch(ctx, organizationID, dispatchID) })
+}
+
+// ListDispatchesByDisposition lists an organization's dispatches in one disposition.
+func (s *Store) ListDispatchesByDisposition(ctx context.Context, organizationID uuid.UUID, disposition store.Disposition) ([]store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.StoryDispatch, error) {
+		return t.ListDispatchesByDisposition(ctx, organizationID, disposition)
+	})
+}
+
+// GetExecutionByDispatch reads the execution an accepted dispatch created.
+func (s *Store) GetExecutionByDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Execution, error) {
+		return t.GetExecutionByDispatch(ctx, organizationID, dispatchID)
+	})
 }

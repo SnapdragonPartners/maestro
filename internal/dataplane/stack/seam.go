@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/registry"
@@ -51,12 +52,16 @@ import (
 // per open file description, and the shared request would block against the
 // caller's own exclusive one forever.
 //
-// The registry is the CALLER's: what types are readable is a property of
-// the caller's job, not of the plane, and an empty one here would refuse
-// every payload the caller came to write.
-func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store.Store, err error) {
+// Both registries are the CALLER's: what types are readable and what keys
+// are writable are properties of the caller's job, not of the plane, and an
+// empty one here would refuse every payload or key the caller came to write.
+// A caller that writes no configuration says so with configkeys.MustNew(nil).
+func OpenSeam(ctx context.Context, c *Config, types *registry.Registry, keys *configkeys.Registry) (_ store.Store, err error) {
 	if types == nil {
 		return nil, fmt.Errorf("open the persistence seam: no artifact registry was supplied")
+	}
+	if keys == nil {
+		return nil, fmt.Errorf("open the persistence seam: no configuration-key registry was supplied")
 	}
 	if mkErr := os.MkdirAll(c.Roots.Data, 0o700); mkErr != nil {
 		return nil, fmt.Errorf("create data root %s: %w", c.Roots.Data, mkErr)
@@ -76,12 +81,17 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 
 	// UNDER the lock, which is the whole point: the marker state a guard
 	// reads cannot change while this is held.
+	//
+	// Each refusal below crosses the seam as a readiness cause (design D6):
+	// the caller above the seam cannot import this package's sentinels, so
+	// the mapping happens here, where the sentinels are.
 	if guardErr := guardRestoreState(c, lifecycleUse); guardErr != nil {
-		err = guardErr
+		err = classifyLocal(guardErr)
 		return nil, err
 	}
 	rootKey, err := rootKeyFor(c, lifecycleUse)
 	if err != nil {
+		err = classifyLocal(err)
 		return nil, err
 	}
 	dsn, err := c.DSN(rootKey)
@@ -90,6 +100,7 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 	}
 	blob, err := ensureBucket(ctx, c, rootKey)
 	if err != nil {
+		err = objectStoreUnusable(err)
 		return nil, err
 	}
 	// The key this function already resolved, wrapped — never a second
@@ -124,12 +135,14 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry) (_ store
 		Objects: blob,
 		RootKey: keyProvider,
 		Types:   types,
+		Keys:    keys,
 		Owned: []plane.Owned{
 			{What: "data-plane lifecycle lock", Close: lock},
 		},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open the persistence seam for %s: %w", c.Roots.Data, err)
+		// The probe's remedies are neutral; this deployment has commands.
+		return nil, localizeProbe(fmt.Errorf("open the persistence seam for %s: %w", c.Roots.Data, err))
 	}
 	return seam, nil
 }

@@ -21,6 +21,7 @@ import (
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
+	"orchestrator/internal/dataplane/work"
 )
 
 // testType is registered per-test rather than globally: the registry ships
@@ -49,18 +50,18 @@ func requireTitle() registry.Validator {
 
 func testRegistry(t *testing.T) *registry.Registry {
 	t.Helper()
-	built, err := registry.New(map[registry.Type]registry.Entry{
-		testType: {
-			Category:       registry.CategoryManagement,
-			CurrentVersion: 1,
-			Validators:     map[int]registry.Validator{1: requireTitle()},
-		},
-		"test_event": {
-			Category:       registry.CategoryAudit,
-			CurrentVersion: 1,
-			Validators:     map[int]registry.Validator{1: requireTitle()},
-		},
-	})
+	entries := work.RegistryEntries() // the production types, so dispatch tests write real records
+	entries[testType] = registry.Entry{
+		Category:       registry.CategoryManagement,
+		CurrentVersion: 1,
+		Validators:     map[int]registry.Validator{1: requireTitle()},
+	}
+	entries["test_event"] = registry.Entry{
+		Category:       registry.CategoryAudit,
+		CurrentVersion: 1,
+		Validators:     map[int]registry.Validator{1: requireTitle()},
+	}
+	built, err := registry.New(entries)
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}

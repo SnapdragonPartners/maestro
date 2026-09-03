@@ -17,8 +17,6 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
-
-	"orchestrator/pkg/utils"
 )
 
 const (
@@ -235,7 +233,10 @@ func verifyOwnedAndWritable(dir string) error {
 		return fmt.Errorf("%w: %s has mode %#o, want %#o", ErrServiceDataDir, dir, perm, rootPerm)
 	}
 
-	stat, ok := utils.SafeAssert[*syscall.Stat_t](info.Sys())
+	// A checked assertion rather than the repository's SafeAssert helper: that
+	// helper lives in pkg/utils, whose closure reaches v1's file-based
+	// configuration, and the persistence seam must not (design D2).
+	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return fmt.Errorf("%w: cannot read ownership of %s on this platform", ErrServiceDataDir, dir)
 	}

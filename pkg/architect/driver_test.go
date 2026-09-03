@@ -38,7 +38,7 @@ func newTestDriver() *Driver {
 	// Create a minimal persistence channel (won't be used)
 	persistCh := make(chan<- *persistence.Request, 10)
 
-	baseSM := agent.NewBaseStateMachine("test-arch", StateWaiting, nil, architectTransitions)
+	baseSM := agent.NewBaseStateMachine("test-arch", StateWaiting, architectTransitions)
 
 	return &Driver{
 		BaseStateMachine:   baseSM,

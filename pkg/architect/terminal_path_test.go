@@ -28,7 +28,7 @@ func newTerminalTestDriver(t *testing.T) (*Driver, *dispatch.Dispatcher) {
 	}
 
 	queue := NewQueue(nil)
-	baseSM := agent.NewBaseStateMachine("test-arch", StateWaiting, nil, architectTransitions)
+	baseSM := agent.NewBaseStateMachine("test-arch", StateWaiting, architectTransitions)
 	persistCh := make(chan<- *persistence.Request, 10)
 
 	driver := &Driver{

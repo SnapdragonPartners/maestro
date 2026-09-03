@@ -3,7 +3,6 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -54,9 +53,6 @@ type StateMachine interface {
 	// Initialize sets up the state machine.
 	Initialize(ctx context.Context) error
 
-	// Persist saves the current state to durable storage.
-	Persist() error
-
 	// TruncateTransitionHistoryIfNeeded truncates old state transitions if history is too long.
 	TruncateTransitionHistoryIfNeeded() error
 }
@@ -67,14 +63,6 @@ type StateData map[string]any
 // TransitionTable represents valid state transitions for an agent instance.
 type TransitionTable map[proto.State][]proto.State
 
-// StateStore defines the interface for state persistence.
-type StateStore interface {
-	// Save persists a value with the given ID.
-	Save(id string, value any) error
-	// Load retrieves a value by ID into the provided destination.
-	Load(id string, dest any) error
-}
-
 // BaseStateMachine provides common state machine functionality.
 //
 //nolint:govet // Large complex state machine struct, logical grouping preferred over memory optimization
@@ -83,7 +71,6 @@ type BaseStateMachine struct {
 	currentState proto.State
 	stateData    StateData
 	transitions  []StateTransition
-	store        StateStore      // State persistence
 	table        TransitionTable // Instance-local transition table
 	mu           sync.Mutex      // Protects state changes
 	retryCount   int             // Tracks retry attempts
@@ -108,7 +95,7 @@ type BaseStateMachine struct {
 }
 
 // NewBaseStateMachine creates a new base state machine with an optional transition table.
-func NewBaseStateMachine(agentID string, initialState proto.State, store StateStore, table TransitionTable) *BaseStateMachine {
+func NewBaseStateMachine(agentID string, initialState proto.State, table TransitionTable) *BaseStateMachine {
 	// Use global ValidTransitions as fallback to preserve existing behavior.
 	if table == nil {
 		table = ValidTransitions
@@ -121,7 +108,6 @@ func NewBaseStateMachine(agentID string, initialState proto.State, store StateSt
 		currentState:   initialState,
 		stateData:      make(StateData),
 		transitions:    make([]StateTransition, 0),
-		store:          store,
 		table:          table,
 		maxRetries:     DefaultMaxRetries,
 		logger:         logx.NewLogger(agentID),
@@ -283,11 +269,6 @@ func (sm *BaseStateMachine) TransitionTo(ctx context.Context, newState proto.Sta
 		sm.stateData[k] = v
 	}
 
-	// Persist state changes.
-	if err := sm.Persist(); err != nil {
-		return fmt.Errorf("failed to persist state transition: %w", err)
-	}
-
 	return nil
 }
 
@@ -301,26 +282,6 @@ func (sm *BaseStateMachine) GetTransitions() []StateTransition {
 // GetAgentID returns the agent ID.
 func (sm *BaseStateMachine) GetAgentID() string {
 	return sm.agentID
-}
-
-// Persist saves the current state to durable storage.
-func (sm *BaseStateMachine) Persist() error {
-	if sm.store == nil {
-		return nil // No storage configured
-	}
-
-	// Save current state and data.
-	state := map[string]any{
-		"current_state": sm.currentState.String(),
-		"state_data":    sm.stateData,
-		"transitions":   sm.transitions,
-		"retry_count":   sm.retryCount,
-	}
-
-	if err := sm.store.Save(sm.agentID, state); err != nil {
-		return fmt.Errorf("failed to save agent state: %w", err)
-	}
-	return nil
 }
 
 // TruncateTransitionHistoryIfNeeded truncates old state transitions if history is too long.
@@ -422,83 +383,13 @@ func (sm *BaseStateMachine) ProcessState(_ context.Context) (proto.State, bool, 
 }
 
 // Initialize sets up the state machine.
+//
+// Nothing is loaded. The StateStore that once sat here persisted nothing at
+// runtime -- every production constructor passed nil (Phase 3 item 1,
+// finding 1) -- and the durable workflow state that replaces it lives in the
+// data plane, read through the Orchestrator's recovery projection (item 3,
+// design D8/D9), never through the agent.
 func (sm *BaseStateMachine) Initialize(_ context.Context) error {
-	// Load previous state if available.
-	if sm.store != nil {
-		var state map[string]any
-		if err := sm.store.Load(sm.agentID, &state); err != nil {
-			// No state found is OK - this is first run.
-			if errors.Is(err, ErrStateNotFound) {
-				return nil
-			}
-			return fmt.Errorf("failed to load state: %w", err)
-		}
-
-		// Handle nil state map (no previous state)
-		if state == nil {
-			return nil
-		}
-
-		// Restore state from storage.
-		sm.mu.Lock()
-		defer sm.mu.Unlock()
-
-		// Restore transitions.
-		if transitionsAny, ok := state["transitions"].([]any); ok {
-			transitions := make([]StateTransition, 0, len(transitionsAny))
-			for _, t := range transitionsAny {
-				tMap, ok := t.(map[string]any)
-				if !ok {
-					continue
-				}
-				transition := StateTransition{}
-
-				// Safely extract from_state.
-				if fromState, ok := tMap["from_state"].(string); ok {
-					transition.FromState = proto.State(fromState)
-				}
-
-				// Safely extract to_state.
-				if toState, ok := tMap["to_state"].(string); ok {
-					transition.ToState = proto.State(toState)
-				}
-
-				// Safely extract timestamp.
-				if ts, ok := tMap["timestamp"].(string); ok {
-					if t, err := time.Parse(time.RFC3339, ts); err == nil {
-						transition.Timestamp = t
-					}
-				}
-
-				// Safely extract metadata.
-				if meta, ok := tMap["metadata"].(map[string]any); ok {
-					transition.Metadata = meta
-				}
-
-				transitions = append(transitions, transition)
-			}
-			sm.transitions = transitions
-		}
-
-		// Restore state data.
-		if stateData, ok := state["state_data"].(map[string]any); ok {
-			sm.stateData = make(StateData)
-			for k, v := range stateData {
-				sm.stateData[k] = v
-			}
-		}
-
-		// Restore retry count.
-		if retryCount, ok := state["retry_count"].(float64); ok {
-			sm.retryCount = int(retryCount)
-		}
-
-		// Restore current state.
-		if currentState, ok := state["current_state"].(string); ok {
-			sm.currentState = proto.State(currentState)
-		}
-	}
-
 	return nil
 }
 

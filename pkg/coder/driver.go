@@ -497,7 +497,7 @@ func NewCoder(ctx context.Context, agentID, workDir string, cloneManager *CloneM
 	modelName := config.GetEffectiveCoderModel()
 
 	// Create state machine
-	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine(agentID, proto.StateWaiting, CoderTransitions)
 
 	// Create build registry
 	buildRegistry := build.NewRegistry()
@@ -962,11 +962,6 @@ func (c *Coder) ProcessApprovalResult(ctx context.Context, approvalStatus, appro
 		return logx.Errorf("unknown approval type: %s", approvalType)
 	}
 
-	// Persist state to ensure approval result is saved.
-	if err := c.BaseStateMachine.Persist(); err != nil {
-		return logx.Wrap(err, "failed to persist approval result")
-	}
-
 	// Debug logging for approval processing.
 	logx.DebugToFile(ctx, "coder", "approval_debug.log", "ProcessApprovalResult called - status=%s->%s, type=%s", approvalStatus, standardStatus, approvalType)
 
@@ -1107,9 +1102,6 @@ func (c *Coder) Shutdown(ctx context.Context) error {
 	}
 
 	c.logger.Info("Coder agent %s shutdown complete", c.BaseStateMachine.GetAgentID())
-	if err := c.BaseStateMachine.Persist(); err != nil {
-		return fmt.Errorf("failed to persist coder state on shutdown: %w", err)
-	}
 	return nil
 }
 

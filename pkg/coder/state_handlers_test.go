@@ -46,7 +46,7 @@ func createTestCoder(t *testing.T, opts *testCoderOptions) *Coder {
 		t.Fatalf("Failed to create renderer: %v", err)
 	}
 
-	sm := agent.NewBaseStateMachine("test-coder-001", proto.StateWaiting, nil, CoderTransitions)
+	sm := agent.NewBaseStateMachine("test-coder-001", proto.StateWaiting, CoderTransitions)
 
 	// Create minimal chat service for tool provider
 	chatCfg := &config.ChatConfig{

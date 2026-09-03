@@ -213,7 +213,7 @@ func TestFormatProbingEvidence_Icons(t *testing.T) {
 // --- Unit tests: shouldRunAdversarialProbing ---
 
 func newTestStateMachine() *agent.BaseStateMachine {
-	return agent.NewBaseStateMachine("test-coder", StateTesting, nil, CoderTransitions)
+	return agent.NewBaseStateMachine("test-coder", StateTesting, CoderTransitions)
 }
 
 func setupEligibleSM(t *testing.T) *agent.BaseStateMachine {

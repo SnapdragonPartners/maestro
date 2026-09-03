@@ -91,3 +91,26 @@ func TestTxDoesNotAdvertiseObjectOperations(t *testing.T) {
 		}
 	}
 }
+
+// TestTxDoesNotAdvertiseRecovery guards the third split, for the same
+// reason as truncation: OpenWork opens its own REPEATABLE READ snapshot and
+// locks nothing, which a caller's READ COMMITTED transaction cannot promise.
+func TestTxDoesNotAdvertiseRecovery(t *testing.T) {
+	const method = "OpenWork"
+	for _, surface := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"Tx", reflect.TypeOf((*Tx)(nil)).Elem()},
+		{"Reader", reflect.TypeOf((*Reader)(nil)).Elem()},
+		{"Writer", reflect.TypeOf((*Writer)(nil)).Elem()},
+	} {
+		if _, found := surface.typ.MethodByName(method); found {
+			t.Errorf("%s advertises %s; the projection's read needs its own snapshot and belongs on Recovery, "+
+				"which only Store embeds", surface.name, method)
+		}
+	}
+	if _, found := reflect.TypeOf((*Store)(nil)).Elem().MethodByName(method); !found {
+		t.Errorf("Store no longer offers %s, so recovery is unreachable through the seam", method)
+	}
+}

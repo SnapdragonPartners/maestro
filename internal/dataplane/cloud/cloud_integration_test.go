@@ -50,6 +50,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -58,9 +59,11 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"orchestrator/internal/dataplane/benchmarkimport"
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/importslice"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 )
@@ -276,7 +279,7 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(ctx, cfg, types)
+	seam, err := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}
@@ -335,7 +338,7 @@ func migratedCloudPlane(
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(ctx, cfg, types)
+	seam, err := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}
@@ -805,10 +808,18 @@ func TestCloudOpenRefusesAMissingBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(context.Background(), cfg, types)
+	seam, err := OpenSeam(context.Background(), cfg, types, configkeys.MustNew(nil))
 	if err == nil {
 		seam.Close()
 		t.Fatal("opening against a bucket that does not exist succeeded, so the failure would " +
 			"arrive at the first object read instead")
+	}
+	// And it crosses the seam as the typed cause with a remedy (design D6),
+	// not as a bare listing error.
+	if cause, ok := readiness.CauseOf(err); !ok || cause != readiness.ObjectStoreUnusable {
+		t.Fatalf("cause %q (%v), want %q: %v", cause, ok, readiness.ObjectStoreUnusable, err)
+	}
+	if remedy, _ := readiness.RemedyOf(err); !strings.Contains(remedy, "bucket") {
+		t.Fatalf("remedy %q does not name the bucket", remedy)
 	}
 }

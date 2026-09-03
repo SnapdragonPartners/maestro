@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/registry"
 )
@@ -27,7 +28,7 @@ func TestOpenSeamReleasesTheLockWhenItCannotOpen(t *testing.T) {
 
 	// An empty data root: no plane has been provisioned, so rootKeyFor
 	// refuses. The failure is the point; what matters is what it leaves.
-	if _, openErr := OpenSeam(context.Background(), cfg, types); openErr == nil {
+	if _, openErr := OpenSeam(context.Background(), cfg, types, configkeys.MustNew(nil)); openErr == nil {
 		t.Fatal("OpenSeam succeeded against an empty data root")
 	}
 

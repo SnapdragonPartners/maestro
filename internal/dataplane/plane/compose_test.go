@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
@@ -158,6 +159,7 @@ func TestOpenTakesACopyOfTheOwnedSlice(t *testing.T) {
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
 		Types:   emptyRegistry(t),
+		Keys:    configkeys.MustNew(nil),
 		Owned:   owned,
 	})
 	if err == nil {
@@ -252,6 +254,7 @@ func TestOpenReleasesOwnedResourcesWhenItFails(t *testing.T) {
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
 		Types:   emptyRegistry(t),
+		Keys:    configkeys.MustNew(nil),
 		Owned: []Owned{
 			{What: "data-plane lifecycle lock", Close: func() error { released = true; return nil }},
 		},
@@ -274,6 +277,7 @@ func TestOpenReportsAReleaseFailureAlongsideTheOpenFailure(t *testing.T) {
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
 		Types:   emptyRegistry(t),
+		Keys:    configkeys.MustNew(nil),
 		Owned: []Owned{
 			{What: "lifecycle lock", Close: func() error { return errors.New("descriptor gone") }},
 		},
@@ -308,6 +312,7 @@ func TestOpenSurvivesReleasingAnUnclosableResource(t *testing.T) {
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
 		Types:   emptyRegistry(t),
+		Keys:    configkeys.MustNew(nil),
 		Owned: []Owned{
 			{What: "closable", Close: func() error { released = true; return nil }},
 			{What: "unclosable"},
@@ -346,6 +351,7 @@ func TestValidateRefusesAnIncompleteComposition(t *testing.T) {
 			Objects: stubObjects{},
 			RootKey: stubRootKey{},
 			Types:   emptyRegistry(t),
+			Keys:    configkeys.MustNew(nil),
 		}
 	}
 	var typedNilObjects *objects.GCS
@@ -358,6 +364,7 @@ func TestValidateRefusesAnIncompleteComposition(t *testing.T) {
 		"no root key":         func(c *Composition) { c.RootKey = nil },
 		"typed-nil root key":  func(c *Composition) { c.RootKey = typedNilKey },
 		"no registry":         func(c *Composition) { c.Types = nil },
+		"no key registry":     func(c *Composition) { c.Keys = nil },
 		"owned without close": func(c *Composition) { c.Owned = []Owned{{What: "lock"}} },
 		"owned without name": func(c *Composition) {
 			c.Owned = []Owned{{Close: func() error { return nil }}}
@@ -381,6 +388,7 @@ func TestValidateAcceptsACompleteComposition(t *testing.T) {
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
 		Types:   emptyRegistry(t),
+		Keys:    configkeys.MustNew(nil),
 		Owned:   []Owned{{What: "lock", Close: func() error { return nil }}},
 	}
 	if err := composition.validate(); err != nil {

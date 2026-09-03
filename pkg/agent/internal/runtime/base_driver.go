@@ -22,7 +22,7 @@ func NewBaseDriver(config *Config, initialState proto.State) (*BaseDriver, error
 	// Removed config validation - should be done at higher level
 
 	// Initialize state machine.
-	sm := core.NewBaseStateMachine(config.ID, initialState, config.Context.Store, nil)
+	sm := core.NewBaseStateMachine(config.ID, initialState, nil)
 
 	return &BaseDriver{
 		StateMachine: sm,
@@ -95,9 +95,5 @@ func (d *BaseDriver) Step(ctx context.Context) (bool, error) {
 
 // Shutdown performs cleanup when the driver is stopping.
 func (d *BaseDriver) Shutdown(_ context.Context) error {
-	// Persist final state.
-	if err := d.Persist(); err != nil {
-		return fmt.Errorf("failed to persist state during shutdown: %w", err)
-	}
 	return nil
 }

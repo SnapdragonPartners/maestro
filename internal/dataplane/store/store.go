@@ -441,6 +441,9 @@ type Reader interface {
 	ConfigurationReader
 	SecretReader
 	BenchmarkReader
+	ProvisioningReader
+	WorkReader
+	DispatchReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -453,6 +456,13 @@ type Reader interface {
 	// amendment of this original, read at one instant under the original's
 	// lock.
 	AmendmentBase(ctx context.Context, organizationID, originalID uuid.UUID) (AmendmentBase, error)
+
+	// EffectiveBase is AmendmentBase WITHOUT the lock: the same view, digest
+	// and sequence, consistent only within the caller's own snapshot. It
+	// exists for the recovery projection, which reads under REPEATABLE READ
+	// and must not lock (design D9). A reviewer recording a base uses
+	// AmendmentBase; a reader comparing one uses this.
+	EffectiveBase(ctx context.Context, organizationID, originalID uuid.UUID) (AmendmentBase, error)
 
 	ListManagementArtifactsByScope(ctx context.Context, organizationID uuid.UUID, scope Scope) ([]ManagementArtifact, error)
 	ListManagementArtifactsByStory(ctx context.Context, organizationID, storyID uuid.UUID) ([]ManagementArtifact, error)
@@ -471,6 +481,9 @@ type Writer interface {
 	ConfigurationWriter
 	SecretWriter
 	BenchmarkWriter
+	ProvisioningWriter
+	WorkWriter
+	DispatchWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)
@@ -525,6 +538,7 @@ type Store interface {
 	Reader
 	Writer
 	Maintenance
+	Recovery
 	ObjectStore
 
 	// WithTx runs fn inside one transaction, committing when it returns nil

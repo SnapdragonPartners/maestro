@@ -31,6 +31,10 @@ func main() {
 	orgName := flag.String("org-name", "", "for bootstrap: the organization's display name (defaults to the slug)")
 	user := flag.String("user", "", "for bootstrap: the user handle")
 	userName := flag.String("user-name", "", "for bootstrap: the user's display name (defaults to the handle)")
+	product := flag.String("product", "", "for provision product|repository: the product slug")
+	productName := flag.String("product-name", "", "for provision product: the display name (defaults to the slug)")
+	repo := flag.String("repo", "", "for provision repository: the repository slug")
+	repoName := flag.String("repo-name", "", "for provision repository: the display name (defaults to the slug)")
 	operator := flag.String("operator", "", "for benchmark import: the handle of the operator the report is authored by")
 	results := flag.String("results", "", "for benchmark import: the results store (default "+DefaultResultsDir+")")
 	fileCap := flag.Int64("file-cap", 0, "for benchmark import: the per-file evidence cap in bytes (0 is the default)")
@@ -61,6 +65,10 @@ func main() {
 		orgName:      *orgName,
 		user:         *user,
 		userName:     *userName,
+		product:      *product,
+		productName:  *productName,
+		repo:         *repo,
+		repoName:     *repoName,
 		operator:     *operator,
 		results:      *results,
 		suites:       suites,
@@ -76,7 +84,7 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key|
-                                  bootstrap|benchmark import|benchmark show>
+                                  bootstrap|provision organization|user|product|repository|recover|benchmark import|benchmark show>
 
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
@@ -135,6 +143,10 @@ type runOptions struct {
 	orgName      string
 	user         string
 	userName     string
+	product      string
+	productName  string
+	repo         string
+	repoName     string
 	operator     string
 	results      string
 	suites       suiteList
@@ -196,7 +208,15 @@ func run(ctx context.Context, command string, opts *runOptions) error {
 func runPlaneCommand(ctx context.Context, cfg *stack.Config, command string, opts *runOptions) error {
 	switch command {
 	case "bootstrap":
+		// A shortcut over the same seam methods as `provision organization`
+		// followed by `provision user`, kept for the scripts that call it.
 		return runBootstrap(ctx, cfg, opts)
+
+	case "provision organization", "provision user", "provision product", "provision repository":
+		return runProvision(ctx, cfg, strings.TrimPrefix(command, "provision "), opts)
+
+	case "recover":
+		return runRecover(ctx, cfg, opts)
 
 	case "benchmark import":
 		return runBenchmarkImport(ctx, cfg, opts)

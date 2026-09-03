@@ -688,6 +688,33 @@ func (t *tx) effectiveViewWithPatch(ctx context.Context, organizationID, artifac
 	return view, nil
 }
 
+// EffectiveBase measures the effective view without locking. Consistent
+// only within the caller's snapshot, which is what the recovery projection
+// supplies (design D9).
+func (t *tx) EffectiveBase(ctx context.Context, organizationID, originalID uuid.UUID) (store.AmendmentBase, error) {
+	return t.measureBase(ctx, organizationID, originalID)
+}
+
+// measureBase is the one definition of "digest and sequence of a reference".
+func (t *tx) measureBase(ctx context.Context, organizationID, originalID uuid.UUID) (store.AmendmentBase, error) {
+	view, err := t.EffectiveView(ctx, organizationID, originalID)
+	if err != nil {
+		return store.AmendmentBase{}, err
+	}
+	digest, err := canonical.DigestJSON(view)
+	if err != nil {
+		return store.AmendmentBase{}, fmt.Errorf("digest base of %s: %w", originalID, err)
+	}
+	sequence, err := t.queries.MaxAmendmentSequence(ctx, gen.MaxAmendmentSequenceParams{
+		AmendsArtifactID: toUUID(originalID),
+		OrganizationID:   toUUID(organizationID),
+	})
+	if err != nil {
+		return store.AmendmentBase{}, fmt.Errorf("read amendment sequence for %s: %w", originalID, err)
+	}
+	return store.AmendmentBase{View: view, Digest: digest, Sequence: int(sequence)}, nil
+}
+
 // AmendmentBase reads the view, its digest and the current sequence under
 // the ORIGINAL's lock.
 //
@@ -706,22 +733,7 @@ func (t *tx) AmendmentBase(ctx context.Context, organizationID, originalID uuid.
 		return store.AmendmentBase{}, notFound(lockErr, "amendment target", originalID)
 	}
 
-	view, err := t.EffectiveView(ctx, organizationID, originalID)
-	if err != nil {
-		return store.AmendmentBase{}, err
-	}
-	digest, err := canonical.DigestJSON(view)
-	if err != nil {
-		return store.AmendmentBase{}, fmt.Errorf("digest base of %s: %w", originalID, err)
-	}
-	sequence, err := t.queries.MaxAmendmentSequence(ctx, gen.MaxAmendmentSequenceParams{
-		AmendsArtifactID: toUUID(originalID),
-		OrganizationID:   toUUID(organizationID),
-	})
-	if err != nil {
-		return store.AmendmentBase{}, fmt.Errorf("read amendment sequence for %s: %w", originalID, err)
-	}
-	return store.AmendmentBase{View: view, Digest: digest, Sequence: int(sequence)}, nil
+	return t.measureBase(ctx, organizationID, originalID)
 }
 
 func (t *tx) ListManagementArtifactsByScope(ctx context.Context, organizationID uuid.UUID, scope store.Scope) ([]store.ManagementArtifact, error) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/registry"
 )
 
@@ -114,7 +115,7 @@ func TestDownBlocksForTheWholeOfAnOpenSeam(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(t.Context(), cfg, types)
+	seam, err := OpenSeam(t.Context(), cfg, types, configkeys.MustNew(nil))
 	if err != nil {
 		t.Fatalf("OpenSeam: %v", err)
 	}

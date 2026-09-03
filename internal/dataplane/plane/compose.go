@@ -26,8 +26,13 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
@@ -64,6 +69,19 @@ type Composition struct {
 	// Types is the CALLER's registry: what payloads are readable is a
 	// property of the caller's job rather than of the plane.
 	Types *registry.Registry
+
+	// Keys is the caller's configuration-key registry, with Types's
+	// semantics: what keys are writable is a property of the caller's job.
+	//
+	// It was absent until Phase 3 item 3 (design D7), and its absence was
+	// not a default but a hole: postgres.New falls back to an empty,
+	// fail-closed registry, so no caller reaching the plane through a
+	// composer could write a governed configuration record at all. It is
+	// required rather than defaulted for the same reason Types is — a caller
+	// that writes no configuration says so with configkeys.MustNew(nil), and
+	// is refused if it then tries, which is the existing behaviour reached
+	// deliberately instead of by omission.
+	Keys *configkeys.Registry
 
 	// Owned are resources whose lifetime is the SEAM's, released when it
 	// closes and — the part that is easy to get wrong — also released if this
@@ -134,11 +152,86 @@ func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
 		return nil, err
 	}
 
-	seam, err := postgres.Open(ctx, c.DSN, c.Types, c.Objects, c.RootKey)
+	// The pool is built HERE rather than by postgres.Open, because the probe
+	// below must run on it before a store exists, and the pool is lazy:
+	// pgxpool.New validates the DSN and contacts nothing.
+	pool, err := pgxpool.New(ctx, c.DSN)
 	if err != nil {
+		return nil, fmt.Errorf("open the persistence seam: open data plane pool: %w", err)
+	}
+	if probeErr := probe(ctx, pool); probeErr != nil {
+		// The pool is closed on the path the probe was added to diagnose;
+		// a probe that leaked a connection here would be worse than none.
+		pool.Close()
+		err = probeErr
+		return nil, err
+	}
+	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey, postgres.WithConfigKeys(c.Keys))
+	if err != nil {
+		pool.Close()
 		return nil, fmt.Errorf("open the persistence seam: %w", err)
 	}
 	return &composedSeam{Store: seam, owned: c.Owned}, nil
+}
+
+// Neutral remedies. This package does not know how the plane is deployed, so
+// it names the ACTION; a composer that knows the command replaces the remedy
+// with readiness.WithRemedy.
+const (
+	remedyStartDatabase = "start the database the plane was configured with and check the endpoint"
+	remedyInspectSchema = "inspect the plane: a connection was made but its schema version could not be read"
+	remedyMigrate       = "apply this binary's pending migrations to the plane"
+	remedyRepairDirty   = "repair the failed migration by hand, then force the version clean (docs/v2/phase_2/design_schema_core.md); nothing automates this"
+	remedyNewerBinary   = "run a binary built at or after the plane's schema version; never downgrade the plane"
+)
+
+// probe proves the plane is usable from ONE connection, before a seam is
+// handed out (Phase 3 item 3, design D4).
+//
+// Acquiring the connection is what establishes reachability, since the pool
+// is lazy; the schema version is then read ON that connection. Two facts,
+// one connection, so they cannot disagree. Classification follows from which
+// step failed.
+//
+// This is the same reason the cloud composer probes its bucket rather than
+// trusting a constructed handle: it is what makes "the seam opened" mean the
+// same thing in both modes.
+func probe(ctx context.Context, pool *pgxpool.Pool) error {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return readiness.Refuse(readiness.Unreachable,
+			"the database did not accept a connection", remedyStartDatabase, err)
+	}
+	defer conn.Release()
+
+	version, dirty, err := migrations.VersionOn(ctx, conn.Conn())
+	if err != nil {
+		return readiness.Refuse(readiness.SchemaUnreadable,
+			"the schema version could not be read on an open connection", remedyInspectSchema, err)
+	}
+	embedded, err := migrations.Embedded()
+	if err != nil {
+		// A binary that cannot find its own migrations: not a plane state,
+		// and not a readiness cause.
+		return fmt.Errorf("open the persistence seam: %w", err)
+	}
+	switch {
+	case dirty:
+		// Before the version comparison: a dirty version is the target of
+		// the migration that failed, and its remedy is repair, not migrate.
+		return readiness.Refuse(readiness.SchemaDirty,
+			fmt.Sprintf("schema version %d is marked dirty: a migration to it failed partway", version),
+			remedyRepairDirty, nil)
+	case version < embedded:
+		return readiness.Refuse(readiness.SchemaBehind,
+			fmt.Sprintf("the plane is at schema version %d and this binary needs %d", version, embedded),
+			remedyMigrate, nil)
+	case version > embedded:
+		return readiness.Refuse(readiness.SchemaAhead,
+			fmt.Sprintf("the plane is at schema version %d and this binary knows only %d", version, embedded),
+			remedyNewerBinary, nil)
+	}
+	return nil
 }
 
 // validate refuses a composition that cannot open, before anything is built.
@@ -160,6 +253,9 @@ func (c Composition) validate() error {
 		return errors.New("compose a data plane: no root-key provider was supplied")
 	case c.Types == nil:
 		return errors.New("compose a data plane: no artifact registry was supplied")
+	case c.Keys == nil:
+		return errors.New("compose a data plane: no configuration-key registry was supplied; a caller " +
+			"that writes no configuration declares that with an empty one")
 	}
 	for i, owned := range c.Owned {
 		if owned.Close == nil {

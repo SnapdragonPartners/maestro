@@ -167,6 +167,11 @@ linters-settings:
       - errors.Unwrap(
       - .Wrap(
       - .Wrapf(
+      # The readiness package's two constructors build a typed error the way
+      # errors.New does; wrapping their result would prefix every operator-
+      # facing refusal with the composer's own words.
+      - readiness.Refuse(
+      - readiness.WithRemedy(
     ignoreSigRegexps:
       - \.New.*Error\(
     ignorePackageGlobs:

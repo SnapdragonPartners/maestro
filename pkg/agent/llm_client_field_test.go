@@ -12,7 +12,7 @@ import (
 // through embedded BaseStateMachine without shadowing issues.
 func TestLLMClientFieldAccess(t *testing.T) {
 	// Create a base state machine
-	sm := agent.NewBaseStateMachine("test-agent", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-agent", proto.StateWaiting, nil)
 
 	// Create a mock LLM client
 	mockClient := &mockLLMClient{}

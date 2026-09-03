@@ -39,10 +39,12 @@ import (
 	"fmt"
 	"time"
 
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/plane"
+	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
@@ -110,9 +112,12 @@ func (c Config) validate() error {
 // only one of the two adapters needs it — so nothing except the composition can
 // close it. `plane.Open` releases it on every failure path and the returned
 // store releases it on Close.
-func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.Store, error) {
+func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry, keys *configkeys.Registry) (store.Store, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+	if keys == nil {
+		return nil, errors.New("open a cloud data plane: no configuration-key registry was supplied")
 	}
 	// Before the client, deliberately. `plane` refuses a nil registry too, but
 	// reaching that costs a network client this function would then have to
@@ -144,7 +149,11 @@ func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.
 	// MEASURED: an integration test opening against a non-existent bucket
 	// succeeded before this existed.
 	if probeErr := probeBucket(ctx, blob); probeErr != nil {
-		return nil, unusableBucket(cfg.Bucket, probeErr, blob)
+		// Crosses the seam as a readiness cause (design D6). The remedy is
+		// neutral because this composer has no lifecycle verbs to name.
+		return nil, unusableBucket(cfg.Bucket, readiness.Refuse(readiness.ObjectStoreUnusable,
+			"the object bucket "+cfg.Bucket+" did not answer a listing",
+			"create the bucket, or grant this identity read access to it", probeErr), blob)
 	}
 
 	// The root key is wrapped as OPERATOR-PROVIDED, which is a claim about
@@ -163,6 +172,7 @@ func OpenSeam(ctx context.Context, cfg Config, types *registry.Registry) (store.
 		Objects: blob,
 		RootKey: keyProvider,
 		Types:   types,
+		Keys:    keys,
 		Owned: []plane.Owned{
 			{What: "cloud object client for " + cfg.Bucket, Close: blob.Close},
 		},

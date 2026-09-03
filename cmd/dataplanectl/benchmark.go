@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"orchestrator/internal/dataplane/benchmarkimport"
+	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/stack"
 	"orchestrator/internal/dataplane/store"
@@ -46,7 +47,10 @@ func openSeam(ctx context.Context, cfg *stack.Config) (store.Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build the benchmark artifact registry: %w", err)
 	}
-	seam, err := stack.OpenSeam(ctx, cfg, types)
+	// The benchmark verbs write no configuration, and say so. This registry
+	// is THEIRS; the Orchestrator declares its own (design D7), and neither
+	// quietly becomes the other's.
+	seam, err := stack.OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
 	if err != nil {
 		return nil, fmt.Errorf("open the data plane: %w", err)
 	}

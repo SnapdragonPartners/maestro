@@ -22,7 +22,7 @@ func TestSessionResumeKeys(t *testing.T) {
 
 // TestSessionIDStorageInStateMachine verifies that session IDs can be stored and retrieved.
 func TestSessionIDStorageInStateMachine(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil)
 
 	// Store a session ID
 	testSessionID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -46,7 +46,7 @@ func TestSessionIDStorageInStateMachine(t *testing.T) {
 
 // TestResumeInputStorageInStateMachine verifies that resume input can be stored and retrieved.
 func TestResumeInputStorageInStateMachine(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil)
 
 	// Store resume input (simulating test failure feedback)
 	testInput := "Tests failed with 3 errors:\n1. TestFoo failed\n2. TestBar failed\n3. TestBaz failed"
@@ -70,7 +70,7 @@ func TestResumeInputStorageInStateMachine(t *testing.T) {
 
 // TestResumeInputClearing verifies that resume input can be cleared after use.
 func TestResumeInputClearing(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", proto.StateWaiting, nil)
 
 	// Store resume input
 	sm.SetStateData(KeyResumeInput, "some feedback")
@@ -121,7 +121,7 @@ func TestSessionResumeCondition(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil, nil)
+			sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil)
 
 			if tc.sessionID != "" {
 				sm.SetStateData(KeyCodingSessionID, tc.sessionID)
@@ -156,7 +156,7 @@ func TestSessionResumeCondition(t *testing.T) {
 
 // TestResumeInputFromTestFailure simulates TESTING → CODING transition with resume input.
 func TestResumeInputFromTestFailure(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", StateTesting, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", StateTesting, nil)
 
 	// Store existing session ID (set during first CODING pass)
 	sm.SetStateData(KeyCodingSessionID, "session-abc-123")
@@ -182,7 +182,7 @@ func TestResumeInputFromTestFailure(t *testing.T) {
 
 // TestResumeInputFromCodeReview simulates CODE_REVIEW → CODING transition with architect feedback.
 func TestResumeInputFromCodeReview(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", StateCodeReview, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", StateCodeReview, nil)
 
 	// Store existing session ID
 	sm.SetStateData(KeyCodingSessionID, "session-def-456")
@@ -205,7 +205,7 @@ func TestResumeInputFromCodeReview(t *testing.T) {
 
 // TestResumeInputFromPrepareMerge simulates PREPARE_MERGE → CODING transition on rebase conflict.
 func TestResumeInputFromPrepareMerge(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", StatePrepareMerge, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", StatePrepareMerge, nil)
 
 	// Store existing session ID
 	sm.SetStateData(KeyCodingSessionID, "session-ghi-789")
@@ -229,7 +229,7 @@ func TestResumeInputFromPrepareMerge(t *testing.T) {
 // TestSessionIDPersistsInStateData verifies session ID persists in state data.
 // Note: State data persists regardless of state transitions - this tests the basic persistence.
 func TestSessionIDPersistsInStateData(t *testing.T) {
-	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil, nil)
+	sm := agent.NewBaseStateMachine("test-coder", StateCoding, nil)
 
 	// Set session ID
 	sessionID := "persistent-session-xyz"

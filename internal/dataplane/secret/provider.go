@@ -5,9 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-
-	"orchestrator/internal/dataplane/paths"
 )
+
+// RootKeyLen is the raw root-of-trust key length in bytes.
+//
+// It lives HERE, not beside the key file, because the invariant is about
+// ROOT KEYS and not about one way of storing them: material handed to the
+// process from outside must meet the same bar as material read from disk.
+// `paths` re-exports it for the file format, importing this package to do
+// so — the edge runs downward, so the persistence seam, which imports this
+// package for RootKeyProvider and Value, never reaches the local key-file
+// machinery through it (Phase 3 item 3, design D2).
+const RootKeyLen = 32
 
 // RootKeyProvider supplies the root-of-trust key material.
 //
@@ -78,78 +87,12 @@ var ErrBackendNotImplemented = errors.New("root-key backend is not implemented")
 
 // ErrRootKeyLength reports material that is not a root key's length, so a
 // caller can tell a malformed key from a missing one without matching text.
-var ErrRootKeyLength = fmt.Errorf("root-of-trust key must be exactly %d bytes", paths.RootKeyLen)
+var ErrRootKeyLength = fmt.Errorf("root-of-trust key must be exactly %d bytes", RootKeyLen)
 
-// Access says whether a provider may CREATE key material or only load it.
-//
-// The distinction is item 7's D4, and it exists because the root key derives
-// the Postgres password and the object-store credentials as well as the
-// vault's key material. A plane whose data root already holds a cluster and
-// whose key is missing must refuse, not mint a new one: the new key produces
-// a password the existing cluster does not know, and the failure arrives as
-// a readiness timeout that names nothing.
-type Access int
-
-const (
-	// LoadOnly refuses when no key is present. Every operation against an
-	// existing plane uses it.
-	LoadOnly Access = iota
-
-	// MayCreate generates a key when none exists. Only first-time setup
-	// against an empty data root may pass it.
-	MayCreate
-)
-
-// KeyFile builds the file-backed provider.
-func KeyFile(configRoot string, access Access) RootKeyProvider {
-	return keyFileProvider{configRoot: configRoot, access: access}
-}
-
-type keyFileProvider struct {
-	configRoot string
-	access     Access
-}
-
-func (p keyFileProvider) Backend() Backend { return BackendKeyFile }
-
-func (p keyFileProvider) RootKey() ([]byte, error) {
-	if p.access == MayCreate {
-		key, err := paths.EnsureKey(p.configRoot)
-		if err != nil {
-			return nil, fmt.Errorf("ensure root-of-trust key: %w", err)
-		}
-		return key, nil
-	}
-	key, err := paths.LoadKey(p.configRoot)
-	if err != nil {
-		return nil, fmt.Errorf("load root-of-trust key: %w", err)
-	}
-	return key, nil
-}
-
-// ProviderFor selects a backend by name, and REFUSES an unimplemented one at
-// construction (design D3).
-//
-// At construction, not at first use. An earlier revision returned a provider
-// whose RootKey refused later, which reads as equivalent and is not: a
-// deferred refusal is one a caller can hold, pass around, and discover only
-// at the moment it needs key material — by which point it may already have
-// decided the plane is usable. Failing here means selecting an unbuilt
-// backend cannot produce a usable-looking provider at all.
-//
-// No provider is returned alongside the error, deliberately. A refusal that
-// also hands back something callable invites exactly the fall-through this
-// design exists to prevent.
-func ProviderFor(backend Backend, configRoot string, access Access) (RootKeyProvider, error) {
-	switch backend {
-	case BackendKeyFile:
-		return KeyFile(configRoot, access), nil
-	case BackendKeychain, BackendPassphrase:
-		return nil, fmt.Errorf("%w: %s", ErrBackendNotImplemented, backend)
-	default:
-		return nil, fmt.Errorf("unknown root-key backend %q", backend)
-	}
-}
+// The key-file provider — the local backend, with its create-versus-load
+// access mode — lives in `paths`, which owns the key-file protocol. This
+// package defines the seam and the vocabulary; it holds nothing that reads
+// a disk.
 
 // ResolvedKey wraps key material that has ALREADY been obtained, for callers
 // that must hand a provider to something else without making a second
@@ -193,8 +136,8 @@ func ResolvedKey(key []byte, source Backend) (RootKeyProvider, error) {
 		return nil, fmt.Errorf("resolved root key was given no material: %w", ErrNoRootKey)
 	}
 	// The LENGTH invariant is enforced here, not only where key files are
-	// read, and that placement is the point. `paths.LoadKey` refuses a file
-	// that is not exactly RootKeyLen bytes, so every key that reached this
+	// read, and that placement is the point. The key-file loader refuses a
+	// file that is not exactly RootKeyLen bytes, so every key that reached this
 	// constructor used to satisfy it as a side effect of where it came from.
 	// Material handed in from outside has no such history: a one-byte key
 	// would derive perfectly usable-looking subkeys through HKDF and unlock
@@ -205,9 +148,9 @@ func ResolvedKey(key []byte, source Backend) (RootKeyProvider, error) {
 	// hashing an over-long key to fit would silently accept two different
 	// inputs as the same key, and an operator who supplied 64 bytes believing
 	// all of them mattered would be wrong in a way nothing reports.
-	if len(key) != paths.RootKeyLen {
+	if len(key) != RootKeyLen {
 		return nil, fmt.Errorf("resolved root key is %d bytes, want exactly %d: %w",
-			len(key), paths.RootKeyLen, ErrRootKeyLength)
+			len(key), RootKeyLen, ErrRootKeyLength)
 	}
 	if !source.known() {
 		return nil, fmt.Errorf("resolved root key names backend %q, which is not one of %s: a "+

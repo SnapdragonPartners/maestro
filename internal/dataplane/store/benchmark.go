@@ -28,16 +28,6 @@ var (
 	// Overwriting would erase the evidence of exactly that, which is why the
 	// import refuses instead.
 	ErrImportConflict = errors.New("a different payload is already imported for this identity")
-
-	// ErrBootstrapConflict reports that a natural key already exists carrying
-	// different display data.
-	//
-	// Distinguished from a plain "already exists" because the outcomes differ:
-	// matching data is a successful no-op, and differing data is a request
-	// this command will not honour. Silently ignoring the difference would
-	// make `bootstrap --org acme --org-name "Acme Ltd"` appear to succeed
-	// while the plane still said "Acme Inc".
-	ErrBootstrapConflict = errors.New("the record exists with different display data")
 )
 
 // ImportConflict carries both sides of a rejected re-import, because the
@@ -56,40 +46,6 @@ func (e *ImportConflict) Error() string {
 
 // Is lets callers match the sentinel without unwrapping the detail.
 func (e *ImportConflict) Is(target error) bool { return target == ErrImportConflict }
-
-// BootstrapConflict carries the stored and supplied display data.
-type BootstrapConflict struct {
-	Kind     string
-	Key      string
-	Stored   string
-	Supplied string
-}
-
-func (e *BootstrapConflict) Error() string {
-	return fmt.Sprintf("%s: %s %q is named %q, not %q; renaming is a separate operation",
-		ErrBootstrapConflict, e.Kind, e.Key, e.Stored, e.Supplied)
-}
-
-// Is lets callers match the sentinel without unwrapping the detail.
-func (e *BootstrapConflict) Is(target error) bool { return target == ErrBootstrapConflict }
-
-// Organization is a tenant.
-type Organization struct {
-	CreatedAt      time.Time
-	Slug           string
-	DisplayName    string
-	OrganizationID uuid.UUID
-}
-
-// User is an accountable human. Local mode has no authentication; this is an
-// identity, not a credential.
-type User struct {
-	CreatedAt      time.Time
-	Handle         string
-	DisplayName    string
-	UserID         uuid.UUID
-	OrganizationID uuid.UUID
-}
 
 // BenchmarkRun is one imported suite run, and the entity benchmark-scoped
 // artifacts scope to.
@@ -137,28 +93,6 @@ type SuiteReportClaim struct {
 	ReportArtifactID uuid.UUID
 }
 
-// BootstrapOrganizationInput provisions a tenant.
-type BootstrapOrganizationInput struct {
-	Slug        string
-	DisplayName string
-}
-
-// BootstrapUserInput provisions an accountable human within one tenant.
-type BootstrapUserInput struct {
-	Handle         string
-	DisplayName    string
-	OrganizationID uuid.UUID
-}
-
-// Bootstrapped reports what a provisioning call did.
-//
-// Created distinguishes the two SUCCESSFUL outcomes, which a caller reports
-// differently and which a conflict is neither of.
-type Bootstrapped[T any] struct {
-	Record  T
-	Created bool
-}
-
 // RecordBenchmarkAttemptInput ledgers one imported attempt.
 //
 // It is written in the SAME transaction as the Audit artifact it names.
@@ -178,9 +112,6 @@ type RecordBenchmarkAttemptInput struct {
 
 // BenchmarkReader is the benchmark family's read surface.
 type BenchmarkReader interface {
-	GetOrganizationBySlug(ctx context.Context, slug string) (*Organization, error)
-	GetUserByHandle(ctx context.Context, organizationID uuid.UUID, handle string) (*User, error)
-
 	GetBenchmarkRunBySuite(ctx context.Context, organizationID uuid.UUID, suiteRunID string) (*BenchmarkRun, error)
 	GetBenchmarkAttempt(ctx context.Context, organizationID, benchmarkRunID uuid.UUID, runID string) (*BenchmarkAttempt, error)
 	ListBenchmarkAttempts(ctx context.Context, organizationID, benchmarkRunID uuid.UUID) ([]BenchmarkAttempt, error)
@@ -193,18 +124,6 @@ type BenchmarkReader interface {
 
 // BenchmarkWriter is the benchmark family's write surface.
 type BenchmarkWriter interface {
-	// BootstrapOrganization and BootstrapUser are idempotent by natural key,
-	// with exact conflict semantics: matching display data returns the
-	// existing record with Created=false, and DIFFERING display data returns
-	// ErrBootstrapConflict rather than silently ignoring the difference or
-	// quietly renaming the record.
-	//
-	// Reachable only from the bootstrap command. The importer resolves with
-	// Get* and never provisions: an import that silently creates a tenant is
-	// a defect waiting for team mode.
-	BootstrapOrganization(ctx context.Context, input BootstrapOrganizationInput) (Bootstrapped[Organization], error)
-	BootstrapUser(ctx context.Context, input BootstrapUserInput) (Bootstrapped[User], error)
-
 	// EnsureBenchmarkRun returns the suite's row, creating it if absent.
 	// Idempotent by (organization, suite run id) and carrying nothing a
 	// second call would change, so re-import reads rather than writes.
