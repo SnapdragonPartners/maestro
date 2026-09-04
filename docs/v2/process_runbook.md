@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Operations Runbook"
-edit_date = "2026-09-03"
+edit_date = "2026-09-04"
 status = "live"
 summary = "Operational sequences and measured gotchas for running the v2 data plane locally and in the cloud: provider defaults that cost money or silently retain data, commands whose failure modes mislead, and the project-safety rules for cloud work. Command definitions live in the Makefile; design rationale lives in the ADRs."
 type = "process"
@@ -570,9 +570,11 @@ current is an incident, and the procedure exists so it is never reached.
 The sequence, for a cloud plane:
 
 1. Stop every Orchestrator and every `dataplanectl` session against the
-   plane. Confirm no **Maestro** session remains — system and background
-   workers are not the concern, and the migration's own session will be
-   present — with:
+   plane. Then confirm **no other client backend session remains on the
+   Maestro database**. The query below already excludes Postgres's own
+   background workers by `backend_type` and the session running it by
+   `pid`, so every row it returns is a session to terminate — there is no
+   further judgement to make about which rows count:
 
    ```sql
    SELECT pid, usename, application_name, client_addr, state, backend_start
@@ -592,6 +594,26 @@ The sequence, for a cloud plane:
    everywhere, `AND application_name LIKE 'maestro%'` narrows the list to
    Maestro's own sessions, and an empty result then means no seam is open —
    but only then.
+
+   To terminate a listed session, from the same connection:
+
+   ```sql
+   SELECT pg_terminate_backend(pid)
+     FROM pg_stat_activity
+    WHERE backend_type = 'client backend'
+      AND datname = current_database()
+      AND pid <> pg_backend_pid();
+   ```
+
+   `pg_terminate_backend` succeeds when the caller is a superuser, a member
+   of `pg_signal_backend`, or **the same role as the target session**
+   ([Documented](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-SIGNAL)).
+   Maestro's seams connect as the application role, so running this as that
+   same role terminates them without extra privilege; a session under a
+   different role returns `false` from the function rather than an error,
+   so **check the result column** and escalate to a role that holds
+   `pg_signal_backend` if any row is `false`. Re-run the listing query
+   afterwards and proceed only on an empty result.
 2. Run the migration.
 3. Deploy the new code.
 4. Start Orchestrators on the new code only.
