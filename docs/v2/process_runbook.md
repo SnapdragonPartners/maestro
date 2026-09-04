@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Operations Runbook"
-edit_date = "2026-08-18"
+edit_date = "2026-09-04"
 status = "live"
 summary = "Operational sequences and measured gotchas for running the v2 data plane locally and in the cloud: provider defaults that cost money or silently retain data, commands whose failure modes mislead, and the project-safety rules for cloud work. Command definitions live in the Makefile; design rationale lives in the ADRs."
 type = "process"
@@ -540,6 +540,88 @@ reserved IP address continue to bill**
 So "stopped" is cheaper, not free, and a long-idle instance is still a line on
 the bill — which is the number to check before assuming an idle plane costs
 nothing.
+
+### Schema migration cutover
+
+**Amendment Accepted by Codex and DR, 2026-09-03**, drafted with the
+[Phase 3 item 4 design](phase_3/design_prompt-packs.md) (D5) and reviewed with
+it. The rest of this document remains Accepted as of 2026-08-17.
+
+**Every old-code seam is terminated before a migration starts, and none is
+opened until the new code is the only code running** (**Policy**, Phase 3 item
+4). Locally this is enforced: `dataplane-migrate` takes the lifecycle lock
+exclusive and an open seam holds it shared, so the command waits. In cloud
+mode nothing enforces it, and the failure it prevents is not the one the
+migration's own locks cover.
+
+A migration that scans and then alters takes its table locks before scanning,
+so no row slips in between — that much holds regardless of what else is
+running. What the locks cannot cover is a seam opened **before** the
+migration, idle **through** it, that writes **after** the locks release with
+code that predates the schema. Such a write satisfies every constraint its
+code knows about and violates one it does not: the first case is a
+`story_dispatches` row written by pre-000023 code with no
+`dispatch_prompt_resolutions` child. The schema refuses that statement — the
+column the old code cannot supply is NOT NULL, and a reciprocal deferred
+foreign key holds the pair in steady state — so the outcome is a failed write
+rather than a corrupt plane — but a failed write in an Orchestrator that believed it was
+current is an incident, and the procedure exists so it is never reached.
+
+The sequence, for a cloud plane:
+
+1. Stop every Orchestrator and every `dataplanectl` session against the
+   plane. Then confirm **no other client backend session remains on the
+   Maestro database**. The query below already excludes Postgres's own
+   background workers by `backend_type` and the session running it by
+   `pid`, so every row it returns is a session to terminate — there is no
+   further judgement to make about which rows count:
+
+   ```sql
+   SELECT pid, usename, application_name, client_addr, state, backend_start
+     FROM pg_stat_activity
+    WHERE backend_type = 'client backend'
+      AND datname = current_database()
+      AND pid <> pg_backend_pid();
+   ```
+
+   **This lists every client session on the Maestro database, deliberately
+   unfiltered by name.** The seam sets `application_name` on the connections
+   it opens from Phase 3 item 4 onward, but the session this check exists to
+   find at the **first** cutover is one opened by code that predates the
+   label, and a filter on the label would return empty with that session
+   still open. Read every row; anything that is not the migration's own
+   session is a session to terminate. For cutovers after item 4 is running
+   everywhere, `AND application_name LIKE 'maestro%'` narrows the list to
+   Maestro's own sessions, and an empty result then means no seam is open —
+   but only then.
+
+   To terminate a listed session, from the same connection:
+
+   ```sql
+   SELECT pg_terminate_backend(pid)
+     FROM pg_stat_activity
+    WHERE backend_type = 'client backend'
+      AND datname = current_database()
+      AND pid <> pg_backend_pid();
+   ```
+
+   `pg_terminate_backend` succeeds when the caller is a superuser, a member
+   of `pg_signal_backend`, or **the same role as the target session**
+   ([Documented](https://www.postgresql.org/docs/current/functions-admin.html#FUNCTIONS-ADMIN-SIGNAL)).
+   Maestro's seams connect as the application role, so running this as that
+   same role terminates them without extra privilege; a session under a
+   different role returns `false` from the function rather than an error,
+   so **check the result column** and escalate to a role that holds
+   `pg_signal_backend` if any row is `false`. Re-run the listing query
+   afterwards and proceed only on an empty result.
+2. Run the migration.
+3. Deploy the new code.
+4. Start Orchestrators on the new code only.
+
+If a migration deadlocks against a session step 1 missed, Postgres aborts one
+side; if that is the migration, the recorded version is dirty and the
+migration's own message names the `dataplane-force-version` recovery. Do step 1
+properly and retry.
 
 ## Local data plane
 
