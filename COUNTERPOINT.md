@@ -19,8 +19,14 @@
   the review invariant (ADRs 0020, 0021, 0028), and the exact-set closure
   guards in `internal/dataplane/store` and `internal/orchestrator`.
 - In a build-capable review, run from the checkout with
-  `GOCACHE=$COUNTERPOINT_CACHE_DIR/go-build GOPROXY=off`: `go build ./...`,
-  `go vet ./...`, and `go test` on the packages the commit touches. Do not run
+  `GOCACHE=$COUNTERPOINT_CACHE_DIR/go-build GOPROXY=off`. **First run
+  `make build-mcp-proxy`**: `pkg/coder/claude/embedded/proxy.go` embeds
+  `proxy-linux-arm64` and `proxy-linux-amd64`, which are gitignored generated
+  files absent from a fresh checkout, so nothing under `./...` compiles until
+  that target has produced them. Then `go build ./...`, `go vet ./...`, and
+  `go test` on the packages the commit touches. The `Makefile` is the source
+  of truth for build prerequisites; if a step here disagrees with it, the
+  `Makefile` wins and this file is the defect. Do not run
   the `integration` build tag — those suites need Docker, Postgres and MinIO —
   and report them as not run; the author runs them and records the outcome in
   the notes. golangci-lint and `make sqlc-check` may be unavailable offline;
