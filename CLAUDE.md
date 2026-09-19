@@ -92,7 +92,9 @@ positions and escalate the decision to DR rather than cycling indefinitely.
    implementation step, and Counterpoint never pushes, opens PRs, or merges.
 6. Open the PR to `main`; reference the phase plan and applicable ADRs/specs.
 7. Address every CI review thread with a fix or reasoned reply, push the
-   resolution, mark the thread resolved, and check again for new feedback.
+   resolution, mark the thread resolved, and check again for new feedback. The
+   heavy review has already happened before push; post-push automated review is
+   a final proofread, and its findings are still treated on their merits.
 8. DR gives final approval and merges. Claude never merges.
 
 Keep at most one feature/development branch open at a time. Parallel branches
@@ -106,7 +108,9 @@ defined under *Code And Review Standards* — must be resolved before the push
 gate. Suggestions and style points are addressed at Claude's discretion and
 their disposition noted. A finding Claude judges wrong, out of scope, or
 disproportionate gets a reasoned response in the next round's notes rather than
-a change; verify the finding against the tree before accepting or disputing it.
+a change; verify the finding against the tree before accepting or disputing
+it, cite the ADR, test, or deliberate design choice that answers it, and when
+the pushback is correct on the merits add a regression test alongside it.
 If Codex reaffirms it, stop, state both positions, and bring the decision to DR
 before another round. Do not implement a change Claude believes is wrong in
 order to end the loop.
@@ -128,7 +132,8 @@ author starts with none.
 #### Submitting For Review
 
 - If the Counterpoint tool is available, call it directly with the absolute
-  repository path, the branch, the exact local commit, and the branch notes.
+  repository path (derive it with `git rev-parse --show-toplevel`; never
+  hard-code it), the branch, the exact local commit, and the branch notes.
   The commit must be the branch tip and the checked-out HEAD of a clean
   worktree, so commit before calling. The call blocks for the whole Codex turn
   — up to about twenty minutes. Submit every round through the tool; do not ask
@@ -162,9 +167,11 @@ author starts with none.
 
 #### Branch Notes
 
-Branch notes are the handoff artifact, not a generic summary. Include:
+Branch notes are the handoff artifact, not a generic summary. Every round's
+notes lead with the exact commit hash and the branch's push state, then
+include:
 
-- review round and exact commit;
+- review round number;
 - whether the change is code, documentation, or both;
 - verification commands and outcomes, including mutants run and the reason
   each died;
@@ -175,7 +182,8 @@ Branch notes are the handoff artifact, not a generic summary. Include:
 - branch status, and confirmation that it is unpushed and awaiting approval.
 
 Codex verifies the notes against the commit and repository rather than assuming
-the author's claims are correct.
+the author's claims are correct. The same notes seed the PR body once push is
+authorized.
 
 This human build workflow is distinct from the product's v2 Epic/Story branch
 model in ADR 0023. Use ADR 0023 when implementing Maestro's Orchestrator-managed
