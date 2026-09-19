@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Build Process (Interim)"
-edit_date = "2026-08-31"
+edit_date = "2026-09-19"
 status = "live"
 summary = "Working agreement for building v2 until Maestro can build Maestro: Claude authors, Codex reviews, DR orchestrates and accepts; review cadence, branching, spikes, testing, and merge rules. Command-level mechanics live in CLAUDE.md."
 type = "process"
@@ -23,6 +23,8 @@ The split is by audience: a rule that DR or Codex needs in order to review or en
 - **Author agent: Claude (Claude Code).** Drafts all artifacts — docs, ADRs, phase scopes and plans, specs, code. Roles anchor to the agent, not the underlying model.
 - **Reviewer: Codex.** Provides the review function, analogous to what Maestro will automate.
 - **Human operator: DR.** Resolves escalation and contention, provides feedback, and accepts. DR is also the effective orchestrator: all communication between Claude and Codex flows through DR.
+
+> **Amendment, PROPOSED 2026-09-19 — pending Codex and DR acceptance; this line is replaced with the acceptance date and parties in the acceptance commit.** The last clause above is superseded: review rounds between Claude and Codex go through the **Counterpoint review tool** when it is available in the author's session, and through DR manually when it is not. The tool replaces DR as the *relay* and nothing else. DR still resolves contention that does not converge, still authorizes every push, still gives final approval and merges, and an artifact is still Accepted only when both Codex and DR have approved it. The tool reviews local commits and never pushes, opens pull requests, merges, or edits the repository, so *Review Cadence* below is unchanged. The command-level mechanics — how a round is submitted, what branch notes contain, how a disputed finding is escalated and recorded — are `CLAUDE.md`'s.
 
 An artifact is Accepted when both Codex and DR have approved it.
 
