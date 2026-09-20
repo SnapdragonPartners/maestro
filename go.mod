@@ -1,6 +1,6 @@
 module orchestrator
 
-go 1.26.3
+go 1.26.8
 
 require (
 	cloud.google.com/go/storage v1.64.0
