@@ -718,6 +718,160 @@ func TestRecoveryRemovesAnOrphanNothingInThisProcessStarted(t *testing.T) {
 	assertRecovered(t, cfg, seed, staged)
 }
 
+// TestRecoveryResumesOverAnEmptyPostmasterPid is #352, reproduced on demand
+// rather than by luck.
+//
+// TestRecoveryRemovesAnOrphanNothingInThisProcessStarted found the defect and
+// cannot be relied on to find it again: it needs a forced removal to land in
+// the instant after the postmaster CREATES postmaster.pid and before it
+// WRITES to it, which took suite-level load to hit once and then passed eight
+// times out of eight alone. A regression test that needs a race cannot fail
+// for the defect it names, so the remnant is planted directly.
+//
+// An empty lock file is what Postgres refuses outright -- "lock file
+// postmaster.pid is empty" -- because it cannot tell a crash remnant from
+// another server mid-start. It will never clear one itself. Recovery can,
+// because at the point it starts its server it holds the lifecycle lock
+// exclusively, has stopped the Compose Postgres, and has confirmed its own
+// container gone: nothing else can be starting over this PGDATA.
+func TestRecoveryResumesOverAnEmptyPostmasterPid(t *testing.T) {
+	cfg, seed := lockedPlaneWithSecret(t)
+
+	pidFile := postmasterPidPath(t, cfg)
+	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a cleanly stopped plane still has %s (%v), so planting one proves nothing: the "+
+			"fixture is not the state under test", pidFile, err)
+	}
+	if err := os.WriteFile(pidFile, nil, 0o600); err != nil {
+		t.Fatalf("plant the empty lock file: %v", err)
+	}
+
+	if err := RecoverKey(t.Context(), cfg, testComposeFile(), true); err != nil {
+		t.Fatalf("recover over an empty postmaster.pid: %v", err)
+	}
+	staged, err := paths.LoadKeyFile(cfg.Roots.KeyPath())
+	if err != nil {
+		t.Fatalf("read the installed key: %v", err)
+	}
+	assertRecovered(t, cfg, seed, staged)
+}
+
+// TestRecoveryServerRemovalShutsItDownCleanly is the OTHER half of #352:
+// the repair above survives a remnant, and this is what stops recovery making
+// one. It goes through removeRecoveryContainer, the PRODUCTION path.
+//
+// The first version of this test called the shutdown helper directly, and
+// review showed what that was worth: deleting the helper's call from
+// removeRecoveryContainer -- which restores the original kill-only behaviour
+// exactly -- left it passing. It proved the helper worked and said nothing
+// about whether recovery used it.
+//
+// The evidence has to survive the container's removal, which rules out its
+// exit code; Docker's event stream records one but was measured to be
+// incomplete when read back, so a guard built on it would be a flaky one.
+// What does survive is what the server LEFT in PGDATA, and that is also the
+// property that matters. A running postmaster holds a populated
+// postmaster.pid and removes it on a clean shutdown. Killed, it cannot, and
+// the file stays. So after the production removal of a RUNNING server the
+// lock file must be gone, and it is gone only if the server was asked to stop
+// before it was removed.
+func TestRecoveryServerRemovalShutsItDownCleanly(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+
+	marker := &recoveryMarker{Container: recoveryContainerName(cfg), StagedKey: stagedKeyPath(cfg)}
+	t.Cleanup(func() {
+		_ = removeRecoveryContainer(context.WithoutCancel(t.Context()), marker.Container)
+	})
+	if err := startRecoveryServer(t.Context(), cfg, testComposeFile(), marker, hbaTrust); err != nil {
+		t.Fatalf("startRecoveryServer: %v", err)
+	}
+
+	// Positive control: the running server holds a POPULATED lock file, so
+	// its absence below is something the removal did rather than something
+	// that was never there.
+	pidFile := postmasterPidPath(t, cfg)
+	if info, err := os.Stat(pidFile); err != nil || info.Size() == 0 {
+		t.Fatalf("a running recovery server has no populated %s (%v): the fixture is not the "+
+			"state under test", pidFile, err)
+	}
+
+	if err := removeRecoveryContainer(t.Context(), marker.Container); err != nil {
+		t.Fatalf("removeRecoveryContainer: %v", err)
+	}
+	if gone, err := recoveryContainerGone(t.Context(), marker.Container); err != nil || !gone {
+		t.Fatalf("the recovery container survived its removal (gone=%v, err=%v)", gone, err)
+	}
+
+	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removing the recovery server left %s behind (stat: %v): the server was KILLED, not "+
+			"shut down. A postmaster removes its lock file on a clean stop and cannot when it is "+
+			"killed, and a kill landing mid-startup is what leaves the file EMPTY (#352)", pidFile, err)
+	}
+}
+
+// TestRecoveryServerRemovalToleratesAnExitedContainer pins a fact about
+// Docker that the fix for #352 depends on: `docker stop` on a container that
+// has ALREADY exited succeeds.
+//
+// It is not an idle case. When the recovery server dies on the FATAL this
+// fix is about, the survivor the next attempt must remove is an exited
+// container, not a running one. If stopping it were an error, the removal
+// would return before its `docker rm --force`, the name would stay taken,
+// and the retry would fail on the conflict -- a fix for one unresumable state
+// that creates another. Review raised exactly that; it was measured not to
+// happen, and this keeps the measurement honest across Docker versions.
+func TestRecoveryServerRemovalToleratesAnExitedContainer(t *testing.T) {
+	cfg := isolatedPlane(t)
+	name := recoveryContainerName(cfg)
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "rm", "--force", name).Run()
+	})
+
+	image, err := pinnedImage(testComposeFile(), "MAESTRO_PG_IMAGE")
+	if err != nil {
+		t.Fatalf("resolve the pinned image: %v", err)
+	}
+	// `true` exits at once, leaving a container that exists and is not running.
+	if out, err := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--name", name,
+		"--entrypoint", "true", image).CombinedOutput(); err != nil {
+		t.Fatalf("start a container that exits immediately: %v\n%s", err, out)
+	}
+	if out, err := exec.CommandContext(t.Context(), "docker", "wait", name).CombinedOutput(); err != nil {
+		t.Fatalf("wait for it to exit: %v\n%s", err, out)
+	}
+	// Positive control: it EXISTS and has EXITED. A missing container takes
+	// the other, already-tolerated branch and would prove nothing here.
+	status, err := exec.CommandContext(t.Context(), "docker", "inspect",
+		"--format", "{{.State.Status}}", name).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(status)) != "exited" {
+		t.Fatalf("the fixture container is %q (%v), want \"exited\": it is not the state under test",
+			strings.TrimSpace(string(status)), err)
+	}
+
+	if err := removeRecoveryContainer(t.Context(), name); err != nil {
+		t.Fatalf("removing an already-exited recovery container failed: %v", err)
+	}
+	if gone, err := recoveryContainerGone(t.Context(), name); err != nil || !gone {
+		t.Fatalf("the exited container survived its removal (gone=%v, err=%v)", gone, err)
+	}
+}
+
+// postmasterPidPath is the postmaster's lock file inside this plane's PGDATA.
+func postmasterPidPath(t *testing.T, cfg *Config) string {
+	t.Helper()
+	pgDir, err := cfg.Roots.ServiceDataDir(paths.ServicePostgres)
+	if err != nil {
+		t.Fatalf("resolve the postgres data directory: %v", err)
+	}
+	return filepath.Join(pgDir, "pgdata", "postmaster.pid")
+}
+
 // recoveryContainerExists reports whether the recovery container is present.
 func recoveryContainerExists(t *testing.T, cfg *Config) bool {
 	t.Helper()

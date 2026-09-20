@@ -637,6 +637,10 @@ func startRecoveryServer(
 	if err := removeRecoveryContainer(ctx, marker.Container); err != nil {
 		return err
 	}
+	// And what a KILLED survivor may have left in it (#352).
+	if err := clearEmptyPostmasterPid(ctx, c, marker.Container); err != nil {
+		return err
+	}
 
 	hbaDir, err := os.MkdirTemp("", "maestro-recovery-hba-")
 	if err != nil {
@@ -757,9 +761,24 @@ func dockerExec(ctx context.Context, container string, env []string, command ...
 // Called before every step rather than only at the end, because the
 // container can outlive the process that started it and the survivor still
 // owns PGDATA.
+//
+// It STOPS before it removes (#352). `docker rm --force` alone is an immediate
+// SIGKILL, and a postmaster killed between creating postmaster.pid and
+// writing to it leaves the file present and EMPTY -- which the next server
+// over that PGDATA refuses outright, and which Postgres will never clear by
+// itself because it cannot tell a remnant from another server mid-start. The
+// survivor this function exists for is, by construction, often mid-startup.
+// `docker stop` sends the image's own stop signal (SIGINT for the pinned
+// Postgres image: a fast shutdown, which also spares the next start a crash
+// recovery) and escalates to SIGKILL itself after the grace period, so a
+// wedged server still goes. The forced removal that follows is unchanged.
 func removeRecoveryContainer(ctx context.Context, container string) error {
 	rmCtx, cancel := context.WithTimeout(ctx, recoveryStepTimeout)
 	defer cancel()
+
+	if err := shutDownRecoveryServer(rmCtx, container); err != nil {
+		return err
+	}
 
 	out, err := exec.CommandContext(rmCtx, "docker", "rm", "--force", container).CombinedOutput()
 	if err == nil {
@@ -770,6 +789,97 @@ func removeRecoveryContainer(ctx context.Context, container string) error {
 		return nil
 	}
 	return fmt.Errorf("remove the recovery container %s: %w\n%s", container, err, out)
+}
+
+// recoveryStopGrace is how long the recovery server gets to shut down cleanly
+// before Docker kills it. A fast shutdown of this idle, socket-only server
+// takes about a second; the rest is margin under load, and it sits well
+// inside recoveryStepTimeout so the removal after it still has time to run.
+const recoveryStopGrace = 20 * time.Second
+
+// shutDownRecoveryServer asks the recovery server to shut down cleanly. A
+// container that does not exist, or has already exited, is not a failure.
+//
+// The two cases are handled differently, and only one needs code. A MISSING
+// container makes `docker stop` fail, so that message is tolerated below. An
+// EXITED one does not: stopping a stopped container is a no-op the Engine API
+// answers 304 and the CLI reports as success (measured on Docker 29.6.2,
+// 2026-09-20; it is `docker kill` that refuses with "is not running"). That
+// case matters here more than it looks -- in #352's own scenario the survivor
+// has usually exited already, on the FATAL -- so it is pinned by
+// TestRecoveryServerRemovalToleratesAnExitedContainer rather than trusted.
+//
+// `-t`, not `--time`: Docker 29 deprecates the long form in favour of
+// `--timeout`, which older daemons do not know. The short flag is the one
+// spelling both accept.
+//
+// Its effect is tested THROUGH removeRecoveryContainer rather than here: a
+// test of this function alone passes with its call deleted from the removal,
+// which is the original defect restored.
+func shutDownRecoveryServer(ctx context.Context, container string) error {
+	grace := strconv.Itoa(int(recoveryStopGrace / time.Second))
+	out, err := exec.CommandContext(ctx, "docker", "stop", "-t", grace, container).CombinedOutput()
+	if err == nil || strings.Contains(string(out), "No such container") {
+		return nil
+	}
+	return fmt.Errorf("stop the recovery container %s: %w\n%s", container, err, out)
+}
+
+// postmasterPidFile is the postmaster's lock file, relative to the postgres
+// service data directory: PGDATA is the `pgdata` subdirectory (see the
+// PGDATA the recovery server is started with).
+const postmasterPidFile = "pgdata/postmaster.pid"
+
+// clearEmptyPostmasterPid removes postmaster.pid if, and only if, it exists
+// and is EMPTY (#352).
+//
+// Stopping gracefully (above) keeps this process from creating the remnant.
+// It cannot help with one something else left: an OOM kill, a host crash, a
+// `docker rm --force` by hand, or a recovery interrupted by a version of this
+// code that still killed. Any of those leaves a plane whose `recover-key`
+// fails identically on every retry, which is not what "resumable" means.
+//
+// Why removing it is safe HERE and would not be in general. Postgres refuses
+// an empty lock file because it might belong to another server that has
+// created it and not yet written its pid. The caller rules that out: it
+// holds the lifecycle lock exclusively, it has stopped the Compose Postgres,
+// and this function itself confirms the recovery container is gone before
+// touching anything. With nothing able to be starting over this PGDATA, an
+// empty file can only be a remnant.
+//
+// A NON-empty file is deliberately left alone. Postgres handles a stale pid
+// itself, correctly, and a file with content is evidence this function has
+// no business destroying.
+func clearEmptyPostmasterPid(ctx context.Context, c *Config, container string) error {
+	pgDir, err := c.Roots.ServiceDataDir(paths.ServicePostgres)
+	if err != nil {
+		return fmt.Errorf("resolve the postgres data directory: %w", err)
+	}
+	pidFile := filepath.Join(pgDir, filepath.FromSlash(postmasterPidFile))
+
+	info, err := os.Stat(pidFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", pidFile, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 {
+		return nil
+	}
+
+	gone, err := recoveryContainerGone(ctx, container)
+	if err != nil {
+		return err
+	}
+	if !gone {
+		return fmt.Errorf("%s is empty and the recovery server %s still exists: it may be that "+
+			"server's own lock file mid-start, so it is not being removed", pidFile, container)
+	}
+	if err := os.Remove(pidFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove the empty lock file %s: %w", pidFile, err)
+	}
+	return nil
 }
 
 // recoveryContainerGone reports whether no container by that name exists.
