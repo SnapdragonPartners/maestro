@@ -718,6 +718,112 @@ func TestRecoveryRemovesAnOrphanNothingInThisProcessStarted(t *testing.T) {
 	assertRecovered(t, cfg, seed, staged)
 }
 
+// TestRecoveryResumesOverAnEmptyPostmasterPid is #352, reproduced on demand
+// rather than by luck.
+//
+// TestRecoveryRemovesAnOrphanNothingInThisProcessStarted found the defect and
+// cannot be relied on to find it again: it needs a forced removal to land in
+// the instant after the postmaster CREATES postmaster.pid and before it
+// WRITES to it, which took suite-level load to hit once and then passed eight
+// times out of eight alone. A regression test that needs a race cannot fail
+// for the defect it names, so the remnant is planted directly.
+//
+// An empty lock file is what Postgres refuses outright -- "lock file
+// postmaster.pid is empty" -- because it cannot tell a crash remnant from
+// another server mid-start. It will never clear one itself. Recovery can,
+// because at the point it starts its server it holds the lifecycle lock
+// exclusively, has stopped the Compose Postgres, and has confirmed its own
+// container gone: nothing else can be starting over this PGDATA.
+func TestRecoveryResumesOverAnEmptyPostmasterPid(t *testing.T) {
+	cfg, seed := lockedPlaneWithSecret(t)
+
+	pidFile := postmasterPidPath(t, cfg)
+	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a cleanly stopped plane still has %s (%v), so planting one proves nothing: the "+
+			"fixture is not the state under test", pidFile, err)
+	}
+	if err := os.WriteFile(pidFile, nil, 0o600); err != nil {
+		t.Fatalf("plant the empty lock file: %v", err)
+	}
+
+	if err := RecoverKey(t.Context(), cfg, testComposeFile(), true); err != nil {
+		t.Fatalf("recover over an empty postmaster.pid: %v", err)
+	}
+	staged, err := paths.LoadKeyFile(cfg.Roots.KeyPath())
+	if err != nil {
+		t.Fatalf("read the installed key: %v", err)
+	}
+	assertRecovered(t, cfg, seed, staged)
+}
+
+// TestRecoveryServerIsShutDownNotKilled is the OTHER half of #352: the repair
+// above survives a remnant, and this is what stops recovery making one.
+//
+// The evidence is the container's exit code, read BETWEEN the stop and the
+// removal, because a removed container has no exit code left to read -- which
+// is why shutDownRecoveryServer is a function of its own. Postgres exits 0 on
+// the fast shutdown its image's stop signal (SIGINT) requests. A SIGKILL is
+// 137, and that is what `docker rm --force` alone delivered before this fix,
+// to a server that is by construction often mid-startup.
+//
+// A clean stop also has to LEAVE no lock file, which is the property that
+// matters: the exit code says how the server went, the absent file says what
+// it left behind. Both are asserted, since either could hold without the
+// other.
+func TestRecoveryServerIsShutDownNotKilled(t *testing.T) {
+	cfg := isolatedPlane(t)
+	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if err := Down(t.Context(), cfg, testComposeFile()); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+
+	marker := &recoveryMarker{Container: recoveryContainerName(cfg), StagedKey: stagedKeyPath(cfg)}
+	t.Cleanup(func() {
+		_ = removeRecoveryContainer(context.WithoutCancel(t.Context()), marker.Container)
+	})
+	if err := startRecoveryServer(t.Context(), cfg, testComposeFile(), marker, hbaTrust); err != nil {
+		t.Fatalf("startRecoveryServer: %v", err)
+	}
+
+	// Positive control: a running postmaster holds a NON-empty lock file, so
+	// its absence below is something the stop did rather than something that
+	// was never there.
+	pidFile := postmasterPidPath(t, cfg)
+	if info, err := os.Stat(pidFile); err != nil || info.Size() == 0 {
+		t.Fatalf("a running recovery server has no populated %s (%v): the fixture is not the "+
+			"state under test", pidFile, err)
+	}
+
+	if err := shutDownRecoveryServer(t.Context(), marker.Container); err != nil {
+		t.Fatalf("shutDownRecoveryServer: %v", err)
+	}
+
+	out, err := exec.CommandContext(t.Context(), "docker", "inspect",
+		"--format", "{{.State.Status}} {{.State.ExitCode}}", marker.Container).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect the stopped container: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "exited 0" {
+		t.Fatalf("the recovery server ended as %q, want \"exited 0\": 137 is SIGKILL, which is what "+
+			"leaves an empty postmaster.pid when it lands mid-startup (#352)", got)
+	}
+	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a cleanly stopped server left %s behind (%v)", pidFile, err)
+	}
+}
+
+// postmasterPidPath is the postmaster's lock file inside this plane's PGDATA.
+func postmasterPidPath(t *testing.T, cfg *Config) string {
+	t.Helper()
+	pgDir, err := cfg.Roots.ServiceDataDir(paths.ServicePostgres)
+	if err != nil {
+		t.Fatalf("resolve the postgres data directory: %v", err)
+	}
+	return filepath.Join(pgDir, "pgdata", "postmaster.pid")
+}
+
 // recoveryContainerExists reports whether the recovery container is present.
 func recoveryContainerExists(t *testing.T, cfg *Config) bool {
 	t.Helper()
