@@ -13,8 +13,23 @@ if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$GOOGLE_GENA
 fi
 
 echo "Running integration tests (this may take a minute)..."
-if ! make test-integration; then
-    echo "❌ Integration tests failed!"
+# The output is shown AND kept. It was only ever shown, so a caller that
+# truncated or discarded the hook's output lost the name of the failing test
+# for good -- after a twenty-minute run. The log lives under .git/ so it is
+# per-clone and can never be committed.
+#
+# The status tested is MAKE's, not tee's: a pipeline's exit status is its last
+# command's, and tee succeeds whatever it was handed.
+HOOK_LOG_DIR="$(git rev-parse --absolute-git-dir)/maestro-hook-logs"
+mkdir -p "$HOOK_LOG_DIR"
+TEST_LOG="$HOOK_LOG_DIR/pre-push-$(date +%Y%m%dT%H%M%S).log"
+make test-integration 2>&1 | tee "$TEST_LOG"
+TEST_STATUS=${PIPESTATUS[0]}
+ls -1t "$HOOK_LOG_DIR"/pre-push-*.log 2>/dev/null | tail -n +11 | while read -r old; do rm -f "$old"; done
+if [ "$TEST_STATUS" -ne 0 ]; then
+    echo "❌ Integration tests failed! What failed:"
+    grep -E '^(--- FAIL|FAIL|panic:)|test timed out' "$TEST_LOG" | head -20 | sed 's/^/     /'
+    echo "   Full output: $TEST_LOG"
     echo "   Fix the failures or use 'git push --no-verify' to skip this hook."
     exit 1
 fi

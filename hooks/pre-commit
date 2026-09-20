@@ -32,10 +32,21 @@ echo "✅ Build passed"
 
 # 2. Run core tests (with timeout)
 echo "2. Running core tests..."
-if ! go test -cover -timeout=300s ./... >/dev/null 2>&1; then
-    echo "⚠️  Tests timed out or failed. Consider running 'make test' manually."
+# The output is KEPT, not discarded. It used to go to /dev/null, which meant a
+# refusal said only "timed out or failed": which test, and why, was
+# unrecoverable, and a transient failure could never be diagnosed afterwards.
+# The log lives under .git/ so it is per-clone and can never be committed.
+HOOK_LOG_DIR="$(git rev-parse --absolute-git-dir)/maestro-hook-logs"
+mkdir -p "$HOOK_LOG_DIR"
+TEST_LOG="$HOOK_LOG_DIR/pre-commit-$(date +%Y%m%dT%H%M%S).log"
+if ! go test -cover -timeout=300s ./... >"$TEST_LOG" 2>&1; then
+    echo "⚠️  Tests timed out or failed. What failed:"
+    grep -E '^(--- FAIL|FAIL|panic:)|test timed out' "$TEST_LOG" | head -20 | sed 's/^/     /'
+    echo "   Full output: $TEST_LOG"
     exit 1
 fi
+# Keep the ten most recent logs; a passing run's log is rarely read twice.
+ls -1t "$HOOK_LOG_DIR"/pre-commit-*.log 2>/dev/null | tail -n +11 | while read -r old; do rm -f "$old"; done
 echo "✅ Tests completed"
 
 # 3. Run comprehensive linting
