@@ -8,7 +8,7 @@ type = "process"
 
 # Maestro v2 Build Process (Interim)
 
-Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit); amended 2026-08-31 (*Reachability Claims* added — Accepted by Codex and DR alongside Phase 3 item 1).
+Status: live — agreed working agreement, 2026-07-11; amended 2026-07-24 (review-before-push made explicit, golden-run cost gate added, command-level mechanics delegated to `CLAUDE.md`); amended 2026-08-06 (defect-shaped verification made explicit); amended 2026-08-31 (*Reachability Claims* added — Accepted by Codex and DR alongside Phase 3 item 1); amended 2026-09-19 (review rounds go through the Counterpoint tool rather than through DR as relay; DR keeps every gate — Accepted by Codex and DR).
 
 This defines how v2 gets built until Maestro can build Maestro (the Phase 9 ramp). It manually implements the generate/review invariant that Maestro v2 automates: one author, one reviewer, human escalation.
 
@@ -24,7 +24,7 @@ The split is by audience: a rule that DR or Codex needs in order to review or en
 - **Reviewer: Codex.** Provides the review function, analogous to what Maestro will automate.
 - **Human operator: DR.** Resolves escalation and contention, provides feedback, and accepts. DR is also the effective orchestrator: all communication between Claude and Codex flows through DR.
 
-> **Amendment, PROPOSED 2026-09-19 — pending Codex and DR acceptance; this line is replaced with the acceptance date and parties in the acceptance commit.** The last clause above is superseded: review rounds between Claude and Codex go through the **Counterpoint review tool** when it is available in the author's session, and through DR manually when it is not. The tool replaces DR as the *relay* and nothing else. DR still resolves contention that does not converge, still authorizes every push, still gives final approval and merges, and an artifact is still Accepted only when both Codex and DR have approved it. The tool reviews local commits and never pushes, opens pull requests, merges, or edits the repository, so *Review Cadence* below is unchanged. The command-level mechanics — how a round is submitted, what branch notes contain, how a disputed finding is escalated and recorded — are `CLAUDE.md`'s.
+> **Amendment, Accepted by Codex and DR, 2026-09-19.** The last clause above is superseded: review rounds between Claude and Codex go through the **Counterpoint review tool** when it is available in the author's session, and through DR manually when it is not. The tool replaces DR as the *relay* and nothing else. DR still resolves contention that does not converge, still authorizes every push, still gives final approval and merges, and an artifact is still Accepted only when both Codex and DR have approved it. The tool reviews local commits and never pushes, opens pull requests, merges, or edits the repository, so *Review Cadence* below is unchanged. The command-level mechanics — how a round is submitted, what branch notes contain, how a disputed finding is escalated and recorded — are `CLAUDE.md`'s.
 
 An artifact is Accepted when both Codex and DR have approved it.
 
