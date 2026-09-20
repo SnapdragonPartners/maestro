@@ -38,7 +38,10 @@ echo "2. Running core tests..."
 # The log lives under .git/ so it is per-clone and can never be committed.
 HOOK_LOG_DIR="$(git rev-parse --absolute-git-dir)/maestro-hook-logs"
 mkdir -p "$HOOK_LOG_DIR"
-TEST_LOG="$HOOK_LOG_DIR/pre-commit-$(date +%Y%m%dT%H%M%S).log"
+# The shell's PID makes the name unique: a timestamp alone has one-second
+# resolution, so two runs inside the same second would share a file and the
+# later would overwrite the earlier run's evidence.
+TEST_LOG="$HOOK_LOG_DIR/pre-commit-$(date +%Y%m%dT%H%M%S)-$$.log"
 if ! go test -cover -timeout=300s ./... >"$TEST_LOG" 2>&1; then
     echo "⚠️  Tests timed out or failed. What failed:"
     grep -E '^(--- FAIL|FAIL|panic:)|test timed out' "$TEST_LOG" | head -20 | sed 's/^/     /'
