@@ -7,7 +7,14 @@
 // recalled — the same discipline blob.go's comments record for MinIO. Where a
 // claim here is about GCS behaviour, it was observed; where it is about the
 // pinned client library, it was read in the source of
-// cloud.google.com/go/storage v1.56.0.
+// cloud.google.com/go/storage, first at v1.56.0 and RE-READ at v1.64.0 when
+// the pin moved (2026-09-19). All five library claims below still hold there:
+// the 16 MiB default chunk (googleapi.DefaultUploadChunkSize, applied by
+// NewWriter), SendCRC32C needing to be set before the first Write,
+// CloseWithError deprecated in favour of cancelling the context, a generation
+// on a copy destination being rejected, and -1 (defaultGen) meaning an
+// unspecified generation. A future bump re-reads them; a version named here
+// that is not the version in go.mod means nobody has.
 //
 // The three that shape the code most:
 //
