@@ -289,6 +289,134 @@ jobs:
   # credential authenticates over the network by service name, the probe can
   # fail, all three resume windows converge, and no orphaned container
   # survives. A second copy of that in YAML would drift from the first.
+  # The v2 data-plane integration suite (issue #356).
+  #
+  # Until this job existed, GitHub CI ran 20 of the tree's 477 integration-tagged
+  # tests: `dataplane-recover-key` below selects `TestRecover` in one package,
+  # and everything else -- the persistence seam, the migration guards, the
+  # importer, dispatch and the recovery projection -- ran ONLY in the local
+  # pre-push hook. A client-side hook cannot be enforced: `git push --no-verify`
+  # skips it entirely, and it skips itself for a contributor with no API keys
+  # set. So a green CI run did not mean the suite had passed anywhere.
+  #
+  # Scope is the v2 packages only. The full `integration` job at the bottom of
+  # this file stays disabled for the reason it records: the v1 packages spend
+  # paid API tokens. These need Docker and no secret.
+  #
+  # TWO THINGS THIS JOB MUST NOT DO, both of which a naive version does:
+  #
+  #   1. Run without a plane. Most of these tests reach Postgres and MinIO
+  #      through `planetest`, which SKIPS when it cannot connect -- correct for a
+  #      developer who has not run `make dataplane-up`, and in CI a false green.
+  #      Measured 2026-09-20 with no plane behind MAESTRO_HOME: `store/postgres`,
+  #      the persistence seam, reported a package verdict of PASS with 279 of
+  #      its 367 tests skipped and none failed. Not every package behaves that
+  #      way -- `objects` fails hard instead -- so the overall exit status may
+  #      still be non-zero; the point is that a package can be `ok` having run
+  #      a quarter of itself. So the plane is brought up first. (The `stack`
+  #      package differs: it starts its own isolated Compose projects, which is
+  #      why it needed no plane in the job below.)
+  #   2. Trust the exit status. Even with a plane up, a skip is silent. The
+  #      results are judged by scripts/check-go-test-json.py, which fails on any
+  #      failure, on any skip, and on too FEW passes -- an empty or truncated
+  #      result has no failures and no skips either.
+  dataplane-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # MAESTRO_HOME is set PER STEP, on the two steps that need it, and must
+      # stay that way. `runner.temp` is a `runner` context value, and that
+      # context does not exist at job level -- no runner has been assigned when
+      # a job's `env` is evaluated. Setting it there makes the whole workflow
+      # file invalid: GitHub creates ZERO jobs, reports "workflow file issue",
+      # and the required `build-lint-test` check sits at "Expected" forever
+      # with nothing running. That is what this job's first push did.
+      - name: Bring up the shared data plane the tests reach through planetest
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-integration
+        run: make dataplane-up
+
+      - name: Run the v2 integration suite
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-integration
+        run: |
+          set -uo pipefail
+          # -json so the verdict below can see skips. The exit status is
+          # CAPTURED, not allowed to end the step, and re-raised after the
+          # verdict, so a failure prints which tests failed and why.
+          #
+          # `|| status=$?` is what does the capturing. GitHub runs this script
+          # as `bash -e`, and `set -uo pipefail` does not turn errexit OFF, so
+          # a bare `go test` that failed would end the step on that line: the
+          # status below would never be written, the verdict step would be
+          # skipped, and the only record of what failed would be a JSON file
+          # nobody can see. A command on the left of `||` is exempt from -e.
+          # The package list is the Makefile's, read rather than repeated, so
+          # this job and `make test-integration-v2` cannot drift apart.
+          packages=$(make --no-print-directory -s v2-integration-packages)
+          test -n "$packages" || { echo "the Makefile printed no package list"; exit 1; }
+          echo "packages: $packages"
+          # shellcheck disable=SC2086 # word-splitting the list is the point
+          status=0
+          go test -tags=integration -count=1 -timeout=50m -json $packages \
+            > "$RUNNER_TEMP/v2-integration.json" || status=$?
+          echo "go test exited $status"
+          echo "GO_TEST_STATUS=$status" >> "$GITHUB_ENV"
+
+      - name: Verdict -- no failures, no skips, and not suspiciously few passes
+        run: |
+          set -euo pipefail
+          python3 scripts/check-go-test-json.py "$RUNNER_TEMP/v2-integration.json" \
+            --min-passed 1200
+          if [ "$GO_TEST_STATUS" -ne 0 ]; then
+            echo "go test exited $GO_TEST_STATUS although the verdict above found nothing: refusing to pass"
+            exit 1
+          fi
+
+      - name: Slowest packages
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/v2-integration.json" <<'EOF'
+          import json, sys
+          rows = []
+          for line in open(sys.argv[1], encoding="utf-8"):
+              try:
+                  ev = json.loads(line)
+              except ValueError:
+                  continue
+              if ev.get("Action") in ("pass", "fail") and not ev.get("Test"):
+                  rows.append((ev.get("Elapsed", 0), ev["Action"], ev["Package"]))
+          for elapsed, action, pkg in sorted(rows, reverse=True)[:8]:
+              print(f"{elapsed:8.1f}s  {action}  {pkg}")
+          EOF
+
+      - name: No test plane or recovery container survived the suite
+        if: always()
+        run: |
+          set -euo pipefail
+          # Two steps, because they fail differently and only one failure is
+          # benign. `docker ps | grep ... || true` forgave BOTH: grep finding
+          # nothing, which is the good outcome, and docker being unable to
+          # answer, which leaves the question unanswered. An inventory that
+          # could not be taken is not an empty inventory.
+          inventory=$(docker ps --all --format '{{.Names}}')
+          survivors=$(printf '%s\n' "$inventory" | grep -E '^maestro-it-|keyrecovery' || true)
+          if [ -n "$survivors" ]; then
+            echo "containers survived the suite:"
+            echo "$survivors"
+            echo "$survivors" | xargs -r docker rm --force
+            exit 1
+          fi
+
   dataplane-recover-key:
     runs-on: ubuntu-latest
     steps:

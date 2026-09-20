@@ -7,9 +7,14 @@ echo "Running pre-push checks..."
 
 # Check if integration test API keys are set
 if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$GOOGLE_GENAI_API_KEY" ]; then
-    echo "⚠️  Warning: No API keys set (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENAI_API_KEY)"
-    echo "   Skipping integration tests. To run them, set at least one API key."
-    exit 0
+    # This branch used to `exit 0`: no keys, no tests at all. But only the v1
+    # packages need a model API key. The v2 data-plane suite needs Docker and
+    # nothing else, and it is most of what this gate protects, so a contributor
+    # without keys runs THAT rather than nothing (issue #356).
+    echo "⚠️  No API keys set (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENAI_API_KEY)."
+    echo "   Skipping the v1 integration tests, which spend model API tokens."
+    echo "   Running the v2 data-plane integration tests, which need none."
+    TEST_TARGET=test-integration-v2
 fi
 
 echo "Running integration tests (this may take a minute)..."
@@ -26,7 +31,7 @@ mkdir -p "$HOOK_LOG_DIR"
 # resolution, so two runs inside the same second would share a file and the
 # later would overwrite the earlier run's evidence.
 TEST_LOG="$HOOK_LOG_DIR/pre-push-$(date +%Y%m%dT%H%M%S)-$$.log"
-make test-integration 2>&1 | tee "$TEST_LOG"
+make "${TEST_TARGET:-test-integration}" 2>&1 | tee "$TEST_LOG"
 TEST_STATUS=${PIPESTATUS[0]}
 ls -1t "$HOOK_LOG_DIR"/pre-push-*.log 2>/dev/null | tail -n +11 | while read -r old; do rm -f "$old"; done
 if [ "$TEST_STATUS" -ne 0 ]; then
