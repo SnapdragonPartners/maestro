@@ -323,8 +323,6 @@ jobs:
   dataplane-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      MAESTRO_HOME: ${{ runner.temp }}/maestro-integration
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -335,10 +333,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # MAESTRO_HOME is set PER STEP, on the two steps that need it, and must
+      # stay that way. `runner.temp` is a `runner` context value, and that
+      # context does not exist at job level -- no runner has been assigned when
+      # a job's `env` is evaluated. Setting it there makes the whole workflow
+      # file invalid: GitHub creates ZERO jobs, reports "workflow file issue",
+      # and the required `build-lint-test` check sits at "Expected" forever
+      # with nothing running. That is what this job's first push did.
       - name: Bring up the shared data plane the tests reach through planetest
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-integration
         run: make dataplane-up
 
       - name: Run the v2 integration suite
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-integration
         run: |
           set -uo pipefail
           # -json so the verdict below can see skips. The exit status is
