@@ -51,12 +51,18 @@ diverge.
 
 Roles:
 
-- Claude authors docs, ADRs, scopes, plans, specs, and code.
-- Codex reviews.
-- DR orchestrates, resolves contention, and accepts.
+- Claude authors docs, ADRs, scopes, plans, specs, code, and fixes.
+- Codex reviews committed artifacts and code.
+- DR orchestrates, resolves contention, authorizes external effects, and
+  accepts.
 - An artifact is Accepted only after both Codex and DR approve it.
-- Claude/Codex communication routes through DR. Escalate contention that does
-  not converge to DR.
+- Claude/Codex communication goes through the Counterpoint review tool
+  (`mcp__counterpoint__review`) when it is available in the session; otherwise
+  it routes through DR manually. The tool replaces DR as the *relay*, not as
+  the approver: every gate below that names DR still needs DR.
+
+If Claude and Codex do not converge after reasoned attempts, preserve both
+positions and escalate the decision to DR rather than cycling indefinitely.
 
 ### Branch And Review Workflow
 
@@ -76,17 +82,108 @@ Roles:
    output, and fixtures. The pre-commit hook (build and lint) is fast and is never
    bypassed; this exception exists solely because the pre-push integration suite
    costs ~11 minutes and cannot tell you anything about a Markdown change.
-4. Produce branch notes for Codex and iterate on the local commits until every
-   review point is resolved or DR explicitly overrides it.
-5. Push only after Codex and DR approve. Push is a gate, not a routine step.
+4. Write branch notes for Codex and submit the exact local commit for review
+   (see *Submitting For Review*). Address every blocking finding with a fix or
+   a reasoned response, commit each review round locally, and submit the new
+   commit with updated notes. Continue until Codex has no blocking findings, DR
+   explicitly overrides one, or Claude has escalated a disputed finding to DR.
+5. Stop for DR approval, quoting Codex's approval or outstanding findings. Push
+   only after Codex and DR approve. Push is a human gate, not a routine
+   implementation step, and Counterpoint never pushes, opens PRs, or merges.
 6. Open the PR to `main`; reference the phase plan and applicable ADRs/specs.
 7. Address every CI review thread with a fix or reasoned reply, push the
-   resolution, mark the thread resolved, and check again for new feedback.
+   resolution, mark the thread resolved, and check again for new feedback. The
+   heavy review has already happened before push; post-push automated review is
+   a final proofread, and its findings are still treated on their merits.
 8. DR gives final approval and merges. Claude never merges.
 
 Keep at most one feature/development branch open at a time. Parallel branches
 are allowed only for bug fixes. Review checkpoints for large work come from the
 phase plan; smaller work receives one end-of-work review.
+
+#### Responding To Findings
+
+Codex is a reviewer, not an authority. Only blocking findings — P0 and P1 as
+defined under *Code And Review Standards* — must be resolved before the push
+gate. Suggestions and style points are addressed at Claude's discretion and
+their disposition noted. A finding Claude judges wrong, out of scope, or
+disproportionate gets a reasoned response in the next round's notes rather than
+a change; verify the finding against the tree before accepting or disputing
+it, cite the ADR, test, or deliberate design choice that answers it, and when
+the pushback is correct on the merits add a regression test alongside it.
+If Codex reaffirms it, stop, state both positions, and bring the decision to DR
+before another round. Do not implement a change Claude believes is wrong in
+order to end the loop.
+
+A finding settled by argument rather than by a change — Codex withdraws it,
+Claude accepts it after a further round, or DR decides it after escalation — is
+recorded in the repository before the push gate, in a commit Codex has
+reviewed: as an ADR when the resolution applies beyond the current work,
+otherwise as a dated entry in the governing design's *Points Resolved In
+Review* (or a dated amendment to the governing plan or spec). The branch notes
+of the round that reviews the record cite it by path. When the resolution
+arrives in the round that would otherwise approve the branch, recording it
+costs one more documentation-only round, and that round is required. A finding
+settled by a change is recorded by the change. A resolution that exists only in
+conversation, in the review thread, or in branch notes is not a resolution: the
+reviewer starts each round with only the last three verdicts, and the next
+author starts with none.
+
+#### Submitting For Review
+
+- If the Counterpoint tool is available, call it directly with the absolute
+  repository path (derive it with `git rev-parse --show-toplevel`; never
+  hard-code it), the branch, the exact local commit, and the branch notes.
+  The commit must be the branch tip and the checked-out HEAD of a clean
+  worktree, so commit before calling. The call blocks for the whole Codex turn
+  — up to about twenty minutes. Submit every round through the tool; do not ask
+  DR to relay when the tool is available.
+- In a read-only review the reviewer reads the worktree, so do not touch it
+  while the review runs — no edits, no mutation harnesses, no `make` targets
+  that write generated output. In a build-capable review (`build: true`) the
+  reviewer works in a disposable checkout, and the only obligation is not to
+  rewrite the branch meanwhile.
+- Ask for a build-capable review when a test run is material evidence: code
+  changes, especially to concurrency, persistence, migrations, protocol
+  handling, or Git interaction. Keep documentation-only rounds and small
+  follow-ups read-only. The reviewer's checkout is an offline sandbox, so
+  the `integration`-tagged suites, which need the Docker data plane, are never
+  its evidence; Claude runs those and reports the commands and outcomes in the
+  notes.
+- Reviewer guidance specific to this repository lives in `COUNTERPOINT.md` at
+  the repository root, which Counterpoint quotes into every round from the
+  commit under review. Keep it short; it is reviewed like any other file.
+- The reviewer starts each round fresh; its memory is the last three rounds'
+  verdicts. Write later rounds' notes as a delta, but keep the disposition of
+  every prior finding in each round's notes, since older rounds are evicted and
+  the reviewer re-validates rather than trusting its earlier output. A new or
+  renamed branch starts a new review thread.
+- If the tool reports the thread is unavailable, stop and tell DR rather than
+  working around it; the error says what to do.
+- If the tool is not available in the session, write the branch notes and ask
+  DR to submit them to Codex manually, then wait for the relayed findings.
+- Treat the tool result as Codex's review. Verification claims in the notes
+  must be backed by the commands and outcomes that produced them.
+
+#### Branch Notes
+
+Branch notes are the handoff artifact, not a generic summary. Every round's
+notes lead with the exact commit hash and the branch's push state, then
+include:
+
+- review round number;
+- whether the change is code, documentation, or both;
+- verification commands and outcomes, including mutants run and the reason
+  each died;
+- a concise account of material changes;
+- resolution of each prior review finding;
+- important design choices and rejected alternatives;
+- known limitations and open questions; and
+- branch status, and confirmation that it is unpushed and awaiting approval.
+
+Codex verifies the notes against the commit and repository rather than assuming
+the author's claims are correct. The same notes seed the PR body once push is
+authorized.
 
 This human build workflow is distinct from the product's v2 Epic/Story branch
 model in ADR 0023. Use ADR 0023 when implementing Maestro's Orchestrator-managed
