@@ -21,6 +21,9 @@ import json
 import re
 import sys
 
+# How much of a failing test's output the verdict repeats.
+TAIL = 40
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -66,6 +69,16 @@ def main() -> int:
         print("\nFAILED:")
         for name in failed:
             print(f"  {name}")
+        # The stream is a file on the runner that nobody can open afterwards,
+        # so the verdict carries each failing test's own output. Packages are
+        # skipped here: their output is the sum of their tests'.
+        for name in failed:
+            lines = "".join(output.get(name, [])).rstrip().splitlines()
+            if not lines:
+                continue
+            print(f"\n--- output of {name} (last {min(len(lines), TAIL)} of {len(lines)} lines)")
+            for out_line in lines[-TAIL:]:
+                print(f"    {out_line}")
     if fatal_skips:
         ok = False
         print("\nSKIPPED -- in CI a skip means the test did not run, which is not a pass:")
