@@ -344,8 +344,13 @@ jobs:
           # -json so the verdict below can see skips. The exit status is kept
           # and re-raised AFTER the verdict, so a failure still prints which
           # tests failed instead of stopping at a bare non-zero exit.
-          go test -tags=integration -count=1 -timeout=50m -json \
-            ./internal/dataplane/... ./internal/orchestrator/... \
+          # The package list is the Makefile's, read rather than repeated, so
+          # this job and `make test-integration-v2` cannot drift apart.
+          packages=$(make --no-print-directory -s v2-integration-packages)
+          test -n "$packages" || { echo "the Makefile printed no package list"; exit 1; }
+          echo "packages: $packages"
+          # shellcheck disable=SC2086 # word-splitting the list is the point
+          go test -tags=integration -count=1 -timeout=50m -json $packages \
             > "$RUNNER_TEMP/v2-integration.json"
           echo "GO_TEST_STATUS=$?" >> "$GITHUB_ENV"
 
