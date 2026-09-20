@@ -756,21 +756,26 @@ func TestRecoveryResumesOverAnEmptyPostmasterPid(t *testing.T) {
 	assertRecovered(t, cfg, seed, staged)
 }
 
-// TestRecoveryServerIsShutDownNotKilled is the OTHER half of #352: the repair
-// above survives a remnant, and this is what stops recovery making one.
+// TestRecoveryServerRemovalShutsItDownCleanly is the OTHER half of #352:
+// the repair above survives a remnant, and this is what stops recovery making
+// one. It goes through removeRecoveryContainer, the PRODUCTION path.
 //
-// The evidence is the container's exit code, read BETWEEN the stop and the
-// removal, because a removed container has no exit code left to read -- which
-// is why shutDownRecoveryServer is a function of its own. Postgres exits 0 on
-// the fast shutdown its image's stop signal (SIGINT) requests. A SIGKILL is
-// 137, and that is what `docker rm --force` alone delivered before this fix,
-// to a server that is by construction often mid-startup.
+// The first version of this test called the shutdown helper directly, and
+// review showed what that was worth: deleting the helper's call from
+// removeRecoveryContainer -- which restores the original kill-only behaviour
+// exactly -- left it passing. It proved the helper worked and said nothing
+// about whether recovery used it.
 //
-// A clean stop also has to LEAVE no lock file, which is the property that
-// matters: the exit code says how the server went, the absent file says what
-// it left behind. Both are asserted, since either could hold without the
-// other.
-func TestRecoveryServerIsShutDownNotKilled(t *testing.T) {
+// The evidence has to survive the container's removal, which rules out its
+// exit code; Docker's event stream records one but was measured to be
+// incomplete when read back, so a guard built on it would be a flaky one.
+// What does survive is what the server LEFT in PGDATA, and that is also the
+// property that matters. A running postmaster holds a populated
+// postmaster.pid and removes it on a clean shutdown. Killed, it cannot, and
+// the file stays. So after the production removal of a RUNNING server the
+// lock file must be gone, and it is gone only if the server was asked to stop
+// before it was removed.
+func TestRecoveryServerRemovalShutsItDownCleanly(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -787,30 +792,26 @@ func TestRecoveryServerIsShutDownNotKilled(t *testing.T) {
 		t.Fatalf("startRecoveryServer: %v", err)
 	}
 
-	// Positive control: a running postmaster holds a NON-empty lock file, so
-	// its absence below is something the stop did rather than something that
-	// was never there.
+	// Positive control: the running server holds a POPULATED lock file, so
+	// its absence below is something the removal did rather than something
+	// that was never there.
 	pidFile := postmasterPidPath(t, cfg)
 	if info, err := os.Stat(pidFile); err != nil || info.Size() == 0 {
 		t.Fatalf("a running recovery server has no populated %s (%v): the fixture is not the "+
 			"state under test", pidFile, err)
 	}
 
-	if err := shutDownRecoveryServer(t.Context(), marker.Container); err != nil {
-		t.Fatalf("shutDownRecoveryServer: %v", err)
+	if err := removeRecoveryContainer(t.Context(), marker.Container); err != nil {
+		t.Fatalf("removeRecoveryContainer: %v", err)
+	}
+	if gone, err := recoveryContainerGone(t.Context(), marker.Container); err != nil || !gone {
+		t.Fatalf("the recovery container survived its removal (gone=%v, err=%v)", gone, err)
 	}
 
-	out, err := exec.CommandContext(t.Context(), "docker", "inspect",
-		"--format", "{{.State.Status}} {{.State.ExitCode}}", marker.Container).CombinedOutput()
-	if err != nil {
-		t.Fatalf("inspect the stopped container: %v\n%s", err, out)
-	}
-	if got := strings.TrimSpace(string(out)); got != "exited 0" {
-		t.Fatalf("the recovery server ended as %q, want \"exited 0\": 137 is SIGKILL, which is what "+
-			"leaves an empty postmaster.pid when it lands mid-startup (#352)", got)
-	}
 	if _, err := os.Stat(pidFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("a cleanly stopped server left %s behind (%v)", pidFile, err)
+		t.Fatalf("removing the recovery server left %s behind (stat: %v): the server was KILLED, not "+
+			"shut down. A postmaster removes its lock file on a clean stop and cannot when it is "+
+			"killed, and a kill landing mid-startup is what leaves the file EMPTY (#352)", pidFile, err)
 	}
 }
 

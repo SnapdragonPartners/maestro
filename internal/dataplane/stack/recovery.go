@@ -800,9 +800,9 @@ const recoveryStopGrace = 20 * time.Second
 // shutDownRecoveryServer asks the recovery server to shut down cleanly. A
 // container that does not exist, or has already exited, is not a failure.
 //
-// Split from removeRecoveryContainer so a test can observe HOW the server
-// went: once the container is removed its exit code is gone, and the exit
-// code is the only honest evidence of a clean stop versus a kill.
+// Its effect is tested THROUGH removeRecoveryContainer rather than here: a
+// test of this function alone passes with its call deleted from the removal,
+// which is the original defect restored.
 func shutDownRecoveryServer(ctx context.Context, container string) error {
 	grace := strconv.Itoa(int(recoveryStopGrace / time.Second))
 	out, err := exec.CommandContext(ctx, "docker", "stop", "--time", grace, container).CombinedOutput()
