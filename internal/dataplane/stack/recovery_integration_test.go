@@ -815,6 +815,53 @@ func TestRecoveryServerRemovalShutsItDownCleanly(t *testing.T) {
 	}
 }
 
+// TestRecoveryServerRemovalToleratesAnExitedContainer pins a fact about
+// Docker that the fix for #352 depends on: `docker stop` on a container that
+// has ALREADY exited succeeds.
+//
+// It is not an idle case. When the recovery server dies on the FATAL this
+// fix is about, the survivor the next attempt must remove is an exited
+// container, not a running one. If stopping it were an error, the removal
+// would return before its `docker rm --force`, the name would stay taken,
+// and the retry would fail on the conflict -- a fix for one unresumable state
+// that creates another. Review raised exactly that; it was measured not to
+// happen, and this keeps the measurement honest across Docker versions.
+func TestRecoveryServerRemovalToleratesAnExitedContainer(t *testing.T) {
+	cfg := isolatedPlane(t)
+	name := recoveryContainerName(cfg)
+	t.Cleanup(func() {
+		_ = exec.CommandContext(context.WithoutCancel(t.Context()), "docker", "rm", "--force", name).Run()
+	})
+
+	image, err := pinnedImage(testComposeFile(), "MAESTRO_PG_IMAGE")
+	if err != nil {
+		t.Fatalf("resolve the pinned image: %v", err)
+	}
+	// `true` exits at once, leaving a container that exists and is not running.
+	if out, err := exec.CommandContext(t.Context(), "docker", "run", "--detach", "--name", name,
+		"--entrypoint", "true", image).CombinedOutput(); err != nil {
+		t.Fatalf("start a container that exits immediately: %v\n%s", err, out)
+	}
+	if out, err := exec.CommandContext(t.Context(), "docker", "wait", name).CombinedOutput(); err != nil {
+		t.Fatalf("wait for it to exit: %v\n%s", err, out)
+	}
+	// Positive control: it EXISTS and has EXITED. A missing container takes
+	// the other, already-tolerated branch and would prove nothing here.
+	status, err := exec.CommandContext(t.Context(), "docker", "inspect",
+		"--format", "{{.State.Status}}", name).CombinedOutput()
+	if err != nil || strings.TrimSpace(string(status)) != "exited" {
+		t.Fatalf("the fixture container is %q (%v), want \"exited\": it is not the state under test",
+			strings.TrimSpace(string(status)), err)
+	}
+
+	if err := removeRecoveryContainer(t.Context(), name); err != nil {
+		t.Fatalf("removing an already-exited recovery container failed: %v", err)
+	}
+	if gone, err := recoveryContainerGone(t.Context(), name); err != nil || !gone {
+		t.Fatalf("the exited container survived its removal (gone=%v, err=%v)", gone, err)
+	}
+}
+
 // postmasterPidPath is the postmaster's lock file inside this plane's PGDATA.
 func postmasterPidPath(t *testing.T, cfg *Config) string {
 	t.Helper()

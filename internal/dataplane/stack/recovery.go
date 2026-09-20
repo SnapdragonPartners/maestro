@@ -800,12 +800,25 @@ const recoveryStopGrace = 20 * time.Second
 // shutDownRecoveryServer asks the recovery server to shut down cleanly. A
 // container that does not exist, or has already exited, is not a failure.
 //
+// The two cases are handled differently, and only one needs code. A MISSING
+// container makes `docker stop` fail, so that message is tolerated below. An
+// EXITED one does not: stopping a stopped container is a no-op the Engine API
+// answers 304 and the CLI reports as success (measured on Docker 29.6.2,
+// 2026-09-20; it is `docker kill` that refuses with "is not running"). That
+// case matters here more than it looks -- in #352's own scenario the survivor
+// has usually exited already, on the FATAL -- so it is pinned by
+// TestRecoveryServerRemovalToleratesAnExitedContainer rather than trusted.
+//
+// `-t`, not `--time`: Docker 29 deprecates the long form in favour of
+// `--timeout`, which older daemons do not know. The short flag is the one
+// spelling both accept.
+//
 // Its effect is tested THROUGH removeRecoveryContainer rather than here: a
 // test of this function alone passes with its call deleted from the removal,
 // which is the original defect restored.
 func shutDownRecoveryServer(ctx context.Context, container string) error {
 	grace := strconv.Itoa(int(recoveryStopGrace / time.Second))
-	out, err := exec.CommandContext(ctx, "docker", "stop", "--time", grace, container).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "docker", "stop", "-t", grace, container).CombinedOutput()
 	if err == nil || strings.Contains(string(out), "No such container") {
 		return nil
 	}
