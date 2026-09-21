@@ -195,6 +195,22 @@ check-coverage:
 # Pinned so lint results are reproducible across CI runs and dev machines;
 # @latest silently changes lint behavior (and busts CI caches) on new releases.
 GOLANGCI_LINT_VERSION := v1.64.8
+
+# actionlint checks that .github/workflows/*.yml are valid GitHub Actions
+# workflows, which is a stricter property than being valid YAML. It is part of
+# `lint` because an invalid workflow cannot report itself: one bad expression
+# voids the WHOLE file, GitHub creates zero jobs, and the required check sits at
+# "Expected" with nothing running. That happened on #357 -- `runner.temp` used
+# in a job-level `env`, where the `runner` context does not exist -- and the
+# file had been "verified" only by loading it as YAML. So the check has to run
+# BEFORE the push, which is where `lint` already runs: the pre-commit hook.
+ACTIONLINT_VERSION := v1.7.12
+# actionlint runs shellcheck and pyflakes over workflow scripts IF they are on
+# PATH. They are absent on a typical developer machine and preinstalled on
+# GitHub's runners, so at defaults the same commit lints clean locally and fails
+# in CI on findings nobody saw. Both are switched off so a clean result means
+# the same thing everywhere.
+ACTIONLINT_FLAGS := -shellcheck= -pyflakes=
 # Pinned so CI and local runs generate identical output; a version drift
 # would show up as spurious diffs in the sqlc-check.
 SQLC_VERSION := v1.31.1
@@ -203,6 +219,12 @@ SQLC_VERSION := v1.31.1
 # version mismatch — a PATH-shadowing install (e.g. homebrew) would win over
 # a reinstall anyway, so a loud warning beats a silent no-op loop.
 install-lint:
+	@which actionlint > /dev/null || { \
+		echo "Installing actionlint $(ACTIONLINT_VERSION)..."; \
+		go install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION); \
+	}
+	@actionlint -version 2>/dev/null | head -1 | grep -q "$(ACTIONLINT_VERSION:v%=%)" || \
+		echo "⚠️  actionlint on PATH is not $(ACTIONLINT_VERSION); lint results may differ from CI"
 	@which golangci-lint > /dev/null || { \
 		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
 		go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
@@ -238,6 +260,7 @@ fix: fix-imports fix-godot
 lint: install-lint benchmark-lint
 	go fmt ./...
 	golangci-lint run
+	actionlint $(ACTIONLINT_FLAGS)
 
 # Lint documentation (markdown files)
 lint-docs:
