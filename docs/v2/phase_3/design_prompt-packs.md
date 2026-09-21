@@ -1,6 +1,6 @@
 +++
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
-edit_date = "2026-09-03"
+edit_date = "2026-09-21"
 status = "live"
 summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L. The harness version is an opaque validated type supplied through the composition, so no root can open a seam with a malformed one, and a reciprocal deferred foreign key makes a dispatch without its resolution — or a resolution later deleted or re-pointed — a refused statement even for a writer that predates the schema."
 type = "design"
@@ -940,6 +940,48 @@ fixture packs with real entries, real declared coverage, and deliberate faults
 — a missing slot for a declared role, an unparseable entry, a reference to a
 variable the slot does not supply — travelling the identical path, through
 `InstallPromptPack` and through `UpdatePromptPackInstallation` both.
+
+#### D10a. The admitted dialect (amendment, 2026-09-21, implementation step 1)
+
+*Status: proposed by the implementation. Codex approved the dialect in
+implementation round 1 at `c826a98` and asked for it to be recorded here; it
+binds once DR accepts it with the branch.*
+
+This design said "parser" and "per-slot variable contract" and did not say what
+language an entry is written in. Implementing the contract forced the question,
+because under full `text/template` the contract is not decidable: `with` and
+`range` rebind dot, so `.Name` stops meaning a declared variable, and import
+renders one path through an entry's conditionals, so a construct that can fail
+on an untaken branch turns an import-time pass into the mid-run failure
+ADR 0031 §5 exists to prevent.
+
+So an entry is `text/template` syntax **restricted to**: text, comments and trim
+markers; `{{.Name}}`, a declared variable, one level deep; `if` / `else if` /
+`else`; `and`, `or`, `not` over variables, string literals and parenthesised
+expressions; and `eq`, `ne` over variables and string literals. Everything else
+is refused as a typed dialect error — `range`, `with`, `define`, `template`,
+`block`, `$x :=` declarations, `|` pipelines, every other builtin, and
+non-string literals. **Variables are strings.** Entry text must be non-blank,
+valid UTF-8 and free of NUL: `json.Marshal` substitutes U+FFFD for invalid
+bytes, so two different entries would otherwise share one `pack-jcs-sha256-v1`
+digest, against D4's *byte for byte*.
+
+**Narrow on purpose, because only one direction is cheap.** Entries are
+persisted under a content identity and validated against the harness that runs
+them, so widening the dialect later leaves every stored pack valid, and
+narrowing it would strand packs already installed.
+
+**The consequence for D11's owners, stated rather than discovered:** v1's
+templates use `range` and a nested `.Extra` bag. The items that re-cut them —
+6, 8 and 10 — either supply pre-rendered string variables or widen the dialect,
+and a widening owes the same two arguments: the contract stays decidable by
+reading the entry, and what is admitted does not fail on an untaken branch.
+The totality of the present constructs is argued and sampled
+(`TestAdmittedDialectRendersOnEveryPath`), not proven, and the code says so.
+
+The render call binds the harness as well: `Render` refuses values that are not
+**exactly** the slot's declared variables, so a registration cannot promise
+what its call site does not deliver.
 
 ### D11. The import-and-select verb is built here; four obligations are assigned to the items that acquire their subjects
 
