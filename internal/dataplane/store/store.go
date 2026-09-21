@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/registry"
 )
 
@@ -551,6 +552,18 @@ type Store interface {
 	// the artifact becoming authoritative only on acceptance (ADR 0022 as
 	// amended by item 6, design D5).
 	WithTx(ctx context.Context, fn func(Tx) error) error
+
+	// Harness returns the version of the running binary this seam was
+	// composed with (Phase 3 item 4 design, D3).
+	//
+	// It is the ONE authority for that version. Every pack install, update
+	// and resolution records it from here, and the Orchestrator reads it
+	// here at Start rather than carrying its own: two valid versions that
+	// differ -- a composition built from one, an Orchestrator configured
+	// with another -- would drive persistence and restart from different
+	// authorities, and no row could tell. Never the zero value: a seam
+	// cannot be constructed without one.
+	Harness() harness.Version
 
 	Close()
 }

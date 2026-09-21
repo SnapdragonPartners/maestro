@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"orchestrator/internal/dataplane/gen"
+	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
@@ -358,7 +359,7 @@ func TestReadsAreVersionBoundedOnEveryPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("narrowed registry: %v", err)
 	}
-	narrowStore, err := postgres.New(f.pool, narrowed, f.blob, f.rootKey)
+	narrowStore, err := postgres.New(f.pool, narrowed, f.blob, f.rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("narrowed store: %v", err)
 	}

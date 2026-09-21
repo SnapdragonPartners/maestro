@@ -105,7 +105,7 @@ func (p *plane) open(t *testing.T, entries map[registry.Type]registry.Entry) *po
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	built, err := postgres.New(planetest.Pool(t, p.dsn), types, p.blob, p.rootKey)
+	built, err := postgres.New(planetest.Pool(t, p.dsn), types, p.blob, p.rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

@@ -68,7 +68,7 @@ func verifyLocked(ctx context.Context, c *Config) (store.VerifyReport, error) {
 	if keyErr != nil {
 		return store.VerifyReport{}, keyErr
 	}
-	seam, openErr := postgres.Open(ctx, dsn, types, blob, keyProvider)
+	seam, openErr := postgres.OpenLifecycle(ctx, dsn, types, blob, keyProvider)
 	if openErr != nil {
 		return store.VerifyReport{}, fmt.Errorf("open the persistence seam: %w", openErr)
 	}

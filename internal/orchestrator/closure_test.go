@@ -21,7 +21,10 @@ const seamPackage = "orchestrator/internal/orchestrator"
 // directly or transitively (Phase 3 item 3, design D2): the seam, the two
 // vocabularies it declares, the readiness causes, the work types, the
 // secrets seam the store returns values through, two neutral helpers, and
-// itself. Nothing local, nothing v1.
+// itself -- and, since item 4 (design D3), the harness-version vocabulary the
+// seam exposes and `internal/prompt`, whose slot registry the Orchestrator
+// declares. `internal/prompt` reaches only `canonical`, which was already
+// here. Nothing local, nothing v1.
 //
 // An exact set, not a deny-list: a package added to the data plane later is
 // forbidden until somebody adds it here deliberately. `stack`, `paths`,
@@ -32,12 +35,14 @@ const seamPackage = "orchestrator/internal/orchestrator"
 var allowedClosure = []string{
 	"orchestrator/internal/dataplane/canonical",
 	"orchestrator/internal/dataplane/configkeys",
+	"orchestrator/internal/dataplane/harness",
 	"orchestrator/internal/dataplane/nilcheck",
 	"orchestrator/internal/dataplane/readiness",
 	"orchestrator/internal/dataplane/registry",
 	"orchestrator/internal/dataplane/secret",
 	"orchestrator/internal/dataplane/store",
 	"orchestrator/internal/dataplane/work",
+	"orchestrator/internal/prompt",
 	seamPackage,
 }
 

@@ -20,6 +20,7 @@ import (
 
 	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/gen"
+	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
@@ -55,6 +56,14 @@ type Store struct {
 	// which is exactly the partial-plane mode design D4 rejects. Refusing
 	// at construction turns that into one failure at one place.
 	rootKey secret.RootKeyProvider
+	// prompts is the prompt-pack import gate, reached through the contract
+	// the seam declares (Phase 3 item 4 design, D3).
+	//
+	// It follows keys' rule and not rootKey's: no vocabulary is a real
+	// state, so it defaults to a contract that REFUSES every pack rather
+	// than to nil. A store nobody gave a slot vocabulary cannot judge a
+	// pack usable, and says so with a typed error on the write.
+	prompts store.PromptContract
 	// blob is the object module's Layer 1 adapter. It is required, not
 	// optional: ADR 0022 makes object storage part of the data plane, and a
 	// store that satisfied the seam while answering every object operation
@@ -74,6 +83,14 @@ type Store struct {
 	// MOVING THE CLOCK rather than by switching the rule off: a test that
 	// disables a guard proves the guard is switchable.
 	now func() time.Time
+	// harness is the version of the running binary (design D3, D8).
+	//
+	// REQUIRED, on rootKey's side of that asymmetry. There is no honest
+	// default: "dev" would be a claim about the build, and the zero value
+	// would be recorded beside every pack this store validates. It arrives
+	// already validated -- harness.Parse is its only constructor -- so the
+	// one thing left to refuse here is that nobody supplied it.
+	harness harness.Version
 }
 
 // Option adjusts a Store at construction.
@@ -106,6 +123,59 @@ func WithConfigKeys(keys *configkeys.Registry) Option {
 	}
 }
 
+// WithPromptContract replaces the prompt-pack import gate.
+//
+// Absent it, every pack write is refused: this package cannot reach the
+// harness's slot vocabulary (that is the point of the contract being
+// consumer-owned), so the only gate it can supply itself is a closed one.
+func WithPromptContract(prompts store.PromptContract) Option {
+	return func(s *Store) {
+		// nilcheck: the argument is an interface, and a typed-nil registry
+		// pointer would otherwise replace a gate that refuses with one that
+		// panics on the first pack write.
+		if !nilcheck.IsNil(prompts) {
+			s.prompts = prompts
+		}
+	}
+}
+
+// ErrNoPromptContract is what the default gate refuses with.
+var ErrNoPromptContract = errors.New("no prompt contract was supplied to this store, so no pack can be judged usable")
+
+// refuseEveryPack is the gate a store has when nobody supplied one.
+type refuseEveryPack struct{}
+
+func (refuseEveryPack) ValidatePack(map[string]string, []string) error { return ErrNoPromptContract }
+
+// ApplicationName labels every connection the seam opens, so the runbook's
+// migration-cutover check can name Maestro's sessions in pg_stat_activity
+// instead of describing them (docs/v2/process_runbook.md, "Schema migration
+// cutover"). The runbook's narrowing filter is `LIKE 'maestro%'`.
+const ApplicationName = "maestro-seam"
+
+// NewPool builds the seam's connection pool from a DSN.
+//
+// Both routes to a Store -- Open here and plane.Open, which needs the pool
+// before a Store exists so it can probe -- build their pool through this, so
+// the label is set in one place. The label is set on the parsed config and
+// OVERRIDES one carried in the DSN: the cutover check reads it to decide
+// whether a seam is still open, and a DSN that renamed the session would hide
+// exactly the connection the check exists to find.
+//
+// Like pgxpool.New, this contacts nothing.
+func NewPool(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse data plane dsn: %w", err)
+	}
+	config.ConnConfig.RuntimeParams["application_name"] = ApplicationName
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("open data plane pool: %w", err)
+	}
+	return pool, nil
+}
+
 // New builds a Store over an existing pool.
 //
 // The registry is injected rather than read from a package-level default,
@@ -113,7 +183,22 @@ func WithConfigKeys(keys *configkeys.Registry) Option {
 // that another test observes.
 func New(
 	pool *pgxpool.Pool, types *registry.Registry, blob objects.Store,
-	rootKey secret.RootKeyProvider, opts ...Option,
+	rootKey secret.RootKeyProvider, running harness.Version, opts ...Option,
+) (*Store, error) {
+	if running.IsZero() {
+		return nil, errors.New("postgres store: no harness version was supplied; construct one with " +
+			"harness.Parse, which is the only way to get one -- the version is recorded beside every " +
+			"prompt pack this store validates, and the zero value is not a version")
+	}
+	return build(pool, types, blob, rootKey, running, opts...)
+}
+
+// build is New without the harness-version requirement. It has exactly two
+// callers: New, which has just enforced it, and OpenLifecycle, which returns
+// a view that cannot reach anything the version is recorded by.
+func build(
+	pool *pgxpool.Pool, types *registry.Registry, blob objects.Store,
+	rootKey secret.RootKeyProvider, running harness.Version, opts ...Option,
 ) (*Store, error) {
 	if pool == nil {
 		return nil, errors.New("postgres store: pool is nil")
@@ -150,6 +235,8 @@ func New(
 		registry: types,
 		keys:     configkeys.MustNew(nil),
 		rootKey:  rootKey,
+		prompts:  refuseEveryPack{},
+		harness:  running,
 		blob:     blob,
 		now:      time.Now,
 	}
@@ -162,13 +249,54 @@ func New(
 // Open builds a Store from a DSN.
 func Open(
 	ctx context.Context, dsn string, types *registry.Registry, blob objects.Store,
-	rootKey secret.RootKeyProvider, opts ...Option,
+	rootKey secret.RootKeyProvider, running harness.Version, opts ...Option,
 ) (*Store, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := NewPool(ctx, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open data plane pool: %w", err)
+		return nil, err
 	}
-	built, err := New(pool, types, blob, rootKey, opts...)
+	built, err := New(pool, types, blob, rootKey, running, opts...)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return built, nil
+}
+
+// Lifecycle is the slice of the store the local lifecycle runs against the
+// plane ITSELF: finishing interrupted deletes on the way up, and verifying
+// stored bytes.
+//
+// It exists because those two callers have no harness version to give and no
+// use for one. They are not a composition root acting for a caller -- they
+// are `up` and `verify` tending the plane -- and neither operation validates,
+// installs or resolves a pack, which is everything the version is recorded
+// by. Requiring one would mean threading a value through stack.Config for
+// nothing to read; inventing one would put a second authority beside
+// store.Store.Harness. So they get a view with no Harness method and no pack
+// surface at all.
+//
+// NOT ENFORCED BY THE TYPE SYSTEM, and stated rather than implied: the value
+// behind this interface is a *Store built without a version, and a type
+// assertion would recover it. Nothing in the module does that, and the
+// structure test beside this file fails if OpenLifecycle's result is ever
+// asserted back.
+type Lifecycle interface {
+	ReconcileDeletionClaims(ctx context.Context) (store.ClaimReconciliation, error)
+	Verify(ctx context.Context) (store.VerifyReport, error)
+	Close()
+}
+
+// OpenLifecycle opens the Lifecycle view from a DSN.
+func OpenLifecycle(
+	ctx context.Context, dsn string, types *registry.Registry, blob objects.Store,
+	rootKey secret.RootKeyProvider,
+) (Lifecycle, error) {
+	pool, err := NewPool(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	built, err := build(pool, types, blob, rootKey, harness.Version{})
 	if err != nil {
 		pool.Close()
 		return nil, err
@@ -178,6 +306,9 @@ func Open(
 
 // Close releases the pool.
 func (s *Store) Close() { s.pool.Close() }
+
+// Harness returns the version this store was constructed with.
+func (s *Store) Harness() harness.Version { return s.harness }
 
 // tx is the transactional view. It holds queries bound to a pgx.Tx, so
 // every method reached through it participates in that transaction.

@@ -126,7 +126,7 @@ func newFixture(t *testing.T) *fixture {
 	pool := planetest.Pool(t, disposableDatabase(t))
 	blob, blobConfig := disposableBlob(t)
 	rootKey := testRootKey(t)
-	built, err := postgres.New(pool, testRegistry(t), blob, rootKey)
+	built, err := postgres.New(pool, testRegistry(t), blob, rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestAmendmentInheritsVersionFromTheOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("advanced registry: %v", err)
 	}
-	advancedStore, err := postgres.New(f.pool, advanced, f.blob, f.rootKey)
+	advancedStore, err := postgres.New(f.pool, advanced, f.blob, f.rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("advanced store: %v", err)
 	}

@@ -910,7 +910,7 @@ func reconcileClaims(ctx context.Context, c *Config, rootKey []byte, blob *objec
 	if err != nil {
 		return err
 	}
-	seam, err := postgres.Open(ctx, dsn, types, blob, keyProvider)
+	seam, err := postgres.OpenLifecycle(ctx, dsn, types, blob, keyProvider)
 	if err != nil {
 		return fmt.Errorf("open the persistence seam: %w", err)
 	}

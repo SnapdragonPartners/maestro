@@ -143,7 +143,7 @@ func openSeam(t *testing.T, cfg *Config) *postgres.Store {
 	if err != nil {
 		t.Fatalf("wrap the root key: %v", err)
 	}
-	seam, err := postgres.Open(t.Context(), dsn, crossStoreRegistry(t), blob, keyProvider)
+	seam, err := postgres.Open(t.Context(), dsn, crossStoreRegistry(t), blob, keyProvider, testHarness(t))
 	if err != nil {
 		t.Fatalf("open the persistence seam: %v", err)
 	}

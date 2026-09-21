@@ -26,6 +26,7 @@ import (
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/work"
+	"orchestrator/internal/prompt"
 )
 
 // Opener opens the persistence seam. The composition root builds it; this
@@ -60,6 +61,16 @@ func Registry() (*registry.Registry, error) {
 // (ADR 0031 §4; design D7).
 func Keys() *configkeys.Registry {
 	return configkeys.MustNew(nil)
+}
+
+// Prompts is the prompt-slot vocabulary the Orchestrator declares, and the
+// import gate the seam validates every pack write through (item 4 design,
+// D3). Empty in item 4, by the rule Keys states: a slot is registered by the
+// item that first renders it, and nothing here calls a model (design D1).
+// With no slots it admits the empty pack -- which is what the built-in is --
+// and refuses every other.
+func Prompts() *prompt.Registry {
+	return prompt.MustNew(nil)
 }
 
 // StartupRefused is a start that could not proceed because the plane is

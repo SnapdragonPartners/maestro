@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	planeharness "orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/planetest"
@@ -94,9 +95,16 @@ func childOpener() (orchestrator.Opener, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The same version the parent composes with: a child that ran under
+	// another would be a second harness restarting the first one's work.
+	running, err := planeharness.Parse(planetest.HarnessVersion)
+	if err != nil {
+		return nil, err
+	}
+	caller := plane.Caller{Types: types, Keys: orchestrator.Keys(), Prompts: orchestrator.Prompts(), Harness: running}
 	dsn := os.Getenv(dsnEnv)
 	return func(ctx context.Context) (store.Store, error) {
-		return plane.Open(ctx, plane.Composition{DSN: dsn, Objects: blob, RootKey: rootKey, Types: types, Keys: orchestrator.Keys()})
+		return plane.Open(ctx, plane.Composition{DSN: dsn, Objects: blob, RootKey: rootKey, Caller: caller})
 	}, nil
 }
 
@@ -360,7 +368,8 @@ func newHarness(t *testing.T, accept bool, kill bool) *harness {
 		t.Fatal(err)
 	}
 	h.seam, err = plane.Open(context.Background(), plane.Composition{
-		DSN: dsn, Objects: blob, RootKey: fixedRootKey(t), Types: types, Keys: orchestrator.Keys(),
+		DSN: dsn, Objects: blob, RootKey: fixedRootKey(t),
+		Caller: plane.Caller{Types: types, Keys: orchestrator.Keys(), Prompts: orchestrator.Prompts(), Harness: planetest.Harness(t)},
 	})
 	if err != nil {
 		t.Fatal(err)
