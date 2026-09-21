@@ -233,6 +233,68 @@ rather than asserted here**: what
 `internal/prompt` itself imports decides the number, and a count written into a
 design before the package exists is a prediction, not a measurement.
 
+#### D3a. How the composition carries the two values (amendment, 2026-09-21, implementation step 2)
+
+*Status: proposed by the implementation. Codex approved these choices in
+implementation round 2 at `020ff45d` and asked for them to be recorded here;
+they bind once DR accepts them with the branch.*
+
+Six choices the accepted text did not make, and one correction to it:
+
+1. **`plane.Caller`, a struct, embedded in `plane.Composition`.** The four
+   things the *caller's job* supplies — `Types`, `Keys`, `Prompts`, `Harness`
+   — travel as one value, all required, and both composers take it as their
+   one caller-side parameter. Two more positional parameters would have
+   re-cut every composer signature and its eighteen call sites now and again
+   at the next addition. `Caller.Validate` is exported so a composer refuses
+   an incomplete caller **before** it acquires anything — the local lifecycle
+   lock, the cloud object client — and `plane.Open` validates again so a
+   composer that forgets is still refused.
+2. **`postgres.OpenLifecycle`, a view with no version.** Two callers open a
+   store with no harness version to give and no use for one: `up`'s deletion-
+   claim reconciliation and `verify`. They are the plane tending itself, not a
+   composition root acting for a caller, and neither reaches anything the
+   version is recorded by. Rejected: threading a `Version` through
+   `stack.Config` for nothing to read, and reading `pkg/version` inside `stack`,
+   which would be a second reader against D3's *exactly one of it*. The view
+   exposes no `Harness()` and no pack surface. The type system does not
+   enforce that a `*Store` built without a version stays behind it — a type
+   assertion would recover it — so a source-level structure test pins the
+   exact caller sets of the unchecked constructor and of `OpenLifecycle`, and
+   refuses any assertion to `*postgres.Store` outside tests.
+3. **`golang.org/x/mod` at v0.38.0, not v0.37.0.** The module graph already
+   selected v0.38.0 after the Dependabot sweep (#353), and pinning v0.37.0
+   downgraded `x/crypto`, `x/net`, `x/text` and grpc. The `semver` package is
+   byte-identical between the two, so round 8's verification transfers, and
+   the ladder test pins the ordering in-tree regardless.
+4. **The seam's pool label overrides a DSN's.** `postgres.NewPool` sets
+   `application_name` on the parsed connection config, so a DSN carrying its
+   own name cannot rename the session the runbook's narrowed cutover check
+   reads. Every route to a store — `plane.Open` and `postgres.Open` — builds
+   its pool there.
+5. **The prompt contract defaults closed; the version has no default.** On
+   `configkeys`' rule, a store nobody gave a slot vocabulary is a real state
+   and refuses every pack with a typed error. On the root key's rule, a
+   missing version is a broken plane, so `postgres.New` refuses the zero value.
+6. **Tests compose with a real semver in the Phase 3 band**
+   (`planetest.HarnessVersion`), so the range check is exercised rather than
+   skipped under `"dev"`; the development branch's tests construct `"dev"`
+   themselves.
+
+**Correction to D8: goreleaser does not stamp the `v`.** D8 says a v-prefixed
+semver is *"what goreleaser stamps."* `.goreleaser.yaml` sets
+`pkg/version.Version` from `{{.Version}}`, and goreleaser documents that
+field as the tag with *the `v` prefix stripped*; `{{.Tag}}` is the unstripped
+form. A v2 release built by today's configuration would therefore stamp
+`2.0.0-…`, which is exactly D8's named malformed case, and `harness.Parse`
+would refuse it: the binary would open no seam. That is the fail-closed
+behaviour D8 asks for, and it is the right one — admitting a bare `2.0.0`
+would reopen the hole round 3 closed. Nothing breaks today, because
+goreleaser builds only `cmd/maestro`, the frozen v1 binary, which opens no v2
+seam. The stamping is corrected when v2 acquires a release build
+([#359](https://github.com/SnapdragonPartners/maestro/issues/359)); changing it on this branch would alter the v1 binary's
+reported version for no v2 consumer.
+
 ### D4. Two schemes in their own column, a rendered form that is not the storage form, and a query that cannot separate them
 
 `canonical.Digest` returns a bare lowercase 64-hex SHA-256 over the RFC 8785
