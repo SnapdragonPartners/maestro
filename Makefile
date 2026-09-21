@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-integration-v2 v2-integration-packages test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -102,6 +102,23 @@ test: benchmark-test
 test-integration:
 	@echo "🧪 Running integration tests..."
 	go test -tags=integration -cover -count=1 -timeout=40m ./...
+
+# Run the v2 data-plane integration tests ONLY: the packages that need Docker
+# and no API key (issue #356). This is the set GitHub CI's
+# `dataplane-integration` job runs, and what the pre-push hook falls back to
+# for a contributor with no model API keys set, instead of skipping everything.
+# Requires a running plane (`make dataplane-up`): without one, planetest-based
+# tests SKIP rather than fail, and a package can report ok having run a
+# quarter of itself.
+V2_INTEGRATION_PACKAGES = ./internal/dataplane/... ./internal/orchestrator/...
+# Prints the package list, so CI reads the SAME list this file defines rather
+# than carrying a second copy that drifts.
+v2-integration-packages:
+	@echo $(V2_INTEGRATION_PACKAGES)
+
+test-integration-v2:
+	@echo "🧪 Running v2 data-plane integration tests (no API keys needed)..."
+	go test -tags=integration -cover -count=1 -timeout=40m $(V2_INTEGRATION_PACKAGES)
 
 # Run the GCS adapter tests against a REAL Google Cloud Storage bucket.
 #
