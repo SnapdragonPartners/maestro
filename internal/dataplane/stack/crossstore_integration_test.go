@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -221,10 +222,15 @@ func seedCrossStore(t *testing.T, cfg *Config) crossStoreSeed {
 	userID := operator.Record.UserID
 
 	agentType := "coder"
+	// Since 000023 an agent always carries a prompt identity; this path
+	// records the foreign shape (item 4 design, D5).
+	packName, promptHash := "fixture", "sha256:"+strings.Repeat("a", 64)
 	author, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
 		Kind:           store.PrincipalAgent,
 		Model:          "fixture-model",
 		AgentType:      &agentType,
+		PromptPackID:   &packName,
+		PromptHash:     &promptHash,
 		OrganizationID: seed.OrganizationID,
 	})
 	if err != nil {

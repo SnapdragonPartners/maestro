@@ -93,13 +93,13 @@ func seed(t *testing.T, db *sql.DB) *fixture {
 		{`INSERT INTO features (feature_id, organization_id, user_id, product_id, title) VALUES ($1,$2,$3,$4,'F')`, []any{f.feature, f.org, f.user, f.product}},
 		{`INSERT INTO epics (epic_id, organization_id, user_id, product_id, feature_id, repository_id, title) VALUES ($1,$2,$3,$4,$5,$6,'E')`, []any{f.epic, f.org, f.user, f.product, f.feature, f.repo}},
 		{`INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id, epic_id, title) VALUES ($1,$2,$3,$4,$5,$6,'S')`, []any{f.story, f.org, f.user, f.product, f.feature, f.epic}},
-		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type) VALUES ($1,$2,'agent','opus','coder')`, []any{f.principal, f.org}},
 	}
 	for _, s := range stmts {
 		if _, err := tx.Exec(s.sql, s.args...); err != nil {
 			t.Fatalf("seed %q: %v", s.sql, err)
 		}
 	}
+	insertAgentPrincipal(t, tx, f.principal, f.org, "opus")
 	return f
 }
 
@@ -502,11 +502,7 @@ func TestArtifactCannotNameAnotherOrganizationsAuthor(t *testing.T) {
 	if _, err := f.tx.Exec(`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,'o3','O3')`, otherOrg); err != nil {
 		t.Fatalf("seed org: %v", err)
 	}
-	if _, err := f.tx.Exec(
-		`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-		 VALUES ($1,$2,'agent','opus','coder')`, otherPrincipal, otherOrg); err != nil {
-		t.Fatalf("seed principal: %v", err)
-	}
+	insertAgentPrincipal(t, f.tx, otherPrincipal, otherOrg, "opus")
 
 	err := f.insertStoryArtifact("40000000-0000-7000-8000-0000000000ff",
 		map[string]any{"author_instance_id": otherPrincipal})

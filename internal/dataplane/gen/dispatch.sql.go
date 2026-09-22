@@ -87,7 +87,7 @@ func (q *Queries) GetExecutionByDispatch(ctx context.Context, arg GetExecutionBy
 }
 
 const getStoryDispatch = `-- name: GetStoryDispatch :one
-SELECT story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence FROM story_dispatches WHERE organization_id = $1 AND story_dispatch_id = $2
+SELECT story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence, prompt_resolution_id FROM story_dispatches WHERE organization_id = $1 AND story_dispatch_id = $2
 `
 
 type GetStoryDispatchParams struct {
@@ -120,6 +120,7 @@ func (q *Queries) GetStoryDispatch(ctx context.Context, arg GetStoryDispatchPara
 		&i.EpicVersionIsAmendment,
 		&i.EpicVersionEffectiveDigest,
 		&i.EpicVersionEffectiveSequence,
+		&i.PromptResolutionID,
 	)
 	return i, err
 }
@@ -219,7 +220,7 @@ INSERT INTO story_dispatches (
     $8, $9, $10,
     $11, $12, $13
 )
-RETURNING story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence
+RETURNING story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence, prompt_resolution_id
 `
 
 type InsertStoryDispatchParams struct {
@@ -277,6 +278,7 @@ func (q *Queries) InsertStoryDispatch(ctx context.Context, arg InsertStoryDispat
 		&i.EpicVersionIsAmendment,
 		&i.EpicVersionEffectiveDigest,
 		&i.EpicVersionEffectiveSequence,
+		&i.PromptResolutionID,
 	)
 	return i, err
 }
@@ -346,7 +348,7 @@ func (q *Queries) ListDispatchBasisDependencies(ctx context.Context, arg ListDis
 }
 
 const listStoryDispatchesByDisposition = `-- name: ListStoryDispatchesByDisposition :many
-SELECT story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence FROM story_dispatches
+SELECT story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence, prompt_resolution_id FROM story_dispatches
 WHERE organization_id = $1 AND disposition = $2
 ORDER BY story_dispatch_id
 `
@@ -387,6 +389,7 @@ func (q *Queries) ListStoryDispatchesByDisposition(ctx context.Context, arg List
 			&i.EpicVersionIsAmendment,
 			&i.EpicVersionEffectiveDigest,
 			&i.EpicVersionEffectiveSequence,
+			&i.PromptResolutionID,
 		); err != nil {
 			return nil, err
 		}

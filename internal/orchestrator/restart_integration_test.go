@@ -173,8 +173,12 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 		name string
 	}{{&ids.Author, store.PrincipalAgent, "author"}, {&ids.Reviewer, store.PrincipalAgent, "reviewer"}} {
 		agentType := "restart-harness"
+		// Since 000023 an agent always carries a prompt identity; until
+		// step 8's dispatched-principal path these are recorded foreign.
+		packName, promptHash := "fixture", "sha256:"+strings.Repeat("a", 64)
 		instance, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
 			Kind: p.kind, Model: "restart-" + p.name, AgentType: &agentType, OrganizationID: ids.Organization,
+			PromptPackID: &packName, PromptHash: &promptHash,
 		})
 		if err != nil {
 			return ids, fmt.Errorf("principal %s: %w", p.name, err)

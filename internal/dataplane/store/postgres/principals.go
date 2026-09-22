@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +26,32 @@ import (
 // MPH comparison that groups by it, which is why the schema forbids it
 // rather than merely tolerating it.
 //
+// legacyPromptHashPattern is the v1-manifest-sha256 storage form: the
+// prefix is data under the legacy scheme (design D5).
+var legacyPromptHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+//nolint:gocritic // by value, matching checkKindFields
+func carriesPromptIdentity(input store.CreatePrincipalInstanceInput) bool {
+	return input.PromptPackID != nil || input.PromptHash != nil
+}
+
+// checkLegacyPromptIdentity is TRANSITIONAL (item 4 step 3): since migration
+// 000023 every agent carries a prompt identity (ADR 0031 section 2), and this
+// path can only write the FOREIGN shape, whose digest is the legacy
+// content-identity form. Step 8 replaces this path with the three writers of
+// design D5, and this rule with theirs.
+//
+//nolint:gocritic // by value, matching checkKindFields
+func checkLegacyPromptIdentity(input store.CreatePrincipalInstanceInput) error {
+	if input.PromptPackID == nil || strings.TrimSpace(*input.PromptPackID) == "" {
+		return errors.New("an agent principal requires a prompt pack name; every agent principal carries the pack it ran under")
+	}
+	if input.PromptHash == nil || !legacyPromptHashPattern.MatchString(*input.PromptHash) {
+		return errors.New("an agent principal requires a prompt hash of the form sha256:<64 hex>, the legacy content-identity form this path records")
+	}
+	return nil
+}
+
 //nolint:gocritic // by value deliberately: the seam must not alias a caller's input struct
 func checkKindFields(input store.CreatePrincipalInstanceInput) error {
 	switch input.Kind {
@@ -34,6 +62,9 @@ func checkKindFields(input store.CreatePrincipalInstanceInput) error {
 		if input.UserID != nil {
 			return errors.New("an agent principal must not carry a user id; only a human principal is a user")
 		}
+		if err := checkLegacyPromptIdentity(input); err != nil {
+			return err
+		}
 	case store.PrincipalHuman:
 		if input.UserID == nil {
 			return errors.New("a human principal requires a user id")
@@ -41,12 +72,18 @@ func checkKindFields(input store.CreatePrincipalInstanceInput) error {
 		if input.AgentType != nil {
 			return errors.New("a human principal must not carry an agent type")
 		}
+		if carriesPromptIdentity(input) {
+			return errors.New("a human principal must not carry a prompt identity")
+		}
 	case store.PrincipalSystem:
 		if input.AgentType != nil {
 			return errors.New("a system principal must not carry an agent type")
 		}
 		if input.UserID != nil {
 			return errors.New("a system principal must not carry a user id")
+		}
+		if carriesPromptIdentity(input) {
+			return errors.New("a system principal must not carry a prompt identity")
 		}
 	default:
 		return fmt.Errorf("unknown principal kind %q", input.Kind)
@@ -80,8 +117,10 @@ func checkRecordedLifetime(recorded *store.RecordedLifetime) error {
 
 func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 	return store.PrincipalInstance{
-		AgentType:         fromNullString(row.AgentType),
-		PromptPackID:      fromNullString(row.PromptPackID),
+		AgentType: fromNullString(row.AgentType),
+		// TRANSITIONAL (item 4 step 3): the name is what the old column held.
+		// Step 8 replaces this projection with the split fields.
+		PromptPackID:      fromNullString(row.PromptPackName),
 		PromptHash:        fromNullString(row.PromptHash),
 		HarnessConfigHash: fromNullString(row.HarnessConfigHash),
 		MaestroVersion:    fromNullString(row.MaestroVersion),

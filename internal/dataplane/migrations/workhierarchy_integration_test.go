@@ -195,18 +195,23 @@ func (w *wh) rejectsNotNull(t *testing.T, column, because, stmt string, args ...
 	}
 }
 
+// Since 000023 a dispatch names its resolution. The fixture's transaction is
+// never committed, so the DEFERRED pair is never checked here -- these cases
+// are about the constraints 000021 added -- but the value is the id
+// seedPromptResolution would write, so a case that does commit can.
 const dispatchInsert = `INSERT INTO story_dispatches (
     story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id,
     work_group_id, disposition,
     story_version_artifact_id, story_version_effective_digest, story_version_effective_sequence,
-    epic_version_artifact_id,  epic_version_effective_digest,  epic_version_effective_sequence)
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11,$12,0)`
+    epic_version_artifact_id,  epic_version_effective_digest,  epic_version_effective_sequence,
+    prompt_resolution_id)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,$11,$12,0,$13)`
 
 // dispatchArgs builds a well-formed pending dispatch for Story 1 in Epic 1,
 // with correctly-scoped artifacts. Each case overrides exactly one thing.
 func (w *wh) dispatchArgs() []any {
 	return []any{w.dispatch, w.org, w.product, w.feature, w.epic, w.story,
-		w.workGroup, "pending", whStory1Plan, digestA, whEpic1Plan, digestB}
+		w.workGroup, "pending", whStory1Plan, digestA, whEpic1Plan, digestB, fixtureResolutionID(w.dispatch)}
 }
 
 func (w *wh) insertDispatch(t *testing.T) {
@@ -286,7 +291,7 @@ func TestDispatchCannotBorrowAnotherEpicsWorkGroup(t *testing.T) {
 		dispatchInsert,
 		"30000000-0000-7000-8000-0000000000ab", w.org, w.product, w.feature,
 		w.epic2, w.story2, w.workGroup, "pending",
-		whStory2Plan, digestA, whEpic2Plan, digestB)
+		whStory2Plan, digestA, whEpic2Plan, digestB, fixtureResolutionID("30000000-0000-7000-8000-0000000000ab"))
 }
 
 func TestDispatchShapeConstraints(t *testing.T) {
@@ -295,14 +300,15 @@ func TestDispatchShapeConstraints(t *testing.T) {
 	             story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id,
 	             work_group_id, disposition, settled_at, failure_code, failure_detail,
 	             story_version_artifact_id, story_version_effective_digest, story_version_effective_sequence,
-	             epic_version_artifact_id,  epic_version_effective_digest,  epic_version_effective_sequence)
-	         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14,$15,0)`
+	             epic_version_artifact_id,  epic_version_effective_digest,  epic_version_effective_sequence,
+	             prompt_resolution_id)
+	         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,0,$14,$15,0,$16)`
 
 	probe := func(constraint, because, disposition string, settledAt, code, detail any) {
 		w.rejectsWith(t, constraint, because, full,
 			"30000000-0000-7000-8000-0000000000ac", w.org, w.product, w.feature, w.epic, w.story,
 			w.workGroup, disposition, settledAt, code, detail,
-			whStory1Plan, digestA, whEpic1Plan, digestB)
+			whStory1Plan, digestA, whEpic1Plan, digestB, fixtureResolutionID("30000000-0000-7000-8000-0000000000ac"))
 	}
 
 	probe("story_dispatches_settled_check", "a pending dispatch carried settled_at",
@@ -323,7 +329,8 @@ func TestDispatchVersionReferencesAreScopeBound(t *testing.T) {
 	w := seedWorkHierarchy(t)
 	args := func(story, epic string) []any {
 		return []any{"30000000-0000-7000-8000-0000000000ad", w.org, w.product, w.feature,
-			w.epic, w.story, w.workGroup, "pending", story, digestA, epic, digestB}
+			w.epic, w.story, w.workGroup, "pending", story, digestA, epic, digestB,
+			fixtureResolutionID("30000000-0000-7000-8000-0000000000ad")}
 	}
 
 	w.rejectsWith(t, "story_dispatches_story_version_fkey",
@@ -591,16 +598,18 @@ func TestDiscriminatorCannotBeNulledAtAnySite(t *testing.T) {
 	        story_version_artifact_id, story_version_is_amendment,
 	        story_version_effective_digest, story_version_effective_sequence,
 	        epic_version_artifact_id, epic_version_is_amendment,
-	        epic_version_effective_digest, epic_version_effective_sequence)
-	      VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,0,$11,$12,$13,0)`
+	        epic_version_effective_digest, epic_version_effective_sequence, prompt_resolution_id)
+	      VALUES ($1,$2,$3,$4,$5,$6,$7,'pending',$8,$9,$10,0,$11,$12,$13,0,$14)`
 	w.rejectsNotNull(t, "story_version_is_amendment",
 		"a dispatch nulled its Story version discriminator", dispatchWithNull,
 		"30000000-0000-7000-8000-0000000000b1", w.org, w.product, w.feature, w.epic, w.story,
-		w.workGroup, whStory1Plan, nil, digestA, whEpic1Plan, false, digestB)
+		w.workGroup, whStory1Plan, nil, digestA, whEpic1Plan, false, digestB,
+		fixtureResolutionID("30000000-0000-7000-8000-0000000000b1"))
 	w.rejectsNotNull(t, "epic_version_is_amendment",
 		"a dispatch nulled its Epic version discriminator", dispatchWithNull,
 		"30000000-0000-7000-8000-0000000000b2", w.org, w.product, w.feature, w.epic, w.story,
-		w.workGroup, whStory1Plan, false, digestA, whEpic1Plan, nil, digestB)
+		w.workGroup, whStory1Plan, false, digestA, whEpic1Plan, nil, digestB,
+		fixtureResolutionID("30000000-0000-7000-8000-0000000000b2"))
 
 	// The basis snapshot's completion.
 	w.insertDispatch(t)

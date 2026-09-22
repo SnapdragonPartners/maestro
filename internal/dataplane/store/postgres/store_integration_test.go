@@ -176,6 +176,10 @@ func (f *fixture) newPrincipal(t *testing.T, kind store.PrincipalKind, model str
 	if kind == store.PrincipalAgent {
 		agentType := "coder"
 		input.AgentType = &agentType
+		// Since 000023 an agent always carries a prompt identity, and this
+		// path records the foreign shape (item 4 design, D5).
+		packName, promptHash := fixturePackName, fixturePromptHash
+		input.PromptPackID, input.PromptHash = &packName, &promptHash
 	}
 	instance, err := f.store.CreatePrincipalInstance(context.Background(), input)
 	if err != nil {
@@ -191,6 +195,10 @@ func (f *fixture) newPrincipalIn(t *testing.T, org uuid.UUID, kind store.Princip
 	if kind == store.PrincipalAgent {
 		agentType := "coder"
 		input.AgentType = &agentType
+		// Since 000023 an agent always carries a prompt identity, and this
+		// path records the foreign shape (item 4 design, D5).
+		packName, promptHash := fixturePackName, fixturePromptHash
+		input.PromptPackID, input.PromptHash = &packName, &promptHash
 	}
 	instance, err := f.store.CreatePrincipalInstance(context.Background(), input)
 	if err != nil {
@@ -270,13 +278,26 @@ func (f *fixture) principalFor(org uuid.UUID) uuid.UUID {
 // about the kind/field rules do not have to restate them.
 func (f *fixture) agentInput() store.CreatePrincipalInstanceInput {
 	agentType := "coder"
+	packName, promptHash := fixturePackName, fixturePromptHash
 	return store.CreatePrincipalInstanceInput{
 		Kind:           store.PrincipalAgent,
 		Model:          "m",
 		AgentType:      &agentType,
+		PromptPackID:   &packName,
+		PromptHash:     &promptHash,
 		OrganizationID: f.organizationID,
 	}
 }
+
+func strPtr(s string) *string { return &s }
+
+// The legacy prompt identity every agent fixture carries: since 000023 an
+// agent principal always has one, and the general creation path records
+// the foreign shape (item 4 design, D5).
+const (
+	fixturePackName   = "fixture"
+	fixturePromptHash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
 
 // TestPrincipalKindFieldRulesAreEnforcedAtTheSeam covers the schema's two
 // biconditional constraints from both directions. The seam checks them so a
@@ -293,6 +314,21 @@ func TestPrincipalKindFieldRulesAreEnforcedAtTheSeam(t *testing.T) {
 			Kind: store.PrincipalAgent, Model: "m", OrganizationID: f.organizationID}},
 		{"agent carrying a user id", store.CreatePrincipalInstanceInput{
 			Kind: store.PrincipalAgent, Model: "m", AgentType: &agentType, UserID: &f.userID, OrganizationID: f.organizationID}},
+		{"agent without a prompt identity", func() store.CreatePrincipalInstanceInput {
+			in := f.agentInput()
+			in.PromptPackID, in.PromptHash = nil, nil
+			return in
+		}()},
+		{"agent with a bare-hex prompt hash", func() store.CreatePrincipalInstanceInput {
+			in := f.agentInput()
+			bare := strings.TrimPrefix(fixturePromptHash, "sha256:")
+			in.PromptHash = &bare
+			return in
+		}()},
+		{"human carrying a prompt identity", store.CreatePrincipalInstanceInput{
+			Kind: store.PrincipalHuman, Model: "m", UserID: &f.userID, PromptHash: strPtr(fixturePromptHash), OrganizationID: f.organizationID}},
+		{"system carrying a prompt identity", store.CreatePrincipalInstanceInput{
+			Kind: store.PrincipalSystem, Model: "m", PromptPackID: strPtr(fixturePackName), OrganizationID: f.organizationID}},
 		{"human without a user id", store.CreatePrincipalInstanceInput{
 			Kind: store.PrincipalHuman, Model: "m", OrganizationID: f.organizationID}},
 		{"human carrying an agent type", store.CreatePrincipalInstanceInput{

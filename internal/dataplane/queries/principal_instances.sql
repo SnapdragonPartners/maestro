@@ -10,16 +10,28 @@
 -- import began. The schema's stop check -- stop_time and stop_reason null
 -- together -- means a half-supplied pair is refused by the database as well
 -- as by the seam.
+--
+-- TRANSITIONAL after migration 000023 (item 4, implementation step 3): the
+-- one column prompt_pack_id became an origin, a name and a scheme. Until
+-- step 8 splits this into the three writers design D5 names, an agent written
+-- here is recorded in the FOREIGN shape -- which is the only shape its sole
+-- caller, the benchmark importer, has ever written. Step 8 removes the
+-- derivation from this statement.
 -- name: CreatePrincipalInstance :one
 INSERT INTO principal_instances (
     principal_instance_id, organization_id, kind, model,
-    agent_type, prompt_pack_id, prompt_hash, harness_config_hash,
+    agent_type, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme,
+    prompt_hash, harness_config_hash,
     maestro_version, user_id,
     product_id, feature_id, epic_id, story_id,
     start_time, stop_time, stop_reason
 ) VALUES (
     @principal_instance_id, @organization_id, @kind, @model,
-    @agent_type, @prompt_pack_id, @prompt_hash, @harness_config_hash,
+    @agent_type,
+    CASE WHEN @kind::text = 'agent' THEN 'foreign' END,
+    @prompt_pack_id,
+    CASE WHEN @kind::text = 'agent' THEN 'v1-manifest-sha256' END,
+    @prompt_hash, @harness_config_hash,
     @maestro_version, @user_id,
     @product_id, @feature_id, @epic_id, @story_id,
     COALESCE(sqlc.narg('start_time')::timestamptz, now()),

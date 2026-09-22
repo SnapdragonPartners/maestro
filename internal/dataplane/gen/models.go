@@ -130,6 +130,26 @@ type DispatchBasisDependency struct {
 	CompletionEffectiveSequence int32
 }
 
+type DispatchPromptResolution struct {
+	ResolutionID            pgtype.UUID
+	StoryDispatchID         pgtype.UUID
+	OrganizationID          pgtype.UUID
+	ProductID               pgtype.UUID
+	FeatureID               pgtype.UUID
+	EpicID                  pgtype.UUID
+	StoryID                 pgtype.UUID
+	ResolvedName            string
+	Scheme                  string
+	Digest                  string
+	ContentID               pgtype.UUID
+	InstallationID          pgtype.UUID
+	InstallationRevision    int32
+	MetadataSnapshot        []byte
+	ValidatedMaestroVersion string
+	RangeCheck              string
+	ResolvedAt              pgtype.Timestamptz
+}
+
 type Epic struct {
 	EpicID               pgtype.UUID
 	OrganizationID       pgtype.UUID
@@ -260,23 +280,29 @@ type Organization struct {
 }
 
 type PrincipalInstance struct {
-	PrincipalInstanceID pgtype.UUID
-	OrganizationID      pgtype.UUID
-	Kind                string
-	Model               string
-	AgentType           *string
-	PromptPackID        *string
-	PromptHash          *string
-	HarnessConfigHash   *string
-	MaestroVersion      *string
-	UserID              pgtype.UUID
-	FeatureID           pgtype.UUID
-	EpicID              pgtype.UUID
-	StoryID             pgtype.UUID
-	ProductID           pgtype.UUID
-	StartTime           pgtype.Timestamptz
-	StopTime            pgtype.Timestamptz
-	StopReason          *string
+	PrincipalInstanceID            pgtype.UUID
+	OrganizationID                 pgtype.UUID
+	Kind                           string
+	Model                          string
+	AgentType                      *string
+	PromptHash                     *string
+	HarnessConfigHash              *string
+	MaestroVersion                 *string
+	UserID                         pgtype.UUID
+	FeatureID                      pgtype.UUID
+	EpicID                         pgtype.UUID
+	StoryID                        pgtype.UUID
+	ProductID                      pgtype.UUID
+	StartTime                      pgtype.Timestamptz
+	StopTime                       pgtype.Timestamptz
+	StopReason                     *string
+	PromptPackOrigin               *string
+	PromptPackName                 *string
+	PromptPackScheme               *string
+	PromptPackContentID            pgtype.UUID
+	PromptPackInstallationID       pgtype.UUID
+	PromptPackInstallationRevision *int32
+	PromptPackMetadataSnapshot     []byte
 }
 
 type PrincipalInstanceInput struct {
@@ -300,6 +326,32 @@ type ProductRepository struct {
 	ProductID      pgtype.UUID
 	RepositoryID   pgtype.UUID
 	OrganizationID pgtype.UUID
+}
+
+type PromptPackContent struct {
+	ContentID      pgtype.UUID
+	OrganizationID pgtype.UUID
+	Scheme         string
+	Digest         string
+	Entries        []byte
+	CreatedAt      pgtype.Timestamptz
+}
+
+type PromptPackInstallation struct {
+	InstallationID          pgtype.UUID
+	OrganizationID          pgtype.UUID
+	ContentID               pgtype.UUID
+	DisplayName             string
+	MinMaestroVersion       string
+	MaxMaestroVersion       string
+	DeclaredRoles           []byte
+	InstalledByKind         string
+	InstalledByUserID       pgtype.UUID
+	BuiltinMaestroVersion   *string
+	ValidatedMaestroVersion string
+	Revision                int32
+	CreatedAt               pgtype.Timestamptz
+	UpdatedAt               pgtype.Timestamptz
 }
 
 type Repository struct {
@@ -396,6 +448,7 @@ type StoryDispatch struct {
 	EpicVersionIsAmendment        bool
 	EpicVersionEffectiveDigest    string
 	EpicVersionEffectiveSequence  int32
+	PromptResolutionID            pgtype.UUID
 }
 
 type ToolCall struct {
