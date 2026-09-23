@@ -424,9 +424,14 @@ type AmendmentBase struct {
 }
 
 // MPHQuery selects principal instances along one signature axis.
+//
+// The P axis is a PromptIdentity, never a bare digest: digests are compared
+// only within a scheme (ADR 0031 section 1), and a query that could name a
+// digest without its scheme would let a v1-manifest identity group with a
+// pack identity that happens to share its hex (design D4).
 type MPHQuery struct {
 	Model             *string
-	PromptHash        *string
+	PromptIdentity    *PromptIdentity
 	HarnessConfigHash *string
 
 	OrganizationID uuid.UUID
@@ -445,6 +450,7 @@ type Reader interface {
 	ProvisioningReader
 	WorkReader
 	DispatchReader
+	PromptPackReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -485,6 +491,7 @@ type Writer interface {
 	ProvisioningWriter
 	WorkWriter
 	DispatchWriter
+	PromptPackWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)

@@ -323,6 +323,11 @@ type tx struct {
 	// attachment row already exists and the sweep's reachable set is
 	// exactly the attachment rows.
 	blob objects.Store
+	// prompts and harness are the composition's, carried so the pack
+	// family's install and update reach the gate and record the version
+	// they validated against (item 4 design, D3, D6).
+	prompts store.PromptContract
+	harness harness.Version
 }
 
 // WithTx runs fn inside one transaction.
@@ -337,13 +342,21 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Tx) error) error {
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	if err := fn(&tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, rootKey: s.rootKey, blob: s.blob}); err != nil {
+	if err := fn(s.txOn(pgxTx)); err != nil {
 		return err
 	}
 	if err := pgxTx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
 	}
 	return nil
+}
+
+// txOn binds a handle to one transaction, carrying everything the store was
+// composed with -- every constructor of a transactional handle goes through
+// this, so a field added to Store cannot be forgotten by one of them.
+func (s *Store) txOn(pgxTx pgx.Tx) *tx {
+	return &tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, rootKey: s.rootKey,
+		blob: s.blob, prompts: s.prompts, harness: s.harness}
 }
 
 // inTx runs one seam operation in its own transaction and returns its

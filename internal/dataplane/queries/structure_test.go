@@ -329,7 +329,7 @@ var namedTruncations = map[string]string{
 // not born final, and they have no lifecycle status, so nothing else in this
 // file would have looked at them at all — a generic `UPDATE secrets SET …`
 // or an unguarded DELETE would have passed every rule here.
-var versionedTables = []string{"configuration_records", "secrets"}
+var versionedTables = []string{"configuration_records", "secrets", "prompt_pack_installations"}
 
 // namedVersionedMutations maps each permitted UPDATE or DELETE to the ONE
 // table it may touch, on the same reasoning as namedTruncations: the names
@@ -340,6 +340,10 @@ var namedVersionedMutations = map[string]string{
 	"DeleteConfigurationRecord": "configuration_records",
 	"ReplaceSecret":             "secrets",
 	"DeleteSecret":              "secrets",
+	// Item 4: the installation's revision is the version column, and there
+	// is no delete -- referenced installations are held by RESTRICT keys
+	// and unreferenced ones have no verb yet.
+	"UpdatePromptPackInstallation": "prompt_pack_installations",
 }
 
 // versionedSetColumns are the ONLY columns these updates may assign.
@@ -364,9 +368,28 @@ var versionedSetColumns = map[string]bool{
 	"version": true, "updated_at": true,
 }
 
+// promptPackSetColumns are the ONLY columns an installation update may
+// assign: the declared metadata, the version the gate re-validated against,
+// and the revision. content_id is the exclusion that carries the rule -- an
+// update that could re-point an installation at other content would make a
+// resolved principal's installation reference name content it never ran
+// under -- and the installer identity is provenance, written once.
+var promptPackSetColumns = map[string]bool{
+	"display_name": true, "min_maestro_version": true, "max_maestro_version": true,
+	"declared_roles": true, "validated_maestro_version": true, "revision": true, "updated_at": true,
+}
+
+// versionGuards is the optimistic-concurrency predicate each table's
+// mutations must carry; the version column is named differently on the
+// pack family, where it is a revision.
+var versionGuards = map[string]*regexp.Regexp{
+	"configuration_records":     regexp.MustCompile(`(?i)version\s*=\s*@expected_version`),
+	"secrets":                   regexp.MustCompile(`(?i)version\s*=\s*@expected_version`),
+	"prompt_pack_installations": regexp.MustCompile(`(?i)revision\s*=\s*@expected_revision`),
+}
+
 var (
-	expectedVersionGuard = regexp.MustCompile(`(?i)version\s*=\s*@expected_version`)
-	membershipGuard      = regexp.MustCompile(`(?is)EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+users`)
+	membershipGuard = regexp.MustCompile(`(?is)EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+users`)
 )
 
 // ownershipBranches are BOTH halves of the acting-user predicate, and the
@@ -432,11 +455,11 @@ func TestVersionedTablesAreMutatedOnlyUnderTheirGuards(t *testing.T) {
 		}
 
 		where := between(stmt.sql, upper, "WHERE", ";")
-		if !expectedVersionGuard.MatchString(where) {
-			t.Errorf("%s: %q mutates %s without `version = @expected_version` in its WHERE. "+
+		if !versionGuards[table].MatchString(where) {
+			t.Errorf("%s: %q mutates %s without `%s` in its WHERE. "+
 				"ADR 0027 forbids resolving concurrent writes to shared state by last-writer-wins, "+
 				"and an unconditional delete erases a rotation committed a moment earlier while "+
-				"reporting success.", stmt.file, stmt.name, table)
+				"reporting success.", stmt.file, stmt.name, table, versionGuards[table])
 		}
 
 		if table == "secrets" {
@@ -457,8 +480,12 @@ func TestVersionedTablesAreMutatedOnlyUnderTheirGuards(t *testing.T) {
 		}
 
 		if isUpdate {
+			permittedColumns := versionedSetColumns
+			if table == "prompt_pack_installations" {
+				permittedColumns = promptPackSetColumns
+			}
 			for _, assigned := range assignedColumns(between(stmt.sql, upper, "SET", "WHERE")) {
-				if !versionedSetColumns[assigned] {
+				if !permittedColumns[assigned] {
 					t.Errorf("%s: %q assigns %s on %s. Ownership, name and scope decide who may "+
 						"read a secret and what it is for; a statement able to rewrite them "+
 						"retargets a live credential.", stmt.file, stmt.name, assigned, table)

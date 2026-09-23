@@ -92,10 +92,15 @@ WHERE organization_id = @organization_id
   AND model = @model
 ORDER BY start_time DESC, principal_instance_id;
 
--- name: ListPrincipalInstancesByPromptHash :many
+-- The P axis filters on the SCHEME and the digest, never the digest alone:
+-- a v1-manifest identity and a pack identity that share their hex are
+-- unrelated (ADR 0031 section 1; design D4). The supporting index is
+-- principal_instances_prompt_identity_idx.
+-- name: ListPrincipalInstancesByPromptIdentity :many
 SELECT * FROM principal_instances
-WHERE organization_id = @organization_id
-  AND prompt_hash = @prompt_hash
+WHERE organization_id    = @organization_id
+  AND prompt_pack_scheme = @prompt_pack_scheme
+  AND prompt_hash        = @prompt_hash
 ORDER BY start_time DESC, principal_instance_id;
 
 -- name: ListPrincipalInstancesByHarnessConfigHash :many

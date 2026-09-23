@@ -353,20 +353,26 @@ func (q *Queries) ListPrincipalInstancesByModel(ctx context.Context, arg ListPri
 	return items, nil
 }
 
-const listPrincipalInstancesByPromptHash = `-- name: ListPrincipalInstancesByPromptHash :many
+const listPrincipalInstancesByPromptIdentity = `-- name: ListPrincipalInstancesByPromptIdentity :many
 SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot FROM principal_instances
-WHERE organization_id = $1
-  AND prompt_hash = $2
+WHERE organization_id    = $1
+  AND prompt_pack_scheme = $2
+  AND prompt_hash        = $3
 ORDER BY start_time DESC, principal_instance_id
 `
 
-type ListPrincipalInstancesByPromptHashParams struct {
-	OrganizationID pgtype.UUID
-	PromptHash     *string
+type ListPrincipalInstancesByPromptIdentityParams struct {
+	OrganizationID   pgtype.UUID
+	PromptPackScheme *string
+	PromptHash       *string
 }
 
-func (q *Queries) ListPrincipalInstancesByPromptHash(ctx context.Context, arg ListPrincipalInstancesByPromptHashParams) ([]PrincipalInstance, error) {
-	rows, err := q.db.Query(ctx, listPrincipalInstancesByPromptHash, arg.OrganizationID, arg.PromptHash)
+// The P axis filters on the SCHEME and the digest, never the digest alone:
+// a v1-manifest identity and a pack identity that share their hex are
+// unrelated (ADR 0031 section 1; design D4). The supporting index is
+// principal_instances_prompt_identity_idx.
+func (q *Queries) ListPrincipalInstancesByPromptIdentity(ctx context.Context, arg ListPrincipalInstancesByPromptIdentityParams) ([]PrincipalInstance, error) {
+	rows, err := q.db.Query(ctx, listPrincipalInstancesByPromptIdentity, arg.OrganizationID, arg.PromptPackScheme, arg.PromptHash)
 	if err != nil {
 		return nil, err
 	}

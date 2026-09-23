@@ -887,9 +887,12 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 	p := newPlane(t)
 	result := p.mustImport(t, twoAttemptSuite(t))
 
-	promptHash := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// The P axis is scheme-qualified (design D4): the importer records the
+	// legacy scheme, and the query names it.
+	legacy := store.PromptIdentity{Scheme: store.PromptSchemeV1Manifest,
+		Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	found, err := p.store.FindPrincipalInstances(context.Background(), store.MPHQuery{
-		OrganizationID: p.organization.OrganizationID, PromptHash: &promptHash,
+		OrganizationID: p.organization.OrganizationID, PromptIdentity: &legacy,
 	})
 	if err != nil {
 		t.Fatalf("MPH query: %v", err)
@@ -910,15 +913,31 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 	}
 	// The importer answers a different question and must not be swept in by
 	// this one: a system principal has no prompt to hash.
-	unrelated := "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	unrelated := store.PromptIdentity{Scheme: store.PromptSchemeV1Manifest,
+		Digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
 	other, err := p.store.FindPrincipalInstances(context.Background(), store.MPHQuery{
-		OrganizationID: p.organization.OrganizationID, PromptHash: &unrelated,
+		OrganizationID: p.organization.OrganizationID, PromptIdentity: &unrelated,
 	})
 	if err != nil {
 		t.Fatalf("MPH query for an unused hash: %v", err)
 	}
 	if len(other) != 0 {
 		t.Errorf("an unused prompt hash matched %d instances", len(other))
+	}
+
+	// And the SAME digest under the plane's scheme is a different identity:
+	// equal-looking hex under two schemes means nothing (ADR 0031 section 1).
+	// THE MUTANT this kills: a query that filters on the digest alone.
+	crossScheme := store.PromptIdentity{Scheme: store.PromptSchemePackJCS, Digest: legacy.Digest}
+	across, err := p.store.FindPrincipalInstances(context.Background(), store.MPHQuery{
+		OrganizationID: p.organization.OrganizationID, PromptIdentity: &crossScheme,
+	})
+	if err != nil {
+		t.Fatalf("MPH query across schemes: %v", err)
+	}
+	if len(across) != 0 {
+		t.Errorf("a pack-scheme query matched %d legacy identities sharing its hex; digests are comparable "+
+			"only within a scheme", len(across))
 	}
 }
 

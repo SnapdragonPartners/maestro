@@ -108,7 +108,8 @@ func (s *Store) StopPrincipalInstance(ctx context.Context, organizationID, insta
 // direct returns a handle bound to the POOL rather than to a transaction.
 // Every statement it issues autocommits on its own.
 func (s *Store) direct() *tx {
-	return &tx{queries: s.queries, registry: s.registry, keys: s.keys, rootKey: s.rootKey}
+	return &tx{queries: s.queries, registry: s.registry, keys: s.keys, rootKey: s.rootKey,
+		prompts: s.prompts, harness: s.harness}
 }
 
 // GetManagementArtifact reads one Management artifact.
@@ -723,4 +724,57 @@ func (s *Store) GetExecutionByDispatch(ctx context.Context, organizationID, disp
 	return inTx(ctx, s, func(t *tx) (*store.Execution, error) {
 		return t.GetExecutionByDispatch(ctx, organizationID, dispatchID)
 	})
+}
+
+// --- prompt packs (item 4, design D6) --------------------------------------
+
+// InstallPromptPack runs the gate and writes content and installation in
+// ONE transaction: content that committed with no installation would be a
+// row nothing can select.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) InstallPromptPack(ctx context.Context, input store.InstallPromptPackInput) (store.Bootstrapped[store.InstalledPromptPack], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.InstalledPromptPack], error) {
+		outcome, txErr := t.InstallPromptPack(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.InstalledPromptPack]{}, err
+	}
+	return *result, nil
+}
+
+// UpdatePromptPackInstallation locks, classifies and writes in one
+// transaction, so the revision it compared is the one it updated.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) UpdatePromptPackInstallation(ctx context.Context, input store.UpdatePromptPackInstallationInput) (*store.PromptPackInstallation, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PromptPackInstallation, error) {
+		return t.UpdatePromptPackInstallation(ctx, input)
+	})
+}
+
+// GetPromptPackContent reads one content row.
+func (s *Store) GetPromptPackContent(ctx context.Context, organizationID, contentID uuid.UUID) (*store.PromptPackContent, error) {
+	return s.direct().GetPromptPackContent(ctx, organizationID, contentID)
+}
+
+// GetPromptPackInstallation reads one installation.
+func (s *Store) GetPromptPackInstallation(ctx context.Context, organizationID, installationID uuid.UUID) (*store.PromptPackInstallation, error) {
+	return s.direct().GetPromptPackInstallation(ctx, organizationID, installationID)
+}
+
+// GetPromptPackByIdentity resolves a scheme-qualified digest to its pack.
+func (s *Store) GetPromptPackByIdentity(ctx context.Context, organizationID uuid.UUID, identity store.PromptIdentity) (*store.InstalledPromptPack, error) {
+	return s.direct().GetPromptPackByIdentity(ctx, organizationID, identity)
+}
+
+// GetPromptPackByContent resolves a content id to its pack.
+func (s *Store) GetPromptPackByContent(ctx context.Context, organizationID, contentID uuid.UUID) (*store.InstalledPromptPack, error) {
+	return s.direct().GetPromptPackByContent(ctx, organizationID, contentID)
+}
+
+// ListPromptPackInstallations lists an organization's installations.
+func (s *Store) ListPromptPackInstallations(ctx context.Context, organizationID uuid.UUID) ([]store.PromptPackInstallation, error) {
+	return s.direct().ListPromptPackInstallations(ctx, organizationID)
 }

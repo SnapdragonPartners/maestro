@@ -1159,10 +1159,14 @@ func TestFindPrincipalInstancesByModel(t *testing.T) {
 func TestMPHQueryRequiresExactlyOneAxis(t *testing.T) {
 	f := newFixture(t)
 	model := "m"
-	hash := "h"
+	identity := store.PromptIdentity{Scheme: store.PromptSchemeV1Manifest, Digest: fixturePromptHash}
+	halfIdentity := store.PromptIdentity{Digest: fixturePromptHash}
 	for _, query := range []store.MPHQuery{
 		{OrganizationID: f.organizationID},
-		{OrganizationID: f.organizationID, Model: &model, PromptHash: &hash},
+		{OrganizationID: f.organizationID, Model: &model, PromptIdentity: &identity},
+		// One axis, but half an identity: a digest with no scheme cannot be
+		// compared with anything.
+		{OrganizationID: f.organizationID, PromptIdentity: &halfIdentity},
 	} {
 		if _, err := f.store.FindPrincipalInstances(context.Background(), query); err == nil {
 			t.Fatalf("query %+v was accepted; it must name exactly one axis", query)

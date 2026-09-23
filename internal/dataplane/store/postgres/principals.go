@@ -343,10 +343,15 @@ func (t *tx) FindPrincipalInstances(ctx context.Context, query store.MPHQuery) (
 			OrganizationID: toUUID(query.OrganizationID),
 			Model:          *query.Model,
 		})
-	case query.PromptHash != nil:
-		rows, err = t.queries.ListPrincipalInstancesByPromptHash(ctx, gen.ListPrincipalInstancesByPromptHashParams{
-			OrganizationID: toUUID(query.OrganizationID),
-			PromptHash:     query.PromptHash,
+	case query.PromptIdentity != nil:
+		if query.PromptIdentity.Scheme == "" || query.PromptIdentity.Digest == "" {
+			return nil, errors.New("MPH query on the prompt axis needs both a scheme and a digest; a digest is comparable only within its scheme")
+		}
+		scheme, digest := string(query.PromptIdentity.Scheme), query.PromptIdentity.Digest
+		rows, err = t.queries.ListPrincipalInstancesByPromptIdentity(ctx, gen.ListPrincipalInstancesByPromptIdentityParams{
+			OrganizationID:   toUUID(query.OrganizationID),
+			PromptPackScheme: &scheme,
+			PromptHash:       &digest,
 		})
 	default:
 		rows, err = t.queries.ListPrincipalInstancesByHarnessConfigHash(ctx, gen.ListPrincipalInstancesByHarnessConfigHashParams{
@@ -367,7 +372,7 @@ func (t *tx) FindPrincipalInstances(ctx context.Context, query store.MPHQuery) (
 
 func axisCount(query store.MPHQuery) int {
 	count := 0
-	for _, set := range []bool{query.Model != nil, query.PromptHash != nil, query.HarnessConfigHash != nil} {
+	for _, set := range []bool{query.Model != nil, query.PromptIdentity != nil, query.HarnessConfigHash != nil} {
 		if set {
 			count++
 		}
