@@ -27,7 +27,7 @@ func main() {
 	forceVersion := flag.Int("version", -1, "for force-version: the schema version to record")
 	destination := flag.String("to", "", "for backup: the archive directory to create (must not exist)")
 	source := flag.String("from", "", "for restore: the archive directory to restore from")
-	org := flag.String("org", "", "for bootstrap and benchmark: the organization slug")
+	org := flag.String("org", "", "for bootstrap, provision, prompt-pack and benchmark: the organization slug")
 	orgName := flag.String("org-name", "", "for bootstrap: the organization's display name (defaults to the slug)")
 	user := flag.String("user", "", "for bootstrap: the user handle")
 	userName := flag.String("user-name", "", "for bootstrap: the user's display name (defaults to the handle)")
@@ -84,7 +84,8 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key|
-                                  bootstrap|provision organization|user|product|repository|recover|benchmark import|benchmark show>
+                                  bootstrap|provision organization|user|product|repository|recover|
+                                  prompt-pack show|prompt-pack select-builtin|benchmark import|benchmark show>
 
   up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
@@ -115,7 +116,24 @@ func usage() {
            either, and the importer resolves them and never creates them.
            Idempotent by slug and handle; supplying different display data
            for an existing record is refused rather than silently ignored.
+           The organization is also given its prompt-pack selector, as
+           'provision organization' does.
                dataplanectl -org acme -user dr bootstrap
+  provision organization
+           provision an organization AND seed its prompt-pack selector: this
+           binary's built-in pack is imported into it and selected at the
+           organization scope, in one transaction (ADR 0031 section 6). An
+           organization that already has a selector keeps it, whatever it
+           names -- an upgrade moves nobody. Idempotent, so it is also how an
+           organization that predates prompt packs is initialised.
+  prompt-pack show
+           print what the organization's selector resolves to. Requires -org.
+  prompt-pack select-builtin
+           import this binary's built-in pack into the organization and move
+           the organization-scoped selector to it, conditional on the version
+           of the selector as read: a concurrent move is refused, not
+           overwritten. Requires -org. This is the only thing that moves an
+           existing organization to a newer built-in.
   benchmark import
            import golden runner records from a results store into the plane.
            Requires -org and -operator; -suite may be repeated, or omitted
@@ -214,6 +232,9 @@ func runPlaneCommand(ctx context.Context, cfg *stack.Config, command string, opt
 
 	case "provision organization", "provision user", "provision product", "provision repository":
 		return runProvision(ctx, cfg, strings.TrimPrefix(command, "provision "), opts)
+
+	case "prompt-pack show", "prompt-pack select-builtin":
+		return runPromptPack(ctx, cfg, strings.TrimPrefix(command, "prompt-pack "), opts)
 
 	case "recover":
 		return runRecover(ctx, cfg, opts)

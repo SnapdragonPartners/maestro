@@ -66,6 +66,21 @@ ORDER BY CASE c.scope_type
          END
 LIMIT 1;
 
+-- GetConfigurationRecordAtScope reads the record set at ONE level, if any.
+--
+-- Distinct from the resolving read above: resolution answers "what applies
+-- to this repository", walking the lineage; this answers "what is set here",
+-- which is what a writer seeding or moving a level's own value needs to
+-- know. The generated scope_id column is the natural key's last component
+-- (configuration_records_key_scope_key).
+--
+-- name: GetConfigurationRecordAtScope :one
+SELECT * FROM configuration_records
+WHERE organization_id = @organization_id
+  AND key             = @key
+  AND scope_type      = @scope_type
+  AND scope_id        = @scope_id;
+
 -- GetConfigurationRecord reads exactly one record by identity.
 --
 -- Exists so the seam can tell a version conflict from a missing row: both

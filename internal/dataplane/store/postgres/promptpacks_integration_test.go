@@ -4,18 +4,17 @@ package postgres_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
-	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
+	"orchestrator/internal/orchestrator"
 	"orchestrator/internal/prompt"
 )
 
@@ -480,44 +479,27 @@ func TestSeamRefusesUndigestableEntriesWhateverTheContractSays(t *testing.T) {
 	}
 }
 
-// seedPromptPack installs the empty pack and seeds the organization-scoped
-// selector, through a store composed the way the Orchestrator's is: the
-// Orchestrator's key vocabulary and an EMPTY slot registry, which admits
-// exactly the empty pack (design D1, D7). Idempotent, so a lineage seeded
-// twice holds one pack and one selector.
+// seedPromptPack provisions the organization's prompt pack the way the
+// composition root does: the EMBEDDED built-in, loaded through
+// orchestrator.LoadBuiltin, provisioned through the seam's verb under the
+// Orchestrator's key vocabulary and its empty slot registry (design D1, D2,
+// D9). Idempotent, so a lineage seeded twice holds one pack and one
+// selector. Every fixture that needs a resolvable selector travels the
+// production path to get one.
 func (f *fixture) seedPromptPack(t *testing.T) store.InstalledPromptPack {
 	t.Helper()
-	ctx := context.Background()
-	keys := configkeys.MustNew(map[configkeys.Key]configkeys.Entry{
-		store.PromptPackKey: {Schema: store.PromptSelectorSchema(),
-			PermittedScopes: []configkeys.Scope{configkeys.ScopeOrganization, configkeys.ScopeProduct, configkeys.ScopeRepository}},
-	})
 	s, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey, planetest.Harness(t),
-		postgres.WithConfigKeys(keys), postgres.WithPromptContract(prompt.MustNew(nil)))
+		postgres.WithConfigKeys(orchestrator.Keys()), postgres.WithPromptContract(orchestrator.Prompts()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	installed, err := s.InstallPromptPack(ctx, store.InstallPromptPackInput{
-		Entries: map[string]string{}, DisplayName: "built-in", MinMaestroVersion: phase3Lower, MaxMaestroVersion: phase3Upper,
-		Installer: builtin(planetest.HarnessVersion), OrganizationID: f.organizationID,
-	})
+	builtin, err := orchestrator.LoadBuiltin(orchestrator.BuiltinPack())
 	if err != nil {
-		t.Fatalf("install the empty pack: %v", err)
+		t.Fatalf("load the embedded built-in: %v", err)
 	}
-	if !installed.Created {
-		return installed.Record
-	}
-	contentID := installed.Record.Content.ContentID
-	value, err := json.Marshal(store.PromptSelector{ContentID: &contentID})
+	provisioned, err := s.ProvisionOrganizationPromptPack(context.Background(), f.organizationID, builtin)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("provision the built-in pack: %v", err)
 	}
-	if _, err := s.CreateConfigurationRecord(ctx, store.CreateConfigurationRecordInput{
-		Value: value, Key: store.PromptPackKey,
-		Scope:          store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID},
-		OrganizationID: f.organizationID,
-	}); err != nil {
-		t.Fatalf("seed the selector: %v", err)
-	}
-	return installed.Record
+	return provisioned.Record.Pack
 }

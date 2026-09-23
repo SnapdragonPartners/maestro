@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -165,8 +166,71 @@ type UpdatePromptPackInstallationInput struct {
 	InstallationID uuid.UUID
 }
 
+// ErrPromptSelectorUnresolved reports an organization-scoped selector that
+// names no pack installed in the organization. It is a real state, not an
+// invariant failure: the configuration family checks a selector's SHAPE,
+// and a content id can be typed that no row carries.
+var ErrPromptSelectorUnresolved = errors.New("the prompt pack selector names no pack installed in this organization")
+
+// PromptSelectorUnresolved carries the record that failed to resolve, so a
+// caller that means to repair it -- select-builtin moves the selector under
+// the record's version -- has what the conditional write needs.
+type PromptSelectorUnresolved struct {
+	Names    PromptSelector
+	Selector ConfigurationRecord
+}
+
+func (e *PromptSelectorUnresolved) Error() string {
+	return fmt.Sprintf("%s: organization %s selects %s (configuration record %s at version %d)",
+		ErrPromptSelectorUnresolved, e.Selector.OrganizationID, e.Names, e.Selector.ID, e.Selector.Version)
+}
+
+// Is lets callers match the sentinel without unwrapping the detail.
+func (e *PromptSelectorUnresolved) Is(target error) bool {
+	return target == ErrPromptSelectorUnresolved
+}
+
+// ErrNoPromptSelector reports an organization with no organization-scoped
+// selector at all: it was never provisioned for prompt packs, or predates
+// them. The remedy is provisioning, which is a different act from selecting
+// (design D1), so it is a different error from ErrPromptSelectorUnresolved.
+var ErrNoPromptSelector = errors.New("the organization has no prompt pack selector")
+
+// BuiltinPromptPack is what the binary carries (ADR 0031 section 6; design
+// D2): the loaded built-in pack, before the gate has judged it. The
+// composition root loads it through the one loader and hands it in; the
+// seam supplies the binary version from its composition, never from here.
+type BuiltinPromptPack struct {
+	Entries           map[string]string
+	DisplayName       string
+	MinMaestroVersion string
+	MaxMaestroVersion string
+	DeclaredRoles     []string
+}
+
+// PromptPackSelection is an organization's default: the organization-scoped
+// prompt.pack record and the installed pack it names.
+type PromptPackSelection struct {
+	Selector ConfigurationRecord
+	Pack     InstalledPromptPack
+}
+
+// PromptPackSelected reports what SelectBuiltinPromptPack did.
+type PromptPackSelected struct {
+	Selection PromptPackSelection
+	// Moved is true when the selector was updated to name the built-in, and
+	// false when it already did and nothing was written.
+	Moved bool
+}
+
 // PromptPackReader resolves packs by identity and by record.
 type PromptPackReader interface {
+	// GetOrganizationPromptPackSelection reads the organization-scoped
+	// selector and resolves it. ErrNoPromptSelector when there is no
+	// record; ErrPromptSelectorUnresolved when the record names nothing
+	// installed.
+	GetOrganizationPromptPackSelection(ctx context.Context, organizationID uuid.UUID) (*PromptPackSelection, error)
+
 	GetPromptPackContent(ctx context.Context, organizationID, contentID uuid.UUID) (*PromptPackContent, error)
 	GetPromptPackInstallation(ctx context.Context, organizationID, installationID uuid.UUID) (*PromptPackInstallation, error)
 
@@ -201,4 +265,16 @@ type PromptPackWriter interface {
 	// entries. ErrPromptPackConflict when somebody moved first; ErrNotFound
 	// when the installation is gone.
 	UpdatePromptPackInstallation(ctx context.Context, input UpdatePromptPackInstallationInput) (*PromptPackInstallation, error)
+
+	// SelectBuiltinPromptPack is the import-and-select verb (design D11):
+	// install the running binary's built-in into the organization --
+	// idempotent by identity -- and move the organization-scoped selector to
+	// name it, conditional on the version the caller read. One transaction.
+	//
+	// ErrConfigurationConflict when the selector moved since the caller
+	// read it; ErrNoPromptSelector when the organization was never
+	// provisioned for packs, since seeding a selector is provisioning's act
+	// and not this verb's. A selector that already names the built-in is
+	// left alone, reported as Moved=false, and its version does not change.
+	SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin BuiltinPromptPack, expectedSelectorVersion int) (*PromptPackSelected, error)
 }

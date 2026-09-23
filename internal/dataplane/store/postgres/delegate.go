@@ -780,3 +780,34 @@ func (s *Store) GetPromptPackByContent(ctx context.Context, organizationID, cont
 func (s *Store) ListPromptPackInstallations(ctx context.Context, organizationID uuid.UUID) ([]store.PromptPackInstallation, error) {
 	return s.direct().ListPromptPackInstallations(ctx, organizationID)
 }
+
+// GetOrganizationPromptPackSelection reads and resolves the organization's
+// selector.
+func (s *Store) GetOrganizationPromptPackSelection(ctx context.Context, organizationID uuid.UUID) (*store.PromptPackSelection, error) {
+	return s.direct().GetOrganizationPromptPackSelection(ctx, organizationID)
+}
+
+// ProvisionOrganizationPromptPack does its three writes in ONE transaction
+// (design D9): content, installation and selector, or none of them.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ProvisionOrganizationPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack) (store.Bootstrapped[store.PromptPackSelection], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.PromptPackSelection], error) {
+		outcome, txErr := t.ProvisionOrganizationPromptPack(ctx, organizationID, builtin)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.PromptPackSelection]{}, err
+	}
+	return *result, nil
+}
+
+// SelectBuiltinPromptPack imports and selects in ONE transaction (design
+// D11), under the selector's version.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expectedSelectorVersion int) (*store.PromptPackSelected, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PromptPackSelected, error) {
+		return t.SelectBuiltinPromptPack(ctx, organizationID, builtin, expectedSelectorVersion)
+	})
+}

@@ -1,0 +1,5 @@
+{
+  "display_name": "built-in",
+  "maestro_version": {"min": "v2.0.0-phase.3.0.0", "max": "v2.0.0-phase.4.0.0"},
+  "roles": []
+}

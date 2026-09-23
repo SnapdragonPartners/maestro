@@ -17,7 +17,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"orchestrator/internal/dataplane/configkeys"
 	planeharness "orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/plane"
@@ -586,32 +585,16 @@ func TestRestartClassifiesEachTransitionShape(t *testing.T) {
 	}
 }
 
-// seedPromptPack installs the empty pack and selects it at the organization,
-// through the seam's own verbs.
+// seedPromptPack provisions the organization's prompt pack as the
+// composition root does: the EMBEDDED built-in through LoadBuiltin, then
+// the seam's provisioning verb (design D2, D9). Idempotent.
 func seedPromptPack(ctx context.Context, seam store.Store, organization uuid.UUID) error {
-	installed, err := seam.InstallPromptPack(ctx, store.InstallPromptPackInput{
-		Entries: map[string]string{}, DisplayName: "built-in",
-		MinMaestroVersion: "v2.0.0-phase.3.0.0", MaxMaestroVersion: "v2.0.0-phase.4.0.0",
-		Installer:      store.PromptPackInstaller{Kind: store.PromptPackInstalledByBuiltin, BuiltinMaestroVersion: planetest.HarnessVersion},
-		OrganizationID: organization,
-	})
-	if err != nil {
-		return fmt.Errorf("install the empty pack: %w", err)
-	}
-	if !installed.Created {
-		return nil
-	}
-	contentID := installed.Record.Content.ContentID
-	value, err := json.Marshal(store.PromptSelector{ContentID: &contentID})
+	builtin, err := orchestrator.LoadBuiltin(orchestrator.BuiltinPack())
 	if err != nil {
 		return err
 	}
-	if _, err := seam.CreateConfigurationRecord(ctx, store.CreateConfigurationRecordInput{
-		Value: value, Key: store.PromptPackKey,
-		Scope:          store.ConfigScope{Type: configkeys.ScopeOrganization, ID: organization},
-		OrganizationID: organization,
-	}); err != nil {
-		return fmt.Errorf("seed the selector: %w", err)
+	if _, err := seam.ProvisionOrganizationPromptPack(ctx, organization, builtin); err != nil {
+		return fmt.Errorf("provision the built-in pack: %w", err)
 	}
 	return nil
 }

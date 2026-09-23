@@ -97,7 +97,9 @@ func runBootstrap(ctx context.Context, cfg *stack.Config, opts *runOptions) erro
 		userName = opts.user
 	}
 
-	seam, err := openSeam(ctx, cfg)
+	// The Orchestrator's seam, as `provision organization` opens: the
+	// selector seeded below is a key only its registry declares.
+	seam, builtin, err := openOrchestratorSeam(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -111,6 +113,9 @@ func runBootstrap(ctx context.Context, cfg *stack.Config, opts *runOptions) erro
 	}
 	fmt.Printf("%s organization %s (%s)\n", provisioned(organization.Created),
 		organization.Record.Slug, organization.Record.DisplayName)
+	if packErr := provisionPromptPack(ctx, seam, &organization.Record, builtin); packErr != nil {
+		return packErr
+	}
 
 	user, err := seam.BootstrapUser(ctx, store.BootstrapUserInput{
 		Handle: opts.user, DisplayName: userName,

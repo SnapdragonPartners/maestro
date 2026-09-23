@@ -62,3 +62,44 @@ func TestBothAdmittedStampsCompose(t *testing.T) {
 		}
 	}
 }
+
+// TestTheOperatorVerbsRefuseAMisStampedBinaryBeforeThePlane is the design's
+// fifth version test (D8): `select-builtin` driven under a malformed stamp
+// refuses, typed, and the plane's data root shows no seam was opened. The
+// provisioning verb crosses the same root, so it is driven too. Neither
+// needs -org resolved: the refusal comes first.
+func TestTheOperatorVerbsRefuseAMisStampedBinaryBeforeThePlane(t *testing.T) {
+	stampVersion(t, "2.0.0")
+	cfg := scratchPlane(t)
+	lockPath := filepath.Join(cfg.Roots.Data, stack.LifecycleLockFile)
+	opts := &runOptions{org: "acme"}
+
+	for _, verb := range []struct {
+		name string
+		run  func() error
+	}{
+		{"prompt-pack select-builtin", func() error { return runPromptPack(context.Background(), cfg, "select-builtin", opts) }},
+		{"prompt-pack show", func() error { return runPromptPack(context.Background(), cfg, "show", opts) }},
+		{"provision organization", func() error { return runProvision(context.Background(), cfg, "organization", opts) }},
+	} {
+		if err := verb.run(); !errors.Is(err, harness.ErrMalformedVersion) {
+			t.Errorf("%s = %v, want ErrMalformedVersion", verb.name, err)
+		}
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the lifecycle lock exists (%v): a seam was reached under a malformed version", err)
+	}
+}
+
+// TestTheOperatorVerbsCarryTheEmbeddedBuiltin: the same root loads the
+// production built-in before it opens anything, and what it loads is the
+// empty Phase 3 pack. A build whose embed was broken would refuse here.
+func TestTheOperatorVerbsCarryTheEmbeddedBuiltin(t *testing.T) {
+	builtin, err := loadBuiltin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(builtin.Entries) != 0 || len(builtin.DeclaredRoles) != 0 || builtin.MinMaestroVersion != "v2.0.0-phase.3.0.0" {
+		t.Fatalf("built-in = %+v", builtin)
+	}
+}

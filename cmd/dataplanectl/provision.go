@@ -17,11 +17,15 @@ import (
 // Feature, Epic and Story creation are deliberately NOT here. Item 11 owns
 // the first manual intake surface, and a CLI shaped now would be the thing
 // it has to unbuild.
+//
+// The verbs open the ORCHESTRATOR's seam (item 4 design, D7, D9): the
+// selector organization provisioning seeds is a key only its registry
+// declares, and provisioning is the Orchestrator's general consumer.
 func runProvision(ctx context.Context, cfg *stack.Config, what string, opts *runOptions) error {
 	if opts.org == "" {
 		return errors.New("provision needs -org <slug>")
 	}
-	seam, err := openSeam(ctx, cfg)
+	seam, builtin, err := openOrchestratorSeam(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -29,7 +33,7 @@ func runProvision(ctx context.Context, cfg *stack.Config, what string, opts *run
 
 	switch what {
 	case "organization":
-		return provisionOrganization(ctx, seam, opts)
+		return provisionOrganization(ctx, seam, builtin, opts)
 	case "user":
 		return provisionUser(ctx, seam, opts)
 	case "product":
@@ -41,7 +45,12 @@ func runProvision(ctx context.Context, cfg *stack.Config, what string, opts *run
 	}
 }
 
-func provisionOrganization(ctx context.Context, seam store.Store, opts *runOptions) error {
+// provisionOrganization creates the tenant and then gives it a resolvable
+// prompt-pack selector (item 4 design, D9). Two seam calls, the second
+// idempotent: a run that created the organization and failed before the
+// pack leaves an organization the next run completes, since the selector
+// is what the second call checks for.
+func provisionOrganization(ctx context.Context, seam store.Store, builtin *store.BuiltinPromptPack, opts *runOptions) error {
 	organization, err := seam.BootstrapOrganization(ctx, store.BootstrapOrganizationInput{
 		Slug: opts.org, DisplayName: orDefault(opts.orgName, opts.org),
 	})
@@ -50,6 +59,21 @@ func provisionOrganization(ctx context.Context, seam store.Store, opts *runOptio
 	}
 	fmt.Printf("%s organization %s (%s)\n", provisioned(organization.Created),
 		organization.Record.Slug, organization.Record.DisplayName)
+	return provisionPromptPack(ctx, seam, &organization.Record, builtin)
+}
+
+// provisionPromptPack seeds the selector, reporting whether this run did it
+// or an earlier one had.
+func provisionPromptPack(ctx context.Context, seam store.Store, organization *store.Organization, builtin *store.BuiltinPromptPack) error {
+	selection, err := seam.ProvisionOrganizationPromptPack(ctx, organization.OrganizationID, *builtin)
+	if err != nil {
+		return fmt.Errorf("provision organization %q prompt pack: %w", organization.Slug, err)
+	}
+	if selection.Created {
+		fmt.Printf("seeded prompt pack selector: %s\n", describePack(&selection.Record.Pack))
+	} else {
+		fmt.Printf("existing prompt pack selector kept: %s\n", describePack(&selection.Record.Pack))
+	}
 	return nil
 }
 
