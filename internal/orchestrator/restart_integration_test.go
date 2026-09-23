@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"orchestrator/internal/dataplane/configkeys"
 	planeharness "orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/plane"
@@ -194,6 +195,13 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 	if err != nil {
 		return ids, err
 	}
+	// Since item 4 a dispatch resolves a prompt pack. The child's seam is
+	// composed the way the real root composes it -- the Orchestrator's key
+	// vocabulary and its empty slot registry -- so the empty pack is what
+	// installs and what the organization selects (design D8, D9).
+	if err := seedPromptPack(ctx, seam, ids.Organization); err != nil {
+		return ids, err
+	}
 	feature, err := seam.CreateFeature(ctx, store.CreateFeatureInput{Title: "Flags", OrganizationID: ids.Organization, UserID: ids.User, ProductID: ids.Product})
 	if err != nil {
 		return ids, err
@@ -248,7 +256,7 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 		ids.Predecessors = append(ids.Predecessors, predecessor.StoryID)
 		ids.Completions = append(ids.Completions, completion)
 	}
-	dispatch, err := seam.CreateDispatch(ctx, ids.Organization, ids.Story)
+	dispatch, err := seam.CreateDispatch(ctx, ids.Organization, ids.Story, nil)
 	if err != nil {
 		return ids, err
 	}
@@ -576,4 +584,34 @@ func TestRestartClassifiesEachTransitionShape(t *testing.T) {
 			h.expect(h.recover(), orchestrator.PendingDiverged, tc.component, predecessor)
 		})
 	}
+}
+
+// seedPromptPack installs the empty pack and selects it at the organization,
+// through the seam's own verbs.
+func seedPromptPack(ctx context.Context, seam store.Store, organization uuid.UUID) error {
+	installed, err := seam.InstallPromptPack(ctx, store.InstallPromptPackInput{
+		Entries: map[string]string{}, DisplayName: "built-in",
+		MinMaestroVersion: "v2.0.0-phase.3.0.0", MaxMaestroVersion: "v2.0.0-phase.4.0.0",
+		Installer:      store.PromptPackInstaller{Kind: store.PromptPackInstalledByBuiltin, BuiltinMaestroVersion: planetest.HarnessVersion},
+		OrganizationID: organization,
+	})
+	if err != nil {
+		return fmt.Errorf("install the empty pack: %w", err)
+	}
+	if !installed.Created {
+		return nil
+	}
+	contentID := installed.Record.Content.ContentID
+	value, err := json.Marshal(store.PromptSelector{ContentID: &contentID})
+	if err != nil {
+		return err
+	}
+	if _, err := seam.CreateConfigurationRecord(ctx, store.CreateConfigurationRecordInput{
+		Value: value, Key: store.PromptPackKey,
+		Scope:          store.ConfigScope{Type: configkeys.ScopeOrganization, ID: organization},
+		OrganizationID: organization,
+	}); err != nil {
+		return fmt.Errorf("seed the selector: %w", err)
+	}
+	return nil
 }

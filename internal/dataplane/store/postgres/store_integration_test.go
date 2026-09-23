@@ -261,6 +261,10 @@ func (f *fixture) seedLineage(t *testing.T) uuid.UUID {
 	}
 
 	f.product, f.feature, f.epic, f.repository = product, feature, epic, repository
+	// Since item 4 a dispatch resolves a prompt pack, so the lineage ships
+	// with one: the empty pack, installed and selected at the organization
+	// through the same verbs provisioning uses (design D8, D9).
+	f.seedPromptPack(t)
 	return story
 }
 

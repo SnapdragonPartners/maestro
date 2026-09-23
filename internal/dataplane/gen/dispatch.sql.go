@@ -58,6 +58,42 @@ func (q *Queries) FailStoryDispatch(ctx context.Context, arg FailStoryDispatchPa
 	return result.RowsAffected(), nil
 }
 
+const getDispatchPromptResolution = `-- name: GetDispatchPromptResolution :one
+SELECT resolution_id, story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, resolved_name, scheme, digest, content_id, installation_id, installation_revision, metadata_snapshot, validated_maestro_version, range_check, resolved_at FROM dispatch_prompt_resolutions
+WHERE organization_id   = $1
+  AND story_dispatch_id = $2
+`
+
+type GetDispatchPromptResolutionParams struct {
+	OrganizationID  pgtype.UUID
+	StoryDispatchID pgtype.UUID
+}
+
+func (q *Queries) GetDispatchPromptResolution(ctx context.Context, arg GetDispatchPromptResolutionParams) (DispatchPromptResolution, error) {
+	row := q.db.QueryRow(ctx, getDispatchPromptResolution, arg.OrganizationID, arg.StoryDispatchID)
+	var i DispatchPromptResolution
+	err := row.Scan(
+		&i.ResolutionID,
+		&i.StoryDispatchID,
+		&i.OrganizationID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.ResolvedName,
+		&i.Scheme,
+		&i.Digest,
+		&i.ContentID,
+		&i.InstallationID,
+		&i.InstallationRevision,
+		&i.MetadataSnapshot,
+		&i.ValidatedMaestroVersion,
+		&i.RangeCheck,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const getExecutionByDispatch = `-- name: GetExecutionByDispatch :one
 SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at FROM executions WHERE organization_id = $1 AND story_dispatch_id = $2
 `
@@ -162,6 +198,84 @@ func (q *Queries) InsertDispatchBasisDependency(ctx context.Context, arg InsertD
 	return err
 }
 
+const insertDispatchPromptResolution = `-- name: InsertDispatchPromptResolution :one
+INSERT INTO dispatch_prompt_resolutions (
+    resolution_id, story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id,
+    resolved_name, scheme, digest, content_id, installation_id, installation_revision,
+    metadata_snapshot, validated_maestro_version, range_check
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11, $12, $13,
+    $14, $15, $16
+)
+RETURNING resolution_id, story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, resolved_name, scheme, digest, content_id, installation_id, installation_revision, metadata_snapshot, validated_maestro_version, range_check, resolved_at
+`
+
+type InsertDispatchPromptResolutionParams struct {
+	ResolutionID            pgtype.UUID
+	StoryDispatchID         pgtype.UUID
+	OrganizationID          pgtype.UUID
+	ProductID               pgtype.UUID
+	FeatureID               pgtype.UUID
+	EpicID                  pgtype.UUID
+	StoryID                 pgtype.UUID
+	ResolvedName            string
+	Scheme                  string
+	Digest                  string
+	ContentID               pgtype.UUID
+	InstallationID          pgtype.UUID
+	InstallationRevision    int32
+	MetadataSnapshot        []byte
+	ValidatedMaestroVersion string
+	RangeCheck              string
+}
+
+// The resolution beside the dispatch (item 4 design, D8). Insertion is
+// parent-first: the dispatch names its resolution id first, under the
+// DEFERRED reciprocal key, and this row -- whose reference to the dispatch is
+// immediate -- follows in the same transaction.
+func (q *Queries) InsertDispatchPromptResolution(ctx context.Context, arg InsertDispatchPromptResolutionParams) (DispatchPromptResolution, error) {
+	row := q.db.QueryRow(ctx, insertDispatchPromptResolution,
+		arg.ResolutionID,
+		arg.StoryDispatchID,
+		arg.OrganizationID,
+		arg.ProductID,
+		arg.FeatureID,
+		arg.EpicID,
+		arg.StoryID,
+		arg.ResolvedName,
+		arg.Scheme,
+		arg.Digest,
+		arg.ContentID,
+		arg.InstallationID,
+		arg.InstallationRevision,
+		arg.MetadataSnapshot,
+		arg.ValidatedMaestroVersion,
+		arg.RangeCheck,
+	)
+	var i DispatchPromptResolution
+	err := row.Scan(
+		&i.ResolutionID,
+		&i.StoryDispatchID,
+		&i.OrganizationID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.ResolvedName,
+		&i.Scheme,
+		&i.Digest,
+		&i.ContentID,
+		&i.InstallationID,
+		&i.InstallationRevision,
+		&i.MetadataSnapshot,
+		&i.ValidatedMaestroVersion,
+		&i.RangeCheck,
+		&i.ResolvedAt,
+	)
+	return i, err
+}
+
 const insertExecution = `-- name: InsertExecution :one
 INSERT INTO executions (
     execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id
@@ -213,12 +327,14 @@ INSERT INTO story_dispatches (
     story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id,
     disposition,
     story_version_artifact_id, story_version_effective_digest, story_version_effective_sequence,
-    epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence
+    epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence,
+    prompt_resolution_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     'pending',
     $8, $9, $10,
-    $11, $12, $13
+    $11, $12, $13,
+    $14
 )
 RETURNING story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id, dispatched_at, disposition, is_accepted, settled_at, failure_code, failure_detail, story_version_artifact_id, story_version_is_amendment, story_version_effective_digest, story_version_effective_sequence, epic_version_artifact_id, epic_version_is_amendment, epic_version_effective_digest, epic_version_effective_sequence, prompt_resolution_id
 `
@@ -237,6 +353,7 @@ type InsertStoryDispatchParams struct {
 	EpicVersionArtifactID         pgtype.UUID
 	EpicVersionEffectiveDigest    string
 	EpicVersionEffectiveSequence  int32
+	PromptResolutionID            pgtype.UUID
 }
 
 func (q *Queries) InsertStoryDispatch(ctx context.Context, arg InsertStoryDispatchParams) (StoryDispatch, error) {
@@ -254,6 +371,7 @@ func (q *Queries) InsertStoryDispatch(ctx context.Context, arg InsertStoryDispat
 		arg.EpicVersionArtifactID,
 		arg.EpicVersionEffectiveDigest,
 		arg.EpicVersionEffectiveSequence,
+		arg.PromptResolutionID,
 	)
 	var i StoryDispatch
 	err := row.Scan(

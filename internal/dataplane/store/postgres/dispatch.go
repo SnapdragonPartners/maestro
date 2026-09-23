@@ -131,8 +131,9 @@ func (t *tx) SetEpicGoverningArtifact(ctx context.Context, organizationID, epicI
 	return nil
 }
 
-// CreateDispatch derives the basis and writes it whole (design D10).
-func (t *tx) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*store.StoryDispatch, error) {
+// CreateDispatch derives the basis and writes it whole (design D10), and
+// resolves the prompt pack in the same transaction (item 4 design, D8).
+func (t *tx) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID, selector *store.PromptSelector) (*store.StoryDispatch, error) {
 	const operation = "CreateDispatch"
 	// The Story is read once to learn its Epic, and AGAIN under the Epic
 	// lock. A pointer repoint takes the Epic lock first (D10's order), so one
@@ -172,8 +173,15 @@ func (t *tx) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	// 4. Write the dispatch and its complete basis, in this transaction.
-	return t.writeDispatch(ctx, story, &epic, group.WorkGroupID, edges, measured)
+	// 4. Resolve the prompt pack: every refusal returns here, before any
+	//    row is written, so a refused dispatch leaves nothing behind.
+	resolved, err := t.resolvePromptPack(ctx, operation, story, &epic, selector)
+	if err != nil {
+		return nil, err
+	}
+	// 5. Write the dispatch, its complete basis and its resolution, in this
+	//    transaction.
+	return t.writeDispatch(ctx, story, &epic, group.WorkGroupID, edges, measured, resolved)
 }
 
 // basisRequirements reads the inputs under the Epic lock and says what each
@@ -229,8 +237,15 @@ func (t *tx) lockAndMeasureAll(ctx context.Context, operation string, organizati
 
 // writeDispatch inserts the dispatch row, its two version references and
 // every basis row, in the caller's transaction.
-func (t *tx) writeDispatch(ctx context.Context, story *store.Story, epic *store.Epic, workGroupID uuid.UUID, edges []store.StoryDependency, measured map[uuid.UUID]store.VersionRef) (*store.StoryDispatch, error) {
+func (t *tx) writeDispatch(ctx context.Context, story *store.Story, epic *store.Epic, workGroupID uuid.UUID, edges []store.StoryDependency, measured map[uuid.UUID]store.VersionRef, resolved *resolvedPack) (*store.StoryDispatch, error) {
 	identifier, err := newIdentifier(uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+	// The resolution's id is minted before the dispatch, which names it under
+	// the deferred reciprocal key; the resolution row itself follows the
+	// dispatch, because its own reference back is immediate (design D8).
+	resolutionID, err := newIdentifier(uuid.Nil)
 	if err != nil {
 		return nil, err
 	}
@@ -244,9 +259,13 @@ func (t *tx) writeDispatch(ctx context.Context, story *store.Story, epic *store.
 		StoryVersionEffectiveSequence: int32(storyRef.Sequence), //nolint:gosec // sequences are small
 		EpicVersionArtifactID:         toUUID(epicRef.ArtifactID), EpicVersionEffectiveDigest: epicRef.Digest,
 		EpicVersionEffectiveSequence: int32(epicRef.Sequence), //nolint:gosec // sequences are small
+		PromptResolutionID:           toUUID(resolutionID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("insert dispatch of story %s: %w", story.StoryID, err)
+	}
+	if _, resolutionErr := t.writeResolution(ctx, resolutionID, &row, resolved); resolutionErr != nil {
+		return nil, resolutionErr
 	}
 	for i := range edges {
 		ref := measured[*edges[i].SatisfyingCompletionArtifactID]
@@ -281,14 +300,18 @@ func (t *tx) dispatchWithBasis(ctx context.Context, row *gen.StoryDispatch) (*st
 			},
 		})
 	}
-	dispatch := dispatchFromRow(row, basis)
+	resolution, err := t.resolutionOf(ctx, fromUUID(row.OrganizationID), fromUUID(row.StoryDispatchID))
+	if err != nil {
+		return nil, err
+	}
+	dispatch := dispatchFromRow(row, basis, resolution)
 	return &dispatch, nil
 }
 
-func dispatchFromRow(row *gen.StoryDispatch, basis []store.BasisDependency) store.StoryDispatch {
+func dispatchFromRow(row *gen.StoryDispatch, basis []store.BasisDependency, resolution *store.PromptResolution) store.StoryDispatch {
 	return store.StoryDispatch{
 		SettledAt: fromNullTimestamptz(row.SettledAt), FailureCode: row.FailureCode, FailureDetail: row.FailureDetail,
-		Basis: basis, DispatchedAt: fromTimestamptz(row.DispatchedAt), Disposition: store.Disposition(row.Disposition),
+		Basis: basis, PromptResolution: *resolution, DispatchedAt: fromTimestamptz(row.DispatchedAt), Disposition: store.Disposition(row.Disposition),
 		StoryVersion:    store.VersionRef{ArtifactID: fromUUID(row.StoryVersionArtifactID), Digest: row.StoryVersionEffectiveDigest, Sequence: int(row.StoryVersionEffectiveSequence)},
 		EpicVersion:     store.VersionRef{ArtifactID: fromUUID(row.EpicVersionArtifactID), Digest: row.EpicVersionEffectiveDigest, Sequence: int(row.EpicVersionEffectiveSequence)},
 		StoryDispatchID: fromUUID(row.StoryDispatchID), OrganizationID: fromUUID(row.OrganizationID),

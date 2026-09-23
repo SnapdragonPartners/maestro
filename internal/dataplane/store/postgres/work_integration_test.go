@@ -51,6 +51,9 @@ func provisionHierarchy(t *testing.T, f *fixture) hierarchy {
 	if err != nil {
 		t.Fatalf("story: %v", err)
 	}
+	// Since item 4 a dispatch resolves a prompt pack, so the hierarchy ships
+	// with one selected at the organization (design D8, D9).
+	f.seedPromptPack(t)
 	return hierarchy{product: product, repository: repo.Record.RepositoryID, feature: feature, epic: epic, story: story}
 }
 

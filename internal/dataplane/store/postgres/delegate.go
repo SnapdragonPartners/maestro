@@ -682,8 +682,10 @@ func (s *Store) SetEpicGoverningArtifact(ctx context.Context, organizationID, ep
 }
 
 // CreateDispatch derives a Story's basis and writes the dispatch whole.
-func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*store.StoryDispatch, error) {
-	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) { return t.CreateDispatch(ctx, organizationID, storyID) })
+func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID, selector *store.PromptSelector) (*store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) {
+		return t.CreateDispatch(ctx, organizationID, storyID, selector)
+	})
 }
 
 // AcceptDispatch flips pending to accepted and creates the execution.

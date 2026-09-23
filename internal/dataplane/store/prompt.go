@@ -110,7 +110,9 @@ type PromptPackContent struct {
 }
 
 // Identity returns the content's scheme-qualified digest.
-func (c *PromptPackContent) Identity() PromptIdentity {
+//
+//nolint:gocritic // hugeParam: a value receiver so a read result's Identity() is callable without taking its address
+func (c PromptPackContent) Identity() PromptIdentity {
 	return PromptIdentity{Scheme: c.Scheme, Digest: c.Digest}
 }
 
