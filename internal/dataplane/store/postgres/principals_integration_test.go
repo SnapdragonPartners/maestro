@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,10 +96,10 @@ func TestDispatchedPrincipalCopiesTheResolution(t *testing.T) {
 	// The Maestro version is the running harness's, read from the seam's
 	// one authority for it (design D3).
 	if stored.MaestroVersion == nil || *stored.MaestroVersion != planetest.HarnessVersion {
-		t.Fatalf("maestro_version = %v, want the running harness %q", stored.MaestroVersion, planetest.HarnessVersion)
+		t.Fatalf("maestro_version = %s, want the running harness %q", describeString(stored.MaestroVersion), planetest.HarnessVersion)
 	}
 	if stored.HarnessConfigHash == nil || *stored.HarnessConfigHash != hash {
-		t.Fatalf("harness_config_hash = %v, want the supplied %q", stored.HarnessConfigHash, hash)
+		t.Fatalf("harness_config_hash = %s, want the supplied %q", describeString(stored.HarnessConfigHash), hash)
 	}
 	if stored.StopTime != nil || stored.StopReason != nil {
 		t.Fatal("a dispatched principal was created closed")
@@ -162,6 +163,13 @@ func mustExecutionDispatch(t *testing.T, f *fixture, executionID uuid.UUID) uuid
 		t.Fatalf("find the execution's dispatch: %v", err)
 	}
 	return dispatchID
+}
+
+func describeString(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%q", *s)
 }
 
 func describeLineage(l store.Lineage) string {
