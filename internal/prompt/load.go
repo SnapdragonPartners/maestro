@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"path"
@@ -117,7 +118,12 @@ func loadManifest(fsys fs.FS) (*Pack, error) {
 	if decodeErr := decoder.Decode(&doc); decodeErr != nil {
 		return nil, fmt.Errorf("%w: decode %s: %w", ErrLayout, ManifestFile, decodeErr)
 	}
-	if decoder.More() {
+	// EOF, not More(): More reports another element of the CURRENT array or
+	// object and answers false at a stray `}` or `]`, so a manifest followed
+	// by an unmatched closer would load. Only a second Decode that hits EOF
+	// proves the object was the whole file.
+	var trailing json.RawMessage
+	if trailingErr := decoder.Decode(&trailing); !errors.Is(trailingErr, io.EOF) {
 		return nil, fmt.Errorf("%w: %s carries trailing content after the manifest object", ErrLayout, ManifestFile)
 	}
 	switch {

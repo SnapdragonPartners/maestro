@@ -92,9 +92,9 @@ func showPromptPack(ctx context.Context, seam store.Store, organization *store.O
 
 // selectBuiltin reads the current selection, then moves it to the running
 // binary's built-in conditional on the version it read (design D11). The
-// read and the write are two calls on purpose: the version between them is
-// the optimistic-concurrency token, and the seam refuses the write if
-// another operator moved the selector meanwhile.
+// read and the write are two calls on purpose: the record and version
+// between them are the optimistic-concurrency token, and the seam refuses
+// the write if another operator moved or replaced the selector meanwhile.
 func selectBuiltin(ctx context.Context, seam store.Store, organization *store.Organization, builtin *store.BuiltinPromptPack) error {
 	current, err := seam.GetOrganizationPromptPackSelection(ctx, organization.OrganizationID)
 	if err != nil {
@@ -103,16 +103,16 @@ func selectBuiltin(ctx context.Context, seam store.Store, organization *store.Or
 		var unresolved *store.PromptSelectorUnresolved
 		if errors.As(err, &unresolved) {
 			fmt.Printf("organization %s: %v\n", organization.Slug, err)
-			return selectBuiltinFrom(ctx, seam, organization, builtin, unresolved.Selector.Version)
+			return selectBuiltinFrom(ctx, seam, organization, builtin, unresolved.Token())
 		}
 		return fmt.Errorf("organization %s: %w", organization.Slug, err)
 	}
 	fmt.Printf("organization %s currently selects %s\n", organization.Slug, describePack(&current.Pack))
-	return selectBuiltinFrom(ctx, seam, organization, builtin, current.Selector.Version)
+	return selectBuiltinFrom(ctx, seam, organization, builtin, current.Token())
 }
 
-func selectBuiltinFrom(ctx context.Context, seam store.Store, organization *store.Organization, builtin *store.BuiltinPromptPack, expectedVersion int) error {
-	selected, err := seam.SelectBuiltinPromptPack(ctx, organization.OrganizationID, *builtin, expectedVersion)
+func selectBuiltinFrom(ctx context.Context, seam store.Store, organization *store.Organization, builtin *store.BuiltinPromptPack, expected store.PromptSelectorToken) error {
+	selected, err := seam.SelectBuiltinPromptPack(ctx, organization.OrganizationID, *builtin, expected)
 	if err != nil {
 		return fmt.Errorf("select the built-in prompt pack for organization %s: %w", organization.Slug, err)
 	}

@@ -806,8 +806,8 @@ func (s *Store) ProvisionOrganizationPromptPack(ctx context.Context, organizatio
 // D11), under the selector's version.
 //
 //nolint:gocritic // hugeParam: by value, matching the seam interface
-func (s *Store) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expectedSelectorVersion int) (*store.PromptPackSelected, error) {
+func (s *Store) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expected store.PromptSelectorToken) (*store.PromptPackSelected, error) {
 	return inTx(ctx, s, func(t *tx) (*store.PromptPackSelected, error) {
-		return t.SelectBuiltinPromptPack(ctx, organizationID, builtin, expectedSelectorVersion)
+		return t.SelectBuiltinPromptPack(ctx, organizationID, builtin, expected)
 	})
 }

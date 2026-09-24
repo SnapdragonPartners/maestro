@@ -215,6 +215,27 @@ type PromptPackSelection struct {
 	Pack     InstalledPromptPack
 }
 
+// PromptSelectorToken is what a caller of SelectBuiltinPromptPack read: the
+// selector record's identity AND its version (ADR 0027). The version alone
+// is not a token, because a record deleted and recreated starts again at
+// 1 -- a stale caller holding "version 1" would then match the replacement
+// and overwrite a selection it never saw (review round 6).
+type PromptSelectorToken struct {
+	RecordID uuid.UUID
+	Version  int
+}
+
+// Token is the token a selection was read under.
+func (s *PromptPackSelection) Token() PromptSelectorToken {
+	return PromptSelectorToken{RecordID: s.Selector.ID, Version: s.Selector.Version}
+}
+
+// Token is the token the unresolved record was read under, so the caller
+// that means to repair it moves exactly that record.
+func (e *PromptSelectorUnresolved) Token() PromptSelectorToken {
+	return PromptSelectorToken{RecordID: e.Selector.ID, Version: e.Selector.Version}
+}
+
 // PromptPackSelected reports what SelectBuiltinPromptPack did.
 type PromptPackSelected struct {
 	Selection PromptPackSelection
@@ -269,12 +290,14 @@ type PromptPackWriter interface {
 	// SelectBuiltinPromptPack is the import-and-select verb (design D11):
 	// install the running binary's built-in into the organization --
 	// idempotent by identity -- and move the organization-scoped selector to
-	// name it, conditional on the version the caller read. One transaction.
+	// name it, conditional on the record AND version the caller read. One
+	// transaction.
 	//
 	// ErrConfigurationConflict when the selector moved since the caller
-	// read it; ErrNoPromptSelector when the organization was never
-	// provisioned for packs, since seeding a selector is provisioning's act
-	// and not this verb's. A selector that already names the built-in is
-	// left alone, reported as Moved=false, and its version does not change.
-	SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin BuiltinPromptPack, expectedSelectorVersion int) (*PromptPackSelected, error)
+	// read it, or was replaced by another record; ErrNoPromptSelector when
+	// the organization was never provisioned for packs, since seeding a
+	// selector is provisioning's act and not this verb's. A selector that
+	// already names the built-in is left alone, reported as Moved=false, and
+	// its version does not change.
+	SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin BuiltinPromptPack, expected PromptSelectorToken) (*PromptPackSelected, error)
 }

@@ -164,10 +164,20 @@ func selectorValue(contentID uuid.UUID) (json.RawMessage, error) {
 // the selector to it, conditional on the version the caller read.
 //
 //nolint:gocritic // hugeParam: by value, matching the seam interface
-func (t *tx) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expectedSelectorVersion int) (*store.PromptPackSelected, error) {
+func (t *tx) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expected store.PromptSelectorToken) (*store.PromptPackSelected, error) {
 	existing, err := t.organizationSelector(ctx, organizationID)
 	if err != nil {
 		return nil, err
+	}
+	// The record at this scope must be the one the caller read. A deleted
+	// and recreated selector is a different record at version 1, and a
+	// version-only check would let a caller holding the old "version 1"
+	// overwrite it (review round 6). Refused before the lock, with the same
+	// error a moved version produces: the caller's remedy is the same --
+	// re-read, then decide again.
+	if existing.ID != expected.RecordID {
+		return nil, fmt.Errorf("%w: the %s selector of organization %s is record %s, caller read %s",
+			store.ErrConfigurationConflict, store.PromptPackKey, organizationID, existing.ID, expected.RecordID)
 	}
 	// Locked and classified before the install. That a refused call leaves
 	// no installation behind is the TRANSACTION's property, not this
@@ -175,7 +185,7 @@ func (t *tx) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UU
 	// conflict, and survived the test that claimed otherwise. The order
 	// buys only that a stale operator is answered before the gate runs
 	// over their pack, which is cheaper and reports the right fault first.
-	locked, err := t.lockConfigurationRecord(ctx, organizationID, existing.ID, expectedSelectorVersion)
+	locked, err := t.lockConfigurationRecord(ctx, organizationID, existing.ID, expected.Version)
 	if err != nil {
 		return nil, err
 	}

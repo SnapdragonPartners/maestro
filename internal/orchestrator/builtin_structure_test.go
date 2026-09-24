@@ -25,10 +25,11 @@ import (
 // LoadBuiltin's, which sits behind prompt.Load; and that prompt.Load is
 // called from LoadBuiltin and nowhere else outside its own package.
 //
-// Composite literals WITH fields and new() are what it sees; an empty
-// literal on an error path constructs nothing. A zero value assigned field
-// by field would pass; this guards the ordinary way of writing the shortcut,
-// not a determined one.
+// Composite literals WITH fields and new() are what it sees, in function
+// bodies and in package-level declarations alike; an empty literal on an
+// error path constructs nothing. A zero value assigned field by field would
+// pass; this guards the ordinary way of writing the shortcut, not a
+// determined one.
 
 const (
 	storeImportPath  = "orchestrator/internal/dataplane/store"
@@ -63,13 +64,25 @@ func TestTheBuiltinPackIsConstructedOnlyByTheLoader(t *testing.T) {
 			storeAlias := aliasOf(file, storeImportPath)
 			promptAlias := aliasOf(file, promptImportPath)
 
+			// Every declaration, not only function bodies: a package-level
+			// `var fixture = store.BuiltinPromptPack{...}` is the shortcut
+			// in its most ordinary form, and round 6's first cut of this
+			// walk skipped it (review round 6, P1).
 			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
+				var where string
+				var body ast.Node
+				switch typed := decl.(type) {
+				case *ast.FuncDecl:
+					if typed.Body == nil {
+						continue
+					}
+					where, body = rel+":"+typed.Name.Name, typed.Body
+				case *ast.GenDecl:
+					where, body = rel+":"+declaredNames(typed), typed
+				default:
 					continue
 				}
-				where := rel + ":" + fn.Name.Name
-				ast.Inspect(fn.Body, func(node ast.Node) bool {
+				ast.Inspect(body, func(node ast.Node) bool {
 					switch typed := node.(type) {
 					case *ast.CompositeLit:
 						if len(typed.Elts) > 0 && namesType(typed.Type, builtinTypeName, inStore, storeAlias) {
@@ -112,6 +125,22 @@ func TestTheBuiltinPackIsConstructedOnlyByTheLoader(t *testing.T) {
 		t.Errorf("prompt.Load is called from %v, want exactly %v: the loader has one consumer, and a "+
 			"second would be a second place the file-system shape is interpreted", loadCallers, want)
 	}
+}
+
+// declaredNames renders a GenDecl's declared identifiers for a location.
+func declaredNames(decl *ast.GenDecl) string {
+	var names []string
+	for _, spec := range decl.Specs {
+		switch typed := spec.(type) {
+		case *ast.ValueSpec:
+			for _, name := range typed.Names {
+				names = append(names, name.Name)
+			}
+		case *ast.TypeSpec:
+			names = append(names, typed.Name.Name)
+		}
+	}
+	return "var(" + strings.Join(names, ",") + ")"
 }
 
 // namesType reports whether a type expression names `name` from the store

@@ -315,7 +315,7 @@ func TestSelectBuiltinMovesTheSelectorUnderItsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	b := packB(t)
-	moved, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, b, seeded.Record.Selector.Version)
+	moved, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, b, seeded.Record.Token())
 	if err != nil {
 		t.Fatalf("select: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestSelectBuiltinMovesTheSelectorUnderItsVersion(t *testing.T) {
 	}
 
 	// Selecting what is already selected moves nothing and bumps nothing.
-	same, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, b, 2)
+	same, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, b, moved.Selection.Token())
 	if err != nil {
 		t.Fatalf("re-select: %v", err)
 	}
@@ -366,18 +366,18 @@ func TestSelectBuiltinRefusesAStaleVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	staleVersion := seeded.Record.Selector.Version
+	stale := seeded.Record.Token()
 
 	// Operator one moves the selector -- to a third pack, so the stale
 	// operator's B is provably absent afterwards.
 	c := loadPack(t, fixturePackFS("pack C", map[string]string{slotCoderSystem: "C {{.Story}}", slotCoderPlan: "C"}))
-	if _, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, c, staleVersion); err != nil {
+	if _, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, c, stale); err != nil {
 		t.Fatal(err)
 	}
 	before := f.countInstallations(t, s)
 
 	// Operator two, holding the version from before the move.
-	_, err = s.SelectBuiltinPromptPack(ctx, f.organizationID, packB(t), staleVersion)
+	_, err = s.SelectBuiltinPromptPack(ctx, f.organizationID, packB(t), stale)
 	if !errors.Is(err, store.ErrConfigurationConflict) {
 		t.Fatalf("err = %v, want ErrConfigurationConflict", err)
 	}
@@ -396,7 +396,7 @@ func TestSelectBuiltinNeedsASelectorAndRepairsADanglingOne(t *testing.T) {
 	ctx := context.Background()
 
 	// Never provisioned: seeding is provisioning's act.
-	_, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packA(t), 1)
+	_, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packA(t), store.PromptSelectorToken{RecordID: uuid.New(), Version: 1})
 	if !errors.Is(err, store.ErrNoPromptSelector) {
 		t.Fatalf("err = %v, want ErrNoPromptSelector", err)
 	}
@@ -414,12 +414,66 @@ func TestSelectBuiltinNeedsASelectorAndRepairsADanglingOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repaired, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packA(t), record.Version)
+	repaired, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packA(t), store.PromptSelectorToken{RecordID: record.ID, Version: record.Version})
 	if err != nil {
 		t.Fatalf("select over a dangling selector: %v", err)
 	}
 	if !repaired.Moved || repaired.Selection.Pack.Installation.DisplayName != "pack A" || repaired.Selection.Selector.Version != 2 {
 		t.Fatalf("repaired: %+v", repaired)
+	}
+}
+
+// TestSelectBuiltinRefusesAReplacedSelectorRecord (review round 6, P1): a
+// selector deleted and recreated is a DIFFERENT record that starts again at
+// version 1. A caller holding the original's "version 1" must not match
+// it: the token is the record identity and the version together, or a
+// stale operator overwrites a selection they never read.
+func TestSelectBuiltinRefusesAReplacedSelectorRecord(t *testing.T) {
+	f := newFixture(t)
+	s := provisioningStore(t, f)
+	ctx := context.Background()
+
+	seeded, err := s.ProvisionOrganizationPromptPack(ctx, f.organizationID, packA(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := seeded.Record.Token()
+
+	// Another caller deletes the selector and recreates it, at version 1,
+	// naming pack C -- both supported configuration operations.
+	if err := s.DeleteConfigurationRecord(ctx, f.organizationID, stale.RecordID, stale.Version); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.InstallPromptPack(ctx, f.installInput(map[string]string{slotCoderSystem: "C {{.Story}}", slotCoderPlan: "C"}, "coder"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := s.CreateConfigurationRecord(ctx, store.CreateConfigurationRecordInput{
+		Value: selectorValue(t, c.Record.Content.ContentID), Key: store.PromptPackKey,
+		Scope:          store.ConfigScope{Type: configkeys.ScopeOrganization, ID: f.organizationID},
+		OrganizationID: f.organizationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Version != stale.Version || replacement.ID == stale.RecordID {
+		t.Fatalf("the replacement is record %s v%d; the scenario needs the same version on a different record", replacement.ID, replacement.Version)
+	}
+
+	// The stale operator, holding the ORIGINAL record's token.
+	_, err = s.SelectBuiltinPromptPack(ctx, f.organizationID, packB(t), stale)
+	if !errors.Is(err, store.ErrConfigurationConflict) {
+		t.Fatalf("err = %v, want ErrConfigurationConflict", err)
+	}
+	read, err := s.GetOrganizationPromptPackSelection(ctx, f.organizationID)
+	if err != nil || read.Pack.Content.ContentID != c.Record.Content.ContentID || read.Selector.Version != 1 {
+		t.Fatalf("selection %+v (%v), want the replacement's pack C untouched at version 1", read, err)
+	}
+
+	// The control: a caller who read the replacement moves it.
+	moved, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packB(t), read.Token())
+	if err != nil || !moved.Moved {
+		t.Fatalf("the control failed: %+v, %v", moved, err)
 	}
 }
 

@@ -87,6 +87,14 @@ func TestLoadRefusesWhatTheLayoutDoesNotName(t *testing.T) {
 		{"trailing content", func(f fstest.MapFS) {
 			f[ManifestFile] = &fstest.MapFile{Data: []byte(fixtureManifest + "\n{}")}
 		}, ErrLayout, "trailing content"},
+		// Unmatched closers: Decoder.More answers false at these, so a check
+		// built on it admits them (review round 6, P2).
+		{"trailing unmatched brace", func(f fstest.MapFS) {
+			f[ManifestFile] = &fstest.MapFile{Data: []byte(fixtureManifest + "}")}
+		}, ErrLayout, "trailing content"},
+		{"trailing unmatched bracket and text", func(f fstest.MapFS) {
+			f[ManifestFile] = &fstest.MapFile{Data: []byte(fixtureManifest + "] ignored text")}
+		}, ErrLayout, "trailing content"},
 		{"blank display name", func(f fstest.MapFS) {
 			f[ManifestFile] = &fstest.MapFile{Data: []byte(`{"display_name":" ","maestro_version":{"min":"v1","max":"v2"},"roles":[]}`)}
 		}, ErrLayout, "no display_name"},
