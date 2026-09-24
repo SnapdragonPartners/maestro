@@ -690,17 +690,24 @@ func (i *Importer) stopPrincipal(ctx context.Context, organizationID, instance u
 // happened at once, and every one of them would still be running — which is
 // the same MPH query above answering a question about the importer rather
 // than about the runs.
+//
+// The principal is FOREIGN (item 4 design, D5): the run happened outside the
+// plane, so its pack is recorded by name and by the digest the record
+// carried, under the v1 manifest scheme that produced it. The digest bytes
+// are stored as they are, sha256: prefix included -- that prefix is data
+// under the legacy scheme, and the scheme column is what says so.
 func (i *Importer) targetPrincipal(ctx context.Context, tx store.Tx, attempt *attemptContext) (uuid.UUID, error) {
 	mph := attempt.record.Target.MPH
-	agentType := targetAgentType
-	input := store.CreatePrincipalInstanceInput{
-		Kind:           store.PrincipalAgent,
-		Model:          mph.Model,
-		AgentType:      &agentType,
-		PromptPackID:   &mph.PromptPack,
-		PromptHash:     &mph.PromptHash,
+	input := store.RecordForeignAgentPrincipalInput{
+		Model:     mph.Model,
+		AgentType: targetAgentType,
+		Pack: store.ForeignPromptPack{
+			Name:   mph.PromptPack,
+			Scheme: store.PromptSchemeV1Manifest,
+			Digest: mph.PromptHash,
+		},
 		OrganizationID: attempt.organizationID,
-		Recorded: &store.RecordedLifetime{
+		Lifetime: store.RecordedLifetime{
 			// Non-nil on every validated record: validateTimestamps requires
 			// both, refuses the zero time, and refuses a finish that precedes
 			// its start.
@@ -715,9 +722,9 @@ func (i *Importer) targetPrincipal(ctx context.Context, tx store.Tx, attempt *at
 	if mph.MaestroVersion != "" {
 		input.MaestroVersion = &mph.MaestroVersion
 	}
-	instance, err := tx.CreatePrincipalInstance(ctx, input)
+	instance, err := tx.RecordForeignAgentPrincipal(ctx, input)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("create target principal for %s: %w", attempt.record.RunID, err)
+		return uuid.Nil, fmt.Errorf("record target principal for %s: %w", attempt.record.RunID, err)
 	}
 	return instance.PrincipalInstanceID, nil
 }

@@ -93,6 +93,25 @@ func (s *Store) CreatePrincipalInstance(ctx context.Context, input store.CreateP
 	})
 }
 
+// RecordForeignAgentPrincipal writes an imported agent with its seeding set.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface (see artifacts.go)
+func (s *Store) RecordForeignAgentPrincipal(ctx context.Context, input store.RecordForeignAgentPrincipalInput) (*store.PrincipalInstance, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PrincipalInstance, error) {
+		return t.RecordForeignAgentPrincipal(ctx, input)
+	})
+}
+
+// CreateDispatchedPrincipalInstance writes a live agent under an execution
+// with its seeding set.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface (see artifacts.go)
+func (s *Store) CreateDispatchedPrincipalInstance(ctx context.Context, input store.CreateDispatchedPrincipalInput) (*store.PrincipalInstance, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PrincipalInstance, error) {
+		return t.CreateDispatchedPrincipalInstance(ctx, input)
+	})
+}
+
 // StopPrincipalInstance records a stop, once only.
 func (s *Store) StopPrincipalInstance(ctx context.Context, organizationID, instanceID uuid.UUID, reason string) (store.StopOutcome, error) {
 	return inTx(ctx, s, func(t *tx) (store.StopOutcome, error) {

@@ -478,14 +478,13 @@ func TestAuthorKindBackstopFiresInSQL(t *testing.T) {
 func TestPrincipalIdentifiersAreUUIDv7(t *testing.T) {
 	f := newFixture(t)
 
-	instance, err := f.store.CreatePrincipalInstance(context.Background(), f.agentInput())
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	// Every writer allocates its own identifier, so every writer is checked:
+	// the live path here, the foreign and general paths through the
+	// fixture's principals below.
+	instance := f.dispatchedAgent(t)
 	if got := instance.PrincipalInstanceID.Version(); got != 7 {
-		t.Fatalf("principal instance id is UUID version %d, want 7", got)
+		t.Fatalf("dispatched principal instance id is UUID version %d, want 7", got)
 	}
-	// The fixture's own principals go through the same path.
 	for name, id := range map[string]uuid.UUID{"author": f.author, "reviewer": f.reviewer, "system": f.systemAgent} {
 		if got := id.Version(); got != 7 {
 			t.Errorf("%s principal id is UUID version %d, want 7", name, got)

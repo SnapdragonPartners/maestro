@@ -45,27 +45,105 @@ func (q *Queries) AddPrincipalInstanceInput(ctx context.Context, arg AddPrincipa
 	return i, err
 }
 
+const createDispatchedPrincipalInstance = `-- name: CreateDispatchedPrincipalInstance :one
+INSERT INTO principal_instances (
+    principal_instance_id, organization_id, kind, model, agent_type,
+    prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_hash,
+    prompt_pack_content_id, prompt_pack_installation_id,
+    prompt_pack_installation_revision, prompt_pack_metadata_snapshot,
+    harness_config_hash, maestro_version,
+    product_id, feature_id, epic_id, story_id
+)
+SELECT $1, e.organization_id, 'agent', $2, $3,
+       'resolved', r.resolved_name, r.scheme, r.digest,
+       r.content_id, r.installation_id,
+       r.installation_revision, r.metadata_snapshot,
+       $4, $5,
+       e.product_id, e.feature_id, e.epic_id, e.story_id
+  FROM executions e
+  JOIN dispatch_prompt_resolutions r
+    ON r.story_dispatch_id = e.story_dispatch_id
+   AND r.organization_id   = e.organization_id
+ WHERE e.execution_id    = $6
+   AND e.organization_id = $7
+RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
+`
+
+type CreateDispatchedPrincipalInstanceParams struct {
+	PrincipalInstanceID pgtype.UUID
+	Model               string
+	AgentType           *string
+	HarnessConfigHash   *string
+	MaestroVersion      *string
+	ExecutionID         pgtype.UUID
+	OrganizationID      pgtype.UUID
+}
+
+// The live path: an agent starting under an execution. The pack columns and
+// the lineage are SELECTED from the execution and its dispatch's persisted
+// resolution, never supplied -- the copy is a fact of this statement, so no
+// caller and no seam code holds a pack field it could substitute. Name,
+// revision and snapshot come from the RESOLUTION row and never from the
+// installation: they record what the installation said when the dispatch was
+// decided, and after a later installation update they legitimately differ
+// from it (design D5).
+//
+// Zero rows means the execution is absent from the organization, or has no
+// resolution; the seam reads the execution first so it can tell which.
+func (q *Queries) CreateDispatchedPrincipalInstance(ctx context.Context, arg CreateDispatchedPrincipalInstanceParams) (PrincipalInstance, error) {
+	row := q.db.QueryRow(ctx, createDispatchedPrincipalInstance,
+		arg.PrincipalInstanceID,
+		arg.Model,
+		arg.AgentType,
+		arg.HarnessConfigHash,
+		arg.MaestroVersion,
+		arg.ExecutionID,
+		arg.OrganizationID,
+	)
+	var i PrincipalInstance
+	err := row.Scan(
+		&i.PrincipalInstanceID,
+		&i.OrganizationID,
+		&i.Kind,
+		&i.Model,
+		&i.AgentType,
+		&i.PromptHash,
+		&i.HarnessConfigHash,
+		&i.MaestroVersion,
+		&i.UserID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.ProductID,
+		&i.StartTime,
+		&i.StopTime,
+		&i.StopReason,
+		&i.PromptPackOrigin,
+		&i.PromptPackName,
+		&i.PromptPackScheme,
+		&i.PromptPackContentID,
+		&i.PromptPackInstallationID,
+		&i.PromptPackInstallationRevision,
+		&i.PromptPackMetadataSnapshot,
+	)
+	return i, err
+}
+
 const createPrincipalInstance = `-- name: CreatePrincipalInstance :one
+
 
 INSERT INTO principal_instances (
     principal_instance_id, organization_id, kind, model,
-    agent_type, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme,
-    prompt_hash, harness_config_hash,
-    maestro_version, user_id,
+    harness_config_hash, maestro_version, user_id,
     product_id, feature_id, epic_id, story_id,
     start_time, stop_time, stop_reason
 ) VALUES (
     $1, $2, $3, $4,
-    $5,
-    CASE WHEN $3::text = 'agent' THEN 'foreign' END,
-    $6,
-    CASE WHEN $3::text = 'agent' THEN 'v1-manifest-sha256' END,
-    $7, $8,
-    $9, $10,
-    $11, $12, $13, $14,
-    COALESCE($15::timestamptz, now()),
-    $16::timestamptz,
-    $17
+    $5, $6, $7,
+    $8, $9, $10, $11,
+    COALESCE($12::timestamptz, now()),
+    $13::timestamptz,
+    $14
 )
 RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
 `
@@ -75,9 +153,6 @@ type CreatePrincipalInstanceParams struct {
 	OrganizationID      pgtype.UUID
 	Kind                string
 	Model               string
-	AgentType           *string
-	PromptPackID        *string
-	PromptHash          *string
 	HarnessConfigHash   *string
 	MaestroVersion      *string
 	UserID              pgtype.UUID
@@ -102,21 +177,21 @@ type CreatePrincipalInstanceParams struct {
 // together -- means a half-supplied pair is refused by the database as well
 // as by the seam.
 //
-// TRANSITIONAL after migration 000023 (item 4, implementation step 3): the
-// one column prompt_pack_id became an origin, a name and a scheme. Until
-// step 8 splits this into the three writers design D5 names, an agent written
-// here is recorded in the FOREIGN shape -- which is the only shape its sole
-// caller, the benchmark importer, has ever written. Step 8 removes the
-// derivation from this statement.
+// Three writers, one per shape of the prompt-pack columns, and the ORIGIN is
+// a literal in each statement rather than a parameter of any (item 4 design,
+// D5): a discriminator a caller can set is one a caller can set wrong. The
+// schema's shape constraint refuses a row that names a shape its writer does
+// not produce, so each statement below can only ever write its own.
+// The general path: humans and system principals. No agent_type and no pack
+// columns, so an agent cannot be written here even by a seam that forgot to
+// refuse it -- the shape constraint requires all four identity columns on an
+// agent row and this statement supplies none.
 func (q *Queries) CreatePrincipalInstance(ctx context.Context, arg CreatePrincipalInstanceParams) (PrincipalInstance, error) {
 	row := q.db.QueryRow(ctx, createPrincipalInstance,
 		arg.PrincipalInstanceID,
 		arg.OrganizationID,
 		arg.Kind,
 		arg.Model,
-		arg.AgentType,
-		arg.PromptPackID,
-		arg.PromptHash,
 		arg.HarnessConfigHash,
 		arg.MaestroVersion,
 		arg.UserID,
@@ -438,6 +513,93 @@ type LockPrincipalInstanceParams struct {
 // instance that has one.
 func (q *Queries) LockPrincipalInstance(ctx context.Context, arg LockPrincipalInstanceParams) (PrincipalInstance, error) {
 	row := q.db.QueryRow(ctx, lockPrincipalInstance, arg.PrincipalInstanceID, arg.OrganizationID)
+	var i PrincipalInstance
+	err := row.Scan(
+		&i.PrincipalInstanceID,
+		&i.OrganizationID,
+		&i.Kind,
+		&i.Model,
+		&i.AgentType,
+		&i.PromptHash,
+		&i.HarnessConfigHash,
+		&i.MaestroVersion,
+		&i.UserID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.ProductID,
+		&i.StartTime,
+		&i.StopTime,
+		&i.StopReason,
+		&i.PromptPackOrigin,
+		&i.PromptPackName,
+		&i.PromptPackScheme,
+		&i.PromptPackContentID,
+		&i.PromptPackInstallationID,
+		&i.PromptPackInstallationRevision,
+		&i.PromptPackMetadataSnapshot,
+	)
+	return i, err
+}
+
+const recordForeignAgentPrincipal = `-- name: RecordForeignAgentPrincipal :one
+INSERT INTO principal_instances (
+    principal_instance_id, organization_id, kind, model, agent_type,
+    prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_hash,
+    harness_config_hash, maestro_version,
+    product_id, feature_id, epic_id, story_id,
+    start_time, stop_time, stop_reason
+) VALUES (
+    $1, $2, 'agent', $3, $4,
+    'foreign', $5, $6, $7,
+    $8, $9,
+    $10, $11, $12, $13,
+    $14, $15, $16
+)
+RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
+`
+
+type RecordForeignAgentPrincipalParams struct {
+	PrincipalInstanceID pgtype.UUID
+	OrganizationID      pgtype.UUID
+	Model               string
+	AgentType           *string
+	PromptPackName      *string
+	PromptPackScheme    *string
+	PromptHash          *string
+	HarnessConfigHash   *string
+	MaestroVersion      *string
+	ProductID           pgtype.UUID
+	FeatureID           pgtype.UUID
+	EpicID              pgtype.UUID
+	StoryID             pgtype.UUID
+	StartTime           pgtype.Timestamptz
+	StopTime            pgtype.Timestamptz
+	StopReason          *string
+}
+
+// The import path: an agent that ran outside the plane. Its lifetime is
+// already over, so start, stop and reason are all required here, and its
+// pack is a name and a legacy-scheme digest with no plane-owned reference.
+func (q *Queries) RecordForeignAgentPrincipal(ctx context.Context, arg RecordForeignAgentPrincipalParams) (PrincipalInstance, error) {
+	row := q.db.QueryRow(ctx, recordForeignAgentPrincipal,
+		arg.PrincipalInstanceID,
+		arg.OrganizationID,
+		arg.Model,
+		arg.AgentType,
+		arg.PromptPackName,
+		arg.PromptPackScheme,
+		arg.PromptHash,
+		arg.HarnessConfigHash,
+		arg.MaestroVersion,
+		arg.ProductID,
+		arg.FeatureID,
+		arg.EpicID,
+		arg.StoryID,
+		arg.StartTime,
+		arg.StopTime,
+		arg.StopReason,
+	)
 	var i PrincipalInstance
 	err := row.Scan(
 		&i.PrincipalInstanceID,

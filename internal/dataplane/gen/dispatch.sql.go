@@ -94,6 +94,34 @@ func (q *Queries) GetDispatchPromptResolution(ctx context.Context, arg GetDispat
 	return i, err
 }
 
+const getExecution = `-- name: GetExecution :one
+SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at FROM executions WHERE organization_id = $1 AND execution_id = $2
+`
+
+type GetExecutionParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+func (q *Queries) GetExecution(ctx context.Context, arg GetExecutionParams) (Execution, error) {
+	row := q.db.QueryRow(ctx, getExecution, arg.OrganizationID, arg.ExecutionID)
+	var i Execution
+	err := row.Scan(
+		&i.ExecutionID,
+		&i.OrganizationID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.StoryDispatchID,
+		&i.DispatchIsAccepted,
+		&i.AuthorityState,
+		&i.AdmissionClosedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getExecutionByDispatch = `-- name: GetExecutionByDispatch :one
 SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at FROM executions WHERE organization_id = $1 AND story_dispatch_id = $2
 `

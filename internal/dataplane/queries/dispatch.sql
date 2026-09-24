@@ -86,6 +86,9 @@ RETURNING *;
 -- name: GetExecutionByDispatch :one
 SELECT * FROM executions WHERE organization_id = $1 AND story_dispatch_id = $2;
 
+-- name: GetExecution :one
+SELECT * FROM executions WHERE organization_id = $1 AND execution_id = $2;
+
 -- The resolution beside the dispatch (item 4 design, D8). Insertion is
 -- parent-first: the dispatch names its resolution id first, under the
 -- DEFERRED reciprocal key, and this row -- whose reference to the dispatch is

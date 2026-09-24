@@ -901,6 +901,7 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 		t.Fatalf("prompt hash names %d instances, want one per imported attempt (%d)",
 			len(found), len(result.Attempts))
 	}
+	wantName := baseRecord(t)["target"].(map[string]any)["mph"].(map[string]any)["prompt_pack"].(string) //nolint:forcetypeassert // the control corpus record, read the way the record decoder reads it
 	for i := range found {
 		if found[i].Kind != store.PrincipalAgent {
 			t.Errorf("instance %s is a %s principal; the configuration under test is an agent",
@@ -909,6 +910,19 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 		if found[i].AgentType == nil || *found[i].AgentType != "benchmark-target" {
 			t.Errorf("instance %s carries agent type %v, want benchmark-target",
 				found[i].PrincipalInstanceID, found[i].AgentType)
+		}
+		// The importer writes the FOREIGN shape (item 4 design, D5): the
+		// record's name and digest as carried, no plane-owned reference.
+		pack := found[i].PromptPack
+		switch {
+		case pack == nil:
+			t.Errorf("instance %s carries no prompt pack", found[i].PrincipalInstanceID)
+		case pack.Origin != store.PromptPackOriginForeign || pack.Resolution != nil:
+			t.Errorf("instance %s has origin %q with resolution %v; an import is foreign with no reference",
+				found[i].PrincipalInstanceID, pack.Origin, pack.Resolution)
+		case pack.Name != wantName || pack.Identity != legacy:
+			t.Errorf("instance %s recorded pack %q %+v, want the record's %q %+v",
+				found[i].PrincipalInstanceID, pack.Name, pack.Identity, wantName, legacy)
 		}
 	}
 	// The importer answers a different question and must not be swept in by

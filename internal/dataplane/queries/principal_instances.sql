@@ -11,33 +11,83 @@
 -- together -- means a half-supplied pair is refused by the database as well
 -- as by the seam.
 --
--- TRANSITIONAL after migration 000023 (item 4, implementation step 3): the
--- one column prompt_pack_id became an origin, a name and a scheme. Until
--- step 8 splits this into the three writers design D5 names, an agent written
--- here is recorded in the FOREIGN shape -- which is the only shape its sole
--- caller, the benchmark importer, has ever written. Step 8 removes the
--- derivation from this statement.
+-- Three writers, one per shape of the prompt-pack columns, and the ORIGIN is
+-- a literal in each statement rather than a parameter of any (item 4 design,
+-- D5): a discriminator a caller can set is one a caller can set wrong. The
+-- schema's shape constraint refuses a row that names a shape its writer does
+-- not produce, so each statement below can only ever write its own.
+
+-- The general path: humans and system principals. No agent_type and no pack
+-- columns, so an agent cannot be written here even by a seam that forgot to
+-- refuse it -- the shape constraint requires all four identity columns on an
+-- agent row and this statement supplies none.
 -- name: CreatePrincipalInstance :one
 INSERT INTO principal_instances (
     principal_instance_id, organization_id, kind, model,
-    agent_type, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme,
-    prompt_hash, harness_config_hash,
-    maestro_version, user_id,
+    harness_config_hash, maestro_version, user_id,
     product_id, feature_id, epic_id, story_id,
     start_time, stop_time, stop_reason
 ) VALUES (
     @principal_instance_id, @organization_id, @kind, @model,
-    @agent_type,
-    CASE WHEN @kind::text = 'agent' THEN 'foreign' END,
-    @prompt_pack_id,
-    CASE WHEN @kind::text = 'agent' THEN 'v1-manifest-sha256' END,
-    @prompt_hash, @harness_config_hash,
-    @maestro_version, @user_id,
+    @harness_config_hash, @maestro_version, @user_id,
     @product_id, @feature_id, @epic_id, @story_id,
     COALESCE(sqlc.narg('start_time')::timestamptz, now()),
     sqlc.narg('stop_time')::timestamptz,
     sqlc.narg('stop_reason')
 )
+RETURNING *;
+
+-- The import path: an agent that ran outside the plane. Its lifetime is
+-- already over, so start, stop and reason are all required here, and its
+-- pack is a name and a legacy-scheme digest with no plane-owned reference.
+-- name: RecordForeignAgentPrincipal :one
+INSERT INTO principal_instances (
+    principal_instance_id, organization_id, kind, model, agent_type,
+    prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_hash,
+    harness_config_hash, maestro_version,
+    product_id, feature_id, epic_id, story_id,
+    start_time, stop_time, stop_reason
+) VALUES (
+    @principal_instance_id, @organization_id, 'agent', @model, @agent_type,
+    'foreign', @prompt_pack_name, @prompt_pack_scheme, @prompt_hash,
+    @harness_config_hash, @maestro_version,
+    @product_id, @feature_id, @epic_id, @story_id,
+    @start_time, @stop_time, @stop_reason
+)
+RETURNING *;
+
+-- The live path: an agent starting under an execution. The pack columns and
+-- the lineage are SELECTED from the execution and its dispatch's persisted
+-- resolution, never supplied -- the copy is a fact of this statement, so no
+-- caller and no seam code holds a pack field it could substitute. Name,
+-- revision and snapshot come from the RESOLUTION row and never from the
+-- installation: they record what the installation said when the dispatch was
+-- decided, and after a later installation update they legitimately differ
+-- from it (design D5).
+--
+-- Zero rows means the execution is absent from the organization, or has no
+-- resolution; the seam reads the execution first so it can tell which.
+-- name: CreateDispatchedPrincipalInstance :one
+INSERT INTO principal_instances (
+    principal_instance_id, organization_id, kind, model, agent_type,
+    prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_hash,
+    prompt_pack_content_id, prompt_pack_installation_id,
+    prompt_pack_installation_revision, prompt_pack_metadata_snapshot,
+    harness_config_hash, maestro_version,
+    product_id, feature_id, epic_id, story_id
+)
+SELECT @principal_instance_id, e.organization_id, 'agent', @model, @agent_type,
+       'resolved', r.resolved_name, r.scheme, r.digest,
+       r.content_id, r.installation_id,
+       r.installation_revision, r.metadata_snapshot,
+       @harness_config_hash, @maestro_version,
+       e.product_id, e.feature_id, e.epic_id, e.story_id
+  FROM executions e
+  JOIN dispatch_prompt_resolutions r
+    ON r.story_dispatch_id = e.story_dispatch_id
+   AND r.organization_id   = e.organization_id
+ WHERE e.execution_id    = @execution_id
+   AND e.organization_id = @organization_id
 RETURNING *;
 
 -- name: GetPrincipalInstance :one

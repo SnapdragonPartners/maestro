@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -221,16 +222,16 @@ func seedCrossStore(t *testing.T, cfg *Config) crossStoreSeed {
 	}
 	userID := operator.Record.UserID
 
-	agentType := "coder"
-	// Since 000023 an agent always carries a prompt identity; this path
-	// records the foreign shape (item 4 design, D5).
-	packName, promptHash := "fixture", "sha256:"+strings.Repeat("a", 64)
-	author, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
-		Kind:           store.PrincipalAgent,
-		Model:          "fixture-model",
-		AgentType:      &agentType,
-		PromptPackID:   &packName,
-		PromptHash:     &promptHash,
+	// The author only needs an identity, so it is recorded as a foreign
+	// import with a closed lifetime: the general path admits no agent, and
+	// a live agent exists only under an execution (item 4 design, D5).
+	author, err := seam.RecordForeignAgentPrincipal(ctx, store.RecordForeignAgentPrincipalInput{
+		Model:     "fixture-model",
+		AgentType: "coder",
+		Pack: store.ForeignPromptPack{
+			Name: "fixture", Scheme: store.PromptSchemeV1Manifest, Digest: "sha256:" + strings.Repeat("a", 64),
+		},
+		Lifetime:       store.RecordedLifetime{StartTime: time.Now().Add(-time.Hour), StopTime: time.Now(), StopReason: "fixture"},
 		OrganizationID: seed.OrganizationID,
 	})
 	if err != nil {

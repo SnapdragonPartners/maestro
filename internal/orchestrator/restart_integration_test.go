@@ -169,16 +169,17 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 	ids.User = user.Record.UserID
 	for _, p := range []struct {
 		out  *uuid.UUID
-		kind store.PrincipalKind
 		name string
-	}{{&ids.Author, store.PrincipalAgent, "author"}, {&ids.Reviewer, store.PrincipalAgent, "reviewer"}} {
-		agentType := "restart-harness"
-		// Since 000023 an agent always carries a prompt identity; until
-		// step 8's dispatched-principal path these are recorded foreign.
-		packName, promptHash := "fixture", "sha256:"+strings.Repeat("a", 64)
-		instance, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
-			Kind: p.kind, Model: "restart-" + p.name, AgentType: &agentType, OrganizationID: ids.Organization,
-			PromptPackID: &packName, PromptHash: &promptHash,
+	}{{&ids.Author, "author"}, {&ids.Reviewer, "reviewer"}} {
+		// These principals only author and review artifacts, so they are
+		// recorded as foreign imports with closed lifetimes: the general path
+		// admits no agent, and a live agent exists only under an execution
+		// (item 4 design, D5). The harness's dispatches are created below
+		// with no principal starting under them.
+		instance, err := seam.RecordForeignAgentPrincipal(ctx, store.RecordForeignAgentPrincipalInput{
+			Model: "restart-" + p.name, AgentType: "restart-harness", OrganizationID: ids.Organization,
+			Pack:     store.ForeignPromptPack{Name: "fixture", Scheme: store.PromptSchemeV1Manifest, Digest: "sha256:" + strings.Repeat("a", 64)},
+			Lifetime: store.RecordedLifetime{StartTime: time.Now().Add(-time.Hour), StopTime: time.Now(), StopReason: "fixture"},
 		})
 		if err != nil {
 			return ids, fmt.Errorf("principal %s: %w", p.name, err)

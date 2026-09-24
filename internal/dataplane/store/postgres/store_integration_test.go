@@ -167,40 +167,28 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) newPrincipal(t *testing.T, kind store.PrincipalKind, model string) uuid.UUID {
 	t.Helper()
-	input := store.CreatePrincipalInstanceInput{
-		Kind:           kind,
-		Model:          model,
-		OrganizationID: f.organizationID,
-	}
-	// The schema requires agent_type exactly when kind is 'agent'.
-	if kind == store.PrincipalAgent {
-		agentType := "coder"
-		input.AgentType = &agentType
-		// Since 000023 an agent always carries a prompt identity, and this
-		// path records the foreign shape (item 4 design, D5).
-		packName, promptHash := fixturePackName, fixturePromptHash
-		input.PromptPackID, input.PromptHash = &packName, &promptHash
-	}
-	instance, err := f.store.CreatePrincipalInstance(context.Background(), input)
-	if err != nil {
-		t.Fatalf("create %s principal: %v", kind, err)
-	}
-	return instance.PrincipalInstanceID
+	return f.newPrincipalIn(t, f.organizationID, kind, model)
 }
 
 // newPrincipalIn creates a principal in a named organization.
+//
+// The fixture's agents only author and review artifacts, so they are
+// recorded as FOREIGN imports with a closed lifetime: the general path
+// admits no agent, and a live agent exists only under an execution (item 4
+// design, D5). A test that needs a live agent uses dispatchedAgent.
 func (f *fixture) newPrincipalIn(t *testing.T, org uuid.UUID, kind store.PrincipalKind, model string) uuid.UUID {
 	t.Helper()
-	input := store.CreatePrincipalInstanceInput{Kind: kind, Model: model, OrganizationID: org}
+	ctx := context.Background()
 	if kind == store.PrincipalAgent {
-		agentType := "coder"
-		input.AgentType = &agentType
-		// Since 000023 an agent always carries a prompt identity, and this
-		// path records the foreign shape (item 4 design, D5).
-		packName, promptHash := fixturePackName, fixturePromptHash
-		input.PromptPackID, input.PromptHash = &packName, &promptHash
+		input := f.foreignInput()
+		input.Model, input.OrganizationID = model, org
+		instance, err := f.store.RecordForeignAgentPrincipal(ctx, input)
+		if err != nil {
+			t.Fatalf("record foreign agent principal in %s: %v", org, err)
+		}
+		return instance.PrincipalInstanceID
 	}
-	instance, err := f.store.CreatePrincipalInstance(context.Background(), input)
+	instance, err := f.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{Kind: kind, Model: model, OrganizationID: org})
 	if err != nil {
 		t.Fatalf("create %s principal in %s: %v", kind, org, err)
 	}
@@ -278,67 +266,87 @@ func (f *fixture) principalFor(org uuid.UUID) uuid.UUID {
 	return f.otherAuthor
 }
 
-// agentInput builds a valid agent instance input, so tests that are not
-// about the kind/field rules do not have to restate them.
-func (f *fixture) agentInput() store.CreatePrincipalInstanceInput {
-	agentType := "coder"
-	packName, promptHash := fixturePackName, fixturePromptHash
-	return store.CreatePrincipalInstanceInput{
-		Kind:           store.PrincipalAgent,
+// foreignInput builds a valid foreign-agent input, so tests that are not
+// about the verb's own rules do not have to restate them.
+func (f *fixture) foreignInput() store.RecordForeignAgentPrincipalInput {
+	return store.RecordForeignAgentPrincipalInput{
 		Model:          "m",
-		AgentType:      &agentType,
-		PromptPackID:   &packName,
-		PromptHash:     &promptHash,
+		AgentType:      "coder",
+		Pack:           store.ForeignPromptPack{Name: fixturePackName, Scheme: store.PromptSchemeV1Manifest, Digest: fixturePromptHash},
+		Lifetime:       fixtureLifetime,
 		OrganizationID: f.organizationID,
 	}
 }
 
-func strPtr(s string) *string { return &s }
+// dispatchedInput provisions a governed hierarchy, dispatches and accepts
+// its Story, and returns an input for a live agent under that execution.
+// This is the ONLY way a live agent principal comes to exist (item 4
+// design, D5), so a test that needs one pays for the dispatch.
+func (f *fixture) dispatchedInput(t *testing.T) store.CreateDispatchedPrincipalInput {
+	t.Helper()
+	ctx := context.Background()
+	g := provisionGoverned(t, f)
+	dispatch, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	execution, err := f.store.AcceptDispatch(ctx, f.organizationID, dispatch.StoryDispatchID)
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	return store.CreateDispatchedPrincipalInput{
+		Model: "m", AgentType: "coder", ExecutionID: execution.ExecutionID, OrganizationID: f.organizationID,
+	}
+}
 
-// The legacy prompt identity every agent fixture carries: since 000023 an
-// agent principal always has one, and the general creation path records
-// the foreign shape (item 4 design, D5).
+// dispatchedAgent is dispatchedInput written: a live agent under a fresh
+// execution.
+func (f *fixture) dispatchedAgent(t *testing.T) *store.PrincipalInstance {
+	t.Helper()
+	instance, err := f.store.CreateDispatchedPrincipalInstance(context.Background(), f.dispatchedInput(t))
+	if err != nil {
+		t.Fatalf("create dispatched agent: %v", err)
+	}
+	return instance
+}
+
+// The legacy prompt identity every foreign agent fixture carries (item 4
+// design, D5), and the closed lifetime that makes it an import.
 const (
 	fixturePackName   = "fixture"
 	fixturePromptHash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 )
 
-// TestPrincipalKindFieldRulesAreEnforcedAtTheSeam covers the schema's two
-// biconditional constraints from both directions. The seam checks them so a
-// caller reads which field it omitted rather than a constraint name.
+var fixtureLifetime = store.RecordedLifetime{
+	StartTime:  time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC),
+	StopTime:   time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC),
+	StopReason: "fixture",
+}
+
+// TestPrincipalKindFieldRulesAreEnforcedAtTheSeam covers the general path's
+// rules: the schema's human/user biconditional from both directions, and
+// the refusal of agents outright (item 4 design, D5).
+//
+// THE MUTANT for the agent case: let CreatePrincipalInstance accept
+// kind = 'agent'. Its statement writes no pack columns, so the database
+// would refuse the row on the shape constraint -- and the assertion below
+// that the refusal carries no SQLSTATE is what distinguishes the seam's
+// partition from the schema's backstop.
+//
+// Cases the previous shape of this test carried -- an agent type on a
+// human, a prompt identity on a system principal -- are gone because the
+// fields are gone: the input carries neither, so they cannot be asked.
 func TestPrincipalKindFieldRulesAreEnforcedAtTheSeam(t *testing.T) {
 	f := newFixture(t)
-	agentType := "coder"
 
 	cases := []struct {
 		name  string
 		input store.CreatePrincipalInstanceInput
 	}{
-		{"agent without an agent type", store.CreatePrincipalInstanceInput{
+		{"agent through the general path", store.CreatePrincipalInstanceInput{
 			Kind: store.PrincipalAgent, Model: "m", OrganizationID: f.organizationID}},
-		{"agent carrying a user id", store.CreatePrincipalInstanceInput{
-			Kind: store.PrincipalAgent, Model: "m", AgentType: &agentType, UserID: &f.userID, OrganizationID: f.organizationID}},
-		{"agent without a prompt identity", func() store.CreatePrincipalInstanceInput {
-			in := f.agentInput()
-			in.PromptPackID, in.PromptHash = nil, nil
-			return in
-		}()},
-		{"agent with a bare-hex prompt hash", func() store.CreatePrincipalInstanceInput {
-			in := f.agentInput()
-			bare := strings.TrimPrefix(fixturePromptHash, "sha256:")
-			in.PromptHash = &bare
-			return in
-		}()},
-		{"human carrying a prompt identity", store.CreatePrincipalInstanceInput{
-			Kind: store.PrincipalHuman, Model: "m", UserID: &f.userID, PromptHash: strPtr(fixturePromptHash), OrganizationID: f.organizationID}},
-		{"system carrying a prompt identity", store.CreatePrincipalInstanceInput{
-			Kind: store.PrincipalSystem, Model: "m", PromptPackID: strPtr(fixturePackName), OrganizationID: f.organizationID}},
 		{"human without a user id", store.CreatePrincipalInstanceInput{
 			Kind: store.PrincipalHuman, Model: "m", OrganizationID: f.organizationID}},
-		{"human carrying an agent type", store.CreatePrincipalInstanceInput{
-			Kind: store.PrincipalHuman, Model: "m", AgentType: &agentType, UserID: &f.userID, OrganizationID: f.organizationID}},
-		{"system carrying an agent type", store.CreatePrincipalInstanceInput{
-			Kind: store.PrincipalSystem, Model: "m", AgentType: &agentType, OrganizationID: f.organizationID}},
 		{"system carrying a user id", store.CreatePrincipalInstanceInput{
 			Kind: store.PrincipalSystem, Model: "m", UserID: &f.userID, OrganizationID: f.organizationID}},
 		{"unknown kind", store.CreatePrincipalInstanceInput{
@@ -959,15 +967,15 @@ func TestInstanceAndSeedsAreAtomic(t *testing.T) {
 
 	artifact := acceptedOriginal(t, f, `{"title":"seed"}`)
 
+	seeded := f.dispatchedInput(t)
 	before := f.countInstances(t)
-	seeded := f.agentInput()
 	seeded.Seeds = []store.SeedInput{
 		{ArtifactID: artifact.ArtifactID, SeededDigest: artifact.PayloadDigest},
 		// A seed naming an artifact that does not exist, so the write
 		// fails partway through.
 		{ArtifactID: uuid.New(), SeededDigest: "deadbeef"},
 	}
-	_, err := f.store.CreatePrincipalInstance(ctx, seeded)
+	_, err := f.store.CreateDispatchedPrincipalInstance(ctx, seeded)
 	if err == nil {
 		t.Fatal("expected the second seed to fail")
 	}
@@ -991,9 +999,9 @@ func TestSeedsRecordTheDigestAsSeeded(t *testing.T) {
 	ctx := context.Background()
 
 	artifact := acceptedOriginal(t, f, `{"title":"seed"}`)
-	withSeed := f.agentInput()
+	withSeed := f.dispatchedInput(t)
 	withSeed.Seeds = []store.SeedInput{{ArtifactID: artifact.ArtifactID, SeededDigest: artifact.PayloadDigest}}
-	instance, err := f.store.CreatePrincipalInstance(ctx, withSeed)
+	instance, err := f.store.CreateDispatchedPrincipalInstance(ctx, withSeed)
 	if err != nil {
 		t.Fatalf("create instance: %v", err)
 	}
@@ -1017,10 +1025,7 @@ func TestStopIsOnceOnlyAndIdempotent(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
-	instance, err := f.store.CreatePrincipalInstance(ctx, f.agentInput())
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	instance := f.dispatchedAgent(t)
 
 	first, err := f.store.StopPrincipalInstance(ctx, f.organizationID, instance.PrincipalInstanceID, "panic: nil map write")
 	if err != nil {
@@ -1061,45 +1066,59 @@ func TestRecordedLifetimeIsStoredWhole(t *testing.T) {
 
 	started := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
 	stopped := time.Date(2026, 3, 1, 9, 30, 0, 0, time.UTC)
-	input := f.agentInput()
-	input.Recorded = &store.RecordedLifetime{
-		StartTime: started, StopTime: stopped, StopReason: "failed: checks-failed",
-	}
+	lifetime := store.RecordedLifetime{StartTime: started, StopTime: stopped, StopReason: "failed: checks-failed"}
 
-	created, err := f.store.CreatePrincipalInstance(ctx, input)
-	if err != nil {
-		t.Fatalf("create with a recorded lifetime: %v", err)
-	}
-	// Read back rather than trusting the returned struct: the question is
-	// what the DATABASE holds.
-	stored, err := f.store.GetPrincipalInstance(ctx, f.organizationID, created.PrincipalInstanceID)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if !stored.StartTime.Equal(started) {
-		t.Errorf("start_time = %s, want the supplied %s", stored.StartTime, started)
-	}
-	switch {
-	case stored.StopTime == nil:
-		t.Error("stop_time is null; the instance was created for a lifetime that had already ended")
-	case !stored.StopTime.Equal(stopped):
-		t.Errorf("stop_time = %s, want the supplied %s", stored.StopTime, stopped)
-	}
-	switch {
-	case stored.StopReason == nil:
-		t.Error("stop_reason is null")
-	case *stored.StopReason != "failed: checks-failed":
-		t.Errorf("stop_reason = %q, want the supplied one", *stored.StopReason)
-	}
+	// Both verbs that accept a recorded lifetime, because each has its own
+	// INSERT and either could default a start to now().
+	for name, create := range map[string]func() (*store.PrincipalInstance, error){
+		"system principal": func() (*store.PrincipalInstance, error) {
+			return f.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
+				Kind: store.PrincipalSystem, Model: "m", OrganizationID: f.organizationID, Recorded: &lifetime,
+			})
+		},
+		"foreign agent": func() (*store.PrincipalInstance, error) {
+			input := f.foreignInput()
+			input.Lifetime = lifetime
+			return f.store.RecordForeignAgentPrincipal(ctx, input)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			created, err := create()
+			if err != nil {
+				t.Fatalf("create with a recorded lifetime: %v", err)
+			}
+			// Read back rather than trusting the returned struct: the
+			// question is what the DATABASE holds.
+			stored, err := f.store.GetPrincipalInstance(ctx, f.organizationID, created.PrincipalInstanceID)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			if !stored.StartTime.Equal(started) {
+				t.Errorf("start_time = %s, want the supplied %s", stored.StartTime, started)
+			}
+			switch {
+			case stored.StopTime == nil:
+				t.Error("stop_time is null; the instance was created for a lifetime that had already ended")
+			case !stored.StopTime.Equal(stopped):
+				t.Errorf("stop_time = %s, want the supplied %s", stored.StopTime, stopped)
+			}
+			switch {
+			case stored.StopReason == nil:
+				t.Error("stop_reason is null")
+			case *stored.StopReason != "failed: checks-failed":
+				t.Errorf("stop_reason = %q, want the supplied one", *stored.StopReason)
+			}
 
-	// Already closed, so stopping it again records nothing — the same
-	// once-only rule an ordinary instance follows.
-	outcome, err := f.store.StopPrincipalInstance(ctx, f.organizationID, created.PrincipalInstanceID, "later")
-	if err != nil {
-		t.Fatalf("stop an already-closed instance: %v", err)
-	}
-	if outcome.Recorded {
-		t.Error("stopping a recorded lifetime overwrote it; the instance was closed when it was created")
+			// Already closed, so stopping it again records nothing -- the
+			// same once-only rule an ordinary instance follows.
+			outcome, err := f.store.StopPrincipalInstance(ctx, f.organizationID, created.PrincipalInstanceID, "later")
+			if err != nil {
+				t.Fatalf("stop an already-closed instance: %v", err)
+			}
+			if outcome.Recorded {
+				t.Error("stopping a recorded lifetime overwrote it; the instance was closed when it was created")
+			}
+		})
 	}
 }
 
@@ -1130,16 +1149,28 @@ func TestRecordedLifetimeIsValidatedAtTheSeam(t *testing.T) {
 		{"no reason", store.RecordedLifetime{StartTime: started, StopTime: stopped}, "stop reason"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			input := f.agentInput()
 			lifetime := testCase.lifetime
-			input.Recorded = &lifetime
-			created, err := f.store.CreatePrincipalInstance(ctx, input)
-			if err == nil {
-				t.Fatalf("instance %s was created with a lifetime that could not have happened",
-					created.PrincipalInstanceID)
-			}
-			if !strings.Contains(err.Error(), testCase.want) {
-				t.Errorf("error %q does not say which field was wrong (want %q)", err, testCase.want)
+			// Both verbs, because each validates before its own INSERT.
+			for name, create := range map[string]func() (*store.PrincipalInstance, error){
+				"system principal": func() (*store.PrincipalInstance, error) {
+					return f.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
+						Kind: store.PrincipalSystem, Model: "m", OrganizationID: f.organizationID, Recorded: &lifetime,
+					})
+				},
+				"foreign agent": func() (*store.PrincipalInstance, error) {
+					input := f.foreignInput()
+					input.Lifetime = lifetime
+					return f.store.RecordForeignAgentPrincipal(ctx, input)
+				},
+			} {
+				created, err := create()
+				if err == nil {
+					t.Fatalf("%s: instance %s was created with a lifetime that could not have happened",
+						name, created.PrincipalInstanceID)
+				}
+				if !strings.Contains(err.Error(), testCase.want) {
+					t.Errorf("%s: error %q does not say which field was wrong (want %q)", name, err, testCase.want)
+				}
 			}
 		})
 	}
@@ -1246,10 +1277,7 @@ func TestNullableFieldsRoundTripAsAbsent(t *testing.T) {
 	}
 
 	// A stopped instance's optional fields, both directions.
-	instance, err := f.store.CreatePrincipalInstance(ctx, f.agentInput())
-	if err != nil {
-		t.Fatalf("create instance: %v", err)
-	}
+	instance := f.dispatchedAgent(t)
 	if instance.StopTime != nil || instance.StopReason != nil || instance.UserID != nil {
 		t.Fatal("a fresh instance carries stop or user values")
 	}

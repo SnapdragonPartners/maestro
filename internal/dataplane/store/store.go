@@ -245,13 +245,15 @@ type Review struct {
 // PrincipalInstance is one acting principal's lifetime (ADR 0021).
 type PrincipalInstance struct {
 	AgentType         *string
-	PromptPackID      *string
-	PromptHash        *string
 	HarnessConfigHash *string
 	MaestroVersion    *string
 	UserID            *uuid.UUID
 	StopTime          *time.Time
 	StopReason        *string
+
+	// PromptPack is the P of the MPH signature: present on every agent
+	// principal and on nothing else (ADR 0031 section 2; item 4 design, D5).
+	PromptPack *PrincipalPromptPack
 
 	Lineage   Lineage
 	StartTime time.Time
@@ -261,6 +263,48 @@ type PrincipalInstance struct {
 
 	PrincipalInstanceID uuid.UUID
 	OrganizationID      uuid.UUID
+}
+
+// PromptPackOrigin says which writer created an agent principal, and so
+// which shape its prompt-pack fields take. It is never an input: each
+// writer derives it from being the verb that was called (design D5).
+type PromptPackOrigin string
+
+const (
+	// PromptPackOriginForeign is an import: name and legacy-scheme digest
+	// recorded as the run record carried them, with no plane-owned content
+	// behind them.
+	PromptPackOriginForeign PromptPackOrigin = "foreign"
+	// PromptPackOriginResolved is a live principal: every field copied from
+	// the dispatch resolution its execution runs under.
+	PromptPackOriginResolved PromptPackOrigin = "resolved"
+)
+
+// PrincipalPromptPack is the pack an agent principal ran under.
+type PrincipalPromptPack struct {
+	// Resolution is present exactly when Origin is resolved.
+	Resolution *PrincipalPromptPackResolution
+
+	// Name is the installation's label as it stood at resolution, or the
+	// name the import carried. A human handle: never a selector, never a
+	// comparison key (ADR 0031 section 2).
+	Name string
+	// Identity is the scheme-qualified digest MPH comparisons group by.
+	Identity PromptIdentity
+
+	Origin PromptPackOrigin
+}
+
+// PrincipalPromptPackResolution is the plane-owned half of a resolved
+// principal's pack: the content and installation the resolution named, and
+// the revision and metadata the decision read. Revision and Snapshot are
+// HISTORICAL -- copied from the resolution, and after a later installation
+// update they legitimately differ from the installation row (design D5).
+type PrincipalPromptPackResolution struct {
+	Snapshot             PromptResolutionSnapshot
+	InstallationRevision int
+	ContentID            uuid.UUID
+	InstallationID       uuid.UUID
 }
 
 // SeededInput is one artifact an instance was seeded with, recorded with
@@ -375,11 +419,13 @@ type RecordedLifetime struct {
 	StopReason string
 }
 
-// CreatePrincipalInstanceInput describes an instance and its MPH signature.
+// CreatePrincipalInstanceInput describes a HUMAN or SYSTEM principal.
+//
+// It carries no pack fields and admits no agent: every agent principal has
+// a pack, and which kind of pack is decided by the path that creates it
+// (design D5), so there is no general agent path. Agents arrive through
+// RecordForeignAgentPrincipal or CreateDispatchedPrincipalInstance.
 type CreatePrincipalInstanceInput struct {
-	AgentType         *string
-	PromptPackID      *string
-	PromptHash        *string
 	HarnessConfigHash *string
 	MaestroVersion    *string
 	UserID            *uuid.UUID
@@ -399,6 +445,62 @@ type CreatePrincipalInstanceInput struct {
 	// as long as the gap.
 	Seeds []SeedInput
 
+	OrganizationID uuid.UUID
+}
+
+// ForeignPromptPack is the identity an import carries: the name and the
+// digest exactly as the run record had them, under the scheme that
+// produced the digest. Only legacy schemes are admitted -- a foreign pack
+// under the plane's own scheme would be a plane-owned identity with no
+// content behind it (design D5).
+type ForeignPromptPack struct {
+	Name   string
+	Digest string
+	Scheme PromptScheme
+}
+
+// RecordForeignAgentPrincipalInput records an agent that ran OUTSIDE the
+// plane and is being imported: its lifetime is over, so it is supplied
+// whole, and its pack is a foreign identity.
+//
+// Lifetime is by value and validated: a closed, historical lifetime is
+// what an import is and what a live agent is not, which is the one
+// property that keeps this verb from recording a live agent as foreign
+// (ADR 0031 section 2, "only for imports").
+type RecordForeignAgentPrincipalInput struct {
+	HarnessConfigHash *string
+	MaestroVersion    *string
+
+	Lineage Lineage
+
+	AgentType string
+	Model     string
+	Pack      ForeignPromptPack
+	Lifetime  RecordedLifetime
+
+	// Seeds are written in the same transaction; see CreatePrincipalInstanceInput.
+	Seeds []SeedInput
+
+	OrganizationID uuid.UUID
+}
+
+// CreateDispatchedPrincipalInput opens the lifetime of a LIVE agent under
+// an execution. Its pack fields, its lineage and the Maestro version it
+// runs under are not inputs: the seam copies the pack from the persisted
+// resolution of the execution's dispatch, the lineage from the execution,
+// and the version from the running harness. A live principal cannot
+// disagree with the dispatch it runs under, because it never had the
+// chance to (design D5, D8).
+type CreateDispatchedPrincipalInput struct {
+	HarnessConfigHash *string
+
+	AgentType string
+	Model     string
+
+	// Seeds are written in the same transaction; see CreatePrincipalInstanceInput.
+	Seeds []SeedInput
+
+	ExecutionID    uuid.UUID
 	OrganizationID uuid.UUID
 }
 
@@ -516,9 +618,24 @@ type Writer interface {
 
 	ArchiveArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) error
 
-	// CreatePrincipalInstance opens a lifetime, or records a closed one
-	// whole when the input carries a RecordedLifetime.
+	// The three principal writers partition the three shapes an agent's
+	// pack fields can take, and no caller chooses the origin: it is
+	// derived from which verb was called (design D5).
+
+	// CreatePrincipalInstance opens a human or system lifetime, or records
+	// a closed one whole when the input carries a RecordedLifetime. It
+	// refuses kind = agent.
 	CreatePrincipalInstance(ctx context.Context, input CreatePrincipalInstanceInput) (*PrincipalInstance, error)
+
+	// RecordForeignAgentPrincipal is the import path: a closed lifetime and
+	// a foreign pack identity, written with origin foreign.
+	RecordForeignAgentPrincipal(ctx context.Context, input RecordForeignAgentPrincipalInput) (*PrincipalInstance, error)
+
+	// CreateDispatchedPrincipalInstance is the live path: it loads the
+	// resolution of the execution's dispatch and copies its pack onto the
+	// principal, written with origin resolved. ErrNotFound when the
+	// execution is not in the organization.
+	CreateDispatchedPrincipalInstance(ctx context.Context, input CreateDispatchedPrincipalInput) (*PrincipalInstance, error)
 
 	// StopPrincipalInstance is once-only and idempotent (design D7). It
 	// stops an OPEN instance; a lifetime already over when it is written
