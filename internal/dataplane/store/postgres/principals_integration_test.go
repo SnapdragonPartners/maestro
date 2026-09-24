@@ -308,22 +308,43 @@ func TestForeignAgentPrincipalRoundTripsAndIsRefusedAtTheSeam(t *testing.T) {
 }
 
 // TestMPHQueryGroupsWithinAScheme is design D4's proof at the row level,
-// now that both shapes have a writer: a foreign identity and a resolved
-// identity never group, even when asked by digest alone would find both.
+// now that both shapes have a writer: the P axis is (scheme, digest), and a
+// query names a scheme it does not match by accident of form.
+//
+// Round 8's first cut stored the same hex under both schemes and asked for
+// each under its own -- and could not see the scheme predicate go, because
+// the legacy storage form carries its sha256: prefix, so the two prompt_hash
+// strings differ and a digest-only query separates them anyway. What a
+// digest-only query cannot do is REFUSE: asked for each stored digest under
+// the OTHER scheme, it returns the row the scheme predicate exists to
+// exclude. Those two negative queries are the assertion.
+//
+// THE MUTANT: drop `AND prompt_pack_scheme = @prompt_pack_scheme` from
+// ListPrincipalInstancesByPromptIdentity. The positive queries still pass;
+// both negatives return one row.
 func TestMPHQueryGroupsWithinAScheme(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 
 	live := f.dispatchedAgent(t)
 	foreignInput := f.foreignInput()
-	// The same hex as the live principal's digest, under the legacy scheme
-	// with its prefix: the pair a digest-only query would conflate.
+	// The live principal's hex under the legacy scheme's form.
 	foreignInput.Pack.Digest = "sha256:" + live.PromptPack.Identity.Digest
 	foreign, err := f.store.RecordForeignAgentPrincipal(ctx, foreignInput)
 	if err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
+	query := func(t *testing.T, identity store.PromptIdentity) []store.PrincipalInstance {
+		t.Helper()
+		found, err := f.store.FindPrincipalInstances(ctx, store.MPHQuery{OrganizationID: f.organizationID, PromptIdentity: &identity})
+		if err != nil {
+			t.Fatalf("query %s: %v", identity, err)
+		}
+		return found
+	}
+
+	// Positive controls: each identity under its own scheme finds its row.
 	for name, expect := range map[string]struct {
 		identity store.PromptIdentity
 		want     uuid.UUID
@@ -331,13 +352,20 @@ func TestMPHQueryGroupsWithinAScheme(t *testing.T) {
 		"the plane's scheme": {live.PromptPack.Identity, live.PrincipalInstanceID},
 		"the legacy scheme":  {foreign.PromptPack.Identity, foreign.PrincipalInstanceID},
 	} {
-		identity := expect.identity
-		found, err := f.store.FindPrincipalInstances(ctx, store.MPHQuery{OrganizationID: f.organizationID, PromptIdentity: &identity})
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
+		found := query(t, expect.identity)
 		if len(found) != 1 || found[0].PrincipalInstanceID != expect.want {
 			t.Fatalf("%s: found %d instances, want exactly %s", name, len(found), expect.want)
+		}
+	}
+
+	// The assertion: each stored digest asked for under the other scheme
+	// names nothing. A digest-only query returns the row here.
+	for name, identity := range map[string]store.PromptIdentity{
+		"the legacy digest under the plane's scheme": {Scheme: store.PromptSchemePackJCS, Digest: foreign.PromptPack.Identity.Digest},
+		"the plane's digest under the legacy scheme": {Scheme: store.PromptSchemeV1Manifest, Digest: live.PromptPack.Identity.Digest},
+	} {
+		if found := query(t, identity); len(found) != 0 {
+			t.Fatalf("%s: found %d instance(s); the query matched on the digest without the scheme (design D4)", name, len(found))
 		}
 	}
 }
