@@ -226,11 +226,9 @@ func seedCrossStore(t *testing.T, cfg *Config) crossStoreSeed {
 	// import with a closed lifetime: the general path admits no agent, and
 	// a live agent exists only under an execution (item 4 design, D5).
 	author, err := seam.RecordForeignAgentPrincipal(ctx, store.RecordForeignAgentPrincipalInput{
-		Model:     "fixture-model",
-		AgentType: "coder",
-		Pack: store.ForeignPromptPack{
-			Name: "fixture", Scheme: store.PromptSchemeV1Manifest, Digest: "sha256:" + strings.Repeat("a", 64),
-		},
+		Model:          "fixture-model",
+		AgentType:      "coder",
+		Pack:           store.ForeignPromptPack{Name: "fixture", Digest: "sha256:" + strings.Repeat("a", 64)},
 		Lifetime:       store.RecordedLifetime{StartTime: time.Now().Add(-time.Hour), StopTime: time.Now(), StopReason: "fixture"},
 		OrganizationID: seed.OrganizationID,
 	})

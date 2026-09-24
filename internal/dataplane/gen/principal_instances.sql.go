@@ -551,10 +551,10 @@ INSERT INTO principal_instances (
     start_time, stop_time, stop_reason
 ) VALUES (
     $1, $2, 'agent', $3, $4,
-    'foreign', $5, $6, $7,
-    $8, $9,
-    $10, $11, $12, $13,
-    $14, $15, $16
+    'foreign', $5, 'v1-manifest-sha256', $6,
+    $7, $8,
+    $9, $10, $11, $12,
+    $13, $14, $15
 )
 RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
 `
@@ -565,7 +565,6 @@ type RecordForeignAgentPrincipalParams struct {
 	Model               string
 	AgentType           *string
 	PromptPackName      *string
-	PromptPackScheme    *string
 	PromptHash          *string
 	HarnessConfigHash   *string
 	MaestroVersion      *string
@@ -581,6 +580,8 @@ type RecordForeignAgentPrincipalParams struct {
 // The import path: an agent that ran outside the plane. Its lifetime is
 // already over, so start, stop and reason are all required here, and its
 // pack is a name and a legacy-scheme digest with no plane-owned reference.
+// The scheme is a literal like the origin: the one legacy scheme is the
+// only one a foreign row may carry, and a caller is not asked to say so.
 func (q *Queries) RecordForeignAgentPrincipal(ctx context.Context, arg RecordForeignAgentPrincipalParams) (PrincipalInstance, error) {
 	row := q.db.QueryRow(ctx, recordForeignAgentPrincipal,
 		arg.PrincipalInstanceID,
@@ -588,7 +589,6 @@ func (q *Queries) RecordForeignAgentPrincipal(ctx context.Context, arg RecordFor
 		arg.Model,
 		arg.AgentType,
 		arg.PromptPackName,
-		arg.PromptPackScheme,
 		arg.PromptHash,
 		arg.HarnessConfigHash,
 		arg.MaestroVersion,

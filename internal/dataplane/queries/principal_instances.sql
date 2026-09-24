@@ -40,6 +40,8 @@ RETURNING *;
 -- The import path: an agent that ran outside the plane. Its lifetime is
 -- already over, so start, stop and reason are all required here, and its
 -- pack is a name and a legacy-scheme digest with no plane-owned reference.
+-- The scheme is a literal like the origin: the one legacy scheme is the
+-- only one a foreign row may carry, and a caller is not asked to say so.
 -- name: RecordForeignAgentPrincipal :one
 INSERT INTO principal_instances (
     principal_instance_id, organization_id, kind, model, agent_type,
@@ -49,7 +51,7 @@ INSERT INTO principal_instances (
     start_time, stop_time, stop_reason
 ) VALUES (
     @principal_instance_id, @organization_id, 'agent', @model, @agent_type,
-    'foreign', @prompt_pack_name, @prompt_pack_scheme, @prompt_hash,
+    'foreign', @prompt_pack_name, 'v1-manifest-sha256', @prompt_hash,
     @harness_config_hash, @maestro_version,
     @product_id, @feature_id, @epic_id, @story_id,
     @start_time, @stop_time, @stop_reason

@@ -272,7 +272,7 @@ func (f *fixture) foreignInput() store.RecordForeignAgentPrincipalInput {
 	return store.RecordForeignAgentPrincipalInput{
 		Model:          "m",
 		AgentType:      "coder",
-		Pack:           store.ForeignPromptPack{Name: fixturePackName, Scheme: store.PromptSchemeV1Manifest, Digest: fixturePromptHash},
+		Pack:           store.ForeignPromptPack{Name: fixturePackName, Digest: fixturePromptHash},
 		Lifetime:       fixtureLifetime,
 		OrganizationID: f.organizationID,
 	}

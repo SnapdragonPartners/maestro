@@ -449,14 +449,14 @@ type CreatePrincipalInstanceInput struct {
 }
 
 // ForeignPromptPack is the identity an import carries: the name and the
-// digest exactly as the run record had them, under the scheme that
-// produced the digest. Only legacy schemes are admitted -- a foreign pack
-// under the plane's own scheme would be a plane-owned identity with no
-// content behind it (design D5).
+// digest exactly as the run record had them. The scheme is not an input:
+// every foreign pack is recorded under PromptSchemeV1Manifest, the one
+// legacy scheme, and the seam writes it -- a value a caller can set is a
+// value a caller can set wrong, and backwards compatibility with any other
+// legacy form is a non-goal (design D5a).
 type ForeignPromptPack struct {
 	Name   string
 	Digest string
-	Scheme PromptScheme
 }
 
 // RecordForeignAgentPrincipalInput records an agent that ran OUTSIDE the

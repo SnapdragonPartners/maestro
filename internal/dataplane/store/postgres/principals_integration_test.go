@@ -241,10 +241,10 @@ func TestDispatchedPrincipalNeedsAnExecutionInTheOrganization(t *testing.T) {
 // THE MUTANTS, one per refusal: skip the lifetime check (a live agent
 // recorded as foreign -- ADR 0031 section 2's "only for imports" violated by
 // the verb that exists to honour it; the zero-lifetime case is the one the
-// schema does NOT catch, since year 1 is a legal timestamp); admit the
-// plane's scheme (a plane-owned identity with no content behind it, which the
-// schema refuses -- the SQLSTATE assertion is what tells the seam's refusal
-// from the schema's); admit a bare-hex digest under the legacy scheme.
+// schema does NOT catch, since year 1 is a legal timestamp); admit a
+// bare-hex digest under the legacy scheme (the schema refuses it -- the
+// SQLSTATE assertion is what tells the seam's refusal from the schema's).
+// The scheme itself is not an input, so there is no wrong scheme to ask for.
 func TestForeignAgentPrincipalRoundTripsAndIsRefusedAtTheSeam(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -280,10 +280,6 @@ func TestForeignAgentPrincipalRoundTripsAndIsRefusedAtTheSeam(t *testing.T) {
 		{"open lifetime", func(in *store.RecordForeignAgentPrincipalInput) { in.Lifetime.StopTime = time.Time{} }, "stop time"},
 		{"blank agent type", func(in *store.RecordForeignAgentPrincipalInput) { in.AgentType = "" }, "agent type"},
 		{"blank pack name", func(in *store.RecordForeignAgentPrincipalInput) { in.Pack.Name = " \t" }, "name"},
-		{"the plane's own scheme", func(in *store.RecordForeignAgentPrincipalInput) {
-			in.Pack.Scheme, in.Pack.Digest = store.PromptSchemePackJCS, bare
-		}, "legacy-scheme"},
-		{"an unknown scheme", func(in *store.RecordForeignAgentPrincipalInput) { in.Pack.Scheme = "sha1-of-something" }, "legacy-scheme"},
 		{"bare hex under the legacy scheme", func(in *store.RecordForeignAgentPrincipalInput) { in.Pack.Digest = bare }, "storage form"},
 		{"the plane's form with the prefix doubled", func(in *store.RecordForeignAgentPrincipalInput) { in.Pack.Digest = "sha256:" + fixturePromptHash }, "storage form"},
 	} {

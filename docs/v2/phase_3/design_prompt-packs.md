@@ -24,7 +24,8 @@ eight review rounds; flipped in the acceptance commit, following item 3's
 precedent. **Amended in implementation** (2026-09-21 to 2026-09-24) by the
 `Dna` subsections under the decisions — the choices the implementation made
 that this text had left open, each approved by Codex as a checkpoint and
-marked *proposed* until DR accepts the branch.
+**Accepted by DR with the branch on 2026-09-24**. Where an amendment and the
+original text differ, the amendment describes the code.
 
 **Eight review rounds (Codex, 2026-09-03) found nine, eight, six, four, two,
 three, two and then one P1, and this revision carries all thirty-five.** Each is recorded under
@@ -167,10 +168,9 @@ first, exercises the update path that a real upgrade will take.
 
 #### D2a. The layout on a file system, and the one constructor (amendment, 2026-09-24, implementation steps 5 and 9)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (rounds 6 and 7, at `b81a895c` and `dab8d99b`) and
-the branch notes asked for them to be recorded here; they bind once DR accepts
-them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (rounds 6 and 7, at
+`b81a895c` and `dab8d99b`); DR accepted the recorded text at the push gate.*
 
 D2 said `fs.FS` and did not say what the file system holds.
 
@@ -278,9 +278,9 @@ design before the package exists is a prediction, not a measurement.
 
 #### D3a. How the composition carries the two values (amendment, 2026-09-21, implementation step 2)
 
-*Status: proposed by the implementation. Codex approved these choices in
-implementation round 2 at `020ff45d` and asked for them to be recorded here;
-they bind once DR accepts them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices in implementation round 2 at `020ff45d`; DR accepted
+the recorded text at the push gate.*
 
 Six choices the accepted text did not make, and one correction to it:
 
@@ -665,10 +665,10 @@ the test — not an operator — is what finds the instruction wrong.
 
 #### D5a. What the down migration refuses, and how the three writers are cut (amendment, 2026-09-24, implementation steps 3, 8 and 10)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (rounds 3, 8 and 9, at `ad4e38aa`, `beaa4c36` and
-`92ba2538`) and the branch notes asked for them to be recorded here; they bind
-once DR accepts them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (rounds 3, 8 and 9, at
+`ad4e38aa`, `beaa4c36` and `92ba2538`); DR accepted the recorded text at the
+push gate.*
 
 **The down refuses on content rows too.** The text above lists four classes
 of plane-owned state. `000023.down` refuses on a fifth — any
@@ -711,14 +711,18 @@ no objection in round 3 and asked for it to be recorded.
    guard for ADR 0031 §2's *only for imports*. The general path keeps its
    pointer (`nil` = live) because humans and system principals are
    ordinarily live.
-5. **`ForeignPromptPack.Scheme` is an input, under a closed enumeration.**
-   The seam admits only `v1-manifest-sha256`, paired with the form
-   `^sha256:[0-9a-f]{64}$` — its copy of the schema's per-scheme check, so a
-   caller reads which form its digest failed rather than a constraint name.
-   Kept as an input rather than hard-coded because the caller is stating
-   which scheme produced its digest, and a second legacy scheme would be
-   admitted by widening the enumeration rather than by a new verb. The
-   origin, by contrast, is never an input: a literal in each statement.
+5. **The foreign scheme is not an input.** The text above gives the verb
+   `ForeignPromptPack{Name, Scheme, Digest}`; as built it is
+   `{Name, Digest}`, and `v1-manifest-sha256` is a literal in the statement
+   beside the origin. Round 8 had kept the scheme as an input under a
+   one-element closed enumeration, on the argument that a second legacy
+   scheme could later be admitted by widening it; at acceptance DR ruled
+   that backwards compatibility with any other legacy form is a non-goal,
+   which removes the only reason for the parameter and leaves the origin's
+   own argument standing — a value a caller can set is a value a caller can
+   set wrong. The seam still checks the digest's form,
+   `^sha256:[0-9a-f]{64}$`, so a caller reads which form failed rather than
+   a constraint name.
 6. **`CreatePrincipalInstanceInput` lost `AgentType` along with the pack
    fields.** "An agent type on a human" and "a prompt identity on a system
    principal" are unrepresentable rather than refused, and the general
@@ -873,9 +877,9 @@ arrive with the registry semantics.
 
 #### D6a. Four choices at install (amendment, 2026-09-24, implementation step 4)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (round 4, at `1b7157a8`) and the branch notes asked for
-them to be recorded here; they bind once DR accepts them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 4, at `1b7157a8`);
+DR accepted the recorded text at the push gate.*
 
 1. **The installer is provenance, not compared.** On an idempotent re-install
    of identical content the declared metadata — display name, range, roles —
@@ -923,9 +927,9 @@ configuration half. It is a real reader: D8 resolves through
 
 #### D7a. How the selector reaches dispatch (amendment, 2026-09-24, implementation steps 6 and 7)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (round 5, at `c662333f`) and the branch notes asked for
-them to be recorded here; they bind once DR accepts them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 5, at `c662333f`);
+DR accepted the recorded text at the push gate.*
 
 1. **The explicit selector is a parameter, not an input struct:**
    `CreateDispatch(ctx, organizationID, storyID, selector *PromptSelector)`.
@@ -1121,9 +1125,9 @@ happened, and one Story would span two P values.
 
 #### D8a. What the resolution records under a re-run (amendment, 2026-09-24, implementation step 7)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (round 5, at `c662333f`) and the branch notes asked for
-them to be recorded here; they bind once DR accepts them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 5, at `c662333f`);
+DR accepted the recorded text at the push gate.*
 
 1. **The re-run is the same `ValidatePack`** the install gate runs — coverage
    of the declared roles, parse, and the per-slot variable contract — through
@@ -1177,9 +1181,9 @@ different packs by age alone — the price of never moving a lever silently.
 
 #### D9a. How provisioning serialises and what it opens (amendment, 2026-09-24, implementation step 9)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (round 6, at `b81a895c`) and the branch notes asked for
-them to be recorded here; they bind once DR accepts them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 6, at `b81a895c`);
+DR accepted the recorded text at the push gate.*
 
 1. **Provisioning is serialised per organization by locking the organization
    row `FOR NO KEY UPDATE`**, not `FOR UPDATE`: every row referencing the
@@ -1233,9 +1237,9 @@ variable the slot does not supply — travelling the identical path, through
 
 #### D10a. The admitted dialect (amendment, 2026-09-21, implementation step 1)
 
-*Status: proposed by the implementation. Codex approved the dialect in
-implementation round 1 at `c826a98` and asked for it to be recorded here; it
-binds once DR accepts it with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved the dialect in implementation round 1 at `c826a98`; DR accepted the
+recorded text at the push gate.*
 
 This design said "parser" and "per-slot variable contract" and did not say what
 language an entry is written in. Implementing the contract forced the question,
@@ -1314,10 +1318,9 @@ that assignment, split by which item acquires each call site.
 
 #### D11a. What `select-builtin` requires, moves and reads under (amendment, 2026-09-24, implementation step 9)
 
-*Status: proposed by the implementation. Codex approved these choices as
-implementation checkpoints (rounds 6 and 7, at `b81a895c` and `dab8d99b`) and
-the branch notes asked for them to be recorded here; they bind once DR accepts
-them with the branch.*
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (rounds 6 and 7, at
+`b81a895c` and `dab8d99b`); DR accepted the recorded text at the push gate.*
 
 1. **`select-builtin` requires an existing selector** — `ErrNoPromptSelector`
    when the organization was never provisioned — **and moves a dangling

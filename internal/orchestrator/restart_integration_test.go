@@ -178,7 +178,7 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 		// with no principal starting under them.
 		instance, err := seam.RecordForeignAgentPrincipal(ctx, store.RecordForeignAgentPrincipalInput{
 			Model: "restart-" + p.name, AgentType: "restart-harness", OrganizationID: ids.Organization,
-			Pack:     store.ForeignPromptPack{Name: "fixture", Scheme: store.PromptSchemeV1Manifest, Digest: "sha256:" + strings.Repeat("a", 64)},
+			Pack:     store.ForeignPromptPack{Name: "fixture", Digest: "sha256:" + strings.Repeat("a", 64)},
 			Lifetime: store.RecordedLifetime{StartTime: time.Now().Add(-time.Hour), StopTime: time.Now(), StopReason: "fixture"},
 		})
 		if err != nil {

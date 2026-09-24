@@ -76,40 +76,24 @@ func checkRecordedLifetime(recorded *store.RecordedLifetime) error {
 }
 
 // v1ManifestDigestPattern is the storage form of a v1-manifest-sha256
-// digest. Under the legacy scheme the sha256: prefix is DATA, not a scheme
-// marker; the scheme column says which form to expect (design D4).
-var v1ManifestDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-
-// foreignPromptDigestForm is the closed enumeration of schemes a foreign
-// pack may be recorded under, each paired with the storage form of its
 // digest -- the seam's copy of the schema's per-scheme check
 // (principal_instances_prompt_pack_scheme_check), so a caller reads which
-// form its digest failed rather than a constraint name.
+// form its digest failed rather than a constraint name. Under the legacy
+// scheme the sha256: prefix is DATA, not a scheme marker; the scheme column
+// says which form to expect (design D4).
 //
-// The plane's own scheme is deliberately absent: a foreign row under
-// pack-jcs-sha256-v1 would be a plane-owned identity with no content behind
-// it (design D5).
-func foreignPromptDigestForm(scheme store.PromptScheme) (*regexp.Regexp, bool) {
-	switch scheme {
-	case store.PromptSchemeV1Manifest:
-		return v1ManifestDigestPattern, true
-	default:
-		return nil, false
-	}
-}
+// It is the only form a foreign pack has: the scheme is a literal in the
+// statement, not an input, and there is no enumeration to widen (design
+// D5a; backwards compatibility with another legacy form is a non-goal).
+var v1ManifestDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 func checkForeignPromptPack(pack *store.ForeignPromptPack) error {
 	if strings.TrimSpace(pack.Name) == "" {
 		return errors.New("a foreign prompt pack needs a name; it is the label the run record carried")
 	}
-	form, admitted := foreignPromptDigestForm(pack.Scheme)
-	if !admitted {
-		return fmt.Errorf("prompt scheme %q is not one a foreign pack may be recorded under; a foreign pack is "+
-			"identified by a legacy-scheme digest (%s), and the plane's own scheme names content the plane holds",
-			pack.Scheme, store.PromptSchemeV1Manifest)
-	}
-	if !form.MatchString(pack.Digest) {
-		return fmt.Errorf("prompt digest %q is not the storage form of scheme %s (%s)", pack.Digest, pack.Scheme, form)
+	if !v1ManifestDigestPattern.MatchString(pack.Digest) {
+		return fmt.Errorf("prompt digest %q is not the storage form of scheme %s (%s)",
+			pack.Digest, store.PromptSchemeV1Manifest, v1ManifestDigestPattern)
 	}
 	return nil
 }
@@ -252,8 +236,8 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 }
 
 // RecordForeignAgentPrincipal is the import path (design D5): a closed
-// lifetime, a foreign pack identity, origin foreign -- the last written by
-// the statement, not by this code.
+// lifetime, a foreign pack identity, origin foreign and the legacy scheme
+// -- the last two written by the statement, not by this code.
 //
 // The lifetime is required and validated whole. That is the one property
 // separating an import from a live agent: an agent whose lifetime is not
@@ -277,14 +261,12 @@ func (t *tx) RecordForeignAgentPrincipal(ctx context.Context, input store.Record
 	if err != nil {
 		return nil, err
 	}
-	scheme := string(input.Pack.Scheme)
 	row, createErr := t.queries.RecordForeignAgentPrincipal(ctx, gen.RecordForeignAgentPrincipalParams{
 		PrincipalInstanceID: toUUID(instanceID),
 		OrganizationID:      toUUID(input.OrganizationID),
 		Model:               input.Model,
 		AgentType:           &input.AgentType,
 		PromptPackName:      &input.Pack.Name,
-		PromptPackScheme:    &scheme,
 		PromptHash:          &input.Pack.Digest,
 		HarnessConfigHash:   input.HarnessConfigHash,
 		MaestroVersion:      input.MaestroVersion,
