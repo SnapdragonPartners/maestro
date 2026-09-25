@@ -35,13 +35,13 @@ import (
 	"orchestrator/internal/dataplane/stack"
 )
 
-// defaultMinIOPort mirrors stack.DefaultMinIOPort. Mirrored rather than
+// defaultObjectsPort mirrors stack.DefaultObjectsPort. Mirrored rather than
 // imported: a test helper is not a good enough reason to pull in the
-// launcher, and MAESTRO_MINIO_PORT overrides it where the two could differ.
-const defaultMinIOPort = 59000
+// launcher, and MAESTRO_OBJECTS_PORT overrides it where the two could differ.
+const defaultObjectsPort = 59000
 
-// minioPortEnv names the override a non-default stack is reachable through.
-const minioPortEnv = "MAESTRO_MINIO_PORT"
+// objectsPortEnv names the override a non-default stack is reachable through.
+const objectsPortEnv = "MAESTRO_OBJECTS_PORT"
 
 // DSN creates a uniquely named database, migrates it, and drops it when the
 // test ends. The label distinguishes one suite's leftovers from another's if
@@ -135,7 +135,7 @@ func Blob(t *testing.T, label string) (*objects.Blob, objects.Config) {
 	}
 
 	cfg := objects.Config{
-		Endpoint:  net.JoinHostPort("127.0.0.1", strconv.Itoa(minioPort(t))),
+		Endpoint:  net.JoinHostPort("127.0.0.1", strconv.Itoa(objectsPort(t))),
 		Bucket:    "maestro-" + label + "-it-" + randomSuffix(t),
 		AccessKey: accessKey,
 		SecretKey: secretKey,
@@ -180,35 +180,38 @@ func stackConfig(t *testing.T) (*stack.Config, []byte) {
 	return cfg, rootKey
 }
 
-// minioPort is the default unless the environment names another stack.
-func minioPort(t *testing.T) int {
+// objectsPort is the default unless the environment names another stack.
+func objectsPort(t *testing.T) int {
 	t.Helper()
-	raw := os.Getenv(minioPortEnv)
+	raw := os.Getenv(objectsPortEnv)
 	if raw == "" {
-		return defaultMinIOPort
+		return defaultObjectsPort
 	}
 	port, err := strconv.Atoi(raw)
 	if err != nil {
-		t.Fatalf("%s=%q: %v", minioPortEnv, raw, err)
+		t.Fatalf("%s=%q: %v", objectsPortEnv, raw, err)
 	}
 	return port
 }
 
 // removeBucket empties and drops a disposable bucket. A versioned bucket
 // refuses removal while anything remains, and "anything" includes delete
-// markers and incomplete uploads.
+// markers and incomplete uploads -- so each is removed by name first. This
+// is the protocol's own path; the MinIO-only force-delete header it
+// replaced worked on SeaweedFS too, but by accident of that server rather
+// than by contract.
 func removeBucket(t *testing.T, cfg *objects.Config) {
 	t.Helper()
 	ctx := context.Background()
 
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
+	core, err := minio.NewCore(cfg.Endpoint, &minio.Options{
 		Creds: credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 	})
 	if err != nil {
 		t.Errorf("cleanup: build client: %v", err)
 		return
 	}
-	exists, err := client.BucketExists(ctx, cfg.Bucket)
+	exists, err := core.BucketExists(ctx, cfg.Bucket)
 	if err != nil {
 		t.Errorf("cleanup: check bucket %s: %v", cfg.Bucket, err)
 		return
@@ -218,8 +221,40 @@ func removeBucket(t *testing.T, cfg *objects.Config) {
 		// fail.
 		return
 	}
-	if err := client.RemoveBucketWithOptions(ctx, cfg.Bucket,
-		minio.RemoveBucketOptions{ForceDelete: true}); err != nil {
+	for info := range core.Client.ListObjects(ctx, cfg.Bucket, minio.ListObjectsOptions{Recursive: true, WithVersions: true}) {
+		if info.Err != nil {
+			t.Errorf("cleanup: list %s: %v", cfg.Bucket, info.Err)
+			return
+		}
+		if rmErr := core.Client.RemoveObject(ctx, cfg.Bucket, info.Key,
+			minio.RemoveObjectOptions{VersionID: info.VersionID}); rmErr != nil {
+			t.Errorf("cleanup: remove %s@%s: %v", info.Key, info.VersionID, rmErr)
+		}
+	}
+	// Paged, because SeaweedFS truncates this listing and a page left
+	// unread is an upload left behind, which makes RemoveBucket fail.
+	keyMarker, uploadIDMarker := "", ""
+	for {
+		uploads, err := core.ListMultipartUploads(ctx, cfg.Bucket, "", keyMarker, uploadIDMarker, "", 1000)
+		if err != nil {
+			t.Errorf("cleanup: list incomplete uploads in %s: %v", cfg.Bucket, err)
+			return
+		}
+		for i := range uploads.Uploads {
+			if abortErr := core.AbortMultipartUpload(ctx, cfg.Bucket, uploads.Uploads[i].Key, uploads.Uploads[i].UploadID); abortErr != nil {
+				t.Errorf("cleanup: abort upload %s on %s: %v", uploads.Uploads[i].UploadID, uploads.Uploads[i].Key, abortErr)
+			}
+		}
+		if !uploads.IsTruncated {
+			break
+		}
+		if uploads.NextKeyMarker == "" && uploads.NextUploadIDMarker == "" {
+			t.Errorf("cleanup: %s truncated the upload listing with no marker to continue from", cfg.Bucket)
+			return
+		}
+		keyMarker, uploadIDMarker = uploads.NextKeyMarker, uploads.NextUploadIDMarker
+	}
+	if err := core.RemoveBucket(ctx, cfg.Bucket); err != nil {
 		t.Errorf("cleanup: remove bucket %s: %v", cfg.Bucket, err)
 	}
 }

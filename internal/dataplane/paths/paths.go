@@ -81,7 +81,7 @@ type Service string
 // knownServices, which is a reviewed change rather than a caller's choice.
 const (
 	ServicePostgres Service = "postgres"
-	ServiceMinIO    Service = "minio"
+	ServiceObjects  Service = "objects"
 )
 
 // knownServices is the membership test behind Service.validate.
@@ -89,7 +89,7 @@ const (
 //nolint:gochecknoglobals // Immutable lookup table for a closed constant set.
 var knownServices = map[Service]bool{
 	ServicePostgres: true,
-	ServiceMinIO:    true,
+	ServiceObjects:  true,
 }
 
 // Services returns the stateful services in a stable order.
@@ -107,7 +107,7 @@ var knownServices = map[Service]bool{
 // genuinely needs names. A conformance test holds it to the shipped
 // Compose file in both directions.
 func Services() []Service {
-	return []Service{ServicePostgres, ServiceMinIO}
+	return []Service{ServicePostgres, ServiceObjects}
 }
 
 // ErrInvalidService reports a service name that is not one of the known

@@ -86,7 +86,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key|
                                   bootstrap|provision organization|user|product|repository|recover|benchmark import|benchmark show>
 
-  up       start Postgres and MinIO, wait until usable, apply migrations (idempotent)
+  up       start Postgres and the object store, wait until usable, apply migrations (idempotent)
   down     stop the containers, leaving all data in place
   reset    stop the containers and DELETE the contents of the data directories
   force-version
@@ -427,8 +427,8 @@ func runUp(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	if err := stack.Up(ctx, cfg, opts.composeFile); err != nil {
 		return fmt.Errorf("bring the data plane up: %w", err)
 	}
-	fmt.Printf("data plane ready\n  postgres  127.0.0.1:%d/%s\n  objects   http://127.0.0.1:%d\n  console   http://127.0.0.1:%d\n",
-		cfg.PGPort, cfg.Database, cfg.MinIOPort, cfg.MinIOConsolePort)
+	fmt.Printf("data plane ready\n  postgres  127.0.0.1:%d/%s\n  objects   http://127.0.0.1:%d\n",
+		cfg.PGPort, cfg.Database, cfg.ObjectsPort)
 	return nil
 }
 

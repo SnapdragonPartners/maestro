@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/paths"
 )
 
 // ArchiveDataDir is the copied data root inside an archive, and
@@ -354,7 +358,7 @@ func composeStop(ctx context.Context, project, composeFile string, env []string)
 //
 // The wait is part of the restart rather than a courtesy on top of it.
 // `compose start` returns as soon as the containers are started, which is
-// not the same as Postgres accepting connections or MinIO answering: a
+// not the same as Postgres accepting connections or the object store answering: a
 // backup that returned there reported success while an outage it caused was
 // still in progress, and a caller that reached for the plane immediately
 // afterwards got a connection error out of a maintenance operation that
@@ -383,5 +387,49 @@ func composeStart(
 		return fmt.Errorf("wait for %s to be usable again after backup: %w",
 			strings.Join(state.running, ", "), err)
 	}
+	// Liveness is not usability for the object store (waitObjectsServe),
+	// and design D3a's promise -- the plane is usable when backup returns
+	// -- does not depend on the host key file: a backup renders no
+	// credential and runs keyless by design. `compose start` restarts the
+	// SAME container, so the credentials the store is answering to are the
+	// ones in that container's environment; the proof is made with those,
+	// read back from the container, and never from the key.
+	if slices.Contains(state.running, string(paths.ServiceObjects)) {
+		blob, blobErr := objectsFromRunningContainer(ctx, c, composeFile, env)
+		if blobErr != nil {
+			return fmt.Errorf("after backup: %w", blobErr)
+		}
+		if serveErr := waitObjectsServe(ctx, blob); serveErr != nil {
+			return fmt.Errorf("wait for the object store to serve reads again after backup: %w", serveErr)
+		}
+	}
 	return nil
+}
+
+// objectsFromRunningContainer builds the adapter over the bucket the plane
+// uses, with the credentials the running object-store container was
+// started with, so a restart can prove the store usable without the host
+// key. Reads them through the container rather than the Compose
+// environment because the environment a keyless operation renders carries
+// placeholder-derived credentials, which are wrong by construction.
+func objectsFromRunningContainer(ctx context.Context, c *Config, composeFile string, env []string) (*objects.Blob, error) {
+	out, err := composeOutput(ctx, c.ProjectName, composeFile, env, "exec", "-T", string(paths.ServiceObjects),
+		"sh", "-c", `printf '%s\n%s\n' "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY"`)
+	if err != nil {
+		return nil, fmt.Errorf("read the object store's credentials from its container: %w", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) != 2 || lines[0] == "" || lines[1] == "" {
+		return nil, errors.New("the object store container did not report an access key and a secret key")
+	}
+	blob, err := objects.New(objects.Config{
+		Endpoint: c.Bootstrap().Objects.Endpoint, Bucket: c.Bucket, AccessKey: lines[0], SecretKey: lines[1],
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build object store client: %w", err)
+	}
+	if err := blob.EnsureBucket(ctx); err != nil {
+		return nil, fmt.Errorf("provision object storage: %w", err)
+	}
+	return blob, nil
 }

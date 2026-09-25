@@ -135,7 +135,7 @@ func removeBucket(t *testing.T, cfg *Config) {
 		t.Errorf("cleanup: derive credentials: %v %v", keyErr, secretErr)
 		return
 	}
-	client, err := minio.New("127.0.0.1:"+strconv.Itoa(cfg.MinIOPort), &minio.Options{
+	client, err := minio.New("127.0.0.1:"+strconv.Itoa(cfg.ObjectsPort), &minio.Options{
 		Creds: credentials.NewStaticV4(accessKey, secretKey, ""),
 	})
 	if err != nil {
