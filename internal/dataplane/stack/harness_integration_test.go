@@ -80,8 +80,7 @@ func isolatedPlane(t *testing.T) *Config {
 	t.Setenv(paths.HomeEnv, home)
 	t.Setenv(EnvProjectName, project)
 	t.Setenv(EnvPGPort, freePort(t))
-	t.Setenv(EnvMinIOPort, freePort(t))
-	t.Setenv(EnvMinIOConsolePort, freePort(t))
+	t.Setenv(EnvObjectsPort, freePort(t))
 
 	roots, err := paths.Resolve()
 	if err != nil {

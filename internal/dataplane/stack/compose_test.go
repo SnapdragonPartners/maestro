@@ -55,7 +55,7 @@ func TestComposeLabelsEveryService(t *testing.T) {
 
 	const label = "com.maestro.component: dataplane"
 	if got := strings.Count(source, label); got != 2 {
-		t.Errorf("found %d %q labels, want one per service (postgres, minio)", got, label)
+		t.Errorf("found %d %q labels, want one per service (postgres, objects)", got, label)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestImagesArePinnedByDigest(t *testing.T) {
 		}
 	}
 	if pins != 2 {
-		t.Errorf("found %d image pins, want 2 (postgres, minio)", pins)
+		t.Errorf("found %d image pins, want 2 (postgres, objects)", pins)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestImagesArePinnedByDigest(t *testing.T) {
 func TestPostgresHealthcheckAuthenticates(t *testing.T) {
 	source := composeSource(t)
 
-	postgres, _, found := strings.Cut(source, "  minio:")
+	postgres, _, found := strings.Cut(source, "  objects:")
 	if !found {
 		t.Fatal("could not isolate the postgres service block")
 	}

@@ -1,12 +1,20 @@
 +++
 title = "Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery"
-edit_date = "2026-08-03"
+edit_date = "2026-09-24"
 status = "live"
 summary = "Mini-plan for Phase 2 item 8: cold backup as a whole-root tree copy with no exclusion list, a keyless stop/start quiesce protocol measured against the pinned images, a whole-root freshness rule counting any non-directory entry, leaving the service registry only its directory-creation job, restore that preserves every bind-mount inode and the held lock file under one lock spanning stop through verification with a durable incomplete marker and a phase boundary deciding whether failure restarts or stays stopped, archives validated by a completion manifest written last rather than by directory shape, a backup that returns the project to the state it found and waits for the originally-running services to be usable again, a hand-rolled copier because os.CopyFS widens modes rather than preserving them, digest revalidation across both artifact families under the seam's own snapshot and advisory locks, a verification debt carried in its own marker across the two-part restore and settled by the next up on pain of the plane being stopped, a third marker gating the verbs that must not act while a killed recovery leaves an orphaned postmaster owning the cluster, and resumable new-key recovery that installs its staged key last."
 type = "design"
 +++
 
 # Phase 2 Item 8 Design: Cold Backup, Restore And New-Key Recovery
+
+> **Provider note (2026-09-24).** Every reference to MinIO below describes the
+> local object provider as it was when this design was accepted. MinIO was
+> replaced by SeaweedFS on the fix branch for #350; the measurements this
+> design records against "the pinned image" were re-taken against SeaweedFS
+> in [the Phase 3 spike](../phase_3/spike_local-object-provider.md) and in the
+> adapter's own comments, and where the two servers differ the code and its
+> tests now say so. This design is otherwise unchanged and still binds.
 
 Status: **live** — Accepted by Codex and DR, 2026-08-01, after four review rounds (six, four, five and three P1s). One M-sized item, with a review checkpoint after backup, restore and verify and before new-key recovery. Amended during implementation and **Accepted by Codex and DR, 2026-08-03**: **D3a** (a backup returns services usable, not merely started), **D4a** (the verification debt carried across the two-part restore, and its marker policy), **D4b** (an interrupted recovery is a third gated state), **D8a** (a missing staged key is two states), and **D8b** (recovery probes name their user, database and socket).
 

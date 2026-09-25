@@ -153,7 +153,7 @@ func Restore(ctx context.Context, c *Config, composeFile, source string, force b
 //
 // The phase boundary lives here, and it is a single point rather than a
 // judgement at each step: once the marker is written, every failure leaves
-// the plane STOPPED. A partial Postgres/MinIO tree must not be started —
+// the plane STOPPED. A partial Postgres/object-store tree must not be started —
 // starting it would present a torn plane as a live one, which is worse
 // than the failure that produced it. That is the opposite of backup's
 // rule, where the authoritative plane is only ever read and a restart is

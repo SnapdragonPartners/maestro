@@ -1,12 +1,20 @@
 +++
 title = "Design: The Local Data-Plane Stack (Item 2)"
-edit_date = "2026-07-25"
+edit_date = "2026-09-24"
 status = "live"
 summary = "Mini-plan for Phase 2 item 2: the four-root path resolver with MAESTRO_HOME collapse, the 0600 root-of-trust key file, and a Compose stack for Postgres and MinIO bind-mounted under the data root — isolated from v1's container labelling so a benchmark sweep cannot tear it down, digest-pinned, health-gated, and idempotent from a clean checkout."
 type = "design"
 +++
 
 # Design: The Local Data-Plane Stack (Item 2)
+
+> **Provider note (2026-09-24).** Every reference to MinIO below describes the
+> local object provider as it was when this design was accepted. MinIO was
+> replaced by SeaweedFS on the fix branch for #350; the measurements this
+> design records against "the pinned image" were re-taken against SeaweedFS
+> in [the Phase 3 spike](../phase_3/spike_local-object-provider.md) and in the
+> adapter's own comments, and where the two servers differ the code and its
+> tests now say so. This design is otherwise unchanged and still binds.
 
 Status: **live** — Accepted by Codex and DR, 2026-07-25, after five review rounds. Follows the Phase 1 precedent of a design mini-plan for M-sized items ([design_runner.md](../phase_1/design_runner.md), [design_engine.md](../phase_1/design_engine.md), [design_adapter_v1.md](../phase_1/design_adapter_v1.md)).
 

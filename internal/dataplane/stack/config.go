@@ -25,9 +25,8 @@ import (
 // database is a bad failure. High ports keep the default working on a
 // machine that already runs the usual services.
 const (
-	DefaultPGPort           = 55432
-	DefaultMinIOPort        = 59000
-	DefaultMinIOConsolePort = 59001
+	DefaultPGPort      = 55432
+	DefaultObjectsPort = 59000
 
 	DefaultDatabase = "maestro"
 	DefaultUser     = "maestro"
@@ -52,9 +51,8 @@ const (
 // Environment variables that override the defaults, for a machine where
 // the chosen ports are themselves taken.
 const (
-	EnvPGPort           = "MAESTRO_PG_PORT"
-	EnvMinIOPort        = "MAESTRO_MINIO_PORT"
-	EnvMinIOConsolePort = "MAESTRO_MINIO_CONSOLE_PORT"
+	EnvPGPort      = "MAESTRO_PG_PORT"
+	EnvObjectsPort = "MAESTRO_OBJECTS_PORT"
 
 	// EnvProjectName overrides the Compose project.
 	//
@@ -78,28 +76,26 @@ var projectNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // Config is the resolved description of a local data plane.
 type Config struct {
-	Roots            paths.Roots
-	ProjectName      string
-	Database         string
-	User             string
-	Bucket           string
-	PGPort           int
-	MinIOPort        int
-	MinIOConsolePort int
+	Roots       paths.Roots
+	ProjectName string
+	Database    string
+	User        string
+	Bucket      string
+	PGPort      int
+	ObjectsPort int
 }
 
 // NewConfig builds the configuration for the given roots, applying any
 // port overrides from the environment.
 func NewConfig(roots paths.Roots) (*Config, error) {
 	c := &Config{
-		Roots:            roots,
-		ProjectName:      DefaultProjectName,
-		Database:         DefaultDatabase,
-		User:             DefaultUser,
-		Bucket:           DefaultBucket,
-		PGPort:           DefaultPGPort,
-		MinIOPort:        DefaultMinIOPort,
-		MinIOConsolePort: DefaultMinIOConsolePort,
+		Roots:       roots,
+		ProjectName: DefaultProjectName,
+		Database:    DefaultDatabase,
+		User:        DefaultUser,
+		Bucket:      DefaultBucket,
+		PGPort:      DefaultPGPort,
+		ObjectsPort: DefaultObjectsPort,
 	}
 
 	for _, override := range []struct {
@@ -107,8 +103,7 @@ func NewConfig(roots paths.Roots) (*Config, error) {
 		env  string
 	}{
 		{&c.PGPort, EnvPGPort},
-		{&c.MinIOPort, EnvMinIOPort},
-		{&c.MinIOConsolePort, EnvMinIOConsolePort},
+		{&c.ObjectsPort, EnvObjectsPort},
 	} {
 		if err := applyPortOverride(override.env, override.port); err != nil {
 			return nil, err
@@ -162,9 +157,8 @@ func applyPortOverride(env string, port *int) error {
 // with a message that does not name the cause.
 func (c *Config) validatePorts() error {
 	named := map[string]int{
-		EnvPGPort:           c.PGPort,
-		EnvMinIOPort:        c.MinIOPort,
-		EnvMinIOConsolePort: c.MinIOConsolePort,
+		EnvPGPort:      c.PGPort,
+		EnvObjectsPort: c.ObjectsPort,
 	}
 	seen := map[int]string{}
 	for name, port := range named {
@@ -223,7 +217,7 @@ func (c *Config) Bootstrap() *paths.Bootstrap {
 			User:     c.User,
 		},
 		Objects: paths.ObjectStore{
-			Endpoint: fmt.Sprintf("http://127.0.0.1:%d", c.MinIOPort),
+			Endpoint: fmt.Sprintf("http://127.0.0.1:%d", c.ObjectsPort),
 			Bucket:   c.Bucket,
 		},
 		RootOfTrust: paths.RootOfTrust{
@@ -244,20 +238,20 @@ func (c *Config) composeEnv(rootKey []byte) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate postgres data directory: %w", err)
 	}
-	minioDir, err := c.Roots.ServiceDataDir(paths.ServiceMinIO)
+	objectsDir, err := c.Roots.ServiceDataDir(paths.ServiceObjects)
 	if err != nil {
-		return nil, fmt.Errorf("locate minio data directory: %w", err)
+		return nil, fmt.Errorf("locate object store data directory: %w", err)
 	}
 
 	pgPassword, err := secret.Derive(rootKey, secret.ContextPostgresPassword)
 	if err != nil {
 		return nil, fmt.Errorf("derive postgres password: %w", err)
 	}
-	minioUser, err := secret.Derive(rootKey, secret.ContextObjectAccessKey)
+	objectsAccessKey, err := secret.Derive(rootKey, secret.ContextObjectAccessKey)
 	if err != nil {
 		return nil, fmt.Errorf("derive object access key: %w", err)
 	}
-	minioPassword, err := secret.Derive(rootKey, secret.ContextObjectSecretKey)
+	objectsSecretKey, err := secret.Derive(rootKey, secret.ContextObjectSecretKey)
 	if err != nil {
 		return nil, fmt.Errorf("derive object secret key: %w", err)
 	}
@@ -270,16 +264,15 @@ func (c *Config) composeEnv(rootKey []byte) ([]string, error) {
 		"MAESTRO_GID=" + strconv.Itoa(os.Getgid()),
 
 		"MAESTRO_PG_DATA_DIR=" + pgDir,
-		"MAESTRO_MINIO_DATA_DIR=" + minioDir,
+		"MAESTRO_OBJECTS_DATA_DIR=" + objectsDir,
 
 		"MAESTRO_PG_PORT=" + strconv.Itoa(c.PGPort),
-		"MAESTRO_MINIO_PORT=" + strconv.Itoa(c.MinIOPort),
-		"MAESTRO_MINIO_CONSOLE_PORT=" + strconv.Itoa(c.MinIOConsolePort),
+		"MAESTRO_OBJECTS_PORT=" + strconv.Itoa(c.ObjectsPort),
 
 		"MAESTRO_PG_DATABASE=" + c.Database,
 		"MAESTRO_PG_USER=" + c.User,
 		"MAESTRO_PG_PASSWORD=" + pgPassword,
-		"MAESTRO_MINIO_ROOT_USER=" + minioUser,
-		"MAESTRO_MINIO_ROOT_PASSWORD=" + minioPassword,
+		"MAESTRO_OBJECTS_ACCESS_KEY=" + objectsAccessKey,
+		"MAESTRO_OBJECTS_SECRET_KEY=" + objectsSecretKey,
 	}, nil
 }

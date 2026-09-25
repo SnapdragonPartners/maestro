@@ -449,7 +449,19 @@ func (s *Store) observeResidue(
 // A timestamp in the future is skew large enough to say so. Left silent, a
 // store running fast would defer every candidate forever and the sweep would
 // look like it had nothing to do.
+//
+// No timestamp at all is judged YOUNG. The zero time is year 1, which every
+// horizon is after, so a missing date would otherwise read as ancient and
+// condemn storage whose age nobody measured -- a live in-progress upload,
+// on a server that omits Initiated from its listing (SeaweedFS 4.47 did).
+// Held back, such storage is reclaimed once the server dates it, or never;
+// condemned, a writer mid-upload loses its work. The safe side is stated.
 func (s *Store) tooFresh(ctx context.Context, key string, stamp, horizon time.Time) bool {
+	if stamp.IsZero() {
+		slog.Default().WarnContext(ctx, "object store reported storage with no timestamp; treating it as fresh",
+			"key", key)
+		return true
+	}
 	if stamp.After(s.now()) {
 		slog.Default().WarnContext(ctx, "object store dated storage in the future; check clock skew",
 			"key", key, "stamp", stamp)

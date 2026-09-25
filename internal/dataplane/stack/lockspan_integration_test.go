@@ -5,6 +5,7 @@ package stack
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,7 +55,7 @@ func TestResetBlocksForTheWholeOfARestore(t *testing.T) {
 	// Services going down is the first externally visible evidence that the
 	// restore is past its lock acquisition.
 	deadline := time.Now().Add(2 * time.Minute)
-	for len(runningServices(t, cfg)) > 0 {
+	for len(runningServicesMidTransition(t, cfg)) > 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the restore never stopped the plane, so it cannot be shown to hold the lock")
 		}
@@ -156,4 +157,28 @@ func TestDownBlocksForTheWholeOfAnOpenSeam(t *testing.T) {
 	case <-time.After(2 * time.Minute):
 		t.Fatal("Down never completed after the seam was closed; the shared lock was not released")
 	}
+}
+
+// runningServicesMidTransition is runningServices for a poll that runs
+// WHILE the plane is being taken down by another actor. `docker compose ps`
+// lists containers and then inspects each, and a container the restore's
+// `down` removes between the two answers "No such container" -- a transient
+// of exactly the transition this poll is waiting for, not a broken plane.
+// Production only ever reads project state under the lifecycle lock, where
+// nothing removes containers concurrently, so the tolerance belongs here
+// and not in readProjectState. Any other error is still fatal.
+func runningServicesMidTransition(t *testing.T, cfg *Config) []string {
+	t.Helper()
+	env, err := cfg.composeEnv(placeholderKey())
+	if err != nil {
+		t.Fatalf("compose env: %v", err)
+	}
+	state, err := readProjectState(t.Context(), cfg.ProjectName, testComposeFile(), env)
+	if err != nil {
+		if strings.Contains(err.Error(), "No such container") {
+			return []string{"(transitioning)"}
+		}
+		t.Fatalf("read project state: %v", err)
+	}
+	return state.running
 }

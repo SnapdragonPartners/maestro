@@ -65,6 +65,10 @@ type Blob struct {
 	// the branch, and an untested multipart-copy path is the one that runs
 	// for the largest, most expensive evidence media.
 	copyLimit int64
+	// listPageSize bounds one page of the multipart listing. A field for
+	// the same reason as copyLimit: at the protocol maximum a test would
+	// need over a thousand abandoned uploads to reach a page boundary.
+	listPageSize int
 }
 
 // Version is one stored version of a key, including delete markers.
@@ -137,7 +141,7 @@ func newBlob(cfg Config, transport http.RoundTripper) (*Blob, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build object store client: %w", err)
 	}
-	return &Blob{core: core, bucket: cfg.Bucket, copyLimit: singleCopyLimit}, nil
+	return &Blob{core: core, bucket: cfg.Bucket, copyLimit: singleCopyLimit, listPageSize: defaultListPageSize}, nil
 }
 
 // EnsureBucket creates the bucket if it is missing, enables versioning, and
@@ -284,9 +288,9 @@ const nullVersion = "null"
 //     slot when it arrives, which is the unfenced delete versioning exists
 //     to close.
 //
-// MEASURED: a write to an unversioned or suspended bucket returns an EMPTY
-// id on the pinned server, and the literal "null" on a store that reports
-// S3's null version.
+// MEASURED on both MinIO and SeaweedFS: a write to an unversioned or
+// suspended bucket returns an EMPTY id, and the literal "null" is what a
+// store that reports S3's null version would return.
 func fencedVersion(key, version string) (string, error) {
 	switch version {
 	case "":
@@ -387,12 +391,12 @@ func (b *Blob) DeleteVersion(ctx context.Context, key, versionID string) error {
 		// leniency, which is the difference between a claim that clears and a
 		// claim retried forever.
 		//
-		// MEASURED: the pinned server returns no error at all for a repeated
-		// delete, for an unknown version id on a live key, or for a key that
-		// never existed -- so the integration suite cannot tell whether this
-		// tolerance is here. A store that answers NoSuchVersion or NoSuchKey
-		// can, and it is unit-tested against a canned response instead, as
-		// AbortUpload's equivalent tolerance is.
+		// MEASURED on both MinIO and SeaweedFS: the server returns no error
+		// at all for a repeated delete, for an unknown version id on a live
+		// key, or for a key that never existed -- so the integration suite
+		// cannot tell whether this tolerance is here. A store that answers
+		// NoSuchVersion or NoSuchKey can, and it is unit-tested against a
+		// canned response instead.
 		if !isNoSuchKey(err) {
 			return fmt.Errorf("delete %s version %s: %w", key, versionID, err)
 		}
@@ -405,29 +409,25 @@ func (b *Blob) DeleteVersion(ctx context.Context, key, versionID string) error {
 // not report them and DeleteVersion cannot remove them. A process that dies
 // mid-upload leaves them behind forever unless something enumerates them.
 //
-// There are two operations rather than one, because the server offers two
-// modes and no third. MEASURED against the pinned MinIO image
-// (RELEASE.2025-09-07T16-13-09Z), `ListMultipartUploads` treats its prefix
-// parameter as an EXACT object key:
+// There are two operations rather than one, and both match client-side,
+// because the two servers this adapter has run against disagree about what
+// the listing's prefix parameter means and neither reading serves both
+// callers:
 //
-//	prefix ""                    -> every upload in the bucket
-//	prefix "staging/org/upload"  -> that key's uploads
-//	prefix "staging/"            -> NOTHING, with no error
-//	prefix "staging/org/uploa"   -> NOTHING, with no error
+//   - MinIO (RELEASE.2025-09-07T16-13-09Z, the provider until 2026-09-24)
+//     treated the prefix as an EXACT object key -- "staging/" answered
+//     nothing, with no error (minio/minio#11686, closed as intended). A
+//     single prefix-taking operation would have told a sweep asking for one
+//     organization's residue that there was none.
+//   - SeaweedFS (the provider since, spike_local-object-provider.md) treats
+//     it as a prefix, as S3 does: the exact-key form would answer `key` plus
+//     every key it prefixes, and the abort fence depends on not getting
+//     those.
 //
-// This is deliberate upstream and long-standing, not a defect in this
-// deployment (minio/minio#11686, closed as intended; #20989, open), and it
-// diverges from S3. A single prefix-taking operation would therefore be a
-// silent lie: a sweep asking for one organization's residue would be told
-// there is none and would reclaim nothing, which is the same
-// correct-on-the-easy-case failure the composite checksum had.
-//
-// So prefix matching happens HERE, over the only listing the server will
-// actually answer, and each caller names which question it is asking. Both
-// operations filter client-side, which also makes them correct against a
-// store with true prefix semantics: real S3 would answer the exact-key form
-// with `key` plus every key it prefixes, and the abort fence depends on not
-// getting those.
+// So each caller names which question it is asking, the server is asked in
+// the one form both answer -- the whole bucket -- and the match is made
+// here. Correct on either server; on a prefix-honouring one it lists more
+// than it keeps, which the sweep's cadence can afford.
 
 // ListUploadsForKey enumerates the incomplete uploads on exactly one key.
 func (b *Blob) ListUploadsForKey(ctx context.Context, key string) ([]Upload, error) {
@@ -456,7 +456,7 @@ func (b *Blob) listUploads(ctx context.Context, serverPrefix string, keep func(k
 	)
 	for {
 		result, err := b.core.ListMultipartUploads(ctx, b.bucket, serverPrefix,
-			keyMarker, uploadIDMarker, "", listPageSize)
+			keyMarker, uploadIDMarker, "", b.listPageSize)
 		if err != nil {
 			return nil, fmt.Errorf("list incomplete uploads: %w", err)
 		}
@@ -475,26 +475,34 @@ func (b *Blob) listUploads(ctx context.Context, serverPrefix string, keep func(k
 		if !result.IsTruncated {
 			return uploads, nil
 		}
+		// A truncated page with no marker to continue from cannot be paged;
+		// asking again would serve the same page forever. Refused rather
+		// than looped: the sweep runs on a cadence and a listing that never
+		// returns would stall every reclamation behind it.
+		if result.NextKeyMarker == "" && result.NextUploadIDMarker == "" {
+			return nil, errors.New("list incomplete uploads: the server truncated the listing and " +
+				"supplied no marker to continue from")
+		}
 		// Both markers advance together: paging on the key alone repeats
 		// every upload after the first for a key with several in flight.
+		// SeaweedFS supplies only the upload-id marker and pages on it
+		// alone; MinIO never truncated; a store following the protocol
+		// sends both. Passing both through as received is right for each.
 		keyMarker, uploadIDMarker = result.NextKeyMarker, result.NextUploadIDMarker
 	}
 }
 
-// listPageSize bounds one page of multipart uploads. The value is the
-// protocol's own default maximum.
+// defaultListPageSize is the protocol's own default maximum for one page of
+// multipart uploads.
 //
-// MEASURED: the pinned MinIO image IGNORES this parameter — asked for one
-// upload with four present it returns all four, `IsTruncated` false. That
-// is the only lever a test has, so nothing here establishes what it would
-// do at a scale where it might truncate of its own accord; what is
-// established is that paging above cannot be reached by asking. The marker
-// arithmetic is tested against canned responses instead.
-//
-// It stays because a store that honours the protocol will truncate at a
-// thousand and answer the rest only to a correct pair of markers, and
-// ADR 0022 names other backends as a later choice.
-const listPageSize = 1000
+// MEASURED on both providers. MinIO IGNORED this parameter -- asked for one
+// upload with four present it returned all four, `IsTruncated` false -- so
+// while it was the provider the paging above could not be reached by
+// asking and the marker arithmetic was tested against canned responses.
+// SeaweedFS honours it: asked for one of two it returns one, truncated,
+// with both markers set, and the integration suite now drives a real page
+// boundary (TestTheServerTruncatesAndPagesTheUploadListing).
+const defaultListPageSize = 1000
 
 // AbortUpload aborts exactly one upload id on one key.
 //
@@ -516,11 +524,11 @@ func (b *Blob) AbortUpload(ctx context.Context, key, uploadID string) error {
 		// that claim permanently, on the one path whose whole purpose is
 		// to finish work an earlier actor could not.
 		//
-		// MEASURED: the pinned server returns no error at all for a repeat
-		// abort, or for an id that never existed. S3 answers NoSuchUpload,
-		// so this tolerance is for a store that follows the protocol and
-		// cannot be exercised here; it is unit-tested against a canned
-		// response instead.
+		// MEASURED: MinIO returned no error at all for a repeat abort or an
+		// unknown id, so while it was the provider this tolerance could only
+		// be unit-tested against a canned response. SeaweedFS answers
+		// NoSuchUpload for an id that never existed (and no error for the
+		// repeat of a real one), so the integration suite now exercises it.
 		if minio.ToErrorResponse(err).Code != noSuchUpload {
 			return fmt.Errorf("abort upload %s on %s: %w", uploadID, key, err)
 		}

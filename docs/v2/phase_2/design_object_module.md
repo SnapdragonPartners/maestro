@@ -1,12 +1,20 @@
 +++
 title = "Phase 2 Item 6 Design: The Object Module"
-edit_date = "2026-07-30"
+edit_date = "2026-09-24"
 status = "live"
 summary = "Design for the object module: a blob adapter separated from the persistence seam that owns pins, content proven by a local hash with the server checksum kept to transport, an amended cross-store commit order whose expected evidence set is extracted from the reviewed payload and assembled from the locked base for amendments, pins mutable only while their holder is a draft, and reclamation fenced by owner-token leases whose expiry is one of three mechanisms rather than the only one, and by durable claims over version-specific deletes, with abandoned staging discovered by prefix scan where lease absence is the licence to delete."
 type = "design"
 +++
 
 # Phase 2 Item 6 Design: The Object Module
+
+> **Provider note (2026-09-24).** Every reference to MinIO below describes the
+> local object provider as it was when this design was accepted. MinIO was
+> replaced by SeaweedFS on the fix branch for #350; the measurements this
+> design records against "the pinned image" were re-taken against SeaweedFS
+> in [the Phase 3 spike](../phase_3/spike_local-object-provider.md) and in the
+> adapter's own comments, and where the two servers differ the code and its
+> tests now say so. This design is otherwise unchanged and still binds.
 
 Status: **live** — Accepted by Codex and DR after nine review rounds (four P1s, then five, four, three, four, one, one, one and one; all upheld). The pin-race contract is **measured and asserted**, not predicted (D6a). The ADR 0022 amendment (D5) is **accepted** by Codex and DR (2026-07-29).
 

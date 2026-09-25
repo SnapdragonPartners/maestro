@@ -221,7 +221,7 @@ func TestOpenSeamRefusesAnUnusableObjectStore(t *testing.T) {
 	}
 	port := addr.Port
 	_ = listener.Close()
-	cfg.MinIOPort = port
+	cfg.ObjectsPort = port
 
 	got, ok := readiness.CauseOf(openRefusal(t, cfg))
 	if !ok || got != readiness.ObjectStoreUnusable {

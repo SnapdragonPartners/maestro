@@ -1,4 +1,4 @@
-# Maestro v2 data plane: Postgres + MinIO, for local mode.
+# Maestro v2 data plane: Postgres + SeaweedFS (the object store), for local mode.
 #
 # Not launched directly — `make dataplane-up` runs cmd/dataplanectl, which
 # resolves the storage roots, pre-creates and verifies the bind-mount
@@ -61,23 +61,34 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  minio:
-    image: ${MAESTRO_MINIO_IMAGE}
+  # Named for its role, not its image: the launcher waits on and CI inspects
+  # services by the names paths.Services() declares.
+  objects:
+    image: ${MAESTRO_OBJECTS_IMAGE}
     user: "${MAESTRO_UID}:${MAESTRO_GID}"
-    command: server /data --console-address ":9001"
+    # One process carrying master, volume server, filer and the S3 gateway,
+    # with every piece of state under /data (spike_local-object-provider.md):
+    # the cold backup copies that one directory and nothing else. The
+    # master/volume/filer ports stay inside the container; only the S3
+    # gateway is published. -ip pins the internal addresses so the services
+    # find each other without DNS; -ip.bind lets the published port be
+    # reached. The credentials are the environment fallback the binary
+    # documents, which governs only while no identities file or filer-side
+    # S3 configuration exists -- the plane must never write either.
+    command: >
+      server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -master.volumeSizeLimitMB=1024 -volume.max=0
+      -s3 -s3.port=8333
     environment:
-      MINIO_ROOT_USER: ${MAESTRO_MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MAESTRO_MINIO_ROOT_PASSWORD}
+      AWS_ACCESS_KEY_ID: ${MAESTRO_OBJECTS_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${MAESTRO_OBJECTS_SECRET_KEY}
     ports:
-      - "127.0.0.1:${MAESTRO_MINIO_PORT}:9000"
-      - "127.0.0.1:${MAESTRO_MINIO_CONSOLE_PORT}:9001"
+      - "127.0.0.1:${MAESTRO_OBJECTS_PORT}:8333"
     volumes:
-      - "${MAESTRO_MINIO_DATA_DIR}:/data"
+      - "${MAESTRO_OBJECTS_DATA_DIR}:/data"
     labels:
       com.maestro.component: dataplane
-    # No container healthcheck: this image is built on a minimal base whose
-    # available tooling has changed across releases, so a healthcheck that
-    # shells out to curl or mc is a pin-bump away from silently failing.
-    # The launcher probes /minio/health/live from the host instead, which
-    # tests the published port — the thing callers actually use.
+    # No container healthcheck, for the same reason as before: the launcher
+    # probes GET /healthz on the published S3 port from the host, which
+    # tests the thing callers actually use. Cold start is ~18s.
     restart: unless-stopped

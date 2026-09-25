@@ -77,22 +77,17 @@ func TestAbortUploadRefusesAnUnnamedUpload(t *testing.T) {
 	}
 }
 
-// The two tests below drive the multipart listing against CANNED
-// responses, and they are unit tests on purpose.
+// The tests below drive the multipart listing against CANNED responses,
+// and they are unit tests on purpose.
 //
-// Neither behaviour they protect can be produced by the pinned server. It
-// ignores `max-uploads` entirely — it answers with everything it has and
-// never sets IsTruncated, so the paging loop is unreachable against it —
-// and it treats the listing prefix as an exact object key, so the
-// exact-key filter never has anything to narrow. Both mutations survive
-// every real-server test in this package, which is precisely the
-// "guard behind a working guard" case: unexercisable here, and the only
-// thing standing between a portable adapter and a silently wrong one on a
-// store that follows the protocol.
-//
-// So the server is stubbed to behave the way the protocol says, and what
-// is asserted is what the ADAPTER does with it — including the exact
-// markers it sends on the second request, which is the whole of the fix.
+// They were written when MinIO was the provider, which ignored
+// `max-uploads` and treated the listing prefix as an exact key, so neither
+// behaviour they protect could be produced by a real server. SeaweedFS
+// honours both, and the integration suite now exercises the real path
+// (TestTheServerTruncatesAndPagesTheUploadListing) -- but SeaweedFS sends
+// only the upload-id marker back, so the two-marker request shape a
+// protocol-following store needs is still asserted only here, against a
+// stub that behaves the way the protocol says.
 
 // uploadListing serves a scripted sequence of multipart listings and
 // records the query each request carried.
@@ -191,6 +186,28 @@ func TestListUploadsAdvancesBothPagingMarkers(t *testing.T) {
 				page, got.Get("key-marker"), got.Get("upload-id-marker"),
 				want.keyMarker, want.uploadIDMarker)
 		}
+	}
+}
+
+// TestListUploadsRefusesATruncatedPageWithNoMarker: a server that says
+// "there is more" and does not say where from would be asked for the same
+// page forever. The adapter refuses instead of looping, and the stub's own
+// page-count check is what proves it stopped asking.
+func TestListUploadsRefusesATruncatedPageWithNoMarker(t *testing.T) {
+	listing := &uploadListing{pages: []string{
+		uploadPage(true, "", "", [2]string{"org/aa/bb/one", "upload-1"}),
+	}}
+	blob := stubbedBlob(t, listing)
+
+	_, err := blob.ListUploadsUnder(context.Background(), "")
+	if err == nil {
+		t.Fatal("a truncated page with no marker was paged rather than refused")
+	}
+	if !strings.Contains(err.Error(), "no marker") {
+		t.Fatalf("error %q does not say why", err)
+	}
+	if len(listing.requests) != 1 {
+		t.Fatalf("the adapter made %d requests after a markerless truncation, want 1", len(listing.requests))
 	}
 }
 

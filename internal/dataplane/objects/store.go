@@ -121,7 +121,7 @@ const (
 	IncompleteWritesProviderReclaimed IncompleteWriteSupport = "provider-reclaimed"
 )
 
-// Compile-time proof that the MinIO adapter satisfies both halves.
+// Compile-time proof that the S3 adapter satisfies both halves.
 //
 // It proves that and nothing more: it says *Blob implements both interfaces,
 // not that any provider declaring Enumerable implements the reclaimer. That

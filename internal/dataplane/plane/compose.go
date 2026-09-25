@@ -4,7 +4,7 @@
 // It is the provider-neutral half of what `stack.OpenSeam` used to do alone
 // (#286). That function assembles six LOCAL things — a data root, an flock
 // lifecycle lock, restore-marker guards, a key file, a DSN derived from it,
-// and a MinIO bucket — and then composes them. Only the composing is portable,
+// and an S3 bucket — and then composes them. Only the composing is portable,
 // and everything above it describes one deployment: `stack.Config` is a Docker
 // Compose topology, ports and container labels included.
 //

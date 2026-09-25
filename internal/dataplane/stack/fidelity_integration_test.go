@@ -197,7 +197,7 @@ func TestBackupOfAPartlyRunningPlaneRestoresThatExactState(t *testing.T) {
 	// also have running -- a test that stopped ALL but one would pass for a
 	// backup that restarted nothing.
 	if err := compose(t.Context(), cfg.ProjectName, testComposeFile(), env,
-		"stop", "--timeout", "60", string(paths.ServiceMinIO)); err != nil {
+		"stop", "--timeout", "60", string(paths.ServiceObjects)); err != nil {
 		t.Fatalf("stop one service: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestCancelledBackupStillRestartsThePlane(t *testing.T) {
 		padding[i] = byte(i)
 	}
 	for chunk := range 24 {
-		name := filepath.Join(cfg.Roots.Data, string(paths.ServiceMinIO), fmt.Sprintf("padding-%02d", chunk))
+		name := filepath.Join(cfg.Roots.Data, string(paths.ServiceObjects), fmt.Sprintf("padding-%02d", chunk))
 		if err := os.WriteFile(name, padding, 0o600); err != nil {
 			t.Fatalf("pad the data root: %v", err)
 		}

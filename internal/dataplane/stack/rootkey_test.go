@@ -90,7 +90,7 @@ func TestExistingPlaneRefusesToMintAKey(t *testing.T) {
 // unreachable.
 func TestObjectDataAloneMarksThePlaneExisting(t *testing.T) {
 	cfg := planeAt(t)
-	populate(t, cfg, paths.ServiceMinIO)
+	populate(t, cfg, paths.ServiceObjects)
 
 	if _, err := rootKeyFor(cfg, lifecycleUp); !errors.Is(err, paths.ErrNoKey) {
 		t.Fatalf("a plane holding objects but no cluster returned %v, want ErrNoKey: the "+
