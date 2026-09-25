@@ -22,7 +22,12 @@ import (
 // `up` returns, because a surviving deletion claim is condemned storage that
 // may still be there AND a digest whose writers cannot take the
 // existing-object shortcut until it clears.
-var provisioningOrder = []string{"waitReady", "ensureBucket", "migrateLocked", "reconcileClaims"}
+//
+// waitObjectsServe sits between the bucket and the migrations: it is the
+// proof that the store serves READS, which liveness does not establish on
+// a provider whose gateway answers before its volume server has
+// registered (#350), and it needs the bucket to write its probe into.
+var provisioningOrder = []string{"waitReady", "ensureBucket", "waitObjectsServe", "migrateLocked", "reconcileClaims"}
 
 // TestUpProvisionsBetweenReadinessAndMigration reads `up`'s own source.
 //

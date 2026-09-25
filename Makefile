@@ -59,7 +59,7 @@ test: benchmark-test
 # Run integration tests only (requires API keys and external services)
 #
 # -count=1 is REQUIRED, not tidiness. These tests depend on mutable external
-# state -- a Postgres cluster, MinIO buckets, containers -- and Go's test cache
+# state -- a Postgres cluster, object-store buckets, containers -- and Go's test cache
 # keys on inputs it can see, which excludes all of it. A cached PASS is a claim
 # about a plane that may since have been reset, migrated or emptied. Measured on
 # #286's branch: a pre-push run that failed was followed by one that passed with
@@ -81,7 +81,7 @@ test: benchmark-test
 # The inflation column has TWO causes, not one, which is why its range is so
 # wide. Packages built on `planetest` take a database and a bucket per test on
 # the ALREADY-RUNNING dev stack, so under `./...` they compete for one Postgres
-# and one MinIO -- that is benchmarkimport's ~58x. The stack package instead
+# and one object store -- that is benchmarkimport's ~58x. The stack package instead
 # brings up its own throwaway Compose planes per test, so it is not queueing
 # behind anyone for a shared server; its 1.04x is near-zero for that reason and
 # because, as the long pole, little else is still running near its end. Reading

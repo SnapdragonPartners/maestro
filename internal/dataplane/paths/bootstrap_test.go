@@ -132,11 +132,11 @@ func TestEnsureServiceDataDirs(t *testing.T) {
 	if ensureErr := roots.Ensure(); ensureErr != nil {
 		t.Fatalf("Ensure: %v", ensureErr)
 	}
-	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceMinIO); svcErr != nil {
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceObjects); svcErr != nil {
 		t.Fatalf("EnsureServiceDataDirs: %v", svcErr)
 	}
 
-	for _, service := range []Service{ServicePostgres, ServiceMinIO} {
+	for _, service := range []Service{ServicePostgres, ServiceObjects} {
 		dir, dirErr := roots.ServiceDataDir(service)
 		if dirErr != nil {
 			t.Fatalf("ServiceDataDir(%q): %v", service, dirErr)
@@ -154,7 +154,7 @@ func TestEnsureServiceDataDirs(t *testing.T) {
 	}
 
 	// Re-running setup is the everyday path.
-	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceMinIO); svcErr != nil {
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceObjects); svcErr != nil {
 		t.Fatalf("second EnsureServiceDataDirs: %v", svcErr)
 	}
 	// The data root itself stays tight; only the children are mounted.
@@ -394,14 +394,14 @@ func TestEnsureServiceDataDirsRejectsUnusableExisting(t *testing.T) {
 	}
 
 	// A file where the directory should be.
-	minioDir, err := roots.ServiceDataDir(ServiceMinIO)
+	objectsDir, err := roots.ServiceDataDir(ServiceObjects)
 	if err != nil {
 		t.Fatalf("ServiceDataDir: %v", err)
 	}
-	if writeErr := os.WriteFile(minioDir, []byte("not a dir"), 0o600); writeErr != nil {
+	if writeErr := os.WriteFile(objectsDir, []byte("not a dir"), 0o600); writeErr != nil {
 		t.Fatalf("write: %v", writeErr)
 	}
-	if svcErr := roots.EnsureServiceDataDirs(ServiceMinIO); svcErr == nil {
+	if svcErr := roots.EnsureServiceDataDirs(ServiceObjects); svcErr == nil {
 		t.Fatal("a regular file was accepted as a service data directory")
 	}
 }
@@ -412,10 +412,10 @@ func TestEnsureServiceDataDirsLeavesNoProbeFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceMinIO); svcErr != nil {
+	if svcErr := roots.EnsureServiceDataDirs(ServicePostgres, ServiceObjects); svcErr != nil {
 		t.Fatalf("EnsureServiceDataDirs: %v", svcErr)
 	}
-	for _, service := range []Service{ServicePostgres, ServiceMinIO} {
+	for _, service := range []Service{ServicePostgres, ServiceObjects} {
 		dir, dirErr := roots.ServiceDataDir(service)
 		if dirErr != nil {
 			t.Fatalf("ServiceDataDir: %v", dirErr)

@@ -1,10 +1,14 @@
 package stack
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -84,12 +88,21 @@ func Up(ctx context.Context, c *Config, composeFile string) (err error) {
 	return up(ctx, c, composeFile)
 }
 
-func up(ctx context.Context, c *Config, composeFile string) (err error) {
+// prepareRoots creates the storage roots and every service's bind-mount
+// source before anything is started.
+func prepareRoots(c *Config) error {
 	if rootsErr := c.Roots.Ensure(); rootsErr != nil {
 		return fmt.Errorf("prepare storage roots: %w", rootsErr)
 	}
 	if dirsErr := c.Roots.EnsureServiceDataDirs(paths.Services()...); dirsErr != nil {
 		return fmt.Errorf("prepare service data directories: %w", dirsErr)
+	}
+	return nil
+}
+
+func up(ctx context.Context, c *Config, composeFile string) (err error) {
+	if rootsErr := prepareRoots(c); rootsErr != nil {
+		return rootsErr
 	}
 
 	rootKey, keyErr := rootKeyFor(c, lifecycleUp)
@@ -155,6 +168,9 @@ func up(ctx context.Context, c *Config, composeFile string) (err error) {
 	blob, bucketErr := ensureBucket(ctx, c, rootKey)
 	if bucketErr != nil {
 		return bucketErr
+	}
+	if serveErr := waitObjectsServe(ctx, blob); serveErr != nil {
+		return serveErr
 	}
 	if migrateErr := migrateLocked(ctx, c, rootKey); migrateErr != nil {
 		return migrateErr
@@ -783,7 +799,7 @@ const maxEvidencePaths = 5
 //
 //   - Not any entry, because `up` creates the service directories before it
 //     asks whether the root is fresh, so on a first run this walk already
-//     sees empty postgres/ and minio/. Counting them would refuse to mint a
+//     sees empty postgres/ and objects/. Counting them would refuse to mint a
 //     key on a clean checkout and fail `dataplane-up` from empty.
 //   - Not any regular file, because a FIFO, socket, device node, or anything
 //     else unrecognised would then read as "fresh" — and freshness is the
@@ -1200,7 +1216,7 @@ func loadImagePins(composeFile string) ([]string, error) {
 
 	lines := strings.Split(string(raw), "\n")
 	pins := make([]string, 0, len(lines))
-	required := map[string]bool{"MAESTRO_PG_IMAGE": false, "MAESTRO_MINIO_IMAGE": false}
+	required := map[string]bool{"MAESTRO_PG_IMAGE": false, "MAESTRO_OBJECTS_IMAGE": false}
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -1273,8 +1289,8 @@ func compose(ctx context.Context, project, composeFile string, env []string, arg
 	return err
 }
 
-// waitReady blocks until Postgres reports healthy and MinIO answers its
-// liveness endpoint, or the deadline passes.
+// waitReady blocks until Postgres reports healthy and the object store
+// answers its liveness endpoint, or the deadline passes.
 //
 // readyTimeout is enforced by a context, not by a loop condition. A loop
 // that only checks elapsed time between iterations cannot bound an
@@ -1317,21 +1333,21 @@ func waitReadyFor(ctx context.Context, c *Config, composeFile string, env, servi
 	defer cancel()
 
 	wantPostgres := slices.Contains(services, string(paths.ServicePostgres))
-	wantMinIO := slices.Contains(services, string(paths.ServiceMinIO))
+	wantObjects := slices.Contains(services, string(paths.ServiceObjects))
 
 	var lastErr error
 	for {
-		var pgErr, minioErr error
+		var pgErr, objectsErr error
 		if wantPostgres {
 			pgErr = postgresHealthy(waitCtx, c.ProjectName, composeFile, env)
 		}
-		if wantMinIO {
-			minioErr = minioLive(waitCtx, c)
+		if wantObjects {
+			objectsErr = objectsLive(waitCtx, c)
 		}
-		if pgErr == nil && minioErr == nil {
+		if pgErr == nil && objectsErr == nil {
 			return nil
 		}
-		lastErr = errors.Join(pgErr, minioErr)
+		lastErr = errors.Join(pgErr, objectsErr)
 
 		select {
 		case <-waitCtx.Done():
@@ -1408,31 +1424,98 @@ func postgresHealthy(ctx context.Context, project, composeFile string, env []str
 	return errors.New("postgres container not found")
 }
 
-// minioLive probes the published port from the host.
+// objectsLive probes the published S3 port from the host.
 //
-// Host-side rather than a container healthcheck: this image's minimal base
-// has changed its available tooling across releases, so a healthcheck
-// shelling out to curl or mc is one pin-bump from silently breaking. This
-// also tests the path callers actually use — the published port.
-func minioLive(ctx context.Context, c *Config) error {
+// Host-side rather than a container healthcheck, so the probe tests the
+// path callers actually use — the published port — and does not depend on
+// what tooling the image's base happens to ship. SeaweedFS answers GET
+// /healthz on the S3 gateway port, unauthenticated, and serves S3 within
+// about a second of it; a cold start takes ~18s (spike_local-object-provider.md).
+func objectsLive(ctx context.Context, c *Config) error {
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/minio/health/live", c.MinIOPort)
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", c.ObjectsPort)
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, url, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("build minio health request: %w", err)
+		return fmt.Errorf("build object store health request: %w", err)
 	}
 	// Not http.DefaultClient: it has no timeout, so a connection that is
 	// accepted and then never answered would hang on the context alone.
 	client := &http.Client{Timeout: probeTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("minio not answering: %w", err)
+		return fmt.Errorf("object store not answering: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("minio health returned %s", resp.Status)
+		return fmt.Errorf("object store health returned %s", resp.Status)
+	}
+	return nil
+}
+
+// waitObjectsServe blocks until the object store serves a READ, or the
+// deadline passes.
+//
+// Liveness is not usability, and on this provider the gap is real: the S3
+// gateway answers /healthz and the bucket's metadata is readable before the
+// volume server that holds object bytes has registered, and a read in that
+// window fails with InternalError. Under the full integration suite, where
+// several planes cold-start at once, key recovery's first read after
+// restart landed in it. So `up` proves the path callers need -- write,
+// read back, delete by version -- through the same adapter they use, and
+// retries until it holds. The probe leaves nothing behind: a
+// version-specific delete writes no marker.
+func waitObjectsServe(ctx context.Context, blob *objects.Blob) error {
+	waitCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+	defer cancel()
+	var lastErr error
+	for {
+		if lastErr = objectsRoundTrip(waitCtx, blob); lastErr == nil {
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("%w within %s: the object store answers its liveness probe but does not serve reads: %w",
+				ErrNotReady, readyTimeout, lastErr)
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// readinessPrefix is where the round-trip probe writes. Outside every
+// organization's key space, so nothing that enumerates organization
+// residue can mistake it for an object of theirs.
+const readinessPrefix = "readiness/"
+
+func objectsRoundTrip(ctx context.Context, blob *objects.Blob) error {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Errorf("readiness probe nonce: %w", err)
+	}
+	key := readinessPrefix + hex.EncodeToString(nonce[:])
+	body := []byte("maestro object store readiness probe " + key)
+
+	version, err := blob.PutStaged(ctx, key, int64(len(body)), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("readiness write: %w", err)
+	}
+	reader, err := blob.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("readiness read: %w", errors.Join(err, blob.DeleteVersion(ctx, key, version)))
+	}
+	got, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	deleteErr := blob.DeleteVersion(ctx, key, version)
+	if readErr != nil || closeErr != nil {
+		return fmt.Errorf("readiness read: %w", errors.Join(readErr, closeErr, deleteErr))
+	}
+	if !bytes.Equal(got, body) {
+		return fmt.Errorf("readiness read returned %d bytes that differ from the %d written: %w",
+			len(got), len(body), errors.Join(errors.New("content mismatch"), deleteErr))
+	}
+	if deleteErr != nil {
+		return fmt.Errorf("readiness probe cleanup: %w", deleteErr)
 	}
 	return nil
 }

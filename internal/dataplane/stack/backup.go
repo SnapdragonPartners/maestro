@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"orchestrator/internal/dataplane/paths"
 )
 
 // ArchiveDataDir is the copied data root inside an archive, and
@@ -354,7 +357,7 @@ func composeStop(ctx context.Context, project, composeFile string, env []string)
 //
 // The wait is part of the restart rather than a courtesy on top of it.
 // `compose start` returns as soon as the containers are started, which is
-// not the same as Postgres accepting connections or MinIO answering: a
+// not the same as Postgres accepting connections or the object store answering: a
 // backup that returned there reported success while an outage it caused was
 // still in progress, and a caller that reached for the plane immediately
 // afterwards got a connection error out of a maintenance operation that
@@ -382,6 +385,28 @@ func composeStart(
 	if err := waitReadyFor(ctx, c, composeFile, env, state.running); err != nil {
 		return fmt.Errorf("wait for %s to be usable again after backup: %w",
 			strings.Join(state.running, ", "), err)
+	}
+	// Liveness is not usability for the object store (waitObjectsServe).
+	// A backup renders no credential and runs keyless by design, so the
+	// read-path proof is made only when the key is here to derive them
+	// from -- asked for through rootKeyFor, the one place that decides key
+	// access, in load-only mode. A keyless backup restarts to liveness and
+	// no further, which is what it could promise before as well.
+	if slices.Contains(state.running, string(paths.ServiceObjects)) {
+		rootKey, keyErr := rootKeyFor(c, lifecycleBackup)
+		if errors.Is(keyErr, ErrPlaneLocked) {
+			return nil
+		}
+		if keyErr != nil {
+			return fmt.Errorf("after backup: %w", keyErr)
+		}
+		blob, blobErr := ensureBucket(ctx, c, rootKey)
+		if blobErr != nil {
+			return fmt.Errorf("after backup: %w", blobErr)
+		}
+		if serveErr := waitObjectsServe(ctx, blob); serveErr != nil {
+			return fmt.Errorf("wait for the object store to serve reads again after backup: %w", serveErr)
+		}
 	}
 	return nil
 }

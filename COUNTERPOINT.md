@@ -35,7 +35,7 @@
   `go test` on the packages the commit touches. The `Makefile` is the source
   of truth for build prerequisites; if a step here disagrees with it, the
   `Makefile` wins and this file is the defect. Do not run
-  the `integration` build tag — those suites need Docker, Postgres and MinIO —
+  the `integration` build tag — those suites need Docker, Postgres and SeaweedFS —
   and report them as not run; the author runs them and records the outcome in
   the notes. golangci-lint and `make sqlc-check` may be unavailable offline;
   report them as not run and let CI cover them.

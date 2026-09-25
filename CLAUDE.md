@@ -271,7 +271,7 @@ The v2 data plane has its own lifecycle, and nothing that touches Postgres
 or the object store works without it:
 
 ```bash
-make dataplane-up        # start Postgres + MinIO, wait for health, migrate
+make dataplane-up        # start Postgres + SeaweedFS, wait for health, migrate
 make dataplane-migrate   # apply migrations to an already-running stack
 make dataplane-down      # stop containers, leaving all data in place
 make dataplane-reset FORCE=1   # DESTRUCTIVE: delete the cluster and object store

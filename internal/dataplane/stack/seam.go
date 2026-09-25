@@ -112,7 +112,7 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry, keys *co
 	}
 
 	// Everything above this line is local: a data root, an flock, marker
-	// guards, a key file, a DSN derived from it, and a MinIO bucket. Composing
+	// guards, a key file, a DSN derived from it, and an S3 bucket. Composing
 	// them is not, so it happens in `plane`, which knows none of it.
 	//
 	// The lock is handed over as an OWNED resource rather than released here,

@@ -65,11 +65,11 @@ func testConfig(t *testing.T) Config {
 		t.Fatalf("derive object secret key: %v", err)
 	}
 
-	port := 59000 // stack.DefaultMinIOPort
-	if raw := os.Getenv("MAESTRO_MINIO_PORT"); raw != "" {
+	port := 59000 // stack.DefaultObjectsPort
+	if raw := os.Getenv("MAESTRO_OBJECTS_PORT"); raw != "" {
 		parsed, convErr := strconv.Atoi(raw)
 		if convErr != nil {
-			t.Fatalf("MAESTRO_MINIO_PORT=%q: %v", raw, convErr)
+			t.Fatalf("MAESTRO_OBJECTS_PORT=%q: %v", raw, convErr)
 		}
 		port = parsed
 	}
@@ -845,88 +845,130 @@ func TestAbortUploadSparesOtherUploadsOnTheSameKey(t *testing.T) {
 	}
 }
 
-// TestListUploadsUnderFindsWhatTheServerPrefixCannot is the regression test
-// for the measurement recorded beside the implementation: this server's
-// multipart listing takes an EXACT key, so asking it for a prefix returns
-// nothing at all and reports no error. Prefix matching therefore happens in
-// the adapter, over the bucket-wide listing.
+// TestUploadListingsMatchClientSideOnAPrefixServer is the regression test
+// for the client-side matching recorded beside the implementation, on the
+// server that makes it necessary in the OTHER direction from MinIO.
 //
-// Without the client-side filter a sweep would be told an organization has
-// no incomplete uploads and would reclaim none of them, silently.
-func TestListUploadsUnderFindsWhatTheServerPrefixCannot(t *testing.T) {
+// SeaweedFS treats the listing's prefix as a prefix, as S3 does. So the
+// exact-key form -- what the sweep's abort fence asks -- would be answered
+// with the key AND every key it prefixes, and a fence that took the server's
+// word would abort uploads on keys it never condemned. The adapter matches
+// exactly, client-side, and this proves that on a server where the raw call
+// over-returns.
+//
+// THE MUTANT: drop the exact-match filter in ListUploadsForKey (pass the key
+// as the server prefix and keep everything). The "prefix of a key" case
+// below then returns the upload on the longer key.
+func TestUploadListingsMatchClientSideOnAPrefixServer(t *testing.T) {
 	blob := testBlob(t)
 	ctx := t.Context()
 
-	wanted := map[string]bool{}
-	for _, key := range []string{"staging/org/one", "staging/org/two"} {
-		wanted[startAbandonedUpload(t, blob, key)] = true
-	}
-	// A different prefix, which must not be returned.
+	one := startAbandonedUpload(t, blob, "staging/org/one")
+	two := startAbandonedUpload(t, blob, "staging/org/two")
 	elsewhere := startAbandonedUpload(t, blob, "other-org/aa/bb/digest")
 
-	// The server behaviour this works around, asserted rather than
-	// described. If a pin bump makes this pass a prefix through, revisit
-	// the note in blob.go: the client-side filter may become belt and
-	// braces rather than the only thing that works.
-	raw, err := blob.core.ListMultipartUploads(ctx, blob.bucket, "staging/", "", "", "", 1000)
+	// The server behaviour the exact-key filter defends against, asserted
+	// rather than described: a prefix that is not a key still returns the
+	// upload on the key it prefixes.
+	raw, err := blob.core.ListMultipartUploads(ctx, blob.bucket, "staging/org/on", "", "", "", 1000)
 	if err != nil {
 		t.Fatalf("raw ListMultipartUploads: %v", err)
 	}
-	if len(raw.Uploads) != 0 {
-		t.Fatalf("the pinned server now answers a prefixed multipart listing with %d uploads; "+
-			"the measurement recorded in blob.go is stale", len(raw.Uploads))
+	if len(raw.Uploads) != 1 || raw.Uploads[0].UploadID != one {
+		t.Fatalf("the server answered the prefix \"staging/org/on\" with %v; this test assumes a "+
+			"prefix-honouring server (MinIO answered nothing), so the measurement in blob.go is stale",
+			rawUploadIDs(raw))
 	}
 
-	uploads, err := blob.ListUploadsUnder(ctx, "staging/")
+	// The adapter's exact-key form must NOT be fooled by that.
+	partial, err := blob.ListUploadsForKey(ctx, "staging/org/on")
+	if err != nil {
+		t.Fatalf("ListUploadsForKey: %v", err)
+	}
+	if len(partial) != 0 {
+		t.Fatalf("ListUploadsForKey(\"staging/org/on\") returned %v; a prefix of a key is not the key, "+
+			"and an abort fence trusting this would abort uploads it never condemned", uploadIDs(partial))
+	}
+	exact, err := blob.ListUploadsForKey(ctx, "staging/org/one")
+	if err != nil {
+		t.Fatalf("ListUploadsForKey: %v", err)
+	}
+	if len(exact) != 1 || exact[0].UploadID != one {
+		t.Fatalf("ListUploadsForKey(\"staging/org/one\") = %v, want exactly %s", uploadIDs(exact), one)
+	}
+
+	// The prefix form keeps what is under the prefix and nothing else.
+	under, err := blob.ListUploadsUnder(ctx, "staging/")
 	if err != nil {
 		t.Fatalf("ListUploadsUnder: %v", err)
 	}
-	if len(uploads) != len(wanted) {
-		t.Fatalf("ListUploadsUnder(staging/) returned %v, want the %d staging uploads",
-			uploadIDs(uploads), len(wanted))
+	got := uploadIDs(under)
+	slices.Sort(got)
+	want := []string{one, two}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("ListUploadsUnder(staging/) = %v, want %v", got, want)
 	}
-	for _, upload := range uploads {
-		if !wanted[upload.UploadID] {
-			t.Fatalf("ListUploadsUnder(staging/) returned %s on %s, outside the prefix",
-				upload.UploadID, upload.Key)
-		}
-	}
-
 	all, err := blob.ListUploadsUnder(ctx, "")
 	if err != nil {
 		t.Fatalf("ListUploadsUnder(\"\"): %v", err)
 	}
-	if len(all) != len(wanted)+1 {
-		t.Fatalf("the empty prefix returned %d uploads, want every one in the bucket", len(all))
-	}
-	if !slices.ContainsFunc(all, func(u Upload) bool { return u.UploadID == elsewhere }) {
-		t.Fatalf("the empty prefix omitted %s", elsewhere)
+	if len(all) != 3 || !slices.ContainsFunc(all, func(u Upload) bool { return u.UploadID == elsewhere }) {
+		t.Fatalf("the empty prefix returned %v, want every upload in the bucket", uploadIDs(all))
 	}
 }
 
-// TestTheServerNeverTruncatesTheUploadListing pins the second measurement
-// recorded beside the implementation: this server ignores `max-uploads` and
-// answers with everything it has, never setting IsTruncated.
+func rawUploadIDs(result minio.ListMultipartUploadsResult) []string {
+	ids := make([]string, 0, len(result.Uploads))
+	for i := range result.Uploads {
+		ids = append(ids, result.Uploads[i].UploadID)
+	}
+	return ids
+}
+
+// TestTheServerTruncatesAndPagesTheUploadListing drives the adapter's
+// two-marker paging against a real page boundary. MinIO ignored
+// `max-uploads`, so while it was the provider this path was reachable only
+// through canned responses; SeaweedFS honours it.
 //
-// That makes the adapter's paging unreachable HERE, which is why the marker
-// arithmetic is tested against canned responses instead. Asserting the
-// server's behaviour is what keeps those unit tests honest: if a pin bump
-// starts truncating, this fails and says the real path is now exercisable.
-func TestTheServerNeverTruncatesTheUploadListing(t *testing.T) {
+// The page size is lowered to one so three uploads make three pages. Two of
+// them sit on ONE key, which is the case the two-marker rule exists for:
+// paging on the key marker alone would repeat every upload after the first
+// on that key, or skip them.
+//
+// THE MUTANT: advance only the key marker. The listing then either repeats
+// an upload or drops one, and the count or the set below is wrong.
+func TestTheServerTruncatesAndPagesTheUploadListing(t *testing.T) {
 	blob := testBlob(t)
-	const key = "org/aa/bb/many"
-	for range 3 {
-		startAbandonedUpload(t, blob, key)
+	ctx := t.Context()
+	want := []string{
+		startAbandonedUpload(t, blob, "org/aa/bb/many"),
+		startAbandonedUpload(t, blob, "org/aa/bb/many"),
+		startAbandonedUpload(t, blob, "org/aa/bb/other"),
 	}
 
-	result, err := blob.core.ListMultipartUploads(t.Context(), blob.bucket, "", "", "", "", 1)
+	// The server behaviour, asserted: one asked for, one returned, truncated,
+	// with both markers set.
+	raw, err := blob.core.ListMultipartUploads(ctx, blob.bucket, "", "", "", "", 1)
 	if err != nil {
 		t.Fatalf("raw ListMultipartUploads: %v", err)
 	}
-	if len(result.Uploads) != 3 || result.IsTruncated {
-		t.Fatalf("asking for 1 upload returned %d with truncated=%v; the pinned server now honours "+
-			"max-uploads and the measurement in blob.go is stale",
-			len(result.Uploads), result.IsTruncated)
+	if len(raw.Uploads) != 1 || !raw.IsTruncated || raw.NextUploadIDMarker == "" {
+		t.Fatalf("asking for 1 of 3 uploads returned %d, truncated=%v, markers=%q/%q; this test assumes a "+
+			"server that honours max-uploads (MinIO did not), so the measurement in blob.go is stale",
+			len(raw.Uploads), raw.IsTruncated, raw.NextKeyMarker, raw.NextUploadIDMarker)
+	}
+
+	blob.listPageSize = 1
+	all, err := blob.ListUploadsUnder(ctx, "")
+	if err != nil {
+		t.Fatalf("ListUploadsUnder: %v", err)
+	}
+	got := uploadIDs(all)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("paged listing = %v, want %v: the marker arithmetic repeated or dropped an upload", got, want)
 	}
 }
 
@@ -970,17 +1012,25 @@ func TestPutStagedRejectsCorruptionInTransit(t *testing.T) {
 	// options and the other two are one deliberate change away from it.
 	shipped := minio.PutObjectOptions{Checksum: minio.ChecksumSHA256}
 
+	// The refusal codes are the PROVIDER's, recorded per provider so a
+	// change is noticed rather than absorbed: MinIO answered
+	// SignatureDoesNotMatch and XAmzContentChecksumMismatch -- the S3
+	// codes; SeaweedFS answers InternalError for a chunk whose signature
+	// does not match and InvalidDigest for a trailing checksum that does
+	// not. The property under test is the refusal and the absence of the
+	// object afterwards, which hold on both; the code is asserted so a
+	// malformed-framing error cannot pass as an integrity refusal.
 	for _, testCase := range []struct {
-		name    string
-		options minio.PutObjectOptions
-		refusal string
+		name     string
+		options  minio.PutObjectOptions
+		refusals []string
 	}{
-		{"shipped", shipped, "SignatureDoesNotMatch"},
+		{"shipped", shipped, []string{"SignatureDoesNotMatch", "InternalError"}},
 		{"unsigned payload", minio.PutObjectOptions{
 			Checksum:             minio.ChecksumSHA256,
 			DisableContentSha256: true,
-		}, "XAmzContentChecksumMismatch"},
-		{"neither mechanism", minio.PutObjectOptions{DisableContentSha256: true}, ""},
+		}, []string{"XAmzContentChecksumMismatch", "InvalidDigest"}},
+		{"neither mechanism", minio.PutObjectOptions{DisableContentSha256: true}, nil},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			corrupting, err := newBlob(cfg, &corruptingTransport{needle: body})
@@ -992,7 +1042,7 @@ func TestPutStagedRejectsCorruptionInTransit(t *testing.T) {
 			_, err = corrupting.core.Client.PutObject(t.Context(), cfg.Bucket, key,
 				bytes.NewReader(body), int64(len(body)), testCase.options)
 
-			if testCase.refusal == "" {
+			if testCase.refusals == nil {
 				// The control: with nothing guarding the wire the server
 				// stores what it received, corruption and all.
 				if err != nil {
@@ -1012,8 +1062,8 @@ func TestPutStagedRejectsCorruptionInTransit(t *testing.T) {
 			// Named explicitly: any error would satisfy a weaker assertion,
 			// including the malformed-framing error an incorrectly built
 			// corruption produces, which says nothing about integrity.
-			if code := minio.ToErrorResponse(err).Code; code != testCase.refusal {
-				t.Fatalf("upload refused with %q (%v), want %s", code, err, testCase.refusal)
+			if code := minio.ToErrorResponse(err).Code; !slices.Contains(testCase.refusals, code) {
+				t.Fatalf("upload refused with %q (%v), want one of %v", code, err, testCase.refusals)
 			}
 			exists, err := honest.Exists(t.Context(), key)
 			if err != nil {

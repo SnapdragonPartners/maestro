@@ -146,7 +146,7 @@ jobs:
             || { echo "pgdata is not owned by the invoking uid"; exit 1; }
 
           # Containers run as the invoking user (design D2a).
-          for svc in postgres minio; do
+          for svc in postgres objects; do
             got=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.Config.User}}')
             test "$got" = "$(id -u):$(id -g)" \
               || { echo "$svc runs as '$got', want '$(id -u):$(id -g)'"; exit 1; }
@@ -160,7 +160,7 @@ jobs:
           # so a service that lost it would pass. The negative check below
           # is safe either way — any match is a failure — but it is written
           # per-service too, so both read the same way.
-          for svc in postgres minio; do
+          for svc in postgres objects; do
             labels=$(docker inspect "maestro-dataplane-$svc-1" --format '{{json .Config.Labels}}')
             echo "$labels" | grep -q '"com.maestro.component":"dataplane"' \
               || { echo "$svc is missing the component label"; exit 1; }
@@ -218,16 +218,16 @@ jobs:
           MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
         run: |
           set -euo pipefail
-          # BOTH services: checking only Postgres would let MinIO be
+          # BOTH services: checking only Postgres would let the object store be
           # replaced or restarted without failing the job.
-          for svc in postgres minio; do
+          for svc in postgres objects; do
             eval "before_id_$svc=\$(docker inspect maestro-dataplane-$svc-1 --format '{{.Id}}')"
             eval "before_started_$svc=\$(docker inspect maestro-dataplane-$svc-1 --format '{{.State.StartedAt}}')"
           done
 
           make dataplane-up
 
-          for svc in postgres minio; do
+          for svc in postgres objects; do
             after_id=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.Id}}')
             after_started=$(docker inspect "maestro-dataplane-$svc-1" --format '{{.State.StartedAt}}')
             eval "before_id=\$before_id_$svc"
@@ -250,20 +250,20 @@ jobs:
         run: |
           set -euo pipefail
           pg_dir="$MAESTRO_HOME/data/postgres"
-          minio_dir="$MAESTRO_HOME/data/minio"
+          objects_dir="$MAESTRO_HOME/data/objects"
 
           test -d "$pg_dir/pgdata" || { echo "nothing to reset"; exit 1; }
           pg_inode=$(stat -c %i "$pg_dir")
-          minio_inode=$(stat -c %i "$minio_dir")
+          objects_inode=$(stat -c %i "$objects_dir")
 
           make dataplane-reset FORCE=1
 
           test "$(stat -c %i "$pg_dir")" = "$pg_inode" \
             || { echo "postgres data directory was recreated; bind mounts would be stranded"; exit 1; }
-          test "$(stat -c %i "$minio_dir")" = "$minio_inode" \
-            || { echo "minio data directory was recreated; bind mounts would be stranded"; exit 1; }
+          test "$(stat -c %i "$objects_dir")" = "$objects_inode" \
+            || { echo "object store data directory was recreated; bind mounts would be stranded"; exit 1; }
           test -z "$(ls -A "$pg_dir")" || { echo "postgres data survived reset"; exit 1; }
-          test -z "$(ls -A "$minio_dir")" || { echo "minio data survived reset"; exit 1; }
+          test -z "$(ls -A "$objects_dir")" || { echo "object store data survived reset"; exit 1; }
 
       - name: Tear down
         if: always()
@@ -305,7 +305,7 @@ jobs:
   #
   # TWO THINGS THIS JOB MUST NOT DO, both of which a naive version does:
   #
-  #   1. Run without a plane. Most of these tests reach Postgres and MinIO
+  #   1. Run without a plane. Most of these tests reach Postgres and the object store
   #      through `planetest`, which SKIPS when it cannot connect -- correct for a
   #      developer who has not run `make dataplane-up`, and in CI a false green.
   #      Measured 2026-09-20 with no plane behind MAESTRO_HOME: `store/postgres`,
