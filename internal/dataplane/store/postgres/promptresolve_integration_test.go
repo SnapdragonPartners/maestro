@@ -337,7 +337,11 @@ func TestDispatchVersionSemantics(t *testing.T) {
 	// built an hour later. So a pack INSTALLED under dev, dispatched under
 	// dev with a refusing contract, is refused -- the equal strings did not
 	// stand in for a comparison.
-	devInstalled, err := resolutionStore(t, f, dev, fixturePrompts(t)).InstallPromptPack(ctx, f.installInput(validPack(), "coder"))
+	// Installed by the dev COMPOSITION, so its installer is the dev binary:
+	// the seam refuses a built-in installer naming any other version.
+	devInput := f.installInput(validPack(), "coder")
+	devInput.Installer = builtin(harness.Development)
+	devInstalled, err := resolutionStore(t, f, dev, fixturePrompts(t)).InstallPromptPack(ctx, devInput)
 	if err != nil {
 		t.Fatal(err)
 	}
