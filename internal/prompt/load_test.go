@@ -87,6 +87,14 @@ func TestLoadRefusesWhatTheLayoutDoesNotName(t *testing.T) {
 		{"trailing content", func(f fstest.MapFS) {
 			f[ManifestFile] = &fstest.MapFile{Data: []byte(fixtureManifest + "\n{}")}
 		}, ErrLayout, "trailing content"},
+		// The manifest DECLARES its coverage: an omitted or null roles key is
+		// not an empty list, or a typo would mint a no-coverage pack.
+		{"roles omitted", func(f fstest.MapFS) {
+			f[ManifestFile] = &fstest.MapFile{Data: []byte(`{"display_name":"x","maestro_version":{"min":"v1","max":"v2"}}`)}
+		}, ErrLayout, "must declare roles"},
+		{"roles null", func(f fstest.MapFS) {
+			f[ManifestFile] = &fstest.MapFile{Data: []byte(`{"display_name":"x","maestro_version":{"min":"v1","max":"v2"},"roles":null}`)}
+		}, ErrLayout, "must declare roles"},
 		// Unmatched closers: Decoder.More answers false at these, so a check
 		// built on it admits them (review round 6, P2).
 		{"trailing unmatched brace", func(f fstest.MapFS) {

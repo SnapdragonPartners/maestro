@@ -52,18 +52,23 @@ func TestParsePromptSelectorRefusesANameByName(t *testing.T) {
 
 func TestParsePromptSelectorRefusesEverythingElse(t *testing.T) {
 	for name, raw := range map[string]string{
-		"empty object":         `{}`,
-		"both":                 `{"content_id": "` + uuid.New().String() + `", "identity": "pack-jcs-sha256-v1:` + hex64 + `"}`,
-		"unknown field":        `{"pack": "x"}`,
-		"non-uuid content id":  `{"content_id": "not-a-uuid"}`,
-		"legacy scheme":        `{"identity": "v1-manifest-sha256:sha256:` + hex64 + `"}`,
-		"bare hex":             `{"identity": "` + hex64 + `"}`,
-		"uppercase hex":        `{"identity": "pack-jcs-sha256-v1:` + strings.ToUpper(hex64) + `"}`,
-		"third scheme":         `{"identity": "pack-jcs-sha256-v2:` + hex64 + `"}`,
-		"null":                 `null`,
-		"array":                `[]`,
-		"number":               `1`,
-		"trailing garbage":     `{"content_id": "` + uuid.New().String() + `"} x`,
+		"empty object":        `{}`,
+		"both":                `{"content_id": "` + uuid.New().String() + `", "identity": "pack-jcs-sha256-v1:` + hex64 + `"}`,
+		"unknown field":       `{"pack": "x"}`,
+		"non-uuid content id": `{"content_id": "not-a-uuid"}`,
+		"legacy scheme":       `{"identity": "v1-manifest-sha256:sha256:` + hex64 + `"}`,
+		"bare hex":            `{"identity": "` + hex64 + `"}`,
+		"uppercase hex":       `{"identity": "pack-jcs-sha256-v1:` + strings.ToUpper(hex64) + `"}`,
+		"third scheme":        `{"identity": "pack-jcs-sha256-v2:` + hex64 + `"}`,
+		"null":                `null`,
+		"array":               `[]`,
+		"number":              `1`,
+		"trailing garbage":    `{"content_id": "` + uuid.New().String() + `"} x`,
+		// Decoder.More answers false at an unmatched closer, so a parser
+		// checking More instead of EOF accepted these (PR #367 review).
+		"trailing closer":      `{"content_id": "` + uuid.New().String() + `"}]`,
+		"trailing brace":       `{"content_id": "` + uuid.New().String() + `"}}`,
+		"second value":         `{"content_id": "` + uuid.New().String() + `"} {}`,
 		"explicit null fields": `{"content_id": null}`,
 	} {
 		if _, err := ParsePromptSelector([]byte(raw)); err == nil {

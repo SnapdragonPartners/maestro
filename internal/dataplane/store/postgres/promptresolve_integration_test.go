@@ -170,6 +170,17 @@ func TestDispatchSelectorPrecedence(t *testing.T) {
 		t.Fatalf("explicit selector resolved %s, want %s", viaExplicit.PromptResolution.ContentID, empty.Content.ContentID)
 	}
 
+	// An explicit selector naming BOTH a content id and an identity is
+	// refused rather than resolved by whichever field the lookup prefers
+	// (PR #367 review): the pair below disagree, and taking the content id
+	// would silently ignore the identity the caller also asserted.
+	both := &store.PromptSelector{ContentID: &empty.Content.ContentID, Identity: ptr(second.Record.Content.Identity())}
+	_, err = s.CreateDispatch(ctx, f.organizationID, g.story.StoryID, both)
+	assertDispatchRejected(t, err, store.ReasonPromptSelectorUnresolved)
+	if !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("both-set selector: %v, want the exactly-one rule named", err)
+	}
+
 	// A name where a selector belongs is refused at the write, by name.
 	_, err = s.CreateConfigurationRecord(ctx, store.CreateConfigurationRecordInput{
 		Value: json.RawMessage(`"default"`), Key: store.PromptPackKey,

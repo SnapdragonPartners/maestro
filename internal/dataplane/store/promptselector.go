@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 
@@ -73,7 +74,11 @@ func ParsePromptSelector(raw []byte) (PromptSelector, error) {
 	if err := decoder.Decode(&wire); err != nil {
 		return PromptSelector{}, fmt.Errorf("prompt pack selector is not an object with content_id or identity: %w", err)
 	}
-	if decoder.More() {
+	// EOF, not More(): More reports another element of the CURRENT array or
+	// object and says nothing about bytes after the top-level value, so
+	// `{...}]` would pass it. The same rule the manifest loader applies.
+	var trailing json.RawMessage
+	if trailingErr := decoder.Decode(&trailing); !errors.Is(trailingErr, io.EOF) {
 		return PromptSelector{}, errors.New("prompt pack selector carries trailing content after the object")
 	}
 	if wire.Name != nil {

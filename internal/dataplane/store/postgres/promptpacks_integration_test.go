@@ -121,9 +121,16 @@ func TestInstallPromptPackWritesBothRowsAndIsIdempotentByIdentity(t *testing.T) 
 
 	// A later binary re-installing identical content is a no-op, not a
 	// conflict: the installer is provenance, recorded once (design D11).
+	// The later binary is a later COMPOSITION: its installer version is the
+	// harness it runs, which the seam enforces (a caller cannot name another
+	// binary as the carrier -- PR #367 review).
+	laterVersion, err := harness.Parse("v2.0.0-phase.3.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
 	later := f.installInput(validPack(), "coder")
-	later.Installer = builtin("v2.0.0-phase.3.9.9")
-	if got, err := s.InstallPromptPack(ctx, later); err != nil || got.Created {
+	later.Installer = builtin(laterVersion.String())
+	if got, err := packStore(t, f, laterVersion).InstallPromptPack(ctx, later); err != nil || got.Created {
 		t.Fatalf("re-install from a later binary: Created=%v err=%v", got.Created, err)
 	}
 
@@ -210,6 +217,11 @@ func TestInstallPromptPackRunsTheGateThroughTheContract(t *testing.T) {
 		"a builtin with a mis-stamped version": {func(in *store.InstallPromptPackInput) {
 			in.Installer = builtin("2.0.0")
 		}, harness.ErrMalformedVersion, ""},
+		// Well-formed, but not this composition's: a caller cannot record
+		// another binary as the carrier (PR #367 review).
+		"a builtin naming another binary": {func(in *store.InstallPromptPackInput) {
+			in.Installer = builtin("v2.0.0-phase.3.0.1")
+		}, nil, "this composition's"},
 		"a user installer with no user": {func(in *store.InstallPromptPackInput) {
 			in.Installer = store.PromptPackInstaller{Kind: store.PromptPackInstalledByUser}
 		}, nil, "installing user"},

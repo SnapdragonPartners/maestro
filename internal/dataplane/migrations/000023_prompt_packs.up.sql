@@ -252,10 +252,14 @@ CREATE TABLE prompt_pack_installations (
 
     CONSTRAINT prompt_pack_installations_display_name_check
         CHECK (btrim(display_name, E' \t\r\n') <> ''),
+    -- The FORM of a semver bound, anchored at both ends: `v` major.minor.patch,
+    -- an optional prerelease and an optional build. Ordering is the seam's
+    -- (harness.CheckRange); this refuses a value the seam could not compare,
+    -- such as a trailing suffix, from any writer.
     CONSTRAINT prompt_pack_installations_min_version_check
-        CHECK (min_maestro_version ~ '^v[0-9]+\.[0-9]+\.[0-9]+'),
+        CHECK (min_maestro_version ~ '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'),
     CONSTRAINT prompt_pack_installations_max_version_check
-        CHECK (max_maestro_version ~ '^v[0-9]+\.[0-9]+\.[0-9]+'),
+        CHECK (max_maestro_version ~ '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'),
     CONSTRAINT prompt_pack_installations_declared_roles_check
         CHECK (prompt_pack_roles_canonical(declared_roles)),
     CONSTRAINT prompt_pack_installations_installer_kind_check

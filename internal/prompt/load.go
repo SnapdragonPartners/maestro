@@ -75,9 +75,12 @@ type Pack struct {
 
 // manifest is pack.json's wire shape.
 type manifest struct {
-	DisplayName    string   `json:"display_name"`
-	MaestroVersion rangeDoc `json:"maestro_version"`
-	Roles          []string `json:"roles"`
+	// A pointer, so an omitted or null roles field is told apart from an
+	// explicitly empty one: the manifest DECLARES its coverage, and a typo
+	// in the key must not silently become a no-coverage pack.
+	Roles          *[]string `json:"roles"`
+	DisplayName    string    `json:"display_name"`
+	MaestroVersion rangeDoc  `json:"maestro_version"`
 }
 
 type rangeDoc struct {
@@ -131,8 +134,10 @@ func loadManifest(fsys fs.FS) (*Pack, error) {
 		return nil, fmt.Errorf("%w: %s declares no display_name", ErrLayout, ManifestFile)
 	case doc.MaestroVersion.Min == "" || doc.MaestroVersion.Max == "":
 		return nil, fmt.Errorf("%w: %s must declare maestro_version.min and maestro_version.max", ErrLayout, ManifestFile)
+	case doc.Roles == nil:
+		return nil, fmt.Errorf("%w: %s must declare roles, as a list (empty for a pack that covers no role)", ErrLayout, ManifestFile)
 	}
-	roles, err := canonicalRoles(doc.Roles)
+	roles, err := canonicalRoles(*doc.Roles)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s: %w", ErrLayout, ManifestFile, err)
 	}

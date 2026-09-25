@@ -214,6 +214,10 @@ func TestPromptPackInstallationConstraints(t *testing.T) {
 	// The range's FORM; ordering is the seam's.
 	probe("prompt_pack_installations_min_version_check", "a lower bound without its v", map[string]any{"min": "2.0.0"})
 	probe("prompt_pack_installations_max_version_check", "an upper bound that is the dev sentinel", map[string]any{"max": "dev"})
+	// End-anchored: a well-formed prefix with a suffix the seam could not
+	// compare passed an unanchored pattern (PR #367 review).
+	probe("prompt_pack_installations_min_version_check", "a lower bound with a trailing suffix", map[string]any{"min": "v2.0.0garbage"})
+	probe("prompt_pack_installations_max_version_check", "an upper bound with a fourth component", map[string]any{"max": "v2.0.0.4"})
 	probe("prompt_pack_installations_validated_version_check", "a blank validated version", map[string]any{"validated": " "})
 	probe("prompt_pack_installations_display_name_check", "a blank display name", map[string]any{"name": " \t"})
 	// Cardinality: at most one installation per content.

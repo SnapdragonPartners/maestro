@@ -107,8 +107,15 @@ func rolesFromObject(raw []byte) ([]string, error) {
 	return slices.Sorted(maps.Keys(object)), nil
 }
 
-// checkInstaller validates the governed installer identity.
-func checkInstaller(installer store.PromptPackInstaller) error {
+// checkInstaller validates the governed installer identity against the
+// composition's harness.
+//
+// A built-in installer records the binary that carried the pack, and the
+// one authority for that version is the composition's (design D3): a caller
+// that could name another would record the wrong carrier -- `dev` under a
+// tagged harness, or a tagged version under `dev` -- and nothing could
+// tell. So the value is not merely well-formed; it is the running version.
+func checkInstaller(installer store.PromptPackInstaller, running harness.Version) error {
 	switch installer.Kind {
 	case store.PromptPackInstalledByBuiltin:
 		if installer.UserID != nil {
@@ -116,6 +123,10 @@ func checkInstaller(installer store.PromptPackInstaller) error {
 		}
 		if _, err := harness.Parse(installer.BuiltinMaestroVersion); err != nil {
 			return fmt.Errorf("a built-in installation records the binary version that carried it: %w", err)
+		}
+		if installer.BuiltinMaestroVersion != running.String() {
+			return fmt.Errorf("a built-in installation records the binary that carried it, which is this composition's %s, not %q",
+				running, installer.BuiltinMaestroVersion)
 		}
 	case store.PromptPackInstalledByUser:
 		if installer.UserID == nil {
@@ -162,7 +173,7 @@ func (t *tx) InstallPromptPack(ctx context.Context, input store.InstallPromptPac
 	if err != nil {
 		return empty, err
 	}
-	if installerErr := checkInstaller(input.Installer); installerErr != nil {
+	if installerErr := checkInstaller(input.Installer, t.harness); installerErr != nil {
 		return empty, installerErr
 	}
 	if gateErr := t.gate(input.Entries, input.MinMaestroVersion, input.MaxMaestroVersion, roles); gateErr != nil {

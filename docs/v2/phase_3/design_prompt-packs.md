@@ -1,6 +1,6 @@
 +++
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
-edit_date = "2026-09-24"
+edit_date = "2026-09-25"
 status = "live"
 summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L. The harness version is an opaque validated type supplied through the composition, so no root can open a seam with a malformed one, and a reciprocal deferred foreign key makes a dispatch without its resolution — or a resolution later deleted or re-pointed — a refused statement even for a writer that predates the schema."
 type = "design"
@@ -900,7 +900,10 @@ DR accepted the recorded text at the push gate.*
    a substituted digest rather than refusing.
 4. **A built-in installer's version is parsed with `harness.Parse`**, so the
    `dev` sentinel is admitted alongside a tagged semver and anything else
-   refuses to construct — the same two forms D8 admits everywhere.
+   refuses to construct — the same two forms D8 admits everywhere. And it
+   must **equal the composition's running version** (PR #367 review): a
+   caller that could name another binary as the carrier would record the
+   wrong one, and nothing could tell.
 
 ### D7. The selector is a configuration key, and it is the registry's first live reader
 
@@ -939,7 +942,9 @@ DR accepted the recorded text at the push gate.*
    identity — **is `ReasonNoPromptSelector`**, the same refusal as no
    configuration at any scope, because the dispatch was handed a selector
    and it selects nothing. It is not treated as "fall through to
-   configuration": a caller that passed a selector meant it.
+   configuration": a caller that passed a selector meant it. One that names
+   **both** is refused too (`ReasonPromptSelectorUnresolved`, PR #367
+   review), rather than resolved by whichever field the lookup prefers.
 
 ### D8. Resolution happens once at dispatch, with defined version semantics, and pre-000023 dispatches are refused rather than special-cased
 

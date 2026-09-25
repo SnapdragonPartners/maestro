@@ -92,6 +92,13 @@ func (t *tx) selectorFor(ctx context.Context, operation string, story *store.Sto
 		if explicit.ContentID == nil && explicit.Identity == nil {
 			return store.PromptSelector{}, rejectDispatch(operation, story.StoryID, store.ReasonNoPromptSelector, "the explicit selector is empty")
 		}
+		// Exactly one field, as the wire form requires: with both set the
+		// lookup would take the content id and silently ignore the identity
+		// the caller also asserted.
+		if explicit.ContentID != nil && explicit.Identity != nil {
+			return store.PromptSelector{}, rejectDispatch(operation, story.StoryID, store.ReasonPromptSelectorUnresolved,
+				"the explicit selector names both a content id and an identity; a selector names exactly one")
+		}
 		return *explicit, nil
 	}
 	record, err := t.ResolveConfiguration(ctx, story.OrganizationID, epic.RepositoryID, store.PromptPackKey)
