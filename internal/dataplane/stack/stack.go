@@ -1060,7 +1060,15 @@ func down(ctx context.Context, c *Config, composeFile string) error {
 	if err != nil {
 		return err
 	}
-	if composeErr := compose(ctx, c.ProjectName, composeFile, env, "down"); composeErr != nil {
+	// --remove-orphans: a container in THIS project whose service the
+	// current compose file no longer declares. The one such container that
+	// exists is the retired MinIO service (#350): left running by a plain
+	// `down` it keeps its port bound, so the replacement cannot start, and
+	// keeps its bind mount open, so `reset` empties a directory a live
+	// process is still writing into. The flag is scoped by project label,
+	// so it reaches only what this stack once started -- never v1's
+	// containers, and never another actor's work.
+	if composeErr := compose(ctx, c.ProjectName, composeFile, env, "down", "--remove-orphans"); composeErr != nil {
 		return composeErr
 	}
 	// The recovery container too, which `compose down` cannot reach: it is
@@ -1471,7 +1479,14 @@ func waitObjectsServe(ctx context.Context, blob *objects.Blob) error {
 	defer cancel()
 	var lastErr error
 	for {
-		if lastErr = objectsRoundTrip(waitCtx, blob); lastErr == nil {
+		// Each attempt is bounded on its own, as objectsLive's is: a store
+		// that accepts a connection and then never answers -- which is what
+		// an interrupted stop followed by a start can produce -- must cost
+		// one probe, not the whole readiness budget.
+		attemptCtx, cancelAttempt := context.WithTimeout(waitCtx, probeTimeout)
+		lastErr = objectsRoundTrip(attemptCtx, blob)
+		cancelAttempt()
+		if lastErr == nil {
 			return nil
 		}
 		select {
