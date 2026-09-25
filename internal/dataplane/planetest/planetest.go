@@ -231,15 +231,28 @@ func removeBucket(t *testing.T, cfg *objects.Config) {
 			t.Errorf("cleanup: remove %s@%s: %v", info.Key, info.VersionID, rmErr)
 		}
 	}
-	uploads, err := core.ListMultipartUploads(ctx, cfg.Bucket, "", "", "", "", 1000)
-	if err != nil {
-		t.Errorf("cleanup: list incomplete uploads in %s: %v", cfg.Bucket, err)
-		return
-	}
-	for i := range uploads.Uploads {
-		if abortErr := core.AbortMultipartUpload(ctx, cfg.Bucket, uploads.Uploads[i].Key, uploads.Uploads[i].UploadID); abortErr != nil {
-			t.Errorf("cleanup: abort upload %s on %s: %v", uploads.Uploads[i].UploadID, uploads.Uploads[i].Key, abortErr)
+	// Paged, because SeaweedFS truncates this listing and a page left
+	// unread is an upload left behind, which makes RemoveBucket fail.
+	keyMarker, uploadIDMarker := "", ""
+	for {
+		uploads, err := core.ListMultipartUploads(ctx, cfg.Bucket, "", keyMarker, uploadIDMarker, "", 1000)
+		if err != nil {
+			t.Errorf("cleanup: list incomplete uploads in %s: %v", cfg.Bucket, err)
+			return
 		}
+		for i := range uploads.Uploads {
+			if abortErr := core.AbortMultipartUpload(ctx, cfg.Bucket, uploads.Uploads[i].Key, uploads.Uploads[i].UploadID); abortErr != nil {
+				t.Errorf("cleanup: abort upload %s on %s: %v", uploads.Uploads[i].UploadID, uploads.Uploads[i].Key, abortErr)
+			}
+		}
+		if !uploads.IsTruncated {
+			break
+		}
+		if uploads.NextKeyMarker == "" && uploads.NextUploadIDMarker == "" {
+			t.Errorf("cleanup: %s truncated the upload listing with no marker to continue from", cfg.Bucket)
+			return
+		}
+		keyMarker, uploadIDMarker = uploads.NextKeyMarker, uploads.NextUploadIDMarker
 	}
 	if err := core.RemoveBucket(ctx, cfg.Bucket); err != nil {
 		t.Errorf("cleanup: remove bucket %s: %v", cfg.Bucket, err)

@@ -1,6 +1,6 @@
 +++
 title = "Spike: SeaweedFS As The Local Object Provider"
-edit_date = "2026-09-24"
+edit_date = "2026-09-25"
 status = "draft"
 type = "spike"
 summary = "The narrow spike behind replacing MinIO (#350): SeaweedFS, ADR 0022's named fallback, started the way the plane starts its object provider and measured against the unchanged objects adapter suite and the five process-model constraints the cold backup and key recovery depend on. 42 of 45 adapter tests pass on a post-4.47 build; the three that fail are pins of MinIO's own divergences from S3, which SeaweedFS does not share. All five constraints hold. One real gap found and already fixed upstream: release 4.47 omits the Initiated date from a multipart-upload listing, which the sweep's grace period reads, so the pin must be a build after seaweedfs#11313. Cold start is ~18s against MinIO's ~1s, which the readiness budgets must absorb."
@@ -35,8 +35,10 @@ one bind mount, the invoking uid, credentials by environment, one loopback
 port) and:
 
 1. **The unchanged `internal/dataplane/objects` integration suite** was run
-   against it by pointing `MAESTRO_MINIO_PORT` at the spike container, with
-   the plane's own credential derivation.
+   against it by pointing the adapter suite's port variable at the spike
+   container, with the plane's own credential derivation. (It was
+   `MAESTRO_MINIO_PORT` when the spike ran; the swap renamed it
+   `MAESTRO_OBJECTS_PORT`, which is what the spike README now says.)
 2. **The five constraints** were exercised by hand: arbitrary uid, first-start
    files, credential swap over an existing data directory, cold copy of a
    stopped tree, and a host-side liveness probe.

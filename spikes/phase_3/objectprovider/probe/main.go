@@ -1,18 +1,16 @@
-// probe starts one multipart upload and prints the raw ListMultipartUploads
-// answer, so a candidate's Initiated field can be read as the server sent it.
+// probe starts one multipart upload and prints what minio-go parses from
+// the ListMultipartUploads answer, so a candidate's Initiated field can be
+// read the way the adapter will read it.
 package main
 
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/minio/minio-go/v7/pkg/s3utils"
 )
 
 func main() {
@@ -35,10 +33,9 @@ func main() {
 	if _, err := core.PutObjectPart(ctx, bucket, "probe/key", id, 1, strings.NewReader("hello"), 5, minio.PutObjectPartOptions{}); err != nil {
 		panic(err)
 	}
-	// Raw GET of ?uploads with a presigned URL, so we see the XML untouched.
-	u, err := core.Client.PresignedGetObject(ctx, bucket, "", 3600, nil)
-	_ = u
-	// Simpler: use the SDK's own listing and print what it parsed.
+	// What the SDK parsed. The raw XML was read separately with
+	// `aws --debug s3api list-multipart-uploads`, which is how the missing
+	// <Initiated> element was confirmed at the wire.
 	result, err := core.ListMultipartUploads(ctx, bucket, "", "", "", "", 1000)
 	if err != nil {
 		panic(err)
@@ -46,8 +43,5 @@ func main() {
 	for _, up := range result.Uploads {
 		fmt.Printf("parsed: key=%s id=%s initiated=%v\n", up.Key, up.UploadID, up.Initiated)
 	}
-	_ = s3utils.EncodePath
-	_ = http.Get
-	_ = io.ReadAll
 	_ = core.AbortMultipartUpload(ctx, bucket, "probe/key", id)
 }
