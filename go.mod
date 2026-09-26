@@ -3,7 +3,7 @@ module orchestrator
 go 1.26.8
 
 require (
-	cloud.google.com/go/storage v1.64.0
+	cloud.google.com/go/storage v1.68.0
 	github.com/SnapdragonPartners/maestro-llms v0.7.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
