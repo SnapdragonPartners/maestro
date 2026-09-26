@@ -3,7 +3,7 @@ title = "Design: The Mediated Execution Boundary (Item 5)"
 edit_date = "2026-09-26"
 status = "draft"
 type = "design"
-summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge binding they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
+summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day and reads drainage from per-attempt evidence persisted independently of the outcome; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge binding they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
 +++
 
 # Design: The Mediated Execution Boundary (Item 5)
@@ -173,7 +173,7 @@ plugin:
 | `Checkability` — one sentence: what prevents the execution resource from performing this directly | Reviewed, and rendered in the family's documentation; a family with an empty answer fails registry construction | §7 "a family with no answer is mediated in documentation only" |
 | `CommitPoint` — the instant after which the effect is no longer the Orchestrator's to withhold | Gate 3's reconciliation and, from item 9, drain | §5 "every action family MUST declare its commit point" |
 | `ConditionalCommit bool` — whether the effect site accepts a generation predicate | Item 9's drain disposition | §5's second disposition |
-| `Effect` — the function that performs the action, receiving the revealed secrets and the resolved target | Gate 3 only | D1 |
+| `Effect` — the function that performs the action, receiving the revealed secrets and the resolved target; on failure it reports whether the declared commit point was passed, or that it cannot tell | Gate 3 only; the drain disposition (D11) | D1; ADR 0032 §6 |
 | `Reconcile` — the probe that, given an attempt with no recorded outcome, determines whether its effect committed | Reconciliation of `unknown` (D5) | §3 "resolves as `unknown` and goes to reconciliation" |
 
 Registry construction validates the set: identities unique, every schema
@@ -532,15 +532,29 @@ fenced**. In item 5 the domain half is vacuous — no resource exists to hold
 — but the action half is not: an Orchestrator-side attempt can be `open`
 with its forge mutation unresolved (the request timed out, reconciliation
 found nothing, the remote may yet commit), and a receipt that ignored it
-would be issued while an action can still commit (review round 1). So the
-verb accepts a receipt only when **every attempt of the execution is
-`settled`** — the boundary's drain for Orchestrator-side families is to
-settle each open attempt through `Reconcile`, and an attempt reconciliation
-cannot settle leaves the execution without a receipt and therefore without
-a terminal result; the operator sees an execution stuck open with a named
-unresolved attempt, which is the truthful state. The item 5 receipt type is
-`Receipt{ActionsDrained: true, Domain: DomainNoneHeld}`; item 7 adds the
-domain values. The alternative — record `blocked` without the parameter and
+would be issued while an action can still commit (review round 1). Settlement is
+not drainage: D5 settles an inconclusive reconciliation as `unknown`, and a
+timed-out forge request can be `settled`/`unknown` while the remote may
+still commit (review round 2). So drainage is **persisted evidence of its
+own**, independent of the outcome — `tool_calls.drain_disposition`, ADR 0032
+§6's three dispositions plus the absence of one: `stopped_before_commit`,
+`committed`, `in_fenced_domain`, `unresolved`. It is set at settle from what
+the family can attest: `denied`, `stale` and `blocked` never reached the
+effect and are `stopped_before_commit`; `succeeded` is `committed`; `failed`
+is `stopped_before_commit` only if the family reports the failure landed
+before its declared commit point, else `unresolved`; `unknown` is
+`unresolved`. Unlike the outcome, the disposition may move later, in one
+direction — `unresolved` → `committed` or `stopped_before_commit` — when a
+later `Reconcile` (on retry, on `Recover`, and from item 9 on a schedule)
+obtains attempt-specific evidence; a mutation that can never be confirmed
+either way stays `unresolved`.
+
+The verb accepts a receipt only when **every attempt of the execution has a
+resolved disposition**. An execution with an `unresolved` attempt has no
+receipt and therefore no terminal result; the operator sees it open with the
+attempt named, which is the truthful state and is what ADR 0030 §5 calls
+`unconfirmed`. The item 5 receipt type is `Receipt{ActionsDrained: true,
+Domain: DomainNoneHeld}`; item 7 adds the domain values. The alternative — record `blocked` without the parameter and
 add it later — is exactly the positive-receipt-while-an-action-can-commit
 defect that is an exit-checklist criterion of items 7 and 9.
 
@@ -548,10 +562,11 @@ defect that is an exit-checklist criterion of items 7 and 9.
 may be claimed by the runtime (item 6's agent core, item 8's adapter) and
 are validated here; `blocked` is recorded by the boundary itself from D7's
 headless path, referencing the attempt, because it is "a fact about a gate
-the agent cannot see". At that point the blocked attempt is itself
-`settled` and D4's Story-scoped check guarantees no other attempt of the
-Story is waiting, so the drained half of the receipt holds by construction;
-the verb still checks it.
+the agent cannot see". At that point the blocked attempt is
+`stopped_before_commit` by construction, and D4's Story-scoped check
+guarantees no other attempt of the Story is waiting; earlier attempts of
+the execution must still have resolved dispositions, and the verb checks
+all of them.
 
 **`OpenWork` is extended** (item 3 D9's obligation): an execution with a
 terminal result is not open work and leaves the projection; one with an
@@ -568,6 +583,7 @@ item:
 
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
+| `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled'`; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: present iff `outcome IN ('denied','stale','unknown')` or `outcome = 'failed'` — `failed` keeps `error_message` as the human text and the code is optional; `succeeded` and `blocked` carry none (`blocked` carries the requirement set) | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid`, `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`; CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
 | `repositories` | `forge_provider text`, `forge_base_url text`, `forge_owner text`, `forge_repo text`; CHECK: all four or none; `forge_provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry several forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`); the record has none today (`store/provisioning.go:80-95`) and the family needs an endpoint (review round 1) | D13 |
@@ -593,7 +609,9 @@ with an integration test on a real ephemeral plane:
   and replaces it with the reason-code and requirement-set checks that
   refusal was standing in for;
 - tool calls, continued: `RecordDeniedToolCall` (D4 — settled on insert,
-  no registration) and `ConsumeOperatorDecision` (D7);
+  no registration), `ConsumeOperatorDecision` (D7) and
+  `ResolveDrainDisposition` (D11 — `unresolved` to a resolved value, with
+  the evidence's attempt id);
 - executions: `SetExecutionConfiguration` (inside `AcceptDispatch`),
   `CloseAdmission`, `SupersedeExecution`, `RecordTerminalResult`;
 - secrets: `RevealSecretAtVersion` (D6);
@@ -839,8 +857,8 @@ D10 says why.
 | An effect is reachable only through the boundary (D2) | Import-graph guard over `families/*`; AST guard over `(tools.Tool).Exec` callers | Add an import of a family from `internal/orchestrator`: the guard names the package. Add a direct `Exec` call in a new file under `pkg/agent`: the guard names the file and line |
 | Every attempt is opened before its effect (ADR 0030 §8) | The failing-after-commit test family: the row exists `open` when the effect runs | Reorder `Mediate` to call `Effect` before `OpenToolCall`: the family's effect observes no row |
 | A denial is opened and completed together | A superseded execution's request: one row, `settled`/`denied`, one transaction | Split into two statements with a crash injected between: the row is `open` with no wait, which the test reads as the defect |
-| At-most-once by attempt id (D5) | Same id twice after settle: one effect, the replay returns the recorded result | Skip the settled-row lookup on retry so the request runs the gates again: the family's effect counter reads 2, which is the assertion that fails |
-| Concurrent re-presentations of one approved attempt run one effect (D7) | Two goroutines re-present the same approved id through a barrier: effect counter 1, one consumption timestamp | Make consumption unconditional (drop the `consumed_at IS NULL` predicate): counter reads 2 |
+| At-most-once by attempt id (D5) | Same id twice after settle: one effect, the replay returns the recorded result. The effect is observed as **mutation requests at the forge**, counted by a recording `http.RoundTripper` the test installs on the family's client (POST and PATCH to the pulls endpoint), not as PRs — the forge upserts, so two creates for one head leave one PR (review round 2) | Skip the settled-row lookup on retry so the request runs the gates again: the mutation-request count reads 2, which is the assertion that fails |
+| Concurrent re-presentations of one approved attempt run one effect (D7) | Two goroutines re-present the same approved id through a barrier: mutation-request count 1, one consumption timestamp | Make consumption unconditional — remove the `WHERE` predicates on both `state` and `operator_decision_consumed_at`, leaving only the id — so both re-presentations transition and proceed: count reads 2 |
 | An approved attempt is not misread as interrupted (D7) | Approve, kill before re-presentation, restart, re-present: the effect runs once and the row settles `succeeded` | Move the row to `open` at approval: the re-presentation reconciles, finds nothing, settles `unknown`, and the assertion names the outcome |
 | A recorded intent with no outcome does not re-execute | Kill the process between open and effect (the restart harness's kill path); retry: `Reconcile` runs, no second effect | Skip the wait-state check on retry: the effect runs twice and the family's counter says so |
 | Secrets are substituted before the digest (D6) | The digest over the substituted form equals a digest computed by the test from the reference, and differs from one over the raw form | Digest the raw arguments: equality with the reference-form digest fails, and the test reads the token text out of `arguments` |
@@ -860,9 +878,10 @@ D10 says why.
 | Terminal executions leave `OpenWork` | The restart harness with a terminal result planted: the row is gone; with a waiting attempt: present, wait named | Skip the terminal filter: `execution_awaiting_boundary` counts it |
 | `capability_set` and `headless` are immutable | Direct `UPDATE` refused by the trigger | Drop the trigger: the update succeeds |
 | The migration refuses a populated table | Plant an execution before 000024 | Remove the guard: the migration fails on `NOT NULL` instead, which is the wrong reason and is recorded as such |
-| The forge family creates, replays, updates (D13) | The live-Gitea test in D13 | On the interrupted-`open` retry, run the effect instead of `Reconcile`: two PRs on the forge, which the test counts |
+| The forge family creates, replays, updates (D13) | The live-Gitea test in D13, with the recording transport counting mutation requests | On the interrupted-`open` retry, run the effect instead of `Reconcile`: a second mutation request is recorded (one PR either way, because the forge upserts) |
 | `Reconcile` is attempt-specific | Kill after the forge's 201, before settle; retry: `succeeded`, one PR carrying this attempt's trailer. Then: an update attempt killed after intent, before the request; retry: the existing PR carries the *previous* trailer → `unknown`, not `succeeded` | Settle on head existence alone: the second case settles `succeeded` for an update that never ran |
-| A positive receipt needs drained actions (D11) | An attempt left `open` whose `Reconcile` is inconclusive: `RecordTerminalResult` refused; settle it: accepted | Check only resource waits: recorded with the attempt still open |
+| A positive receipt needs drained actions, not settled ones (D11) | A forge attempt whose request times out is reconciled inconclusively and settles `unknown`/`unresolved`: `RecordTerminalResult` refused **after** settlement. Then the test plants the attempt's trailer on the forge (the late commit), `Recover` re-reconciles, the disposition moves to `committed`, and the receipt is accepted | Accept on `state = 'settled'` instead of on the disposition: recorded while the attempt is `unknown`/`unresolved`, which is the assertion that fails |
+| A disposition moves only from `unresolved` | Direct `UPDATE` of a `committed` disposition refused by the trigger | Drop the trigger: the update succeeds |
 | A denial after closure is still recorded (D4, D9) | Supersede, then request: a `settled`/`denied` row with `authority/superseded` exists and no registration happened | Route the denial through `OpenToolCall`: refused at closure, no row, and the audit assertion fails |
 | The reveal is version-atomic (D6) | Replace the secret between gate 1's resolution and gate 3's reveal: the new verb refuses, `stale/secret_version_moved` | Reveal by id without the version predicate: the new token is used and the PR is created with it |
 | The Story-scoped guard is derived and releases (D4) | While one attempt is `operator_waiting`, a second is refused; after deny/approve/supersede, admitted | Read a cached flag instead of the attempt rows: the post-release request is still refused |
@@ -898,6 +917,15 @@ before the design moved: `pkg/tools/constants.go:3` imports `pkg/config` and
 | 7 | The repository record has no forge binding to supply an endpoint | D12, D13 — four binding columns on `repositories`, `BindRepositoryForge`, the family reads them and admission refuses an unbound target |
 | 8 | Closure refusing `OpenToolCall` suppresses the denied audit row | D4, D9 — registration and denied-audit insertion are separate verbs; closure refuses only registration |
 | 9 | Two mutants could not produce their named failure | Testing table — replaced with mutants that bypass replay suppression and reconciliation, with concurrent and interrupted attempts, failing at the effect count |
+
+Round 2 (Codex, 2026-09-26). Findings 1 and 9 reaffirmed as still open; both
+confirmed — D5 does settle an inconclusive reconciliation as `unknown`, and
+D13's client does upsert on the same head.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 (cont.) | "Every attempt settled" accepts the receipt for a `settled`/`unknown` attempt whose mutation may still commit | D11, D12 — drainage is its own persisted evidence, `tool_calls.drain_disposition`, set from what the family attests at settle and movable only from `unresolved`; the receipt requires every disposition resolved; the test refuses the receipt *after* the `unknown` settlement and accepts it once a late commit is reconciled |
+| 9 (cont.) | Counting PRs cannot see a replayed create (the forge upserts); dropping only the `consumed_at` predicate leaves the `state` predicate protecting the transition | Testing table — the effect is counted as mutation requests through a recording transport on the family's client; the concurrency mutant removes both predicates |
 
 ## Open Questions
 
