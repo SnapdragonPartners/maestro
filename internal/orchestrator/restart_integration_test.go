@@ -153,6 +153,34 @@ type committed struct {
 	Dispatch     uuid.UUID   `json:"dispatch"`
 	Author       uuid.UUID   `json:"author"`
 	Reviewer     uuid.UUID   `json:"reviewer"`
+	// Resolution is the prompt-pack decision the dispatch persisted (item 4,
+	// ADR 0031 §5): what the fresh process must read back verbatim.
+	Resolution resolutionJSON `json:"resolution"`
+}
+
+// resolutionJSON is the part of a store.PromptResolution that identifies
+// the decision: which content, which installation record at which revision,
+// under which validated harness version. Comparable, so the parent asserts
+// equality rather than picking fields.
+type resolutionJSON struct {
+	ResolutionID         string `json:"resolution_id"`
+	Scheme               string `json:"scheme"`
+	Digest               string `json:"digest"`
+	ContentID            string `json:"content_id"`
+	InstallationID       string `json:"installation_id"`
+	InstallationRevision int    `json:"installation_revision"`
+	ResolvedName         string `json:"resolved_name"`
+	DisplayName          string `json:"display_name"`
+	ValidatedVersion     string `json:"validated_version"`
+}
+
+func resolutionOf(r *store.PromptResolution) resolutionJSON {
+	return resolutionJSON{
+		ResolutionID: r.ResolutionID.String(), Scheme: string(r.Identity.Scheme), Digest: r.Identity.Digest,
+		ContentID: r.ContentID.String(), InstallationID: r.InstallationID.String(),
+		InstallationRevision: r.InstallationRevision, ResolvedName: r.ResolvedName,
+		DisplayName: r.Snapshot.DisplayName, ValidatedVersion: r.ValidatedMaestroVersion,
+	}
 }
 
 func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, error) {
@@ -261,6 +289,7 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 		return ids, err
 	}
 	ids.Dispatch = dispatch.StoryDispatchID
+	ids.Resolution = resolutionOf(&dispatch.PromptResolution)
 	if accept {
 		if _, err := seam.AcceptDispatch(ctx, ids.Organization, ids.Dispatch); err != nil {
 			return ids, err
@@ -313,9 +342,10 @@ type projected struct {
 }
 
 type rowJSON struct {
-	Class       string `json:"class"`
-	Component   string `json:"component,omitempty"`
-	Predecessor string `json:"predecessor,omitempty"`
+	Class       string         `json:"class"`
+	Component   string         `json:"component,omitempty"`
+	Predecessor string         `json:"predecessor,omitempty"`
+	Resolution  resolutionJSON `json:"resolution"`
 }
 
 func childRecover() int {
@@ -337,6 +367,14 @@ func childRecover() int {
 	}
 	for _, row := range p.Rows {
 		r := rowJSON{Class: string(row.Class)}
+		// The resolution as this process reads it: from the plane, through
+		// the seam the Orchestrator started with, and nothing else.
+		dispatch, err := o.Store().GetDispatch(context.Background(), o.Organization().OrganizationID, row.DispatchID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		r.Resolution = resolutionOf(&dispatch.PromptResolution)
 		if row.Divergence != nil {
 			r.Component = string(row.Divergence.Component)
 			if row.Divergence.Predecessor != uuid.Nil {
@@ -468,6 +506,15 @@ func (h *harness) expect(p projected, class orchestrator.Class, component orches
 	if predecessor != uuid.Nil && row.Predecessor != predecessor.String() {
 		t.Fatalf("predecessor %s, want %s", row.Predecessor, predecessor)
 	}
+	// ADR 0031 §5: resolved once at dispatch, reused verbatim across
+	// restarts. The fresh process read the decision the commit child
+	// persisted -- every identifying field, not a re-resolution.
+	if row.Resolution != h.ids.Resolution {
+		t.Fatalf("the fresh process read resolution\n  %+v\nbut the dispatch persisted\n  %+v", row.Resolution, h.ids.Resolution)
+	}
+	if row.Resolution.ResolutionID == "" || row.Resolution.Digest == "" {
+		t.Fatalf("an empty resolution survived the comparison: %+v", row.Resolution)
+	}
 	if len(p.Rows) != 1 {
 		t.Fatalf("%d rows, want 1", len(p.Rows))
 	}
@@ -504,6 +551,28 @@ func (h *harness) amendNoOp(original uuid.UUID, kind registry.Type, scope store.
 	}
 }
 
+// moveInstallation corrects the installation the dispatch resolved, as the
+// other writer: a new display name at revision 2. The dispatch's resolution
+// is history and must not follow it.
+func (h *harness) moveInstallation() {
+	t := h.t
+	t.Helper()
+	ctx := context.Background()
+	pack, err := h.seam.GetPromptPackByIdentity(ctx, h.ids.Organization, store.PromptIdentity{Scheme: store.PromptScheme(h.ids.Resolution.Scheme), Digest: h.ids.Resolution.Digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pack.Installation.Revision != h.ids.Resolution.InstallationRevision {
+		t.Fatalf("installation at revision %d, the dispatch resolved %d: the fixture moved before the test did", pack.Installation.Revision, h.ids.Resolution.InstallationRevision)
+	}
+	if _, err := h.seam.UpdatePromptPackInstallation(ctx, store.UpdatePromptPackInstallationInput{
+		DisplayName: "moved after dispatch", MinMaestroVersion: pack.Installation.MinMaestroVersion, MaxMaestroVersion: pack.Installation.MaxMaestroVersion,
+		ExpectedRevision: pack.Installation.Revision, OrganizationID: h.ids.Organization, InstallationID: pack.Installation.InstallationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (h *harness) lineage(storyID *uuid.UUID) store.Lineage {
 	return store.Lineage{ProductID: &h.ids.Product, FeatureID: &h.ids.Feature, EpicID: &h.ids.Epic, StoryID: storyID}
 }
@@ -512,6 +581,11 @@ func (h *harness) lineage(storyID *uuid.UUID) store.Lineage {
 // after commit -- a clean exit can flush something a kill would not.
 func TestRestartRecoversCommittedWork(t *testing.T) {
 	h := newHarness(t, false, true)
+	// Between the two processes the installation record moves on: a
+	// re-resolution in the fresh process would read revision 2 and the new
+	// display name, and expect() would see it. THE MUTANT: have the recover
+	// child resolve afresh instead of reading the dispatch's row.
+	h.moveInstallation()
 	p := h.recover()
 	h.expect(p, orchestrator.PendingResumable, "", uuid.Nil)
 	if p.Counts[string(orchestrator.PendingResumable)] != 1 {
