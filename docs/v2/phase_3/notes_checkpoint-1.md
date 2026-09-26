@@ -1,15 +1,18 @@
 +++
 title = "Checkpoint 1: The Plane Holds The Work"
-edit_date = "2026-09-25"
-status = "draft"
+edit_date = "2026-09-26"
+status = "live"
 type = "notes"
 summary = "Record of Phase 3's first checkpoint, closing block A: each of the checkpoint's five clauses mapped to the test or operator command that demonstrates it, the three gaps the review of that mapping found and closed — the four schema states and the object-store state were proved one layer below the Orchestrator, and the dispatch's persisted prompt resolution was never read back across the restart — the operator run against the real local plane, the mutants that prove the new assertions discriminate, and what the checkpoint deliberately does not claim: no agent has run, the built-in pack is resolvable and not executable, and work creation is seam API only."
 +++
 
 # Checkpoint 1: The Plane Holds The Work
 
-Status: **draft** — awaiting Codex review and DR acceptance. Branch
-`v2/phase_3/checkpoint-1`, unpushed.
+Status: **live** — Checkpoint 1 passed. Codex approved the demonstration
+commit `39b097b9` with no blocking findings (round 1, build-capable,
+2026-09-25); DR accepted 2026-09-26. Block A is closed and block B opens
+with item 5. The rendering observation below is deferred to a GitHub issue by
+DR's decision.
 
 The [phase plan](plan_scope.md#block-a--foundations) closes block A with:
 
@@ -236,7 +239,7 @@ Not defects in the checkpoint; recorded so they are not rediscovered.
 ## Exit Checklist Items This Checkpoint Settles
 
 Marked in [`plan_scope.md`](plan_scope.md#exit-checklist) with this record as
-the evidence, in the acceptance commit:
+the evidence:
 
 - *Prompt pack identity is resolved once at dispatch and reused verbatim
   across restarts.* — the restart harness's resolution assertion with the

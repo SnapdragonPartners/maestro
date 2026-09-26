@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Phase 3: Scope And Plan"
-edit_date = "2026-09-25"
+edit_date = "2026-09-26"
 status = "live"
 summary = "Accepted Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
 type = "plan"
@@ -299,6 +299,10 @@ is not done.
 > state, and **interrupted recovery**, where normal startup must neither
 > bypass nor corrupt the recovery protocol. No agent has run.
 > Reviewed before block B opens, because everything below persists through it.
+>
+> **Passed 2026-09-26** (Codex round 1 on `39b097b9`, no blocking findings;
+> DR accepted). Record: [Checkpoint 1: The Plane Holds The
+> Work](notes_checkpoint-1.md). Block A closed.
 
 ### Block B — Execution
 
