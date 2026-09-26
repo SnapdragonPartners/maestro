@@ -75,8 +75,21 @@ services:
     # reached. The credentials are the environment fallback the binary
     # documents, which governs only while no identities file or filer-side
     # S3 configuration exists -- the plane must never write either.
+    #
+    # Two defaults sized for a cluster, shortened for a single process
+    # (measured 2026-09-25 on the spike compose, three runs each):
+    #   -master.electionTimeout: the one master waits out a 10s Raft election
+    #     before it will lead; 1s takes container start to first S3 answer
+    #     from 15-18s to ~4s.
+    #   -volume.preStopSeconds: the volume server sleeps 10s after its last
+    #     heartbeat before exiting; 1s takes `compose stop` from 25s to 16s.
+    #     The remaining ~15s is the process lingering after every component
+    #     reports shut down, and is not explained by any flag tried.
+    # The integration suite brings up ~30 throwaway planes, so these two
+    # are most of the difference between it on SeaweedFS and on MinIO.
     command: >
       server -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+      -master.electionTimeout=1s -volume.preStopSeconds=1
       -master.volumeSizeLimitMB=1024 -volume.max=0
       -s3 -s3.port=8333
     environment:
