@@ -9,8 +9,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
+	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -131,12 +133,52 @@ func TestNewRejectsTypedNilObjectAdapter(t *testing.T) {
 		t.Fatalf("build an empty registry: %v", err)
 	}
 
-	_, err = New(&pgxpool.Pool{}, types, blob, nil)
+	running, err := harness.Parse("v2.0.0-phase.3.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(&pgxpool.Pool{}, types, blob, nil, running)
 	if err == nil {
 		t.Fatal("a typed-nil object adapter was accepted")
 	}
 	if !strings.Contains(err.Error(), "object adapter is nil") {
 		t.Fatalf("got %v, want the object-adapter guard to have rejected it — any other error means "+
 			"an earlier guard fired and this test proves nothing about the typed-nil case", err)
+	}
+}
+
+// TestNewRefusesAZeroHarnessVersion: the version is recorded beside every
+// pack this store validates, and the zero value is not a version (Phase 3
+// item 4 design, D3). plane.Open refuses it first; this is the same refusal
+// for a caller that builds a Store directly, as most of this package's
+// integration suites do.
+func TestNewRefusesAZeroHarnessVersion(t *testing.T) {
+	types, err := registry.New(nil)
+	if err != nil {
+		t.Fatalf("build an empty registry: %v", err)
+	}
+	rootKey, err := secret.ResolvedKey([]byte(strings.Repeat("k", secret.RootKeyLen)), secret.BackendOperatorProvided)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Everything else is valid, so the version is the only thing New can be
+	// refusing -- and the control below proves these arguments do construct.
+	blob := &fakeBlob{support: objects.IncompleteWritesProviderReclaimed}
+
+	_, err = New(&pgxpool.Pool{}, types, blob, rootKey, harness.Version{})
+	if err == nil || !strings.Contains(err.Error(), "no harness version") {
+		t.Fatalf("New() = %v, want the harness-version refusal", err)
+	}
+
+	running, err := harness.Parse("v2.0.0-phase.3.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, err := New(&pgxpool.Pool{}, types, blob, rootKey, running)
+	if err != nil {
+		t.Fatalf("the control did not construct: %v", err)
+	}
+	if built.Harness() != running {
+		t.Fatalf("Harness() = %q, want %q", built.Harness(), running)
 	}
 }

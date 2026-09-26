@@ -63,7 +63,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
 		p, c := f.addPredecessor(t, g, "p", true)
-		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +84,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 	t.Run("story sequence moves on a no-op amendment", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		f.amendNoOp(t, g.storyRecord, storyScope(g.story.StoryID), storyLineage(g.hierarchy, g.story.StoryID))
@@ -101,7 +101,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 	t.Run("epic sequence moves on a no-op amendment", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		f.amendNoOp(t, g.epicRecord, epicScope(g.epic.EpicID), epicLineage(g.hierarchy))
@@ -115,7 +115,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 	t.Run("story id and digest move on a repoint", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		twin := f.acceptedRecord(t, work.TypeStoryRecord, storyScope(g.story.StoryID), storyLineage(g.hierarchy, g.story.StoryID), `{"intent":"add the flag"}`)
@@ -134,7 +134,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
 		p1, c1 := f.addPredecessor(t, g, "one", true)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		// An added, already-satisfied predecessor.
@@ -176,7 +176,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 	t.Run("accepted rows carry their execution; a missing one is an invariant error", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -250,7 +250,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 	t.Run("story digest moves on a content amendment", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		f.amendContent(t, g.storyRecord, storyScope(g.story.StoryID), storyLineage(g.hierarchy, g.story.StoryID), `{"intent":"changed"}`)
@@ -265,7 +265,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 	t.Run("epic id moves on a repoint to a twin", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		twin := f.acceptedRecord(t, work.TypeEpicRecord, epicScope(g.epic.EpicID), epicLineage(g.hierarchy), `{"intent":"flags","mode":"factory"}`)
@@ -283,7 +283,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 	t.Run("epic digest moves on a content amendment", func(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		f.amendContent(t, g.epicRecord, epicScope(g.epic.EpicID), epicLineage(g.hierarchy), `{"intent":"changed"}`)
@@ -299,7 +299,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
 		p, c := f.addPredecessor(t, g, "p", true)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		twin := f.acceptedRecord(t, work.TypeStoryCompletion, storyScope(p.StoryID), storyLineage(g.hierarchy, p.StoryID), `{"head_commit":"`+testSHA+`"}`)
@@ -316,7 +316,7 @@ func TestOpenWorkMapsTheRemainingFields(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
 		p, c := f.addPredecessor(t, g, "p", true)
-		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+		if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 			t.Fatal(err)
 		}
 		f.amendContent(t, c, storyScope(p.StoryID), storyLineage(g.hierarchy, p.StoryID), `{"head_commit":"fedcba9876543210fedcba9876543210fedcba98"}`)
@@ -347,7 +347,7 @@ func TestOpenWorkDoesNotWaitOnAHeldArtifactLock(t *testing.T) {
 	f := newFixture(t)
 	g := provisionGoverned(t, f)
 	ctx := context.Background()
-	if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID); err != nil {
+	if _, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil); err != nil {
 		t.Fatal(err)
 	}
 	holder, err := f.pool.Begin(ctx)

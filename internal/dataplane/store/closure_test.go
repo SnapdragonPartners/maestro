@@ -18,9 +18,13 @@ import (
 const seamPackage = "orchestrator/internal/dataplane/store"
 
 // allowedClosure is every in-module package the seam may reach, directly or
-// transitively (Phase 3 item 3, design D2). Six packages, none local, none
+// transitively (Phase 3 item 3, design D2). Seven packages, none local, none
 // v1: the seam, the two vocabularies a caller declares, the secrets seam it
-// returns values through, and two neutral helpers.
+// returns values through, two neutral helpers, and -- since item 4 (design
+// D3) -- `harness`, the running binary's version as an opaque value, which is
+// a vocabulary of configkeys' class. What item 4 deliberately did NOT add is
+// internal/prompt: the seam reaches the prompt gate through
+// store.PromptContract so the renderer stays out of this list.
 //
 // It is an exact set rather than a deny-list, because a deny-list permits
 // by omission: a package added to the data plane later would be reachable
@@ -30,6 +34,7 @@ const seamPackage = "orchestrator/internal/dataplane/store"
 var allowedClosure = []string{
 	"orchestrator/internal/dataplane/canonical",
 	"orchestrator/internal/dataplane/configkeys",
+	"orchestrator/internal/dataplane/harness",
 	"orchestrator/internal/dataplane/nilcheck",
 	"orchestrator/internal/dataplane/registry",
 	"orchestrator/internal/dataplane/secret",

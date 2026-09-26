@@ -105,7 +105,7 @@ func (p *plane) open(t *testing.T, entries map[registry.Type]registry.Entry) *po
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	built, err := postgres.New(planetest.Pool(t, p.dsn), types, p.blob, p.rootKey)
+	built, err := postgres.New(planetest.Pool(t, p.dsn), types, p.blob, p.rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -887,9 +887,12 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 	p := newPlane(t)
 	result := p.mustImport(t, twoAttemptSuite(t))
 
-	promptHash := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// The P axis is scheme-qualified (design D4): the importer records the
+	// legacy scheme, and the query names it.
+	legacy := store.PromptIdentity{Scheme: store.PromptSchemeV1Manifest,
+		Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
 	found, err := p.store.FindPrincipalInstances(context.Background(), store.MPHQuery{
-		OrganizationID: p.organization.OrganizationID, PromptHash: &promptHash,
+		OrganizationID: p.organization.OrganizationID, PromptIdentity: &legacy,
 	})
 	if err != nil {
 		t.Fatalf("MPH query: %v", err)
@@ -898,6 +901,7 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 		t.Fatalf("prompt hash names %d instances, want one per imported attempt (%d)",
 			len(found), len(result.Attempts))
 	}
+	wantName := baseRecord(t)["target"].(map[string]any)["mph"].(map[string]any)["prompt_pack"].(string) //nolint:forcetypeassert // the control corpus record, read the way the record decoder reads it
 	for i := range found {
 		if found[i].Kind != store.PrincipalAgent {
 			t.Errorf("instance %s is a %s principal; the configuration under test is an agent",
@@ -907,18 +911,47 @@ func TestMPHQueryFindsTheImportedRuns(t *testing.T) {
 			t.Errorf("instance %s carries agent type %v, want benchmark-target",
 				found[i].PrincipalInstanceID, found[i].AgentType)
 		}
+		// The importer writes the FOREIGN shape (item 4 design, D5): the
+		// record's name and digest as carried, no plane-owned reference.
+		pack := found[i].PromptPack
+		switch {
+		case pack == nil:
+			t.Errorf("instance %s carries no prompt pack", found[i].PrincipalInstanceID)
+		case pack.Origin != store.PromptPackOriginForeign || pack.Resolution != nil:
+			t.Errorf("instance %s has origin %q with resolution %v; an import is foreign with no reference",
+				found[i].PrincipalInstanceID, pack.Origin, pack.Resolution)
+		case pack.Name != wantName || pack.Identity != legacy:
+			t.Errorf("instance %s recorded pack %q %+v, want the record's %q %+v",
+				found[i].PrincipalInstanceID, pack.Name, pack.Identity, wantName, legacy)
+		}
 	}
 	// The importer answers a different question and must not be swept in by
 	// this one: a system principal has no prompt to hash.
-	unrelated := "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	unrelated := store.PromptIdentity{Scheme: store.PromptSchemeV1Manifest,
+		Digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
 	other, err := p.store.FindPrincipalInstances(context.Background(), store.MPHQuery{
-		OrganizationID: p.organization.OrganizationID, PromptHash: &unrelated,
+		OrganizationID: p.organization.OrganizationID, PromptIdentity: &unrelated,
 	})
 	if err != nil {
 		t.Fatalf("MPH query for an unused hash: %v", err)
 	}
 	if len(other) != 0 {
 		t.Errorf("an unused prompt hash matched %d instances", len(other))
+	}
+
+	// And the SAME digest under the plane's scheme is a different identity:
+	// equal-looking hex under two schemes means nothing (ADR 0031 section 1).
+	// THE MUTANT this kills: a query that filters on the digest alone.
+	crossScheme := store.PromptIdentity{Scheme: store.PromptSchemePackJCS, Digest: legacy.Digest}
+	across, err := p.store.FindPrincipalInstances(context.Background(), store.MPHQuery{
+		OrganizationID: p.organization.OrganizationID, PromptIdentity: &crossScheme,
+	})
+	if err != nil {
+		t.Fatalf("MPH query across schemes: %v", err)
+	}
+	if len(across) != 0 {
+		t.Errorf("a pack-scheme query matched %d legacy identities sharing its hex; digests are comparable "+
+			"only within a scheme", len(across))
 	}
 }
 

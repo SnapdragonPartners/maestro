@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
@@ -89,7 +90,7 @@ func evidenceRegistry(t *testing.T) *registry.Registry {
 func evidenceFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := newFixture(t)
-	built, err := postgres.New(f.pool, evidenceRegistry(t), f.blob, f.rootKey)
+	built, err := postgres.New(f.pool, evidenceRegistry(t), f.blob, f.rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("store with an evidence registry: %v", err)
 	}

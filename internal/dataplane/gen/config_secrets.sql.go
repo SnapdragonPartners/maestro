@@ -273,6 +273,53 @@ func (q *Queries) GetConfigurationRecord(ctx context.Context, arg GetConfigurati
 	return i, err
 }
 
+const getConfigurationRecordAtScope = `-- name: GetConfigurationRecordAtScope :one
+SELECT configuration_record_id, organization_id, key, scope_type, scope_organization_id, scope_product_id, scope_repository_id, scope_id, value, version, created_at, updated_at FROM configuration_records
+WHERE organization_id = $1
+  AND key             = $2
+  AND scope_type      = $3
+  AND scope_id        = $4
+`
+
+type GetConfigurationRecordAtScopeParams struct {
+	OrganizationID pgtype.UUID
+	Key            string
+	ScopeType      string
+	ScopeID        pgtype.UUID
+}
+
+// GetConfigurationRecordAtScope reads the record set at ONE level, if any.
+//
+// Distinct from the resolving read above: resolution answers "what applies
+// to this repository", walking the lineage; this answers "what is set here",
+// which is what a writer seeding or moving a level's own value needs to
+// know. The generated scope_id column is the natural key's last component
+// (configuration_records_key_scope_key).
+func (q *Queries) GetConfigurationRecordAtScope(ctx context.Context, arg GetConfigurationRecordAtScopeParams) (ConfigurationRecord, error) {
+	row := q.db.QueryRow(ctx, getConfigurationRecordAtScope,
+		arg.OrganizationID,
+		arg.Key,
+		arg.ScopeType,
+		arg.ScopeID,
+	)
+	var i ConfigurationRecord
+	err := row.Scan(
+		&i.ConfigurationRecordID,
+		&i.OrganizationID,
+		&i.Key,
+		&i.ScopeType,
+		&i.ScopeOrganizationID,
+		&i.ScopeProductID,
+		&i.ScopeRepositoryID,
+		&i.ScopeID,
+		&i.Value,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getSecret = `-- name: GetSecret :one
 SELECT s.secret_id, s.organization_id, s.name, s.owner_user_id, s.scope_type, s.scope_organization_id, s.scope_product_id, s.scope_repository_id, s.scope_id, s.scheme, s.nonce, s.ciphertext, s.version, s.created_at, s.updated_at FROM secrets s
 WHERE s.organization_id = $1

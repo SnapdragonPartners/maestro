@@ -2,49 +2,46 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
 )
 
-// checkKindFields mirrors the schema's two biconditional constraints:
-// kind = 'agent' exactly when agent_type is present, and kind = 'human'
-// exactly when user_id is present.
+// checkKindFields mirrors the schema's rule that kind = 'human' exactly
+// when user_id is present, and refuses kind = 'agent' outright.
 //
-// The database enforces both already. Repeating them here is not
-// belt-and-braces — it is the difference between a caller reading
-// "principal_instances_agent_fields_check" and reading which field it
-// omitted. The constraints are biconditional, so both directions are
-// checked: an agent_type on a human principal would silently corrupt every
-// MPH comparison that groups by it, which is why the schema forbids it
-// rather than merely tolerating it.
+// The database enforces the first already. Repeating it here is not
+// belt-and-braces -- it is the difference between a caller reading
+// "principal_instances_human_fields_check" and reading which field it
+// omitted.
+//
+// The agent refusal is the partition (item 4 design, D5): every agent
+// principal has a pack, and which kind of pack is decided by the path that
+// creates it, so there is no general agent path. A general path that
+// admitted agents would be a fourth door into a three-shape schema -- one
+// that derives no origin.
 //
 //nolint:gocritic // by value deliberately: the seam must not alias a caller's input struct
 func checkKindFields(input store.CreatePrincipalInstanceInput) error {
 	switch input.Kind {
 	case store.PrincipalAgent:
-		if input.AgentType == nil {
-			return errors.New("an agent principal requires an agent type; it is what MPH comparisons group by")
-		}
-		if input.UserID != nil {
-			return errors.New("an agent principal must not carry a user id; only a human principal is a user")
-		}
+		return errors.New("CreatePrincipalInstance does not create agents: an agent principal carries the pack it " +
+			"ran under, so it arrives through RecordForeignAgentPrincipal (an import) or " +
+			"CreateDispatchedPrincipalInstance (a live agent under an execution)")
 	case store.PrincipalHuman:
 		if input.UserID == nil {
 			return errors.New("a human principal requires a user id")
 		}
-		if input.AgentType != nil {
-			return errors.New("a human principal must not carry an agent type")
-		}
 	case store.PrincipalSystem:
-		if input.AgentType != nil {
-			return errors.New("a system principal must not carry an agent type")
-		}
 		if input.UserID != nil {
 			return errors.New("a system principal must not carry a user id")
 		}
@@ -60,8 +57,8 @@ func checkKindFields(input store.CreatePrincipalInstanceInput) error {
 // The zero time is year 1: present in the struct and no more a timestamp
 // than an unset field, and an instance carrying it sorts before every window
 // a query could ask about. A stop before its start is a lifetime that ran
-// backwards. Neither is caught by the schema — its only stop constraint is
-// that time and reason are null together — so the seam is where a caller
+// backwards. Neither is caught by the schema -- its only stop constraint is
+// that time and reason are null together -- so the seam is where a caller
 // finds out, before the row exists rather than after.
 func checkRecordedLifetime(recorded *store.RecordedLifetime) error {
 	switch {
@@ -78,16 +75,47 @@ func checkRecordedLifetime(recorded *store.RecordedLifetime) error {
 	return nil
 }
 
-func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
-	return store.PrincipalInstance{
+// v1ManifestDigestPattern is the storage form of a v1-manifest-sha256
+// digest -- the seam's copy of the schema's per-scheme check
+// (principal_instances_prompt_pack_scheme_check), so a caller reads which
+// form its digest failed rather than a constraint name. Under the legacy
+// scheme the sha256: prefix is DATA, not a scheme marker; the scheme column
+// says which form to expect (design D4).
+//
+// It is the only form a foreign pack has: the scheme is a literal in the
+// statement, not an input, and there is no enumeration to widen (design
+// D5a; backwards compatibility with another legacy form is a non-goal).
+var v1ManifestDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+func checkForeignPromptPack(pack *store.ForeignPromptPack) error {
+	if strings.TrimSpace(pack.Name) == "" {
+		return errors.New("a foreign prompt pack needs a name; it is the label the run record carried")
+	}
+	if !v1ManifestDigestPattern.MatchString(pack.Digest) {
+		return fmt.Errorf("prompt digest %q is not the storage form of scheme %s (%s)",
+			pack.Digest, store.PromptSchemeV1Manifest, v1ManifestDigestPattern)
+	}
+	return nil
+}
+
+func principalFromRow(row *gen.PrincipalInstance) (*store.PrincipalInstance, error) {
+	var pack *store.PrincipalPromptPack
+	if row.PromptPackOrigin != nil {
+		projected, err := principalPromptPackFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		pack = projected
+	}
+	return &store.PrincipalInstance{
 		AgentType:         fromNullString(row.AgentType),
-		PromptPackID:      fromNullString(row.PromptPackID),
-		PromptHash:        fromNullString(row.PromptHash),
 		HarnessConfigHash: fromNullString(row.HarnessConfigHash),
 		MaestroVersion:    fromNullString(row.MaestroVersion),
 		UserID:            fromNullUUID(row.UserID),
 		StopTime:          fromNullTimestamptz(row.StopTime),
 		StopReason:        fromNullString(row.StopReason),
+
+		PromptPack: pack,
 
 		Kind:  store.PrincipalKind(row.Kind),
 		Model: row.Model,
@@ -103,11 +131,46 @@ func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 		OrganizationID:      fromUUID(row.OrganizationID),
 
 		StartTime: fromTimestamptz(row.StartTime),
-	}
+	}, nil
 }
 
-// CreatePrincipalInstance writes the instance and its seeding set in ONE
-// transaction (design D7).
+// principalPromptPackFromRow projects the two agent shapes the schema
+// admits, on a row whose origin is present. The shape constraint guarantees
+// the columns arrive all-or-nothing per shape, so a row that disagrees with
+// it is an invariant failure, not a case to tolerate.
+func principalPromptPackFromRow(row *gen.PrincipalInstance) (*store.PrincipalPromptPack, error) {
+	if row.PromptPackName == nil || row.PromptPackScheme == nil || row.PromptHash == nil {
+		return nil, fmt.Errorf("%w: principal %s carries origin %q with an incomplete identity",
+			store.ErrInvariant, fromUUID(row.PrincipalInstanceID), *row.PromptPackOrigin)
+	}
+	pack := &store.PrincipalPromptPack{
+		Origin:   store.PromptPackOrigin(*row.PromptPackOrigin),
+		Name:     *row.PromptPackName,
+		Identity: store.PromptIdentity{Scheme: store.PromptScheme(*row.PromptPackScheme), Digest: *row.PromptHash},
+	}
+	if pack.Origin != store.PromptPackOriginResolved {
+		return pack, nil
+	}
+	if !row.PromptPackContentID.Valid || !row.PromptPackInstallationID.Valid ||
+		row.PromptPackInstallationRevision == nil || row.PromptPackMetadataSnapshot == nil {
+		return nil, fmt.Errorf("%w: resolved principal %s is missing a reference the shape constraint requires",
+			store.ErrInvariant, fromUUID(row.PrincipalInstanceID))
+	}
+	var snapshot store.PromptResolutionSnapshot
+	if err := json.Unmarshal(row.PromptPackMetadataSnapshot, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode principal %s prompt snapshot: %w", fromUUID(row.PrincipalInstanceID), err)
+	}
+	pack.Resolution = &store.PrincipalPromptPackResolution{
+		Snapshot:             snapshot,
+		InstallationRevision: int(*row.PromptPackInstallationRevision),
+		ContentID:            fromUUID(row.PromptPackContentID),
+		InstallationID:       fromUUID(row.PromptPackInstallationID),
+	}
+	return pack, nil
+}
+
+// CreatePrincipalInstance writes a human or system instance and its seeding
+// set in ONE transaction (design D7). It refuses agents; see checkKindFields.
 //
 // ADR 0021 promises that "what was this agent given to start?" is always a
 // query. An instance observable without its inputs makes that promise false
@@ -123,7 +186,7 @@ func principalFromRow(row *gen.PrincipalInstance) store.PrincipalInstance {
 // begins. One struct copy per instance creation is not worth trading that
 // guarantee for.
 //
-//nolint:gocritic // hugeParam: by value, deliberately — see above
+//nolint:gocritic // hugeParam: by value, deliberately -- see above
 func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrincipalInstanceInput) (*store.PrincipalInstance, error) {
 	if err := checkKindFields(input); err != nil {
 		return nil, err
@@ -133,7 +196,7 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 	if input.Recorded != nil {
 		// Copied, not pointed at. The input struct is taken by value so a
 		// caller cannot mutate it mid-call, and a pointer field would hand
-		// that guarantee straight back — the validation below would then be
+		// that guarantee straight back -- the validation below would then be
 		// checking values the INSERT need not still be using.
 		recorded := *input.Recorded
 		if err := checkRecordedLifetime(&recorded); err != nil {
@@ -152,9 +215,6 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 		OrganizationID:      toUUID(input.OrganizationID),
 		Kind:                string(input.Kind),
 		Model:               input.Model,
-		AgentType:           input.AgentType,
-		PromptPackID:        input.PromptPackID,
-		PromptHash:          input.PromptHash,
 		HarnessConfigHash:   input.HarnessConfigHash,
 		MaestroVersion:      input.MaestroVersion,
 		UserID:              toNullUUID(input.UserID),
@@ -169,25 +229,138 @@ func (t *tx) CreatePrincipalInstance(ctx context.Context, input store.CreatePrin
 	if createErr != nil {
 		return nil, fmt.Errorf("create principal instance: %w", createErr)
 	}
+	if err := t.seedInstance(ctx, input.OrganizationID, instanceID, input.Seeds); err != nil {
+		return nil, err
+	}
+	return principalFromRow(&row)
+}
 
-	for i := range input.Seeds {
-		seed := &input.Seeds[i]
+// RecordForeignAgentPrincipal is the import path (design D5): a closed
+// lifetime, a foreign pack identity, origin foreign and the legacy scheme
+// -- the last two written by the statement, not by this code.
+//
+// The lifetime is required and validated whole. That is the one property
+// separating an import from a live agent: an agent whose lifetime is not
+// over is not something an importer has, and recording one here would be
+// ADR 0031 section 2's "only for imports" violated by the verb that exists
+// to honour it.
+//
+//nolint:gocritic // hugeParam: by value, deliberately -- see CreatePrincipalInstance
+func (t *tx) RecordForeignAgentPrincipal(ctx context.Context, input store.RecordForeignAgentPrincipalInput) (*store.PrincipalInstance, error) {
+	if strings.TrimSpace(input.AgentType) == "" {
+		return nil, errors.New("an agent principal requires an agent type; it is what MPH comparisons group by")
+	}
+	if err := checkForeignPromptPack(&input.Pack); err != nil {
+		return nil, err
+	}
+	if err := checkRecordedLifetime(&input.Lifetime); err != nil {
+		return nil, err
+	}
+
+	instanceID, err := newIdentifier(uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+	row, createErr := t.queries.RecordForeignAgentPrincipal(ctx, gen.RecordForeignAgentPrincipalParams{
+		PrincipalInstanceID: toUUID(instanceID),
+		OrganizationID:      toUUID(input.OrganizationID),
+		Model:               input.Model,
+		AgentType:           &input.AgentType,
+		PromptPackName:      &input.Pack.Name,
+		PromptHash:          &input.Pack.Digest,
+		HarnessConfigHash:   input.HarnessConfigHash,
+		MaestroVersion:      input.MaestroVersion,
+		ProductID:           toNullUUID(input.Lineage.ProductID),
+		FeatureID:           toNullUUID(input.Lineage.FeatureID),
+		EpicID:              toNullUUID(input.Lineage.EpicID),
+		StoryID:             toNullUUID(input.Lineage.StoryID),
+		StartTime:           toNullTimestamptz(&input.Lifetime.StartTime),
+		StopTime:            toNullTimestamptz(&input.Lifetime.StopTime),
+		StopReason:          &input.Lifetime.StopReason,
+	})
+	if createErr != nil {
+		return nil, fmt.Errorf("record foreign agent principal: %w", createErr)
+	}
+	if err := t.seedInstance(ctx, input.OrganizationID, instanceID, input.Seeds); err != nil {
+		return nil, err
+	}
+	return principalFromRow(&row)
+}
+
+// CreateDispatchedPrincipalInstance is the live path (design D5): the
+// principal's pack is the persisted resolution of its execution's dispatch,
+// and its lineage is the execution's.
+//
+// The copy is a property of the INSERT ... SELECT, not of this function: no
+// pack field passes through Go, so there is nothing here a caller or a
+// later edit could substitute. The Maestro version is the running harness's,
+// read from the seam's one authority for it (design D3) rather than taken
+// from the caller.
+//
+// The execution's authority state is not consulted. Whether an agent may
+// START under a superseded execution is a dispatch-and-start rule, and
+// those are item 6's (design D11); this verb records what the caller is
+// doing under the execution it names.
+//
+//nolint:gocritic // hugeParam: by value, deliberately -- see CreatePrincipalInstance
+func (t *tx) CreateDispatchedPrincipalInstance(ctx context.Context, input store.CreateDispatchedPrincipalInput) (*store.PrincipalInstance, error) {
+	if strings.TrimSpace(input.AgentType) == "" {
+		return nil, errors.New("an agent principal requires an agent type; it is what MPH comparisons group by")
+	}
+	// Read first so a zero-row INSERT below is classifiable: an execution
+	// that exists in this organization and yields no row has no
+	// resolution, which 000023 and the reciprocal key promise cannot happen.
+	if _, err := t.queries.GetExecution(ctx, gen.GetExecutionParams{
+		OrganizationID: toUUID(input.OrganizationID), ExecutionID: toUUID(input.ExecutionID),
+	}); err != nil {
+		return nil, notFound(err, "execution", input.ExecutionID)
+	}
+
+	instanceID, err := newIdentifier(uuid.Nil)
+	if err != nil {
+		return nil, err
+	}
+	version := t.harness.String()
+	row, createErr := t.queries.CreateDispatchedPrincipalInstance(ctx, gen.CreateDispatchedPrincipalInstanceParams{
+		PrincipalInstanceID: toUUID(instanceID),
+		Model:               input.Model,
+		AgentType:           &input.AgentType,
+		HarnessConfigHash:   input.HarnessConfigHash,
+		MaestroVersion:      &version,
+		ExecutionID:         toUUID(input.ExecutionID),
+		OrganizationID:      toUUID(input.OrganizationID),
+	})
+	if createErr != nil {
+		if errors.Is(createErr, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: execution %s has no prompt resolution on its dispatch; every dispatch since 000023 carries one",
+				store.ErrInvariant, input.ExecutionID)
+		}
+		return nil, fmt.Errorf("create dispatched principal instance under execution %s: %w", input.ExecutionID, createErr)
+	}
+	if err := t.seedInstance(ctx, input.OrganizationID, instanceID, input.Seeds); err != nil {
+		return nil, err
+	}
+	return principalFromRow(&row)
+}
+
+// seedInstance writes the seeding set inside the caller's transaction.
+func (t *tx) seedInstance(ctx context.Context, organizationID, instanceID uuid.UUID, seeds []store.SeedInput) error {
+	for i := range seeds {
+		seed := &seeds[i]
 		if seed.SeededDigest == "" {
-			return nil, fmt.Errorf("seed for artifact %s has an empty digest; the digest AS SEEDED is what "+
+			return fmt.Errorf("seed for artifact %s has an empty digest; the digest AS SEEDED is what "+
 				"makes a later comparison against the artifact's current digest meaningful", seed.ArtifactID)
 		}
 		if _, err := t.queries.AddPrincipalInstanceInput(ctx, gen.AddPrincipalInstanceInputParams{
 			PrincipalInstanceID: toUUID(instanceID),
 			ArtifactID:          toUUID(seed.ArtifactID),
-			OrganizationID:      toUUID(input.OrganizationID),
+			OrganizationID:      toUUID(organizationID),
 			SeededDigest:        seed.SeededDigest,
 		}); err != nil {
-			return nil, fmt.Errorf("seed instance %s with artifact %s: %w", instanceID, seed.ArtifactID, err)
+			return fmt.Errorf("seed instance %s with artifact %s: %w", instanceID, seed.ArtifactID, err)
 		}
 	}
-
-	created := principalFromRow(&row)
-	return &created, nil
+	return nil
 }
 
 // StopPrincipalInstance is once-only and idempotent (design D7).
@@ -263,8 +436,7 @@ func (t *tx) GetPrincipalInstance(ctx context.Context, organizationID, instanceI
 	if err != nil {
 		return nil, notFound(err, "principal instance", instanceID)
 	}
-	instance := principalFromRow(&row)
-	return &instance, nil
+	return principalFromRow(&row)
 }
 
 func (t *tx) ListSeededInputs(ctx context.Context, organizationID, instanceID uuid.UUID) ([]store.SeededInput, error) {
@@ -304,10 +476,15 @@ func (t *tx) FindPrincipalInstances(ctx context.Context, query store.MPHQuery) (
 			OrganizationID: toUUID(query.OrganizationID),
 			Model:          *query.Model,
 		})
-	case query.PromptHash != nil:
-		rows, err = t.queries.ListPrincipalInstancesByPromptHash(ctx, gen.ListPrincipalInstancesByPromptHashParams{
-			OrganizationID: toUUID(query.OrganizationID),
-			PromptHash:     query.PromptHash,
+	case query.PromptIdentity != nil:
+		if query.PromptIdentity.Scheme == "" || query.PromptIdentity.Digest == "" {
+			return nil, errors.New("MPH query on the prompt axis needs both a scheme and a digest; a digest is comparable only within its scheme")
+		}
+		scheme, digest := string(query.PromptIdentity.Scheme), query.PromptIdentity.Digest
+		rows, err = t.queries.ListPrincipalInstancesByPromptIdentity(ctx, gen.ListPrincipalInstancesByPromptIdentityParams{
+			OrganizationID:   toUUID(query.OrganizationID),
+			PromptPackScheme: &scheme,
+			PromptHash:       &digest,
 		})
 	default:
 		rows, err = t.queries.ListPrincipalInstancesByHarnessConfigHash(ctx, gen.ListPrincipalInstancesByHarnessConfigHashParams{
@@ -321,14 +498,18 @@ func (t *tx) FindPrincipalInstances(ctx context.Context, query store.MPHQuery) (
 
 	instances := make([]store.PrincipalInstance, 0, len(rows))
 	for i := range rows {
-		instances = append(instances, principalFromRow(&rows[i]))
+		instance, err := principalFromRow(&rows[i])
+		if err != nil {
+			return nil, err
+		}
+		instances = append(instances, *instance)
 	}
 	return instances, nil
 }
 
 func axisCount(query store.MPHQuery) int {
 	count := 0
-	for _, set := range []bool{query.Model != nil, query.PromptHash != nil, query.HarnessConfigHash != nil} {
+	for _, set := range []bool{query.Model != nil, query.PromptIdentity != nil, query.HarnessConfigHash != nil} {
 		if set {
 			count++
 		}

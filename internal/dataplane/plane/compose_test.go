@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
@@ -158,8 +159,7 @@ func TestOpenTakesACopyOfTheOwnedSlice(t *testing.T) {
 		DSN:     "",
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
-		Types:   emptyRegistry(t),
-		Keys:    configkeys.MustNew(nil),
+		Caller:  completeCaller(t),
 		Owned:   owned,
 	})
 	if err == nil {
@@ -253,8 +253,7 @@ func TestOpenReleasesOwnedResourcesWhenItFails(t *testing.T) {
 		DSN:     "",
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
-		Types:   emptyRegistry(t),
-		Keys:    configkeys.MustNew(nil),
+		Caller:  completeCaller(t),
 		Owned: []Owned{
 			{What: "data-plane lifecycle lock", Close: func() error { released = true; return nil }},
 		},
@@ -276,8 +275,7 @@ func TestOpenReportsAReleaseFailureAlongsideTheOpenFailure(t *testing.T) {
 	_, err := Open(context.Background(), Composition{
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
-		Types:   emptyRegistry(t),
-		Keys:    configkeys.MustNew(nil),
+		Caller:  completeCaller(t),
 		Owned: []Owned{
 			{What: "lifecycle lock", Close: func() error { return errors.New("descriptor gone") }},
 		},
@@ -311,8 +309,7 @@ func TestOpenSurvivesReleasingAnUnclosableResource(t *testing.T) {
 		DSN:     "postgres://example",
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
-		Types:   emptyRegistry(t),
-		Keys:    configkeys.MustNew(nil),
+		Caller:  completeCaller(t),
 		Owned: []Owned{
 			{What: "closable", Close: func() error { released = true; return nil }},
 			{What: "unclosable"},
@@ -350,12 +347,12 @@ func TestValidateRefusesAnIncompleteComposition(t *testing.T) {
 			DSN:     "postgres://example",
 			Objects: stubObjects{},
 			RootKey: stubRootKey{},
-			Types:   emptyRegistry(t),
-			Keys:    configkeys.MustNew(nil),
+			Caller:  completeCaller(t),
 		}
 	}
 	var typedNilObjects *objects.GCS
 	var typedNilKey *stubRootKeyPtr
+	var typedNilPrompts *stubPromptsPtr
 
 	for name, breakIt := range map[string]func(*Composition){
 		"no DSN":              func(c *Composition) { c.DSN = "" },
@@ -365,6 +362,9 @@ func TestValidateRefusesAnIncompleteComposition(t *testing.T) {
 		"typed-nil root key":  func(c *Composition) { c.RootKey = typedNilKey },
 		"no registry":         func(c *Composition) { c.Types = nil },
 		"no key registry":     func(c *Composition) { c.Keys = nil },
+		"no prompt contract":  func(c *Composition) { c.Prompts = nil },
+		"typed-nil prompts":   func(c *Composition) { c.Prompts = typedNilPrompts },
+		"no harness version":  func(c *Composition) { c.Harness = harness.Version{} },
 		"owned without close": func(c *Composition) { c.Owned = []Owned{{What: "lock"}} },
 		"owned without name": func(c *Composition) {
 			c.Owned = []Owned{{Close: func() error { return nil }}}
@@ -387,14 +387,41 @@ func TestValidateAcceptsACompleteComposition(t *testing.T) {
 		DSN:     "postgres://example",
 		Objects: stubObjects{},
 		RootKey: stubRootKey{},
-		Types:   emptyRegistry(t),
-		Keys:    configkeys.MustNew(nil),
+		Caller:  completeCaller(t),
 		Owned:   []Owned{{What: "lock", Close: func() error { return nil }}},
 	}
 	if err := composition.validate(); err != nil {
 		t.Fatalf("a complete composition was refused: %v", err)
 	}
 }
+
+// completeCaller is a Caller with nothing missing: the two empty
+// vocabularies, a stub gate, and a real version.
+func completeCaller(t *testing.T) Caller {
+	t.Helper()
+	running, err := harness.Parse("v2.0.0-phase.3.0.0")
+	if err != nil {
+		t.Fatalf("parse the test harness version: %v", err)
+	}
+	return Caller{
+		Types:   emptyRegistry(t),
+		Keys:    configkeys.MustNew(nil),
+		Prompts: stubPrompts{},
+		Harness: running,
+	}
+}
+
+// stubPrompts satisfies the prompt contract without a slot vocabulary; this
+// package must not import the one real implementation.
+type stubPrompts struct{}
+
+func (stubPrompts) ValidatePack(map[string]string, []string) error { return nil }
+
+// stubPromptsPtr exists only so a typed-nil POINTER can be stored in the
+// interface, which is the shape internal/prompt.Registry has.
+type stubPromptsPtr struct{}
+
+func (*stubPromptsPtr) ValidatePack(map[string]string, []string) error { return nil }
 
 func emptyRegistry(t *testing.T) *registry.Registry {
 	t.Helper()

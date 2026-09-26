@@ -27,7 +27,7 @@ func (s *Store) OpenWork(ctx context.Context, organizationID uuid.UUID) (store.O
 	}
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
-	handle := &tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, rootKey: s.rootKey, blob: s.blob}
+	handle := s.txOn(pgxTx)
 	work, err := handle.openWork(ctx, organizationID)
 	if err != nil {
 		return store.OpenWork{}, err

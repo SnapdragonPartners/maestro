@@ -41,7 +41,7 @@ func TestCreateDispatchReadsTheStoryUnderTheEpicLock(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		done <- outcome{d, err}
 	}()
 

@@ -1,6 +1,6 @@
 +++
 title = "Design: Prompt Pack Identity, Storage, And Resolution (Item 4)"
-edit_date = "2026-09-03"
+edit_date = "2026-09-25"
 status = "live"
 summary = "Mini-plan for Phase 3 item 4: the prompt-pack family built whole — immutable content records under a scheme-qualified digest, guarded by the schema's first anti-update trigger, beside mutable installation records carrying a monotonic revision and a governed installer identity; one atomic validated install operation so no content commits uninstalled and no coverage check runs without its declaring installation; the import gate reached through a consumer-owned contract so the seam validates every pack write without the plane importing a renderer; a selector configuration key that is the key registry's first live reader; resolution once at dispatch persisted beside the basis with the harness version it was validated against; a dispatch-bound principal path that copies the persisted resolution so a live principal cannot disagree with its dispatch; and organization provisioning that imports the built-in pack and seeds its selector in one transaction, with the import-and-select operator verb that later built-in versions move through. The built-in pack ships EMPTY and declares no role coverage, because item 4 has no model caller and neither candidate slot survived inspection: v1 has exactly one system prompt, the Architect's, bound to v1's workspace and tool contracts. Resolvable but not executable is the honest state, so the loader takes an fs.FS and the non-vacuous proof comes from fixtures travelling the identical path. Carries the principal_instances three-roles-in-one-column split as a total, lock-first migration whose single shape constraint partitions every row null-safely, whose guard is classified over what the old schema permits rather than what its writers produced, and whose origin is derived from which of three writer verbs was called, the scheme-qualified MPH query, the importer's legacy-scheme backfill, refusal recovery documented and tested in both directions, and five amendments — including the size, which review re-cut from M to L. The harness version is an opaque validated type supplied through the composition, so no root can open a seam with a malformed one, and a reciprocal deferred foreign key makes a dispatch without its resolution — or a resolution later deleted or re-pointed — a refused statement even for a writer that predates the schema."
 type = "design"
@@ -21,7 +21,11 @@ a stub to replace; both are absences to complete.
 
 Status: **live** — Accepted by Codex and DR, 2026-09-03, at `404b3a2` after
 eight review rounds; flipped in the acceptance commit, following item 3's
-precedent.
+precedent. **Amended in implementation** (2026-09-21 to 2026-09-24) by the
+`Dna` subsections under the decisions — the choices the implementation made
+that this text had left open, each approved by Codex as a checkpoint and
+**Accepted by DR with the branch on 2026-09-24**. Where an amendment and the
+original text differ, the amendment describes the code.
 
 **Eight review rounds (Codex, 2026-09-03) found nine, eight, six, four, two,
 three, two and then one P1, and this revision carries all thirty-five.** Each is recorded under
@@ -162,6 +166,45 @@ drift apart. The same injection gives D11's import-and-select verb its
 non-vacuous proof: a *second* non-empty fixture built-in, selected over the
 first, exercises the update path that a real upgrade will take.
 
+#### D2a. The layout on a file system, and the one constructor (amendment, 2026-09-24, implementation steps 5 and 9)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (rounds 6 and 7, at
+`b81a895c` and `dab8d99b`); DR accepted the recorded text at the push gate.*
+
+D2 said `fs.FS` and did not say what the file system holds.
+
+1. **The layout is `pack.json` and `entries/<slot>.tmpl`.** The manifest
+   carries `display_name`, `maestro_version.{min,max}` and `roles`; one file
+   per slot, the file name being the slot key, so there is no second place
+   the key is spelled. Entries are files rather than manifest fields because
+   they are multi-line prose an author edits. Unknown manifest fields, stray
+   files at the root or under `entries/`, and a manifest with trailing
+   content are **refused**, not ignored. Trailing content is detected by
+   requiring the second `Decode` to return `io.EOF`: `Decoder.More` reports
+   another element of the *current* array or object and says nothing about
+   bytes after the top-level value (review round 7). A missing `entries/`
+   is zero entries — an empty directory cannot be embedded, and the item-4
+   built-in is exactly that shape.
+2. **`prompt.Load` checks shape only.** Whether slots exist, roles are
+   covered and entries render is the seam's gate through the contract (D3),
+   not the loader's; a loader that judged that too would be a second copy
+   of the policy against a registry the seam might not hold.
+3. **The embed lives in `internal/orchestrator`**, beside `Prompts()`, and
+   **`orchestrator.LoadBuiltin(fs.FS)` is the single constructor** of the
+   seam's input type `store.BuiltinPromptPack`. Production passes the embed;
+   fixtures pass an `fstest.MapFS` with content; both cross the same code.
+   This is the *route the fixture packs around the production loader*
+   mutant made enforceable: a source-level structure test parses `cmd/`,
+   `internal/` and `pkg/` **including `_test.go`**, and requires that every
+   composite literal of the type with fields, and every `new` of it, is
+   `LoadBuiltin`'s, and that `prompt.Load` is called nowhere else. It walks
+   every declaration, package-level `var` blocks included, because a guard
+   that walked only function bodies missed a package-level fixture (round
+   7). It does not see a zero value assigned field by field, and says so.
+   Rejected: a `planetest` helper (a second constructor) and an
+   unexported-field type (the postgres tests need the seam input directly).
+
 ### D3. `internal/prompt` sits above the plane, and the seam validates through a consumer-owned contract
 
 The slot registry, the per-slot variable contract, the parser and the renderer
@@ -232,6 +275,68 @@ set gains `internal/dataplane/harness` — a vocabulary package, the class
 rather than asserted here**: what
 `internal/prompt` itself imports decides the number, and a count written into a
 design before the package exists is a prediction, not a measurement.
+
+#### D3a. How the composition carries the two values (amendment, 2026-09-21, implementation step 2)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices in implementation round 2 at `020ff45d`; DR accepted
+the recorded text at the push gate.*
+
+Six choices the accepted text did not make, and one correction to it:
+
+1. **`plane.Caller`, a struct, embedded in `plane.Composition`.** The four
+   things the *caller's job* supplies — `Types`, `Keys`, `Prompts`, `Harness`
+   — travel as one value, all required, and both composers take it as their
+   one caller-side parameter. Two more positional parameters would have
+   re-cut every composer signature and its eighteen call sites now and again
+   at the next addition. `Caller.Validate` is exported so a composer refuses
+   an incomplete caller **before** it acquires anything — the local lifecycle
+   lock, the cloud object client — and `plane.Open` validates again so a
+   composer that forgets is still refused.
+2. **`postgres.OpenLifecycle`, a view with no version.** Two callers open a
+   store with no harness version to give and no use for one: `up`'s deletion-
+   claim reconciliation and `verify`. They are the plane tending itself, not a
+   composition root acting for a caller, and neither reaches anything the
+   version is recorded by. Rejected: threading a `Version` through
+   `stack.Config` for nothing to read, and reading `pkg/version` inside `stack`,
+   which would be a second reader against D3's *exactly one of it*. The view
+   exposes no `Harness()` and no pack surface. The type system does not
+   enforce that a `*Store` built without a version stays behind it — a type
+   assertion would recover it — so a source-level structure test pins the
+   exact caller sets of the unchecked constructor and of `OpenLifecycle`, and
+   refuses any assertion to `*postgres.Store` outside tests.
+3. **`golang.org/x/mod` at v0.38.0, not v0.37.0.** The module graph already
+   selected v0.38.0 after the Dependabot sweep (#353), and pinning v0.37.0
+   downgraded `x/crypto`, `x/net`, `x/text` and grpc. The `semver` package is
+   byte-identical between the two, so round 8's verification transfers, and
+   the ladder test pins the ordering in-tree regardless.
+4. **The seam's pool label overrides a DSN's.** `postgres.NewPool` sets
+   `application_name` on the parsed connection config, so a DSN carrying its
+   own name cannot rename the session the runbook's narrowed cutover check
+   reads. Every route to a store — `plane.Open` and `postgres.Open` — builds
+   its pool there.
+5. **The prompt contract defaults closed; the version has no default.** On
+   `configkeys`' rule, a store nobody gave a slot vocabulary is a real state
+   and refuses every pack with a typed error. On the root key's rule, a
+   missing version is a broken plane, so `postgres.New` refuses the zero value.
+6. **Tests compose with a real semver in the Phase 3 band**
+   (`planetest.HarnessVersion`), so the range check is exercised rather than
+   skipped under `"dev"`; the development branch's tests construct `"dev"`
+   themselves.
+
+**Correction to D8: goreleaser does not stamp the `v`.** D8 says a v-prefixed
+semver is *"what goreleaser stamps."* `.goreleaser.yaml` sets
+`pkg/version.Version` from `{{.Version}}`, and goreleaser documents that
+field as the tag with *the `v` prefix stripped*; `{{.Tag}}` is the unstripped
+form. A v2 release built by today's configuration would therefore stamp
+`2.0.0-…`, which is exactly D8's named malformed case, and `harness.Parse`
+would refuse it: the binary would open no seam. That is the fail-closed
+behaviour D8 asks for, and it is the right one — admitting a bare `2.0.0`
+would reopen the hole round 3 closed. Nothing breaks today, because
+goreleaser builds only `cmd/maestro`, the frozen v1 binary, which opens no v2
+seam. The stamping is corrected when v2 acquires a release build
+([#359](https://github.com/SnapdragonPartners/maestro/issues/359)); changing it on this branch would alter the v1 binary's
+reported version for no v2 consumer.
 
 ### D4. Two schemes in their own column, a rendered form that is not the storage form, and a query that cannot separate them
 
@@ -558,6 +663,94 @@ version and dirty flag the message assumes, proves a bare retry fails, then
 forces and retries successfully. If the driver's dirty semantics ever change,
 the test — not an operator — is what finds the instruction wrong.
 
+#### D5a. What the down migration refuses, and how the three writers are cut (amendment, 2026-09-24, implementation steps 3, 8 and 10)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (rounds 3, 8 and 9, at
+`ad4e38aa`, `beaa4c36` and `92ba2538`); DR accepted the recorded text at the
+push gate.*
+
+**The down refuses on content rows too.** The text above lists four classes
+of plane-owned state. `000023.down` refuses on a fifth — any
+`prompt_pack_contents` row — because content the plane digested is
+plane-owned whether or not anything installs it, and dropping the table
+under it would be the silent discard the down exists to avoid. Codex raised
+no objection in round 3 and asked for it to be recorded.
+
+**The three writers, as built:**
+
+1. **The live copy is a statement, not a function.**
+   `CreateDispatchedPrincipalInstance` is an `INSERT … SELECT` over
+   `executions` joined to `dispatch_prompt_resolutions`: name, scheme,
+   digest, content id, installation id, revision and snapshot come from the
+   resolution row (`resolved_name`, never the installation's current
+   `display_name`), lineage from the execution row, and origin `resolved` as
+   a literal. **No pack field passes through Go**, so there is nothing a
+   caller or a later edit of the verb could substitute. Rejected: reading
+   the resolution in Go and passing its fields to a `VALUES` insert — a
+   correct copy today, and an edit away from a substitution tomorrow. The
+   test's historical half updates the installation between the dispatch and
+   a second principal under the same execution, and the mutant that copies
+   from the installation instead of the resolution fails there.
+2. **The dispatched principal's `maestro_version` and lineage are derived.**
+   The version is the composition's `harness.Version` (D3's one authority)
+   and the lineage is the execution's; the input carries neither. The text
+   above names the pack fields as the ones the caller cannot supply; these
+   two are the same argument one step further.
+3. **An absent execution is `ErrNotFound`; a present execution with no
+   resolution is `ErrInvariant`.** The seam reads the execution first (a new
+   `GetExecution` query, by organization and execution id) so a zero-row
+   `INSERT … SELECT` is classifiable. Without the pre-read both cases read
+   as the invariant failure.
+4. **`RecordForeignAgentPrincipal` takes its lifetime by value**, validated
+   by the same check the general path applies to a `RecordedLifetime`.
+   "Requires a lifetime" is then a type fact, and the check is what refuses
+   the zero value. The schema does not: year 1 is a legal timestamp and the
+   stop pair is only constrained null-together, so with the check removed a
+   zero and an open lifetime were both **inserted**. The seam is the only
+   guard for ADR 0031 §2's *only for imports*. The general path keeps its
+   pointer (`nil` = live) because humans and system principals are
+   ordinarily live.
+5. **The foreign scheme is not an input.** The text above gives the verb
+   `ForeignPromptPack{Name, Scheme, Digest}`; as built it is
+   `{Name, Digest}`, and `v1-manifest-sha256` is a literal in the statement
+   beside the origin. Round 8 had kept the scheme as an input under a
+   one-element closed enumeration, on the argument that a second legacy
+   scheme could later be admitted by widening it; at acceptance DR ruled
+   that backwards compatibility with any other legacy form is a non-goal,
+   which removes the only reason for the parameter and leaves the origin's
+   own argument standing — a value a caller can set is a value a caller can
+   set wrong. The seam still checks the digest's form,
+   `^sha256:[0-9a-f]{64}$`, so a caller reads which form failed rather than
+   a constraint name.
+6. **`CreatePrincipalInstanceInput` lost `AgentType` along with the pack
+   fields.** "An agent type on a human" and "a prompt identity on a system
+   principal" are unrepresentable rather than refused, and the general
+   path's statement writes neither column, so the shape constraint is the
+   backstop behind the seam's refusal of `kind = agent`.
+7. **`PrincipalInstance.PromptPack`** replaces the flat name and hash: origin,
+   name, scheme-qualified identity, and — when resolved — the copied
+   references and decoded snapshot. A row disagreeing with the shape
+   constraint projects as `ErrInvariant`; unreachable through the schema,
+   and stated beside the code rather than claimed covered.
+8. **In the test tree, the foreign shape is the fixture shape for agents
+   that only author and review**, with a fixed closed lifetime, and a live
+   agent exists only under a real dispatch. This is the partition applied to
+   the fixtures; no seam rule ties authorship or review to an open lifetime.
+9. **The scheme-isolation proof is two negative queries.** A test that
+   stored the same hex under both schemes and asked for each under its own
+   could not see the scheme predicate go: the legacy storage form carries
+   its `sha256:` prefix, so the two `prompt_hash` strings differ and a
+   digest-only query separates them by accident of form (review round 8).
+   The assertion is each stored digest asked for under the *other* scheme
+   returning nothing.
+
+**Left open, for item 6:** the dispatched verb does not consult the
+execution's authority state. Whether an agent may *start* under a superseded
+execution is a dispatch-and-start rule, which D11 assigns to item 6; ADR
+0019's second amendment cancels running work and says nothing about refusing
+new principals. Recorded under [Open Questions](#open-questions).
+
 ### D6. Immutable content by trigger, a mutable installation with a governed installer, and one atomic install
 
 Two tables, because the record has two lifetimes.
@@ -682,6 +875,36 @@ There is no public content write and no unconditional installation update.
 cannot be selected on and cannot be compared. Version labels and their ordering
 arrive with the registry semantics.
 
+#### D6a. Four choices at install (amendment, 2026-09-24, implementation step 4)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 4, at `1b7157a8`);
+DR accepted the recorded text at the push gate.*
+
+1. **The installer is provenance, not compared.** On an idempotent re-install
+   of identical content the declared metadata — display name, range, roles —
+   is compared against the stored row and a difference is the typed
+   conflict; the installer (`builtin` at some version, or a user) records
+   where the pack came from at *first* install, and a later binary
+   re-installing the same content is the no-op D11 requires, not a conflict.
+2. **A legacy-scheme identity names no content, and says so.**
+   `GetPromptPackByIdentity` refuses any scheme but `pack-jcs-sha256-v1`
+   with `ErrNotFound` and a message: the query would find nothing anyway,
+   since contents admit one scheme, but a bare "not found" reads as "not
+   yet", and this is "never".
+3. **The seam re-checks entry text before it digests.** `checkEntryText` —
+   non-blank, valid UTF-8, no NUL — runs in the seam as well as in
+   `internal/prompt`, because `json.Marshal` substitutes U+FFFD for invalid
+   bytes and two different entries would otherwise install under one
+   digest (D10a's *byte for byte*). The mutant that drops it installs under
+   a substituted digest rather than refusing.
+4. **A built-in installer's version is parsed with `harness.Parse`**, so the
+   `dev` sentinel is admitted alongside a tagged semver and anything else
+   refuses to construct — the same two forms D8 admits everywhere. And it
+   must **equal the composition's running version** (PR #367 review): a
+   caller that could name another binary as the carrier would record the
+   wrong one, and nothing could tell.
+
 ### D7. The selector is a configuration key, and it is the registry's first live reader
 
 `orchestrator.Keys()` stops returning an empty registry and registers one key.
@@ -704,6 +927,24 @@ This is the live reader item 3's amendment 3 assigned here, and it satisfies the
 plan's *"configuration and secrets acquire their first consumer"* for the
 configuration half. It is a real reader: D8 resolves through
 `ResolveConfiguration` on the ordinary path, not through a fixture write.
+
+#### D7a. How the selector reaches dispatch (amendment, 2026-09-24, implementation steps 6 and 7)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 5, at `c662333f`);
+DR accepted the recorded text at the push gate.*
+
+1. **The explicit selector is a parameter, not an input struct:**
+   `CreateDispatch(ctx, organizationID, storyID, selector *PromptSelector)`.
+   Item 3's signature gains one optional argument; `nil` means "resolve from
+   configuration", which is every present caller.
+2. **An explicit selector that names nothing** — neither a content id nor an
+   identity — **is `ReasonNoPromptSelector`**, the same refusal as no
+   configuration at any scope, because the dispatch was handed a selector
+   and it selects nothing. It is not treated as "fall through to
+   configuration": a caller that passed a selector meant it. One that names
+   **both** is refused too (`ReasonPromptSelectorUnresolved`, PR #367
+   review), rather than resolved by whichever field the lookup prefers.
 
 ### D8. Resolution happens once at dispatch, with defined version semantics, and pre-000023 dispatches are refused rather than special-cased
 
@@ -887,6 +1128,30 @@ resolved pack. If it re-resolved, a configuration edit between the crash and the
 restart would move a factory lever mid-Story with nothing recording that it had
 happened, and one Story would span two P values.
 
+#### D8a. What the resolution records under a re-run (amendment, 2026-09-24, implementation step 7)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 5, at `c662333f`);
+DR accepted the recorded text at the push gate.*
+
+1. **The re-run is the same `ValidatePack`** the install gate runs — coverage
+   of the declared roles, parse, and the per-slot variable contract — through
+   the same consumer-owned contract, not a second validator.
+2. **`validated_maestro_version` on the resolution is the running version
+   when the contract was re-run, and the installation's stored value
+   otherwise.** It records what the *dispatch* validated against, which is
+   the only reading under which item 6's restart rule can compare it.
+3. **The installation row is not updated at dispatch.** A re-run that passes
+   proves the installation usable under the running harness, but writing
+   that back would make dispatch a writer of installation metadata, with a
+   revision bump nobody asked for and a race with `UpdatePromptPackInstallation`
+   under its own revision. The installation's `validated_maestro_version`
+   moves only through install and update.
+4. **The metadata snapshot carries `contract_rerun`** — whether the dispatch
+   re-ran the contract or accepted the installation's validation — so a
+   reader of the resolution can tell a moved-or-development harness from an
+   unmoved one without reconstructing the comparison.
+
 ### D9. Organization provisioning does all three writes, or none
 
 `ProvisionOrganizationPromptPack` joins the provisioning family on its existing
@@ -919,6 +1184,40 @@ An organization provisioned after an upgrade seeds at the version the binary
 then carries. Two organizations in one deployment can therefore default to
 different packs by age alone — the price of never moving a lever silently.
 
+#### D9a. How provisioning serialises and what it opens (amendment, 2026-09-24, implementation step 9)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (round 6, at `b81a895c`);
+DR accepted the recorded text at the push gate.*
+
+1. **Provisioning is serialised per organization by locking the organization
+   row `FOR NO KEY UPDATE`**, not `FOR UPDATE`: every row referencing the
+   organization takes `FOR KEY SHARE` on insert, and `FOR UPDATE` would block
+   a concurrent `provision user` for the whole transaction. `NO KEY UPDATE`
+   excludes other provisioners and nothing else. Rejected: the
+   insert-if-absent-then-read pattern the rest of the family uses — it
+   cannot honour *upgrades move nothing*, because the decision not to install
+   has to be made before the install, which is check-then-act.
+2. **`store.BuiltinPromptPack` carries no version.** The installer's
+   `BuiltinMaestroVersion` is the composition's `harness.Version`, taken
+   inside the seam and never from a caller (D3's *exactly one of it*); the
+   seam cannot be handed one because the type has nowhere to put it.
+3. **A dangling selector is reported, not repaired.** If the
+   organization-scoped record exists and names nothing installed,
+   provisioning returns the typed `*PromptSelectorUnresolved` carrying the
+   record and what it names. Repair is D11's verb — see D11a for the
+   asymmetry.
+4. **`provision organization` and `bootstrap` are two seam calls** — the
+   tenant, then the pack. The second is idempotent and is what a re-run
+   checks; the checkpoint's partial-success concern is the three writes
+   *inside* `ProvisionOrganizationPromptPack`, which are one transaction.
+5. **The provisioning verbs open the Orchestrator's seam.** They wrote
+   configuration for the first time here, and `prompt.pack` is only in
+   `orchestrator.Keys()`; the benchmark verbs' registry would refuse the
+   write. `openOrchestratorSeam` loads the built-in and parses the version
+   **before the plane is touched**, so a mis-stamped binary refuses with no
+   lifecycle lock file left behind.
+
 ### D10. The import gate, and what it can and cannot prove at item 4
 
 Three checks at install, against the harness version that will run
@@ -940,6 +1239,48 @@ fixture packs with real entries, real declared coverage, and deliberate faults
 — a missing slot for a declared role, an unparseable entry, a reference to a
 variable the slot does not supply — travelling the identical path, through
 `InstallPromptPack` and through `UpdatePromptPackInstallation` both.
+
+#### D10a. The admitted dialect (amendment, 2026-09-21, implementation step 1)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved the dialect in implementation round 1 at `c826a98`; DR accepted the
+recorded text at the push gate.*
+
+This design said "parser" and "per-slot variable contract" and did not say what
+language an entry is written in. Implementing the contract forced the question,
+because under full `text/template` the contract is not decidable: `with` and
+`range` rebind dot, so `.Name` stops meaning a declared variable, and import
+renders one path through an entry's conditionals, so a construct that can fail
+on an untaken branch turns an import-time pass into the mid-run failure
+ADR 0031 §5 exists to prevent.
+
+So an entry is `text/template` syntax **restricted to**: text, comments and trim
+markers; `{{.Name}}`, a declared variable, one level deep; `if` / `else if` /
+`else`; `and`, `or`, `not` over variables, string literals and parenthesised
+expressions; and `eq`, `ne` over variables and string literals. Everything else
+is refused as a typed dialect error — `range`, `with`, `define`, `template`,
+`block`, `$x :=` declarations, `|` pipelines, every other builtin, and
+non-string literals. **Variables are strings.** Entry text must be non-blank,
+valid UTF-8 and free of NUL: `json.Marshal` substitutes U+FFFD for invalid
+bytes, so two different entries would otherwise share one `pack-jcs-sha256-v1`
+digest, against D4's *byte for byte*.
+
+**Narrow on purpose, because only one direction is cheap.** Entries are
+persisted under a content identity and validated against the harness that runs
+them, so widening the dialect later leaves every stored pack valid, and
+narrowing it would strand packs already installed.
+
+**The consequence for D11's owners, stated rather than discovered:** v1's
+templates use `range` and a nested `.Extra` bag. The items that re-cut them —
+6, 8 and 10 — either supply pre-rendered string variables or widen the dialect,
+and a widening owes the same two arguments: the contract stays decidable by
+reading the entry, and what is admitted does not fail on an untaken branch.
+The totality of the present constructs is argued and sampled
+(`TestAdmittedDialectRendersOnEveryPath`), not proven, and the code says so.
+
+The render call binds the harness as well: `Render` refuses values that are not
+**exactly** the slot's declared variables, so a registration cannot promise
+what its call site does not deliver.
 
 ### D11. The import-and-select verb is built here; four obligations are assigned to the items that acquire their subjects
 
@@ -979,6 +1320,36 @@ This also gives the `pkg/templates` re-cut a home. The
 [port inventory](../phase_0/inventory_v1-port.md) lists it as rework —
 *"templates re-cut for v2 states"* — without naming an item; the rows above are
 that assignment, split by which item acquires each call site.
+
+#### D11a. What `select-builtin` requires, moves and reads under (amendment, 2026-09-24, implementation step 9)
+
+*Status: **Accepted** by Codex and DR, 2026-09-24, with the branch. Codex
+approved these choices as implementation checkpoints (rounds 6 and 7, at
+`b81a895c` and `dab8d99b`); DR accepted the recorded text at the push gate.*
+
+1. **`select-builtin` requires an existing selector** — `ErrNoPromptSelector`
+   when the organization was never provisioned — **and moves a dangling
+   one.** Seeding is provisioning's act, and D1 says the two remedies are
+   different; but a record that exists and names nothing installed is
+   exactly what an operator running this verb has asked to move. Provisioning
+   reports the same state and does not repair it (D9a): an operator running
+   `provision` has not asked for the selector to move.
+2. **The selector is written by content id**, not by identity. Both resolve;
+   the id is the handle the row was created under. The value shape is
+   unchanged.
+3. **The conditional write is under a token of record id *and* version**
+   (`PromptSelectorToken{RecordID, Version}`), not the version alone. A
+   record deleted and recreated starts again at version 1, so a stale caller
+   holding "version 1" would match the replacement and overwrite a selection
+   it never saw (review round 7). A replaced record is
+   `ErrConfigurationConflict`, like a moved one — and so is a **deleted**
+   one when the caller holds a token (PR #367 review): the caller read a
+   record, so "never provisioned" would send them to the wrong remedy.
+4. **The result reports `Moved`, not `Created`:** "created" would misdescribe
+   an update, and the verb never creates.
+5. **The CLI reads, prints, then writes under what it read** — two seam
+   calls on purpose; the token between them is the ADR 0027 token. A
+   concurrent move between the two is reported and the operator re-runs.
 
 ## Amendments To The Phase Plan
 
@@ -1051,6 +1422,19 @@ verification depends on the one before it.
 9. **`ProvisionOrganizationPromptPack`** and `select-builtin` (D9, D11), with
    the `dataplanectl` verbs.
 10. **The importer's origin and legacy scheme** (D5).
+
+**Implementation record (2026-09-24).** Every step has a commit on
+`v2/phase_3/prompt-packs-impl`, each approved by Codex as a checkpoint:
+step 1 `c826a981` (round 1); step 2 `020ff45d` (round 2); step 3 `ad4e38aa`
+(round 3); step 4 `1b7157a8` (round 4); steps 6 and 7 `c662333f` (round 5);
+steps 5 and 9 `b81a895c` and `dab8d99b` (rounds 6 and 7); steps 8 and 10
+`7b22abac`, `beaa4c36` and `92ba2538` (rounds 8 and 9). The choices each step
+made that the accepted text had left open are recorded as amendments D2a,
+D3a, D5a, D6a, D7a, D8a, D9a, D10a and D11a, beside the decisions they
+amend. The sequence was taken in the order 1, 2, 3, 4, 6+7, 5+9, 8+10:
+resolution (7) was pulled ahead of the loader (5) because the fixtures that
+step 3 had left red needed a selector to resolve before any test of steps 5
+or 9 could be green.
 
 ## Testing And Verification
 
@@ -1309,8 +1693,15 @@ not live in a review transcript.
 
 ## Open Questions
 
-None outstanding after round 8. The two the first draft carried — the trigger
-as the schema's first, and the semver comparator — are closed above.
+One, raised by the implementation (D5a) and assigned rather than decided
+here: **should the seam refuse to create a dispatched principal under an
+execution whose authority is no longer `current`?** D11 assigns the
+dispatch-and-start checks to item 6, and ADR 0019's second amendment governs
+cancelling running work, not refusing new principals, so item 4's verb records
+what the caller is doing under the execution it names. It is a one-line guard
+and a test if item 6 decides the seam should hold it. The two the first draft
+carried — the trigger as the schema's first, and the semver comparator — are
+closed above.
 
 ## Related Documents
 

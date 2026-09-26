@@ -46,18 +46,19 @@ const (
 // naming a nonexistent Product would be refused by the product foreign key
 // before the lineage rule was ever consulted, and would then pass while the
 // rule it claims to test was absent.
-const seedTwoTenants = `
+//
+// The principals are written by seedTwoTenants the FUNCTION, between the
+// tenants and what references them, because their shape depends on the
+// schema version the test runs at (see promptpack_fixture_test.go).
+const seedTwoTenantsBefore = `
 	INSERT INTO organizations (organization_id, slug, display_name)
 	VALUES ('` + orgA + `', 'scope-a', 'Scope A'),
 	       ('` + orgB + `', 'scope-b', 'Scope B');
 
 	INSERT INTO users (user_id, organization_id, handle, display_name)
-	VALUES ('` + userA + `', '` + orgA + `', 'op', 'Operator');
+	VALUES ('` + userA + `', '` + orgA + `', 'op', 'Operator');`
 
-	INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-	VALUES ('` + principalA + `', '` + orgA + `', 'agent', 'test-model', 'coder'),
-	       ('` + principalB + `', '` + orgB + `', 'agent', 'test-model', 'coder');
-
+const seedTwoTenantsAfter = `
 	INSERT INTO products (product_id, organization_id, user_id, slug, display_name)
 	VALUES ('` + productA + `', '` + orgA + `', '` + userA + `', 'prod', 'Product');
 
@@ -74,6 +75,17 @@ const seedTwoTenants = `
 	                             summary, payload, payload_digest)
 	VALUES ('` + auditA + `', '` + orgA + `', 'probe', 'organization', '` + orgA + `',
 	        '` + principalA + `', 1, 'probe', '{}'::jsonb, repeat('c', 64));`
+
+func seedTwoTenants(t *testing.T, db *sql.DB) error {
+	t.Helper()
+	if _, err := db.Exec(seedTwoTenantsBefore); err != nil {
+		return err
+	}
+	insertAgentPrincipal(t, db, principalA, orgA, "test-model")
+	insertAgentPrincipal(t, db, principalB, orgB, "test-model")
+	_, err := db.Exec(seedTwoTenantsAfter)
+	return err
+}
 
 // benchmarkScopedInsert builds an insert for one family, so both are driven
 // by the same cases instead of one standing in for the other.
@@ -143,7 +155,7 @@ func TestBenchmarkScopeIsQueryable(t *testing.T) {
 	}
 	defer db.Close() //nolint:errcheck // test handle
 
-	if _, err := db.Exec(seedTwoTenants); err != nil {
+	if err := seedTwoTenants(t, db); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -199,7 +211,7 @@ func TestBenchmarkScopeConstraints(t *testing.T) {
 	}
 	defer db.Close() //nolint:errcheck // test handle
 
-	if _, err := db.Exec(seedTwoTenants); err != nil {
+	if err := seedTwoTenants(t, db); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -260,7 +272,7 @@ func TestBenchmarkAttemptTenancy(t *testing.T) {
 	}
 	defer db.Close() //nolint:errcheck // test handle
 
-	if _, err := db.Exec(seedTwoTenants); err != nil {
+	if err := seedTwoTenants(t, db); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	const (
@@ -344,7 +356,7 @@ func TestBenchmarkScopeMigrationPreservesExistingScopes(t *testing.T) {
 	}
 	defer db.Close() //nolint:errcheck // test handle
 
-	if _, err := db.Exec(seedTwoTenants); err != nil {
+	if err := seedTwoTenants(t, db); err != nil {
 		t.Fatalf("seed under the old expression: %v", err)
 	}
 

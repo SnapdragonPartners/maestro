@@ -71,13 +71,12 @@ func TestProvenanceLinksCannotCrossOrganizations(t *testing.T) {
 	}{
 		{`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,'o9','O9')`, []any{otherOrg}},
 		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'u9','U9')`, []any{otherUser, otherOrg}},
-		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-		  VALUES ($1,$2,'agent','opus','coder')`, []any{otherPrincipal, otherOrg}},
 	} {
 		if _, err := f.tx.Exec(stmt.sql, stmt.args...); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
+	insertAgentPrincipal(t, f.tx, otherPrincipal, otherOrg, "opus")
 
 	// A tool call in the other organization, which this organization's
 	// artifact must not be able to claim as its provenance.
@@ -154,13 +153,12 @@ func seedForeignOrg(t *testing.T, f *fixture, suffix string) foreign {
 	}{
 		{`INSERT INTO organizations (organization_id, slug, display_name) VALUES ($1,$2,'X')`, []any{fo.org, "org" + suffix}},
 		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'fu','FU')`, []any{fo.user, fo.org}},
-		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-		  VALUES ($1,$2,'agent','opus','coder')`, []any{fo.principal, fo.org}},
 	} {
 		if _, err := f.tx.Exec(stmt.sql, stmt.args...); err != nil {
 			t.Fatalf("seed foreign org: %v", err)
 		}
 	}
+	insertAgentPrincipal(t, f.tx, fo.principal, fo.org, "opus")
 	return fo
 }
 
@@ -290,11 +288,7 @@ func TestToolCallCannotClaimAnotherPrincipalsLLMCall(t *testing.T) {
 	f := seed(t, openPlane(t))
 
 	otherPrincipal := "70000000-0000-7000-8000-0000000000d1"
-	if _, err := f.tx.Exec(
-		`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-		 VALUES ($1,$2,'agent','sonnet','coder')`, otherPrincipal, f.org); err != nil {
-		t.Fatalf("seed principal: %v", err)
-	}
+	insertAgentPrincipal(t, f.tx, otherPrincipal, f.org, "sonnet")
 
 	llmCall := "70000000-0000-7000-8000-0000000000d2"
 	if _, err := f.tx.Exec(

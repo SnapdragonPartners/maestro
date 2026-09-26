@@ -93,6 +93,25 @@ func (s *Store) CreatePrincipalInstance(ctx context.Context, input store.CreateP
 	})
 }
 
+// RecordForeignAgentPrincipal writes an imported agent with its seeding set.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface (see artifacts.go)
+func (s *Store) RecordForeignAgentPrincipal(ctx context.Context, input store.RecordForeignAgentPrincipalInput) (*store.PrincipalInstance, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PrincipalInstance, error) {
+		return t.RecordForeignAgentPrincipal(ctx, input)
+	})
+}
+
+// CreateDispatchedPrincipalInstance writes a live agent under an execution
+// with its seeding set.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface (see artifacts.go)
+func (s *Store) CreateDispatchedPrincipalInstance(ctx context.Context, input store.CreateDispatchedPrincipalInput) (*store.PrincipalInstance, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PrincipalInstance, error) {
+		return t.CreateDispatchedPrincipalInstance(ctx, input)
+	})
+}
+
 // StopPrincipalInstance records a stop, once only.
 func (s *Store) StopPrincipalInstance(ctx context.Context, organizationID, instanceID uuid.UUID, reason string) (store.StopOutcome, error) {
 	return inTx(ctx, s, func(t *tx) (store.StopOutcome, error) {
@@ -108,7 +127,8 @@ func (s *Store) StopPrincipalInstance(ctx context.Context, organizationID, insta
 // direct returns a handle bound to the POOL rather than to a transaction.
 // Every statement it issues autocommits on its own.
 func (s *Store) direct() *tx {
-	return &tx{queries: s.queries, registry: s.registry, keys: s.keys, rootKey: s.rootKey}
+	return &tx{queries: s.queries, registry: s.registry, keys: s.keys, rootKey: s.rootKey,
+		prompts: s.prompts, harness: s.harness}
 }
 
 // GetManagementArtifact reads one Management artifact.
@@ -681,8 +701,10 @@ func (s *Store) SetEpicGoverningArtifact(ctx context.Context, organizationID, ep
 }
 
 // CreateDispatch derives a Story's basis and writes the dispatch whole.
-func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*store.StoryDispatch, error) {
-	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) { return t.CreateDispatch(ctx, organizationID, storyID) })
+func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID, selector *store.PromptSelector) (*store.StoryDispatch, error) {
+	return inTx(ctx, s, func(t *tx) (*store.StoryDispatch, error) {
+		return t.CreateDispatch(ctx, organizationID, storyID, selector)
+	})
 }
 
 // AcceptDispatch flips pending to accepted and creates the execution.
@@ -722,5 +744,89 @@ func (s *Store) ListDispatchesByDisposition(ctx context.Context, organizationID 
 func (s *Store) GetExecutionByDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
 	return inTx(ctx, s, func(t *tx) (*store.Execution, error) {
 		return t.GetExecutionByDispatch(ctx, organizationID, dispatchID)
+	})
+}
+
+// --- prompt packs (item 4, design D6) --------------------------------------
+
+// InstallPromptPack runs the gate and writes content and installation in
+// ONE transaction: content that committed with no installation would be a
+// row nothing can select.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) InstallPromptPack(ctx context.Context, input store.InstallPromptPackInput) (store.Bootstrapped[store.InstalledPromptPack], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.InstalledPromptPack], error) {
+		outcome, txErr := t.InstallPromptPack(ctx, input)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.InstalledPromptPack]{}, err
+	}
+	return *result, nil
+}
+
+// UpdatePromptPackInstallation locks, classifies and writes in one
+// transaction, so the revision it compared is the one it updated.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) UpdatePromptPackInstallation(ctx context.Context, input store.UpdatePromptPackInstallationInput) (*store.PromptPackInstallation, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PromptPackInstallation, error) {
+		return t.UpdatePromptPackInstallation(ctx, input)
+	})
+}
+
+// GetPromptPackContent reads one content row.
+func (s *Store) GetPromptPackContent(ctx context.Context, organizationID, contentID uuid.UUID) (*store.PromptPackContent, error) {
+	return s.direct().GetPromptPackContent(ctx, organizationID, contentID)
+}
+
+// GetPromptPackInstallation reads one installation.
+func (s *Store) GetPromptPackInstallation(ctx context.Context, organizationID, installationID uuid.UUID) (*store.PromptPackInstallation, error) {
+	return s.direct().GetPromptPackInstallation(ctx, organizationID, installationID)
+}
+
+// GetPromptPackByIdentity resolves a scheme-qualified digest to its pack.
+func (s *Store) GetPromptPackByIdentity(ctx context.Context, organizationID uuid.UUID, identity store.PromptIdentity) (*store.InstalledPromptPack, error) {
+	return s.direct().GetPromptPackByIdentity(ctx, organizationID, identity)
+}
+
+// GetPromptPackByContent resolves a content id to its pack.
+func (s *Store) GetPromptPackByContent(ctx context.Context, organizationID, contentID uuid.UUID) (*store.InstalledPromptPack, error) {
+	return s.direct().GetPromptPackByContent(ctx, organizationID, contentID)
+}
+
+// ListPromptPackInstallations lists an organization's installations.
+func (s *Store) ListPromptPackInstallations(ctx context.Context, organizationID uuid.UUID) ([]store.PromptPackInstallation, error) {
+	return s.direct().ListPromptPackInstallations(ctx, organizationID)
+}
+
+// GetOrganizationPromptPackSelection reads and resolves the organization's
+// selector.
+func (s *Store) GetOrganizationPromptPackSelection(ctx context.Context, organizationID uuid.UUID) (*store.PromptPackSelection, error) {
+	return s.direct().GetOrganizationPromptPackSelection(ctx, organizationID)
+}
+
+// ProvisionOrganizationPromptPack does its three writes in ONE transaction
+// (design D9): content, installation and selector, or none of them.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) ProvisionOrganizationPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack) (store.Bootstrapped[store.PromptPackSelection], error) {
+	result, err := inTx(ctx, s, func(t *tx) (*store.Bootstrapped[store.PromptPackSelection], error) {
+		outcome, txErr := t.ProvisionOrganizationPromptPack(ctx, organizationID, builtin)
+		return &outcome, txErr
+	})
+	if err != nil {
+		return store.Bootstrapped[store.PromptPackSelection]{}, err
+	}
+	return *result, nil
+}
+
+// SelectBuiltinPromptPack imports and selects in ONE transaction (design
+// D11), under the selector's version.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expected store.PromptSelectorToken) (*store.PromptPackSelected, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PromptPackSelected, error) {
+		return t.SelectBuiltinPromptPack(ctx, organizationID, builtin, expected)
 	})
 }

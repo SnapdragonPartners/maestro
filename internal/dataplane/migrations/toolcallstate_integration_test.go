@@ -43,13 +43,12 @@ func seedForBackfill(t *testing.T, db *sql.DB) planeFixture {
 			[]any{f.org}},
 		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'u','U')`,
 			[]any{f.user, f.org}},
-		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-		  VALUES ($1,$2,'agent','opus','coder')`, []any{f.principal, f.org}},
 	} {
 		if _, err := db.Exec(stmt.sql, stmt.args...); err != nil {
 			t.Fatalf("seed plane %q: %v", stmt.sql, err)
 		}
 	}
+	insertAgentPrincipal(t, db, f.principal, f.org, "opus")
 	return f
 }
 
@@ -74,6 +73,7 @@ func seedExecutionForPlane(t *testing.T, db *sql.DB, f planeFixture) (execution,
 		t.Fatalf("begin: %v", txErr)
 	}
 	defer func() { _ = tx.Rollback() }()
+	resolutionColumn, resolutionValue := promptResolutionColumn(t, tx, dispatch)
 
 	artifact := `INSERT INTO management_artifacts
 	    (artifact_id, organization_id, user_id, artifact_type, scope_type, scope_story_id, scope_epic_id,
@@ -107,18 +107,24 @@ func seedExecutionForPlane(t *testing.T, db *sql.DB, f planeFixture) (execution,
 		    (story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id,
 		     disposition, settled_at,
 		     story_version_artifact_id, story_version_effective_digest, story_version_effective_sequence,
-		     epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence)
-		  VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',now(),$8,$9,0,$10,$11,0)`,
+		     epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence` +
+			resolutionColumn + `)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',now(),$8,$9,0,$10,$11,0` + resolutionValue + `)`,
 			[]any{dispatch, f.org, product, feature, epic, story, workGroup,
 				storyPlan, digestA, epicPlan, digestB}},
-		{`INSERT INTO executions
-		    (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-		  VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			[]any{execution, f.org, product, feature, epic, story, dispatch}},
 	} {
 		if _, err := tx.Exec(stmt.sql, stmt.args...); err != nil {
 			t.Fatalf("seed execution chain %q: %v", stmt.sql, err)
 		}
+	}
+	// After the dispatch (its reference to the dispatch is immediate) and
+	// before the execution, which needs an ACCEPTED dispatch either way.
+	seedPromptResolution(t, tx, dispatchLineage{dispatch: dispatch, org: f.org, product: product,
+		feature: feature, epic: epic, story: story})
+	if _, err := tx.Exec(`INSERT INTO executions
+	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
+	      VALUES ($1,$2,$3,$4,$5,$6,$7)`, execution, f.org, product, feature, epic, story, dispatch); err != nil {
+		t.Fatalf("seed execution: %v", err)
 	}
 	// One committed transaction, because repositories_primary_is_member_fkey
 	// is DEFERRABLE INITIALLY DEFERRED: the repository names a primary
@@ -325,6 +331,7 @@ func (w *wh) seedForeignOrgExecution(t *testing.T, org string) string {
 	     product_id, feature_id, epic_id, story_id, author_instance_id, schema_version, summary,
 	     payload, payload_digest, review_digest)
 	  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,1,'s','{}'::jsonb,$13,$14)`
+	resolutionColumn, resolutionValue := promptResolutionColumn(t, w.tx, dispatch)
 
 	for _, stmt := range []struct {
 		sql  string
@@ -334,8 +341,17 @@ func (w *wh) seedForeignOrgExecution(t *testing.T, org string) string {
 			[]any{org}},
 		{`INSERT INTO users (user_id, organization_id, handle, display_name) VALUES ($1,$2,'u2','U2')`,
 			[]any{user, org}},
-		{`INSERT INTO principal_instances (principal_instance_id, organization_id, kind, model, agent_type)
-		  VALUES ($1,$2,'agent','opus','coder')`, []any{principal, org}},
+	} {
+		if _, err := w.tx.Exec(stmt.sql, stmt.args...); err != nil {
+			t.Fatalf("seed foreign-org chain %q: %v", stmt.sql, err)
+		}
+	}
+	insertAgentPrincipal(t, w.tx, principal, org, "opus")
+
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
 		{`INSERT INTO products (product_id, organization_id, user_id, slug, display_name)
 		  VALUES ($1,$2,$3,'p2','P2')`, []any{product, org, user}},
 		{`INSERT INTO repositories (repository_id, organization_id, primary_product_id, user_id, slug, display_name)
@@ -358,18 +374,22 @@ func (w *wh) seedForeignOrgExecution(t *testing.T, org string) string {
 		    (story_dispatch_id, organization_id, product_id, feature_id, epic_id, story_id, work_group_id,
 		     disposition, settled_at,
 		     story_version_artifact_id, story_version_effective_digest, story_version_effective_sequence,
-		     epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence)
-		  VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',now(),$8,$9,0,$10,$11,0)`,
+		     epic_version_artifact_id, epic_version_effective_digest, epic_version_effective_sequence` +
+			resolutionColumn + `)
+		  VALUES ($1,$2,$3,$4,$5,$6,$7,'accepted',now(),$8,$9,0,$10,$11,0` + resolutionValue + `)`,
 			[]any{dispatch, org, product, feature, epic, story, workGroup,
 				storyPlan, digestA, epicPlan, digestB}},
-		{`INSERT INTO executions
-		    (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-		  VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			[]any{execution, org, product, feature, epic, story, dispatch}},
 	} {
 		if _, err := w.tx.Exec(stmt.sql, stmt.args...); err != nil {
 			t.Fatalf("seed foreign-org chain %q: %v", stmt.sql, err)
 		}
+	}
+	seedPromptResolution(t, w.tx, dispatchLineage{dispatch: dispatch, org: org, product: product,
+		feature: feature, epic: epic, story: story})
+	if _, err := w.tx.Exec(`INSERT INTO executions
+	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
+	      VALUES ($1,$2,$3,$4,$5,$6,$7)`, execution, org, product, feature, epic, story, dispatch); err != nil {
+		t.Fatalf("seed foreign-org execution: %v", err)
 	}
 	return execution
 }
@@ -487,7 +507,10 @@ func TestDownMigrationRefusesRatherThanCorrupts(t *testing.T) {
 			"1 tool call(s) carry a requirement set"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dsn := disposableDatabase(t)
+			// At 22, not the head: these cases test 000022's reversal, and from the
+			// head a reversal to 21 passes through 000023's first, which refuses on
+			// the plane-owned rows the execution fixture writes (design D5).
+			dsn := disposableDatabaseAt(t, 22)
 			db, err := sql.Open("pgx", dsn)
 			if err != nil {
 				t.Fatalf("open: %v", err)
@@ -542,7 +565,10 @@ func TestDownMigrationRefusesRatherThanCorrupts(t *testing.T) {
 // persisted.
 func TestDownMigrationRefusesASucceededRowCarryingAnExecution(t *testing.T) {
 	ctx := context.Background()
-	dsn := disposableDatabase(t)
+	// At 22, not the head: these cases test 000022's reversal, and from the
+	// head a reversal to 21 passes through 000023's first, which refuses on
+	// the plane-owned rows the execution fixture writes (design D5).
+	dsn := disposableDatabaseAt(t, 22)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -590,7 +616,10 @@ func TestDownMigrationRefusesASucceededRowCarryingAnExecution(t *testing.T) {
 // with it moved below the scans, the migration succeeds and this fails.
 func TestDownMigrationLocksBeforeItScans(t *testing.T) {
 	ctx := context.Background()
-	dsn := disposableDatabase(t)
+	// At 22, not the head: these cases test 000022's reversal, and from the
+	// head a reversal to 21 passes through 000023's first, which refuses on
+	// the plane-owned rows the execution fixture writes (design D5).
+	dsn := disposableDatabaseAt(t, 22)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -703,7 +732,10 @@ func waitForBlockedLock(t *testing.T, db *sql.DB, relation string) error {
 // knows is broken.
 func TestRefusalRecoveryNeedsTheVersionForcedBack(t *testing.T) {
 	ctx := context.Background()
-	dsn := disposableDatabase(t)
+	// At 22, not the head: these cases test 000022's reversal, and from the
+	// head a reversal to 21 passes through 000023's first, which refuses on
+	// the plane-owned rows the execution fixture writes (design D5).
+	dsn := disposableDatabaseAt(t, 22)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -785,7 +817,10 @@ func TestRefusalRecoveryNeedsTheVersionForcedBack(t *testing.T) {
 // the restored coherence constraint reads.
 func TestDownMigrationSucceedsOnExpressibleRows(t *testing.T) {
 	ctx := context.Background()
-	dsn := disposableDatabase(t)
+	// At 22, not the head: these cases test 000022's reversal, and from the
+	// head a reversal to 21 passes through 000023's first, which refuses on
+	// the plane-owned rows the execution fixture writes (design D5).
+	dsn := disposableDatabaseAt(t, 22)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {

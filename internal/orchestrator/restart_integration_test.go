@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	planeharness "orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/planetest"
@@ -94,9 +95,16 @@ func childOpener() (orchestrator.Opener, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The same version the parent composes with: a child that ran under
+	// another would be a second harness restarting the first one's work.
+	running, err := planeharness.Parse(planetest.HarnessVersion)
+	if err != nil {
+		return nil, err
+	}
+	caller := plane.Caller{Types: types, Keys: orchestrator.Keys(), Prompts: orchestrator.Prompts(), Harness: running}
 	dsn := os.Getenv(dsnEnv)
 	return func(ctx context.Context) (store.Store, error) {
-		return plane.Open(ctx, plane.Composition{DSN: dsn, Objects: blob, RootKey: rootKey, Types: types, Keys: orchestrator.Keys()})
+		return plane.Open(ctx, plane.Composition{DSN: dsn, Objects: blob, RootKey: rootKey, Caller: caller})
 	}, nil
 }
 
@@ -161,12 +169,17 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 	ids.User = user.Record.UserID
 	for _, p := range []struct {
 		out  *uuid.UUID
-		kind store.PrincipalKind
 		name string
-	}{{&ids.Author, store.PrincipalAgent, "author"}, {&ids.Reviewer, store.PrincipalAgent, "reviewer"}} {
-		agentType := "restart-harness"
-		instance, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
-			Kind: p.kind, Model: "restart-" + p.name, AgentType: &agentType, OrganizationID: ids.Organization,
+	}{{&ids.Author, "author"}, {&ids.Reviewer, "reviewer"}} {
+		// These principals only author and review artifacts, so they are
+		// recorded as foreign imports with closed lifetimes: the general path
+		// admits no agent, and a live agent exists only under an execution
+		// (item 4 design, D5). The harness's dispatches are created below
+		// with no principal starting under them.
+		instance, err := seam.RecordForeignAgentPrincipal(ctx, store.RecordForeignAgentPrincipalInput{
+			Model: "restart-" + p.name, AgentType: "restart-harness", OrganizationID: ids.Organization,
+			Pack:     store.ForeignPromptPack{Name: "fixture", Digest: "sha256:" + strings.Repeat("a", 64)},
+			Lifetime: store.RecordedLifetime{StartTime: time.Now().Add(-time.Hour), StopTime: time.Now(), StopReason: "fixture"},
 		})
 		if err != nil {
 			return ids, fmt.Errorf("principal %s: %w", p.name, err)
@@ -180,6 +193,13 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 	ids.Product = product.Record.ProductID
 	repo, err := seam.ProvisionRepository(ctx, store.ProvisionRepositoryInput{Slug: "api", DisplayName: "API", OrganizationID: ids.Organization, PrimaryProductID: ids.Product, UserID: ids.User})
 	if err != nil {
+		return ids, err
+	}
+	// Since item 4 a dispatch resolves a prompt pack. The child's seam is
+	// composed the way the real root composes it -- the Orchestrator's key
+	// vocabulary and its empty slot registry -- so the empty pack is what
+	// installs and what the organization selects (design D8, D9).
+	if err := seedPromptPack(ctx, seam, ids.Organization); err != nil {
 		return ids, err
 	}
 	feature, err := seam.CreateFeature(ctx, store.CreateFeatureInput{Title: "Flags", OrganizationID: ids.Organization, UserID: ids.User, ProductID: ids.Product})
@@ -236,7 +256,7 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 		ids.Predecessors = append(ids.Predecessors, predecessor.StoryID)
 		ids.Completions = append(ids.Completions, completion)
 	}
-	dispatch, err := seam.CreateDispatch(ctx, ids.Organization, ids.Story)
+	dispatch, err := seam.CreateDispatch(ctx, ids.Organization, ids.Story, nil)
 	if err != nil {
 		return ids, err
 	}
@@ -360,7 +380,8 @@ func newHarness(t *testing.T, accept bool, kill bool) *harness {
 		t.Fatal(err)
 	}
 	h.seam, err = plane.Open(context.Background(), plane.Composition{
-		DSN: dsn, Objects: blob, RootKey: fixedRootKey(t), Types: types, Keys: orchestrator.Keys(),
+		DSN: dsn, Objects: blob, RootKey: fixedRootKey(t),
+		Caller: plane.Caller{Types: types, Keys: orchestrator.Keys(), Prompts: orchestrator.Prompts(), Harness: planetest.Harness(t)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -563,4 +584,18 @@ func TestRestartClassifiesEachTransitionShape(t *testing.T) {
 			h.expect(h.recover(), orchestrator.PendingDiverged, tc.component, predecessor)
 		})
 	}
+}
+
+// seedPromptPack provisions the organization's prompt pack as the
+// composition root does: the EMBEDDED built-in through LoadBuiltin, then
+// the seam's provisioning verb (design D2, D9). Idempotent.
+func seedPromptPack(ctx context.Context, seam store.Store, organization uuid.UUID) error {
+	builtin, err := orchestrator.LoadBuiltin(orchestrator.BuiltinPack())
+	if err != nil {
+		return err
+	}
+	if _, err := seam.ProvisionOrganizationPromptPack(ctx, organization, builtin); err != nil {
+		return fmt.Errorf("provision the built-in pack: %w", err)
+	}
+	return nil
 }

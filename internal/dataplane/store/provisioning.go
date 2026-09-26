@@ -166,4 +166,24 @@ type ProvisioningWriter interface {
 	// AddRepositoryToProduct records a secondary membership, idempotently.
 	// Adding the primary again is a no-op with Created=false.
 	AddRepositoryToProduct(ctx context.Context, organizationID, productID, repositoryID uuid.UUID) (Bootstrapped[Repository], error)
+
+	// ProvisionOrganizationPromptPack gives an organization a resolvable
+	// prompt-pack selector (ADR 0031 section 6; item 4 design, D9): it
+	// imports the built-in the binary carries, creates its installation,
+	// and writes the organization-scoped prompt.pack record naming it --
+	// three writes in ONE transaction, because an organization holding
+	// content and installation but no selector is unresolvable, and that
+	// state is reached by an ordinary retry.
+	//
+	// Idempotent, and it is how an organization that predates packs is
+	// initialised. An organization that already has a selector keeps it,
+	// whatever it names, with Created=false and NOTHING imported: an
+	// upgrade moves no organization until someone selects the new built-in
+	// through SelectBuiltinPromptPack. Serialised per organization, so two
+	// provisioners cannot each seed a selector.
+	//
+	// ErrNotFound when the organization does not exist;
+	// ErrPromptSelectorUnresolved when its existing selector names nothing
+	// installed, which is reported rather than repaired.
+	ProvisionOrganizationPromptPack(ctx context.Context, organizationID uuid.UUID, builtin BuiltinPromptPack) (Bootstrapped[PromptPackSelection], error)
 }

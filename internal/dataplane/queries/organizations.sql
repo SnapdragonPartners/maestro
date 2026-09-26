@@ -38,3 +38,20 @@ ON CONFLICT ON CONSTRAINT organizations_slug_key DO NOTHING;
 INSERT INTO users (user_id, organization_id, handle, display_name)
 VALUES (@user_id, @organization_id, @handle, @display_name)
 ON CONFLICT ON CONSTRAINT users_org_handle_key DO NOTHING;
+
+-- LockOrganization serialises the operations that seed per-organization
+-- state (item 4 design, D9): provisioning an organization's prompt pack
+-- reads "is there a selector?" and then writes one, and two provisioners
+-- interleaving those two steps would each find none. The organization row
+-- is the key that matches the shared resource (ADR 0027).
+--
+-- FOR NO KEY UPDATE, not FOR UPDATE: every row that references the
+-- organization takes FOR KEY SHARE on it when inserted, and FOR UPDATE would
+-- block a concurrent user or product being provisioned for the whole
+-- transaction. NO KEY UPDATE excludes other provisioners and nothing else.
+--
+-- name: LockOrganization :one
+SELECT organization_id, slug, display_name, created_at
+FROM organizations
+WHERE organization_id = $1
+FOR NO KEY UPDATE;

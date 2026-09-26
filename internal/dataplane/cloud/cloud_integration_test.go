@@ -59,7 +59,6 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"orchestrator/internal/dataplane/benchmarkimport"
-	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/importslice"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
@@ -279,7 +278,7 @@ func TestCloudProvisionMigrateFromEmptyThenOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
+	seam, err := OpenSeam(ctx, cfg, testCaller(t, types))
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}
@@ -338,7 +337,7 @@ func migratedCloudPlane(
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
+	seam, err := OpenSeam(ctx, cfg, testCaller(t, types))
 	if err != nil {
 		t.Fatalf("open the seam against a cloud plane: %v", err)
 	}
@@ -808,7 +807,7 @@ func TestCloudOpenRefusesAMissingBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build registry: %v", err)
 	}
-	seam, err := OpenSeam(context.Background(), cfg, types, configkeys.MustNew(nil))
+	seam, err := OpenSeam(context.Background(), cfg, testCaller(t, types))
 	if err == nil {
 		seam.Close()
 		t.Fatal("opening against a bucket that does not exist succeeded, so the failure would " +

@@ -7,10 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/plane"
-	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -52,16 +50,13 @@ import (
 // per open file description, and the shared request would block against the
 // caller's own exclusive one forever.
 //
-// Both registries are the CALLER's: what types are readable and what keys
-// are writable are properties of the caller's job, not of the plane, and an
-// empty one here would refuse every payload or key the caller came to write.
-// A caller that writes no configuration says so with configkeys.MustNew(nil).
-func OpenSeam(ctx context.Context, c *Config, types *registry.Registry, keys *configkeys.Registry) (_ store.Store, err error) {
-	if types == nil {
-		return nil, fmt.Errorf("open the persistence seam: no artifact registry was supplied")
-	}
-	if keys == nil {
-		return nil, fmt.Errorf("open the persistence seam: no configuration-key registry was supplied")
+// The Caller is the caller's own: what types are readable, what keys are
+// writable, what prompt slots exist and what binary is running are properties
+// of the caller's job, not of the plane. It is checked before the lock is
+// taken, so a caller with something missing never becomes a lock holder.
+func OpenSeam(ctx context.Context, c *Config, caller plane.Caller) (_ store.Store, err error) {
+	if callerErr := caller.Validate(); callerErr != nil {
+		return nil, fmt.Errorf("open the persistence seam: %w", callerErr)
 	}
 	if mkErr := os.MkdirAll(c.Roots.Data, 0o700); mkErr != nil {
 		return nil, fmt.Errorf("create data root %s: %w", c.Roots.Data, mkErr)
@@ -134,8 +129,7 @@ func OpenSeam(ctx context.Context, c *Config, types *registry.Registry, keys *co
 		DSN:     dsn,
 		Objects: blob,
 		RootKey: keyProvider,
-		Types:   types,
-		Keys:    keys,
+		Caller:  caller,
 		Owned: []plane.Owned{
 			{What: "data-plane lifecycle lock", Close: lock},
 		},

@@ -15,6 +15,7 @@ import (
 
 	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/objects"
+	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
 )
@@ -636,7 +637,7 @@ func (f *fixture) storeThatCannotDelete(t *testing.T, opts ...postgres.Option) *
 	if err != nil {
 		t.Fatalf("build a blob that cannot delete: %v", err)
 	}
-	built, err := postgres.New(f.pool, testRegistry(t), blob, f.rootKey, opts...)
+	built, err := postgres.New(f.pool, testRegistry(t), blob, f.rootKey, planetest.Harness(t), opts...)
 	if err != nil {
 		t.Fatalf("build the store: %v", err)
 	}

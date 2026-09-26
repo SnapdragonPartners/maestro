@@ -13,6 +13,7 @@ import (
 	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
+	"orchestrator/internal/prompt"
 )
 
 // TestOpenThreadsTheCallerKeyRegistry: a key the caller registered is
@@ -40,7 +41,8 @@ func TestOpenThreadsTheCallerKeyRegistry(t *testing.T) {
 	}
 	blob, _ := planetest.Blob(t, "keys")
 	seam, err := plane.Open(ctx, plane.Composition{
-		DSN: planetest.DSN(t, "keys"), Objects: blob, RootKey: planetest.RootKey(t), Types: types, Keys: keys,
+		DSN: planetest.DSN(t, "keys"), Objects: blob, RootKey: planetest.RootKey(t),
+		Caller: plane.Caller{Types: types, Keys: keys, Prompts: prompt.MustNew(nil), Harness: planetest.Harness(t)},
 	})
 	if err != nil {
 		t.Fatalf("open: %v", err)

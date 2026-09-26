@@ -18,6 +18,7 @@ import (
 	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
+	"orchestrator/internal/prompt"
 )
 
 // composition builds an otherwise-valid composition over dsn, so the only
@@ -29,8 +30,9 @@ func composition(t *testing.T, dsn string) plane.Composition {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return plane.Composition{DSN: dsn, Objects: blob, RootKey: planetest.RootKey(t), Types: types,
-		Keys: configkeys.MustNew(nil)}
+	return plane.Composition{DSN: dsn, Objects: blob, RootKey: planetest.RootKey(t),
+		Caller: plane.Caller{Types: types, Keys: configkeys.MustNew(nil), Prompts: prompt.MustNew(nil),
+			Harness: planetest.Harness(t)}}
 }
 
 func expectCause(t *testing.T, err error, want readiness.Cause, remedyFragment string) {

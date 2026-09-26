@@ -26,6 +26,7 @@ import (
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/work"
+	"orchestrator/internal/prompt"
 )
 
 // Opener opens the persistence seam. The composition root builds it; this
@@ -53,13 +54,33 @@ func Registry() (*registry.Registry, error) {
 	return types, nil
 }
 
-// Keys is the configuration vocabulary the Orchestrator declares. Empty in
-// item 3, deliberately: no Orchestrator path here reads a configuration
-// record, and a key registered without a reader is a guess about a future
-// caller. Item 4 registers the pack selector, the first live reader
-// (ADR 0031 §4; design D7).
+// Keys is the configuration vocabulary the Orchestrator declares: one key,
+// the prompt-pack selector, which is the registry's first LIVE reader --
+// dispatch resolves it through ResolveConfiguration on the ordinary path
+// (ADR 0031 section 4; item 4 design, D7). Item 3 left this empty because
+// a key registered without a reader is a guess about a future caller.
+//
+// All three lineage levels, because section 4's precedence is
+// most-specific-wins over the whole repository -> product -> organization
+// chain, and ResolveConfiguration already reads all of it. The value is a
+// selector and never a name; the schema refuses a name by name.
 func Keys() *configkeys.Registry {
-	return configkeys.MustNew(nil)
+	return configkeys.MustNew(map[configkeys.Key]configkeys.Entry{
+		store.PromptPackKey: {
+			Schema:          store.PromptSelectorSchema(),
+			PermittedScopes: []configkeys.Scope{configkeys.ScopeOrganization, configkeys.ScopeProduct, configkeys.ScopeRepository},
+		},
+	})
+}
+
+// Prompts is the prompt-slot vocabulary the Orchestrator declares, and the
+// import gate the seam validates every pack write through (item 4 design,
+// D3). Empty in item 4, by the rule Keys states: a slot is registered by the
+// item that first renders it, and nothing here calls a model (design D1).
+// With no slots it admits the empty pack -- which is what the built-in is --
+// and refuses every other.
+func Prompts() *prompt.Registry {
+	return prompt.MustNew(nil)
 }
 
 // StartupRefused is a start that could not proceed because the plane is
@@ -195,7 +216,9 @@ func (o *Orchestrator) Store() store.Store { return o.seam }
 
 // Dispatch issues a Story's dispatch, deriving its basis (design D10).
 func (o *Orchestrator) Dispatch(ctx context.Context, storyID uuid.UUID) (*store.StoryDispatch, error) {
-	dispatch, err := o.seam.CreateDispatch(ctx, o.organization.OrganizationID, storyID)
+	// No explicit selector: the pack comes from scoped configuration, which
+	// provisioning seeds (item 4 design, D8, D9).
+	dispatch, err := o.seam.CreateDispatch(ctx, o.organization.OrganizationID, storyID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch story %s: %w", storyID, err)
 	}

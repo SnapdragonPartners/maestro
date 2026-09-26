@@ -61,7 +61,66 @@ const (
 	ReasonNotPending DispatchReason = "dispatch is not pending; terminal dispositions are immutable"
 	// ReasonFailureCodeRequired: a failure must carry a stable code.
 	ReasonFailureCodeRequired DispatchReason = "a failed dispatch needs a failure code"
+
+	// The prompt-pack refusals (item 4 design, D8), one per producer that
+	// exists at item 4. A reason no code can emit would be a guess about a
+	// future caller, so the coverage refusal waits for item 6's subject.
+
+	// ReasonNoPromptSelector: neither the dispatch nor any scope supplies a
+	// selector. The remedy is to seed one (provisioning does).
+	ReasonNoPromptSelector DispatchReason = "no prompt pack selector applies to this story"
+	// ReasonPromptSelectorUnresolved: the selector names no plane-owned pack
+	// in this organization.
+	ReasonPromptSelectorUnresolved DispatchReason = "the prompt pack selector names no pack in this organization"
+	// ReasonPromptPackIncompatible: the installation's declared range
+	// excludes the running Maestro version.
+	ReasonPromptPackIncompatible DispatchReason = "the prompt pack declares a maestro version range that excludes this harness"
+	// ReasonPromptPackUnusable: the harness contract re-run at dispatch
+	// refused the pack.
+	ReasonPromptPackUnusable DispatchReason = "the prompt pack is refused by this harness's contract"
 )
+
+// PromptRangeCheck is what the declared-range check recorded on a
+// resolution: passed, or not evaluated under a development build. There is
+// no third value; a refused range is a dispatch that was never written.
+type PromptRangeCheck string
+
+// The two results.
+const (
+	PromptRangePassed       PromptRangeCheck = "passed"
+	PromptRangeNotEvaluated PromptRangeCheck = "not-evaluated"
+)
+
+// PromptResolution is the pack a dispatch resolved, persisted beside the
+// dispatch basis in the same transaction (design D8). It snapshots every
+// installation value that affected the decision, so a later correction to
+// the installation cannot make this dispatch look decided on facts that did
+// not yet exist.
+type PromptResolution struct {
+	ResolvedAt              time.Time
+	Identity                PromptIdentity
+	ResolvedName            string
+	ValidatedMaestroVersion string
+	RangeCheck              PromptRangeCheck
+	Snapshot                PromptResolutionSnapshot
+	InstallationRevision    int
+	ResolutionID            uuid.UUID
+	StoryDispatchID         uuid.UUID
+	ContentID               uuid.UUID
+	InstallationID          uuid.UUID
+}
+
+// PromptResolutionSnapshot is the metadata the decision read.
+type PromptResolutionSnapshot struct {
+	DisplayName       string   `json:"display_name"`
+	MinMaestroVersion string   `json:"min_maestro_version"`
+	MaxMaestroVersion string   `json:"max_maestro_version"`
+	DeclaredRoles     []string `json:"declared_roles"`
+	// ContractRerun records whether dispatch re-ran parse and the variable
+	// contract (a moved or development harness) or accepted the
+	// installation's validation.
+	ContractRerun bool `json:"contract_rerun"`
+}
 
 // DispatchRejected is a refused dispatch operation, carrying the rule and
 // the reference that failed it.
@@ -102,22 +161,22 @@ type BasisDependency struct {
 
 // StoryDispatch is a dispatch record with its disposition and its basis.
 type StoryDispatch struct {
-	SettledAt     *time.Time
-	FailureCode   *string
-	FailureDetail *string
-	Basis         []BasisDependency
-	DispatchedAt  time.Time
-	Disposition   Disposition
-	StoryVersion  VersionRef
-	EpicVersion   VersionRef
-
-	StoryDispatchID uuid.UUID
-	OrganizationID  uuid.UUID
-	ProductID       uuid.UUID
-	FeatureID       uuid.UUID
-	EpicID          uuid.UUID
-	StoryID         uuid.UUID
-	WorkGroupID     uuid.UUID
+	DispatchedAt     time.Time
+	FailureCode      *string
+	FailureDetail    *string
+	SettledAt        *time.Time
+	Disposition      Disposition
+	Basis            []BasisDependency
+	EpicVersion      VersionRef
+	StoryVersion     VersionRef
+	PromptResolution PromptResolution
+	StoryDispatchID  uuid.UUID
+	OrganizationID   uuid.UUID
+	ProductID        uuid.UUID
+	FeatureID        uuid.UUID
+	EpicID           uuid.UUID
+	StoryID          uuid.UUID
+	WorkGroupID      uuid.UUID
 }
 
 // Execution is one logical Story-scoped execution, carrying identity and
@@ -167,7 +226,12 @@ type DispatchWriter interface {
 	// its Epic has no accepted governing artifact of the expected type, when
 	// a completion is not an accepted work.story_completion, or when the
 	// Epic has no Work Group.
-	CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID) (*StoryDispatch, error)
+	//
+	// It also resolves the prompt pack in the same transaction (item 4
+	// design, D8). An explicit selector wins; nil falls back to scoped
+	// configuration under PromptPackKey; failing both, the dispatch is
+	// refused.
+	CreateDispatch(ctx context.Context, organizationID, storyID uuid.UUID, selector *PromptSelector) (*StoryDispatch, error)
 
 	// AcceptDispatch flips pending → accepted and creates the execution in
 	// the same transaction: an accepted dispatch has at least one execution,

@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"sort"
 
+	"orchestrator/internal/dataplane/harness"
+	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/stack"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/orchestrator"
+	"orchestrator/pkg/version"
 )
 
 // orchestratorOpener is the composition root's half of design D3: the only
@@ -22,10 +25,34 @@ func orchestratorOpener(cfg *stack.Config) (orchestrator.Opener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compose the orchestrator's seam: %w", err)
 	}
-	keys := orchestrator.Keys()
+	running, err := runningHarness()
+	if err != nil {
+		return nil, fmt.Errorf("compose the orchestrator's seam: %w", err)
+	}
+	caller := plane.Caller{
+		Types:   types,
+		Keys:    orchestrator.Keys(),
+		Prompts: orchestrator.Prompts(),
+		Harness: running,
+	}
 	return func(ctx context.Context) (store.Store, error) {
-		return stack.OpenSeam(ctx, cfg, types, keys)
+		return stack.OpenSeam(ctx, cfg, caller)
 	}, nil
+}
+
+// runningHarness is this binary's version, validated (item 4 design, D3 and
+// D8). Every verb that opens a seam crosses it, and it runs BEFORE the plane
+// is touched: a mis-stamped build is refused here, typed, rather than opening
+// a seam and recording a version no declared range can be compared with.
+//
+// pkg/version is read here and nowhere below: the composition root is the one
+// place that knows it is a binary.
+func runningHarness() (harness.Version, error) {
+	running, err := harness.Parse(version.Version)
+	if err != nil {
+		return harness.Version{}, fmt.Errorf("this binary's version stamp is unusable, so it may not open a data plane: %w", err)
+	}
+	return running, nil
 }
 
 // runRecover starts the Orchestrator against the local plane and prints

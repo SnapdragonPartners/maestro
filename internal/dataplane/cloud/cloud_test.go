@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
+	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/secret"
 )
@@ -59,7 +59,7 @@ func TestConfigRefusesAWrongLengthRootKey(t *testing.T) {
 func TestOpenSeamRefusesANilRegistryBeforeBuildingAClient(t *testing.T) {
 	_, err := OpenSeam(context.Background(), Config{
 		DSN: "postgres://example", Bucket: "b", RootKey: validRootKey(),
-	}, nil, configkeys.MustNew(nil))
+	}, testCaller(t, nil))
 	if err == nil {
 		t.Fatal("OpenSeam accepted a nil registry")
 	}
@@ -161,7 +161,7 @@ func TestOpenSeamRefusesBeforeBuildingAnything(t *testing.T) {
 	_, err := OpenSeam(context.Background(), Config{
 		DSN:     "postgres://example",
 		RootKey: validRootKey(),
-	}, nil, configkeys.MustNew(nil))
+	}, testCaller(t, nil))
 	if err == nil {
 		t.Fatal("OpenSeam accepted a configuration with no bucket")
 	}
@@ -280,7 +280,7 @@ func TestOpenSeamRefusesANilKeyRegistryBeforeBuildingAClient(t *testing.T) {
 	}
 	_, err = OpenSeam(context.Background(), Config{
 		DSN: "postgres://example", Bucket: "b", RootKey: validRootKey(),
-	}, types, nil)
+	}, func() plane.Caller { c := testCaller(t, types); c.Keys = nil; return c }())
 	if err == nil {
 		t.Fatal("OpenSeam accepted a nil configuration-key registry")
 	}

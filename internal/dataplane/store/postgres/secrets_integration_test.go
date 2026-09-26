@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
 	"orchestrator/internal/dataplane/store/postgres"
@@ -44,7 +45,7 @@ func newVault(t *testing.T) *vault {
 	// stub: the provider is part of what is under test, and a fake one
 	// would prove the envelope works with key material nothing in
 	// production produces.
-	built, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey)
+	built, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey, planetest.Harness(t))
 	if err != nil {
 		t.Fatalf("store with root key: %v", err)
 	}
@@ -642,7 +643,7 @@ func TestStoreRefusesWithoutARootKeyProvider(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			built, err := postgres.New(f.pool, testRegistry(t), f.blob, tc.provider)
+			built, err := postgres.New(f.pool, testRegistry(t), f.blob, tc.provider, planetest.Harness(t))
 			if err == nil {
 				built.Close()
 				t.Fatal("the store was built without a usable root-key provider; every non-vault " +

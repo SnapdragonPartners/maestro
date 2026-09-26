@@ -9,9 +9,11 @@ import (
 
 	"orchestrator/internal/dataplane/benchmarkimport"
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/plane"
 	"orchestrator/internal/dataplane/registry"
 	"orchestrator/internal/dataplane/stack"
 	"orchestrator/internal/dataplane/store"
+	"orchestrator/internal/prompt"
 )
 
 // DefaultResultsDir mirrors the runner's own default, so the two halves of
@@ -50,7 +52,19 @@ func openSeam(ctx context.Context, cfg *stack.Config) (store.Store, error) {
 	// The benchmark verbs write no configuration, and say so. This registry
 	// is THEIRS; the Orchestrator declares its own (design D7), and neither
 	// quietly becomes the other's.
-	seam, err := stack.OpenSeam(ctx, cfg, types, configkeys.MustNew(nil))
+	//
+	// The same goes for prompt packs: no slots, so the importer can install
+	// none. It records FOREIGN pack identities, which no gate judges.
+	running, err := runningHarness()
+	if err != nil {
+		return nil, err
+	}
+	seam, err := stack.OpenSeam(ctx, cfg, plane.Caller{
+		Types:   types,
+		Keys:    configkeys.MustNew(nil),
+		Prompts: prompt.MustNew(nil),
+		Harness: running,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open the data plane: %w", err)
 	}
@@ -83,7 +97,9 @@ func runBootstrap(ctx context.Context, cfg *stack.Config, opts *runOptions) erro
 		userName = opts.user
 	}
 
-	seam, err := openSeam(ctx, cfg)
+	// The Orchestrator's seam, as `provision organization` opens: the
+	// selector seeded below is a key only its registry declares.
+	seam, builtin, err := openOrchestratorSeam(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -97,6 +113,9 @@ func runBootstrap(ctx context.Context, cfg *stack.Config, opts *runOptions) erro
 	}
 	fmt.Printf("%s organization %s (%s)\n", provisioned(organization.Created),
 		organization.Record.Slug, organization.Record.DisplayName)
+	if packErr := provisionPromptPack(ctx, seam, &organization.Record, builtin); packErr != nil {
+		return packErr
+	}
 
 	user, err := seam.BootstrapUser(ctx, store.BootstrapUserInput{
 		Handle: opts.user, DisplayName: userName,

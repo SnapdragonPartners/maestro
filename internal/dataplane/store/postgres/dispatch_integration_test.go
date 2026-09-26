@@ -144,7 +144,7 @@ func TestCreateDispatchDerivesTheWholeBasis(t *testing.T) {
 	p1, c1 := f.addPredecessor(t, g, "one", true)
 	p2, c2 := f.addPredecessor(t, g, "two", true)
 
-	dispatch, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+	dispatch, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 	if err != nil {
 		t.Fatalf("CreateDispatch: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestCreateDispatchRefusesEveryBadReference(t *testing.T) {
 		f := newFixture(t)
 		g := provisionGoverned(t, f)
 		f.addPredecessor(t, g, "pending", false)
-		_, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		_, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		assertDispatchRejected(t, err, store.ReasonNotDependencyReady)
 		if rows, _ := f.store.ListDispatchesByDisposition(ctx, f.organizationID, store.DispositionPending); len(rows) != 0 {
 			t.Fatal("a refused dispatch left a row behind")
@@ -205,14 +205,14 @@ func TestCreateDispatchRefusesEveryBadReference(t *testing.T) {
 		if _, err := f.store.EnsureWorkGroup(ctx, f.organizationID, h.epic.EpicID); err != nil {
 			t.Fatal(err)
 		}
-		_, err := f.store.CreateDispatch(ctx, f.organizationID, h.story.StoryID)
+		_, err := f.store.CreateDispatch(ctx, f.organizationID, h.story.StoryID, nil)
 		assertDispatchRejected(t, err, store.ReasonNoGoverningArtifact)
 	})
 
 	t.Run("no work group", func(t *testing.T) {
 		f := newFixture(t)
 		h := provisionHierarchy(t, f)
-		_, err := f.store.CreateDispatch(ctx, f.organizationID, h.story.StoryID)
+		_, err := f.store.CreateDispatch(ctx, f.organizationID, h.story.StoryID, nil)
 		assertDispatchRejected(t, err, store.ReasonNoWorkGroup)
 	})
 
@@ -222,7 +222,7 @@ func TestCreateDispatchRefusesEveryBadReference(t *testing.T) {
 		predecessor, _ := f.addPredecessor(t, g, "p", false)
 		draft := f.draftRecord(t, work.TypeStoryCompletion, storyScope(predecessor.StoryID), storyLineage(g.hierarchy, predecessor.StoryID), `{"head_commit":"`+testSHA+`"}`)
 		f.satisfyEdge(t, g, predecessor.StoryID, draft.ArtifactID)
-		_, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		_, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		assertDispatchRejected(t, err, store.ReasonGoverningNotAccepted)
 	})
 
@@ -234,7 +234,7 @@ func TestCreateDispatchRefusesEveryBadReference(t *testing.T) {
 		// right status, wrong type. THE MUTANT: skip the type check.
 		record := f.acceptedRecord(t, work.TypeStoryRecord, storyScope(predecessor.StoryID), storyLineage(g.hierarchy, predecessor.StoryID), `{"intent":"x"}`)
 		f.satisfyEdge(t, g, predecessor.StoryID, record.ArtifactID)
-		_, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		_, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		assertDispatchRejected(t, err, store.ReasonGoverningWrongType)
 	})
 
@@ -256,7 +256,7 @@ func TestCreateDispatchRefusesEveryBadReference(t *testing.T) {
 			t.Fatalf("supersede: %v", err)
 		}
 		// The pointer still names the superseded original: not accepted.
-		_, err = f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		_, err = f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		assertDispatchRejected(t, err, store.ReasonGoverningNotAccepted)
 	})
 }
@@ -306,7 +306,7 @@ func TestDispositionTransitionsAreNamedAndTerminal(t *testing.T) {
 
 	dispatchOf := func(t *testing.T, g governed) *store.StoryDispatch {
 		t.Helper()
-		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID)
+		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -346,7 +346,7 @@ func TestDispositionTransitionsAreNamedAndTerminal(t *testing.T) {
 		// the fixture's second tenant instead of re-provisioning.
 		f2 := newFixture(t)
 		g := provisionGoverned(t, f2)
-		d, err := f2.store.CreateDispatch(ctx, f2.organizationID, g.story.StoryID)
+		d, err := f2.store.CreateDispatch(ctx, f2.organizationID, g.story.StoryID, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +369,7 @@ func TestDispositionTransitionsAreNamedAndTerminal(t *testing.T) {
 	t.Run("invalidate is terminal", func(t *testing.T) {
 		f3 := newFixture(t)
 		g := provisionGoverned(t, f3)
-		d, err := f3.store.CreateDispatch(ctx, f3.organizationID, g.story.StoryID)
+		d, err := f3.store.CreateDispatch(ctx, f3.organizationID, g.story.StoryID, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

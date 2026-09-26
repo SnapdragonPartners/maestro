@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -143,7 +145,7 @@ func openSeam(t *testing.T, cfg *Config) *postgres.Store {
 	if err != nil {
 		t.Fatalf("wrap the root key: %v", err)
 	}
-	seam, err := postgres.Open(t.Context(), dsn, crossStoreRegistry(t), blob, keyProvider)
+	seam, err := postgres.Open(t.Context(), dsn, crossStoreRegistry(t), blob, keyProvider, testHarness(t))
 	if err != nil {
 		t.Fatalf("open the persistence seam: %v", err)
 	}
@@ -220,11 +222,14 @@ func seedCrossStore(t *testing.T, cfg *Config) crossStoreSeed {
 	}
 	userID := operator.Record.UserID
 
-	agentType := "coder"
-	author, err := seam.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
-		Kind:           store.PrincipalAgent,
+	// The author only needs an identity, so it is recorded as a foreign
+	// import with a closed lifetime: the general path admits no agent, and
+	// a live agent exists only under an execution (item 4 design, D5).
+	author, err := seam.RecordForeignAgentPrincipal(ctx, store.RecordForeignAgentPrincipalInput{
 		Model:          "fixture-model",
-		AgentType:      &agentType,
+		AgentType:      "coder",
+		Pack:           store.ForeignPromptPack{Name: "fixture", Digest: "sha256:" + strings.Repeat("a", 64)},
+		Lifetime:       store.RecordedLifetime{StartTime: time.Now().Add(-time.Hour), StopTime: time.Now(), StopReason: "fixture"},
 		OrganizationID: seed.OrganizationID,
 	})
 	if err != nil {

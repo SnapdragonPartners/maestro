@@ -189,13 +189,11 @@ func TestAgentsSharingAModelMayReviewEachOther(t *testing.T) {
 	ctx := context.Background()
 
 	sameModel := func() uuid.UUID {
-		agentType := "coder"
-		instance, err := f.store.CreatePrincipalInstance(ctx, store.CreatePrincipalInstanceInput{
-			Kind: store.PrincipalAgent, Model: "claude-opus-5", AgentType: &agentType,
-			OrganizationID: f.organizationID,
-		})
+		in := f.foreignInput()
+		in.Model = "claude-opus-5"
+		instance, err := f.store.RecordForeignAgentPrincipal(ctx, in)
 		if err != nil {
-			t.Fatalf("create agent principal: %v", err)
+			t.Fatalf("record agent principal: %v", err)
 		}
 		return instance.PrincipalInstanceID
 	}

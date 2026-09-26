@@ -29,6 +29,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/nilcheck"
 	"orchestrator/internal/dataplane/objects"
@@ -66,6 +67,32 @@ type Composition struct {
 	// evidence that the secrets module is portable.
 	RootKey secret.RootKeyProvider
 
+	// Caller is what the caller's JOB supplies, as opposed to where the
+	// plane lives. Embedded, so a composer hands on what it was given
+	// without restating it.
+	Caller
+
+	// Owned are resources whose lifetime is the SEAM's, released when it
+	// closes and — the part that is easy to get wrong — also released if this
+	// function fails partway.
+	Owned []Owned
+}
+
+// Caller is the half of a composition that belongs to the caller's job and
+// not to the deployment: every composer, local or cloud, takes one and hands
+// it to Open unchanged.
+//
+// It is one struct rather than a growing parameter list because each field
+// was added by a different item -- Types in Phase 2, Keys by Phase 3 item 3,
+// Prompts and Harness by item 4 -- and each addition otherwise re-cuts every
+// composer's signature and every one of its call sites.
+//
+// ALL FOUR ARE REQUIRED. A caller with nothing to say says so explicitly --
+// an empty key registry, a slot registry with no slots -- and is then
+// refused, with a typed error, only if it tries the thing it disclaimed.
+//
+//nolint:govet // fieldalignment: ordered by the item that added each
+type Caller struct {
 	// Types is the CALLER's registry: what payloads are readable is a
 	// property of the caller's job rather than of the plane.
 	Types *registry.Registry
@@ -83,10 +110,24 @@ type Composition struct {
 	// deliberately instead of by omission.
 	Keys *configkeys.Registry
 
-	// Owned are resources whose lifetime is the SEAM's, released when it
-	// closes and — the part that is easy to get wrong — also released if this
-	// function fails partway.
-	Owned []Owned
+	// Prompts is the caller's prompt-pack import gate (Phase 3 item 4 design,
+	// D3), with Types's semantics: what slots exist is a property of the
+	// caller's job. The seam consults it on every pack write and never names
+	// the implementation, which is internal/prompt.Registry.
+	//
+	// Required rather than defaulted, as Keys is: a caller that installs no
+	// packs says so with a registry holding no slots, which admits the empty
+	// pack and refuses everything else.
+	Prompts store.PromptContract
+
+	// Harness is the version of the running binary (design D3, D8): the
+	// one authority for it, read back through store.Store.Harness.
+	//
+	// harness.Parse is its only constructor, so a root that reaches here has
+	// already had a mis-stamped version refused. The zero value is what is
+	// left to refuse, and Open refuses it: no root opens a seam without
+	// saying what it is running.
+	Harness harness.Version
 }
 
 // Owned is a resource the composition takes responsibility for closing.
@@ -155,9 +196,9 @@ func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
 	// The pool is built HERE rather than by postgres.Open, because the probe
 	// below must run on it before a store exists, and the pool is lazy:
 	// pgxpool.New validates the DSN and contacts nothing.
-	pool, err := pgxpool.New(ctx, c.DSN)
+	pool, err := postgres.NewPool(ctx, c.DSN)
 	if err != nil {
-		return nil, fmt.Errorf("open the persistence seam: open data plane pool: %w", err)
+		return nil, fmt.Errorf("open the persistence seam: %w", err)
 	}
 	if probeErr := probe(ctx, pool); probeErr != nil {
 		// The pool is closed on the path the probe was added to diagnose;
@@ -166,7 +207,8 @@ func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
 		err = probeErr
 		return nil, err
 	}
-	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey, postgres.WithConfigKeys(c.Keys))
+	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey, c.Harness,
+		postgres.WithConfigKeys(c.Keys), postgres.WithPromptContract(c.Prompts))
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("open the persistence seam: %w", err)
@@ -251,11 +293,9 @@ func (c Composition) validate() error {
 		return errors.New("compose a data plane: no object store was supplied")
 	case nilcheck.IsNil(c.RootKey):
 		return errors.New("compose a data plane: no root-key provider was supplied")
-	case c.Types == nil:
-		return errors.New("compose a data plane: no artifact registry was supplied")
-	case c.Keys == nil:
-		return errors.New("compose a data plane: no configuration-key registry was supplied; a caller " +
-			"that writes no configuration declares that with an empty one")
+	}
+	if err := c.Caller.Validate(); err != nil {
+		return fmt.Errorf("compose a data plane: %w", err)
 	}
 	for i, owned := range c.Owned {
 		if owned.Close == nil {
@@ -297,6 +337,34 @@ func release(owned []Owned) error {
 	}
 	if joined := errors.Join(errs...); joined != nil {
 		return fmt.Errorf("release resources owned by the data-plane seam: %w", joined)
+	}
+	return nil
+}
+
+// Validate refuses a Caller with anything missing.
+//
+// Exported because the composers call it FIRST, before they acquire what they
+// would then have to release: the local one takes the lifecycle lock and the
+// cloud one builds a network client, and a resource that only needs closing
+// on an error path is the one that gets leaked. Open calls it again, so a
+// composer that forgets is still refused.
+//
+//nolint:gocritic // hugeParam: by value, matching Composition.validate.
+func (c Caller) Validate() error {
+	switch {
+	case c.Types == nil:
+		return errors.New("no artifact registry was supplied")
+	case c.Keys == nil:
+		return errors.New("no configuration-key registry was supplied; a caller that writes no " +
+			"configuration declares that with an empty one")
+	// nilcheck: Prompts is an interface, and the implementation is a pointer
+	// type, so a nil *prompt.Registry arrives here as a non-nil interface.
+	case nilcheck.IsNil(c.Prompts):
+		return errors.New("no prompt contract was supplied; a caller that installs no packs " +
+			"declares that with a slot registry holding no slots")
+	case c.Harness.IsZero():
+		return errors.New("no harness version was supplied; construct one with harness.Parse " +
+			"from the running binary's version")
 	}
 	return nil
 }

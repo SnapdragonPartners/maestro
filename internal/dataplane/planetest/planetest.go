@@ -28,6 +28,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
+	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/migrations"
 	"orchestrator/internal/dataplane/objects"
 	"orchestrator/internal/dataplane/paths"
@@ -266,4 +267,22 @@ func randomSuffix(t *testing.T) string {
 		t.Fatalf("random suffix: %v", err)
 	}
 	return hex.EncodeToString(suffix)
+}
+
+// HarnessVersion is the version test seams are composed with: a REAL
+// semantic version inside the Phase 3 band the built-in pack declares, not
+// "dev". Under "dev" every declared-range comparison records not-evaluated,
+// so a suite composed that way would exercise the skip and never the check
+// (Phase 3 item 4 design, D8). Tests of the development branch construct
+// their own.
+const HarnessVersion = "v2.0.0-phase.3.0.0"
+
+// Harness returns HarnessVersion, parsed.
+func Harness(t *testing.T) harness.Version {
+	t.Helper()
+	running, err := harness.Parse(HarnessVersion)
+	if err != nil {
+		t.Fatalf("parse the test harness version: %v", err)
+	}
+	return running
 }

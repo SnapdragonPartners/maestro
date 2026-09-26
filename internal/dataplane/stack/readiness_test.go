@@ -13,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/paths"
 	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
@@ -127,7 +126,7 @@ func openRefusal(t *testing.T, cfg *Config) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seam, err := OpenSeam(context.Background(), cfg, types, configkeys.MustNew(nil))
+	seam, err := OpenSeam(context.Background(), cfg, testCaller(t, types))
 	if err == nil {
 		seam.Close()
 		t.Fatal("OpenSeam succeeded against a plane that is not ready")
