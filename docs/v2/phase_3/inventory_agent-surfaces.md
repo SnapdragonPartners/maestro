@@ -1,6 +1,6 @@
 +++
 title = "Inventory: Agent Surfaces — Retain, Refactor, Replace, Retire"
-edit_date = "2026-08-31"
+edit_date = "2026-09-26"
 status = "live"
 type = "inventory"
 summary = "Phase 3 item 1: the surface-grain disposition table over the agent, toolloop, proto, supervisor, dispatcher and Claude adapter subsystems, classified by evidence from the import graph unioned over every applicable build configuration against the frozen v1 tree — including the three findings that change the plan's starting hypothesis, the deltas from the Phase 0 package-grain inventory, and the reachability evidence that makes issue #298's deletions complete rather than approximate."
@@ -323,6 +323,7 @@ evidence; no row rests on the plan's hypothesis alone.
 | `ToolLoop`, `Config`, `Outcome` external contract | **retain** | 4 production importers (`supervisor`, `architect`, `coder`, `pm`). Phase 0's rework note preserves this contract precisely so call sites migrate unchanged. |
 | Harness layer — durable audit persistence, escalation, per-tool circuit breaking (`EscalationHandler`, `ToolCircuitBreakerConfig`, `ActivityTracker`) | **refactor** | 3,228 lines, 5 files. The Phase 0 toolloop spike found this layer worth keeping over `llms/toolloop`. Refactored behind item 5's boundary, per the plan — not rewritten. |
 | `TerminalTool[T]` and the one-goal-one-exit rule | **refactor** | Declared `toolloop.go:36`; `Config.TerminalTool` requires exactly one (`:113`) and construction rejects `nil` (`:208`). The loop can *require* a terminal call but cannot *force* one: when the model never calls it, extraction returns `toolloop.ErrNoTerminalTool` (`pkg/architect/toolloop_results.go:28,65,82` for `submit_reply`, `review_complete`, `story_edit`) and the architect escalates. That is [#317](https://github.com/SnapdragonPartners/maestro/issues/317) — the approval loop deadlocks into `ESCALATED`, which is unreachable headlessly. The refactor must make forcing expressible at the boundary. |
+| `pkg/tools` — the `Tool` interface (`pkg/tools/mcp.go:120-132`), the sealed registry (`registry.go:77-139`), the per-role allow-lists (`constants.go`) and the tool implementations | **retire** (item 14) — **PROPOSED**, item 5 design amendment 2, 2026-09-26 | Absent from this table until item 5 touched it; the only mention was #298's "blocked on v1 tools (item 14)" row below. v1's, and reachable only from v1 drivers and the toolloop's legacy executor. The v2 action vocabulary is the boundary's code-resident family registry ([item 5 design](design_execution-boundary.md) D3, D15); no v2 item registers a `pkg/tools` tool. |
 
 ### `pkg/proto`
 
