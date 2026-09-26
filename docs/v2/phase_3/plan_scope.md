@@ -1,6 +1,6 @@
 +++
 title = "Maestro v2 Phase 3: Scope And Plan"
-edit_date = "2026-09-02"
+edit_date = "2026-09-25"
 status = "live"
 summary = "Accepted Phase 3 scope and execution plan: build the smallest real v2 factory path — work hierarchy, a single Work Group lifecycle, the agent execution boundary, Incubators and Habitats, a contract-only intake and an Epic dashboard skeleton — then retire v1 behind a proven v2 benchmark adapter. Sixteen items in four blocks with a checkpoint at each seam, implementing the five Track A ADRs and settling the mechanisms ADR 0032 deliberately handed back as design inputs."
 type = "plan"
@@ -423,8 +423,8 @@ is not done.
       up. *(Items 7 and 9.)*
 - [ ] Agents hold no data-plane connection and issue no queries; every artifact,
       decision and state transition passes through an action record. *(Items 3, 5, 6.)*
-- [ ] Prompt pack identity is resolved once at dispatch and reused verbatim
-      across restarts. *(Item 4.)*
+- [x] Prompt pack identity is resolved once at dispatch and reused verbatim
+      across restarts. *(Item 4.)* *Demonstrated at [Checkpoint 1](notes_checkpoint-1.md), 2026-09-25.*
 - [ ] Cancellation on a changed dispatch basis is demonstrated end to end,
       including the `unconfirmed` path that leaves it unresolved. *(Item 9;
       checkpoint 2.)*
@@ -434,24 +434,24 @@ is not done.
 - [ ] Every table in the Phase 3 migrations traces to an Accepted ADR **and** a
       Phase 3 consumer, or carries a written justification. *(Phase 2's rule,
       carried forward.)*
-- [ ] `StateStore.Save(id, any)` is gone, and no workflow state persists through
-      a non-atomic write. *(Item 3.)*
-- [ ] **`paths.Bootstrap` is not imported from above the seam.** Phase 2's exit
+- [x] `StateStore.Save(id, any)` is gone, and no workflow state persists through
+      a non-atomic write. *(Item 3.)* *Demonstrated at [Checkpoint 1](notes_checkpoint-1.md), 2026-09-25.*
+- [x] **`paths.Bootstrap` is not imported from above the seam.** Phase 2's exit
       record makes this a rule and predicts its violation here by name — "the
       pressure to import the concrete struct from above the seam will be real in
       Phase 3, and that is precisely how a local-only assumption hardens into
       architecture." Checkable by import graph, so it is checked rather than
-      trusted. *(Item 3.)*
+      trusted. *(Item 3.)* *Demonstrated at [Checkpoint 1](notes_checkpoint-1.md), 2026-09-25.*
 - [ ] Configuration has a live reader — the pack selector resolved through
       the key registry — and a secret has one — the forge operation's token
       from the vault. *(Items 4 and 5; amended 2026-09-02, formerly item 3's.)*
-- [ ] The locked-plane path is exercised by the Orchestrator's own startup
-      rather than only by the plane's tests. *(Item 3.)*
-- [ ] Startup is defined and demonstrated for **every enumerated** not-ready
+- [x] The locked-plane path is exercised by the Orchestrator's own startup
+      rather than only by the plane's tests. *(Item 3.)* *Demonstrated at [Checkpoint 1](notes_checkpoint-1.md), 2026-09-25.*
+- [x] Startup is defined and demonstrated for **every enumerated** not-ready
       plane state (amended 2026-09-02, formerly "all four"), including
       **interrupted recovery**, where normal startup must neither bypass nor
       corrupt Phase 2's recovery protocol — the state whose mishandling
-      destroys a staged key. *(Item 3, checkpoint 1.)*
+      destroys a staged key. *(Item 3, checkpoint 1.)* *Demonstrated at [Checkpoint 1](notes_checkpoint-1.md), 2026-09-25.*
 - [ ] **Execution-resource routing is by declared requirement, never by contract
       name**, and **both run kinds exist with different behaviour** — an
       iteration run redeploys into the existing instance and keeps accumulated

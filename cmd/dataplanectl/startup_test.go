@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,21 @@ func scratchPlane(t *testing.T) *stack.Config {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// closedPort is a loopback port nothing listens on: listen, learn it, close.
+func closedPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address %T is not TCP", listener.Addr())
+	}
+	_ = listener.Close()
+	return addr.Port
 }
 
 func plantFile(t *testing.T, path string) {
@@ -72,6 +88,21 @@ func TestStartRendersEveryLocalNotReadyState(t *testing.T) {
 		{"recovery interrupted", func(t *testing.T, cfg *stack.Config) {
 			plantFile(t, filepath.Join(cfg.Roots.Data, stack.RecoveryMarkerFile))
 		}, readiness.RecoveryInterrupted, "recover-key"},
+		{"object store unusable", func(t *testing.T, cfg *stack.Config) {
+			// A provisioned plane whose key is present, so every local guard
+			// passes, but whose object store is a port nothing listens on.
+			// The bucket probe runs before the database is touched, so no
+			// service is needed here either.
+			dir, err := cfg.Roots.ServiceDataDir(paths.ServicePostgres)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plantFile(t, filepath.Join(dir, "PG_VERSION"))
+			if _, err := paths.EnsureKey(cfg.Roots.Config); err != nil {
+				t.Fatal(err)
+			}
+			cfg.ObjectsPort = closedPort(t)
+		}, readiness.ObjectStoreUnusable, "dataplane-up"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
