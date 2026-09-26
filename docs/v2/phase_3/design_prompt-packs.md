@@ -1342,7 +1342,9 @@ approved these choices as implementation checkpoints (rounds 6 and 7, at
    record deleted and recreated starts again at version 1, so a stale caller
    holding "version 1" would match the replacement and overwrite a selection
    it never saw (review round 7). A replaced record is
-   `ErrConfigurationConflict`, like a moved one.
+   `ErrConfigurationConflict`, like a moved one — and so is a **deleted**
+   one when the caller holds a token (PR #367 review): the caller read a
+   record, so "never provisioned" would send them to the wrong remedy.
 4. **The result reports `Moved`, not `Created`:** "created" would misdescribe
    an update, and the verb never creates.
 5. **The CLI reads, prints, then writes under what it read** — two seam

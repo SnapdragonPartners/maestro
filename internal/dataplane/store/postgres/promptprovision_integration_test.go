@@ -395,8 +395,10 @@ func TestSelectBuiltinNeedsASelectorAndRepairsADanglingOne(t *testing.T) {
 	s := provisioningStore(t, f)
 	ctx := context.Background()
 
-	// Never provisioned: seeding is provisioning's act.
-	_, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packA(t), store.PromptSelectorToken{RecordID: uuid.New(), Version: 1})
+	// Never provisioned: seeding is provisioning's act. No token, because
+	// there was nothing to read -- a token names a record the caller saw,
+	// and one held against a missing record is a conflict, not this.
+	_, err := s.SelectBuiltinPromptPack(ctx, f.organizationID, packA(t), store.PromptSelectorToken{})
 	if !errors.Is(err, store.ErrNoPromptSelector) {
 		t.Fatalf("err = %v, want ErrNoPromptSelector", err)
 	}
@@ -428,6 +430,43 @@ func TestSelectBuiltinNeedsASelectorAndRepairsADanglingOne(t *testing.T) {
 // version 1. A caller holding the original's "version 1" must not match
 // it: the token is the record identity and the version together, or a
 // stale operator overwrites a selection they never read.
+// TestSelectBuiltinRefusesADeletedSelectorAsAConflict: the record the
+// operator read is gone and NOT replaced. That is "moved from under you"
+// (re-read, decide again), not "never provisioned" (run provision) -- the
+// caller demonstrably read a record, and the token says which.
+//
+// THE MUTANT: drop the ErrNoPromptSelector -> ErrConfigurationConflict
+// mapping in SelectBuiltinPromptPack. The call then answers
+// ErrNoPromptSelector, the assertion below names it.
+func TestSelectBuiltinRefusesADeletedSelectorAsAConflict(t *testing.T) {
+	f := newFixture(t)
+	s := provisioningStore(t, f)
+	ctx := context.Background()
+
+	seeded, err := s.ProvisionOrganizationPromptPack(ctx, f.organizationID, packA(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := seeded.Record.Token()
+	if err := s.DeleteConfigurationRecord(ctx, f.organizationID, stale.RecordID, stale.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.SelectBuiltinPromptPack(ctx, f.organizationID, packB(t), stale)
+	if !errors.Is(err, store.ErrConfigurationConflict) {
+		t.Fatalf("err = %v, want ErrConfigurationConflict: the caller read a record and it is gone", err)
+	}
+	if errors.Is(err, store.ErrNoPromptSelector) {
+		t.Fatal("a deleted selector under a held token was reported as never provisioned")
+	}
+	// The control: with NO token -- nothing read -- the answer is still
+	// "never provisioned", so provisioning's remedy is not hidden.
+	_, err = s.SelectBuiltinPromptPack(ctx, f.organizationID, packB(t), store.PromptSelectorToken{})
+	if !errors.Is(err, store.ErrNoPromptSelector) {
+		t.Fatalf("err = %v, want ErrNoPromptSelector with no token held", err)
+	}
+}
+
 func TestSelectBuiltinRefusesAReplacedSelectorRecord(t *testing.T) {
 	f := newFixture(t)
 	s := provisioningStore(t, f)

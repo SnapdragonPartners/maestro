@@ -167,6 +167,14 @@ func selectorValue(contentID uuid.UUID) (json.RawMessage, error) {
 func (t *tx) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expected store.PromptSelectorToken) (*store.PromptPackSelected, error) {
 	existing, err := t.organizationSelector(ctx, organizationID)
 	if err != nil {
+		// A caller holding a token READ a record. If none is here now, the
+		// selector was deleted since -- moved from under them, whose remedy
+		// is re-read and decide again -- not never provisioned, whose remedy
+		// is `provision organization`. The same fault as a moved version.
+		if errors.Is(err, store.ErrNoPromptSelector) && expected.RecordID != uuid.Nil {
+			return nil, fmt.Errorf("%w: the %s selector of organization %s that the caller read as record %s no longer exists",
+				store.ErrConfigurationConflict, store.PromptPackKey, organizationID, expected.RecordID)
+		}
 		return nil, err
 	}
 	// The record at this scope must be the one the caller read. A deleted
@@ -187,6 +195,12 @@ func (t *tx) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UU
 	// over their pack, which is cheaper and reports the right fault first.
 	locked, err := t.lockConfigurationRecord(ctx, organizationID, existing.ID, expected.Version)
 	if err != nil {
+		// Deleted between the read above and the lock: the same moved-from-
+		// under-you fault, one statement later.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, fmt.Errorf("%w: the %s selector of organization %s (record %s) was deleted before it could be locked",
+				store.ErrConfigurationConflict, store.PromptPackKey, organizationID, existing.ID)
+		}
 		return nil, err
 	}
 
