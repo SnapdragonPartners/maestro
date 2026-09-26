@@ -860,7 +860,7 @@ D10 says why.
 | At-most-once by attempt id (D5) | Same id twice after settle: one effect, the replay returns the recorded result. The effect is observed as **mutation requests at the forge**, counted by a recording `http.RoundTripper` the test installs on the family's client (POST and PATCH to the pulls endpoint), not as PRs — the forge upserts, so two creates for one head leave one PR (review round 2) | Skip the settled-row lookup on retry so the request runs the gates again: the mutation-request count reads 2, which is the assertion that fails |
 | Concurrent re-presentations of one approved attempt run one effect (D7) | Two goroutines re-present the same approved id through a barrier: mutation-request count 1, one consumption timestamp | Make consumption unconditional — remove the `WHERE` predicates on both `state` and `operator_decision_consumed_at`, leaving only the id — so both re-presentations transition and proceed: count reads 2 |
 | An approved attempt is not misread as interrupted (D7) | Approve, kill before re-presentation, restart, re-present: the effect runs once and the row settles `succeeded` | Move the row to `open` at approval: the re-presentation reconciles, finds nothing, settles `unknown`, and the assertion names the outcome |
-| A recorded intent with no outcome does not re-execute | Kill the process between open and effect (the restart harness's kill path); retry: `Reconcile` runs, no second effect | Skip the wait-state check on retry: the effect runs twice and the family's counter says so |
+| A recorded intent with no outcome does not re-execute | Kill the process between open and effect (the restart harness's kill path), so **zero** effects have run; retry in a fresh process: D5's `open` branch calls `Reconcile`, which finds nothing, and the row settles `unknown`/`unresolved` with the mutation-request count still **0** | Replace D5's `open` classification branch with the effect (execute instead of reconcile): the count reads 1, which is the assertion that fails (review round 3 — an earlier version of this row asserted "twice" against a fixture that can only produce one) |
 | Secrets are substituted before the digest (D6) | The digest over the substituted form equals a digest computed by the test from the reference, and differs from one over the raw form | Digest the raw arguments: equality with the reference-form digest fails, and the test reads the token text out of `arguments` |
 | No token text is persisted anywhere | `tool_calls.arguments`, `error_message`, `result` and the log capture are searched for the minted token | Persist the raw form: found in `arguments` |
 | The secret's version is what was approved | Replace the secret between gate 1 and gate 3: `stale/secret_version_moved` | Reveal by name rather than by `(id, version)`: the new token is used and the PR is created — the test asserts it is not |
@@ -926,6 +926,13 @@ D13's client does upsert on the same head.
 | --- | --- | --- |
 | 1 (cont.) | "Every attempt settled" accepts the receipt for a `settled`/`unknown` attempt whose mutation may still commit | D11, D12 — drainage is its own persisted evidence, `tool_calls.drain_disposition`, set from what the family attests at settle and movable only from `unresolved`; the receipt requires every disposition resolved; the test refuses the receipt *after* the `unknown` settlement and accepts it once a late commit is reconciled |
 | 9 (cont.) | Counting PRs cannot see a replayed create (the forge upserts); dropping only the `consumed_at` predicate leaves the `state` predicate protecting the transition | Testing table — the effect is counted as mutation requests through a recording transport on the family's client; the concurrency mutant removes both predicates |
+
+Round 3 (Codex, 2026-09-26). Finding 9 partially open: the pre-effect-kill
+row asserted a second effect against a fixture that has run none.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 9 (cont.) | The interrupted-attempt row's fixture yields zero effects, so "runs twice" is unreachable; removing a wait-state check does not bypass the `open` branch | Testing table — the row asserts count 0 and the mutant replaces D5's `open` branch with the effect, count 1 |
 
 ## Open Questions
 
