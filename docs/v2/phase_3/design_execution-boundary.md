@@ -1,9 +1,9 @@
 +++
 title = "Design: The Mediated Execution Boundary (Item 5)"
-edit_date = "2026-09-26"
+edit_date = "2026-09-27"
 status = "live"
 type = "design"
-summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day and reads drainage from per-attempt evidence persisted independently of the outcome; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge binding they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
+summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day and reads drainage from per-attempt evidence persisted independently of the outcome; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge-binding child family they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
 +++
 
 # Design: The Mediated Execution Boundary (Item 5)
@@ -14,10 +14,12 @@ gates and ADR 0032's binding boundary items … The toolloop is refactored
 behind it, and the MCP `lastEffect` and signal-correction path is removed …
 Also carries the vault's first live reader."*
 
-Status: **live** — Accepted by Codex and DR, 2026-09-26, at `94a36172` after
-four review rounds (nine P1s in round 1, all confirmed against the tree and
-all resolved; see *Points Resolved In Review*); flipped in the acceptance
-commit, following items 3 and 4. Its two plan amendments are Accepted with
+Status: **live** — Accepted by Codex and DR, 2026-09-26. Codex approved the
+design at `94a36172` (round 4; nine P1s in round 1, all confirmed against the
+tree and all resolved — see *Points Resolved In Review*) and the acceptance
+commit at `4825ab76` (round 5); flipped in that commit, following items 3
+and 4. The post-push proofread (PR #373, 2026-09-27) is recorded below as
+well. Its two plan amendments are Accepted with
 it and applied to `plan_scope.md` and the inventory in that commit. DR's
 decisions on the open questions are recorded under *Open Questions*.
 
@@ -175,7 +177,7 @@ plugin:
 | `Checkability` — one sentence: what prevents the execution resource from performing this directly | Reviewed, and rendered in the family's documentation; a family with an empty answer fails registry construction | §7 "a family with no answer is mediated in documentation only" |
 | `CommitPoint` — the instant after which the effect is no longer the Orchestrator's to withhold | Gate 3's reconciliation and, from item 9, drain | §5 "every action family MUST declare its commit point" |
 | `ConditionalCommit bool` — whether the effect site accepts a generation predicate | Item 9's drain disposition | §5's second disposition |
-| `Effect` — the function that performs the action, receiving the revealed secrets and the resolved target; on failure it reports whether the declared commit point was passed, or that it cannot tell | Gate 3 only; the drain disposition (D11) | D1; ADR 0032 §6 |
+| `Effect` — the function that performs the action, receiving the revealed secrets and the resolved target; on failure it reports one of three things — the declared commit point was not reached, it was passed, or it cannot tell | Gate 3 only; the drain disposition (D11) | D1; ADR 0032 §6 |
 | `Reconcile` — the probe that, given an attempt with no recorded outcome, determines whether its effect committed | Reconciliation of `unknown` (D5) | §3 "resolves as `unknown` and goes to reconciliation" |
 
 Registry construction validates the set: identities unique, every schema
@@ -225,8 +227,11 @@ governing artifact and nothing else (`store/work.go:45-55`), and adding a
 column would be a second copy of a fact the attempt row already holds. The
 check is a query on `tool_calls` for the Story under the Story row's share
 lock; entering `operator_waiting` (D7) takes the same lock exclusively, so
-the two serialize. Release is automatic: approval, denial and supersession
-each move the row out of `operator_waiting`, and the derived state follows.
+the two serialize. Release is automatic and follows the row: denial and supersession settle
+it, and approval releases it only when gate 3 **consumes** the decision (D7
+— an approved row stays `operator_waiting` until the caller re-presents
+it), so no second Story action is admitted before the approved one has
+started. The derived state needs no separate release.
 
 **Policy** — the hook:
 
@@ -305,13 +310,17 @@ ADR 0030 §3 names the forms and this design implements them literally:
 
 | Form | Held where | Lifetime |
 | --- | --- | --- |
-| **Raw** — what the caller supplied | `Request.Arguments`, with every secret-slot value already inside a `secret.Value` (the redacting wrapper Phase 2 built: `internal/dataplane/secret/value.go`) | The call stack of `Mediate`; never digested, never logged, never persisted |
+| **Raw** — the plaintext | For a secret slot the caller supplies **nothing**: the slot is declared by the schema and filled by the boundary from the vault, so the raw form exists only as the `secret.Value` gate 3 reveals (the redacting wrapper Phase 2 built, `internal/dataplane/secret/value.go`, which has no JSON form and needs none). For a non-secret field the raw form is what the caller supplied, in `Request.Arguments` | The effect call, for a secret; the call stack of `Mediate`, for the rest; never digested, never logged, never persisted |
 | **Substituted** — every secret slot replaced by `secret:<secret_id>@<version>` | Built by the family's schema; canonical JSON | Digested; presented to the hook; compared at gate 3 |
 | **Persisted projection** — the schema's *persist* fields, plus `digest`, plus object references for *large* fields | `tool_calls.arguments` | The record |
 
 **Where the secret comes from.** A secret slot is declared with a *secret
 name* and the *scope* it resolves at; the family's slot for the forge token
-is `forge.token` at repository scope. At gate 1 the boundary calls
+is `forge.token` at repository scope. The request shape an agent (or the
+`dispatch` verb's operator path) can produce therefore **omits the slot**,
+and a request that supplies a value for a secret slot is refused at
+admission — an agent handing the boundary a credential is exactly what
+ADR 0030 §7 forbids the resource from holding (PR #373 review). At gate 1 the boundary calls
 `ResolveSecret(org, repository, actingUser, "forge.token")` — the six-step
 ownership ladder Phase 2 built (`store/secrets.go:135-146`) — and records the
 resolved `(secret_id, version)` as the substituted reference. Resolution is
@@ -393,8 +402,16 @@ at dispatch — never an observation that nobody answered". Under headless,
 the requirement is recorded on the row exactly as above and the row settles
 **terminally** `blocked` in the same transaction, preserving the requirement
 set (ADR 0032 §5 "a headless block is terminal for the action, not a
-wait"); the execution's terminal result is then `blocked` (D11). Independent
-runnable work is unaffected because nothing here touches any other Story.
+wait"). What follows is a **forced stop**, in ADR 0032 §6's order and not a
+bare record: `CloseAdmission` on the execution first, so no further attempt
+registers; then the drain check over every attempt (D11); then
+`RecordTerminalResult(blocked)`, whose precondition is that admission is
+already closed. Cancellation of a running runtime and fencing of a resource
+domain are the steps items 6, 7 and 9 insert between closure and the
+record — in item 5 no runtime runs and no domain is held, and the verb's
+precondition is what keeps those steps from being skippable once they
+exist (PR #373 review). Independent runnable work is unaffected because
+nothing here touches any other Story.
 
 Rejected: a wait implemented as a channel the caller blocks on. That is
 v1's `SUSPEND` shape, and it is what item 3 D8's artifact-level restart
@@ -517,14 +534,21 @@ func (r TerminalResult) Validate() error
 absent, and one that applies must be present. A result that fails it is
 refused and the execution fails `non_retryable_agent` (§5 "a result
 violating the applicability rule is a protocol violation … not recorded and
-then reasoned about downstream"). The same rule is a CHECK constraint on
+then reasoned about downstream") — concretely, the boundary **synthesizes**
+`{Status: failed, FailureClass: non_retryable_agent}` with `error_message`
+naming the violated rule and records *that* through the same verb, under the
+same closure and receipt checks; the offending value is never stored. So a
+protocol violation leaves a terminal execution, not one that can be retried
+or requeued (PR #373 review). The same rule is a CHECK constraint on
 the columns migration 000024 adds to `executions`, so a direct SQL writer
 cannot store what the validator refuses — "makes invalid combinations
 unrepresentable" is a property of the schema, not only of one Go path.
 
 **Recording.** `RecordTerminalResult(org, execution_id, TerminalResult,
-FenceReceipt)`: sets the terminal columns and `terminated_at`, at most once
-(a second record is a conflict), and closes admission. The `FenceReceipt`
+FenceReceipt)`: requires admission already closed (D7's forced-stop order —
+the verb refuses otherwise rather than closing it as a side effect), sets
+the terminal columns and `terminated_at`, at most once (a second record is a
+conflict). The `FenceReceipt`
 parameter exists from the first day because ADR 0032 §6 puts receipt
 discipline on the *category* — any positive terminal result after admitted
 actions, including `blocked` "at a gate no operator can answer" — and not
@@ -543,8 +567,10 @@ own**, independent of the outcome — `tool_calls.drain_disposition`, ADR 0032
 `committed`, `in_fenced_domain`, `unresolved`. It is set at settle from what
 the family can attest: `denied`, `stale` and `blocked` never reached the
 effect and are `stopped_before_commit`; `succeeded` is `committed`; `failed`
-is `stopped_before_commit` only if the family reports the failure landed
-before its declared commit point, else `unresolved`; `unknown` is
+follows what the family reports about its declared commit point —
+`stopped_before_commit` if the failure landed before it, `committed` if
+after it (the effect is known to have landed even though the family then
+failed), and `unresolved` only when it cannot tell; `unknown` is
 `unresolved`. Unlike the outcome, the disposition may move later, in one
 direction — `unresolved` → `committed` or `stopped_before_commit` — when a
 later `Reconcile` (on retry, on `Recover`, and from item 9 on a schedule)
@@ -579,18 +605,18 @@ terminal result and a waiting attempt planted.
 
 ### D12. Migration 000024 and the seam verbs
 
-One migration, three tables touched — `tool_calls`, `executions`,
-`repositories` — every column with an ADR clause and a consumer in this
-item:
+One migration, three tables touched — `tool_calls`, `executions`, and the
+new `repository_forge_bindings` — every column with an ADR clause and a
+consumer in this item:
 
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled'`; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
-| `tool_calls` | `reason_code text`; CHECK: present iff `outcome IN ('denied','stale','unknown')` or `outcome = 'failed'` — `failed` keeps `error_message` as the human text and the code is optional; `succeeded` and `blocked` carry none (`blocked` carries the requirement set) | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
+| `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid`, `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`; CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
-| `repositories` | `forge_provider text`, `forge_base_url text`, `forge_owner text`, `forge_repo text`; CHECK: all four or none; `forge_provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry several forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`); the record has none today (`store/provisioning.go:80-95`) and the family needs an endpoint (review round 1) | D13 |
+| `repository_forge_bindings` (new) | `repository_id`, `organization_id`, `provider text`, `base_url text`, `owner text`, `repo text`, `created_at`; PK `(repository_id, provider)`; FK to `repositories (repository_id, organization_id)`; `provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry **several** forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`) — a child family, not columns on the row, so a second binding is representable without a schema change (PR #373 review); the record has none today (`store/provisioning.go:80-95`) | D13 |
 | `executions` | `capability_set jsonb NOT NULL` — a JSON array of family identities, unique, sorted; `headless boolean NOT NULL`; both immutable after insert by an anti-update trigger on item 4's pattern | ADR 0032 item 10, the resolved-configuration lifetime: "what was resolved for an execution must not silently change"; ADR 0030 §4 "headless is a declared execution configuration, known at dispatch" | D4 check 3; D7 |
-| `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `terminated_at timestamptz`; the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL` | ADR 0032 item 7 | D11 |
+| `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `terminated_at timestamptz`; the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL`; `blocked_tool_call_id` is a **composite FK** `(blocked_tool_call_id, execution_id, organization_id) → tool_calls (tool_call_id, execution_id, organization_id)` over a new unique key on `tool_calls`, so the reference cannot name another execution's attempt, plus a trigger requiring the referenced row to be `settled` with `outcome = 'blocked'` (PR #373 review) | ADR 0032 item 7; §5 "`blocked` … references the pending action and the structured requirement set" | D11 |
 
 `capability_set` is supplied to `AcceptDispatch` by the Orchestrator; in
 item 5 the composition root passes the set its caller declares, and item 6
@@ -622,9 +648,10 @@ with an integration test on a real ephemeral plane:
 - executions: `SetExecutionConfiguration` (inside `AcceptDispatch`),
   `CloseAdmission`, `SupersedeExecution`, `RecordTerminalResult`;
 - secrets: `RevealSecretAtVersion` (D6);
-- repositories: `BindRepositoryForge` (idempotent; a differing binding is a
-  conflict, on `ProvisionRepository`'s pattern) and `Repository.Forge
-  *ForgeBinding` on the read side;
+- repositories: `BindRepositoryForge` (idempotent per `(repository,
+  provider)`; a differing binding for the same provider is a conflict, on
+  `ProvisionRepository`'s pattern) and `Repository.ForgeBindings
+  []ForgeBinding` on the read side, in provider order;
 - `store.ToolCall` gains `ExecutionID`, `RequirementSet`,
   `RequirementSetDigest`, `ReasonCode`, `OperatorDecision` — the columns
   `000022` added and no Go type exposed.
@@ -641,20 +668,30 @@ schema produced, never the raw arguments. Item 2's deferral (its lines
 ```go
 type Forge interface {
     CreateOrUpdatePullRequest(ctx context.Context, token secret.Value, spec PullRequestSpec) (PullRequest, error)
-    FindPullRequestByHead(ctx context.Context, token secret.Value, head string) (*PullRequest, error)
+    FindPullRequest(ctx context.Context, token secret.Value, head, base string) (*PullRequest, error)
 }
 ```
 
 Two methods, both of which the family needs — the second is its
-`Reconcile` probe's lookup; the attempt trailer it then checks is in the
-returned `PullRequest.Body`. The token is a parameter, never a field: a `Forge` value
+`Reconcile` probe's lookup and the update half's target, matched on **head
+and base** together: the v1 client lists by head alone and its 422 fallback
+takes the first result (`gitea/client.go:134-164, 278-284`), which with two
+PRs from one head against different bases would update or reconcile the
+wrong one (PR #373 review). More than one match is refused as ambiguous,
+never resolved by position. The attempt trailer the probe then checks is in
+the returned `PullRequest.Body`. The token is a parameter, never a field: a `Forge` value
 holds no credential, so there is nothing to leak from it and nothing that
 outlives the effect (D6). The repository binding (`provider`, `base URL`,
-`owner`, `repo`) comes from the repository record's forge binding — D12's
-four columns, written by `BindRepositoryForge` — "which is what the
-inventory's own row says `forge_state.json` dies into" (item 3 D7). The
-record has no such binding today; item 3 provisioned identity only and
-migration 000002 deferred bindings to "the forge rework", which this is.
+`owner`, `repo`) comes from the repository's forge bindings — D12's child
+family, written by `BindRepositoryForge` — "which is what the inventory's
+own row says `forge_state.json` dies into" (item 3 D7). **Selection** in
+item 5 is by provider: the family declares `gitea`, and the binding it uses
+is the repository's `gitea` binding, refused at admission if absent. A rule
+for choosing among several providers (the local forge versus GitHub after
+sync) is item 10's, where the promotion path has a consumer for it; item 5
+adds no such rule and represents a second binding without needing one.
+The record has no bindings today; item 3 provisioned identity only and
+migration 000002 deferred them to "the forge rework", which this is.
 
 **The port.** `pkg/forge/gitea/client.go` imports only `pkg/forge` and
 `pkg/logx`, and `pkg/forge/client.go` imports nothing under `orchestrator/`
@@ -674,7 +711,7 @@ becomes the seam's *update* half rather than a silent list-and-return.
 | Effect site | `orchestrator_side` — ADR 0030 §6's table lists forge operations by name |
 | Checkability | The Incubator holds no forge credential: the token exists only in the vault and is revealed only in the Orchestrator process for the lifetime of one effect (D6); a resource that wants a pull request must ask. ADR 0030 §7 "credentials for a mediated resource are not placed inside an execution resource" |
 | Commit point | The forge's acceptance of the create or update — HTTP 201 or 200 from the pulls endpoint. A forge operation cannot commit conditionally (§5) |
-| Reconcile | Evidence must be **attempt-specific**: the family writes the attempt id into the PR body as a trailer, `Maestro-Attempt: <tool_call_id>`, on both create and update, and `Reconcile` finds the PR by head and settles `succeeded` only if the trailer names *this* attempt. Head existence alone is inconclusive — on the update path a PR already exists before the attempt starts, and on the create path one may exist from an earlier attempt (review round 1) |
+| Reconcile | Evidence must be **attempt-specific**: the family writes the attempt id into the PR body as a trailer, `Maestro-Attempt: <tool_call_id>`, on both create and update, and `Reconcile` finds the PR by head and base and settles `succeeded` only if the trailer names *this* attempt. Head existence alone is inconclusive — on the update path a PR already exists before the attempt starts, and on the create path one may exist from an earlier attempt (review round 1) |
 | Target | The repository the Story's Epic binds (`epics.repository_id`); admission check 4 refuses any other |
 
 The branch *push* is not this family and not this item: ADR 0030 §7 says
@@ -940,6 +977,23 @@ row asserted a second effect against a fixture that has run none.
 | # | Finding | Resolution |
 | --- | --- | --- |
 | 9 (cont.) | The interrupted-attempt row's fixture yields zero effects, so "runs twice" is unreachable; removing a wait-state check does not bypass the `open` branch | Testing table — the row asserts count 0 and the mutant replaces D5's `open` branch with the effect, count 1 |
+
+PR #373 proofread (Copilot, 2026-09-27), after Codex's approval of the
+acceptance commit. Ten threads, all accepted; two were contradictions the
+round-2 edits introduced.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | D4 said approval releases the Story wait; D7 keeps the row waiting until consumption | D4 — release follows consumption, denial or supersession |
+| 2 | A secret slot cannot be supplied by the caller: `secret.Value` has no JSON form and the agent holds no credential | D6 — the caller omits the slot, the boundary fills it from the vault, a supplied value is refused at admission; the raw form exists only as the revealed value inside the effect |
+| 3 | Headless recorded `blocked` without the forced-stop order | D7, D11 — `CloseAdmission` first, then drain, then the record; the verb requires closure as a precondition so later items' cancellation and fencing steps cannot be skipped |
+| 4 | An invalid runtime result had no terminal fallback | D11 — the boundary synthesizes `failed/non_retryable_agent` naming the violation and records it under the same checks |
+| 5 | Inline binding columns contradict 000002's several-bindings model | D12, D13 — `repository_forge_bindings` child family keyed `(repository, provider)`; item 5 selects by provider; the cross-provider rule is item 10's |
+| 6 | Lookup by head alone can update or reconcile the wrong PR | D13 — `FindPullRequest(head, base)`; ambiguity refused |
+| 7 | A failure known to be past the commit point was classified `unresolved` | D11 — three-way report; past the commit point is `committed` |
+| 8 | The `reason_code` rule was self-contradictory for `failed` | D12 — required / optional / forbidden stated per outcome |
+| 9 | `blocked_tool_call_id` had no integrity tie to a blocked attempt of the same execution | D12 — composite FK plus a trigger on the referenced row's outcome |
+| 10 | The Status line's round and commit disagreed with the PR | Status line — design at `94a36172` (round 4), acceptance at `4825ab76` (round 5) |
 
 ## Open Questions
 
