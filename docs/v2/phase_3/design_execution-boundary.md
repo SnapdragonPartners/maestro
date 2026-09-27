@@ -1,7 +1,7 @@
 +++
 title = "Design: The Mediated Execution Boundary (Item 5)"
 edit_date = "2026-09-26"
-status = "draft"
+status = "live"
 type = "design"
 summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day and reads drainage from per-attempt evidence persisted independently of the outcome; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge binding they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
 +++
@@ -14,10 +14,12 @@ gates and ADR 0032's binding boundary items … The toolloop is refactored
 behind it, and the MCP `lastEffect` and signal-correction path is removed …
 Also carries the vault's first live reader."*
 
-Status: **draft** — awaiting Codex review and DR acceptance. Flips to **live**
-in the acceptance commit, following items 3 and 4. Its two plan amendments
-and one in-place inventory amendment are applied in that commit and not
-before.
+Status: **live** — Accepted by Codex and DR, 2026-09-26, at `94a36172` after
+four review rounds (nine P1s in round 1, all confirmed against the tree and
+all resolved; see *Points Resolved In Review*); flipped in the acceptance
+commit, following items 3 and 4. Its two plan amendments are Accepted with
+it and applied to `plan_scope.md` and the inventory in that commit. DR's
+decisions on the open questions are recorded under *Open Questions*.
 
 Reference tree: `main` at `b587bffd` (Checkpoint 1 merged; block A closed),
 plus this branch.
@@ -592,7 +594,12 @@ item:
 
 `capability_set` is supplied to `AcceptDispatch` by the Orchestrator; in
 item 5 the composition root passes the set its caller declares, and item 6
-derives it from the role and pack. An execution accepted before 000024 does
+derives it from the role and pack. The caller in item 5 is a new operator
+verb, `dataplanectl -org <slug> -user <handle> -story <id> -capabilities
+<family,...> dispatch`, which creates and accepts a dispatch for a Story
+with a declared set and prints the execution — Checkpoint 2's manual path,
+and the way an operator exercises the boundary before an agent core exists
+(DR, 2026-09-26, open question 3). An execution accepted before 000024 does
 not exist on any plane this phase supports (the local plane is reset per
 phase; the cloud plane was provisioned empty at #286), so the column is
 `NOT NULL` without a backfill and the migration refuses to run against a
@@ -832,7 +839,7 @@ the guards are written last because they enumerate what exists.
 
 | # | Commit | Contents |
 | --- | --- | --- |
-| 1 | `schema` | Migration 000024 (D12) with its total-or-refuse guard; the store types; the tool-call verbs with all six outcomes and the refusal lifted, `RecordDeniedToolCall` and `ConsumeOperatorDecision`; the execution verbs; `RevealSecretAtVersion`; `BindRepositoryForge`; every verb's integration test on an ephemeral plane; `OpenWork` extended (D11) |
+| 1 | `schema` | Migration 000024 (D12) with its total-or-refuse guard; the `dispatch` operator verb; the store types; the tool-call verbs with all six outcomes and the refusal lifted, `RecordDeniedToolCall` and `ConsumeOperatorDecision`; the execution verbs; `RevealSecretAtVersion`; `BindRepositoryForge`; every verb's integration test on an ephemeral plane; `OpenWork` extended (D11) |
 | 2 | `registry` | The leaf `internal/action` (D1); the family registry with construction validation (D3); the requirement-identity vocabulary and canonical set (D4); substitution and the persisted projection (D6); the terminal-result type and validator (D11); the test-only families |
 | 3 | `gates` | `Mediate`: admission, the hook, gate 2's transitions and headless path, gate 3's revalidation and execution, attempt idempotency and synchronous reconciliation (D4–D10); `DefaultAllow`; the test hooks |
 | 4 | `forge` | `internal/forge` and the Gitea port (D13); the Story pull-request family; the live-Gitea integration test with its digest-pinned image; the vault read inside it |
@@ -936,30 +943,25 @@ row asserted a second effect against a fixture that has run none.
 
 ## Open Questions
 
+All four were put to DR with the Codex-approved design and decided
+2026-09-26; none remains open.
+
 1. **`blocked` before fencing exists.** D11 records `blocked` under a
    receipt whose domain half is `DomainNoneHeld` and whose action half is
-   checked. If review reads ADR 0032 §6's forced-stop path as
-   requiring the full sequence even when nothing is held, the alternative
-   is to defer the headless terminal record to item 7 and leave a headless
-   block as a settled `blocked` *attempt* with no execution result until
-   then. This design prefers recording it, because the receipt parameter
-   makes the discipline visible and the vacuous case is honestly vacuous.
-2. **Retaining `SignalDetector`** (D14) reads the plan line and the
-   inventory row differently from a literal reading of the row's
-   parenthetical. If DR would rather the whole row go now and v1's Claude
-   coder be non-functional until item 8, the deletion is small and the
-   reachability measurement covers it.
-3. **The capability set's source in item 5.** D12 has the composition root
-   pass what its caller declares. Until item 6, the only caller is the test
-   and the CLI's `recover`, which accepts nothing. Whether `dataplanectl`
-   should gain an operator verb that accepts a dispatch with a declared set
-   — useful for Checkpoint 2's manual path — is a question of scope, not
-   design; the design works either way.
-4. **Gitea in `dataplane-integration`.** A ~20 s container start per test
-   binary is affordable; if the suite structure means it starts once per
-   package rather than once per job, the notes will show the number and
-   the item may want a shared fixture. Not a design question unless the
-   number is bad.
+   checked against every attempt's drain disposition. Codex accepted this
+   reading of ADR 0032 §6 in round 3; DR left it as designed.
+2. **Retaining `SignalDetector`** (D14). DR: not needed between now and
+   item 8, so "whatever is neater". Neater is the design as written —
+   removing the slot and the correction touches two files and leaves no
+   half-working runner, where removing the detector too would mean editing
+   the runner to compile around a channel that no longer exists. D14 stands.
+3. **The capability set's source in item 5.** DR: add the operator verb.
+   D12 gains `dataplanectl dispatch`; commit 1 of the sequence carries it.
+4. **A stuck-open execution as the honest outcome** when a mutation can
+   never be confirmed either way (D11). DR: no strong view; left as is.
+5. **Gitea in `dataplane-integration`.** Not a design question; the
+   implementation's notes report the container-start cost and the item
+   shares a fixture if the number is bad.
 
 ## Related Documents
 
