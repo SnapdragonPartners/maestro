@@ -373,12 +373,20 @@ Reconciliation is bounded here to what item 5 can prove: `Reconcile` is
 called synchronously on the retry path and on `Recover` for every
 `open`-in-no-wait row belonging to the organization, and it settles the row
 `succeeded` (the effect is found) or `unknown` with `reason_code =
-attempt/interrupted` (it is not). **`Recover` gains that step**: today it
-reads `OpenWork` and builds the projection (`internal/orchestrator/orchestrator.go:187`)
+attempt/interrupted` (it is not). **`Recover` gains that step, and it runs first**: today `Recover` reads
+`OpenWork` and builds the projection (`internal/orchestrator/orchestrator.go:187`)
 and `OpenWork` returns no attempts; commit 3 of the sequence adds an
-attempt enumeration (`ListUnsettledAttempts`, D12) after the projection,
-settling interrupted waits `stale` and reconciling foreign-claimed `open`
-rows, before `Start` returns (PR #373 review, fourth pass). **Reconciliation's credential.** A forge lookup needs the token, and after
+attempt recovery **before** the `OpenWork` read — so the projection `Start`
+returns reflects the rows recovery has already settled rather than a wait
+it has just removed (review round 11) — over two enumerations
+(`ListAttemptsForRecovery`, D12): unsettled attempts, whose foreign-claimed
+waits settle `stale` and whose foreign-claimed `open` rows are reconciled;
+and **settled attempts whose `drain_disposition` is `unresolved`**, which
+are reconciled again for drainage only — the outcome is never rewritten,
+only the disposition moves (`ResolveDrainDisposition`) when attempt-specific
+evidence has since appeared, so a forge commit that became visible after
+the attempt settled `unknown` still lets its execution obtain a receipt
+(PR #373 review, fourth pass; review round 11). **Reconciliation's credential.** A forge lookup needs the token, and after
 a restart no revealed value exists. The row holds the substituted reference
 `secret:<id>@<version>` in its projection, so the reconciler reveals with
 `RevealSecretAtVersion` at exactly that version under the execution's
@@ -800,8 +808,8 @@ with an integration test on a real ephemeral plane:
 - tool calls, continued: `RecordDeniedToolCall` (D4 — settled on insert,
   no registration), `ConsumeOperatorDecision` (D7),
   `ResolveDrainDisposition` (D11 — `unresolved` to a resolved value, with
-  the evidence's attempt id), `ListUnsettledAttempts` and `StaleInterruptedWait`
-  (D5's `Recover` step);
+  the evidence's attempt id), `ListAttemptsForRecovery` (unsettled, and settled-but-`unresolved`) and
+  `StaleInterruptedWait` (D5's `Recover` step);
 - executions: `AcceptDispatch` gains a configuration input —
   `capability_set`, `headless`, `acting_user_id` — written **in the
   execution's INSERT** (`postgres/dispatch.go:400-404`), because an
@@ -1100,7 +1108,8 @@ D10 says why.
 | Re-evaluation raises no second operator requirement | A hook that returns `RequiresOperator` again at gate 3: the action proceeds | Re-raise: the row enters `operator_waiting` a second time |
 | A same-id re-presentation with a different family or digest is refused, not replayed (D5) | Re-present a settled id with changed arguments: `ErrCorrelationMismatch`, no new row, an error-level log | Skip the digest comparison: the old result is returned for the new arguments |
 | A wait interrupted by a restart goes stale with its decision preserved (D5) | Instance A opens, blocks; approve; A exits; instance B's `Recover` settles the row `stale`/`stale/interrupted_wait` with `operator_decision = approve_once` still on it and `drain_disposition = stopped_before_commit`; a re-presentation of the id on B is a replay of the stale result, not an execution | Resume the approved wait on B: the effect runs, which the recording transport shows |
-| `Recover` reconciles interrupted opens (D5) | Kill A between open and effect; B's `Start` returns with the row settled (`succeeded` if the trailer is on the forge, else `unknown`) before any caller presents | Skip the enumeration: the row is still `open` after `Start` |
+| `Recover` reconciles interrupted opens, before the projection (D5) | Kill A between open and effect; B's `Start` returns with the row settled (`succeeded` if the trailer is on the forge, else `unknown`) before any caller presents, and `B.Projection()` does not report the attempt as open | Skip the enumeration: the row is still `open` after `Start`. Build the projection first: the row is settled but `Projection()` still reports the wait — the assertion on the returned projection fails |
+| A late commit after an `unknown` settlement is recovered for drainage (D5, D11) | A's forge request times out, settles `unknown`/`unresolved`; the PR then appears with A's trailer; A exits; B's `Recover` moves the disposition to `committed`, the outcome stays `unknown`, and the receipt is now available | Enumerate unsettled attempts only: the disposition stays `unresolved` and `RecordTerminalResult` is refused forever |
 | Reconciliation reveals only the approved version (D5, D6) | Rotate the secret after A's open; B reconciles: the disposition stays `unresolved` and no request with the new token is recorded | Reveal by name: a probe with the new token is recorded |
 | Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
 | `story_id` comes from the execution (D13) | A request naming another Story's id: the field is not in the schema and is refused as unknown; the PR's head is the execution's Story's | Accept `story_id` as an argument: Story B's PR is opened under A's execution |
@@ -1253,6 +1262,13 @@ threads, all accepted — including one the author first meant to dispute.
 | 9 | The harness's image is a tag constant, not a digest | D13 — an image option on `ContainerManager`, set to the golden runner's digest |
 | 10 | `dataplane-integration` enumerates packages and would not run the new tests | D13, sequence commit 7 — `V2_INTEGRATION_PACKAGES` extended, with a CI run showing execution |
 | 11 | "Unauthenticated read" contradicted the admin credential | D13 — an authenticated read with the harness credential, independent of the family's token |
+
+Round 11 (Codex, 2026-09-28). Two P1s on the fourth pass's `Recover` step.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Settled-but-`unresolved` attempts were outside recovery, so a late commit could never yield a receipt | D5, D12 — `ListAttemptsForRecovery` covers them; drainage re-reconciled, outcome untouched |
+| 2 | Recovery ran after the projection was built, so `Start` reported a wait recovery had removed | D5 — recovery before the `OpenWork` read; the test asserts the returned projection |
 
 ## Open Questions
 
