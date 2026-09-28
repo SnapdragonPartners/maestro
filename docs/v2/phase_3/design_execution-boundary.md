@@ -140,7 +140,7 @@ ADR 0030 §1: *"The boundary is the only route to the effect, structurally —
 not a function every tool is expected to call … Phase 3 must be able to
 demonstrate the property rather than assert it."*
 
-Two structural facts, each guarded:
+Three structural facts, each guarded:
 
 1. **An action family's effect function is reachable only from the
    boundary.** The family *types* — schema, classification, the `Effect`
@@ -183,8 +183,16 @@ Two structural facts, each guarded:
    injected seam, the family calls it, the client implements it, the root
    constructs it; importers of the **concrete client** `internal/forge/gitea`
    are exactly `{cmd/dataplanectl}` — nothing but the composition root
-   names the implementation. Both plus tests. The guard's positive control
-   is the production graph passing as designed.
+   names the implementation. Both plus tests. **Import sets are not
+   enough here either**: the root legitimately imports the client to
+   construct it, and an import set cannot tell construction from a call to
+   `CreateOrUpdatePullRequest` (PR #373 review, eighth pass). So the AST
+   guard of (2) also enumerates every call to the seam's mutation methods
+   — on the interface and on the concrete client — and asserts the set is
+   exactly the family's effect and reconcile functions plus tests; the
+   root's only permitted calls into `internal/forge/gitea` are its
+   constructor. The guard's positive control is the production graph
+   passing as designed.
 
 These prove the property for the v2 path. They do not make v1's four
 unrecorded sites go through the boundary, and this design does not claim
@@ -329,9 +337,20 @@ field of the projection (`caller_ref`) for correlation with the LLM turn,
 never as the key (PR #373 review, second pass).
 
 **The id is bound to its logical action.** `OpenToolCall` records the
-execution, the family identity and the substituted-input digest on the
-row, and a re-presentation whose execution, family or digest differs from
-the row's is a **correlation mismatch** — a caller-minted id presented
+execution, the family identity and a **request digest** — the canonical
+digest of the fields the caller supplied, which by D6 never include a
+secret slot — on the row, and a re-presentation whose execution, family or
+request digest differs from the row's is a **correlation mismatch**. The
+request digest, not the substituted-input digest, is the correlation key
+on purpose: the substituted form embeds the resolved secret version, and a
+rotation between two presentations of one logical call would otherwise
+turn a legitimate at-most-once replay into a caller error (PR #373 review,
+eighth pass). Classification of an existing row therefore happens on the
+raw request, before any secret is resolved. The substituted-input digest
+(`arguments_digest`) remains what the hook decides on, what gate 3's
+equality compares, and what D5's inheritance binds to — an approval was
+given for a specific secret version and does not survive rotation.
+A mismatch is — a caller-minted id presented
 under another execution must not receive a result that execution's
 admission never checked (PR #373 review, third pass): refused, not recorded as a new attempt (the id is
 taken) and not replayed, and logged as an invariant violation — a same-id,
@@ -378,7 +397,20 @@ supersedes the round-7 transfer-across-restart rule, which this makes
 unnecessary). A duplicate presentation that finds an `open` row
 claimed by *this* instance is **in progress** — returned as such, not
 reconciled — because the original caller is still driving it and would be
-unable to settle its later success behind a duplicate's `unknown`. A row
+unable to settle its later success behind a duplicate's `unknown`.
+**"Still driving it" is a fact about a call, not a process** (PR #373
+review, eighth pass): a `Mediate` call registers its attempt id in the
+boundary's in-memory **live set** before T1 and removes it in a `defer`
+that runs on return, cancellation and panic alike; that `defer` also
+settles the row if it is still `open` — `stopped_before_commit` when the
+effect had not started, `unknown`/`unresolved` otherwise. A same-instance
+re-presentation that finds an `open` row **not in the live set** knows the
+original call has stopped and the settle-on-unwind did not land (the plane
+was unreachable at that moment): it takes the claim under the boundary's
+mutex and reconciles, exactly as a foreign-claimed row is reconciled. So
+no attempt is in progress forever without a restart; the live set is what
+makes an own-instance claim decidable, and it needs no heartbeat because
+one process can always ask itself. A row
 claimed by another instance belongs to a process that is gone: one
 Orchestrator runs per plane (ADR 0027's single-writer rule; item 9's #265
 makes restart single-owner), so a foreign claim is an interrupted attempt
@@ -399,7 +431,8 @@ read, so:
   | `operator_waiting`, no decision | waiting | *waiting* is returned |
   | `operator_waiting`, decision `approve_once`, unconsumed, claimed by this instance | approved, not started | D7's consumption, then gate 3 |
   | `resource_waiting` | waiting | *waiting* is returned (item 7's producer) |
-  | `open`, claimed by this instance | in progress | *in progress* is returned; the original caller settles it |
+  | `open`, claimed by this instance, **in the live set** | in progress | *in progress* is returned; the original call settles it |
+  | `open`, claimed by this instance, **not in the live set** | the call stopped without settling | claim taken under the mutex; the family's `Reconcile` |
   | `open`, claimed by another instance | attempted, outcome unknown | the family's `Reconcile`, never the effect (ADR 0030 §3 "an attempt with a recorded intent and no outcome does not re-execute") |
   | any wait, claimed by another instance | interrupted wait | settled `stale` by `Recover` before any caller sees it |
 
@@ -834,7 +867,7 @@ consumer in this item:
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
 | `tool_calls` | `target_key text` (the family's declared target, used with `family` for D5's correlation and inheritance) and `mutation_key text` (the **shared resource** the effect mutates, named family-independently — for the forge, `forge:<repository>/<head>/<base>`; NULL for a family that mutates nothing shared): `target_key` present iff `execution_id IS NOT NULL`; `mutation_key` present only if `execution_id IS NOT NULL` **and permitted NULL** for an execution-bound attempt of a non-mutating family — D3's no-op test family registers with a NULL key and is never serialized (review round 17) — with a **partial unique index on `mutation_key` alone** `WHERE state <> 'settled' OR drain_disposition = 'unresolved'` — ADR 0027 keys serialization by the resource, not by the writer, so two *families* touching one PR are serialized as one family's two attempts are (PR #373 review, sixth pass). At most one attempt per mutated resource that is unsettled **or settled with unresolved drainage**, so a target stays excluded until the attempt's mutation is known to have landed or not: an attempt that settled `unknown` may still commit remotely (D11), and releasing the target at settlement would let a second attempt read-modify-write the same PR body against it (ADR 0027; PR #373 review, fifth pass; review round 14). The target is released when drainage resolves | D13 | D5 |
-| `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `arguments_digest text` (`^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
+| `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `request_digest text` (the caller-supplied fields, D5's correlation key), `arguments_digest text` (the substituted input; both `^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled' AND execution_id IS NOT NULL` — scoped to execution-bound attempts, because the importer settles its rows through `CompleteToolCall` with no disposition (`benchmarkimport.closeToolCall`) and its existing settled rows would otherwise block the migration (review round 9); the migration's test covers an existing import and a fresh import after it; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid` (composite FK `(operator_decided_by, organization_id) → users (user_id, organization_id)`, the same tenant invariant as `acting_user_id`), `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`, `operator_decision_consumed_by uuid` (the attempt that consumed it — itself, or the inheriting re-request of D5); CHECK: `consumed_at` and `consumed_by` both present or both NULL, and the consuming transition writes both in one statement (PR #373 review, seventh pass); CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
@@ -902,7 +935,7 @@ with an integration test on a real ephemeral plane:
   read D4 check 1 performs;
 - `store.ToolCall` gains every column the boundary reads or classifies
   on: `ExecutionID`, `RequirementSet`, `RequirementSetDigest` (000022's),
-  and `Family`, `ArgumentsDigest`, `CallerRef`, `ClaimedBy`, `ReasonCode`,
+  and `Family`, `RequestDigest`, `ArgumentsDigest`, `CallerRef`, `ClaimedBy`, `ReasonCode`,
   `OperatorDecision` (with `DecidedBy`, `DecidedAt`, `ConsumedAt`),
   `DrainDisposition` (000024's). One record shape; no boundary-owned
   view.
@@ -1075,10 +1108,22 @@ resolves a call by `toolProvider.Get(name)` before dispatch
 before any executor saw it (PR #373 review, seventh pass). So
 `action.Executor` has a second method, `Definitions() []action.Definition`
 — name, description, parameter schema, the shape the loop already converts
-to `tools.ToolDefinition` — and the loop offers `Definitions()` plus the
-terminal tool to the model, and hands every non-terminal call to `Execute`
-without a lookup of its own; an unknown name is the executor's error
-result, as it is the provider's today. `GeneralTools` becomes the legacy
+to `tools.ToolDefinition` — and the loop offers `Definitions()` to the model — one of which the
+executor marks `Terminal: true` — and hands **every** call, the terminal
+one included, to `Execute` without a lookup of its own; an unknown name is
+the executor's error result, as it is the provider's today. The terminal
+call crosses the executor too because `TerminalTool` embeds `tools.Tool`
+and the loop runs it through `tool.Exec` today (`toolloop.go:36-39, 486`);
+a loop that executed it itself would be a second `Exec` caller and break
+D2's exact set (PR #373 review, eighth pass). Extraction is unchanged: the
+loop reads the terminal result from the `Result` the executor returns, as
+it reads `ExecResult` now. For `LegacyActions` the terminal tool's `Exec`
+runs inside the executor like any other; for `boundary.Executor` the
+terminal call is **not a mediated action** — it is the agent's claim of a
+result, not an effect (ADR 0032 §5: the runtime *claims* a status; the
+Orchestrator validates and records it through D11's `Terminate`) — so the
+executor returns its arguments as the result content, records no attempt,
+and item 6's core is what turns that claim into a `Terminate` call. `GeneralTools` becomes the legacy
 executor's input rather than the loop's. Two implementations:
 
 - **`toolloop.LegacyActions(provider)`**, in `toolloop`, deriving
@@ -1168,7 +1213,7 @@ the guards are written last because they enumerate what exists.
 | 4 | `forge` | `internal/forge` and the Gitea port (D13); the Story pull-request family; the live-Gitea integration test with its digest-pinned image; the vault read inside it |
 | 5 | `toolloop` | The executor seam, the legacy executor, `boundary.Executor`, the harness layer behind the seam, forcing (D15); the four v1 driver packages building unchanged |
 | 6 | `lasteffect` | The removal (D14) with the reachability measurement in the notes |
-| 7 | `guards` | The two mandatoriness guards (D2) with their planted violations; the closure guards extended to admit `internal/boundary` and `internal/forge` and nothing new below them; `V2_INTEGRATION_PACKAGES` extended and a CI run showing the new packages' tests executed, not skipped |
+| 7 | `guards` | The three mandatoriness guards (D2) — families, `Exec`/effect call sites, the forge seam — with their planted violations; the closure guards extended to admit `internal/boundary` and `internal/forge` and nothing new below them; `V2_INTEGRATION_PACKAGES` extended and a CI run showing the new packages' tests executed, not skipped |
 
 Each checkpoint's notes report the mutants of that step per the table
 below; the branch's final notes carry all of them.
@@ -1211,6 +1256,10 @@ D10 says why.
 | Reconciliation reveals only the approved version (D5, D6) | Rotate the secret after A's open; B reconciles: the disposition stays `unresolved` and no request with the new token is recorded | Reveal by name: a probe with the new token is recorded |
 | Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
 | `head` and `base` come from the execution (D13) | A request carrying `head` or `base`: refused as unknown; the PR on the forge is `maestro/story/<id>` → `maestro/epic/<id>` | Accept `base` as an argument: a PR against `main` is opened |
+| The composition root cannot call the forge (D2) | AST guard over the seam's mutation methods | Add a `CreateOrUpdatePullRequest` call in `cmd/dataplanectl`: the guard names the file and line |
+| A stopped call's attempt is recoverable in-process (D5) | A test family whose effect panics after T1; the `defer` settles the row; then: the same family with the plane made unreachable at unwind, so the settle fails — a same-instance retry finds the row `open`, not in the live set, takes the claim and reconciles | Skip the live-set check: the retry returns *in progress* forever; the test asserts a settled row within the timeout |
+| Rotation does not break replay (D5, D6) | Settle an attempt; rotate `forge.token`; re-present the same id and arguments: replay of the recorded result, not `ErrCorrelationMismatch` | Correlate on `arguments_digest`: the retry is refused |
+| The terminal call crosses the executor (D15) | A stub LLM calls the terminal tool; the recording provider shows the terminal `Exec` ran inside `LegacyActions`, and the D2 AST guard's set is unchanged | Execute the terminal call in the loop: the AST guard names the new `Exec` site |
 | A family cannot call its own effect (D2) | AST guard over `Effect`/`Reconcile` call sites | Add a call to `Effect` from a helper in the family's own package: the guard names the file and line |
 | Headless never commits a wait (D7) | A test hook that returns `RequiresOperator` under a headless execution, with a **barrier inside the boundary between the gate-2 decision and the settlement statement** (the test family's hook blocks there); while blocked, a reader on another connection sees the row `open` with no wait and admission open; release; the row is `settled`/`blocked` with admission closed | Route headless through the general `operator_waiting` transition first, settling after: the reader at the barrier sees `operator_waiting` — deterministic, not a poll (review round 19) |
 | Ordinary completion goes through `Terminate` (D11) | A runtime claims `completed/changed` while one attempt is **held `open` by a barrier in its test family**: with `Terminate` blocked in its drain, a new request for the execution is refused `authority/admission_closed` — closure precedes drainage; release the barrier; the attempt settles and the terminal result records | Drain before closing: the new request registers while `Terminate` waits, which the assertion at the barrier sees. (Not "record without closing" — that mutant dies at the verb's own precondition, a neighbouring guard; review round 19) |
@@ -1446,6 +1495,18 @@ Round 19 (Codex, 2026-09-28). Two P1s on the seventh pass's fixtures: the
 completion mutant died at the verb's precondition, not the race; the
 headless poller could miss a committed-then-settled wait. Both rows now
 use a barrier inside the boundary and assert at it.
+
+PR #373 proofread, eighth pass (Copilot, 2026-09-28, on `fadcf170`; not
+posted to the PR — relayed by DR from the task log). Five threads, all
+accepted; two would have been production defects.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | An `open` row claimed by this instance whose driving goroutine panicked or was cancelled is *in progress* forever — no heartbeat, no restart, unreachable by `Recover` | D5 — the claim means a *call*: an in-memory live set registered before T1 and removed by a `defer` that also settles the row on unwind; a same-instance retry that finds an `open` row outside the live set takes the claim and reconciles |
+| 2 | The composition root may import the concrete client, and an import set cannot tell construction from a mutation call | D2 — the AST guard also enumerates calls to the seam's mutation methods; the root's permitted calls are the constructor only |
+| 3 | "Two structural facts" beside a third guard; commit 7 scheduled two | D2, sequence — three, named |
+| 4 | Correlating on the substituted digest lets a secret rotation turn an at-most-once replay into a mismatch | D5 — correlation on a request digest over caller-supplied fields, classified before any secret is resolved; the substituted digest keeps its hook, gate-3 and inheritance roles |
+| 5 | The terminal tool is executed through `tool.Exec` today; routing only non-terminal calls to the executor leaves a second `Exec` caller or no terminal path | D15 — every call crosses the executor, the terminal definition marked; for the boundary it is the agent's claim, not an effect, and item 6 turns it into `Terminate` |
 
 ## Open Questions
 
