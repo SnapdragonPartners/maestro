@@ -164,6 +164,14 @@ Two structural facts, each guarded:
    with the item that deletes them (14); when one disappears the guard
    fails and its entry is removed, so the list can only shrink.
 
+   **The import graph is necessary and not sufficient**: a call to a
+   family's own `Effect` from elsewhere in the same `families/<name>`
+   package creates no importer (PR #373 review, seventh pass). So the AST
+   guard in (2) also enumerates every call expression resolving to any
+   family's `Effect` or `Reconcile`, same-package callers included, and
+   asserts the set is exactly `internal/boundary`'s gate-3 call site plus
+   each family's own tests.
+
 3. **The forge client is reachable only from its family.** D13's
    `internal/forge/gitea` performs a mutation without any family or
    `tools.Tool.Exec`, so the two guards above would not see a v2 package
@@ -542,9 +550,14 @@ run the effect. `operator_decision_consumed_at` is a column of D12.
 **Headless.** Whether a responder exists is a property of the *execution*,
 read from the resolved configuration D12 persists (`headless bool`), "known
 at dispatch — never an observation that nobody answered". Under headless,
-the requirement is recorded on the row exactly as above and the row settles
-**terminally** `blocked` — **and `CloseAdmission` runs in that same
-transaction**, under the execution row's exclusive lock: a settled `blocked`
+the general path's `open → operator_waiting` transition **is not taken**:
+ADR 0032 §5 says the action "does not sit in `operator_waiting` — nothing
+will ever answer it", and a committed wait would reopen the registration
+window the next sentence closes (PR #373 review, seventh pass). One
+transaction, under the execution row's exclusive lock, writes the
+requirement set and digest onto the row, settles it `open → settled` with
+`outcome = blocked` and `drain_disposition = stopped_before_commit`, **and
+runs `CloseAdmission`**: a settled `blocked`
 row no longer holds the Story guard, so closing admission in a later
 transaction would leave an interval in which a second request could
 register and begin an effect that is then drained only after it started
@@ -781,11 +794,25 @@ Domain: DomainNoneHeld}`; item 7 adds the domain values. The alternative — rec
 add it later — is exactly the positive-receipt-while-an-action-can-commit
 defect that is an exit-checklist criterion of items 7 and 9.
 
-**Who records what.** `completed`, `cancelled`, `timed_out` and `failed`
-may be claimed by the runtime (item 6's agent core, item 8's adapter) and
-are validated here; `blocked` is recorded by the boundary itself from D7's
-headless path, referencing the attempt, because it is "a fact about a gate
-the agent cannot see". At that point the blocked attempt is
+**Who records what, and through what.** `completed`, `cancelled`,
+`timed_out` and `failed` may be claimed by the runtime (item 6's agent
+core, item 8's adapter) and are validated here; `blocked` is recorded by
+the boundary itself from D7's headless path, referencing the attempt,
+because it is "a fact about a gate the agent cannot see". **No caller
+records a terminal result by calling the seam verb directly.** Every
+terminal result — a runtime's ordinary `completed` included — goes through
+the boundary's `Terminate(ctx, execution, TerminalResult)`, which is the
+one sequence: T-a `CloseAdmission` (after which nothing new registers and
+the runtime's later requests are refused `authority/admission_closed`);
+then the drain over the execution's attempts (D11's rule — open attempts
+are awaited to settlement within the grace period, `unresolved`
+dispositions block); then T-b `RecordTerminalResult` with the receipt,
+re-checking the precondition. A runtime that finishes with an attempt
+still in flight therefore waits for it, and one that finishes with an
+attempt unresolved stays open-with-admission-closed until drainage
+resolves — the same truthful state as any other (PR #373 review, seventh
+pass: the earlier text gave the verb its precondition and no ordinary path
+to satisfy it). At that point the blocked attempt is
 `stopped_before_commit` by construction, and D4's Story-scoped check
 guarantees no other attempt of the Story is waiting; earlier attempts of
 the execution must still have resolved dispositions, and the verb checks
@@ -810,7 +837,7 @@ consumer in this item:
 | `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `arguments_digest text` (`^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled' AND execution_id IS NOT NULL` — scoped to execution-bound attempts, because the importer settles its rows through `CompleteToolCall` with no disposition (`benchmarkimport.closeToolCall`) and its existing settled rows would otherwise block the migration (review round 9); the migration's test covers an existing import and a fresh import after it; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
-| `tool_calls` | `operator_decision text`, `operator_decided_by uuid` (composite FK `(operator_decided_by, organization_id) → users (user_id, organization_id)`, the same tenant invariant as `acting_user_id`), `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`, `operator_decision_consumed_by uuid` (the attempt that consumed it — itself, or the inheriting re-request of D5); CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
+| `tool_calls` | `operator_decision text`, `operator_decided_by uuid` (composite FK `(operator_decided_by, organization_id) → users (user_id, organization_id)`, the same tenant invariant as `acting_user_id`), `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`, `operator_decision_consumed_by uuid` (the attempt that consumed it — itself, or the inheriting re-request of D5); CHECK: `consumed_at` and `consumed_by` both present or both NULL, and the consuming transition writes both in one statement (PR #373 review, seventh pass); CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
 | `repository_forge_bindings` (new) | `repository_id`, `organization_id`, `provider text`, `base_url text`, `owner text`, `repo text`, `created_at`; PK `(repository_id, provider)`; FK to `repositories (repository_id, organization_id)`; `provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry **several** forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`) — a child family, not columns on the row, so a second binding is representable without a schema change (PR #373 review); the record has none today (`store/provisioning.go:80-95`) | D13 |
 | `executions` | `capability_set jsonb NOT NULL` — a JSON array of family identities, unique, sorted; `headless boolean NOT NULL`; both — **and `acting_user_id`** — immutable after insert by one anti-update trigger on item 4's pattern, with one regression test covering all three (PR #373 review, fifth pass) | ADR 0032 item 10, the resolved-configuration lifetime: "what was resolved for an execution must not silently change"; ADR 0030 §4 "headless is a declared execution configuration, known at dispatch" | D4 check 3; D7 |
 | `executions` | `acting_user_id uuid NOT NULL`, composite FK `(acting_user_id, organization_id) → users (user_id, organization_id)` — the tenant-scoped shape every table since `000001:32-36` uses, so an execution cannot bind another organization's member; immutable with the configuration (D6) | ADR 0030 §3's request names the principal; the vault names a member | D6 |
@@ -931,6 +958,7 @@ becomes the seam's *update* half rather than a silent list-and-return.
 
 | Field | Value |
 | --- | --- |
+| Result schema | `number` (persist), `url` (persist), `state` (persist — `open`/`merged`/`closed` as the forge reports it); everything else the forge returns is *digest-only*, so a response echoing the request cannot put more in the record than the projection admits; the redaction pass (D8) runs over the projected result regardless |
 | Schema | `title` (persist), `body` (large — an artifact reference when over the projection limit; the PR body is the Story's completion narrative and belongs in the Audit family by reference), `token` (secret slot, `forge.token`, repository scope) |
 | Effect site | `orchestrator_side` — ADR 0030 §6's table lists forge operations by name |
 | Checkability | The Incubator holds no forge credential: the token exists only in the vault and is revealed only in the Orchestrator process for the lifetime of one effect (D6); a resource that wants a pull request must ask. ADR 0030 §7 "credentials for a mediated resource are not placed inside an execution resource" |
@@ -1040,9 +1068,21 @@ type Executor interface {
 is content, an error flag, and an optional process effect — the loop's
 existing consumption of `tools.ExecResult` (`toolloop.go:486-561`)
 unchanged in shape, with the signal vocabulary copied into the leaf rather
-than imported from `pkg/tools`. Two implementations:
+than imported from `pkg/tools`. **The executor also owns the catalog.**
+Today the loop builds the LLM's tool definitions from `GeneralTools` and
+resolves a call by `toolProvider.Get(name)` before dispatch
+(`toolloop.go:212-245, 464`), so a family call would be refused as unknown
+before any executor saw it (PR #373 review, seventh pass). So
+`action.Executor` has a second method, `Definitions() []action.Definition`
+— name, description, parameter schema, the shape the loop already converts
+to `tools.ToolDefinition` — and the loop offers `Definitions()` plus the
+terminal tool to the model, and hands every non-terminal call to `Execute`
+without a lookup of its own; an unknown name is the executor's error
+result, as it is the provider's today. `GeneralTools` becomes the legacy
+executor's input rather than the loop's. Two implementations:
 
-- **`toolloop.LegacyActions(provider)`**, in `toolloop`, wrapping
+- **`toolloop.LegacyActions(provider)`**, in `toolloop`, deriving
+  `Definitions()` from the provider's tools and wrapping
   `ToolProvider.Get` and `tool.Exec` exactly as the loop does today, with
   `LogToolExecution` into the persistence channel — the one caller D2's
   guard admits. It is **constructed only by name**: `Run` refuses a nil
@@ -1054,8 +1094,9 @@ than imported from `pkg/tools`. Two implementations:
   deviation from the inventory's "call sites migrate unchanged" (row 321),
   recorded here: the contract's shape is unchanged, and the edit is the
   explicit statement of what each caller was already doing.
-- **`boundary.Executor`**, in `internal/boundary`, translating an
-  `action.Call` into a `Request` for the execution it was built for and a
+- **`boundary.Executor`**, in `internal/boundary`, deriving `Definitions()`
+  from the execution's capability set and the families' schemas (D3), and
+  translating an `action.Call` into a `Request` for the execution it was built for and a
   `Result` back into content the model reads — including `Waiting`, which
   the loop returns as a new `OutcomeAwaitingOperator{Requirements}` so the
   caller (item 6's core) can stop the turn. Item 6 is its first
@@ -1170,6 +1211,10 @@ D10 says why.
 | Reconciliation reveals only the approved version (D5, D6) | Rotate the secret after A's open; B reconciles: the disposition stays `unresolved` and no request with the new token is recorded | Reveal by name: a probe with the new token is recorded |
 | Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
 | `head` and `base` come from the execution (D13) | A request carrying `head` or `base`: refused as unknown; the PR on the forge is `maestro/story/<id>` → `maestro/epic/<id>` | Accept `base` as an argument: a PR against `main` is opened |
+| A family cannot call its own effect (D2) | AST guard over `Effect`/`Reconcile` call sites | Add a call to `Effect` from a helper in the family's own package: the guard names the file and line |
+| Headless never commits a wait (D7) | Barrier after the headless transaction; the row is `settled`/`blocked` and was never observed `operator_waiting` by a concurrent reader polling the row | Route headless through the general `operator_waiting` transition first: the poller observes the wait |
+| Ordinary completion goes through `Terminate` (D11) | A runtime claims `completed/changed` with one attempt still `open`: `Terminate` closes admission, waits for the attempt to settle, then records; a request arriving after closure is refused | Record without closing: the late request registers after the terminal result |
+| Consumption is all-or-none (D12) | Direct `UPDATE` setting `consumed_at` without `consumed_by`: refused | Drop the CHECK: stored |
 | A non-mutating family registers with no mutation key (D12) | Two concurrent attempts of the no-op test family under one execution: both register, both run; `mutation_key IS NULL` on both | Require `mutation_key` for every execution-bound row: the no-op attempts are refused at registration |
 | One live attempt per mutated resource, held through unresolved drainage (D12, D13) | Two attempts with different ids for one execution's PR, the second registering while the first is `open`: refused `target/busy` — and the same with the second attempt from a **different test family** declaring the same `mutation_key`. Then: the first settles `unknown`/`unresolved` (lost response); the second is **still** refused; the late commit is reconciled, drainage → `committed`; the second is admitted and its update appends to the trailer list | Drop the partial unique index: both register and the recording transport shows two concurrent mutation requests. Index on `(family, mutation_key)`: the second family registers. Index on `state` alone: the second registers while the first is `unresolved`, transmits before the late commit lands, and one of the two trailers is missing from the PR afterwards |
 | Evidence is append-only | Attempt A commits and settles `succeeded`/`committed` (so the target is released); attempt B updates the same PR; the PR body's `Maestro-Attempts:` list contains A **and** B, and A's row re-reconciled for evidence still finds itself | Replace the trailer instead of appending: the list contains only B, and the assertion on A's presence fails (review round 15: the earlier fixture had B registering while A was unresolved, which D12's exclusion now refuses) |
@@ -1384,6 +1429,18 @@ threads, all accepted; two are mechanism.
 Round 17 (Codex, 2026-09-28). One P1: the `mutation_key` row said both
 "NULL for a non-mutating family" and "present iff execution-bound".
 Separate presence rules; a test that the no-op family registers with NULL.
+
+PR #373 proofread, seventh pass (Copilot, 2026-09-28, on `48e05454`). Six
+threads, all accepted; three are gaps in the contract.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | A same-package call to a family's `Effect` creates no importer, so the import guard passes | D2 — the AST guard also enumerates `Effect`/`Reconcile` call sites, same-package included |
+| 2 | Whether headless committed `operator_waiting` first was unspecified; doing so would reopen the window | D7 — one transaction writes the requirement, settles `blocked`, closes admission; the wait is never entered |
+| 3 | Ordinary `completed`/`failed` had no path to satisfy the verb's closed-admission precondition | D11 — every terminal result goes through the boundary's `Terminate`: close, drain, record |
+| 4 | The production family declared no result schema | D13 — `number`, `url`, `state` persist; the rest digest-only |
+| 5 | The loop builds the catalog from `GeneralTools` and looks the name up before dispatch, so a family call never reaches the executor | D15 — `Executor.Definitions()`; the loop offers the executor's catalog and hands every call to `Execute` without a lookup |
+| 6 | The two consumption columns could be written partially | D12 — all-or-none CHECK; one statement |
 
 ## Open Questions
 
