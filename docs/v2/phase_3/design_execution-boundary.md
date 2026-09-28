@@ -399,11 +399,17 @@ claimed by *this* instance is **in progress** — returned as such, not
 reconciled — because the original caller is still driving it and would be
 unable to settle its later success behind a duplicate's `unknown`.
 **"Still driving it" is a fact about a call, not a process** (PR #373
-review, eighth pass): a `Mediate` call registers its attempt id in the
-boundary's in-memory **live set** before T1 and removes it in a `defer`
-that runs on return, cancellation and panic alike; that `defer` also
-settles the row if it is still `open` — `stopped_before_commit` when the
-effect had not started, `unknown`/`unresolved` otherwise. A same-instance
+review, eighth pass): a `Mediate` call **acquires ownership** of its
+attempt id in the boundary's in-memory **live set** — an atomic
+insert-if-absent under the boundary's mutex, taken before T1 — and only
+the call that acquired it arms the `defer` that removes the entry on
+return, cancellation and panic alike, and settles the row if it is still
+`open` (`stopped_before_commit` when the effect had not started,
+`unknown`/`unresolved` otherwise). A call that finds the id already owned
+is a duplicate: it returns *in progress* (or a correlation mismatch) and
+**arms no cleanup** — it never removes the owner's entry and never settles
+the owner's row, because doing so would release the target and permit a
+receipt while the owner's effect can still commit (review round 21). A same-instance
 re-presentation that finds an `open` row **not in the live set** knows the
 original call has stopped and the settle-on-unwind did not land (the plane
 was unreachable at that moment): it takes the claim under the boundary's
@@ -1257,6 +1263,7 @@ D10 says why.
 | Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
 | `head` and `base` come from the execution (D13) | A request carrying `head` or `base`: refused as unknown; the PR on the forge is `maestro/story/<id>` → `maestro/epic/<id>` | Accept `base` as an argument: a PR against `main` is opened |
 | The composition root cannot call the forge (D2) | AST guard over the seam's mutation methods | Add a `CreateOrUpdatePullRequest` call in `cmd/dataplanectl`: the guard names the file and line |
+| A duplicate's return does not disturb the owner (D5) | Call A held inside its effect at a barrier; duplicate B presents the same id and returns *in progress*; after B returns, A's live-set entry is present, the row is `open`, target exclusion holds (a third id is refused `target/busy`), and `Terminate` is refused; release A: it settles `succeeded` | Arm the cleanup in every call: B's return removes A's entry and settles A's row `stopped_before_commit` — the exclusion check and the row assertion both fail while A is still at the barrier |
 | A stopped call's attempt is recoverable in-process (D5) | A test family whose effect panics after T1; the `defer` settles the row; then: the same family with the plane made unreachable at unwind, so the settle fails — a same-instance retry finds the row `open`, not in the live set, takes the claim and reconciles | Skip the live-set check: the retry returns *in progress* forever; the test asserts a settled row within the timeout |
 | Rotation does not break replay (D5, D6) | Settle an attempt; rotate `forge.token`; re-present the same id and arguments: replay of the recorded result, not `ErrCorrelationMismatch` | Correlate on `arguments_digest`: the retry is refused |
 | The terminal call crosses the executor (D15) | A stub LLM calls the terminal tool; the recording provider shows the terminal `Exec` ran inside `LegacyActions`, and the D2 AST guard's set is unchanged | Execute the terminal call in the loop: the AST guard names the new `Exec` site |
@@ -1507,6 +1514,10 @@ accepted; two would have been production defects.
 | 3 | "Two structural facts" beside a third guard; commit 7 scheduled two | D2, sequence — three, named |
 | 4 | Correlating on the substituted digest lets a secret rotation turn an at-most-once replay into a mismatch | D5 — correlation on a request digest over caller-supplied fields, classified before any secret is resolved; the substituted digest keeps its hook, gate-3 and inheritance roles |
 | 5 | The terminal tool is executed through `tool.Exec` today; routing only non-terminal calls to the executor leaves a second `Exec` caller or no terminal path | D15 — every call crosses the executor, the terminal definition marked; for the boundary it is the agent's claim, not an effect, and item 6 turns it into `Terminate` |
+
+Round 21 (Codex, 2026-09-28). One P1: the per-call `defer` as written
+would let a duplicate's return remove the owner's live-set entry and settle
+its row. Ownership is acquired atomically; only the owner arms cleanup.
 
 ## Open Questions
 
