@@ -123,10 +123,15 @@ v2-integration-packages:
 # run together is V2_INTEGRATION_PACKAGES with nothing repeated and nothing
 # dropped. `test-integration-v2` above is unchanged: locally the whole list
 # runs in one process.
+#
+# `go list` carries the tag because a wildcard silently omits a package whose
+# every file is integration-tagged: without `-tags=integration` such a package
+# is not "a package" to the wildcard, and a list that leaves it out cannot be
+# put back by the tagged `go test` that consumes the list.
 V2_SHARDED_PACKAGE = ./internal/dataplane/stack
 v2-integration-packages-unsharded:
-	@sharded=$$(go list $(V2_SHARDED_PACKAGE)) && test -n "$$sharded" && \
-		go list $(V2_INTEGRATION_PACKAGES) | grep -v -x "$$sharded"
+	@sharded=$$(go list -tags=integration $(V2_SHARDED_PACKAGE)) && test -n "$$sharded" && \
+		go list -tags=integration $(V2_INTEGRATION_PACKAGES) | grep -v -x "$$sharded"
 
 test-integration-v2:
 	@echo "🧪 Running v2 data-plane integration tests (no API keys needed)..."

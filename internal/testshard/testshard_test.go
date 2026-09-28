@@ -38,6 +38,9 @@ func TestAssignsEveryTaggedTestToItsShard(t *testing.T) {
 			"func helper(t *testing.T) {}\n" +
 			"func TestMain(m *testing.M) {}\n",
 		"unit_test.go":       untagged + "func TestUnit(t *testing.T) {}\n",
+		"seam_unix_test.go":  tagged + "//ci:shard 1\nfunc TestUnixIsNotAFileNameConstraint(t *testing.T) {}\n",
+		"_ignored_test.go":   tagged + "func TestGoIgnoresThisFile(t *testing.T) {}\n",
+		".hidden_test.go":    tagged + "func TestGoIgnoresThisFileToo(t *testing.T) {}\n",
 		"excluded_test.go":   "//go:build !integration\n\npackage p\n\nimport \"testing\"\n\nfunc TestNever(t *testing.T) {}\n",
 		"notatest.go":        "package p\n",
 		"README_test.go.bak": "not go",
@@ -46,7 +49,7 @@ func TestAssignsEveryTaggedTestToItsShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	want := [][]string{{"TestBackup", "TestRestore"}, {"TestRestoreTwice"}, {"TestReset"}}
+	want := [][]string{{"TestBackup", "TestRestore"}, {"TestRestoreTwice", "TestUnixIsNotAFileNameConstraint"}, {"TestReset"}}
 	if len(assignment.Shards) != len(want) {
 		t.Fatalf("shards = %v, want %v", assignment.Shards, want)
 	}
@@ -76,6 +79,7 @@ func TestAssignsEveryTaggedTestToItsShard(t *testing.T) {
 func TestRefusesEveryWayAnAssignmentGoesWrong(t *testing.T) {
 	cases := []struct {
 		name   string
+		file   string // defaults to x_test.go
 		source string
 		want   string
 	}{
@@ -140,6 +144,24 @@ func TestRefusesEveryWayAnAssignmentGoesWrong(t *testing.T) {
 			want:   "build constraint mentions linux",
 		},
 		{
+			name:   "file name carrying a GOOS constraint",
+			file:   "x_linux_test.go",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n",
+			want:   "x_linux_test.go: the file name is a build constraint (GOOS=linux)",
+		},
+		{
+			name:   "file name carrying a GOARCH constraint",
+			file:   "x_amd64_test.go",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n",
+			want:   "the file name is a build constraint (GOARCH=amd64)",
+		},
+		{
+			name:   "file name carrying both",
+			file:   "x_linux_amd64_test.go",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n",
+			want:   "the file name is a build constraint (GOOS=linux GOARCH=amd64)",
+		},
+		{
 			name:   "file that does not parse",
 			source: tagged + "func TestA(t *testing.T) {\n",
 			want:   "expected '}'",
@@ -147,7 +169,11 @@ func TestRefusesEveryWayAnAssignmentGoesWrong(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := writePackage(t, map[string]string{"x_test.go": tc.source})
+			file := tc.file
+			if file == "" {
+				file = "x_test.go"
+			}
+			dir := writePackage(t, map[string]string{file: tc.source})
 			_, err := Discover(dir, "integration")
 			if err == nil {
 				t.Fatalf("Discover accepted the package; want an error containing %q", tc.want)

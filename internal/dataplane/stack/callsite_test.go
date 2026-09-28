@@ -449,6 +449,51 @@ func TestEveryIntegrationTestIsInExactlyOneCIShard(t *testing.T) {
 		t.Errorf("the CI workflow does not contain %q: the shard job selects tests some other way "+
 			"and this guard is enforcing nothing", invocation)
 	}
+
+	// And the runner must CONSUME what the tool produced. The first cut of
+	// this guard checked only that the tool was invoked; the review changed
+	// the `go test` line to `-run "^TestRecover"` and the guard stayed green
+	// with the selector computed and ignored — a false green of exactly the
+	// kind the pass floor cannot catch, since twenty recovery tests clear
+	// any shard's floor. So the go test command that names $SHARD_RUN is
+	// found and read: it must select by that variable, in this package,
+	// under the tag, uncached.
+	runner := shardRunnerCommand(t, string(workflow))
+	for _, want := range []string{"go test ", "-tags=integration", "-count=1", `-run "$SHARD_RUN"`, "./internal/dataplane/stack/"} {
+		if !strings.Contains(runner, want) {
+			t.Errorf("the shard job's go test command lacks %q: %q", want, runner)
+		}
+	}
+}
+
+// shardRunnerCommand returns the workflow's `go test` command that uses
+// $SHARD_RUN, with its backslash continuations joined into one line.
+func shardRunnerCommand(t *testing.T, workflow string) string {
+	t.Helper()
+	lines := strings.Split(workflow, "\n")
+	for i, line := range lines {
+		if !strings.Contains(line, `-run "$SHARD_RUN"`) {
+			continue
+		}
+		// Walk back to the line that starts the command, then forward
+		// through its continuations.
+		start := i
+		for start > 0 && strings.HasSuffix(strings.TrimSpace(lines[start-1]), "\\") {
+			start--
+		}
+		var command []string
+		for j := start; j < len(lines); j++ {
+			piece := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(lines[j]), "\\"))
+			command = append(command, piece)
+			if !strings.HasSuffix(strings.TrimSpace(lines[j]), "\\") {
+				break
+			}
+		}
+		return strings.Join(command, " ")
+	}
+	t.Fatal("the CI workflow has no go test command using $SHARD_RUN: the shard job selects " +
+		"tests some other way and this guard is enforcing nothing")
+	return ""
 }
 
 // shardMatrix extracts the shard ids the workflow's matrix lists, in order.

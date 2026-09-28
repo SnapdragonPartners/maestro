@@ -89,7 +89,11 @@ func (a *Assignment) RunPattern(shard int) string {
 // Build constraints are evaluated with the given tag satisfied and nothing
 // else. A constraint that mentions any other tag — an OS, an architecture,
 // a second feature tag — is refused rather than guessed at, because which
-// tests such a file contributes would depend on where this ran.
+// tests such a file contributes would depend on where this ran. The same
+// goes for the constraint Go reads from a FILE NAME (`x_linux_test.go`,
+// `x_amd64_test.go`, `x_linux_amd64_test.go`): it is as real as a
+// `//go:build` line and quieter, so it is refused by the same rule. Files
+// Go ignores outright — names starting with `_` or `.` — are skipped.
 func Discover(dir, tag string) (*Assignment, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -101,10 +105,16 @@ func Discover(dir, tag string) (*Assignment, error) {
 	var problems []error
 	taggedTests := 0
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") || name[0] == '_' || name[0] == '.' {
 			continue
 		}
-		found, tagged, fileProblems := discoverFile(fileSet, filepath.Join(dir, entry.Name()), tag)
+		if platform := fileNameConstraint(name); platform != "" {
+			problems = append(problems, fmt.Errorf("%s: the file name is a build constraint (%s), which this tool does not evaluate",
+				filepath.Join(dir, name), platform))
+			continue
+		}
+		found, tagged, fileProblems := discoverFile(fileSet, filepath.Join(dir, name), tag)
 		problems = append(problems, fileProblems...)
 		taggedTests += tagged
 		for name, shard := range found {
@@ -164,6 +174,48 @@ func buildShards(byShard map[int][]string) (*Assignment, []error) {
 		assignment.Shards[id] = names
 	}
 	return assignment, problems
+}
+
+// fileNameConstraint reports the platform constraint Go reads from a file
+// name, or "" when there is none. Go's rule (go/build's goodOSArchFile):
+// after dropping `_test`, a trailing `_GOOS`, `_GOARCH` or `_GOOS_GOARCH`
+// element constrains the file. `unix` is a tag, not a file-name element.
+func fileNameConstraint(name string) string {
+	stem := strings.TrimSuffix(strings.TrimSuffix(name, ".go"), "_test")
+	parts := strings.Split(stem, "_")
+	if len(parts) < 2 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	if knownArch[last] {
+		if len(parts) >= 3 && knownOS[parts[len(parts)-2]] {
+			return "GOOS=" + parts[len(parts)-2] + " GOARCH=" + last
+		}
+		return "GOARCH=" + last
+	}
+	if knownOS[last] {
+		return "GOOS=" + last
+	}
+	return ""
+}
+
+// The lists go/build keeps unexported (internal/syslist, checked against Go 1.26).
+//
+//nolint:gochecknoglobals // Fixed vocabulary of the toolchain.
+var knownOS = set("aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos", "ios", "js",
+	"linux", "nacl", "netbsd", "openbsd", "plan9", "solaris", "wasip1", "windows", "zos")
+
+//nolint:gochecknoglobals // Fixed vocabulary of the toolchain.
+var knownArch = set("386", "amd64", "amd64p32", "arm", "armbe", "arm64", "arm64be", "loong64", "mips",
+	"mipsle", "mips64", "mips64le", "mips64p32", "mips64p32le", "ppc", "ppc64", "ppc64le", "riscv",
+	"riscv64", "s390", "s390x", "sparc", "sparc64", "wasm")
+
+func set(words ...string) map[string]bool {
+	m := make(map[string]bool, len(words))
+	for _, w := range words {
+		m[w] = true
+	}
+	return m
 }
 
 // inclusion reports whether the file is compiled with the tag set, and
