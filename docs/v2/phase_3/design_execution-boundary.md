@@ -1,9 +1,9 @@
 +++
 title = "Design: The Mediated Execution Boundary (Item 5)"
-edit_date = "2026-09-27"
+edit_date = "2026-09-28"
 status = "live"
 type = "design"
-summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day and reads drainage from per-attempt evidence persisted independently of the outcome; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge-binding child family they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
+summary = "Mini-plan for Phase 3 item 5: one Orchestrator-owned boundary package through which every agent-initiated action reaches its effect, with mandatoriness demonstrated by an exact-set guard on the one remaining direct call site rather than asserted; a code-resident action-family registry on ADR 0028's payload-type pattern that declares, per family, the argument schema with its safe projection and secret slots, the effect site, the commit point, the mediation-checkability answer and an attempt-specific reconciliation probe; ADR 0030's three gates in order — deterministic admission against the seam, a default-allow policy hook that may not infer or write, a logical operator wait that holds no transaction, and revalidation immediately before the effect — with the requirement-identity vocabulary item 2 left opaque defined here; attempt identity as the tool-call id so at-most-once is a row property and a recorded intent with no outcome resolves unknown; substitution of every secret by a version-pinned reference before the digest, with the raw value held in a redacting wrapper and revealed only inside the family's effect function; attempts registering against the execution before admission completes so admission closure linearizes on the execution row, with the generation-level key left to item 7; rejection of superseded authority at both gates from the execution row under lock, and of fenced references through a generation predicate whose real source is item 7's; the four-axis terminal result as a validated Go type and as CHECK constraints that make invalid combinations unrepresentable, recorded through a verb that carries fence-receipt discipline from the first day and reads drainage from per-attempt evidence persisted independently of the outcome; a mandatory redaction pass over results and errors so nothing a family returns can put a revealed secret in the record; the execution binding its principal and its acting user; migration 000024 giving executions their immutable capability set and terminal columns, tool_calls a reason code and the durable operator decision with its consumption, and repositories the forge-binding child family they have deferred since Phase 2, with the seam's outcome refusal lifted and a version-atomic secret reveal added; a v2-neutral forge seam with the Gitea API client ported by copy, and the first secret-bearing family — the Story pull request — proven against a live, digest-pinned Gitea in the integration job; the MCP lastEffect slot and its signal correction removed as the second of two channels that could disagree, leaving the stdout detector as v1's one channel until item 8; and the toolloop refactored onto an executor seam declared in a neutral leaf package so neither side imports the other, its harness layer moved behind it unchanged, with terminal-tool forcing made expressible. Carries two plan amendments — the release rule for a resource held by a waiting execution is assigned to item 7, and the agent-surface inventory gains the pkg/tools row it lacks — and adds no ADR need."
 +++
 
 # Design: The Mediated Execution Boundary (Item 5)
@@ -160,7 +160,7 @@ Two structural facts, each guarded:
    `(tools.Tool).Exec` across the applicable configurations (Reachability
    Claims: the constraint set derived at analysis time, over ADR 0026's
    matrix) and asserts the set is exactly the frozen v1 sites plus
-   `toolloop.legacyExecutor.Execute`. The v1 sites are named in the guard
+   `toolloop.LegacyActions`'s executor. The v1 sites are named in the guard
    with the item that deletes them (14); when one disappears the guard
    fails and its entry is removed, so the list can only shrink.
 
@@ -180,7 +180,7 @@ plugin:
 | Field | Consumed by | Source |
 | --- | --- | --- |
 | `Kind`, `Verb` — an Orchestrator-owned identity, "not the caller's tool name" | Gate 1 admission; the record's `tool_name` as `<kind>/<verb>` | ADR 0030 §3 request table |
-| `Schema` — the argument schema: required fields, types, and per field one of *persist*, *digest-only*, *secret slot*, *large (by reference)*, or *keyed commitment* (D6; declared, not implemented in item 5) | Substitution (D6), the persisted projection, policy's readable fields | §3 "declared by the code-resident action schema"; Consequences "every action family needs a declared safe projection before it can be recorded at all" |
+| `Schema` — the argument schema, and `ResultSchema` — the result's: required fields, types, and per field one of *persist*, *digest-only*, *secret slot*, *large (by reference)*, or *keyed commitment* (D6; declared, not implemented in item 5) | Substitution (D6), the persisted projection, policy's readable fields | §3 "declared by the code-resident action schema"; Consequences "every action family needs a declared safe projection before it can be recorded at all" |
 | `EffectSite` — `orchestrator_side`, `in_resource`, `external` | Classification and what "policed per action" means for the family | §6's table |
 | `Checkability` — one sentence: what prevents the execution resource from performing this directly | Reviewed, and rendered in the family's documentation; a family with an empty answer fails registry construction | §7 "a family with no answer is mediated in documentation only" |
 | `CommitPoint` — the instant after which the effect is no longer the Orchestrator's to withhold | Gate 3's reconciliation and, from item 9, drain | §5 "every action family MUST declare its commit point" |
@@ -212,7 +212,12 @@ registry refuses by construction.
 hook (ADR 0030 §3): in the registration transaction (D8's T1), under the
 execution row's share lock,
 
-1. the principal instance is live and belongs to the execution;
+1. the principal instance is live and belongs to the execution — by
+   `principal_instances.execution_id`, a column 000024 adds (D12): the
+   live-principal insert already derives its lineage *from* an execution
+   (`queries/principal_instances.sql:73-93`) but stores no reference to it,
+   so a principal of a prior execution of the same Story was
+   indistinguishable from this one's (PR #373 review, third pass);
 2. the execution's authority is `current` and admission is open
    (`executions.authority_state`, `admission_closed_at`);
 3. the family is contained in the execution's resolved capability set
@@ -296,9 +301,11 @@ field of the projection (`caller_ref`) for correlation with the LLM turn,
 never as the key (PR #373 review, second pass).
 
 **The id is bound to its logical action.** `OpenToolCall` records the
-family identity and the substituted-input digest on the row, and a
-re-presentation whose family or digest differs from the row's is a
-**correlation mismatch**: refused, not recorded as a new attempt (the id is
+execution, the family identity and the substituted-input digest on the
+row, and a re-presentation whose execution, family or digest differs from
+the row's is a **correlation mismatch** — a caller-minted id presented
+under another execution must not receive a result that execution's
+admission never checked (PR #373 review, third pass): refused, not recorded as a new attempt (the id is
 taken) and not replayed, and logged as an invariant violation — a same-id,
 different-arguments request is a caller defect, and returning the old
 result for it would be a replay of an action nobody asked for (ADR 0032 §6;
@@ -367,7 +374,15 @@ ADR 0030 §3 names the forms and this design implements them literally:
 
 **Where the secret comes from.** A secret slot is declared with a *secret
 name* and the *scope* it resolves at; the family's slot for the forge token
-is `forge.token` at repository scope. The request shape an agent (or the
+is `forge.token` at repository scope. **On whose behalf.** The vault's
+verbs require an `actingUserID` that is an organization member, and an
+agent principal has no user; the trusted value is
+`executions.acting_user_id`, set at `AcceptDispatch` from the operator who
+accepted the dispatch (the `dispatch` verb's `-user`; item 6's dispatcher
+supplies it the same way), immutable with the rest of the resolved
+configuration, and never read from a request (PR #373 review, third pass).
+An execution acts for the operator who dispatched it, and the ownership
+ladder resolves that operator's and shared secrets and nobody else's. The request shape an agent (or the
 `dispatch` verb's operator path) can produce therefore **omits the slot**,
 and a request that supplies a value for a secret slot is refused at
 admission — an agent handing the boundary a credential is exactly what
@@ -495,7 +510,16 @@ On the approved re-presentation (or immediately, when gate 1 allowed):
 6. the row settles: `succeeded` with the family's result projection;
    `failed` with `error_message`; or, when `Effect` returns after the
    declared commit point with an error that does not say whether the effect
-   landed, `Reconcile` is called before settling.
+   landed, `Reconcile` is called before settling. **Nothing the effect
+   returns is persisted as returned.** The family declares a *result
+   schema* with the same per-field classification as its argument schema
+   (D3), and the result is projected through it; and before settlement the
+   boundary performs a **mandatory redaction pass** over the projected
+   result and the error text, replacing any occurrence of a revealed
+   secret's bytes with its substituted reference — a family that echoes the
+   token, or a client error that quotes the request, cannot put it in
+   `tool_calls` (PR #373 review, third pass). The D13 no-token test reads
+   `result` and `error_message` as well as `arguments`.
 
 Every attempt is completed, reads included (§8): a family whose effect is a
 retrieval settles `succeeded` with the projection, because releasing data is
@@ -695,13 +719,15 @@ consumer in this item:
 
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
-| `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'`), `family text NOT NULL` (the action identity, beside the legacy `tool_name`), `arguments_digest text NOT NULL` (the substituted-input digest, `^[0-9a-f]{64}$`) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
+| `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `arguments_digest text` (`^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled'`; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid`, `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`; CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
 | `repository_forge_bindings` (new) | `repository_id`, `organization_id`, `provider text`, `base_url text`, `owner text`, `repo text`, `created_at`; PK `(repository_id, provider)`; FK to `repositories (repository_id, organization_id)`; `provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry **several** forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`) — a child family, not columns on the row, so a second binding is representable without a schema change (PR #373 review); the record has none today (`store/provisioning.go:80-95`) | D13 |
 | `executions` | `capability_set jsonb NOT NULL` — a JSON array of family identities, unique, sorted; `headless boolean NOT NULL`; both immutable after insert by an anti-update trigger on item 4's pattern | ADR 0032 item 10, the resolved-configuration lifetime: "what was resolved for an execution must not silently change"; ADR 0030 §4 "headless is a declared execution configuration, known at dispatch" | D4 check 3; D7 |
-| `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `error_message text` (present only when `status = 'failed'`), `terminated_at timestamptz`; the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL`; `blocked_tool_call_id` is a **composite FK** `(blocked_tool_call_id, execution_id, organization_id) → tool_calls (tool_call_id, execution_id, organization_id)` over a new unique key on `tool_calls`, so the reference cannot name another execution's attempt, plus a trigger requiring the referenced row to be `settled` with `outcome = 'blocked'` (PR #373 review) | ADR 0032 item 7; §5 "`blocked` … references the pending action and the structured requirement set" | D11 |
+| `executions` | `acting_user_id uuid NOT NULL` FK `users`, immutable with the configuration (D6) | ADR 0030 §3's request names the principal; the vault names a member | D6 |
+| `principal_instances` | `execution_id uuid` FK `executions (execution_id, organization_id)`; required iff the principal is live (D4 check 1) | ADR 0032 item 2; item 4 D5 "a live agent exists only under an execution" | D4 |
+| `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `error_message text` (present only when `status = 'failed'`), `terminated_at timestamptz`; **closed-vocabulary CHECKs on every axis** matching `TerminalResult.Validate` (`status IN (...)`, and each axis `IN (...)` or NULL) so a direct writer cannot store `'bogus'`; then the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL`; `blocked_tool_call_id` is a **composite FK** `(blocked_tool_call_id, execution_id, organization_id) → tool_calls (tool_call_id, execution_id, organization_id)` over a new unique key on `tool_calls`, so the reference cannot name another execution's attempt, plus a trigger requiring the referenced row to be `settled` with `outcome = 'blocked'` (PR #373 review) | ADR 0032 item 7; §5 "`blocked` … references the pending action and the structured requirement set" | D11 |
 
 `capability_set` is supplied to `AcceptDispatch` by the Orchestrator; in
 item 5 the composition root passes the set its caller declares, and item 6
@@ -737,16 +763,23 @@ with an integration test on a real ephemeral plane:
   no registration), `ConsumeOperatorDecision` (D7) and
   `ResolveDrainDisposition` (D11 — `unresolved` to a resolved value, with
   the evidence's attempt id);
-- executions: `SetExecutionConfiguration` (inside `AcceptDispatch`),
-  `CloseAdmission`, `SupersedeExecution`, `RecordTerminalResult`;
+- executions: `AcceptDispatch` gains a configuration input —
+  `capability_set`, `headless`, `acting_user_id` — written **in the
+  execution's INSERT** (`postgres/dispatch.go:400-404`), because an
+  anti-update trigger leaves no other initialization path (PR #373 review,
+  third pass); `CloseAdmission`, `SupersedeExecution`,
+  `RecordTerminalResult`;
 - secrets: `RevealSecretAtVersion` (D6);
 - repositories: `BindRepositoryForge` (idempotent per `(repository,
   provider)`; a differing binding for the same provider is a conflict, on
   `ProvisionRepository`'s pattern) and `Repository.ForgeBindings
   []ForgeBinding` on the read side, in provider order;
-- `store.ToolCall` gains `ExecutionID`, `RequirementSet`,
-  `RequirementSetDigest`, `ReasonCode`, `OperatorDecision` — the columns
-  `000022` added and no Go type exposed.
+- `store.ToolCall` gains every column the boundary reads or classifies
+  on: `ExecutionID`, `RequirementSet`, `RequirementSetDigest` (000022's),
+  and `Family`, `ArgumentsDigest`, `CallerRef`, `ClaimedBy`, `ReasonCode`,
+  `OperatorDecision` (with `DecidedBy`, `DecidedAt`, `ConsumedAt`),
+  `DrainDisposition` (000024's). One record shape; no boundary-owned
+  view.
 
 `tool_calls.arguments` becomes the persisted projection by construction:
 the only writer is `OpenToolCall` and it takes the projection the family's
@@ -896,13 +929,18 @@ existing consumption of `tools.ExecResult` (`toolloop.go:486-561`)
 unchanged in shape, with the signal vocabulary copied into the leaf rather
 than imported from `pkg/tools`. Two implementations:
 
-- **`legacyExecutor`**, in `toolloop`, wrapping `ToolProvider.Get` and
-  `tool.Exec` exactly as the loop does today, with `LogToolExecution` into
-  the persistence channel — the one caller D2's guard admits. Constructed in
-  `Run` when `Config.Actions` is nil — the point where the loop builds its
-  local provider today (`toolloop.go:212-217`); `New` receives only the
-  client and logger and never sees a `Config` — so the four v1 driver
-  packages migrate with no edit, as the inventory requires.
+- **`toolloop.LegacyActions(provider)`**, in `toolloop`, wrapping
+  `ToolProvider.Get` and `tool.Exec` exactly as the loop does today, with
+  `LogToolExecution` into the persistence channel — the one caller D2's
+  guard admits. It is **constructed only by name**: `Run` refuses a nil
+  `Config.Actions` rather than defaulting to it, because nil as a mode
+  switch would let a v2 caller that forgot the field bypass the boundary
+  silently through the one call site the guard permits (PR #373 review,
+  third pass). The v1 driver packages therefore take a one-line edit per
+  `Config` literal, `Actions: toolloop.LegacyActions(...)`; this is a
+  deviation from the inventory's "call sites migrate unchanged" (row 321),
+  recorded here: the contract's shape is unchanged, and the edit is the
+  explicit statement of what each caller was already doing.
 - **`boundary.Executor`**, in `internal/boundary`, translating an
   `action.Call` into a `Request` for the execution it was built for and a
   `Result` back into content the model reads — including `Waiting`, which
@@ -1000,7 +1038,12 @@ D10 says why.
 | An approved attempt is not misread as interrupted (D7) | Approve, kill before re-presentation, restart, re-present: the effect runs once and the row settles `succeeded` | Move the row to `open` at approval: the re-presentation reconciles, finds nothing, settles `unknown`, and the assertion names the outcome |
 | A recorded intent with no outcome does not re-execute | Kill the process between open and effect (the restart harness's kill path), so **zero** effects have run; retry in a fresh process: D5's `open` branch calls `Reconcile`, which finds nothing, and the row settles `unknown`/`unresolved` with the mutation-request count still **0** | Replace D5's `open` classification branch with the effect (execute instead of reconcile): the count reads 1, which is the assertion that fails (review round 3 — an earlier version of this row asserted "twice" against a fixture that can only produce one) |
 | Secrets are substituted before the digest (D6) | The digest over the substituted form equals a digest computed by the test from the reference, and differs from one over the raw form | Digest the raw arguments: equality with the reference-form digest fails, and the test reads the token text out of `arguments` |
-| No token text is persisted anywhere | `tool_calls.arguments`, `error_message`, `result` and the log capture are searched for the minted token | Persist the raw form: found in `arguments` |
+| No token text is persisted anywhere | `tool_calls.arguments`, `error_message`, `result` and the log capture are searched for the minted token, with a test family whose effect **returns** the token in its result and one whose error **quotes** it | Persist the raw form: found in `arguments`. Skip the redaction pass: found in `result`; found in `error_message` |
+| A principal of a prior execution is refused (D4) | Two executions of one Story; the first's live principal presents under the second: `denied`/`principal/not_of_execution` | Check lineage instead of `execution_id`: admitted |
+| The acting user is the execution's, not the request's (D6) | A request naming another member as acting user: ignored; the secret resolves for the dispatching operator | Read the acting user from the request: the other member's secret is revealed |
+| A reused id under another execution is a mismatch (D5) | Settle under execution A; present the same id, family and digest under execution B: `ErrCorrelationMismatch`, nothing replayed | Bind to family and digest only: B receives A's result |
+| Every terminal axis is closed-vocabulary in SQL (D11) | Direct `UPDATE executions SET status = 'bogus'` refused | Drop the status CHECK: stored |
+| `Run` refuses a nil executor (D15) | `Config{}` with no `Actions`: `Run` returns an error before any LLM call | Default to `LegacyActions`: the stub tool's `Exec` runs, which the recording provider counts |
 | The secret's version is what was approved | Replace the secret between gate 1 and gate 3: `stale/secret_version_moved` | Reveal by name rather than by `(id, version)`: the new token is used and the PR is created — the test asserts it is not |
 | The wait holds nothing (D7) | `pg_stat_activity` shows no session for the waiting attempt; the boundary's goroutine count is unchanged | Hold the transaction open across the wait: a session is visible |
 | A second request for a waiting Story is an invariant violation | Reason code and an error-level log line | Downgrade to an ordinary denial: the log assertion fails |
@@ -1058,7 +1101,7 @@ before the design moved: `pkg/tools/constants.go:3` imports `pkg/config` and
 | 4 | `RevealSecret` decrypts whichever row it finds; a separate version check races `ReplaceSecret` | D6, D12 — `RevealSecretAtVersion`, one read conditioned on the approved version |
 | 5 | Importing `pkg/tools` for its types reaches `pkg/config`; implementing toolloop-owned types from the boundary reaches `pkg/persistence` | D1, D15 — the vocabulary moves to the leaf `internal/action`; the legacy adapter stays in the toolloop, outside the boundary's closure |
 | 6 | The Story-level `awaiting_resolution` transition does not exist | D4, D7 — waiting is derived from attempts under the Story row lock; entry, release and the guard all read the same rows |
-| 7 | The repository record has no forge binding to supply an endpoint | D12, D13 — four binding columns on `repositories`, `BindRepositoryForge`, the family reads them and admission refuses an unbound target |
+| 7 | The repository record has no forge binding to supply an endpoint | D12, D13 — a forge binding written by `BindRepositoryForge`, read by the family, an unbound target refused at admission (first drafted as columns on `repositories`; revised to the `repository_forge_bindings` child family by the PR #373 proofread, #5) |
 | 8 | Closure refusing `OpenToolCall` suppresses the denied audit row | D4, D9 — registration and denied-audit insertion are separate verbs; closure refuses only registration |
 | 9 | Two mutants could not produce their named failure | Testing table — replaced with mutants that bypass replay suppression and reconciliation, with concurrent and interrupted attempts, failing at the effect count |
 
@@ -1116,6 +1159,23 @@ Round 7 (Codex, 2026-09-27). One P1 on the second pass's claim rule.
 | # | Finding | Resolution |
 | --- | --- | --- |
 | 1 | The claim was set only at open, so an approval consumed after a restart left the row claimed by the dead instance and a duplicate would reconcile the live effect | D5, D7 — consumption transfers the claim in the same statement; reconciliation of a foreign-claimed row takes the claim conditionally so one reconciler proceeds; two test rows |
+
+PR #373 proofread, third pass (Copilot, 2026-09-28, on `bc56f1c7`). Eleven
+threads, all accepted.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Only input was projected; a family's result or error could carry the revealed token into the record | D3, D8 — a result schema per family and a mandatory redaction pass over result and error before settlement; two test families |
+| 2 | `principal_instances` has no execution binding, so "belongs to the execution" was unprovable | D4, D12 — `principal_instances.execution_id`, required for live principals |
+| 3 | Correlation bound to family and digest but not the execution | D5 — the execution is part of the binding |
+| 4 | The vault needs an acting member and an agent has no user; a request-supplied value would choose whose secret resolves | D6, D12 — `executions.acting_user_id`, set at `AcceptDispatch` from the dispatching operator, immutable, never read from a request |
+| 5 | `NOT NULL` boundary columns break the plane's other writer and existing rows | D12 — `family`/`arguments_digest` present iff `execution_id` is; the importer writes neither; the legacy executor writes v1 persistence, not the plane |
+| 6 | An `UPDATE`-shaped `SetExecutionConfiguration` is refused by the anti-update trigger | D12 — the configuration is part of the execution INSERT via `AcceptDispatch`'s input |
+| 7 | Terminal axes were unrestricted `text` | D12 — closed-vocabulary CHECKs on every axis |
+| 8 | A nil `Config.Actions` defaulting to the legacy executor is a silent bypass | D15 — `Run` refuses nil; `LegacyActions` is constructed by name at v1 call sites, recorded as a deviation from "unchanged" |
+| 9 | `caller_ref` had no column | D12 |
+| 10 | `store.ToolCall` did not expose the boundary's columns | D12 — the complete list |
+| 11 | The round-1 record still described the inline binding columns | Points Resolved, round 1 #7 — reworded with the revision noted |
 
 ## Open Questions
 
