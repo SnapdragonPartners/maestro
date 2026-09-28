@@ -355,9 +355,15 @@ new attempt in the same execution whose family and substituted digest
 equal a stale row's with an unconsumed `approve_once` is what ADR 0030 §4
 says the approval binds to ("the logical action: its Story version, the
 action, the intended target, and the arguments"), so gate 1 finds that row
-by `(execution, family, digest)`, treats the decision as answered, marks it
-consumed on the stale row with the new attempt's id, and proceeds to gate 3
-without a second operator wait. One decision, one consumption; a second
+by `(execution, family, digest, target_key)`, **re-runs gate 1's policy
+and requires the recomputed requirement-set digest to equal the stale
+row's** — an approval answers a question, and if the requirements or the
+target have changed the question has too (ADR 0030 §5's equality rule;
+ADR 0032's binding of the decision to the requirement set; PR #373 review,
+sixth pass) — and only then treats the decision as answered, marks it
+consumed on the stale row with the new attempt's id, and proceeds to gate
+3 without a second operator wait. A mismatch on any of the four, or on
+the requirement set, is an ordinary `RequiresOperator`: a fresh wait. One decision, one consumption; a second
 re-request asks again. This is not the deferred `*_for_story` grant, which
 would cover *other* actions (PR #373 review, fourth and fifth passes;
 supersedes the round-7 transfer-across-restart rule, which this makes
@@ -433,7 +439,7 @@ ADR 0030 §3 names the forms and this design implements them literally:
 | --- | --- | --- |
 | **Raw** — the plaintext | For a secret slot the caller supplies **nothing**: the slot is declared by the schema and filled by the boundary from the vault, so the raw form exists only as the `secret.Value` gate 3 reveals (the redacting wrapper Phase 2 built, `internal/dataplane/secret/value.go`, which has no JSON form and needs none). For a non-secret field the raw form is what the caller supplied, in `Request.Arguments` | The effect call, for a secret; the call stack of `Mediate`, for the rest; never digested, never logged, never persisted |
 | **Substituted** — every secret slot replaced by `secret:<secret_id>@<version>` | Built by the family's schema; canonical JSON | Digested; presented to the hook; compared at gate 3 |
-| **Persisted projection** — the schema's *persist* fields, plus `digest`, plus object references for *large* fields | `tool_calls.arguments` | The record |
+| **Persisted projection** — the schema's *persist* fields, **secret slots as their substituted reference** (`secret:<id>@<version>`, never any plaintext — the reference is what gate 3 reveals from and what reconciliation and audit need), plus `digest`, plus object references for *large* fields | `tool_calls.arguments` | The record |
 
 **Where the secret comes from.** A secret slot is declared with a *secret
 name* and the *scope* it resolves at; the family's slot for the forge token
@@ -800,7 +806,7 @@ consumer in this item:
 
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
-| `tool_calls` | `target_key text` (the family's declared target, e.g. `<repository>/<head>/<base>`; present iff `execution_id IS NOT NULL`) with a **partial unique index** `(family, target_key) WHERE state <> 'settled' OR drain_disposition = 'unresolved'` — at most one attempt per target that is unsettled **or settled with unresolved drainage**, so a target stays excluded until the attempt's mutation is known to have landed or not: an attempt that settled `unknown` may still commit remotely (D11), and releasing the target at settlement would let a second attempt read-modify-write the same PR body against it (ADR 0027; PR #373 review, fifth pass; review round 14). The target is released when drainage resolves | D13 | D5 |
+| `tool_calls` | `target_key text` (the family's declared target, used with `family` for D5's correlation and inheritance) and `mutation_key text` (the **shared resource** the effect mutates, named family-independently — for the forge, `forge:<repository>/<head>/<base>`; NULL for a family that mutates nothing shared), both present iff `execution_id IS NOT NULL`, with a **partial unique index on `mutation_key` alone** `WHERE state <> 'settled' OR drain_disposition = 'unresolved'` — ADR 0027 keys serialization by the resource, not by the writer, so two *families* touching one PR are serialized as one family's two attempts are (PR #373 review, sixth pass). At most one attempt per mutated resource that is unsettled **or settled with unresolved drainage**, so a target stays excluded until the attempt's mutation is known to have landed or not: an attempt that settled `unknown` may still commit remotely (D11), and releasing the target at settlement would let a second attempt read-modify-write the same PR body against it (ADR 0027; PR #373 review, fifth pass; review round 14). The target is released when drainage resolves | D13 | D5 |
 | `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `arguments_digest text` (`^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled' AND execution_id IS NOT NULL` — scoped to execution-bound attempts, because the importer settles its rows through `CompleteToolCall` with no disposition (`benchmarkimport.closeToolCall`) and its existing settled rows would otherwise block the migration (review round 9); the migration's test covers an existing import and a fresh import after it; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
@@ -815,8 +821,15 @@ consumer in this item:
 item 5 the composition root passes the set its caller declares, and item 6
 derives it from the role and pack. **The seam validates it at dispatch**
 against the closed family set — handed to the seam at composition as
-`plane.Caller.Actions`, on the pattern of `Caller.Keys` and
-`Caller.Prompts` (`plane/compose.go:105-116`) — refusing an identity the
+`plane.Caller.Actions`, a **required fifth field** on the pattern of
+`Caller.Keys` and `Caller.Prompts` (`plane/compose.go:105-116`):
+`Caller.Validate` (`compose.go:344-369`) refuses a nil `Actions` as it
+refuses the other four, so no composer acquires resources without it, and
+every composition root — the local stack, the cloud composer, the CLI, the
+restart harness and `planetest` — is updated in sequence commit 2 to pass
+the boundary's family identities (or, for a root that dispatches nothing,
+an explicit empty set, as `configkeys.MustNew(nil)` is for keys) (PR #373
+review, sixth pass). The seam refuses an identity the
 registry does not know, and canonicalizes it (sorted, de-duplicated) before
 persistence, so the stored set is the invariant D12 states and an unknown
 family cannot be stored now to become live under a later registry (PR #373
@@ -934,8 +947,13 @@ which is test setup, not a mediated action.
 **The test** is the exit criterion, and it is one test that does all of
 this in order against a live Gitea: provision an organization, repository
 and Story on an ephemeral plane; create a shared secret `forge.token` at
-repository scope holding the token the harness minted; accept a dispatch
-with `capability_set = ["forge/story_pull_request"]`; call `Mediate`;
+repository scope holding the token the harness minted; **bind the
+repository to the harness's forge** (`BindRepositoryForge`, D12 — without
+it admission refuses `target/repository_unbound`); accept a dispatch with
+`capability_set = ["forge/story_pull_request"]` and the test's operator as
+acting user; **record a live agent principal under that execution** (the
+dispatch-bound principal verb item 4 built, now with `execution_id` — D4
+check 1 refuses without it); call `Mediate` for that principal;
 observe the pull request on the forge over a read authenticated with the
 harness's admin credential — independent of the family's token, which the
 observer never holds; read the `tool_calls` row and
@@ -1104,7 +1122,7 @@ the guards are written last because they enumerate what exists.
 | # | Commit | Contents |
 | --- | --- | --- |
 | 1 | `schema` | Migration 000024 (D12) with its total-or-refuse guard; the `dispatch` operator verb; the store types; the tool-call verbs with all six outcomes and the refusal lifted, `RecordDeniedToolCall` and `ConsumeOperatorDecision`; the execution verbs; `RevealSecretAtVersion`; `BindRepositoryForge`; every verb's integration test on an ephemeral plane; `OpenWork` extended (D11) |
-| 2 | `registry` | The leaf `internal/action` (D1); the family registry with construction validation (D3); the requirement-identity vocabulary and canonical set (D4); substitution and the persisted projection (D6); the terminal-result type and validator (D11); the test-only families |
+| 2 | `registry` | The leaf `internal/action` (D1); the family registry with construction validation (D3); `plane.Caller.Actions` with its validation and every composition root updated, and `AcceptDispatch`'s capability-set validation moved here from commit 1 (D12); the requirement-identity vocabulary and canonical set (D4); substitution and the persisted projection (D6); the terminal-result type and validator (D11); the test-only families |
 | 3 | `gates` | `Mediate`: admission, the hook, gate 2's transitions and headless path, gate 3's revalidation and execution, attempt idempotency and synchronous reconciliation (D4–D10); `Recover`'s attempt enumeration — stale waits, reconciled opens (D5); `DefaultAllow`; the test hooks |
 | 4 | `forge` | `internal/forge` and the Gitea port (D13); the Story pull-request family; the live-Gitea integration test with its digest-pinned image; the vault read inside it |
 | 5 | `toolloop` | The executor seam, the legacy executor, `boundary.Executor`, the harness layer behind the seam, forcing (D15); the four v1 driver packages building unchanged |
@@ -1152,7 +1170,7 @@ D10 says why.
 | Reconciliation reveals only the approved version (D5, D6) | Rotate the secret after A's open; B reconciles: the disposition stays `unresolved` and no request with the new token is recorded | Reveal by name: a probe with the new token is recorded |
 | Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
 | `head` and `base` come from the execution (D13) | A request carrying `head` or `base`: refused as unknown; the PR on the forge is `maestro/story/<id>` → `maestro/epic/<id>` | Accept `base` as an argument: a PR against `main` is opened |
-| One live attempt per target, held through unresolved drainage (D12, D13) | Two attempts with different ids for one execution's PR, the second registering while the first is `open`: refused `target/busy`. Then: the first settles `unknown`/`unresolved` (lost response); the second is **still** refused; the late commit is reconciled, drainage → `committed`; the second is admitted and its update appends to the trailer list | Drop the partial unique index: both register and the recording transport shows two concurrent mutation requests. Index on `state` alone: the second registers while the first is `unresolved`, transmits before the late commit lands, and one of the two trailers is missing from the PR afterwards |
+| One live attempt per mutated resource, held through unresolved drainage (D12, D13) | Two attempts with different ids for one execution's PR, the second registering while the first is `open`: refused `target/busy` — and the same with the second attempt from a **different test family** declaring the same `mutation_key`. Then: the first settles `unknown`/`unresolved` (lost response); the second is **still** refused; the late commit is reconciled, drainage → `committed`; the second is admitted and its update appends to the trailer list | Drop the partial unique index: both register and the recording transport shows two concurrent mutation requests. Index on `(family, mutation_key)`: the second family registers. Index on `state` alone: the second registers while the first is `unresolved`, transmits before the late commit lands, and one of the two trailers is missing from the PR afterwards |
 | Evidence is append-only | Attempt A commits and settles `succeeded`/`committed` (so the target is released); attempt B updates the same PR; the PR body's `Maestro-Attempts:` list contains A **and** B, and A's row re-reconciled for evidence still finds itself | Replace the trailer instead of appending: the list contains only B, and the assertion on A's presence fails (review round 15: the earlier fixture had B registering while A was unresolved, which D12's exclusion now refuses) |
 | The commit point is transmission | **Process alive:** a test transport that confirms transmission and then fails the response; the forge holds the PR invisible to the immediate reconcile (a delayed-visibility fixture): the family reports "passed, cannot tell", the row settles `unknown`/`unresolved`, and no receipt is issued; the PR then becomes visible and drainage resolves `committed`. **Separately**, the crash case: kill after transmission, before the response — recovery classifies the `open` row through D5 (review round 14: the crash fixture never runs the live classification, so it cannot discriminate this mutant) | Classify a post-transmission response failure as `stopped_before_commit`: the live case issues a receipt while the PR exists |
 | An approved re-presentation is not blocked by the Story guard (D4, D5) | Approve; the same id re-presents: consumed and executed, not `invariant/story_awaiting_resolution` | Run the guard before classification: the re-presentation is refused and the approval never executes |
@@ -1350,6 +1368,17 @@ Round 14 (Codex, 2026-09-28). Three P1s on the fifth pass's fixes.
 Round 15 (Codex, 2026-09-28). One P1: the append-only fixture had B
 registering while A was unresolved, which round 14's exclusion refuses.
 Rewritten: A resolves first, B updates, the trailer list must hold both.
+
+PR #373 proofread, sixth pass (Copilot, 2026-09-28, on `c04df283`). Five
+threads, all accepted; two are mechanism.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Inheritance keyed on `(execution, family, digest)` could reuse an approval after the requirements or target changed | D5 — the key gains `target_key`, and inheritance requires the recomputed requirement-set digest to equal the stale row's; otherwise a fresh wait |
+| 2 | The persisted projection excluded secret slots while the test expects the token's reference in `arguments` | D6 — secret slots persist as their substituted reference, never plaintext |
+| 3 | The serialization index on `(family, target_key)` let two families race on one PR | D12 — `mutation_key`, family-independent, uniquely indexed alone under the live predicate; `target_key` kept for correlation |
+| 4 | `plane.Caller` has four validated fields; a fifth needs `Validate` and every root updated | D12, sequence commit 2 — a required fifth field, validated, every root updated, the dispatch validation moved to commit 2 |
+| 5 | The live-Gitea test could not reach `Mediate`: no forge binding, no live principal under the execution | D13 — both added to the setup |
 
 ## Open Questions
 
