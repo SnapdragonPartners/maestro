@@ -720,7 +720,7 @@ consumer in this item:
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
 | `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `arguments_digest text` (`^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
-| `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled'`; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
+| `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled' AND execution_id IS NOT NULL` — scoped to execution-bound attempts, because the importer settles its rows through `CompleteToolCall` with no disposition (`benchmarkimport.closeToolCall`) and its existing settled rows would otherwise block the migration (review round 9); the migration's test covers an existing import and a fresh import after it; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid`, `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`; CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
 | `repository_forge_bindings` (new) | `repository_id`, `organization_id`, `provider text`, `base_url text`, `owner text`, `repo text`, `created_at`; PK `(repository_id, provider)`; FK to `repositories (repository_id, organization_id)`; `provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry **several** forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`) — a child family, not columns on the row, so a second binding is representable without a schema change (PR #373 review); the record has none today (`store/provisioning.go:80-95`) | D13 |
@@ -1043,7 +1043,7 @@ D10 says why.
 | The acting user is the execution's, not the request's (D6) | A request naming another member as acting user: ignored; the secret resolves for the dispatching operator | Read the acting user from the request: the other member's secret is revealed |
 | A reused id under another execution is a mismatch (D5) | Settle under execution A; present the same id, family and digest under execution B: `ErrCorrelationMismatch`, nothing replayed | Bind to family and digest only: B receives A's result |
 | Every terminal axis is closed-vocabulary in SQL (D11) | Direct `UPDATE executions SET status = 'bogus'` refused | Drop the status CHECK: stored |
-| `Run` refuses a nil executor (D15) | `Config{}` with no `Actions`: `Run` returns an error before any LLM call | Default to `LegacyActions`: the stub tool's `Exec` runs, which the recording provider counts |
+| `Run` refuses a nil executor (D15) | An otherwise valid `Config` — context manager, terminal tool, a stub LLM that calls a stub tool — with `Actions` nil: `Run` returns the executor-specific error (`ErrNoActions`), and the stub tool's `Exec` count is 0. Positive control: the same `Config` with `Actions: LegacyActions(provider)` runs the stub tool once | Default to `LegacyActions` on nil: the count reads 1 — and not the `ContextManager`/`TerminalTool` refusal at `toolloop.go:204-209`, which an empty `Config` would have hit first (review round 9) |
 | The secret's version is what was approved | Replace the secret between gate 1 and gate 3: `stale/secret_version_moved` | Reveal by name rather than by `(id, version)`: the new token is used and the PR is created — the test asserts it is not |
 | The wait holds nothing (D7) | `pg_stat_activity` shows no session for the waiting attempt; the boundary's goroutine count is unchanged | Hold the transaction open across the wait: a session is visible |
 | A second request for a waiting Story is an invariant violation | Reason code and an error-level log line | Downgrade to an ordinary denial: the log assertion fails |
@@ -1176,6 +1176,13 @@ threads, all accepted.
 | 9 | `caller_ref` had no column | D12 |
 | 10 | `store.ToolCall` did not expose the boundary's columns | D12 — the complete list |
 | 11 | The round-1 record still described the inline binding columns | Points Resolved, round 1 #7 — reworded with the revision noted |
+
+Round 9 (Codex, 2026-09-28). Two P1s on the third pass's fixes.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | The drain-disposition "present iff settled" CHECK rejects the importer's completions and its existing settled rows | D12 — scoped to `execution_id IS NOT NULL`; the migration test covers an existing and a fresh import |
+| 2 | `Config{}` fails `Run` on the missing context manager and terminal tool before reaching the nil-executor check, so the mutant could not be seen | Testing table — an otherwise valid config, the executor-specific error asserted, `LegacyActions` as the positive control |
 
 ## Open Questions
 
