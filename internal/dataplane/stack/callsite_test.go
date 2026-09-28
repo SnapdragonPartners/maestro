@@ -6,9 +6,11 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
-	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+
+	"orchestrator/internal/testshard"
 )
 
 // guardedVerbs maps each lifecycle entry point to the lifecycle constant it
@@ -403,72 +405,71 @@ func assignsTrue(assignment *ast.AssignStmt, target string) bool {
 	return false
 }
 
-// The native-Linux CI job selects recovery tests by NAME PATTERN, and a
-// pattern is exactly the kind of enumeration that goes stale silently.
+// CI runs this package's integration tests in shards, one runner VM each,
+// and the tests a shard runs are chosen by the `//ci:shard N` directive in
+// each test's doc comment (issue #374; see internal/testshard for the
+// rules). The workflow never names a test: `cmd/testshard` reads the
+// directives at each commit and computes the `-run` pattern.
 //
-// This package has already been bitten twice by hand-maintained lists of
-// what to cover: the lock table that omitted three verbs, and the marker
-// table that would have. Here the list lives in a YAML file nobody edits
-// while writing Go, and its failure mode is the quietest yet — a new
-// recovery test is written, passes locally on macOS, and is never run on the
-// platform item 7 specifically assigned it to. The suite stays green and the
-// coverage it reports is a platform short.
-//
-// So the pattern is checked against the tests that exist — and the suite
-// keeps a NAMING CONVENTION (`TestRecover…`) so the pattern stays one token
-// rather than an alternation that grows with every test. The growing
-// alternation was itself the smell: it needed widening twice in two rounds,
-// and each widening was a chance to forget.
-func TestEveryRecoveryTestIsSelectedByTheLinuxCIJob(t *testing.T) {
+// This guard is what makes that safe. A test with no directive would run in
+// no shard — and, like the two hand-maintained `-run` alternations this
+// replaced, its absence would be silent: it passes locally on macOS and the
+// suite stays green. This package has been bitten by enumerations of what
+// to cover three times already (the lock table that omitted three verbs,
+// the marker table that would have, and the recovery job's pattern, widened
+// twice in two rounds). So the assignment is checked against the tests that
+// exist, and the workflow's matrix against the assignment: a shard id the
+// directives use that the matrix does not list is a shard nobody runs.
+func TestEveryIntegrationTestIsInExactlyOneCIShard(t *testing.T) {
+	assignment, err := testshard.Discover(".", "integration")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	workflow, err := os.ReadFile(filepath.Join("..", "..", "..", ".github", "workflows", "ci.yml"))
 	if err != nil {
 		t.Fatalf("read the CI workflow: %v", err)
 	}
-	pattern := recoveryRunPattern(t, string(workflow))
-	selector, err := regexp.Compile(pattern)
-	if err != nil {
-		t.Fatalf("the CI job's -run pattern %q does not compile: %v", pattern, err)
+	matrix := shardMatrix(t, string(workflow))
+	var want []string
+	for id := range assignment.Shards {
+		want = append(want, strconv.Itoa(id))
+	}
+	if strings.Join(matrix, ",") != strings.Join(want, ",") {
+		t.Errorf("the workflow's shard matrix is [%s] but the directives assign shards [%s]: "+
+			"a shard in one and not the other is either a job that runs nothing or tests no job runs",
+			strings.Join(matrix, ", "), strings.Join(want, ", "))
 	}
 
-	fileSet := token.NewFileSet()
-	file, err := parser.ParseFile(fileSet, "recovery_integration_test.go", nil, 0)
-	if err != nil {
-		t.Fatalf("parse the recovery suite: %v", err)
-	}
-
-	found := 0
-	for _, decl := range file.Decls {
-		fn, isFunc := decl.(*ast.FuncDecl)
-		if !isFunc || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") {
-			continue
-		}
-		found++
-		// Unanchored, because that is how `go test -run` matches.
-		if !selector.MatchString(fn.Name.Name) {
-			t.Errorf("%s is not selected by the Linux CI job's pattern %q: it would never run on "+
-				"the platform item 7 assigned recovery to", fn.Name.Name, pattern)
-		}
-	}
-	if found == 0 {
-		t.Fatal("no tests found in recovery_integration_test.go: this guard is enforcing nothing")
+	// The job must read the assignment from THIS package, with the tool
+	// that this guard just ran: a workflow that computed the pattern some
+	// other way, or for some other directory, would be enforced by nothing.
+	const invocation = "go run ./cmd/testshard -dir ./internal/dataplane/stack -shard ${{ matrix.shard }}"
+	if !strings.Contains(string(workflow), invocation) {
+		t.Errorf("the CI workflow does not contain %q: the shard job selects tests some other way "+
+			"and this guard is enforcing nothing", invocation)
 	}
 }
 
-// recoveryRunPattern extracts the -run pattern from the recovery CI job.
-func recoveryRunPattern(t *testing.T, workflow string) string {
+// shardMatrix extracts the shard ids the workflow's matrix lists, in order.
+func shardMatrix(t *testing.T, workflow string) []string {
 	t.Helper()
-	const marker = "-run '"
+	const marker = "shard: ["
 	index := strings.Index(workflow, marker)
 	if index < 0 {
-		t.Fatal("the CI workflow has no -run pattern: the recovery job is gone, or it now selects " +
-			"tests some other way and this guard is enforcing nothing")
+		t.Fatal("the CI workflow has no shard matrix: the sharded job is gone, or it enumerates " +
+			"shards some other way and this guard is enforcing nothing")
 	}
 	rest := workflow[index+len(marker):]
-	end := strings.Index(rest, "'")
+	end := strings.Index(rest, "]")
 	if end < 0 {
-		t.Fatal("the CI workflow's -run pattern is not closed")
+		t.Fatal("the CI workflow's shard matrix is not closed")
 	}
-	return rest[:end]
+	var ids []string
+	for _, field := range strings.Split(rest[:end], ",") {
+		ids = append(ids, strings.TrimSpace(field))
+	}
+	return ids
 }
 
 // Restore's destructive recovery-state clear must sit INSIDE D4's phase

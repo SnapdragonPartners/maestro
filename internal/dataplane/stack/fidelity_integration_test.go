@@ -41,6 +41,8 @@ import (
 // for a second reason: unlinking a HELD lock lets another process lock a
 // fresh inode at the same path, producing two simultaneous "exclusive"
 // holders (ADR 0027).
+//
+//ci:shard 2
 func TestRestorePreservesEveryInodeThroughTheExportedVerb(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -97,6 +99,8 @@ func TestRestorePreservesEveryInodeThroughTheExportedVerb(t *testing.T) {
 // The modes asserted are the ones the design states, not the ones observed:
 // a test written to match whatever the tree happened to have would pass for
 // a widened tree as readily as a correct one.
+//
+//ci:shard 1
 func TestRestorePreservesModesThroughTheExportedVerb(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -182,6 +186,8 @@ func TestRestorePreservesModesThroughTheExportedVerb(t *testing.T) {
 // "start nothing" does. Only a partly running project distinguishes those
 // two wrong answers from the right one, which is to start exactly what was
 // up before.
+//
+//ci:shard 1
 func TestBackupOfAPartlyRunningPlaneRestoresThatExactState(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -248,6 +254,8 @@ func TestBackupOfAPartlyRunningPlaneRestoresThatExactState(t *testing.T) {
 // The assertion therefore uses the plane IMMEDIATELY, with no retry and no
 // sleep. A retry loop here would restate the defect as the test's own
 // workaround and pass against the broken version.
+//
+//ci:shard 0
 func TestBackupLeavesThePlaneUsableNotMerelyStarted(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -280,6 +288,8 @@ func TestBackupLeavesThePlaneUsableNotMerelyStarted(t *testing.T) {
 // which is the earliest moment at which there is something to restart. A
 // timer would cancel before the stop on a fast machine and after the copy on
 // a slow one, and would pass either way while testing neither.
+//
+//ci:shard 1
 func TestCancelledBackupStillRestartsThePlane(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {

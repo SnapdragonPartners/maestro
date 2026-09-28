@@ -38,6 +38,8 @@ import (
 // developer's live plane. Both the database and the bucket here are
 // disposable, which is also what keeps the test able to fail -- against the
 // canonical pair, a step that did nothing would leave the assertions passing.
+//
+//ci:shard 3
 func TestUpFinishesDeletionClaimsLeftBehind(t *testing.T) {
 	cfg, rootKey := disposablePlane(t)
 	ctx := t.Context()
@@ -110,6 +112,8 @@ func TestUpFinishesDeletionClaimsLeftBehind(t *testing.T) {
 // TestUpReconcilesAnEmptyClaimsTableQuietly is the everyday case: `up` runs
 // this step on every start, and on a plane with nothing to recover it must be
 // a no-op rather than a failure.
+//
+//ci:shard 2
 func TestUpReconcilesAnEmptyClaimsTableQuietly(t *testing.T) {
 	cfg, rootKey := disposablePlane(t)
 	ctx := t.Context()

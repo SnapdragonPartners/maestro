@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-integration-v2 v2-integration-packages test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-integration-v2 v2-integration-packages v2-integration-packages-unsharded test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -75,8 +75,8 @@ test: benchmark-test
 #     tests/integration                  215.8s
 #     internal/dataplane/benchmarkimport  86.9s   (1.5s standalone: ~58x)
 #
-# 40m leaves the long pole better than 3x headroom, and matches what the
-# ubuntu-latest recovery job in ci.yml already uses.
+# 40m leaves the long pole better than 3x headroom, and matches what CI's
+# `dataplane-stack` shard jobs in ci.yml use.
 #
 # The inflation column has TWO causes, not one, which is why its range is so
 # wide. Packages built on `planetest` take a database and a bucket per test on
@@ -115,6 +115,18 @@ V2_INTEGRATION_PACKAGES = ./internal/dataplane/... ./internal/orchestrator/...
 # than carrying a second copy that drifts.
 v2-integration-packages:
 	@echo $(V2_INTEGRATION_PACKAGES)
+
+# CI runs `internal/dataplane/stack` apart from the rest and split across
+# runner VMs by the `//ci:shard N` directives beside its tests (issue #374;
+# see internal/testshard). This target is the OTHER packages: derived from
+# the full list by removing exactly the sharded one, so what CI's two jobs
+# run together is V2_INTEGRATION_PACKAGES with nothing repeated and nothing
+# dropped. `test-integration-v2` above is unchanged: locally the whole list
+# runs in one process.
+V2_SHARDED_PACKAGE = ./internal/dataplane/stack
+v2-integration-packages-unsharded:
+	@sharded=$$(go list $(V2_SHARDED_PACKAGE)) && test -n "$$sharded" && \
+		go list $(V2_INTEGRATION_PACKAGES) | grep -v -x "$$sharded"
 
 test-integration-v2:
 	@echo "🧪 Running v2 data-plane integration tests (no API keys needed)..."

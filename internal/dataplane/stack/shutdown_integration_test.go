@@ -39,6 +39,8 @@ const readyMarker = "database system is ready to accept connections"
 // A backup with no clients connected cannot tell those two designs apart.
 // This one holds an open transaction across the whole operation, and reads
 // the server's own log afterwards rather than assuming.
+//
+//ci:shard 1
 func TestBackupShutsDownCleanlyWithAConnectionHeld(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {

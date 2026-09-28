@@ -40,6 +40,8 @@ import (
 // fail: against the configured bucket, which by now exists on any machine
 // that has run `up`, a provisioning step that did nothing at all would
 // still leave every assertion below passing.
+//
+//ci:shard 1
 func TestEnsureBucketMakesThePlaneAbleToStoreAnObject(t *testing.T) {
 	roots, err := paths.Resolve()
 	if err != nil {

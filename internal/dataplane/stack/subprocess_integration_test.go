@@ -27,6 +27,8 @@ import (
 // It asserts EFFECTS rather than reading the child's configuration back:
 // what matters is where the child actually wrote and which containers it
 // actually created, not what it claimed it would do.
+//
+//ci:shard 3
 func TestSubprocessInheritsTheIsolatedPlane(t *testing.T) {
 	cfg := isolatedPlane(t)
 

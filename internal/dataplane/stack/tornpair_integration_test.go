@@ -28,6 +28,8 @@ import (
 // clients a plane the operator has been told is broken; leaving it stopped
 // without the marker gives the next `up` a plane it will happily start; and
 // keeping the marker without the error hides the whole thing.
+//
+//ci:shard 2
 func TestRestoreRefusesATornArchive(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -88,6 +90,8 @@ func TestRestoreRefusesATornArchive(t *testing.T) {
 // A verification that detected the tear and left the plane running would be
 // the worst of both outcomes -- the operator sees an error while clients keep
 // using the plane it condemns.
+//
+//ci:shard 3
 func TestTwoPartRestoreOfATornArchiveStopsThePlane(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -182,6 +186,8 @@ func TestTwoPartRestoreOfATornArchiveStopsThePlane(t *testing.T) {
 // every later migration refuses until it is forced. It also lands in the
 // middle of the exposed region -- after readiness and the bucket, before
 // reconciliation -- so it exercises the gap rather than its edge.
+//
+//ci:shard 1
 func TestUpStopsAnOwingPlaneWhenItFailsBeforeSettlement(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -242,6 +248,8 @@ func TestUpStopsAnOwingPlaneWhenItFailsBeforeSettlement(t *testing.T) {
 // The refusal must also arrive BEFORE the plane is touched, which is
 // asserted rather than assumed: a refusal that stopped the plane first would
 // satisfy the error check and have caused an outage for a bad argument.
+//
+//ci:shard 0
 func TestRestoreRefusesAnArchiveCarryingLifecycleState(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {

@@ -28,6 +28,8 @@ import (
 //
 // THE MUTANT: drop --remove-orphans from down(). The planted container
 // survives and the assertion below finds it.
+//
+//ci:shard 2
 func TestDownRemovesARetiredServicesContainer(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -114,6 +116,8 @@ func containerExists(t *testing.T, name string) bool {
 // fails with InternalError -- not deterministically, which is why the
 // round-trip exists; the deterministic half is that this test still
 // PASSES with the key gone, which a key-derived proof cannot.
+//
+//ci:shard 1
 func TestBackupRestartProvesTheStoreUsableWithoutTheKey(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {

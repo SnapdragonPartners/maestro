@@ -68,6 +68,8 @@ func padDataRoot(t *testing.T, cfg *Config) {
 // return unwinds through the defers that remove the staging tree, so it
 // exercises the cleanup path and leaves precisely none of the residue this
 // test is about.
+//
+//ci:shard 3
 func TestAKilledBackupLeavesNothingRestorable(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {

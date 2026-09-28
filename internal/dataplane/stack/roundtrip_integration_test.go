@@ -65,6 +65,8 @@ func runningServices(t *testing.T, cfg *Config) []string {
 // a single Postgres table, and it would have passed for a backup that copied
 // the cluster and skipped the bucket entirely, with the verification step it
 // runs having recomputed nothing.
+//
+//ci:shard 2
 func TestBackupRestoreRoundTrip(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -132,6 +134,8 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 // containers that still exist, and `dataplane-down` removes them, so a
 // design that assumed a running project would copy successfully and then
 // fail the restart it promised.
+//
+//ci:shard 3
 func TestBackupOfAStoppedPlaneLeavesItStopped(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -159,6 +163,8 @@ func TestBackupOfAStoppedPlaneLeavesItStopped(t *testing.T) {
 //
 // The failure path IS the requirement, so it is asserted as a sequence
 // rather than described in a comment.
+//
+//ci:shard 3
 func TestTwoPartRestoreNeedsTheKey(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -231,6 +237,8 @@ func TestTwoPartRestoreNeedsTheKey(t *testing.T) {
 
 // A restore must not be startable while a torn tree is on disk, and the
 // marker is what enforces that across process boundaries.
+//
+//ci:shard 1
 func TestTornRestoreRefusesEveryUnsafeVerb(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
