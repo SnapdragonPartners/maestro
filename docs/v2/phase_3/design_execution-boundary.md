@@ -313,13 +313,26 @@ the spike's `boundary/correlation-is-bound-to-its-logical-action`).
 
 **The driver holds a claim.** The row carries `claimed_by`, the
 Orchestrator instance id `Start` mints for its process — set at open,
-**transferred to the consuming instance in D7's consumption statement**
-(an approved attempt survives a restart in `operator_waiting` claimed by
-the instance that opened it, and the instance that later consumes the
-approval must be the one a duplicate sees as live — review round 7), taken
-conditionally by whichever instance reconciles a foreign-claimed `open` row
-(`UPDATE … SET claimed_by = me WHERE claimed_by = <foreign>`, so exactly one
-reconciler proceeds), and cleared at settle. A duplicate presentation that finds an `open` row
+re-asserted in D7's consumption statement (the same instance; a wait does
+not survive a restart, below), taken conditionally by whichever instance
+reconciles a foreign-claimed `open` row (`UPDATE … SET claimed_by = me
+WHERE claimed_by = <foreign>`, so exactly one reconciler proceeds), and
+cleared at settle.
+
+**A wait interrupted by a restart goes stale; it does not resume.** At
+`Recover`, every `operator_waiting` or `resource_waiting` row claimed by
+another instance settles `stale` with `reason_code = stale/interrupted_wait`,
+its requirement set and any recorded operator decision **preserved** on
+the row, and `drain_disposition = stopped_before_commit`. This is ADR 0032
+§6's rule, and although that section is a demoted design input its reason
+stands on its own: resuming gate 3 needs the complete substituted request,
+which the record deliberately does not hold (ADR 0030 §3), and after a
+restart the caller is a restarted agent issuing a new request, not the same
+caller re-presenting the same id. ADR 0030 §4's binding "the action-scoped
+decision is still durable, for crash recovery" is satisfied by preserving
+the decision on the stale row, where a re-request can cite it (PR #373
+review, fourth pass; supersedes the round-7 transfer-across-restart rule,
+which this makes unnecessary). A duplicate presentation that finds an `open` row
 claimed by *this* instance is **in progress** — returned as such, not
 reconciled — because the original caller is still driving it and would be
 unable to settle its later success behind a duplicate's `unknown`. A row
@@ -341,10 +354,11 @@ read, so:
   | --- | --- | --- |
   | `settled` | replay | the recorded result is returned; no effect |
   | `operator_waiting`, no decision | waiting | *waiting* is returned |
-  | `operator_waiting`, decision `approve_once`, unconsumed | approved, not started | D7's consumption, then gate 3 |
+  | `operator_waiting`, decision `approve_once`, unconsumed, claimed by this instance | approved, not started | D7's consumption, then gate 3 |
   | `resource_waiting` | waiting | *waiting* is returned (item 7's producer) |
   | `open`, claimed by this instance | in progress | *in progress* is returned; the original caller settles it |
   | `open`, claimed by another instance | attempted, outcome unknown | the family's `Reconcile`, never the effect (ADR 0030 §3 "an attempt with a recorded intent and no outcome does not re-execute") |
+  | any wait, claimed by another instance | interrupted wait | settled `stale` by `Recover` before any caller sees it |
 
   The `open` row covers both the allow path interrupted between open and
   effect and the approved path interrupted after consumption; both are
@@ -359,8 +373,20 @@ Reconciliation is bounded here to what item 5 can prove: `Reconcile` is
 called synchronously on the retry path and on `Recover` for every
 `open`-in-no-wait row belonging to the organization, and it settles the row
 `succeeded` (the effect is found) or `unknown` with `reason_code =
-attempt/interrupted` (it is not). A scheduled reconciler is item 9's, with
-the watchdog.
+attempt/interrupted` (it is not). **`Recover` gains that step**: today it
+reads `OpenWork` and builds the projection (`internal/orchestrator/orchestrator.go:187`)
+and `OpenWork` returns no attempts; commit 3 of the sequence adds an
+attempt enumeration (`ListUnsettledAttempts`, D12) after the projection,
+settling interrupted waits `stale` and reconciling foreign-claimed `open`
+rows, before `Start` returns (PR #373 review, fourth pass). **Reconciliation's credential.** A forge lookup needs the token, and after
+a restart no revealed value exists. The row holds the substituted reference
+`secret:<id>@<version>` in its projection, so the reconciler reveals with
+`RevealSecretAtVersion` at exactly that version under the execution's
+acting user (D6) — the credential the attempt was approved with, through
+the same gate. If that version has moved, the reconciler cannot probe and
+the disposition stays `unresolved`; it does not reveal a newer token nobody
+approved (PR #373 review, fourth pass). A scheduled reconciler is item 9's,
+with the watchdog.
 
 ### D6. Three forms of input; a secret is substituted before it is digested and revealed only inside the effect
 
@@ -395,7 +421,13 @@ a read of metadata; the plaintext is not yet in hand.
 **Where it is revealed.** Immediately before the effect, inside gate 3,
 `RevealSecretAtVersion(org, secret_id, actingUser, version)` returns a
 `secret.Value`; the family's `Effect` receives it and hands it to the
-client. The value's lifetime is the effect call. The verb is new: the
+client. The value's lifetime is the effect call **through settlement**: the
+boundary, not the family, holds the `secret.Value` until D8's redaction
+pass has run over the result and error text, and `secret.Value` gains a
+`Redact(text string) string` method that replaces its own bytes with the
+substituted reference without exposing them — the family never sees the
+value after `Effect` returns, and nothing else does either (PR #373 review,
+fourth pass). The verb is new: the
 existing `RevealSecret` (`store/postgres/secrets.go:230-254`) decrypts
 whichever row its read finds and takes no expected version, and a separate
 metadata check before it would race with `ReplaceSecret`, which the
@@ -468,11 +500,16 @@ run the effect. `operator_decision_consumed_at` is a column of D12.
 read from the resolved configuration D12 persists (`headless bool`), "known
 at dispatch — never an observation that nobody answered". Under headless,
 the requirement is recorded on the row exactly as above and the row settles
-**terminally** `blocked` in the same transaction, preserving the requirement
-set (ADR 0032 §5 "a headless block is terminal for the action, not a
-wait"). What follows is a **forced stop**, in ADR 0032 §6's order and not a
-bare record: `CloseAdmission` on the execution first, so no further attempt
-registers; then the drain check over every attempt (D11); then
+**terminally** `blocked` — **and `CloseAdmission` runs in that same
+transaction**, under the execution row's exclusive lock: a settled `blocked`
+row no longer holds the Story guard, so closing admission in a later
+transaction would leave an interval in which a second request could
+register and begin an effect that is then drained only after it started
+(PR #373 review, fourth pass). Preserving the requirement set (ADR 0032 §5
+"a headless block is terminal for the action, not a wait"). What follows is
+a **forced stop**, in ADR 0032 §6's order and not a bare record: admission
+already closed by that transaction, so no further attempt registers; then
+the drain check over every attempt (D11); then
 `RecordTerminalResult(blocked)`, whose precondition is that admission is
 already closed. Cancellation of a running runtime and fencing of a resource
 domain are the steps items 6, 7 and 9 insert between closure and the
@@ -515,8 +552,9 @@ On the approved re-presentation (or immediately, when gate 1 allowed):
    schema* with the same per-field classification as its argument schema
    (D3), and the result is projected through it; and before settlement the
    boundary performs a **mandatory redaction pass** over the projected
-   result and the error text, replacing any occurrence of a revealed
-   secret's bytes with its substituted reference — a family that echoes the
+   result and the error text through `secret.Value.Redact` (D6), replacing
+   any occurrence of a revealed secret's bytes with its substituted
+   reference — a family that echoes the
    token, or a client error that quotes the request, cannot put it in
    `tool_calls` (PR #373 review, third pass). The D13 no-token test reads
    `result` and `error_message` as well as `arguments`.
@@ -725,8 +763,8 @@ consumer in this item:
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid`, `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`; CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
 | `repository_forge_bindings` (new) | `repository_id`, `organization_id`, `provider text`, `base_url text`, `owner text`, `repo text`, `created_at`; PK `(repository_id, provider)`; FK to `repositories (repository_id, organization_id)`; `provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry **several** forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`) — a child family, not columns on the row, so a second binding is representable without a schema change (PR #373 review); the record has none today (`store/provisioning.go:80-95`) | D13 |
 | `executions` | `capability_set jsonb NOT NULL` — a JSON array of family identities, unique, sorted; `headless boolean NOT NULL`; both immutable after insert by an anti-update trigger on item 4's pattern | ADR 0032 item 10, the resolved-configuration lifetime: "what was resolved for an execution must not silently change"; ADR 0030 §4 "headless is a declared execution configuration, known at dispatch" | D4 check 3; D7 |
-| `executions` | `acting_user_id uuid NOT NULL` FK `users`, immutable with the configuration (D6) | ADR 0030 §3's request names the principal; the vault names a member | D6 |
-| `principal_instances` | `execution_id uuid` FK `executions (execution_id, organization_id)`; required iff the principal is live (D4 check 1) | ADR 0032 item 2; item 4 D5 "a live agent exists only under an execution" | D4 |
+| `executions` | `acting_user_id uuid NOT NULL`, composite FK `(acting_user_id, organization_id) → users (user_id, organization_id)` — the tenant-scoped shape every table since `000001:32-36` uses, so an execution cannot bind another organization's member; immutable with the configuration (D6) | ADR 0030 §3's request names the principal; the vault names a member | D6 |
+| `principal_instances` | `execution_id uuid`, composite FK `(execution_id, organization_id) → executions`, over a **new unique key** `executions (execution_id, organization_id)` — `000021` has the primary key and the six-column lineage key only; required iff the row is a **live agent** principal, and forbidden for human and system principals, which live organization-wide outside any execution (`store.CreatePrincipalInstance` refuses agents; item 4 D5) (D4 check 1) | ADR 0032 item 2; item 4 D5 "a live agent exists only under an execution" | D4 |
 | `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `error_message text` (present only when `status = 'failed'`), `terminated_at timestamptz`; **closed-vocabulary CHECKs on every axis** matching `TerminalResult.Validate` (`status IN (...)`, and each axis `IN (...)` or NULL) so a direct writer cannot store `'bogus'`; then the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL`; `blocked_tool_call_id` is a **composite FK** `(blocked_tool_call_id, execution_id, organization_id) → tool_calls (tool_call_id, execution_id, organization_id)` over a new unique key on `tool_calls`, so the reference cannot name another execution's attempt, plus a trigger requiring the referenced row to be `settled` with `outcome = 'blocked'` (PR #373 review) | ADR 0032 item 7; §5 "`blocked` … references the pending action and the structured requirement set" | D11 |
 
 `capability_set` is supplied to `AcceptDispatch` by the Orchestrator; in
@@ -760,9 +798,10 @@ with an integration test on a real ephemeral plane:
   and replaces it with the reason-code and requirement-set checks that
   refusal was standing in for;
 - tool calls, continued: `RecordDeniedToolCall` (D4 — settled on insert,
-  no registration), `ConsumeOperatorDecision` (D7) and
+  no registration), `ConsumeOperatorDecision` (D7),
   `ResolveDrainDisposition` (D11 — `unresolved` to a resolved value, with
-  the evidence's attempt id);
+  the evidence's attempt id), `ListUnsettledAttempts` and `StaleInterruptedWait`
+  (D5's `Recover` step);
 - executions: `AcceptDispatch` gains a configuration input —
   `capability_set`, `headless`, `acting_user_id` — written **in the
   execution's INSERT** (`postgres/dispatch.go:400-404`), because an
@@ -832,12 +871,12 @@ becomes the seam's *update* half rather than a silent list-and-return.
 
 | Field | Value |
 | --- | --- |
-| Schema | `story_id` (persist), `head` (persist), `base` (persist), `title` (persist), `body` (large — an artifact reference when over the projection limit; the PR body is the Story's completion narrative and belongs in the Audit family by reference), `token` (secret slot, `forge.token`, repository scope) |
+| Schema | `head` (persist), `base` (persist), `title` (persist), `body` (large — an artifact reference when over the projection limit; the PR body is the Story's completion narrative and belongs in the Audit family by reference), `token` (secret slot, `forge.token`, repository scope) |
 | Effect site | `orchestrator_side` — ADR 0030 §6's table lists forge operations by name |
 | Checkability | The Incubator holds no forge credential: the token exists only in the vault and is revealed only in the Orchestrator process for the lifetime of one effect (D6); a resource that wants a pull request must ask. ADR 0030 §7 "credentials for a mediated resource are not placed inside an execution resource" |
 | Commit point | The forge's acceptance of the create or update — HTTP 201 or 200 from the pulls endpoint. A forge operation cannot commit conditionally (§5) |
 | Reconcile | Evidence must be **attempt-specific**: the family writes the attempt id into the PR body as a trailer, `Maestro-Attempt: <tool_call_id>`, on both create and update, and `Reconcile` finds the PR by head and base and settles `succeeded` only if the trailer names *this* attempt. Head existence alone is inconclusive — on the update path a PR already exists before the attempt starts, and on the create path one may exist from an earlier attempt (review round 1) |
-| Target | The repository the Story's Epic binds (`epics.repository_id`); admission check 4 refuses any other |
+| Target | The execution's Story (`executions.story_id`, never an argument — a caller could otherwise open Story B's pull request under Story A's authority when they share a repository; PR #373 review, fourth pass) and the repository its Epic binds (`epics.repository_id`); admission check 4 refuses any other |
 
 The branch *push* is not this family and not this item: ADR 0030 §7 says
 "the mediated act is the promotion, not the local commit", and the
@@ -850,8 +889,9 @@ this in order against a live Gitea: provision an organization, repository
 and Story on an ephemeral plane; create a shared secret `forge.token` at
 repository scope holding the token the harness minted; accept a dispatch
 with `capability_set = ["forge/story_pull_request"]`; call `Mediate`;
-observe the pull request on the forge over an unauthenticated read (the
-harness's admin credential, not the family's); read the `tool_calls` row and
+observe the pull request on the forge over a read authenticated with the
+harness's admin credential — independent of the family's token, which the
+observer never holds; read the `tool_calls` row and
 assert `arguments` holds the projection with `token` as
 `secret:<id>@<version>` and no token text anywhere in the row; call
 `Mediate` again with the same attempt id and assert it replays without a
@@ -863,12 +903,20 @@ and one PR exists. The negative controls are in the verification table.
 This design chooses `pkg/forge/gitea`'s `ContainerManager` and
 `SetupManager` (`container.go`, `setup.go`), imported **by the test only**:
 they import `pkg/logx` and `pkg/mirror`, neither in the Orchestrator's
-closure because test files are not in it. The image is pinned by digest, as
-the golden runner's harness already does (`benchmark/target/v1target/gitea.go:32`)
-and the airplane harness does not — ADR 0026's lesson. The test carries the
-`integration` tag and runs in CI's `dataplane-integration` job, which has
-Docker; the cold start is measured in the branch notes, and if it moves the
-job past its budget the design says so rather than skipping.
+closure because test files are not in it. `ContainerManager` uses the tag
+constant `GiteaImage = "gitea/gitea:1.25"` (`container.go:18-20`), which
+is not a digest pin; the harness gains an **image option** the test sets
+to the digest the golden runner already pins
+(`benchmark/target/v1target/gitea.go:32`) — a test-infrastructure edit to
+v1 code, allowed because the airplane path keeps its default (ADR 0026's
+lesson, PR #373 review, fourth pass). The test carries the `integration`
+tag and runs in CI's `dataplane-integration` job, which has Docker —
+**and commit 7 of the sequence adds `./internal/boundary/...` and
+`./internal/forge/...` to `V2_INTEGRATION_PACKAGES`** (`Makefile:113`),
+which enumerates the packages the job runs; without that the test would
+exist and never run in CI, the hand-maintained-enumeration failure Phase 2
+hit three times. The cold start is measured in the branch notes, and if it
+moves the job past its budget the design says so rather than skipping.
 
 Rejected: a `Forge` implementation over `pkg/forge.Client`. The interface
 is v2-neutral in source but its only constructor path is
@@ -1010,11 +1058,11 @@ the guards are written last because they enumerate what exists.
 | --- | --- | --- |
 | 1 | `schema` | Migration 000024 (D12) with its total-or-refuse guard; the `dispatch` operator verb; the store types; the tool-call verbs with all six outcomes and the refusal lifted, `RecordDeniedToolCall` and `ConsumeOperatorDecision`; the execution verbs; `RevealSecretAtVersion`; `BindRepositoryForge`; every verb's integration test on an ephemeral plane; `OpenWork` extended (D11) |
 | 2 | `registry` | The leaf `internal/action` (D1); the family registry with construction validation (D3); the requirement-identity vocabulary and canonical set (D4); substitution and the persisted projection (D6); the terminal-result type and validator (D11); the test-only families |
-| 3 | `gates` | `Mediate`: admission, the hook, gate 2's transitions and headless path, gate 3's revalidation and execution, attempt idempotency and synchronous reconciliation (D4–D10); `DefaultAllow`; the test hooks |
+| 3 | `gates` | `Mediate`: admission, the hook, gate 2's transitions and headless path, gate 3's revalidation and execution, attempt idempotency and synchronous reconciliation (D4–D10); `Recover`'s attempt enumeration — stale waits, reconciled opens (D5); `DefaultAllow`; the test hooks |
 | 4 | `forge` | `internal/forge` and the Gitea port (D13); the Story pull-request family; the live-Gitea integration test with its digest-pinned image; the vault read inside it |
 | 5 | `toolloop` | The executor seam, the legacy executor, `boundary.Executor`, the harness layer behind the seam, forcing (D15); the four v1 driver packages building unchanged |
 | 6 | `lasteffect` | The removal (D14) with the reachability measurement in the notes |
-| 7 | `guards` | The two mandatoriness guards (D2) with their planted violations; the closure guards extended to admit `internal/boundary` and `internal/forge` and nothing new below them |
+| 7 | `guards` | The two mandatoriness guards (D2) with their planted violations; the closure guards extended to admit `internal/boundary` and `internal/forge` and nothing new below them; `V2_INTEGRATION_PACKAGES` extended and a CI run showing the new packages' tests executed, not skipped |
 
 Each checkpoint's notes report the mutants of that step per the table
 below; the branch's final notes carry all of them.
@@ -1035,7 +1083,7 @@ D10 says why.
 | A denial is opened and completed together | A superseded execution's request: one row, `settled`/`denied`, one transaction | Split into two statements with a crash injected between: the row is `open` with no wait, which the test reads as the defect |
 | At-most-once by attempt id (D5) | Same id twice after settle: one effect, the replay returns the recorded result. The effect is observed as **mutation requests at the forge**, counted by a recording `http.RoundTripper` the test installs on the family's client (POST and PATCH to the pulls endpoint), not as PRs — the forge upserts, so two creates for one head leave one PR (review round 2) | Skip the settled-row lookup on retry so the request runs the gates again: the mutation-request count reads 2, which is the assertion that fails |
 | Concurrent re-presentations of one approved attempt run one effect (D7) | Two goroutines re-present the same approved id through a barrier: mutation-request count 1, one consumption timestamp | Make consumption unconditional — remove the `WHERE` predicates on both `state` and `operator_decision_consumed_at`, leaving only the id — so both re-presentations transition and proceed: count reads 2 |
-| An approved attempt is not misread as interrupted (D7) | Approve, kill before re-presentation, restart, re-present: the effect runs once and the row settles `succeeded` | Move the row to `open` at approval: the re-presentation reconciles, finds nothing, settles `unknown`, and the assertion names the outcome |
+| An approved attempt is not misread as interrupted (D7) | Approve; the same instance re-presents: the effect runs once and the row settles `succeeded` | Move the row to `open` at approval: the re-presentation reconciles, finds nothing, settles `unknown`, and the assertion names the outcome |
 | A recorded intent with no outcome does not re-execute | Kill the process between open and effect (the restart harness's kill path), so **zero** effects have run; retry in a fresh process: D5's `open` branch calls `Reconcile`, which finds nothing, and the row settles `unknown`/`unresolved` with the mutation-request count still **0** | Replace D5's `open` classification branch with the effect (execute instead of reconcile): the count reads 1, which is the assertion that fails (review round 3 — an earlier version of this row asserted "twice" against a fixture that can only produce one) |
 | Secrets are substituted before the digest (D6) | The digest over the substituted form equals a digest computed by the test from the reference, and differs from one over the raw form | Digest the raw arguments: equality with the reference-form digest fails, and the test reads the token text out of `arguments` |
 | No token text is persisted anywhere | `tool_calls.arguments`, `error_message`, `result` and the log capture are searched for the minted token, with a test family whose effect **returns** the token in its result and one whose error **quotes** it | Persist the raw form: found in `arguments`. Skip the redaction pass: found in `result`; found in `error_message` |
@@ -1051,7 +1099,12 @@ D10 says why.
 | Requirement-set equality is checked both ways (D8) | Add a requirement between gates → `stale`; remove one → `stale` | Compare by subset: the removal case settles `succeeded` |
 | Re-evaluation raises no second operator requirement | A hook that returns `RequiresOperator` again at gate 3: the action proceeds | Re-raise: the row enters `operator_waiting` a second time |
 | A same-id re-presentation with a different family or digest is refused, not replayed (D5) | Re-present a settled id with changed arguments: `ErrCorrelationMismatch`, no new row, an error-level log | Skip the digest comparison: the old result is returned for the new arguments |
-| The claim follows the consumer across a restart (D5, D7) | Instance A opens, blocks, exits; approve; instance B re-presents and consumes; a concurrent duplicate on B during B's effect returns *in progress*; B settles `succeeded` | Consume without transferring the claim: the duplicate sees A's claim as foreign, reconciles, settles `unknown`, and B's settle reports `Recorded: false` |
+| A wait interrupted by a restart goes stale with its decision preserved (D5) | Instance A opens, blocks; approve; A exits; instance B's `Recover` settles the row `stale`/`stale/interrupted_wait` with `operator_decision = approve_once` still on it and `drain_disposition = stopped_before_commit`; a re-presentation of the id on B is a replay of the stale result, not an execution | Resume the approved wait on B: the effect runs, which the recording transport shows |
+| `Recover` reconciles interrupted opens (D5) | Kill A between open and effect; B's `Start` returns with the row settled (`succeeded` if the trailer is on the forge, else `unknown`) before any caller presents | Skip the enumeration: the row is still `open` after `Start` |
+| Reconciliation reveals only the approved version (D5, D6) | Rotate the secret after A's open; B reconciles: the disposition stays `unresolved` and no request with the new token is recorded | Reveal by name: a probe with the new token is recorded |
+| Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
+| `story_id` comes from the execution (D13) | A request naming another Story's id: the field is not in the schema and is refused as unknown; the PR's head is the execution's Story's | Accept `story_id` as an argument: Story B's PR is opened under A's execution |
+| Cross-tenant FKs refuse (D12) | Direct insert of an execution with another organization's user, and of a live agent principal with another organization's execution: both refused | Single-column FK: stored |
 | Exactly one process reconciles a foreign-claimed row (D5) | Two reconcilers race on a row claimed by a dead instance: one takes the claim, one returns *in progress* | Reconcile without taking the claim: both reconcile, and the second settle's `Recorded: false` is the assertion |
 | A duplicate does not reconcile an attempt its creator is still driving (D5) | Two goroutines, same id, barrier after the creator's T1: the duplicate returns *in progress*; the creator's effect runs once and settles `succeeded` | Treat an own-instance claim as foreign: the duplicate reconciles, settles `unknown`, and the creator's settle reports `Recorded: false` — the assertion names the outcome |
 | Supersession in the effect interval is drained, not missed (D8, D10) | Supersede between T2 and the effect (barrier inside the test family): `SupersedeExecution` returns the attempt in its drain list; the effect lands; T3 settles it; the receipt is available only after | Return an empty drain list for attempts past T2: the receipt is issued while the effect is in flight, which the recording transport shows |
@@ -1183,6 +1236,23 @@ Round 9 (Codex, 2026-09-28). Two P1s on the third pass's fixes.
 | --- | --- | --- |
 | 1 | The drain-disposition "present iff settled" CHECK rejects the importer's completions and its existing settled rows | D12 — scoped to `execution_id IS NOT NULL`; the migration test covers an existing and a fresh import |
 | 2 | `Config{}` fails `Run` on the missing context manager and terminal tool before reaching the nil-executor check, so the mutant could not be seen | Testing table — an otherwise valid config, the executor-specific error asserted, `LegacyActions` as the positive control |
+
+PR #373 proofread, fourth pass (Copilot, 2026-09-28, on `084c6dc0`). Eleven
+threads, all accepted — including one the author first meant to dispute.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | `Recover` reads `OpenWork` only; no step reconciles attempts | D5, D12, sequence commit 3 — `ListUnsettledAttempts`; stale waits and reconciled opens before `Start` returns |
+| 2 | Headless settled `blocked` and closed admission in different transactions, leaving a registration window | D7 — one transaction under the execution lock |
+| 3 | Redaction needs the plaintext after the effect, past D6's stated lifetime | D6, D8 — lifetime through settlement, held by the boundary; `secret.Value.Redact` |
+| 4 | `acting_user_id` FK not tenant-scoped | D12 — composite FK on `(user_id, organization_id)` |
+| 5 | `(execution_id, organization_id)` is not a referenced key; "live" is broader than agents | D12 — new unique key; required for live agent principals, forbidden for human and system |
+| 6 | `Reconcile` after a restart has no credential | D5 — re-reveal at the row's recorded version under the execution's acting user; moved version stays `unresolved` |
+| 7 | `story_id` accepted as an argument | D13 — derived from the execution; the field is not in the schema |
+| 8 | ADR 0032 §6: a wait interrupted by restart settles `stale`, not resumes | D5 — accepted on its reasoning (the substituted request is not persisted; the restarted caller is new); waits go stale with the decision preserved; the round-7 transfer-across-restart rule withdrawn as unnecessary |
+| 9 | The harness's image is a tag constant, not a digest | D13 — an image option on `ContainerManager`, set to the golden runner's digest |
+| 10 | `dataplane-integration` enumerates packages and would not run the new tests | D13, sequence commit 7 — `V2_INTEGRATION_PACKAGES` extended, with a CI run showing execution |
+| 11 | "Unauthenticated read" contradicted the admin credential | D13 — an authenticated read with the harness credential, independent of the family's token |
 
 ## Open Questions
 
