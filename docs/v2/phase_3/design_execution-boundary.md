@@ -304,9 +304,15 @@ different-arguments request is a caller defect, and returning the old
 result for it would be a replay of an action nobody asked for (ADR 0032 §6;
 the spike's `boundary/correlation-is-bound-to-its-logical-action`).
 
-**The creator holds a claim.** The row carries `claimed_by`, the
-Orchestrator instance id `Start` mints for its process, set at open and
-cleared at settle. A duplicate presentation that finds an `open` row
+**The driver holds a claim.** The row carries `claimed_by`, the
+Orchestrator instance id `Start` mints for its process — set at open,
+**transferred to the consuming instance in D7's consumption statement**
+(an approved attempt survives a restart in `operator_waiting` claimed by
+the instance that opened it, and the instance that later consumes the
+approval must be the one a duplicate sees as live — review round 7), taken
+conditionally by whichever instance reconciles a foreign-claimed `open` row
+(`UPDATE … SET claimed_by = me WHERE claimed_by = <foreign>`, so exactly one
+reconciler proceeds), and cleared at settle. A duplicate presentation that finds an `open` row
 claimed by *this* instance is **in progress** — returned as such, not
 reconciled — because the original caller is still driving it and would be
 unable to settle its later success behind a duplicate's `unknown`. A row
@@ -436,7 +442,9 @@ creation would settle `unknown` because no PR exists yet (review round 1).
 Instead the *caller* re-presents the same attempt id, and gate 3's first act
 is **consumption**: one conditional update, `operator_waiting → open` where
 `operator_decision = 'approve_once' AND operator_decision_consumed_at IS
-NULL`, setting the consumption time. It succeeds for exactly one
+NULL`, setting the consumption time **and `claimed_by` to the consuming
+instance** (D5 — after a restart the row is still claimed by the instance
+that opened it, and the claim must follow the driver). It succeeds for exactly one
 re-presentation; a concurrent second one finds the row `open` with the
 decision consumed and is classified by D5's table as attempted — it does not
 run the effect. `operator_decision_consumed_at` is a column of D12.
@@ -1000,6 +1008,8 @@ D10 says why.
 | Requirement-set equality is checked both ways (D8) | Add a requirement between gates → `stale`; remove one → `stale` | Compare by subset: the removal case settles `succeeded` |
 | Re-evaluation raises no second operator requirement | A hook that returns `RequiresOperator` again at gate 3: the action proceeds | Re-raise: the row enters `operator_waiting` a second time |
 | A same-id re-presentation with a different family or digest is refused, not replayed (D5) | Re-present a settled id with changed arguments: `ErrCorrelationMismatch`, no new row, an error-level log | Skip the digest comparison: the old result is returned for the new arguments |
+| The claim follows the consumer across a restart (D5, D7) | Instance A opens, blocks, exits; approve; instance B re-presents and consumes; a concurrent duplicate on B during B's effect returns *in progress*; B settles `succeeded` | Consume without transferring the claim: the duplicate sees A's claim as foreign, reconciles, settles `unknown`, and B's settle reports `Recorded: false` |
+| Exactly one process reconciles a foreign-claimed row (D5) | Two reconcilers race on a row claimed by a dead instance: one takes the claim, one returns *in progress* | Reconcile without taking the claim: both reconcile, and the second settle's `Recorded: false` is the assertion |
 | A duplicate does not reconcile an attempt its creator is still driving (D5) | Two goroutines, same id, barrier after the creator's T1: the duplicate returns *in progress*; the creator's effect runs once and settles `succeeded` | Treat an own-instance claim as foreign: the duplicate reconciles, settles `unknown`, and the creator's settle reports `Recorded: false` — the assertion names the outcome |
 | Supersession in the effect interval is drained, not missed (D8, D10) | Supersede between T2 and the effect (barrier inside the test family): `SupersedeExecution` returns the attempt in its drain list; the effect lands; T3 settles it; the receipt is available only after | Return an empty drain list for attempts past T2: the receipt is issued while the effect is in flight, which the recording transport shows |
 | `capability_set` is validated and canonical at dispatch (D12) | `AcceptDispatch` with an unknown identity: refused; with `["b","a","a"]`: stored `["a","b"]` | Skip validation: the unknown identity is stored |
@@ -1100,6 +1110,12 @@ threads, all accepted; four are consequences of the first pass's fixes.
 | 8 | Keyed commitments called a "fourth kind" beside four existing classifications | D3, D6 — a fifth classification, declared and not implemented |
 | 9 | The synthesized failure's `error_message` had no destination on `executions` | D11, D12 — `executions.error_message`, present only for `failed`; `TerminalResult.ErrorMessage` |
 | 10 | `ActionCall`/`ActionResult` versus `Call`/`Result` | D1 — `action.Call`, `action.Result`, `action.Executor` throughout |
+
+Round 7 (Codex, 2026-09-27). One P1 on the second pass's claim rule.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | The claim was set only at open, so an approval consumed after a restart left the row claimed by the dead instance and a duplicate would reconcile the live effect | D5, D7 — consumption transfers the claim in the same statement; reconciliation of a foreign-claimed row takes the claim conditionally so one reconciler proceeds; two test rows |
 
 ## Open Questions
 
