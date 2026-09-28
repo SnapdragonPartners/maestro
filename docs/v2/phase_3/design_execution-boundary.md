@@ -1239,7 +1239,8 @@ D10 says why.
 | Every attempt is opened before its effect (ADR 0030 §8) | The failing-after-commit test family: the row exists `open` when the effect runs | Reorder `Mediate` to call `Effect` before `OpenToolCall`: the family's effect observes no row |
 | A denial is opened and completed together | A superseded execution's request: one row, `settled`/`denied`, one transaction | Split into two statements with a crash injected between: the row is `open` with no wait, which the test reads as the defect |
 | At-most-once by attempt id (D5) | Same id twice after settle: one effect, the replay returns the recorded result. The effect is observed as **mutation requests at the forge**, counted by a recording `http.RoundTripper` the test installs on the family's client (POST and PATCH to the pulls endpoint), not as PRs — the forge upserts, so two creates for one head leave one PR (review round 2) | Skip the settled-row lookup on retry so the request runs the gates again: the mutation-request count reads 2, which is the assertion that fails |
-| Concurrent re-presentations of one approved attempt run one effect (D7) | Two goroutines re-present the same approved id through a barrier: mutation-request count 1, one consumption timestamp | Make consumption unconditional — remove the `WHERE` predicates on both `state` and `operator_decision_consumed_at`, leaving only the id — so both re-presentations transition and proceed: count reads 2 |
+| Conditional consumption admits one consumer (D7, D12) | **At the seam, below the live set** (which would otherwise shield the predicate — review round 22): two connections call `ConsumeOperatorDecision` for one approved row through a barrier; exactly one reports consumed, the row has one `consumed_at`/`consumed_by`, the other returns *already consumed* | Make consumption unconditional — remove the `WHERE` predicates on both `state` and `operator_decision_consumed_at`, leaving only the id — so both statements report consumed |
+| Concurrent re-presentations of one approved attempt run one effect (D5, D7) | Two goroutines re-present the same approved id through a barrier at the boundary: one owns it and runs the effect, the other returns *in progress*; mutation-request count 1 | Remove the live-set ownership check: both consume (only if the seam predicate is also broken) or the second reconciles the first's open row — the count or the row assertion names it |
 | An approved attempt is not misread as interrupted (D7) | Approve; the same instance re-presents: the effect runs once and the row settles `succeeded` | Move the row to `open` at approval: the re-presentation reconciles, finds nothing, settles `unknown`, and the assertion names the outcome |
 | A recorded intent with no outcome does not re-execute | Kill the process between open and effect (the restart harness's kill path), so **zero** effects have run; retry in a fresh process: D5's `open` branch calls `Reconcile`, which finds nothing, and the row settles `unknown`/`unresolved` with the mutation-request count still **0** | Replace D5's `open` classification branch with the effect (execute instead of reconcile): the count reads 1, which is the assertion that fails (review round 3 — an earlier version of this row asserted "twice" against a fixture that can only produce one) |
 | Secrets are substituted before the digest (D6) | The digest over the substituted form equals a digest computed by the test from the reference, and differs from one over the raw form | Digest the raw arguments: equality with the reference-form digest fails, and the test reads the token text out of `arguments` |
@@ -1518,6 +1519,11 @@ accepted; two would have been production defects.
 Round 21 (Codex, 2026-09-28). One P1: the per-call `defer` as written
 would let a duplicate's return remove the owner's live-set entry and settle
 its row. Ownership is acquired atomically; only the owner arms cleanup.
+
+Round 22 (Codex, 2026-09-28). One P1: the live set now shields the SQL
+consumption predicate from the concurrent-consumption test, masking its
+mutant. The predicate is tested at the seam with two connections; the
+boundary-level row tests the live set instead.
 
 ## Open Questions
 
