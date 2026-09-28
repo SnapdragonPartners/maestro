@@ -167,11 +167,16 @@ Two structural facts, each guarded:
 3. **The forge client is reachable only from its family.** D13's
    `internal/forge/gitea` performs a mutation without any family or
    `tools.Tool.Exec`, so the two guards above would not see a v2 package
-   calling it directly (PR #373 review, fifth pass). The same import-graph
-   guard therefore also asserts the importers of `internal/forge/...` are
-   exactly `{internal/boundary/families/storypr, cmd/dataplanectl}` — the
-   family, and the composition root that constructs the `Forge` value and
-   hands it to the boundary — plus tests.
+   calling it directly (PR #373 review, fifth pass). Two sets, because the
+   interface and the concrete client have different legitimate importers
+   (review round 14): importers of the **interface package** `internal/forge`
+   are exactly `{internal/boundary, internal/boundary/families/storypr,
+   internal/forge/gitea, cmd/dataplanectl}` — the boundary receives the
+   injected seam, the family calls it, the client implements it, the root
+   constructs it; importers of the **concrete client** `internal/forge/gitea`
+   are exactly `{cmd/dataplanectl}` — nothing but the composition root
+   names the implementation. Both plus tests. The guard's positive control
+   is the production graph passing as designed.
 
 These prove the property for the v2 path. They do not make v1's four
 unrecorded sites go through the boundary, and this design does not claim
@@ -795,7 +800,7 @@ consumer in this item:
 
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
-| `tool_calls` | `target_key text` (the family's declared target, e.g. `<repository>/<head>/<base>`; present iff `execution_id IS NOT NULL`) with a **partial unique index** `(family, target_key) WHERE state <> 'settled'` — at most one unsettled attempt per target, so two attempts cannot mutate one forge target concurrently (ADR 0027; PR #373 review, fifth pass) | D13 | D5 |
+| `tool_calls` | `target_key text` (the family's declared target, e.g. `<repository>/<head>/<base>`; present iff `execution_id IS NOT NULL`) with a **partial unique index** `(family, target_key) WHERE state <> 'settled' OR drain_disposition = 'unresolved'` — at most one attempt per target that is unsettled **or settled with unresolved drainage**, so a target stays excluded until the attempt's mutation is known to have landed or not: an attempt that settled `unknown` may still commit remotely (D11), and releasing the target at settlement would let a second attempt read-modify-write the same PR body against it (ADR 0027; PR #373 review, fifth pass; review round 14). The target is released when drainage resolves | D13 | D5 |
 | `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'` and `execution_id IS NOT NULL`), `family text`, `arguments_digest text` (`^[0-9a-f]{64}$`), `caller_ref text` (the provider's tool-call id); CHECK: `family` and `arguments_digest` present **iff `execution_id IS NOT NULL`** — a boundary attempt always has them, and the plane's one other writer, the benchmark importer (`benchmarkimport/import.go:552`, `execution_id` NULL), never does, so no existing row and no non-boundary insert is broken; the v1 legacy executor writes to v1's persistence channel (`pkg/agent/tool_logging.go:29`), not to the plane, and is unaffected (PR #373 review, third pass) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled' AND execution_id IS NOT NULL` — scoped to execution-bound attempts, because the importer settles its rows through `CompleteToolCall` with no disposition (`benchmarkimport.closeToolCall`) and its existing settled rows would otherwise block the migration (review round 9); the migration's test covers an existing import and a fresh import after it; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
@@ -1147,9 +1152,9 @@ D10 says why.
 | Reconciliation reveals only the approved version (D5, D6) | Rotate the secret after A's open; B reconciles: the disposition stays `unresolved` and no request with the new token is recorded | Reveal by name: a probe with the new token is recorded |
 | Headless closes admission with the blocked settlement (D7) | Barrier between the headless settle and any later step; a second request in the barrier: refused `authority/admission_closed`, not registered | Close admission in a later transaction: the second request registers |
 | `head` and `base` come from the execution (D13) | A request carrying `head` or `base`: refused as unknown; the PR on the forge is `maestro/story/<id>` → `maestro/epic/<id>` | Accept `base` as an argument: a PR against `main` is opened |
-| One unsettled attempt per target (D12, D13) | Two attempts with different ids for one execution's PR, the second registering while the first is `open`: refused `target/busy`; after the first settles, admitted | Drop the partial unique index: both register and the recording transport shows two concurrent mutation requests |
+| One live attempt per target, held through unresolved drainage (D12, D13) | Two attempts with different ids for one execution's PR, the second registering while the first is `open`: refused `target/busy`. Then: the first settles `unknown`/`unresolved` (lost response); the second is **still** refused; the late commit is reconciled, drainage → `committed`; the second is admitted and its update appends to the trailer list | Drop the partial unique index: both register and the recording transport shows two concurrent mutation requests. Index on `state` alone: the second registers while the first is `unresolved`, transmits before the late commit lands, and one of the two trailers is missing from the PR afterwards |
 | Evidence is append-only | Attempt A commits; attempt B (after A settles `unknown`) updates the PR; A's drainage reconcile still finds A in the trailer list → `committed` | Replace the trailer instead of appending: A's reconcile finds only B and A stays `unresolved` |
-| The commit point is transmission | Kill the process after the request is written to the socket and before the response is read (a test transport that reports transmission): the row settles `unknown`/`unresolved`, and reconciliation finds the PR | Classify the lost response as `stopped_before_commit`: the receipt is issued while the PR exists |
+| The commit point is transmission | **Process alive:** a test transport that confirms transmission and then fails the response; the forge holds the PR invisible to the immediate reconcile (a delayed-visibility fixture): the family reports "passed, cannot tell", the row settles `unknown`/`unresolved`, and no receipt is issued; the PR then becomes visible and drainage resolves `committed`. **Separately**, the crash case: kill after transmission, before the response — recovery classifies the `open` row through D5 (review round 14: the crash fixture never runs the live classification, so it cannot discriminate this mutant) | Classify a post-transmission response failure as `stopped_before_commit`: the live case issues a receipt while the PR exists |
 | An approved re-presentation is not blocked by the Story guard (D4, D5) | Approve; the same id re-presents: consumed and executed, not `invariant/story_awaiting_resolution` | Run the guard before classification: the re-presentation is refused and the approval never executes |
 | A re-request inherits a stale decision once (D5) | A blocks, approve, restart; a new id with the same family and digest in the same execution runs gate 3 without a second wait; a second new id asks again | Skip the lookup: the operator is asked twice. Omit the consumption mark: two re-requests both inherit |
 | A protocol violation closes admission at once (D11) | An invalid runtime result with an `unresolved` attempt outstanding: admission closed, execution open, no terminal result; resolve the attempt: the synthesized result records | Record the synthesized result without the receipt check: recorded with the attempt unresolved |
@@ -1333,6 +1338,14 @@ Thirteen threads, all accepted; six substantive.
 | 11 | `head`/`base` caller-supplied against ADR 0023's fixed topology | D13 — derived from the execution's Story and Epic; refused as arguments |
 | 12 | The preserved stale decision had no path to be used | D5, D12 — a new attempt with the same `(execution, family, digest)` inherits an unconsumed `approve_once` once; `operator_decision_consumed_by` |
 | 13 | "Three tables" understated the migration | D12 — four |
+
+Round 14 (Codex, 2026-09-28). Three P1s on the fifth pass's fixes.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | The per-target index released the target at settlement, while an `unknown` attempt may still commit — a second attempt could read-modify-write the PR against it | D12 — the index also covers `drain_disposition = 'unresolved'`; the target is released when drainage resolves; the test holds the second attempt through the late commit |
+| 2 | The forge guard's set excluded the boundary's own import of the interface and the client's | D2 — two sets: interface importers and concrete-client importers, each enumerated, with the production graph as the positive control |
+| 3 | The transmission-commit fixture killed the process, so recovery classified the row and the live classification never ran | Testing table — a live transport failure after confirmed transmission with delayed remote visibility; the crash case kept separately |
 
 ## Open Questions
 
