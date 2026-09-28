@@ -115,7 +115,7 @@ an effect, with the effect functions themselves unreachable from anywhere
 else (D2), cannot be forgotten.
 
 **The shared vocabulary lives in a leaf.** `internal/action` holds
-`ActionCall`, `ActionResult` and the `Executor` interface, importing only the
+`action.Call`, `action.Result` and the `action.Executor` interface, importing only the
 standard library and `uuid`. The toolloop imports it to *call* an executor
 and the boundary imports it to *be* one; neither imports the other. Being
 under `internal/` it is importable from anywhere in this module and from
@@ -143,7 +143,14 @@ demonstrate the property rather than assert it."*
 Two structural facts, each guarded:
 
 1. **An action family's effect function is reachable only from the
-   boundary.** Families live in `internal/boundary/families/<name>`, and the
+   boundary.** The family *types* — schema, classification, the `Effect`
+   signature — live in the leaf `internal/boundary/family`, which every
+   family imports; the families themselves live in
+   `internal/boundary/families/<name>`; and the closed set is assembled in
+   `internal/boundary` itself, which is the one place that imports them.
+   There is no separate registry package, because a package that imported
+   every family to assemble the set would be a second production importer
+   and the guard would have to admit it (PR #373 review, second pass). The
    guard is an import-graph test in the style of item 3's closure guards:
    the set of packages importing any `families/*` package is exactly
    `{internal/boundary}` plus each family's own tests. A new importer fails
@@ -165,14 +172,15 @@ frozen path still bypasses it.
 
 ### D3. The action-family registry is code-resident, and a family declares everything the gates need
 
-On ADR 0028's payload-type-registry pattern, `internal/boundary/registry`
-holds the closed set of action families. A family is a value, not a
+On ADR 0028's payload-type-registry pattern, `internal/boundary` assembles
+the closed set of action families from `internal/boundary/families/*` over
+the types in `internal/boundary/family` (D2). A family is a value, not a
 plugin:
 
 | Field | Consumed by | Source |
 | --- | --- | --- |
 | `Kind`, `Verb` — an Orchestrator-owned identity, "not the caller's tool name" | Gate 1 admission; the record's `tool_name` as `<kind>/<verb>` | ADR 0030 §3 request table |
-| `Schema` — the argument schema: required fields, types, and per field one of *persist*, *digest-only*, *secret slot*, *large (by reference)* | Substitution (D6), the persisted projection, policy's readable fields | §3 "declared by the code-resident action schema"; Consequences "every action family needs a declared safe projection before it can be recorded at all" |
+| `Schema` — the argument schema: required fields, types, and per field one of *persist*, *digest-only*, *secret slot*, *large (by reference)*, or *keyed commitment* (D6; declared, not implemented in item 5) | Substitution (D6), the persisted projection, policy's readable fields | §3 "declared by the code-resident action schema"; Consequences "every action family needs a declared safe projection before it can be recorded at all" |
 | `EffectSite` — `orchestrator_side`, `in_resource`, `external` | Classification and what "policed per action" means for the family | §6's table |
 | `Checkability` — one sentence: what prevents the execution resource from performing this directly | Reviewed, and rendered in the family's documentation; a family with an empty answer fails registry construction | §7 "a family with no answer is mediated in documentation only" |
 | `CommitPoint` — the instant after which the effect is no longer the Orchestrator's to withhold | Gate 3's reconciliation and, from item 9, drain | §5 "every action family MUST declare its commit point" |
@@ -201,7 +209,8 @@ registry refuses by construction.
 ### D4. Gate 1 is four deterministic checks against the seam, then a hook that may not infer or write
 
 **Admission** — Orchestrator-owned, not policy, and not negotiable by any
-hook (ADR 0030 §3): under the execution row's lock,
+hook (ADR 0030 §3): in the registration transaction (D8's T1), under the
+execution row's share lock,
 
 1. the principal instance is live and belongs to the execution;
 2. the execution's authority is `current` and admission is open
@@ -225,9 +234,12 @@ execution-scoped (ADR 0030 §4): **no attempt of this Story is
 attempts, not stored — `stories` carries identity, lineage, title and the
 governing artifact and nothing else (`store/work.go:45-55`), and adding a
 column would be a second copy of a fact the attempt row already holds. The
-check is a query on `tool_calls` for the Story under the Story row's share
-lock; entering `operator_waiting` (D7) takes the same lock exclusively, so
-the two serialize. Release is automatic and follows the row: denial and supersession settle
+check is a query on `tool_calls` for the Story **under the Story row's
+exclusive lock (`FOR UPDATE`), taken before the check** and held through
+the wait entry when gate 1 blocks — the guard and the entry are one
+single-winner operation. A share lock upgraded to exclusive by two
+concurrent admissions is a PostgreSQL deadlock, not a race one of them
+wins (PR #373 review, second pass), so no share lock is taken. Release is automatic and follows the row: denial and supersession settle
 it, and approval releases it only when gate 3 **consumes** the decision (D7
 — an approved row stays `operator_waiting` until the caller re-presents
 it), so no second Story action is admitted before the approved one has
@@ -273,9 +285,41 @@ once" true by construction.
 ### D5. Attempt identity is the tool-call id, so at-most-once is a property of a row
 
 The request carries `AttemptID uuid.UUID` (UUIDv7, item 2's convention). It
-*is* `tool_calls.tool_call_id`. The boundary's first durable act for any
-request is `OpenToolCall` under that id; the seam's insert is
-`ON CONFLICT (tool_call_id) DO NOTHING` followed by a read, so:
+*is* `tool_calls.tool_call_id`. **Who mints it.** The LLM's tool-call id is
+a provider string (`llm.ToolCall.ID`, `pkg/agent/llm/api.go:81` — values
+like `call_1`), not an identity the plane can key on; so `action.Call`
+carries `AttemptID`, minted once per logical call by the caller of the
+executor — `boundary.Executor` on first presentation for the in-process
+path, item 8's adapter for the wire path, where transport retries are the
+reason the id exists — and the provider's string is kept as a *persist*
+field of the projection (`caller_ref`) for correlation with the LLM turn,
+never as the key (PR #373 review, second pass).
+
+**The id is bound to its logical action.** `OpenToolCall` records the
+family identity and the substituted-input digest on the row, and a
+re-presentation whose family or digest differs from the row's is a
+**correlation mismatch**: refused, not recorded as a new attempt (the id is
+taken) and not replayed, and logged as an invariant violation — a same-id,
+different-arguments request is a caller defect, and returning the old
+result for it would be a replay of an action nobody asked for (ADR 0032 §6;
+the spike's `boundary/correlation-is-bound-to-its-logical-action`).
+
+**The creator holds a claim.** The row carries `claimed_by`, the
+Orchestrator instance id `Start` mints for its process, set at open and
+cleared at settle. A duplicate presentation that finds an `open` row
+claimed by *this* instance is **in progress** — returned as such, not
+reconciled — because the original caller is still driving it and would be
+unable to settle its later success behind a duplicate's `unknown`. A row
+claimed by another instance belongs to a process that is gone: one
+Orchestrator runs per plane (ADR 0027's single-writer rule; item 9's #265
+makes restart single-owner), so a foreign claim is an interrupted attempt
+and reconciliation is correct. No heartbeat or lease refresh exists —
+those are demoted mechanisms — and the rule needs none under the
+one-process assumption, which is stated here so item 9 revisits it if the
+assumption changes.
+
+The seam's insert is `ON CONFLICT (tool_call_id) DO NOTHING` followed by a
+read, so:
 
 - a transport retry with the same id finds the row and is classified by
   its state, re-entering no gate it has passed:
@@ -286,7 +330,8 @@ request is `OpenToolCall` under that id; the seam's insert is
   | `operator_waiting`, no decision | waiting | *waiting* is returned |
   | `operator_waiting`, decision `approve_once`, unconsumed | approved, not started | D7's consumption, then gate 3 |
   | `resource_waiting` | waiting | *waiting* is returned (item 7's producer) |
-  | `open` | attempted, outcome unknown | the family's `Reconcile`, never the effect (ADR 0030 §3 "an attempt with a recorded intent and no outcome does not re-execute") |
+  | `open`, claimed by this instance | in progress | *in progress* is returned; the original caller settles it |
+  | `open`, claimed by another instance | attempted, outcome unknown | the family's `Reconcile`, never the effect (ADR 0030 §3 "an attempt with a recorded intent and no outcome does not re-execute") |
 
   The `open` row covers both the allow path interrupted between open and
   effect and the approved path interrupted after consumption; both are
@@ -346,9 +391,9 @@ name would make a later reveal fetch a token nobody approved; Phase 2 put
 `secrets.version` into the key-derivation context precisely so that a
 version is an immutable identity (`design_config_secrets.md:176`).
 
-**Keyed commitments** for sensitive low-entropy non-secret values are
-declared in the schema classification as a fourth kind and *not
-implemented* here: no item 5 family has such a field. The classification
+**Keyed commitments** for sensitive low-entropy non-secret values are a
+**fifth** field classification beside D3's four (persist, digest-only,
+secret slot, large) and are *not implemented* here: no item 5 family has such a field. The classification
 exists so a family that needs one cannot omit it silently.
 
 Rejected: revealing at gate 1 and carrying the plaintext through the wait.
@@ -419,8 +464,7 @@ rule exists to replace.
 
 ### D8. Gate 3 revalidates everything and executes; in item 5 the resource step is a seam whose only implementation is "none required"
 
-On the approved re-presentation (or immediately, when gate 1 allowed), under
-the execution row's lock:
+On the approved re-presentation (or immediately, when gate 1 allowed):
 
 1. admission's four checks again — *"an unchanged policy that now denies
    still denies"*, and a superseded authority discovered here is D10's
@@ -449,11 +493,40 @@ Every attempt is completed, reads included (§8): a family whose effect is a
 retrieval settles `succeeded` with the projection, because releasing data is
 the security-relevant effect.
 
-Rejected: revalidating without the execution lock. Item 3 D10 takes the
-artifact lock the transitions themselves take; the analogue here is that the
-authority check and the effect must see the same execution row, or the
-window ADR 0030 §5 calls "admission to effect" is exactly where a
-supersession could land unseen.
+#### The transaction protocol: durable intent, then a committed revalidation, then the effect outside any transaction
+
+An earlier revision put gate 3 and the effect "under the execution row's
+lock". It cannot: a row lock is transaction-scoped, so holding it through
+an external effect would mean the open row is not committed before the
+effect (no durable intent), while committing first releases the lock before
+the effect (PR #373 review, second pass). The protocol is three
+transactions and an interval:
+
+| Step | Transaction | What is durable afterwards |
+| --- | --- | --- |
+| Register | T1: execution `FOR SHARE`, admission open, insert the row `open` with claim, family, digest | The intent (D5, D9) |
+| Revalidate | T2: execution `FOR UPDATE`; D8 steps 1–3; for an approved attempt, D7's consumption in the same statement set; record `revalidated_at` | That the attempt was current when checked, and that the decision was consumed once |
+| Effect | none — secrets revealed, `Effect` runs | nothing until the family's commit point |
+| Settle | T3: conditional on `finished_at IS NULL` | The outcome and drain disposition |
+
+**The interval between T2 and the effect is not closed by a lock, and the
+design does not pretend it is.** It is ADR 0030 §5's "admission-to-effect
+interval", and the ADR's answer is fencing, not locking: the attempt is
+*registered* (T1), so a supersession that lands in the interval finds it
+and must **drain** it — wait for T3 within ADR 0029 §7's grace period, or
+report `unconfirmed` — before any positive receipt (D11). `SupersedeExecution`
+therefore does two things in one transaction: sets `superseded` and closes
+admission, and returns the set of attempts registered-and-unsettled at that
+moment, which is the caller's drain list; item 9 is the caller that drains,
+and in item 5 the test is. What the lock in T2 *does* guarantee is that no
+attempt passes revalidation after supersession has committed, and no
+decision is consumed twice; what it does not guarantee — that no effect
+lands after supersession — is the drain's to settle, exactly as §5 says.
+D9's linearization claim is about T1 against closure, and stands.
+
+Rejected: holding T2 open through the effect. Beyond the durability
+problem, the forge call can take seconds and the execution lock would
+serialize every attempt of the execution behind it.
 
 ### D9. Attempts register against the execution before admission completes, and closure linearizes on that row
 
@@ -484,7 +557,7 @@ item 5 has to be redesigned for that, because the registration-before-
 admission ordering and the closure-first-then-settle ordering are the same
 at either grain.
 
-### D10. Superseded authority is rejected at both gates from the row under lock; fenced references through a predicate whose real source is item 7's
+### D10. Superseded authority is rejected at both gates from the row, in each gate's transaction; fenced references through a predicate whose real source is item 7's
 
 Binding item 9: *"A request carrying superseded or fenced execution
 authority is rejected at every mediated boundary. The requirement is
@@ -496,7 +569,9 @@ which item 2 defined with two values and no writer. This item adds
 `SupersedeExecution(org, execution_id)` — sets `superseded` and closes
 admission in one statement, satisfying `000021`'s
 `executions_superseded_closes_admission_check` — and reads the state at gate
-1 (D4 check 2) and gate 3 (D8 step 1), both under the row lock. Item 9 is
+1 (D4 check 2, in T1) and gate 3 (D8 step 1, in T2), each under the row's
+lock for that transaction; the interval after T2 is the drain's (D8's
+protocol). Item 9 is
 the caller that supersedes on a changed dispatch basis; here the caller is
 the test. Requests refused for it settle `denied` with `reason_code =
 authority/superseded`; an attempt that was `operator_waiting` when
@@ -526,6 +601,7 @@ type TerminalResult struct {
     CancellationReason    *CancellationReason    // superseded|operator_requested|shutdown — iff cancelled
     FailureClass          *FailureClass          // retryable_infrastructure|non_retryable_agent — iff failed
     BlockedToolCallID     *uuid.UUID             // iff blocked: the attempt carrying the requirement
+    ErrorMessage          string                 // iff failed: the diagnostic; required for a synthesized result
 }
 func (r TerminalResult) Validate() error
 ```
@@ -611,16 +687,24 @@ consumer in this item:
 
 | Table | Change | Clause | Consumer |
 | --- | --- | --- | --- |
+| `tool_calls` | `claimed_by uuid` (the Orchestrator instance, present iff `state <> 'settled'`), `family text NOT NULL` (the action identity, beside the legacy `tool_name`), `arguments_digest text NOT NULL` (the substituted-input digest, `^[0-9a-f]{64}$`) | D5's correlation binding and claim; ADR 0032 §6 | D5 |
 | `tool_calls` | `drain_disposition text`; CHECK: `IN ('stopped_before_commit','committed','in_fenced_domain','unresolved')`, present iff `state = 'settled'`; a trigger permits change only from `unresolved` | ADR 0032 §6's per-attempt disposition; ADR 0030 §5 "otherwise `Fence()` returns `unconfirmed`" | D11 |
 | `tool_calls` | `reason_code text`; CHECK: **required** for `denied`, `stale` and `unknown`; **optional** for `failed` (which keeps `error_message` as the human text); **forbidden** for `succeeded` and `blocked` (`blocked` carries the requirement set) and while unsettled | ADR 0030 §8 "with the reason code"; `000022:159-162`'s explicit deferral | D4, D5, D8, D10 |
 | `tool_calls` | `operator_decision text`, `operator_decided_by uuid`, `operator_decided_at timestamptz`, `operator_decision_consumed_at timestamptz`; CHECK: the first three all or none; decision in `('approve_once','deny_once')`; consumed only if decided and only for `approve_once` | ADR 0030 §4 "the action-scoped decision is still durable, for crash recovery"; D7's approved-not-started distinction | D5, D7 |
 | `repository_forge_bindings` (new) | `repository_id`, `organization_id`, `provider text`, `base_url text`, `owner text`, `repo text`, `created_at`; PK `(repository_id, provider)`; FK to `repositories (repository_id, organization_id)`; `provider IN ('gitea')` until a second provider has a consumer | ADR 0022's logical repository "may carry **several** forge bindings … bindings arrive in Phase 3 with the forge rework" (`000002:35-38`) — a child family, not columns on the row, so a second binding is representable without a schema change (PR #373 review); the record has none today (`store/provisioning.go:80-95`) | D13 |
 | `executions` | `capability_set jsonb NOT NULL` — a JSON array of family identities, unique, sorted; `headless boolean NOT NULL`; both immutable after insert by an anti-update trigger on item 4's pattern | ADR 0032 item 10, the resolved-configuration lifetime: "what was resolved for an execution must not silently change"; ADR 0030 §4 "headless is a declared execution configuration, known at dispatch" | D4 check 3; D7 |
-| `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `terminated_at timestamptz`; the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL`; `blocked_tool_call_id` is a **composite FK** `(blocked_tool_call_id, execution_id, organization_id) → tool_calls (tool_call_id, execution_id, organization_id)` over a new unique key on `tool_calls`, so the reference cannot name another execution's attempt, plus a trigger requiring the referenced row to be `settled` with `outcome = 'blocked'` (PR #373 review) | ADR 0032 item 7; §5 "`blocked` … references the pending action and the structured requirement set" | D11 |
+| `executions` | `status text`, `completion_disposition text`, `cancellation_reason text`, `failure_class text`, `blocked_tool_call_id uuid`, `error_message text` (present only when `status = 'failed'`), `terminated_at timestamptz`; the applicability rule as CHECKs; `terminated_at IS NOT NULL` iff `status IS NOT NULL`; `blocked_tool_call_id` is a **composite FK** `(blocked_tool_call_id, execution_id, organization_id) → tool_calls (tool_call_id, execution_id, organization_id)` over a new unique key on `tool_calls`, so the reference cannot name another execution's attempt, plus a trigger requiring the referenced row to be `settled` with `outcome = 'blocked'` (PR #373 review) | ADR 0032 item 7; §5 "`blocked` … references the pending action and the structured requirement set" | D11 |
 
 `capability_set` is supplied to `AcceptDispatch` by the Orchestrator; in
 item 5 the composition root passes the set its caller declares, and item 6
-derives it from the role and pack. The caller in item 5 is a new operator
+derives it from the role and pack. **The seam validates it at dispatch**
+against the closed family set — handed to the seam at composition as
+`plane.Caller.Actions`, on the pattern of `Caller.Keys` and
+`Caller.Prompts` (`plane/compose.go:105-116`) — refusing an identity the
+registry does not know, and canonicalizes it (sorted, de-duplicated) before
+persistence, so the stored set is the invariant D12 states and an unknown
+family cannot be stored now to become live under a later registry (PR #373
+review, second pass). The immutability trigger then keeps it so. The caller in item 5 is a new operator
 verb, `dataplanectl -org <slug> -user <handle> -story <id> -capabilities
 <family,...> dispatch`, which creates and accepts a dispatch for a Story
 with a declared set and prints the execution — Checkpoint 2's manual path,
@@ -806,8 +890,10 @@ than imported from `pkg/tools`. Two implementations:
 
 - **`legacyExecutor`**, in `toolloop`, wrapping `ToolProvider.Get` and
   `tool.Exec` exactly as the loop does today, with `LogToolExecution` into
-  the persistence channel — the one caller D2's guard admits. Constructed by
-  `toolloop.New` when `Config.Actions` is nil, so the four v1 driver
+  the persistence channel — the one caller D2's guard admits. Constructed in
+  `Run` when `Config.Actions` is nil — the point where the loop builds its
+  local provider today (`toolloop.go:212-217`); `New` receives only the
+  client and logger and never sees a `Config` — so the four v1 driver
   packages migrate with no edit, as the inventory requires.
 - **`boundary.Executor`**, in `internal/boundary`, translating an
   `action.Call` into a `Request` for the execution it was built for and a
@@ -913,6 +999,10 @@ D10 says why.
 | Headless blocks terminally with the requirement preserved | `blocked` row with `requirement_set`; execution `status = blocked` referencing it | Leave the row `operator_waiting` under headless: the terminal-result assertion fails |
 | Requirement-set equality is checked both ways (D8) | Add a requirement between gates → `stale`; remove one → `stale` | Compare by subset: the removal case settles `succeeded` |
 | Re-evaluation raises no second operator requirement | A hook that returns `RequiresOperator` again at gate 3: the action proceeds | Re-raise: the row enters `operator_waiting` a second time |
+| A same-id re-presentation with a different family or digest is refused, not replayed (D5) | Re-present a settled id with changed arguments: `ErrCorrelationMismatch`, no new row, an error-level log | Skip the digest comparison: the old result is returned for the new arguments |
+| A duplicate does not reconcile an attempt its creator is still driving (D5) | Two goroutines, same id, barrier after the creator's T1: the duplicate returns *in progress*; the creator's effect runs once and settles `succeeded` | Treat an own-instance claim as foreign: the duplicate reconciles, settles `unknown`, and the creator's settle reports `Recorded: false` — the assertion names the outcome |
+| Supersession in the effect interval is drained, not missed (D8, D10) | Supersede between T2 and the effect (barrier inside the test family): `SupersedeExecution` returns the attempt in its drain list; the effect lands; T3 settles it; the receipt is available only after | Return an empty drain list for attempts past T2: the receipt is issued while the effect is in flight, which the recording transport shows |
+| `capability_set` is validated and canonical at dispatch (D12) | `AcceptDispatch` with an unknown identity: refused; with `["b","a","a"]`: stored `["a","b"]` | Skip validation: the unknown identity is stored |
 | Registration linearizes with closure (D9) | Two goroutines, a barrier between share-lock and insert, `CloseAdmission` racing: every attempt is either registered-then-settled-by-closure or refused, never registered-after-closure | Drop the share lock: an attempt registers after closure |
 | Superseded authority is rejected at both gates (D10) | Supersede between gate 1 and gate 3: `denied`/`authority/superseded` at gate 3; supersede before: at gate 1 | Remove the gate 3 check: the effect runs under superseded authority |
 | Supersession settles a waiting attempt `stale` with its decision intact | Supersede during `operator_waiting` after a decision is recorded | Clear the decision columns: the assertion names them |
@@ -994,6 +1084,22 @@ round-2 edits introduced.
 | 8 | The `reason_code` rule was self-contradictory for `failed` | D12 — required / optional / forbidden stated per outcome |
 | 9 | `blocked_tool_call_id` had no integrity tie to a blocked attempt of the same execution | D12 — composite FK plus a trigger on the referenced row's outcome |
 | 10 | The Status line's round and commit disagreed with the PR | Status line — design at `94a36172` (round 4), acceptance at `4825ab76` (round 5) |
+
+PR #373 proofread, second pass (Copilot, 2026-09-27, on `9a0550f4`). Ten
+threads, all accepted; four are consequences of the first pass's fixes.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | Share-then-exclusive on the Story row deadlocks two concurrent admissions | D4 — the Story lock is taken `FOR UPDATE` before the check; guard and wait entry are one single-winner operation |
+| 2 | At-most-once was not bound to the action identity and digest; `AttemptID` was a UUID while the LLM's tool-call id is a string | D5, D12 — `family` and `arguments_digest` on the row, correlation mismatch refused and logged; the executor's caller mints the UUIDv7, the provider string is a projection field |
+| 3 | A concurrent duplicate could reconcile an attempt its creator was still driving | D5, D12 — `claimed_by` (the Orchestrator instance id); an own-instance claim is *in progress*; a foreign claim reconciles, under the stated one-process-per-plane assumption |
+| 4 | Gate 3 "under the execution lock" cannot give both durable intent and revalidation-to-effect linearization | D8 — the three-transaction protocol; the interval is the drain's, per ADR 0030 §5; `SupersedeExecution` returns the drain list; D4, D10 reworded |
+| 5 | `capability_set` was not validated against the registry or canonicalized | D12 — `plane.Caller.Actions`; the seam validates and canonicalizes at dispatch |
+| 6 | `toolloop.New` cannot see `Config.Actions` | D15 — the nil fallback is built in `Run`, where the local provider is built today |
+| 7 | A registry package importing every family is a second production importer of `families/*` | D2, D3 — types in the leaf `internal/boundary/family`; assembly in `internal/boundary`; no registry package |
+| 8 | Keyed commitments called a "fourth kind" beside four existing classifications | D3, D6 — a fifth classification, declared and not implemented |
+| 9 | The synthesized failure's `error_message` had no destination on `executions` | D11, D12 — `executions.error_message`, present only for `failed`; `TerminalResult.ErrorMessage` |
+| 10 | `ActionCall`/`ActionResult` versus `Call`/`Result` | D1 — `action.Call`, `action.Result`, `action.Executor` throughout |
 
 ## Open Questions
 
