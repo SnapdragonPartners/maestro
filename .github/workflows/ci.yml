@@ -361,9 +361,9 @@ jobs:
           echo "GO_TEST_STATUS=$status" >> "$GITHUB_ENV"
 
       # The floor was 1200 when this job ran every package (1707 passes on
-      # run 36486432552); `stack` took 205 of those (subtests included) with
-      # it to `dataplane-stack`, and the first sharded run (36502695130)
-      # passed 1502 here. 1050 keeps a ~70% margin.
+      # run 36486432552). `stack` moved to `dataplane-stack` and its 205
+      # passes (subtests included) went with it; the first sharded run
+      # (36502695130) passed 1502 here. 1050 keeps a ~70% margin.
       - name: Verdict -- no failures, no skips, and not suspiciously few passes
         run: |
           set -euo pipefail
