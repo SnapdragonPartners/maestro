@@ -27,6 +27,8 @@ import (
 // phase is correctly protected in both the right and the wrong version. So
 // this asserts on ORDER: the `reset` may not complete until the restore has
 // returned, restart and verification included.
+//
+//ci:shard 3
 func TestResetBlocksForTheWholeOfARestore(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -104,6 +106,8 @@ func TestResetBlocksForTheWholeOfARestore(t *testing.T) {
 // OpenSeam still holds it, which is the half that protects the import: a
 // version releasing the lock as soon as the store was built passes both and
 // leaves the import it was taken for entirely unprotected.
+//
+//ci:shard 0
 func TestDownBlocksForTheWholeOfAnOpenSeam(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {

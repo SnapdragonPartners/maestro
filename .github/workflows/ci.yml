@@ -271,37 +271,25 @@ jobs:
           MAESTRO_HOME: ${{ runner.temp }}/maestro-dataplane
         run: make dataplane-down
 
-  # New-key recovery on NATIVE LINUX, which item 7 assigned to item 8 by name
-  # rather than as a nicety.
-  #
-  # Every measurement behind design D8 was taken on macOS, where Docker
-  # Desktop virtualises bind-mount ownership. The claim that has to hold on
-  # Linux is that the recovery container runs as the SAME uid as the normal
-  # one and therefore has exactly the access the normal one has — and item
-  # 2's own history is that uid handling over a 0700 host-owned mount is
-  # precisely where the two platforms diverge. A recovery verified only on
-  # macOS is a recovery verified on the platform that cannot fail the way
-  # this one can.
-  #
-  # It runs the package's own recovery suite rather than a hand-written
-  # sequence of shell assertions, because those tests already encode what
-  # recovery owes: the data survives, the secrets are gone, the new
-  # credential authenticates over the network by service name, the probe can
-  # fail, all three resume windows converge, and no orphaned container
-  # survives. A second copy of that in YAML would drift from the first.
   # The v2 data-plane integration suite (issue #356).
   #
   # Until this job existed, GitHub CI ran 20 of the tree's 477 integration-tagged
-  # tests: `dataplane-recover-key` below selects `TestRecover` in one package,
-  # and everything else -- the persistence seam, the migration guards, the
-  # importer, dispatch and the recovery projection -- ran ONLY in the local
+  # tests: a `dataplane-recover-key` job selected `TestRecover` in one package
+  # (since folded into `dataplane-stack` below), and everything else -- the
+  # persistence seam, the migration guards, the importer, dispatch and the
+  # recovery projection -- ran ONLY in the local
   # pre-push hook. A client-side hook cannot be enforced: `git push --no-verify`
   # skips it entirely, and it skips itself for a contributor with no API keys
   # set. So a green CI run did not mean the suite had passed anywhere.
   #
-  # Scope is the v2 packages only. The full `integration` job at the bottom of
-  # this file stays disabled for the reason it records: the v1 packages spend
-  # paid API tokens. These need Docker and no secret.
+  # Scope is the v2 packages only, MINUS `internal/dataplane/stack`, which
+  # `dataplane-stack` below runs in shards: that one package was 93% of this
+  # job's wall time (issue #374). The Makefile derives this job's list from
+  # the full one by removing exactly that package, so the two jobs together
+  # run precisely `make test-integration-v2` with nothing repeated and
+  # nothing dropped. The full `integration` job at the bottom of this file
+  # stays disabled for the reason it records: the v1 packages spend paid API
+  # tokens. These need Docker and no secret.
   #
   # TWO THINGS THIS JOB MUST NOT DO, both of which a naive version does:
   #
@@ -362,7 +350,7 @@ jobs:
           # nobody can see. A command on the left of `||` is exempt from -e.
           # The package list is the Makefile's, read rather than repeated, so
           # this job and `make test-integration-v2` cannot drift apart.
-          packages=$(make --no-print-directory -s v2-integration-packages)
+          packages=$(make --no-print-directory -s v2-integration-packages-unsharded)
           test -n "$packages" || { echo "the Makefile printed no package list"; exit 1; }
           echo "packages: $packages"
           # shellcheck disable=SC2086 # word-splitting the list is the point
@@ -372,11 +360,15 @@ jobs:
           echo "go test exited $status"
           echo "GO_TEST_STATUS=$status" >> "$GITHUB_ENV"
 
+      # The floor was 1200 when this job ran every package (1707 passes on
+      # run 36486432552). `stack` moved to `dataplane-stack` and its 205
+      # passes (subtests included) went with it; the first sharded run
+      # (36502695130) passed 1502 here. 1050 keeps a ~70% margin.
       - name: Verdict -- no failures, no skips, and not suspiciously few passes
         run: |
           set -euo pipefail
           python3 scripts/check-go-test-json.py "$RUNNER_TEMP/v2-integration.json" \
-            --min-passed 1200
+            --min-passed 1050
           if [ "$GO_TEST_STATUS" -ne 0 ]; then
             echo "go test exited $GO_TEST_STATUS although the verdict above found nothing: refusing to pass"
             exit 1
@@ -417,8 +409,62 @@ jobs:
             exit 1
           fi
 
-  dataplane-recover-key:
+  # The plane lifecycle suite, `internal/dataplane/stack`, split across
+  # runner VMs (issue #374).
+  #
+  # Every test in it starts, stops, backs up, restores, re-keys or kills a
+  # real Postgres + SeaweedFS plane through Compose, and the package is bound
+  # by Compose transitions rather than by CPU or I/O: on one runner it took
+  # 1578s of the integration job's 1688s. In-process parallelism was measured
+  # and rejected (#307): the deliberate-interrupt tests are tuned to windows
+  # that move when the machine is shared. Separate VMs share nothing, which
+  # is the whole point of this job.
+  #
+  # WHICH TESTS EACH SHARD RUNS IS NOT WRITTEN HERE. Each test names its
+  # shard in a `//ci:shard N` directive in its doc comment, and
+  # `cmd/testshard` reads them back from the tree at this commit to produce
+  # the `-run` pattern below. A hand-maintained `-run` alternation is what
+  # this replaced: it went stale twice in two review rounds, and each time
+  # the tests it forgot passed locally and never ran here. The package's own
+  # guard (TestEveryIntegrationTestIsInExactlyOneCIShard) fails the unit job
+  # when a test names no shard, names two, or when the matrix below and the
+  # directives disagree; `go run ./cmd/testshard` reaches the same verdict
+  # in each shard before anything runs.
+  #
+  # This is also the NATIVE LINUX run of new-key recovery, which item 7
+  # assigned to item 8 by name rather than as a nicety. Every measurement
+  # behind design D8 was taken on macOS, where Docker Desktop virtualises
+  # bind-mount ownership. The claim that has to hold on Linux is that the
+  # recovery container runs as the SAME uid as the normal one and therefore
+  # has exactly the access the normal one has -- and item 2's own history is
+  # that uid handling over a 0700 host-owned mount is precisely where the two
+  # platforms diverge. The former `dataplane-recover-key` job ran the
+  # `TestRecover…` tests here for that reason, on top of the integration job
+  # running them again; now they run once, in whichever shards they name.
+  #
+  # The shared plane is brought up for the same reason as in the job above:
+  # a few of these tests reach the developer's plane through the storage
+  # roots rather than building their own, and skip without one. The images
+  # it pulls are the ones every isolated plane needs anyway.
+  dataplane-stack:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # Consecutive from 0, and exactly the ids the directives use: the
+        # guard reads this list and fails when they differ.
+        #
+        # Balance baseline (macOS M3, 2026-09-28, the whole package uncached
+        # at 1611s over 121 tests, 3.4s of it in the 78 unit tests):
+        # LPT over the measured per-test costs gave shards of 404 / 404 /
+        # 408 / 407s for 9 / 14 / 10 / 10 tests. First run on ubuntu-latest
+        # (36502695130, 2026-09-29): test time 350.6 / 337.8 / 342.8 /
+        # 340.5s, job wall time 434 / 429 / 432 / 423s, against 1688s for
+        # the unsharded job. The "Slowest tests" step below prints each
+        # shard's total and top ten on every run; move directives between
+        # shards when those drift apart.
+        shard: [0, 1, 2, 3]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -429,29 +475,76 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # An isolated MAESTRO_HOME, as the job above uses: these tests build
-      # their own throwaway planes, and the default root would put them on a
-      # plane the runner might share with another step.
-      - name: Recovery, resumability, residues and the SCRAM probe
+      - name: Bring up the shared data plane the tests reach through the storage roots
         env:
-          MAESTRO_HOME: ${{ runner.temp }}/maestro-recovery
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-stack
+        run: make dataplane-up
+
+      # SHARD_RUN and SHARD_TESTS come from the tree, per shard. A broken
+      # assignment fails this step for every shard at once, with the same
+      # message the guard test prints.
+      - name: Read this shard's tests from their directives
         run: |
           set -euo pipefail
-          go test -tags=integration -count=1 -timeout=40m \
-            -run 'TestRecover' \
-            ./internal/dataplane/stack/
+          go run ./cmd/testshard -dir ./internal/dataplane/stack -shard ${{ matrix.shard }} | tee -a "$GITHUB_ENV"
 
-      # The suite isolates per test and tears its own planes down, so a
-      # leftover container here means a test leaked one — worth failing on
-      # rather than cleaning up silently, since the recovery container is
-      # outside every Compose project and nothing else would remove it.
-      - name: No recovery container survived the suite
+      # Same shape as the integration job: -json for the verdict, the exit
+      # status captured rather than allowed to end the step.
+      - name: Run shard ${{ matrix.shard }}
+        env:
+          MAESTRO_HOME: ${{ runner.temp }}/maestro-stack
+        run: |
+          set -uo pipefail
+          status=0
+          go test -tags=integration -count=1 -timeout=35m -json -run "$SHARD_RUN" \
+            ./internal/dataplane/stack/ > "$RUNNER_TEMP/stack-shard.json" || status=$?
+          echo "go test exited $status"
+          echo "GO_TEST_STATUS=$status" >> "$GITHUB_ENV"
+
+      # Every test the shard names must pass: the directives say how many
+      # there are, so the floor is exact rather than a guess at "too few".
+      - name: Verdict -- every test in the shard passed, none skipped
+        run: |
+          set -euo pipefail
+          python3 scripts/check-go-test-json.py "$RUNNER_TEMP/stack-shard.json" \
+            --min-passed "$SHARD_TESTS"
+          if [ "$GO_TEST_STATUS" -ne 0 ]; then
+            echo "go test exited $GO_TEST_STATUS although the verdict above found nothing: refusing to pass"
+            exit 1
+          fi
+
+      # The baseline for the next rebalance: move directives between shards
+      # until these are level. The balance this started from is in the
+      # matrix comment above.
+      - name: Slowest tests in this shard
+        if: always()
+        run: |
+          python3 - "$RUNNER_TEMP/stack-shard.json" <<'EOF'
+          import json, sys
+          rows, total = [], 0.0
+          for line in open(sys.argv[1], encoding="utf-8"):
+              try:
+                  ev = json.loads(line)
+              except ValueError:
+                  continue
+              if ev.get("Action") in ("pass", "fail") and ev.get("Test") and "/" not in ev["Test"]:
+                  rows.append((ev.get("Elapsed", 0), ev["Action"], ev["Test"]))
+                  total += ev.get("Elapsed", 0)
+          print(f"{total:8.1f}s  {len(rows)} tests")
+          for elapsed, action, name in sorted(rows, reverse=True)[:10]:
+              print(f"{elapsed:8.1f}s  {action}  {name}")
+          EOF
+
+      - name: No test plane or recovery container survived the shard
         if: always()
         run: |
           set -euo pipefail
-          survivors=$(docker ps --all --filter 'name=keyrecovery' --format '{{.Names}}')
+          # As in the integration job: an inventory that could not be taken
+          # is not an empty inventory, so docker's own failure ends the step.
+          inventory=$(docker ps --all --format '{{.Names}}')
+          survivors=$(printf '%s\n' "$inventory" | grep -E '^maestro-it-|keyrecovery' || true)
           if [ -n "$survivors" ]; then
-            echo "recovery containers survived the suite:"
+            echo "containers survived the shard:"
             echo "$survivors"
             echo "$survivors" | xargs -r docker rm --force
             exit 1

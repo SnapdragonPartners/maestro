@@ -79,6 +79,8 @@ func countSecrets(t *testing.T, cfg *Config) int {
 // look successful and not be: the data can be lost, the secrets can survive
 // as undecryptable ciphertext nobody notices, or the credential can fail to
 // move while the key file says it did.
+//
+//ci:shard 0
 func TestRecoverKeyReKeysAPlaneWhoseKeyIsGone(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -223,6 +225,8 @@ func authenticateOverNetwork(t *testing.T, cfg *Config, password string) error {
 // working plane's key is a different operation with different hazards --
 // among them that it would delete every secret of a plane that was working
 // perfectly well.
+//
+//ci:shard 0
 func TestRecoverKeyRefusesAPlaneThatIsNotLocked(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -251,6 +255,8 @@ func TestRecoverKeyRefusesAPlaneThatIsNotLocked(t *testing.T) {
 // and every branch of D8's table would take the same path regardless of what
 // actually happened. So the probe must be able to FAIL, and this is what
 // says so.
+//
+//ci:shard 1
 func TestRecoverKeyProbeRejectsAWrongPassword(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -305,6 +311,8 @@ func TestRecoverKeyProbeRejectsAWrongPassword(t *testing.T) {
 // of a listener is the ONLY thing between it and whatever can route to the
 // host -- during the one operation whose entire purpose is restoring data
 // somebody cares about. Item 7 measured this once; a test keeps it true.
+//
+//ci:shard 3
 func TestRecoveryServerPublishesNoListener(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -366,6 +374,8 @@ func TestRecoveryServerPublishesNoListener(t *testing.T) {
 // window that matters -- after the credential moved and before the key was
 // installed -- because the plane's password derives from the FIRST staged
 // key and a second one derives a different password that opens nothing.
+//
+//ci:shard 0
 func TestRecoveryAdoptsAStagedKeyRatherThanMintingASecond(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -412,6 +422,8 @@ func TestRecoveryAdoptsAStagedKeyRatherThanMintingASecond(t *testing.T) {
 // debris and adopting it would silently reuse material whose provenance this
 // process cannot establish. The reverse, a marker with no key, is
 // incoherent and refuses instead.
+//
+//ci:shard 1
 func TestRecoveryCleansAStagedKeyWithNoMarker(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := cfg.Roots.Ensure(); err != nil {
@@ -442,6 +454,8 @@ func TestRecoveryCleansAStagedKeyWithNoMarker(t *testing.T) {
 // It refuses rather than guessing, because the credential may already have
 // been changed to a key this process cannot reproduce. Minting a fresh one
 // there would leave a plane whose password nothing derives.
+//
+//ci:shard 1
 func TestRecoveryRefusesAMarkerWhoseStagedKeyIsGone(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := cfg.Roots.Ensure(); err != nil {
@@ -582,6 +596,8 @@ func lockedPlaneWithSecret(t *testing.T) (*Config, crossStoreSeed) {
 // the property the staging order buys: the real key is installed last, so an
 // interrupted recovery never leaves a key that opens nothing. The resume's
 // probe must FAIL and the transaction must run.
+//
+//ci:shard 3
 func TestRecoveryResumesAfterAKillBeforeTheCredentialMoved(t *testing.T) {
 	cfg, seed := lockedPlaneWithSecret(t)
 	staged := stageAsAKillWould(t, cfg)
@@ -606,6 +622,8 @@ func TestRecoveryResumesAfterAKillBeforeTheCredentialMoved(t *testing.T) {
 // derives from the STAGED key, so a second key opens nothing and the plane
 // would be unrecoverable by its own recovery tool. The probe must SUCCEED
 // and the transaction must be skipped.
+//
+//ci:shard 2
 func TestRecoveryResumesAfterAKillBetweenCommitAndKeyInstall(t *testing.T) {
 	cfg, seed := lockedPlaneWithSecret(t)
 	staged := stageAsAKillWould(t, cfg)
@@ -641,6 +659,8 @@ func TestRecoveryResumesAfterAKillBetweenCommitAndKeyInstall(t *testing.T) {
 // authorization rule that required ErrPlaneLocked would strand exactly this
 // state — a plane that is recovered but cannot be confirmed so, with a
 // marker no operation will clear.
+//
+//ci:shard 2
 func TestRecoveryResumesAfterAKillBetweenKeyInstallAndMarkerRemoval(t *testing.T) {
 	cfg, seed := lockedPlaneWithSecret(t)
 	staged := stageAsAKillWould(t, cfg)
@@ -677,6 +697,8 @@ func TestRecoveryResumesAfterAKillBetweenKeyInstallAndMarkerRemoval(t *testing.T
 // a deterministic name, and it is the one part of a kill that no constructed
 // state reproduces faithfully: here the orphan is left by a child this test
 // killed, holding PGDATA open, with no in-process handle to it at all.
+//
+//ci:shard 2
 func TestRecoveryRemovesAnOrphanNothingInThisProcessStarted(t *testing.T) {
 	cfg, seed := lockedPlaneWithSecret(t)
 
@@ -734,6 +756,8 @@ func TestRecoveryRemovesAnOrphanNothingInThisProcessStarted(t *testing.T) {
 // because at the point it starts its server it holds the lifecycle lock
 // exclusively, has stopped the Compose Postgres, and has confirmed its own
 // container gone: nothing else can be starting over this PGDATA.
+//
+//ci:shard 3
 func TestRecoveryResumesOverAnEmptyPostmasterPid(t *testing.T) {
 	cfg, seed := lockedPlaneWithSecret(t)
 
@@ -775,6 +799,8 @@ func TestRecoveryResumesOverAnEmptyPostmasterPid(t *testing.T) {
 // the file stays. So after the production removal of a RUNNING server the
 // lock file must be gone, and it is gone only if the server was asked to stop
 // before it was removed.
+//
+//ci:shard 2
 func TestRecoveryServerRemovalShutsItDownCleanly(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -826,6 +852,8 @@ func TestRecoveryServerRemovalShutsItDownCleanly(t *testing.T) {
 // and the retry would fail on the conflict -- a fix for one unresumable state
 // that creates another. Review raised exactly that; it was measured not to
 // happen, and this keeps the measurement honest across Docker versions.
+//
+//ci:shard 1
 func TestRecoveryServerRemovalToleratesAnExitedContainer(t *testing.T) {
 	cfg := isolatedPlane(t)
 	name := recoveryContainerName(cfg)
@@ -912,6 +940,8 @@ func waitForRecoveryContainer(t *testing.T, cfg *Config) {
 // Recovery is safe there for the same reason `up` is, by the same mechanism
 // rather than a parallel one -- it ends by calling `up` internally, so the
 // debt reaches the identical settlement.
+//
+//ci:shard 1
 func TestRecoveryAfterAKeylessRestore(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -974,6 +1004,8 @@ func TestRecoveryAfterAKeylessRestore(t *testing.T) {
 // `reset` would empty the Postgres directory while an isolated postmaster
 // still had it open -- the shared-state corruption ADR 0027 exists to
 // prevent -- and would report success.
+//
+//ci:shard 0
 func TestRecoveryResidueIsClearedByReset(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -1013,6 +1045,8 @@ func TestRecoveryResidueIsClearedByReset(t *testing.T) {
 // protection: the next `up` acquires it, believes itself exclusive, and
 // starts a second Postgres over a cluster the orphaned postmaster still
 // holds. The marker is the only thing that can refuse across that boundary.
+//
+//ci:shard 2
 func TestRecoveryInterruptedRefusesUp(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -1041,6 +1075,8 @@ func TestRecoveryInterruptedRefusesUp(t *testing.T) {
 // inside an archive taken on another machine is the realistic one -- could
 // name another project's container, or key material from somewhere this
 // configuration never put it.
+//
+//ci:shard 1
 func TestRecoveryMarkerFromAnotherPlaneIsRefused(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := cfg.Roots.Ensure(); err != nil {
@@ -1076,6 +1112,8 @@ func TestRecoveryMarkerFromAnotherPlaneIsRefused(t *testing.T) {
 // pre-deletion marker because discarding IS the operation; `restore`
 // replaces, and everything it deletes sits behind D4's phase boundary. Both
 // must leave no recovery residue, and only a test per escape shows it.
+//
+//ci:shard 0
 func TestRecoveryResidueIsClearedByRestore(t *testing.T) {
 	cfg := isolatedPlane(t)
 	if err := Up(t.Context(), cfg, testComposeFile()); err != nil {
@@ -1125,6 +1163,8 @@ func TestRecoveryResidueIsClearedByRestore(t *testing.T) {
 // And it must stop there. `down` is not a discard: clearing the marker or
 // the staged key would leave a recovery that cannot be resumed, which is a
 // worse outcome than the orphan.
+//
+//ci:shard 0
 func TestRecoveryDownStopsTheOrphanAndStaysResumable(t *testing.T) {
 	cfg, seed := lockedPlaneWithSecret(t)
 	staged := stageAsAKillWould(t, cfg)
