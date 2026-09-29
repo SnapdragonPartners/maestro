@@ -177,6 +177,26 @@ func TestRefusesEveryWayAnAssignmentGoesWrong(t *testing.T) {
 			want:   "legacy `// +build` constraint",
 		},
 		{
+			name:   "directive in a file the tag excludes",
+			source: "//go:build !integration\n\npackage p\n\nimport \"testing\"\n\n//ci:shard 0\nfunc TestNever(t *testing.T) {}\n",
+			want:   "TestNever names a shard but is not an integration-only test",
+		},
+		{
+			name:   "fuzz target with no directive",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n\nfunc FuzzB(f *testing.F) {}\n",
+			want:   "FuzzB names no shard",
+		},
+		{
+			name:   "runnable example with no directive",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n\nfunc ExampleC() {\n\t// Output: x\n}\n",
+			want:   "ExampleC names no shard",
+		},
+		{
+			name:   "directive on an example that is never run",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n\n//ci:shard 0\nfunc ExampleD() {}\n",
+			want:   "is not in a test's doc comment",
+		},
+		{
 			name:   "file that does not parse",
 			source: tagged + "func TestA(t *testing.T) {\n",
 			want:   "expected '}'",
@@ -219,22 +239,37 @@ func TestReportsEveryProblemAtOnce(t *testing.T) {
 	}
 }
 
-// TestIsTestFollowsGoTestsRule pins the name rule to `go test`'s: `Testable`
-// is not a test, `Test_x` and `Test` are, and TestMain is never one.
-func TestIsTestFollowsGoTestsRule(t *testing.T) {
+// TestSelectableFollowsGoTestsRules pins what `go test -run` selects and
+// runs: `Test`, `Test_x`, `TestÜ`, a bare `Example` and `ExampleE` with an
+// output comment (empty counts), a `Fuzz` target; not `Testable`,
+// `TestMain`, `Fuzzy`, an example without an output comment, or a
+// benchmark. Verified against Go 1.26 by running such a package.
+func TestSelectableFollowsGoTestsRules(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"x_test.go": tagged +
 			"//ci:shard 0\nfunc Test(t *testing.T) {}\n\n" +
 			"//ci:shard 0\nfunc Test_x(t *testing.T) {}\n\n" +
 			"//ci:shard 0\nfunc TestÜ(t *testing.T) {}\n\n" +
+			"//ci:shard 0\nfunc Fuzz(f *testing.F) {}\n\n" +
+			"//ci:shard 0\nfunc FuzzZ(f *testing.F) {}\n\n" +
+			"//ci:shard 0\nfunc Example() {\n\t// Output:\n}\n\n" +
+			"//ci:shard 0\nfunc ExampleE() {\n\t// Output: e\n}\n\n" +
 			"func Testable(t *testing.T) {}\n\n" +
+			"func Fuzzy(f *testing.F) {}\n\n" +
+			"func ExampleNotRun() {}\n\n" +
+			"func Examplelower() {\n\t// Output:\n}\n\n" +
+			"func BenchmarkB(b *testing.B) {}\n\n" +
 			"func TestMain(m *testing.M) {}\n",
 	})
 	assignment, err := Discover(dir, "integration")
 	if err != nil {
 		t.Fatalf("Discover: %v", err)
 	}
-	if got := strings.Join(assignment.Shards[0], ","); got != "Test,Test_x,TestÜ" {
-		t.Errorf("shard 0 = %q, want Test,Test_x,TestÜ", got)
+	const want = "Example,ExampleE,Fuzz,FuzzZ,Test,Test_x,TestÜ"
+	if got := strings.Join(assignment.Shards[0], ","); got != want {
+		t.Errorf("shard 0 = %q, want %s", got, want)
+	}
+	if assignment.Count(0) != 7 {
+		t.Errorf("Count(0) = %d, want 7", assignment.Count(0))
 	}
 }

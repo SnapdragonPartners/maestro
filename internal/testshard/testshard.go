@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build/constraint"
+	"go/doc"
 	"go/parser"
 	"go/token"
 	"os"
@@ -144,10 +145,13 @@ func discoverFile(fileSet *token.FileSet, path, tag string) (found map[string]in
 	if err != nil {
 		return nil, 0, []error{err}
 	}
+	// A file the tag excludes (`//go:build !integration`) contributes no
+	// tests, but its directives are still checked: a shard named on a test
+	// that never runs in the shard job is a claim about CI that is false.
+	found, problems = assignFile(fileSet, file, included && tagOnly)
 	if !included {
-		return nil, 0, nil
+		return nil, 0, problems
 	}
-	found, problems = assignFile(fileSet, file, tagOnly)
 	if tagOnly {
 		taggedTests = countTests(file)
 	}
@@ -327,9 +331,10 @@ func assignFile(fileSet *token.FileSet, file *ast.File, tagOnly bool) (map[strin
 	var problems []error
 	attached := map[*ast.Comment]bool{}
 
+	runnable := runnableExamples(file)
 	for _, decl := range file.Decls {
 		fn, isFunc := decl.(*ast.FuncDecl)
-		if !isFunc || !isTest(fn) {
+		if !isFunc || !isSelectable(fn, runnable) {
 			continue
 		}
 		var directives []*ast.Comment
@@ -386,29 +391,60 @@ func shardOf(fileSet *token.FileSet, fn *ast.FuncDecl, directives []*ast.Comment
 	return shard, nil
 }
 
-// countTests counts the top-level test functions in a file.
+// countTests counts the top-level functions in a file that a `go test
+// -run` pattern can select.
 func countTests(file *ast.File) int {
+	runnable := runnableExamples(file)
 	n := 0
 	for _, decl := range file.Decls {
-		if fn, isFunc := decl.(*ast.FuncDecl); isFunc && isTest(fn) {
+		if fn, isFunc := decl.(*ast.FuncDecl); isFunc && isSelectable(fn, runnable) {
 			n++
 		}
 	}
 	return n
 }
 
-// isTest applies `go test`'s own rule: a top-level function named `Test`
-// followed by something that is not a lower-case letter, and not TestMain.
-func isTest(fn *ast.FuncDecl) bool {
+// isSelectable reports whether `go test -run` selects AND executes the
+// function in an ordinary run, which is what a shard pattern has to cover:
+// `TestX`, `FuzzX` (its seed corpus runs, and reports a pass) and an
+// `ExampleX` that has an output comment. Verified on Go 1.26 with a
+// package holding one of each: those three report pass events; an example
+// with no output comment and a benchmark do not run. TestMain is never
+// one. The name rule is `go test`'s: the prefix followed by something that
+// is not a lower-case letter, or nothing.
+func isSelectable(fn *ast.FuncDecl, runnableExamples map[string]bool) bool {
 	name := fn.Name.Name
-	if fn.Recv != nil || name == "TestMain" || !strings.HasPrefix(name, "Test") {
+	if fn.Recv != nil || name == "TestMain" {
 		return false
 	}
-	if len(name) == len("Test") {
-		return true
+	for _, prefix := range []string{"Test", "Fuzz", "Example"} {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if prefix == "Example" && !runnableExamples[name] {
+			return false
+		}
+		if len(name) == len(prefix) {
+			return true
+		}
+		r, _ := utf8.DecodeRuneInString(name[len(prefix):])
+		return !unicode.IsLower(r)
 	}
-	r, _ := utf8.DecodeRuneInString(name[len("Test"):])
-	return !unicode.IsLower(r)
+	return false
+}
+
+// runnableExamples names the examples in a file that `go test` executes:
+// those with an output comment, empty or not. go/doc applies the same
+// parse the test runner does; its Name drops the `Example` prefix (a bare
+// `Example` is ""), so the function name is rebuilt here.
+func runnableExamples(file *ast.File) map[string]bool {
+	runnable := map[string]bool{}
+	for _, example := range doc.Examples(file) {
+		if example.Output != "" || example.EmptyOutput {
+			runnable["Example"+example.Name] = true
+		}
+	}
+	return runnable
 }
 
 // isDirective reports whether a comment line is a shard directive, well
