@@ -14,11 +14,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # This job's cache key is its own: it installs the pinned lint tools
+      # (`go install`, versions in the Makefiles), whose module graphs nothing
+      # can fetch without building them, so they are complete in a cache only
+      # this job saves. Hashing the Makefiles into the key refreshes it when
+      # a tool version moves. The data-plane jobs share the default go.sum
+      # key instead, warmed by `make deps-download` below (issue #377).
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod  # automatically uses the Go version from your go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            benchmark/go.sum
+            Makefile
+            benchmark/Makefile
 
       # setup-go caches Go's module/build caches but not golangci-lint's
       # analysis cache, which otherwise runs cold every time (~1-2 min).
@@ -34,9 +45,20 @@ jobs:
           restore-keys: |
             golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yaml') }}-
 
-      - name: Install dependencies
-        run: |
-          go mod download
+      # Fill the module cache with the WHOLE dependency union before anything
+      # compiles (issue #377). setup-go saves its cache from whichever job
+      # finishes first after a key change and never re-saves on a hit.
+      # Measured 2026-09-29: every saved entry was 166MB -- the 21-second
+      # sqlc-check's subset -- and every other job downloaded 64-193 modules
+      # from proxy.golang.org on every run despite reporting a cache hit,
+      # which is where run 36600017151 failed (a transient stream error
+      # mid-download). `make deps-download` is the union the Makefile defines
+      # (root and benchmark modules), so any saver saves a complete one, and
+      # on a complete cache this step is seconds. Retried because the proxy's
+      # failures are transient; a third failure fails the job here, before
+      # anything runs.
+      - name: Download modules (complete, retried)
+        run: make deps-download || { sleep 10; make deps-download; } || { sleep 30; make deps-download; }
 
       # make build runs lint as a prerequisite, so no separate lint step.
       - name: Build (includes lint)
@@ -91,11 +113,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # Its own cache key, as build-lint-test has: this job installs sqlc
+      # (pinned in the Makefile) with `go install`, and only a cache this job
+      # saves holds that tool's graph (issue #377).
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            Makefile
+
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: make deps-download || { sleep 10; make deps-download; } || { sleep 30; make deps-download; }
 
       - name: Generated code matches the schema
         run: make sqlc-check
@@ -125,6 +157,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: make deps-download || { sleep 10; make deps-download; } || { sleep 30; make deps-download; }
 
       # An isolated root, so the job never depends on runner home layout
       # and the assertions below know exactly where to look.
@@ -321,6 +357,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: make deps-download || { sleep 10; make deps-download; } || { sleep 30; make deps-download; }
+
       # MAESTRO_HOME is set PER STEP, on the two steps that need it, and must
       # stay that way. `runner.temp` is a `runner` context value, and that
       # context does not exist at job level -- no runner has been assigned when
@@ -474,6 +514,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: make deps-download || { sleep 10; make deps-download; } || { sleep 30; make deps-download; }
 
       - name: Bring up the shared data plane the tests reach through the storage roots
         env:
