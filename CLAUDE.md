@@ -71,17 +71,15 @@ positions and escalate the decision to DR rather than cycling indefinitely.
 2. Never reuse an existing leaf branch name as a namespace prefix; Git refs
    cannot be both a leaf and a directory.
 3. Make and test changes, then commit locally. Never bypass hooks with
-   `--no-verify`; fix failures. **One narrow exception, and only for push:** the
-   pre-push gate may be skipped if and only if the push is **documentation only**
-   *and* DR confirms it for that specific push. Both conditions, every time —
-   prior approval is not reusable.
-
-   "Documentation only" means **zero** changes to code. One line voids it and the
-   suite runs. Spike code under `spikes/` is code for this purpose even though the
-   root walkers skip it, as are `Makefile`, hooks, CI workflows, generated
-   output, and fixtures. The pre-commit hook (build and lint) is fast and is never
-   bypassed; this exception exists solely because the pre-push integration suite
-   costs ~11 minutes and cannot tell you anything about a Markdown change.
+   `--no-verify`; fix failures. Both hooks are fast and there is no exception:
+   pre-commit runs build, lint and the unit tests; pre-push runs the unit tests
+   and compiles every integration-tagged test binary without running it, about
+   two minutes together. Neither hook runs the integration suites. Those are
+   enforced by CI's required checks (`dataplane-integration` and the
+   `dataplane-stack` shards) on every push, and run locally by Claude when a
+   review round needs the evidence (see *Submitting For Review*). The former
+   documentation-only exception existed because the hook once ran the whole
+   suite; it is withdrawn with it.
 4. Write branch notes for Codex and submit the exact local commit for review
    (see *Submitting For Review*). Address every blocking finding with a fix or
    a reasoned response, commit each review round locally, and submit the new
@@ -150,6 +148,16 @@ author starts with none.
   the `integration`-tagged suites, which need the Docker data plane, are never
   its evidence; Claude runs those and reports the commands and outcomes in the
   notes.
+- When to run the integration suites locally, since no hook does: run
+  `make test-integration-v2` against a running plane (`make dataplane-up`)
+  before the first round of any branch that changes code under
+  `internal/dataplane/` or `internal/orchestrator/`, and again before any
+  later round whose changes touch persistence, migrations, concurrency,
+  protocol handling, or Git interaction. A round that changes only
+  documentation, comments, or code outside those trees may cite the previous
+  run. Report the command and outcome in the notes either way; CI's required
+  checks run the same suite on push, and a local run that was skipped is
+  stated as skipped, not implied by a green pre-push hook.
 - Reviewer guidance specific to this repository lives in `COUNTERPOINT.md` at
   the repository root, which Counterpoint quotes into every round from the
   commit under review. Keep it short; it is reviewed like any other file.
@@ -260,11 +268,13 @@ Use the ADR template described by `docs/adr/README.md`.
 The `Makefile` is the source of truth for commands and dependencies:
 
 ```bash
-make build             # build, generated assets, and lint prerequisites
-make test              # repository unit tests, including benchmark tests
-make lint              # repository linters
-make test-integration  # integration suite; may require service credentials
-make run               # build and run Maestro
+make build                    # build, generated assets, and lint prerequisites
+make test                     # repository unit tests, including benchmark tests
+make lint                     # repository linters
+make check-integration-build  # compile integration-tagged tests, run none (pre-push)
+make test-integration-v2      # v2 data-plane integration suite; needs a running plane
+make test-integration         # every integration-tagged suite; v1 parts spend API tokens
+make run                      # build and run Maestro
 ```
 
 The v2 data plane has its own lifecycle, and nothing that touches Postgres

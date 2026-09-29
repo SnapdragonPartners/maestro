@@ -1,54 +1,43 @@
 #!/bin/bash
 
-# Git pre-push hook for Maestro
-# Runs integration tests before allowing push to remote
+# Git pre-push hook for Maestro.
+#
+# Runs the unit tests and COMPILES every integration-tagged test binary
+# without running it. It does not run the integration suites: those are
+# enforced by CI's required checks (`dataplane-integration` and the
+# `dataplane-stack` shards, issue #356), which run them on separate VMs in
+# about eight minutes, and by the author before review (`make
+# test-integration-v2`, see CLAUDE.md). This hook used to run the whole
+# `integration`-tagged tree -- thirty minutes on a laptop, the frozen v1
+# suite spending model API tokens among it -- on every push, re-proving
+# what CI then proved again. A client-side hook was never the gate: it is
+# skipped by `--no-verify` and by a clone that never installed it.
+#
+# What it still catches, and cheaply: an integration-tagged test file that
+# does not compile. `make test` never sees those files, so without this a
+# typo in `*_integration_test.go` would surface only in CI.
 
 echo "Running pre-push checks..."
 
-# Check if integration test API keys are set
-if [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ] && [ -z "$GOOGLE_GENAI_API_KEY" ]; then
-    # This branch used to `exit 0`: no keys, no tests at all. But only the v1
-    # packages need a model API key. The v2 data-plane suite needs Docker and
-    # nothing else, and it is most of what this gate protects, so a contributor
-    # without keys runs THAT rather than nothing (issue #356).
-    echo "⚠️  No API keys set (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENAI_API_KEY)."
-    echo "   Skipping the v1 integration tests, which spend model API tokens."
-    echo "   Running the v2 data-plane integration tests, which need none."
-    TEST_TARGET=test-integration-v2
-fi
-
-echo "Running integration tests (this may take a minute)..."
-# The output is shown AND kept. It was only ever shown, so a caller that
-# truncated or discarded the hook's output lost the name of the failing test
-# for good -- after a twenty-minute run. The log lives under .git/ so it is
-# per-clone and can never be committed.
-#
-# The status tested is MAKE's, not tee's: a pipeline's exit status is its last
-# command's, and tee succeeds whatever it was handed.
+# The output is shown AND kept, under .git/ so it is per-clone and can never
+# be committed. The status tested is MAKE's, not tee's: a pipeline's exit
+# status is its last command's, and tee succeeds whatever it was handed.
 HOOK_LOG_DIR="$(git rev-parse --absolute-git-dir)/maestro-hook-logs"
 mkdir -p "$HOOK_LOG_DIR"
 # The shell's PID makes the name unique: a timestamp alone has one-second
-# resolution, so two runs inside the same second would share a file and the
-# later would overwrite the earlier run's evidence.
+# resolution, so two runs inside the same second would share a file.
 TEST_LOG="$HOOK_LOG_DIR/pre-push-$(date +%Y%m%dT%H%M%S)-$$.log"
-make "${TEST_TARGET:-test-integration}" 2>&1 | tee "$TEST_LOG"
+
+{ make check-integration-build && make test; } 2>&1 | tee "$TEST_LOG"
 TEST_STATUS=${PIPESTATUS[0]}
 ls -1t "$HOOK_LOG_DIR"/pre-push-*.log 2>/dev/null | tail -n +11 | while read -r old; do rm -f "$old"; done
 if [ "$TEST_STATUS" -ne 0 ]; then
-    echo "❌ Integration tests failed! What failed:"
-    grep -E '^(--- FAIL|FAIL|panic:)|test timed out' "$TEST_LOG" | head -20 | sed 's/^/     /'
+    echo "❌ Pre-push checks failed! What failed:"
+    grep -E '^(--- FAIL|FAIL|panic:|# )|test timed out|cannot |undefined:' "$TEST_LOG" | head -20 | sed 's/^/     /'
     echo "   Full output: $TEST_LOG"
-    # This used to end by suggesting `git push --no-verify`, unconditionally,
-    # to whoever had just been refused. The working agreement forbids exactly
-    # that, so the hook now says what the agreement says instead of undoing it.
     echo "   Fix the failures. Do NOT bypass this hook with --no-verify."
-    echo "   The one exception (CLAUDE.md, Branch And Review Workflow, step 3) is a push"
-    echo "   that is documentation ONLY -- zero code, config, hook, workflow or fixture"
-    echo "   changes -- AND that DR has confirmed for that specific push. A failing suite"
-    echo "   is never a reason to skip it: a transient failure is diagnosed from the log"
-    echo "   above and the push is retried."
     exit 1
 fi
 
-echo "✅ All integration tests passed!"
+echo "✅ Pre-push checks passed (unit tests, integration test binaries compile)."
 exit 0
