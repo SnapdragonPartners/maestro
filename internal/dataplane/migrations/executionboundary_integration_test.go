@@ -801,6 +801,20 @@ func TestExecutionBoundaryDownRefusesBoundaryOwnedState(t *testing.T) {
 		"an execution": {func(t *testing.T, db *sql.DB, f planeFixture) {
 			seedExecutionForPlane(t, db, f)
 		}, "1 execution(s) carry a resolved configuration"},
+		// A row OUTSIDE any execution may settle denied with a reason code
+		// (the rule is per outcome): a guard counting execution_id alone
+		// would drop the code silently, and the re-applied 000024 would
+		// then refuse the row on tool_calls_reason_code_check (review
+		// round 1).
+		"an unbound denial with a reason code": {func(t *testing.T, db *sql.DB, f planeFixture) {
+			if _, err := db.Exec(`INSERT INTO tool_calls
+			    (tool_call_id, organization_id, principal_instance_id, tool_name, arguments,
+			     state, outcome, finished_at, reason_code)
+			    VALUES ($1,$2,$3,'t','{}'::jsonb,'settled','denied',now(),'policy/refused')`,
+				ebAttempt, f.org, f.principal); err != nil {
+				t.Fatal(err)
+			}
+		}, "1 tool call(s) carry an execution binding, identity, claim, reason code, decision or drainage"},
 		"a forge binding": {func(t *testing.T, db *sql.DB, f planeFixture) {
 			const repo = "61000000-0000-7000-8000-000000000001"
 			const product = "61000000-0000-7000-8000-000000000002"

@@ -11,8 +11,12 @@
 --   1. any executions row -- every execution since 000024 carries a resolved
 --      configuration, which the old shape cannot record;
 --   2. any principal with an execution binding;
---   3. any execution-bound tool call (execution_id IS NOT NULL), which is
---      every attempt the boundary wrote;
+--   3. any tool call carrying ANY column this migration added -- not only
+--      execution-bound rows: the reason-code rule is per OUTCOME, so a row
+--      outside any execution may settle denied with a reason code, and a
+--      reversal that counted execution_id alone would drop that code
+--      silently and then refuse to re-apply on tool_calls_reason_code_check
+--      (review round 1);
 --   4. any repository_forge_bindings row.
 --
 -- With none present the columns, constraints, triggers and functions go --
@@ -53,12 +57,17 @@ BEGIN
             'version forward (make dataplane-force-version VERSION=24 FORCE=1), then remove them '
             'deliberately or stop reversing.', offending;
     END IF;
-    SELECT count(*) INTO offending FROM tool_calls WHERE execution_id IS NOT NULL;
+    SELECT count(*) INTO offending FROM tool_calls
+     WHERE num_nonnulls(execution_id, family, request_digest, arguments_digest, caller_ref,
+                        target_key, mutation_key, claimed_by, revalidated_at, reason_code,
+                        operator_decision, operator_decided_by, operator_decided_at,
+                        operator_decision_consumed_at, operator_decision_consumed_by,
+                        drain_disposition) > 0;
     IF offending > 0 THEN
-        RAISE EXCEPTION 'cannot reverse 000024: % mediated attempt(s) carry a reason code, decision or '
-            'drainage the old shape cannot hold. Force the version forward (make '
-            'dataplane-force-version VERSION=24 FORCE=1), then remove them deliberately or stop '
-            'reversing.', offending;
+        RAISE EXCEPTION 'cannot reverse 000024: % tool call(s) carry an execution binding, identity, '
+            'claim, reason code, decision or drainage the old shape cannot hold. Force the version '
+            'forward (make dataplane-force-version VERSION=24 FORCE=1), then remove them '
+            'deliberately or stop reversing.', offending;
     END IF;
     SELECT count(*) INTO offending FROM repository_forge_bindings;
     IF offending > 0 THEN

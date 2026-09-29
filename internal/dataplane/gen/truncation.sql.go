@@ -186,9 +186,17 @@ const countToolCallTruncation = `-- name: CountToolCallTruncation :one
 SELECT
     count(*)::bigint AS candidates,
     count(*) FILTER (WHERE t.finished_at IS NULL
-                        OR t.drain_disposition = 'unresolved')::bigint AS retained_open,
+                        OR t.drain_disposition = 'unresolved'
+                        OR EXISTS (SELECT 1 FROM executions e
+                                   WHERE e.execution_id    = t.execution_id
+                                     AND e.organization_id = t.organization_id
+                                     AND e.status IS NULL))::bigint AS retained_open,
     count(*) FILTER (WHERE t.finished_at IS NOT NULL
-                       AND t.drain_disposition IS DISTINCT FROM 'unresolved' AND (
+                       AND t.drain_disposition IS DISTINCT FROM 'unresolved'
+                       AND NOT EXISTS (SELECT 1 FROM executions e
+                                       WHERE e.execution_id    = t.execution_id
+                                         AND e.organization_id = t.organization_id
+                                         AND e.status IS NULL) AND (
         EXISTS (SELECT 1 FROM management_artifacts m
                 WHERE m.produced_by_tool_call_id = t.tool_call_id
                   AND m.organization_id          = t.organization_id)
@@ -228,12 +236,24 @@ type CountToolCallTruncationRow struct {
 // management_artifacts is never truncated -- it is durable by definition --
 // so a tool call cited by one is retained as referenced permanently. That
 // is correct: it is provenance for reviewable work product.
-// Three more retentions since migration 000024 (item 5 design, D11, D12):
+// Four more retentions since migration 000024 (item 5 design, D5, D11, D12):
 //
-//   - an attempt settled with UNRESOLVED drainage is retained as OPEN. It is
+//   - EVERY attempt of an execution with no terminal result is retained as
+//     OPEN, whatever its own state. While admission can still be open the
+//     record is the at-most-once guarantee itself: RegisterAttempt is an
+//     insert ON CONFLICT DO NOTHING, so a settled attempt whose row is gone
+//     is an id the same caller could register AGAIN as a fresh attempt
+//     (design D5; review round 1). And a headless blocked attempt awaiting
+//     another attempt's drainage is the row the eventual terminal result
+//     must name; truncated first, that result could never be recorded. Once
+//     the execution is terminal its admission is closed, no id can register,
+//     and its attempts are ordinary history under the rules below;
+//   - an attempt settled with UNRESOLVED drainage is retained as OPEN, even
+//     under a terminal execution (which cannot happen by the seam's rules,
+//     but the row is the evidence and the rule is stated on the row). It is
 //     not drained -- its mutation may still commit -- and deleting it would
-//     let RecordTerminalResult find no unresolved attempt and issue a receipt
-//     the drain never earned;
+//     let RecordTerminalResult find no unresolved attempt and issue a
+//     receipt the drain never earned;
 //   - an attempt an execution names as its blocking action is provenance for
 //     a terminal result and is retained as referenced, as an artifact's
 //     producing call is;
@@ -405,6 +425,11 @@ WHERE t.organization_id = $1
   AND t.finished_at IS NOT NULL
   AND t.finished_at     < $2
   AND t.drain_disposition IS DISTINCT FROM 'unresolved'
+  AND NOT EXISTS (
+      SELECT 1 FROM executions e
+      WHERE e.execution_id    = t.execution_id
+        AND e.organization_id = t.organization_id
+        AND e.status IS NULL)
   AND NOT EXISTS (
       SELECT 1 FROM management_artifacts m
       WHERE m.produced_by_tool_call_id = t.tool_call_id

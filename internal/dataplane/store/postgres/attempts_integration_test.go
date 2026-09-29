@@ -1140,9 +1140,11 @@ func (b *boundaryFixture) age(t *testing.T, id uuid.UUID) {
 	}
 }
 
-// Truncation cannot manufacture a receipt (D11): a settled attempt whose
-// drainage is unresolved is retained as OPEN however old it is, and deleted
-// only once drainage resolves; an attempt a terminal result names is
+// Truncation cannot manufacture a receipt or a fresh attempt (D5, D11):
+// every attempt of an execution with no terminal result is retained as
+// open, however old -- the row is the at-most-once guarantee while the id
+// can still be presented -- and a settled attempt whose drainage is
+// unresolved is retained even after; an attempt a terminal result names is
 // retained as referenced, and so is the attempt a stale row names as the
 // consumer of its approval.
 func TestTruncationRetainsUndrainedAndReferencedAttempts(t *testing.T) {
@@ -1174,30 +1176,29 @@ func TestTruncationRetainsUndrainedAndReferencedAttempts(t *testing.T) {
 	b.settle(t, successor.ToolCallID, store.ToolOutcomeSucceeded, store.DrainCommitted, nil)
 	plain := b.register(t, nil)
 	b.settle(t, plain.ToolCallID, store.ToolOutcomeSucceeded, store.DrainCommitted, nil)
-	for _, id := range []uuid.UUID{unresolved.ToolCallID, blocked.ToolCallID, stale.ToolCallID, successor.ToolCallID, plain.ToolCallID} {
+	all := []uuid.UUID{unresolved.ToolCallID, blocked.ToolCallID, stale.ToolCallID, successor.ToolCallID, plain.ToolCallID}
+	for _, id := range all {
 		b.age(t, id)
 	}
 
-	// The unresolved attempt blocks the receipt, so the terminal result must
-	// wait; resolve nothing yet and truncate.
+	// 1. The execution has no terminal result: every attempt is retained
+	// as open, and the settled plain attempt's id still classifies as a
+	// replay -- the D5 guarantee truncation must not erase (review round 1).
 	result, err := b.store.TruncateAuditBefore(ctx, b.organizationID, horizon())
 	if err != nil {
 		t.Fatal(err)
 	}
 	calls := result.PerTable[store.TableToolCalls]
-	// unresolved retained open; successor retained referenced (the stale
-	// row names it); plain and stale deleted; blocked deleted -- nothing
-	// references it yet.
-	if calls.RetainedOpen != 1 || calls.RetainedReferenced != 1 || calls.Deleted != 3 || !calls.Reconciles() {
-		t.Fatalf("first pass: %+v", calls)
+	if calls.RetainedOpen != 5 || calls.Deleted != 0 || calls.RetainedReferenced != 0 || !calls.Reconciles() {
+		t.Fatalf("under an open execution: %+v; want every attempt retained as open", calls)
 	}
-	if _, err := b.store.GetToolCall(ctx, b.organizationID, unresolved.ToolCallID); err != nil {
-		t.Fatalf("the unresolved attempt was truncated: %v -- a receipt could now be issued that the drain never earned", err)
+	replay, err := b.store.RegisterAttempt(ctx, b.registration(plain.ToolCallID, nil))
+	if err != nil || replay.Registered {
+		t.Fatalf("re-presenting a settled id after truncation: %+v %v; want the recorded row, not a fresh registration", replay, err)
 	}
-	if _, err := b.store.GetToolCall(ctx, b.organizationID, successor.ToolCallID); err != nil {
-		t.Fatalf("the consumer of a surviving stale row's approval was truncated: %v", err)
-	}
-	// And the receipt is still refused: retention kept the truth.
+
+	// 2. Closed but not terminal -- the unresolved attempt blocks the
+	// receipt -- still retained, and the receipt still refused.
 	if err := b.store.CloseAdmission(ctx, b.organizationID, b.execution.ExecutionID); err != nil {
 		t.Fatal(err)
 	}
@@ -1205,9 +1206,40 @@ func TestTruncationRetainsUndrainedAndReferencedAttempts(t *testing.T) {
 	receipt := store.FenceReceipt{ActionsDrained: true, Domain: store.DomainNoneHeld}
 	assertExecutionRejected(t, b.store.RecordTerminalResult(ctx, b.organizationID, b.execution.ExecutionID, completed, receipt),
 		store.ReasonActionsNotDrained)
+	if result, err = b.store.TruncateAuditBefore(ctx, b.organizationID, horizon()); err != nil {
+		t.Fatal(err)
+	}
+	if calls = result.PerTable[store.TableToolCalls]; calls.RetainedOpen != 5 || calls.Deleted != 0 {
+		t.Fatalf("under a closed, non-terminal execution: %+v", calls)
+	}
 
-	// A blocked result referencing a fresh blocked attempt: retained as
-	// referenced for as long as the execution names it.
+	// 3. Drainage resolves and the result records: the attempts are history.
+	// The stale row and its consumer go in two passes -- the consumer is
+	// referenced for as long as the referrer is in the statement's snapshot.
+	if err := b.store.ResolveDrainDisposition(ctx, b.organizationID, unresolved.ToolCallID, store.DrainCommitted); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.store.RecordTerminalResult(ctx, b.organizationID, b.execution.ExecutionID, completed, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if result, err = b.store.TruncateAuditBefore(ctx, b.organizationID, horizon()); err != nil {
+		t.Fatal(err)
+	}
+	if calls = result.PerTable[store.TableToolCalls]; calls.Deleted != 4 || calls.RetainedReferenced != 1 || calls.RetainedOpen != 0 || !calls.Reconciles() {
+		t.Fatalf("under a terminal execution: %+v; want four deleted and the approval's consumer retained as referenced", calls)
+	}
+	if _, err := b.store.GetToolCall(ctx, b.organizationID, successor.ToolCallID); err != nil {
+		t.Fatalf("the consumer of a surviving stale row's approval was truncated: %v", err)
+	}
+	if result, err = b.store.TruncateAuditBefore(ctx, b.organizationID, horizon()); err != nil {
+		t.Fatal(err)
+	}
+	if calls = result.PerTable[store.TableToolCalls]; calls.Deleted != 1 || calls.RetainedReferenced != 0 {
+		t.Fatalf("second pass under a terminal execution: %+v; want the now-unreferenced consumer deleted", calls)
+	}
+
+	// 4. A blocked result's attempt is retained as referenced for as long as
+	// the execution names it.
 	b2 := newBoundaryFixture(t)
 	blocked2 := b2.register(t, nil)
 	if _, err := b2.store.SettleAttempt(ctx, store.SettleAttemptInput{
@@ -1225,29 +1257,10 @@ func TestTruncationRetainsUndrainedAndReferencedAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	b2.age(t, blocked2.ToolCallID)
-	result, err = b2.store.TruncateAuditBefore(ctx, b2.organizationID, horizon())
-	if err != nil {
+	if result, err = b2.store.TruncateAuditBefore(ctx, b2.organizationID, horizon()); err != nil {
 		t.Fatalf("truncation aborted on the terminal result's reference: %v", err)
 	}
-	calls = result.PerTable[store.TableToolCalls]
-	if calls.RetainedReferenced != 1 || calls.Deleted != 0 || !calls.Reconciles() {
+	if calls = result.PerTable[store.TableToolCalls]; calls.RetainedReferenced != 1 || calls.Deleted != 0 || !calls.Reconciles() {
 		t.Fatalf("blocked attempt named by a terminal result: %+v", calls)
-	}
-
-	// Drainage resolves: the unresolved attempt is ordinary history again.
-	if err := b.store.ResolveDrainDisposition(ctx, b.organizationID, unresolved.ToolCallID, store.DrainCommitted); err != nil {
-		t.Fatal(err)
-	}
-	result, err = b.store.TruncateAuditBefore(ctx, b.organizationID, horizon())
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Two: the drained attempt, and the successor -- the stale row that
-	// named it went in the first pass, so nothing references it now.
-	if calls = result.PerTable[store.TableToolCalls]; calls.Deleted != 2 || calls.RetainedOpen != 0 || calls.RetainedReferenced != 0 {
-		t.Fatalf("after drainage resolved: %+v; the drained attempt and its now-unreferenced successor should be deleted", calls)
-	}
-	if _, err := b.store.GetToolCall(ctx, b.organizationID, unresolved.ToolCallID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("the drained attempt survived truncation: %v", err)
 	}
 }
