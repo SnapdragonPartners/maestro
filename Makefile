@@ -144,16 +144,23 @@ test-integration-v2:
 	@echo "🧪 Running v2 data-plane integration tests (no API keys needed)..."
 	go test -tags=integration -cover -count=1 -timeout=40m $(V2_INTEGRATION_PACKAGES)
 
-# Compile every integration-tagged test binary and run none of it. This is
-# what the pre-push hook runs in place of the suites: `make test` never sees
-# a `//go:build integration` file, so without this a test that does not
-# compile would surface only in CI. `-run '^$$'` selects no test but still
-# builds and vets the binary; `go build` would skip `_test.go` entirely.
-# About twenty seconds with a warm build cache. Runs on `./...` so the
-# frozen v1 suites stay compilable too.
+# Compile every integration-tagged test binary and execute none of it. This
+# is what the pre-push hook runs in place of the suites: `make test` never
+# sees a `//go:build integration` file, so without this a test that does
+# not compile would surface only in CI. `go build` would skip `_test.go`
+# entirely, and `-run '^$$'` alone is not enough: it selects no test but the
+# binary still starts, and `tests/integration`'s TestMain probes Docker and
+# exits 1 before m.Run() when the daemon is down -- a compile check that
+# fails on a laptop with Docker Desktop quit. `-exec true` hands the built
+# binary to `true` instead of running it, so nothing executes while the
+# build and the vet pass (printf, tests, buildtags...) still run. Verified
+# with DOCKER_HOST pointed at a missing socket: `-run '^$$'` FAILs,
+# `-exec true` reports ok; a planted undefined call and a planted t.Errorf
+# format mismatch both still fail it. About twenty seconds with a warm build
+# cache. Runs on `./...` so the frozen v1 suites stay compilable too.
 check-integration-build:
-	@echo "🔧 Compiling integration-tagged test binaries (running none)..."
-	go test -tags=integration -run '^$$' ./...
+	@echo "🔧 Compiling integration-tagged test binaries (executing none)..."
+	go test -tags=integration -run '^$$' -exec true ./...
 
 # Run the GCS adapter tests against a REAL Google Cloud Storage bucket.
 #
