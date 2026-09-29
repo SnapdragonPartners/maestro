@@ -156,14 +156,30 @@ func discoverFile(fileSet *token.FileSet, path, tag string) (found map[string]in
 
 // buildShards turns the per-shard name lists into an Assignment indexed by
 // id, reporting every id below the highest that has no tests.
+//
+// Consecutive non-empty ids from 0 mean the highest id is below the number
+// of assigned tests, so an id at or above that count is refused BEFORE the
+// slice is sized by it: `//ci:shard 1000000000` is a typo, and the promised
+// diagnostic is worth more than an out-of-memory failure on the way to it.
 func buildShards(byShard map[int][]string) (*Assignment, []error) {
 	assignment := &Assignment{}
+	var problems []error
+	assigned := 0
+	for _, names := range byShard {
+		assigned += len(names)
+	}
+	for id, names := range byShard {
+		if id >= assigned {
+			problems = append(problems, fmt.Errorf("shard %d is out of range: %d tests are assigned, so consecutive ids from 0 cannot reach it (%s)",
+				id, assigned, strings.Join(names, ", ")))
+			delete(byShard, id)
+		}
+	}
 	for id := range byShard {
 		if id >= len(assignment.Shards) {
 			assignment.Shards = append(assignment.Shards, make([][]string, id+1-len(assignment.Shards))...)
 		}
 	}
-	var problems []error
 	for id := range assignment.Shards {
 		names := byShard[id]
 		if len(names) == 0 {
@@ -239,21 +255,37 @@ func inclusion(fileSet *token.FileSet, file *ast.File, tag string) (included, ta
 
 // buildConstraint returns the file's `//go:build` expression and whether it
 // has one. Only comments before the package clause can be constraints.
+//
+// A legacy `// +build` line is refused. Go 1.26 still honours a file that
+// has only the legacy form — `go list -tags=integration` includes it,
+// `go test` runs it, vet says nothing — so reading only `//go:build` would
+// take such a file for an untagged one and shard none of its tests, with
+// no error: the exact silence this package exists to remove. gofmt has
+// written the `//go:build` form since Go 1.17; a file without it is fixed
+// by running gofmt, not by teaching this tool a second grammar.
 func buildConstraint(fileSet *token.FileSet, file *ast.File) (constraint.Expr, bool, error) {
+	var header []*ast.Comment
 	for _, group := range file.Comments {
 		if group.Pos() > file.Package {
 			break
 		}
-		for _, comment := range group.List {
-			if !constraint.IsGoBuild(comment.Text) {
-				continue
-			}
-			expr, err := constraint.Parse(comment.Text)
-			if err != nil {
-				return nil, false, fmt.Errorf("%s: %w", fileSet.Position(comment.Pos()), err)
-			}
-			return expr, true, nil
+		header = append(header, group.List...)
+	}
+	for _, comment := range header {
+		if constraint.IsPlusBuild(comment.Text) {
+			return nil, false, fmt.Errorf("%s: legacy `// +build` constraint; write it as `//go:build` (gofmt adds the line)",
+				fileSet.Position(comment.Pos()))
 		}
+	}
+	for _, comment := range header {
+		if !constraint.IsGoBuild(comment.Text) {
+			continue
+		}
+		expr, err := constraint.Parse(comment.Text)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", fileSet.Position(comment.Pos()), err)
+		}
+		return expr, true, nil
 	}
 	return nil, false, nil
 }

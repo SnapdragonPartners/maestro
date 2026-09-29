@@ -110,12 +110,12 @@ func TestRefusesEveryWayAnAssignmentGoesWrong(t *testing.T) {
 		},
 		{
 			name:   "empty shard between two used ones",
-			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n\n//ci:shard 2\nfunc TestC(t *testing.T) {}\n",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n\n//ci:shard 0\nfunc TestB(t *testing.T) {}\n\n//ci:shard 2\nfunc TestC(t *testing.T) {}\n",
 			want:   "shard 1 is empty",
 		},
 		{
 			name:   "shards not starting at zero",
-			source: tagged + "//ci:shard 1\nfunc TestA(t *testing.T) {}\n",
+			source: tagged + "//ci:shard 1\nfunc TestA(t *testing.T) {}\n\n//ci:shard 1\nfunc TestB(t *testing.T) {}\n",
 			want:   "shard 0 is empty",
 		},
 		{
@@ -160,6 +160,21 @@ func TestRefusesEveryWayAnAssignmentGoesWrong(t *testing.T) {
 			file:   "x_linux_amd64_test.go",
 			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n",
 			want:   "the file name is a build constraint (GOOS=linux GOARCH=amd64)",
+		},
+		{
+			name:   "shard id far beyond the number of tests (must not allocate up to it)",
+			source: tagged + "//ci:shard 0\nfunc TestA(t *testing.T) {}\n\n//ci:shard 1000000000\nfunc TestB(t *testing.T) {}\n",
+			want:   "shard 1000000000 is out of range: 2 tests are assigned",
+		},
+		{
+			name:   "legacy +build constraint only",
+			source: "// +build integration\n\npackage p\n\nimport \"testing\"\n\n//ci:shard 0\nfunc TestA(t *testing.T) {}\n",
+			want:   "legacy `// +build` constraint",
+		},
+		{
+			name:   "legacy +build beside a go:build line",
+			source: "//go:build integration\n// +build integration\n\npackage p\n\nimport \"testing\"\n\n//ci:shard 0\nfunc TestA(t *testing.T) {}\n",
+			want:   "legacy `// +build` constraint",
 		},
 		{
 			name:   "file that does not parse",
