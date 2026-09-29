@@ -108,6 +108,11 @@ func TestOnlyNamedTransitionsWriteStatus(t *testing.T) {
 		if !writesStatus(stmt.sql) {
 			continue
 		}
+		if writeTarget(stmt.sql) == "executions" {
+			// executions.status is the terminal result's axis, not an
+			// artifact lifecycle; TestTerminalResultIsRecordedOnce holds it.
+			continue
+		}
 		checked++
 
 		want, permitted := namedTransitions[stmt.name]
@@ -153,7 +158,7 @@ func TestEveryNamedTransitionExists(t *testing.T) {
 
 	found := map[string]bool{}
 	for _, stmt := range statements {
-		if writesStatus(stmt.sql) {
+		if writesStatus(stmt.sql) && writeTarget(stmt.sql) != "executions" {
 			found[stmt.name] = true
 		}
 	}
@@ -256,15 +261,130 @@ var namedCompletions = map[string]completion{
 			"cache_read_tokens": true, "cache_write_tokens": true, "cost_usd": true,
 		},
 	},
-	"CompleteToolCall": {
+	// SettleToolCall replaced CompleteToolCall in item 5: settling moves
+	// state, outcome and the drain disposition together, releases the claim,
+	// and may write the requirement set a headless block preserves.
+	"SettleToolCall": {
 		table: "tool_calls",
 		columns: map[string]bool{
 			// `succeeded` is absent since migration 000022: settling a tool
 			// call moves state and outcome together.
 			"finished_at": true, "state": true, "outcome": true,
 			"error_message": true, "result": true,
+			"reason_code": true, "drain_disposition": true,
+			"requirement_set": true, "requirement_set_digest": true,
+			"claimed_by": true,
 		},
 	},
+	// The two settlements that record a decision or an interruption AND
+	// settle in one statement (item 5 design, D5, D7, D10): each is a
+	// completion by any honest reading, carrying the once-only guard, and
+	// each is bound to the literal outcome it may write, which
+	// TestAttemptTransitionsAreNamed holds.
+	"RecordOperatorDenial": {
+		table: "tool_calls",
+		columns: map[string]bool{
+			"operator_decision": true, "operator_decided_by": true, "operator_decided_at": true,
+			"state": true, "outcome": true, "finished_at": true,
+			"reason_code": true, "drain_disposition": true, "claimed_by": true,
+		},
+	},
+	"StaleInterruptedWait": {
+		table: "tool_calls",
+		columns: map[string]bool{
+			"state": true, "outcome": true, "finished_at": true,
+			"reason_code": true, "drain_disposition": true, "claimed_by": true,
+		},
+	},
+	"StaleSupersededWaits": {
+		table: "tool_calls",
+		columns: map[string]bool{
+			"state": true, "outcome": true, "finished_at": true,
+			"reason_code": true, "drain_disposition": true, "claimed_by": true,
+		},
+	},
+}
+
+// attemptTransition is one permitted UPDATE on tool_calls that does NOT
+// settle the row: the exact columns it may assign, and the predicate that
+// makes it a transition from one state rather than a generic update.
+type attemptTransition struct {
+	guard   *regexp.Regexp
+	columns map[string]bool
+	// settled marks the two transitions that act on an already-settled row
+	// and therefore carry `state = 'settled'` instead of the once-only guard.
+	settled bool
+}
+
+// namedAttemptTransitions are the ONLY non-settling statements permitted to
+// UPDATE tool_calls (item 5 design, D5, D7, D8, D11). Each is bound to the
+// state it moves from and to its own column set, on namedCompletions'
+// reasoning: a name-only allow-list would let EnterOperatorWait rewrite
+// `arguments`, and an unguarded transition would let a settled attempt be
+// re-opened. Adding an entry here is the reviewable act.
+var namedAttemptTransitions = map[string]attemptTransition{
+	"EnterOperatorWait": {
+		guard:   regexp.MustCompile(`(?i)state\s*=\s*'open'`),
+		columns: map[string]bool{"state": true, "requirement_set": true, "requirement_set_digest": true},
+	},
+	"EnterResourceWait": {
+		guard:   regexp.MustCompile(`(?i)state\s*=\s*'open'`),
+		columns: map[string]bool{"state": true},
+	},
+	"LeaveResourceWait": {
+		guard:   regexp.MustCompile(`(?i)state\s*=\s*'resource_waiting'`),
+		columns: map[string]bool{"state": true},
+	},
+	"RecordOperatorApproval": {
+		guard:   regexp.MustCompile(`(?i)state\s*=\s*'operator_waiting'`),
+		columns: map[string]bool{"operator_decision": true, "operator_decided_by": true, "operator_decided_at": true},
+	},
+	"ConsumeOperatorDecision": {
+		// BOTH predicates are load-bearing: the seam's concurrency test
+		// removes both to show exactly-one consumption is theirs.
+		guard: regexp.MustCompile(`(?is)state\s*=\s*'operator_waiting'.*operator_decision_consumed_at\s+IS\s+NULL`),
+		columns: map[string]bool{
+			"state": true, "operator_decision_consumed_at": true, "operator_decision_consumed_by": true,
+			"revalidated_at": true, "claimed_by": true,
+		},
+	},
+	"InheritOperatorDecision": {
+		guard:   regexp.MustCompile(`(?is)state\s*=\s*'settled'.*operator_decision_consumed_at\s+IS\s+NULL`),
+		columns: map[string]bool{"operator_decision_consumed_at": true, "operator_decision_consumed_by": true},
+		settled: true,
+	},
+	"MarkRevalidated": {
+		guard:   regexp.MustCompile(`(?i)state\s*=\s*'open'`),
+		columns: map[string]bool{"revalidated_at": true},
+	},
+	"ResolveDrainDisposition": {
+		guard:   regexp.MustCompile(`(?is)state\s*=\s*'settled'.*drain_disposition\s*=\s*'unresolved'`),
+		columns: map[string]bool{"drain_disposition": true},
+		settled: true,
+	},
+	"TakeClaim": {
+		guard:   regexp.MustCompile(`(?is)state\s*=\s*'open'.*claimed_by\s*=\s*@previous_claim`),
+		columns: map[string]bool{"claimed_by": true},
+	},
+}
+
+// bornSettledInserts are the INSERTs permitted to write a tool call already
+// settled, each bound to the LITERAL outcome it writes. ADR 0030 section 8
+// requires a denial to be "opened and completed together", and item 5's
+// RecordDeniedToolCall is that statement; binding it to the literal is what
+// keeps the exception from becoming a generic terminal insert.
+var bornSettledInserts = map[string]string{
+	"RecordDeniedToolCall": "denied",
+}
+
+// settledOutcomeLiterals binds every settling statement that names its
+// outcome as a LITERAL to that literal, so a decision or interruption
+// cannot be rewritten to settle `succeeded` while keeping its name.
+var settledOutcomeLiterals = map[string]string{
+	"RecordOperatorDenial": "denied",
+	"StaleInterruptedWait": "stale",
+	"StaleSupersededWaits": "stale",
+	"RecordDeniedToolCall": "denied",
 }
 
 // outcomeColumns must never appear in a call's INSERT column list.
@@ -524,6 +644,7 @@ var secretStatements = map[string]struct {
 
 	"ResolveSecretForRepository": {ownership: true, membership: true},
 	"GetSecret":                  {ownership: true, membership: true},
+	"GetSecretAtVersion":         {ownership: true, membership: true},
 	"ReplaceSecret":              {ownership: true, membership: true},
 	"DeleteSecret":               {ownership: true, membership: true},
 }
@@ -613,6 +734,12 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 		switch {
 		case isInsert(stmt.sql):
 			inserts++
+			if _, bornSettled := bornSettledInserts[stmt.name]; bornSettled {
+				// Checked by TestBornSettledInsertsWriteTheirLiteral: the
+				// exception is bound to a literal outcome there rather than
+				// waved through here.
+				continue
+			}
 			columns := between(stmt.sql, strings.ToUpper(stmt.sql), "(", ")")
 			for _, forbidden := range outcomeColumns {
 				if columnPattern(forbidden).MatchString(columns) {
@@ -625,10 +752,16 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 
 		case strings.Contains(strings.ToUpper(stmt.sql), "UPDATE "):
 			updates++
+			if _, transition := namedAttemptTransitions[stmt.name]; transition {
+				// Checked by TestAttemptTransitionsAreNamed, against its own
+				// guard and column set.
+				continue
+			}
 			allowed, named := namedCompletions[stmt.name]
 			if !named {
-				t.Errorf("%s: %q updates %s but is not a named completion. There is no generic update on a "+
-					"call record; add a completion to namedCompletions here only if it genuinely is one.",
+				t.Errorf("%s: %q updates %s but is not a named completion or attempt transition. There is "+
+					"no generic update on a call record; add it to namedCompletions or "+
+					"namedAttemptTransitions here only if it genuinely is one.",
 					stmt.file, stmt.name, table)
 				continue
 			}
@@ -704,9 +837,16 @@ func TestBornFinalTablesAreNeverUpdated(t *testing.T) {
 // after its query was renamed silently widens what may update a call.
 func TestEveryNamedCompletionExists(t *testing.T) {
 	found := map[string]bool{}
+	inserted := map[string]bool{}
 	for _, stmt := range loadStatements(t) {
-		if callTableWritten(stmt.sql) != "" && strings.Contains(strings.ToUpper(stmt.sql), "UPDATE ") {
+		if callTableWritten(stmt.sql) == "" {
+			continue
+		}
+		if strings.Contains(strings.ToUpper(stmt.sql), "UPDATE ") {
 			found[stmt.name] = true
+		}
+		if isInsert(stmt.sql) {
+			inserted[stmt.name] = true
 		}
 	}
 	for name := range namedCompletions {
@@ -714,6 +854,181 @@ func TestEveryNamedCompletionExists(t *testing.T) {
 			t.Errorf("namedCompletions permits %q, but no query by that name updates a call table; "+
 				"remove the stale entry rather than leaving it available for reuse", name)
 		}
+	}
+	for name := range namedAttemptTransitions {
+		if !found[name] {
+			t.Errorf("namedAttemptTransitions permits %q, but no query by that name updates a call table; "+
+				"remove the stale entry rather than leaving it available for reuse", name)
+		}
+	}
+	for name := range bornSettledInserts {
+		if !inserted[name] {
+			t.Errorf("bornSettledInserts permits %q, but no query by that name inserts a call; "+
+				"remove the stale entry rather than leaving it available for reuse", name)
+		}
+	}
+	for name := range settledOutcomeLiterals {
+		if !found[name] && !inserted[name] {
+			t.Errorf("settledOutcomeLiterals binds %q, but no query by that name writes a call; "+
+				"remove the stale entry", name)
+		}
+	}
+}
+
+// terminalRecord is the ONE statement permitted to write the execution's
+// terminal columns (item 5 design, D11), and the guards it owes: no prior
+// result, and admission already closed. The columns are the four axes, the
+// reference, the diagnostic and the instant, and nothing else -- the
+// configuration is immutable and authority has its own transition.
+const terminalRecord = "RecordExecutionTerminalResult"
+
+var (
+	terminalColumns = map[string]bool{
+		"status": true, "completion_disposition": true, "cancellation_reason": true,
+		"failure_class": true, "blocked_tool_call_id": true, "error_message": true, "terminated_at": true,
+	}
+	terminalGuards = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)status\s+IS\s+NULL`),
+		regexp.MustCompile(`(?i)admission_closed_at\s+IS\s+NOT\s+NULL`),
+	}
+)
+
+// TestTerminalResultIsRecordedOnce holds executions.status the way
+// namedTransitions holds an artifact's: one named writer, guarded, and no
+// other statement touching any terminal column.
+func TestTerminalResultIsRecordedOnce(t *testing.T) {
+	var seen bool
+	for _, stmt := range loadStatements(t) {
+		if writeTarget(stmt.sql) != "executions" || !strings.Contains(strings.ToUpper(stmt.sql), "UPDATE ") {
+			continue
+		}
+		upper := strings.ToUpper(stmt.sql)
+		assigned := assignedColumns(between(stmt.sql, upper, "SET", "WHERE"))
+		if stmt.name != terminalRecord {
+			for _, column := range assigned {
+				if terminalColumns[column] {
+					t.Errorf("%s: %q assigns %s; only %s records a terminal result", stmt.file, stmt.name, column, terminalRecord)
+				}
+			}
+			continue
+		}
+		seen = true
+		for _, column := range assigned {
+			if !terminalColumns[column] {
+				t.Errorf("%s: %q assigns %s, which is not a terminal column", stmt.file, stmt.name, column)
+			}
+		}
+		where := between(stmt.sql, upper, "WHERE", ";")
+		for _, guard := range terminalGuards {
+			if !guard.MatchString(where) {
+				t.Errorf("%s: %q lacks `%s` in its WHERE clause; a terminal result is recorded once and "+
+					"only after admission closes (design D11)", stmt.file, stmt.name, guard)
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("no statement named %s updates executions; this test enforced nothing", terminalRecord)
+	}
+}
+
+// TestAttemptTransitionsAreNamed is the attempt family's mutability rule
+// (item 5 design, D5-D12): every non-settling UPDATE of tool_calls is a
+// named transition carrying the guard that binds it to the state it moves
+// from, assigning only its own columns, and -- unless it acts on a settled
+// row -- the once-only guard that keeps a settled attempt settled.
+func TestAttemptTransitionsAreNamed(t *testing.T) {
+	var checked int
+	for _, stmt := range loadStatements(t) {
+		transition, named := namedAttemptTransitions[stmt.name]
+		if !named {
+			continue
+		}
+		checked++
+		if callTableWritten(stmt.sql) != "tool_calls" || !strings.Contains(strings.ToUpper(stmt.sql), "UPDATE ") {
+			t.Errorf("%s: %q is listed as an attempt transition but does not update tool_calls", stmt.file, stmt.name)
+			continue
+		}
+		upper := strings.ToUpper(stmt.sql)
+		where := between(stmt.sql, upper, "WHERE", ";")
+		if !transition.guard.MatchString(where) {
+			t.Errorf("%s: %q lacks its state guard `%s` in the WHERE clause. A transition without the "+
+				"state it moves from is a generic update wearing a transition's name.",
+				stmt.file, stmt.name, transition.guard)
+		}
+		if !transition.settled && !onceOnlyGuard.MatchString(where) {
+			t.Errorf("%s: %q updates an unsettled attempt without `finished_at IS NULL` in its WHERE "+
+				"clause; that guard is what keeps a settled attempt from being re-opened.", stmt.file, stmt.name)
+		}
+		for _, assigned := range assignedColumns(between(stmt.sql, upper, "SET", "WHERE")) {
+			if !transition.columns[assigned] {
+				t.Errorf("%s: %q assigns %s, which is not in its column set. A transition records one "+
+					"movement; rewriting the request side or the outcome through it mutates history "+
+					"past a statement that passed the name check.", stmt.file, stmt.name, assigned)
+			}
+		}
+	}
+	if checked != len(namedAttemptTransitions) {
+		t.Fatalf("checked %d of %d named transitions; the rest do not exist and the allow-list is stale",
+			checked, len(namedAttemptTransitions))
+	}
+}
+
+// TestSettlingStatementsWriteTheirLiteral binds the statements that settle
+// with a fixed outcome to that outcome: a denial that settled `succeeded`
+// would pass every other rule here.
+func TestSettlingStatementsWriteTheirLiteral(t *testing.T) {
+	var checked int
+	for _, stmt := range loadStatements(t) {
+		want, bound := settledOutcomeLiterals[stmt.name]
+		if !bound {
+			continue
+		}
+		checked++
+		upper := strings.ToUpper(stmt.sql)
+		var body string
+		if isInsert(stmt.sql) {
+			body = valuesClause(stmt.sql)
+		} else {
+			body = between(stmt.sql, upper, "SET", "WHERE")
+		}
+		if !strings.Contains(strings.ToLower(body), "'"+want+"'") {
+			t.Errorf("%s: %q must settle with the literal '%s' and does not", stmt.file, stmt.name, want)
+		}
+		if !strings.Contains(strings.ToLower(body), "'settled'") {
+			t.Errorf("%s: %q writes an outcome without state = 'settled'; the two move together", stmt.file, stmt.name)
+		}
+	}
+	if checked != len(settledOutcomeLiterals) {
+		t.Fatalf("checked %d of %d bound statements; the allow-list is stale", checked, len(settledOutcomeLiterals))
+	}
+}
+
+// TestBornSettledInsertsWriteTheirLiteral is the exception's own rule: the
+// one INSERT permitted to write a settled tool call writes state, outcome
+// and disposition as LITERALS, so it cannot become a generic terminal
+// insert by taking them as parameters.
+func TestBornSettledInsertsWriteTheirLiteral(t *testing.T) {
+	var checked int
+	for _, stmt := range loadStatements(t) {
+		want, bound := bornSettledInserts[stmt.name]
+		if !bound {
+			continue
+		}
+		checked++
+		values := strings.ToLower(valuesClause(stmt.sql))
+		for _, literal := range []string{"'settled'", "'" + want + "'", "'stopped_before_commit'"} {
+			if !strings.Contains(values, literal) {
+				t.Errorf("%s: %q must insert the literal %s; a denial that took its outcome as a parameter "+
+					"would be a terminal insert of any outcome at all", stmt.file, stmt.name, literal)
+			}
+		}
+		columns := strings.ToLower(between(stmt.sql, strings.ToUpper(stmt.sql), "(", ")"))
+		if strings.Contains(columns, "result") || strings.Contains(columns, "operator_decision") {
+			t.Errorf("%s: %q inserts a result or a decision; a denial has neither", stmt.file, stmt.name)
+		}
+	}
+	if checked != len(bornSettledInserts) {
+		t.Fatalf("checked %d of %d born-settled inserts; the allow-list is stale", checked, len(bornSettledInserts))
 	}
 }
 

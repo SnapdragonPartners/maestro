@@ -82,6 +82,10 @@ type TokenCounts struct {
 // State and Outcome replace migration 000005's boolean. The pair is one fact
 // with two witnesses and the schema ties them: an outcome is present exactly
 // when the state is settled.
+//
+// One record shape: the boundary's columns (item 5 design, D12) are present
+// on an execution-bound attempt and nil on every other row, the importer's
+// included. There is no boundary-owned view.
 type ToolCall struct {
 	FinishedAt   *time.Time
 	Outcome      *ToolOutcome
@@ -90,10 +94,27 @@ type ToolCall struct {
 	UserID       *uuid.UUID
 	LLMCallID    *uuid.UUID
 
+	// The execution that admitted this action, and everything an attempt
+	// carries (D5, D7, D11). ExecutionID nil means not an attempt.
+	ExecutionID          *uuid.UUID
+	RequirementSet       json.RawMessage
+	RequirementSetDigest *string
+	Family               *string
+	RequestDigest        *string
+	ArgumentsDigest      *string
+	CallerRef            *string
+	TargetKey            *string
+	MutationKey          *string
+	ClaimedBy            *uuid.UUID
+	RevalidatedAt        *time.Time
+	ReasonCode           *ReasonCode
+	OperatorDecision     *OperatorDecisionRecord
+	DrainDisposition     *DrainDisposition
+
 	Lineage   Lineage
 	StartedAt time.Time
 
-	State     string
+	State     AttemptState
 	ToolName  string
 	Arguments json.RawMessage
 

@@ -76,14 +76,16 @@ INSERT INTO principal_instances (
     prompt_pack_content_id, prompt_pack_installation_id,
     prompt_pack_installation_revision, prompt_pack_metadata_snapshot,
     harness_config_hash, maestro_version,
-    product_id, feature_id, epic_id, story_id
+    product_id, feature_id, epic_id, story_id,
+    execution_id
 )
 SELECT @principal_instance_id, e.organization_id, 'agent', @model, @agent_type,
        'resolved', r.resolved_name, r.scheme, r.digest,
        r.content_id, r.installation_id,
        r.installation_revision, r.metadata_snapshot,
        @harness_config_hash, @maestro_version,
-       e.product_id, e.feature_id, e.epic_id, e.story_id
+       e.product_id, e.feature_id, e.epic_id, e.story_id,
+       e.execution_id
   FROM executions e
   JOIN dispatch_prompt_resolutions r
     ON r.story_dispatch_id = e.story_dispatch_id
@@ -96,6 +98,16 @@ RETURNING *;
 SELECT * FROM principal_instances
 WHERE principal_instance_id = @principal_instance_id
   AND organization_id       = @organization_id;
+
+-- Admission check 1 (item 5 design, D4): the principal is live AND belongs
+-- to THIS execution, by the binding 000024 added -- a principal of a prior
+-- execution of the same Story carries the same lineage and a different
+-- execution_id, which is what this read distinguishes.
+-- name: GetPrincipalForExecution :one
+SELECT * FROM principal_instances
+WHERE principal_instance_id = @principal_instance_id
+  AND organization_id       = @organization_id
+  AND execution_id          = @execution_id;
 
 -- Lock before stopping. Stopping is once-only (design D7) and a rowcount
 -- carries no reason, so the seam locks, classifies in Go, then writes

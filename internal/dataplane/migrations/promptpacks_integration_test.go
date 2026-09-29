@@ -265,6 +265,17 @@ func TestPrincipalPromptShapeConstraint(t *testing.T) {
 		origin: "resolved", name: "fixture", scheme: packScheme, hash: digestA,
 		content: p.content, install: p.installation, revision: 1, snapshot: `{}`}
 
+	// Every resolved row below is refused twice over since 000024: a resolved
+	// agent must also name its execution
+	// (principal_instances_live_agent_execution_check), and this fixture has
+	// none by construction. That sibling is dropped for the whole test -- in
+	// the fixture's transaction, which is rolled back -- so each case below
+	// is shown to be refused by the 000023 rule it names and by nothing
+	// else. Its own rule is TestLiveAgentPrincipalNamesItsExecution.
+	if _, err := p.tx.Exec(`ALTER TABLE principal_instances DROP CONSTRAINT principal_instances_live_agent_execution_check`); err != nil {
+		t.Fatal(err)
+	}
+
 	// Stray shapes.
 	rejects(shape, "a system principal carrying a pack name",
 		row{kind: "system", model: "system-x", name: "default"})
@@ -604,8 +615,11 @@ func TestPromptPacksUpRefusesExistingDispatchesAndRecovers(t *testing.T) {
 		t.Fatalf("the documented recovery did not work: %v", stepErr)
 	}
 	version, dirty, err = migrations.Version(dsn)
-	if err != nil || version != 23 || dirty {
-		t.Fatalf("after recovery: version %d dirty=%v err=%v, want 23 clean", version, dirty, err)
+	// Up runs to the HEAD of the ladder, which has moved past 23 since this
+	// test was written; what it asserts is that the plane is clean at or
+	// beyond the migration whose refusal it walked, not the ladder's length.
+	if err != nil || version < 23 || dirty {
+		t.Fatalf("after recovery: version %d dirty=%v err=%v, want at least 23, clean", version, dirty, err)
 	}
 }
 
@@ -695,7 +709,11 @@ func TestPromptPacksDownRefusesPlaneOwnedState(t *testing.T) {
 		}, "1 prompt pack content record(s)"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dsn := disposableDatabase(t)
+			// At 23, not the head: these cases test 000023's reversal, and
+			// from the head a reversal to 22 passes through 000024's first,
+			// which refuses on the execution the fixture writes and requires
+			// an execution of every resolved principal.
+			dsn := disposableDatabaseAt(t, 23)
 			db, err := sql.Open("pgx", dsn)
 			if err != nil {
 				t.Fatal(err)
@@ -724,7 +742,7 @@ func TestPromptPacksDownRefusesPlaneOwnedState(t *testing.T) {
 
 // seedPromptResolutionRows writes the content and installation the fixture
 // resolution would name, without a dispatch.
-func seedPromptResolutionRows(t *testing.T, db *sql.DB, org string) {
+func seedPromptResolutionRows(t *testing.T, db execer, org string) {
 	t.Helper()
 	if _, err := db.Exec(contentInsert, fixtureContentID(org), org, packScheme, fixtureContentDigest, `{}`); err != nil {
 		t.Fatal(err)

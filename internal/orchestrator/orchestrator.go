@@ -225,9 +225,26 @@ func (o *Orchestrator) Dispatch(ctx context.Context, storyID uuid.UUID) (*store.
 	return dispatch, nil
 }
 
-// AcceptDispatch records a handshake accepted, creating the execution.
-func (o *Orchestrator) AcceptDispatch(ctx context.Context, dispatchID uuid.UUID) (*store.Execution, error) {
-	execution, err := o.seam.AcceptDispatch(ctx, o.organization.OrganizationID, dispatchID)
+// DispatchConfiguration is what the Orchestrator's caller declares for an
+// execution (item 5 design, D12): the capability set and whether it is
+// headless. The acting user is NOT an input -- it is this Orchestrator's
+// operator, the member the vault resolves secrets for (D6). Item 6 derives
+// the set from the role and pack; here the caller declares it.
+type DispatchConfiguration struct {
+	CapabilitySet []string
+	Headless      bool
+}
+
+// AcceptDispatch records a handshake accepted, creating the execution with
+// its resolved configuration.
+//
+//nolint:gocritic // hugeParam: by value; a configuration is a value
+func (o *Orchestrator) AcceptDispatch(ctx context.Context, dispatchID uuid.UUID, configuration DispatchConfiguration) (*store.Execution, error) {
+	execution, err := o.seam.AcceptDispatch(ctx, o.organization.OrganizationID, dispatchID, store.ExecutionConfiguration{
+		CapabilitySet: configuration.CapabilitySet,
+		Headless:      configuration.Headless,
+		ActingUserID:  o.operator.UserID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("accept dispatch %s: %w", dispatchID, err)
 	}

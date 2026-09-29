@@ -145,17 +145,39 @@ WHERE b.organization_id = @organization_id
 -- so a tool call cited by one is retained as referenced permanently. That
 -- is correct: it is provenance for reviewable work product.
 
+-- Three more retentions since migration 000024 (item 5 design, D11, D12):
+--
+--   * an attempt settled with UNRESOLVED drainage is retained as OPEN. It is
+--     not drained -- its mutation may still commit -- and deleting it would
+--     let RecordTerminalResult find no unresolved attempt and issue a receipt
+--     the drain never earned;
+--   * an attempt an execution names as its blocking action is provenance for
+--     a terminal result and is retained as referenced, as an artifact's
+--     producing call is;
+--   * an attempt another surviving attempt names as the consumer of its
+--     approval is retained as referenced, for the same reason an LLM call
+--     cited by a surviving tool call is.
+
 -- name: CountToolCallTruncation :one
 SELECT
     count(*)::bigint AS candidates,
-    count(*) FILTER (WHERE t.finished_at IS NULL)::bigint AS retained_open,
-    count(*) FILTER (WHERE t.finished_at IS NOT NULL AND (
+    count(*) FILTER (WHERE t.finished_at IS NULL
+                        OR t.drain_disposition = 'unresolved')::bigint AS retained_open,
+    count(*) FILTER (WHERE t.finished_at IS NOT NULL
+                       AND t.drain_disposition IS DISTINCT FROM 'unresolved' AND (
         EXISTS (SELECT 1 FROM management_artifacts m
                 WHERE m.produced_by_tool_call_id = t.tool_call_id
                   AND m.organization_id          = t.organization_id)
      OR EXISTS (SELECT 1 FROM audit_artifacts u
                 WHERE u.produced_by_tool_call_id = t.tool_call_id
-                  AND u.organization_id          = t.organization_id)))::bigint AS retained_referenced
+                  AND u.organization_id          = t.organization_id)
+     OR EXISTS (SELECT 1 FROM executions e
+                WHERE e.blocked_tool_call_id = t.tool_call_id
+                  AND e.organization_id      = t.organization_id)
+     OR EXISTS (SELECT 1 FROM tool_calls o
+                WHERE o.operator_decision_consumed_by = t.tool_call_id
+                  AND o.organization_id               = t.organization_id
+                  AND o.tool_call_id                 <> t.tool_call_id)))::bigint AS retained_referenced
 FROM tool_calls t
 WHERE t.organization_id = @organization_id
   AND ((t.finished_at IS NOT NULL AND t.finished_at < @before)
@@ -166,6 +188,7 @@ DELETE FROM tool_calls t
 WHERE t.organization_id = @organization_id
   AND t.finished_at IS NOT NULL
   AND t.finished_at     < @before
+  AND t.drain_disposition IS DISTINCT FROM 'unresolved'
   AND NOT EXISTS (
       SELECT 1 FROM management_artifacts m
       WHERE m.produced_by_tool_call_id = t.tool_call_id
@@ -173,7 +196,16 @@ WHERE t.organization_id = @organization_id
   AND NOT EXISTS (
       SELECT 1 FROM audit_artifacts u
       WHERE u.produced_by_tool_call_id = t.tool_call_id
-        AND u.organization_id          = t.organization_id);
+        AND u.organization_id          = t.organization_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM executions e
+      WHERE e.blocked_tool_call_id = t.tool_call_id
+        AND e.organization_id      = t.organization_id)
+  AND NOT EXISTS (
+      SELECT 1 FROM tool_calls o
+      WHERE o.operator_decision_consumed_by = t.tool_call_id
+        AND o.organization_id               = t.organization_id
+        AND o.tool_call_id                 <> t.tool_call_id);
 
 -- --- LLM calls: open, or referenced by a surviving tool call ------------
 

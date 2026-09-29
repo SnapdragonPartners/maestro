@@ -173,17 +173,27 @@ type EpicDependency struct {
 }
 
 type Execution struct {
-	ExecutionID        pgtype.UUID
-	OrganizationID     pgtype.UUID
-	ProductID          pgtype.UUID
-	FeatureID          pgtype.UUID
-	EpicID             pgtype.UUID
-	StoryID            pgtype.UUID
-	StoryDispatchID    pgtype.UUID
-	DispatchIsAccepted bool
-	AuthorityState     string
-	AdmissionClosedAt  pgtype.Timestamptz
-	CreatedAt          pgtype.Timestamptz
+	ExecutionID           pgtype.UUID
+	OrganizationID        pgtype.UUID
+	ProductID             pgtype.UUID
+	FeatureID             pgtype.UUID
+	EpicID                pgtype.UUID
+	StoryID               pgtype.UUID
+	StoryDispatchID       pgtype.UUID
+	DispatchIsAccepted    bool
+	AuthorityState        string
+	AdmissionClosedAt     pgtype.Timestamptz
+	CreatedAt             pgtype.Timestamptz
+	CapabilitySet         []byte
+	Headless              bool
+	ActingUserID          pgtype.UUID
+	Status                *string
+	CompletionDisposition *string
+	CancellationReason    *string
+	FailureClass          *string
+	BlockedToolCallID     pgtype.UUID
+	ErrorMessage          *string
+	TerminatedAt          pgtype.Timestamptz
 }
 
 type Feature struct {
@@ -303,6 +313,7 @@ type PrincipalInstance struct {
 	PromptPackInstallationID       pgtype.UUID
 	PromptPackInstallationRevision *int32
 	PromptPackMetadataSnapshot     []byte
+	ExecutionID                    pgtype.UUID
 }
 
 type PrincipalInstanceInput struct {
@@ -362,6 +373,16 @@ type Repository struct {
 	Slug             string
 	DisplayName      string
 	CreatedAt        pgtype.Timestamptz
+}
+
+type RepositoryForgeBinding struct {
+	RepositoryID   pgtype.UUID
+	OrganizationID pgtype.UUID
+	Provider       string
+	BaseUrl        string
+	Owner          string
+	Repo           string
+	CreatedAt      pgtype.Timestamptz
 }
 
 type RetentionPin struct {
@@ -452,27 +473,42 @@ type StoryDispatch struct {
 }
 
 type ToolCall struct {
-	ToolCallID           pgtype.UUID
-	OrganizationID       pgtype.UUID
-	UserID               pgtype.UUID
-	PrincipalInstanceID  pgtype.UUID
-	LlmCallID            pgtype.UUID
-	ProductID            pgtype.UUID
-	FeatureID            pgtype.UUID
-	EpicID               pgtype.UUID
-	StoryID              pgtype.UUID
-	LineageKey           string
-	ToolName             string
-	Arguments            []byte
-	Result               []byte
-	ErrorMessage         *string
-	StartedAt            pgtype.Timestamptz
-	FinishedAt           pgtype.Timestamptz
-	State                string
-	Outcome              *string
-	ExecutionID          pgtype.UUID
-	RequirementSet       []byte
-	RequirementSetDigest *string
+	ToolCallID                 pgtype.UUID
+	OrganizationID             pgtype.UUID
+	UserID                     pgtype.UUID
+	PrincipalInstanceID        pgtype.UUID
+	LlmCallID                  pgtype.UUID
+	ProductID                  pgtype.UUID
+	FeatureID                  pgtype.UUID
+	EpicID                     pgtype.UUID
+	StoryID                    pgtype.UUID
+	LineageKey                 string
+	ToolName                   string
+	Arguments                  []byte
+	Result                     []byte
+	ErrorMessage               *string
+	StartedAt                  pgtype.Timestamptz
+	FinishedAt                 pgtype.Timestamptz
+	State                      string
+	Outcome                    *string
+	ExecutionID                pgtype.UUID
+	RequirementSet             []byte
+	RequirementSetDigest       *string
+	Family                     *string
+	RequestDigest              *string
+	ArgumentsDigest            *string
+	CallerRef                  *string
+	TargetKey                  *string
+	MutationKey                *string
+	ClaimedBy                  pgtype.UUID
+	RevalidatedAt              pgtype.Timestamptz
+	ReasonCode                 *string
+	OperatorDecision           *string
+	OperatorDecidedBy          pgtype.UUID
+	OperatorDecidedAt          pgtype.Timestamptz
+	OperatorDecisionConsumedAt pgtype.Timestamptz
+	OperatorDecisionConsumedBy pgtype.UUID
+	DrainDisposition           *string
 }
 
 type User struct {

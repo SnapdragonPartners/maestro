@@ -316,7 +316,7 @@ func TestDispositionTransitionsAreNamedAndTerminal(t *testing.T) {
 	t.Run("accept creates the execution", func(t *testing.T) {
 		g := provisionGoverned(t, f)
 		d := dispatchOf(t, g)
-		execution, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID)
+		execution, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, f.configured())
 		if err != nil {
 			t.Fatalf("accept: %v", err)
 		}
@@ -332,7 +332,7 @@ func TestDispositionTransitionsAreNamedAndTerminal(t *testing.T) {
 			t.Fatalf("dispatch after accept: %+v", accepted)
 		}
 		// Terminal: every further transition is refused, and nothing moves.
-		if _, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID); err == nil {
+		if _, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, f.configured()); err == nil {
 			t.Fatal("a second accept succeeded")
 		} else {
 			assertDispatchRejected(t, err, store.ReasonNotPending)
@@ -358,7 +358,7 @@ func TestDispositionTransitionsAreNamedAndTerminal(t *testing.T) {
 		if failed.Disposition != store.DispositionFailed || failed.FailureCode == nil || *failed.FailureCode != "handshake_refused" {
 			t.Fatalf("after fail: %+v", failed)
 		}
-		if _, err := f2.store.AcceptDispatch(ctx, f2.organizationID, d.StoryDispatchID); err == nil {
+		if _, err := f2.store.AcceptDispatch(ctx, f2.organizationID, d.StoryDispatchID, f2.configured()); err == nil {
 			t.Fatal("a failed dispatch was accepted")
 		}
 		if _, err := f2.store.GetExecutionByDispatch(ctx, f2.organizationID, d.StoryDispatchID); !errors.Is(err, store.ErrNotFound) {

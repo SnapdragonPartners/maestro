@@ -35,6 +35,9 @@ func main() {
 	productName := flag.String("product-name", "", "for provision product: the display name (defaults to the slug)")
 	repo := flag.String("repo", "", "for provision repository: the repository slug")
 	repoName := flag.String("repo-name", "", "for provision repository: the display name (defaults to the slug)")
+	story := flag.String("story", "", "for dispatch: the Story id to dispatch")
+	capabilities := flag.String("capabilities", "", "for dispatch: the comma-separated family identities the execution may request (empty declares an empty set)")
+	headless := flag.Bool("headless", false, "for dispatch: declare the execution headless, so an operator requirement blocks terminally rather than waiting")
 	operator := flag.String("operator", "", "for benchmark import: the handle of the operator the report is authored by")
 	results := flag.String("results", "", "for benchmark import: the results store (default "+DefaultResultsDir+")")
 	fileCap := flag.Int64("file-cap", 0, "for benchmark import: the per-file evidence cap in bytes (0 is the default)")
@@ -69,6 +72,9 @@ func main() {
 		productName:  *productName,
 		repo:         *repo,
 		repoName:     *repoName,
+		story:        *story,
+		capabilities: *capabilities,
+		headless:     *headless,
 		operator:     *operator,
 		results:      *results,
 		suites:       suites,
@@ -84,7 +90,7 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage: dataplanectl [flags] <up|down|reset|migrate|force-version|backup|restore|verify|recover-key|
-                                  bootstrap|provision organization|user|product|repository|recover|
+                                  bootstrap|provision organization|user|product|repository|recover|dispatch|
                                   prompt-pack show|prompt-pack select-builtin|benchmark import|benchmark show>
 
   up       start Postgres and the object store, wait until usable, apply migrations (idempotent)
@@ -126,6 +132,15 @@ func usage() {
            organization that already has a selector keeps it, whatever it
            names -- an upgrade moves nobody. Idempotent, so it is also how an
            organization that predates prompt packs is initialised.
+  dispatch
+           create and accept a dispatch for one Story with a DECLARED
+           capability set, and print the execution. Requires -org, -user
+           and -story; -capabilities is a comma-separated list of family
+           identities, empty for an execution that may request nothing;
+           -headless declares that no operator will answer a requirement.
+           The execution acts for -user. Until an agent core exists this is
+           how an operator exercises the execution boundary.
+               dataplanectl -org acme -user dr -story <id> -capabilities forge/story_pull_request dispatch
   prompt-pack show
            print what the organization's selector resolves to. Requires -org.
   prompt-pack select-builtin
@@ -167,11 +182,14 @@ type runOptions struct {
 	repoName     string
 	operator     string
 	results      string
+	story        string
+	capabilities string
 	suites       suiteList
 	fileCap      int64
 	attemptCap   int64
 	forceVersion int
 	force        bool
+	headless     bool
 }
 
 func run(ctx context.Context, command string, opts *runOptions) error {
@@ -238,6 +256,9 @@ func runPlaneCommand(ctx context.Context, cfg *stack.Config, command string, opt
 
 	case "recover":
 		return runRecover(ctx, cfg, opts)
+
+	case "dispatch":
+		return runDispatch(ctx, cfg, opts)
 
 	case "benchmark import":
 		return runBenchmarkImport(ctx, cfg, opts)

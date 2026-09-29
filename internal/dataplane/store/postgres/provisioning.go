@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -148,7 +151,7 @@ func productFromRow(row *gen.Product) store.Product {
 	}
 }
 
-func repositoryFromRow(row *gen.Repository, products []uuid.UUID) store.Repository {
+func repositoryFromRow(row *gen.Repository, products []uuid.UUID, bindings []store.ForgeBinding) store.Repository {
 	return store.Repository{
 		CreatedAt:        fromTimestamptz(row.CreatedAt),
 		Slug:             row.Slug,
@@ -158,6 +161,19 @@ func repositoryFromRow(row *gen.Repository, products []uuid.UUID) store.Reposito
 		PrimaryProductID: fromUUID(row.PrimaryProductID),
 		UserID:           fromUUID(row.UserID),
 		ProductIDs:       products,
+		ForgeBindings:    bindings,
+	}
+}
+
+func forgeBindingFromRow(row *gen.RepositoryForgeBinding) store.ForgeBinding {
+	return store.ForgeBinding{
+		CreatedAt:      fromTimestamptz(row.CreatedAt),
+		BaseURL:        row.BaseUrl,
+		Owner:          row.Owner,
+		Repo:           row.Repo,
+		Provider:       store.ForgeProvider(row.Provider),
+		RepositoryID:   fromUUID(row.RepositoryID),
+		OrganizationID: fromUUID(row.OrganizationID),
 	}
 }
 
@@ -196,9 +212,71 @@ func (t *tx) repositoryWithProducts(ctx context.Context, row *gen.Repository) (*
 	for _, member := range members {
 		products = append(products, fromUUID(member))
 	}
-	repository := repositoryFromRow(row, products)
+	bound, err := t.queries.ListRepositoryForgeBindings(ctx, gen.ListRepositoryForgeBindingsParams{
+		RepositoryID: row.RepositoryID, OrganizationID: row.OrganizationID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list forge bindings of repository %q: %w", row.Slug, err)
+	}
+	bindings := make([]store.ForgeBinding, 0, len(bound))
+	for i := range bound {
+		bindings = append(bindings, forgeBindingFromRow(&bound[i]))
+	}
+	repository := repositoryFromRow(row, products, bindings)
 	return &repository, nil
 }
+
+// BindRepositoryForge records a forge binding, idempotently per
+// (repository, provider), on ProvisionRepository's exact-conflict pattern
+// (item 5 design, D12, D13).
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (t *tx) BindRepositoryForge(ctx context.Context, input store.BindRepositoryForgeInput) (store.Bootstrapped[store.ForgeBinding], error) {
+	var empty store.Bootstrapped[store.ForgeBinding]
+	if input.Provider != store.ForgeProviderGitea {
+		return empty, fmt.Errorf("forge provider %q is not one this plane binds; the closed set is {%s}", input.Provider, store.ForgeProviderGitea)
+	}
+	if !forgeBaseURLPattern.MatchString(input.BaseURL) {
+		return empty, fmt.Errorf("forge base URL %q is not an http(s) URL", input.BaseURL)
+	}
+	if strings.TrimSpace(input.Owner) == "" || strings.TrimSpace(input.Repo) == "" {
+		return empty, errors.New("a forge binding names an owner and a repo; one is blank")
+	}
+	if _, err := t.queries.GetRepositoryByID(ctx, gen.GetRepositoryByIDParams{
+		OrganizationID: toUUID(input.OrganizationID), RepositoryID: toUUID(input.RepositoryID),
+	}); err != nil {
+		return empty, notFound(err, "repository", input.RepositoryID)
+	}
+	inserted, err := t.queries.InsertRepositoryForgeBindingIfAbsent(ctx, gen.InsertRepositoryForgeBindingIfAbsentParams{
+		RepositoryID: toUUID(input.RepositoryID), OrganizationID: toUUID(input.OrganizationID),
+		Provider: string(input.Provider), BaseUrl: input.BaseURL, Owner: input.Owner, Repo: input.Repo,
+	})
+	if err != nil {
+		return empty, fmt.Errorf("bind repository %s to %s: %w", input.RepositoryID, input.Provider, err)
+	}
+	row, err := t.queries.GetRepositoryForgeBinding(ctx, gen.GetRepositoryForgeBindingParams{
+		RepositoryID: toUUID(input.RepositoryID), OrganizationID: toUUID(input.OrganizationID), Provider: string(input.Provider),
+	})
+	if err != nil {
+		return empty, notFound(err, "forge binding of repository", input.RepositoryID)
+	}
+	// Compared against the STORED row, which may be the other racer's.
+	key := input.RepositoryID.String() + "/" + string(input.Provider)
+	for _, field := range []struct{ name, stored, supplied string }{
+		{"forge base URL", row.BaseUrl, input.BaseURL},
+		{"forge owner", row.Owner, input.Owner},
+		{"forge repo", row.Repo, input.Repo},
+	} {
+		if field.stored != field.supplied {
+			return empty, &store.BootstrapConflict{Kind: field.name, Key: key, Stored: field.stored, Supplied: field.supplied}
+		}
+	}
+	return store.Bootstrapped[store.ForgeBinding]{Record: forgeBindingFromRow(&row), Created: inserted == 1}, nil
+}
+
+// forgeBaseURLPattern is the schema's, so the seam refuses before the column
+// has to.
+var forgeBaseURLPattern = regexp.MustCompile(`^https?://\S+$`)
 
 // ProvisionProduct provisions a Product, idempotently. Same shape and same
 // reasoning as BootstrapOrganization.

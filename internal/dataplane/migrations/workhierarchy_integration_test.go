@@ -3,6 +3,7 @@
 package migrations_test
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 
@@ -73,7 +74,15 @@ type wh struct {
 // constraint under test is ever consulted.
 func seedWorkHierarchy(t *testing.T) *wh {
 	t.Helper()
-	f := seed(t, openPlane(t))
+	return seedWorkHierarchyOn(t, openPlane(t))
+}
+
+// seedWorkHierarchyOn is seedWorkHierarchy against a database the caller
+// chose -- a disposable one, for a test whose migration must be the one
+// this binary's SQL just built rather than the shared plane's.
+func seedWorkHierarchyOn(t *testing.T, db *sql.DB) *wh {
+	t.Helper()
+	f := seed(t, db)
 	w := &wh{
 		fixture:       f,
 		epic2:         whEpic2,
@@ -235,9 +244,7 @@ func TestWellFormedWorkHierarchyRowsAreAccepted(t *testing.T) {
 	w.insertDispatch(t)
 	w.acceptDispatch(t)
 
-	if _, err := w.tx.Exec(`INSERT INTO executions
-	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-	        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+	if _, err := w.tx.Exec(executionInsert(t, w.tx, w.user),
 		whExecution, w.org, w.product, w.feature, w.epic, w.story, w.dispatch); err != nil {
 		t.Fatalf("a well-formed execution was rejected: %v", err)
 	}
@@ -358,9 +365,7 @@ func TestExecutionRequiresAnAcceptedDispatch(t *testing.T) {
 	w := seedWorkHierarchy(t)
 	w.insertDispatch(t)
 
-	insert := `INSERT INTO executions
-	           (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-	           VALUES ($1,$2,$3,$4,$5,$6,$7)`
+	insert := executionInsert(t, w.tx, w.user)
 	args := []any{whExecution, w.org, w.product, w.feature, w.epic, w.story, w.dispatch}
 
 	w.rejectsWith(t, "executions_dispatch_fkey",
@@ -389,9 +394,7 @@ func TestExecutionIsBoundToItsDispatchesStory(t *testing.T) {
 
 	w.rejectsWith(t, "executions_dispatch_fkey",
 		"an execution carried Story 2's lineage while referencing Story 1's accepted dispatch",
-		`INSERT INTO executions
-		 (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		executionInsert(t, w.tx, w.user),
 		whExecution, w.org, w.product, w.feature, w.epic2, w.story2, w.dispatch)
 }
 
@@ -399,9 +402,7 @@ func TestExecutionAuthorityConstraints(t *testing.T) {
 	w := seedWorkHierarchy(t)
 	w.insertDispatch(t)
 	w.acceptDispatch(t)
-	if _, err := w.tx.Exec(`INSERT INTO executions
-	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-	        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+	if _, err := w.tx.Exec(executionInsert(t, w.tx, w.user),
 		whExecution, w.org, w.product, w.feature, w.epic, w.story, w.dispatch); err != nil {
 		t.Fatalf("seed execution: %v", err)
 	}
@@ -416,9 +417,7 @@ func TestExecutionAuthorityConstraints(t *testing.T) {
 
 	w.rejectsWith(t, "executions_one_per_dispatch_key",
 		"a second execution was created for one dispatch",
-		`INSERT INTO executions
-		 (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		executionInsert(t, w.tx, w.user),
 		"30000000-0000-7000-8000-0000000000ae", w.org, w.product, w.feature, w.epic, w.story, w.dispatch)
 
 	// The inverse: closing admission while authority is still current is a

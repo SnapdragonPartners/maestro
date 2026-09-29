@@ -11,44 +11,60 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const completeToolCall = `-- name: CompleteToolCall :execrows
+const consumeOperatorDecision = `-- name: ConsumeOperatorDecision :execrows
 UPDATE tool_calls
-SET finished_at   = COALESCE($1::timestamptz, now()),
-    state         = 'settled',
-    outcome       = $2,
-    result        = $3,
-    error_message = $4
-WHERE tool_call_id    = $5
-  AND organization_id = $6
+SET state                         = 'open',
+    operator_decision_consumed_at = now(),
+    operator_decision_consumed_by = tool_call_id,
+    revalidated_at                = now(),
+    claimed_by                    = $1
+WHERE tool_call_id                  = $2
+  AND organization_id               = $3
+  AND state                         = 'operator_waiting'
+  AND operator_decision             = 'approve_once'
+  AND operator_decision_consumed_at IS NULL
   AND finished_at IS NULL
 `
 
-type CompleteToolCallParams struct {
-	FinishedAt     pgtype.Timestamptz
-	Outcome        *string
-	Result         []byte
-	ErrorMessage   *string
+type ConsumeOperatorDecisionParams struct {
+	ClaimedBy      pgtype.UUID
 	ToolCallID     pgtype.UUID
 	OrganizationID pgtype.UUID
 }
 
-// Settling moves the state and the outcome together, because migration
-// 000022 ties them: (state = 'settled') = (outcome IS NOT NULL), and the
-// same equivalence against finished_at. Writing one without the others is
-// refused by the row rather than by this query.
-func (q *Queries) CompleteToolCall(ctx context.Context, arg CompleteToolCallParams) (int64, error) {
-	result, err := q.db.Exec(ctx, completeToolCall,
-		arg.FinishedAt,
-		arg.Outcome,
-		arg.Result,
-		arg.ErrorMessage,
-		arg.ToolCallID,
-		arg.OrganizationID,
-	)
+// Gate 3's first act (D7): ONE conditional update that consumes the
+// approval, moves the row back to open, records the revalidation and
+// transfers the claim to the consuming instance (D5). The predicates on
+// state AND consumption are both load-bearing -- exactly one of two
+// concurrent re-presentations succeeds -- and the seam's test removes both to
+// show the property is theirs.
+func (q *Queries) ConsumeOperatorDecision(ctx context.Context, arg ConsumeOperatorDecisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, consumeOperatorDecision, arg.ClaimedBy, arg.ToolCallID, arg.OrganizationID)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const countUndrainedExecutionAttempts = `-- name: CountUndrainedExecutionAttempts :one
+SELECT count(*)::bigint FROM tool_calls
+WHERE organization_id = $1
+  AND execution_id    = $2
+  AND (state <> 'settled' OR drain_disposition = 'unresolved')
+`
+
+type CountUndrainedExecutionAttemptsParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+// The receipt's action half (D11): an attempt that is unsettled, or settled
+// with unresolved drainage, is not drained.
+func (q *Queries) CountUndrainedExecutionAttempts(ctx context.Context, arg CountUndrainedExecutionAttemptsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUndrainedExecutionAttempts, arg.OrganizationID, arg.ExecutionID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const createToolCall = `-- name: CreateToolCall :one
@@ -62,7 +78,7 @@ INSERT INTO tool_calls (
     $5, $6, $7, $8, $9,
     $10, $11, COALESCE($12::timestamptz, now())
 )
-RETURNING tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest
+RETURNING tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition
 `
 
 type CreateToolCallParams struct {
@@ -129,12 +145,159 @@ func (q *Queries) CreateToolCall(ctx context.Context, arg CreateToolCallParams) 
 		&i.ExecutionID,
 		&i.RequirementSet,
 		&i.RequirementSetDigest,
+		&i.Family,
+		&i.RequestDigest,
+		&i.ArgumentsDigest,
+		&i.CallerRef,
+		&i.TargetKey,
+		&i.MutationKey,
+		&i.ClaimedBy,
+		&i.RevalidatedAt,
+		&i.ReasonCode,
+		&i.OperatorDecision,
+		&i.OperatorDecidedBy,
+		&i.OperatorDecidedAt,
+		&i.OperatorDecisionConsumedAt,
+		&i.OperatorDecisionConsumedBy,
+		&i.DrainDisposition,
+	)
+	return i, err
+}
+
+const enterOperatorWait = `-- name: EnterOperatorWait :execrows
+UPDATE tool_calls
+SET state                  = 'operator_waiting',
+    requirement_set        = $1,
+    requirement_set_digest = $2
+WHERE tool_call_id    = $3
+  AND organization_id = $4
+  AND state           = 'open'
+  AND finished_at IS NULL
+`
+
+type EnterOperatorWaitParams struct {
+	RequirementSet       []byte
+	RequirementSetDigest *string
+	ToolCallID           pgtype.UUID
+	OrganizationID       pgtype.UUID
+}
+
+// Gate 2's entry (D7): the requirement set and the transition in one
+// statement, from open only.
+func (q *Queries) EnterOperatorWait(ctx context.Context, arg EnterOperatorWaitParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enterOperatorWait,
+		arg.RequirementSet,
+		arg.RequirementSetDigest,
+		arg.ToolCallID,
+		arg.OrganizationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enterResourceWait = `-- name: EnterResourceWait :execrows
+UPDATE tool_calls
+SET state = 'resource_waiting'
+WHERE tool_call_id    = $1
+  AND organization_id = $2
+  AND state           = 'open'
+  AND finished_at IS NULL
+`
+
+type EnterResourceWaitParams struct {
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// The resource wait's transitions exist here so item 7 adds a producer, not
+// a column (D8 step 4).
+func (q *Queries) EnterResourceWait(ctx context.Context, arg EnterResourceWaitParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enterResourceWait, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const findInheritableDecision = `-- name: FindInheritableDecision :one
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
+WHERE organization_id  = $1
+  AND execution_id     = $2
+  AND family           = $3
+  AND arguments_digest = $4
+  AND target_key       = $5
+  AND state            = 'settled'
+  AND outcome          = 'stale'
+  AND operator_decision = 'approve_once'
+  AND operator_decision_consumed_at IS NULL
+ORDER BY finished_at DESC, tool_call_id DESC
+LIMIT 1
+`
+
+type FindInheritableDecisionParams struct {
+	OrganizationID  pgtype.UUID
+	ExecutionID     pgtype.UUID
+	Family          *string
+	ArgumentsDigest *string
+	TargetKey       *string
+}
+
+// The row a re-request may inherit from: same execution, family, substituted
+// digest and target, stale, approved, unconsumed. The most recent, if several.
+func (q *Queries) FindInheritableDecision(ctx context.Context, arg FindInheritableDecisionParams) (ToolCall, error) {
+	row := q.db.QueryRow(ctx, findInheritableDecision,
+		arg.OrganizationID,
+		arg.ExecutionID,
+		arg.Family,
+		arg.ArgumentsDigest,
+		arg.TargetKey,
+	)
+	var i ToolCall
+	err := row.Scan(
+		&i.ToolCallID,
+		&i.OrganizationID,
+		&i.UserID,
+		&i.PrincipalInstanceID,
+		&i.LlmCallID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.LineageKey,
+		&i.ToolName,
+		&i.Arguments,
+		&i.Result,
+		&i.ErrorMessage,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.State,
+		&i.Outcome,
+		&i.ExecutionID,
+		&i.RequirementSet,
+		&i.RequirementSetDigest,
+		&i.Family,
+		&i.RequestDigest,
+		&i.ArgumentsDigest,
+		&i.CallerRef,
+		&i.TargetKey,
+		&i.MutationKey,
+		&i.ClaimedBy,
+		&i.RevalidatedAt,
+		&i.ReasonCode,
+		&i.OperatorDecision,
+		&i.OperatorDecidedBy,
+		&i.OperatorDecidedAt,
+		&i.OperatorDecisionConsumedAt,
+		&i.OperatorDecisionConsumedBy,
+		&i.DrainDisposition,
 	)
 	return i, err
 }
 
 const getToolCall = `-- name: GetToolCall :one
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
 WHERE tool_call_id    = $1
   AND organization_id = $2
 `
@@ -169,12 +332,358 @@ func (q *Queries) GetToolCall(ctx context.Context, arg GetToolCallParams) (ToolC
 		&i.ExecutionID,
 		&i.RequirementSet,
 		&i.RequirementSetDigest,
+		&i.Family,
+		&i.RequestDigest,
+		&i.ArgumentsDigest,
+		&i.CallerRef,
+		&i.TargetKey,
+		&i.MutationKey,
+		&i.ClaimedBy,
+		&i.RevalidatedAt,
+		&i.ReasonCode,
+		&i.OperatorDecision,
+		&i.OperatorDecidedBy,
+		&i.OperatorDecidedAt,
+		&i.OperatorDecisionConsumedAt,
+		&i.OperatorDecisionConsumedBy,
+		&i.DrainDisposition,
 	)
 	return i, err
 }
 
+const inheritOperatorDecision = `-- name: InheritOperatorDecision :execrows
+UPDATE tool_calls
+SET operator_decision_consumed_at = now(),
+    operator_decision_consumed_by = $1
+WHERE tool_call_id                  = $2
+  AND organization_id               = $3
+  AND state                         = 'settled'
+  AND outcome                       = 'stale'
+  AND operator_decision             = 'approve_once'
+  AND operator_decision_consumed_at IS NULL
+`
+
+type InheritOperatorDecisionParams struct {
+	ConsumedBy     pgtype.UUID
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// A re-request inheriting a stale attempt's unconsumed approval (D5): the
+// decision is marked consumed on the STALE row with the new attempt's id,
+// once. The stale row is settled, so the guard is its state, not finished_at.
+func (q *Queries) InheritOperatorDecision(ctx context.Context, arg InheritOperatorDecisionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, inheritOperatorDecision, arg.ConsumedBy, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const leaveResourceWait = `-- name: LeaveResourceWait :execrows
+UPDATE tool_calls
+SET state = 'open'
+WHERE tool_call_id    = $1
+  AND organization_id = $2
+  AND state           = 'resource_waiting'
+  AND finished_at IS NULL
+`
+
+type LeaveResourceWaitParams struct {
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+func (q *Queries) LeaveResourceWait(ctx context.Context, arg LeaveResourceWaitParams) (int64, error) {
+	result, err := q.db.Exec(ctx, leaveResourceWait, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const listAttemptsForRecovery = `-- name: ListAttemptsForRecovery :many
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
+WHERE organization_id = $1
+  AND execution_id IS NOT NULL
+  AND (state <> 'settled' OR drain_disposition = 'unresolved')
+ORDER BY started_at, tool_call_id
+`
+
+// Recovery's two enumerations in one (D5, D12): unsettled boundary attempts,
+// and settled ones whose drainage is unresolved.
+func (q *Queries) ListAttemptsForRecovery(ctx context.Context, organizationID pgtype.UUID) ([]ToolCall, error) {
+	rows, err := q.db.Query(ctx, listAttemptsForRecovery, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolCall{}
+	for rows.Next() {
+		var i ToolCall
+		if err := rows.Scan(
+			&i.ToolCallID,
+			&i.OrganizationID,
+			&i.UserID,
+			&i.PrincipalInstanceID,
+			&i.LlmCallID,
+			&i.ProductID,
+			&i.FeatureID,
+			&i.EpicID,
+			&i.StoryID,
+			&i.LineageKey,
+			&i.ToolName,
+			&i.Arguments,
+			&i.Result,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutionAttempts = `-- name: ListExecutionAttempts :many
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
+WHERE organization_id = $1
+  AND execution_id    = $2
+ORDER BY started_at, tool_call_id
+`
+
+type ListExecutionAttemptsParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+func (q *Queries) ListExecutionAttempts(ctx context.Context, arg ListExecutionAttemptsParams) ([]ToolCall, error) {
+	rows, err := q.db.Query(ctx, listExecutionAttempts, arg.OrganizationID, arg.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolCall{}
+	for rows.Next() {
+		var i ToolCall
+		if err := rows.Scan(
+			&i.ToolCallID,
+			&i.OrganizationID,
+			&i.UserID,
+			&i.PrincipalInstanceID,
+			&i.LlmCallID,
+			&i.ProductID,
+			&i.FeatureID,
+			&i.EpicID,
+			&i.StoryID,
+			&i.LineageKey,
+			&i.ToolName,
+			&i.Arguments,
+			&i.Result,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutionWaits = `-- name: ListExecutionWaits :many
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
+WHERE organization_id = $1
+  AND execution_id    = $2
+  AND state           IN ('operator_waiting', 'resource_waiting')
+ORDER BY started_at, tool_call_id
+`
+
+type ListExecutionWaitsParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+// The projection's read (D11's OpenWork extension): which wait, if any, an
+// execution's attempts are in.
+func (q *Queries) ListExecutionWaits(ctx context.Context, arg ListExecutionWaitsParams) ([]ToolCall, error) {
+	rows, err := q.db.Query(ctx, listExecutionWaits, arg.OrganizationID, arg.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolCall{}
+	for rows.Next() {
+		var i ToolCall
+		if err := rows.Scan(
+			&i.ToolCallID,
+			&i.OrganizationID,
+			&i.UserID,
+			&i.PrincipalInstanceID,
+			&i.LlmCallID,
+			&i.ProductID,
+			&i.FeatureID,
+			&i.EpicID,
+			&i.StoryID,
+			&i.LineageKey,
+			&i.ToolName,
+			&i.Arguments,
+			&i.Result,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStoryWaitingAttempts = `-- name: ListStoryWaitingAttempts :many
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
+WHERE organization_id = $1
+  AND story_id        = $2
+  AND state           = 'operator_waiting'
+ORDER BY started_at, tool_call_id
+`
+
+type ListStoryWaitingAttemptsParams struct {
+	OrganizationID pgtype.UUID
+	StoryID        pgtype.UUID
+}
+
+// The Story-scoped guard's read (D4), under the Story lock the seam takes
+// first.
+func (q *Queries) ListStoryWaitingAttempts(ctx context.Context, arg ListStoryWaitingAttemptsParams) ([]ToolCall, error) {
+	rows, err := q.db.Query(ctx, listStoryWaitingAttempts, arg.OrganizationID, arg.StoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolCall{}
+	for rows.Next() {
+		var i ToolCall
+		if err := rows.Scan(
+			&i.ToolCallID,
+			&i.OrganizationID,
+			&i.UserID,
+			&i.PrincipalInstanceID,
+			&i.LlmCallID,
+			&i.ProductID,
+			&i.FeatureID,
+			&i.EpicID,
+			&i.StoryID,
+			&i.LineageKey,
+			&i.ToolName,
+			&i.Arguments,
+			&i.Result,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listToolCallsByPrincipal = `-- name: ListToolCallsByPrincipal :many
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
 WHERE organization_id       = $1
   AND principal_instance_id = $2
   AND ($3::timestamptz IS NULL
@@ -228,6 +737,21 @@ func (q *Queries) ListToolCallsByPrincipal(ctx context.Context, arg ListToolCall
 			&i.ExecutionID,
 			&i.RequirementSet,
 			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -240,7 +764,7 @@ func (q *Queries) ListToolCallsByPrincipal(ctx context.Context, arg ListToolCall
 }
 
 const listToolCallsByStory = `-- name: ListToolCallsByStory :many
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
 WHERE organization_id = $1
   AND story_id        = $2
   AND ($3::timestamptz IS NULL
@@ -294,6 +818,21 @@ func (q *Queries) ListToolCallsByStory(ctx context.Context, arg ListToolCallsByS
 			&i.ExecutionID,
 			&i.RequirementSet,
 			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -306,7 +845,7 @@ func (q *Queries) ListToolCallsByStory(ctx context.Context, arg ListToolCallsByS
 }
 
 const listToolCallsInWindow = `-- name: ListToolCallsInWindow :many
-SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest FROM tool_calls
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
 WHERE organization_id = $1
   AND started_at     >= $2
   AND started_at      < $3
@@ -363,6 +902,92 @@ func (q *Queries) ListToolCallsInWindow(ctx context.Context, arg ListToolCallsIn
 			&i.ExecutionID,
 			&i.RequirementSet,
 			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnsettledExecutionAttempts = `-- name: ListUnsettledExecutionAttempts :many
+SELECT tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition FROM tool_calls
+WHERE organization_id = $1
+  AND execution_id    = $2
+  AND state          <> 'settled'
+ORDER BY started_at, tool_call_id
+`
+
+type ListUnsettledExecutionAttemptsParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+// The drain list: registered and unsettled at this moment (D8).
+func (q *Queries) ListUnsettledExecutionAttempts(ctx context.Context, arg ListUnsettledExecutionAttemptsParams) ([]ToolCall, error) {
+	rows, err := q.db.Query(ctx, listUnsettledExecutionAttempts, arg.OrganizationID, arg.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolCall{}
+	for rows.Next() {
+		var i ToolCall
+		if err := rows.Scan(
+			&i.ToolCallID,
+			&i.OrganizationID,
+			&i.UserID,
+			&i.PrincipalInstanceID,
+			&i.LlmCallID,
+			&i.ProductID,
+			&i.FeatureID,
+			&i.EpicID,
+			&i.StoryID,
+			&i.LineageKey,
+			&i.ToolName,
+			&i.Arguments,
+			&i.Result,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
 		); err != nil {
 			return nil, err
 		}
@@ -375,7 +1000,7 @@ func (q *Queries) ListToolCallsInWindow(ctx context.Context, arg ListToolCallsIn
 }
 
 const lockToolCall = `-- name: LockToolCall :one
-SELECT tool_calls.tool_call_id, tool_calls.organization_id, tool_calls.user_id, tool_calls.principal_instance_id, tool_calls.llm_call_id, tool_calls.product_id, tool_calls.feature_id, tool_calls.epic_id, tool_calls.story_id, tool_calls.lineage_key, tool_calls.tool_name, tool_calls.arguments, tool_calls.result, tool_calls.error_message, tool_calls.started_at, tool_calls.finished_at, tool_calls.state, tool_calls.outcome, tool_calls.execution_id, tool_calls.requirement_set, tool_calls.requirement_set_digest, now()::timestamptz AS locked_at
+SELECT tool_calls.tool_call_id, tool_calls.organization_id, tool_calls.user_id, tool_calls.principal_instance_id, tool_calls.llm_call_id, tool_calls.product_id, tool_calls.feature_id, tool_calls.epic_id, tool_calls.story_id, tool_calls.lineage_key, tool_calls.tool_name, tool_calls.arguments, tool_calls.result, tool_calls.error_message, tool_calls.started_at, tool_calls.finished_at, tool_calls.state, tool_calls.outcome, tool_calls.execution_id, tool_calls.requirement_set, tool_calls.requirement_set_digest, tool_calls.family, tool_calls.request_digest, tool_calls.arguments_digest, tool_calls.caller_ref, tool_calls.target_key, tool_calls.mutation_key, tool_calls.claimed_by, tool_calls.revalidated_at, tool_calls.reason_code, tool_calls.operator_decision, tool_calls.operator_decided_by, tool_calls.operator_decided_at, tool_calls.operator_decision_consumed_at, tool_calls.operator_decision_consumed_by, tool_calls.drain_disposition, now()::timestamptz AS locked_at
 FROM tool_calls
 WHERE tool_call_id    = $1
   AND organization_id = $2
@@ -420,7 +1045,484 @@ func (q *Queries) LockToolCall(ctx context.Context, arg LockToolCallParams) (Loc
 		&i.ToolCall.ExecutionID,
 		&i.ToolCall.RequirementSet,
 		&i.ToolCall.RequirementSetDigest,
+		&i.ToolCall.Family,
+		&i.ToolCall.RequestDigest,
+		&i.ToolCall.ArgumentsDigest,
+		&i.ToolCall.CallerRef,
+		&i.ToolCall.TargetKey,
+		&i.ToolCall.MutationKey,
+		&i.ToolCall.ClaimedBy,
+		&i.ToolCall.RevalidatedAt,
+		&i.ToolCall.ReasonCode,
+		&i.ToolCall.OperatorDecision,
+		&i.ToolCall.OperatorDecidedBy,
+		&i.ToolCall.OperatorDecidedAt,
+		&i.ToolCall.OperatorDecisionConsumedAt,
+		&i.ToolCall.OperatorDecisionConsumedBy,
+		&i.ToolCall.DrainDisposition,
 		&i.LockedAt,
 	)
 	return i, err
+}
+
+const markRevalidated = `-- name: MarkRevalidated :execrows
+UPDATE tool_calls
+SET revalidated_at = now()
+WHERE tool_call_id    = $1
+  AND organization_id = $2
+  AND state           = 'open'
+  AND finished_at IS NULL
+`
+
+type MarkRevalidatedParams struct {
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// D8's T2 for the allow path: the attempt was current when checked.
+func (q *Queries) MarkRevalidated(ctx context.Context, arg MarkRevalidatedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRevalidated, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordDeniedToolCall = `-- name: RecordDeniedToolCall :execrows
+INSERT INTO tool_calls (
+    tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id,
+    product_id, feature_id, epic_id, story_id,
+    tool_name, arguments,
+    execution_id, family, request_digest, arguments_digest, caller_ref,
+    target_key,
+    state, outcome, finished_at, reason_code, drain_disposition
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9,
+    $10, $11,
+    $12, $13, $14, $15, $16,
+    $17,
+    'settled', 'denied', now(), $18, 'stopped_before_commit'
+)
+ON CONFLICT (tool_call_id) DO NOTHING
+`
+
+type RecordDeniedToolCallParams struct {
+	ToolCallID          pgtype.UUID
+	OrganizationID      pgtype.UUID
+	UserID              pgtype.UUID
+	PrincipalInstanceID pgtype.UUID
+	LlmCallID           pgtype.UUID
+	ProductID           pgtype.UUID
+	FeatureID           pgtype.UUID
+	EpicID              pgtype.UUID
+	StoryID             pgtype.UUID
+	ToolName            string
+	Arguments           []byte
+	ExecutionID         pgtype.UUID
+	Family              *string
+	RequestDigest       *string
+	ArgumentsDigest     *string
+	CallerRef           *string
+	TargetKey           *string
+	ReasonCode          *string
+}
+
+// A denial is opened and completed together (ADR 0030 section 8; D4): one
+// insert of a row already settled, so the record exists after admission has
+// closed -- which is exactly when a request refused for closed admission
+// arrives. Not registration: no execution lock, no admission check, no claim.
+// The outcome and disposition are LITERALS, which the structure test holds.
+func (q *Queries) RecordDeniedToolCall(ctx context.Context, arg RecordDeniedToolCallParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordDeniedToolCall,
+		arg.ToolCallID,
+		arg.OrganizationID,
+		arg.UserID,
+		arg.PrincipalInstanceID,
+		arg.LlmCallID,
+		arg.ProductID,
+		arg.FeatureID,
+		arg.EpicID,
+		arg.StoryID,
+		arg.ToolName,
+		arg.Arguments,
+		arg.ExecutionID,
+		arg.Family,
+		arg.RequestDigest,
+		arg.ArgumentsDigest,
+		arg.CallerRef,
+		arg.TargetKey,
+		arg.ReasonCode,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordOperatorApproval = `-- name: RecordOperatorApproval :execrows
+UPDATE tool_calls
+SET operator_decision   = 'approve_once',
+    operator_decided_by = $1,
+    operator_decided_at = now()
+WHERE tool_call_id      = $2
+  AND organization_id   = $3
+  AND state             = 'operator_waiting'
+  AND operator_decision IS NULL
+  AND finished_at IS NULL
+`
+
+type RecordOperatorApprovalParams struct {
+	DecidedBy      pgtype.UUID
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// An approval is DURABLE and leaves the row waiting (D7): an approved attempt
+// that has not started is a different thing from an interrupted one.
+func (q *Queries) RecordOperatorApproval(ctx context.Context, arg RecordOperatorApprovalParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordOperatorApproval, arg.DecidedBy, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const recordOperatorDenial = `-- name: RecordOperatorDenial :execrows
+UPDATE tool_calls
+SET operator_decision   = 'deny_once',
+    operator_decided_by = $1,
+    operator_decided_at = now(),
+    state               = 'settled',
+    outcome             = 'denied',
+    finished_at         = now(),
+    reason_code         = 'operator/denied',
+    drain_disposition   = 'stopped_before_commit',
+    claimed_by          = NULL
+WHERE tool_call_id      = $2
+  AND organization_id   = $3
+  AND state             = 'operator_waiting'
+  AND operator_decision IS NULL
+  AND finished_at IS NULL
+`
+
+type RecordOperatorDenialParams struct {
+	DecidedBy      pgtype.UUID
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// A denial settles the row in the same statement that records it, releasing
+// the claim and the Story guard together.
+func (q *Queries) RecordOperatorDenial(ctx context.Context, arg RecordOperatorDenialParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordOperatorDenial, arg.DecidedBy, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const registerToolCall = `-- name: RegisterToolCall :execrows
+
+INSERT INTO tool_calls (
+    tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id,
+    product_id, feature_id, epic_id, story_id,
+    tool_name, arguments,
+    execution_id, family, request_digest, arguments_digest, caller_ref,
+    target_key, mutation_key, claimed_by
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9,
+    $10, $11,
+    $12, $13, $14, $15, $16,
+    $17, $18, $19
+)
+ON CONFLICT (tool_call_id) DO NOTHING
+`
+
+type RegisterToolCallParams struct {
+	ToolCallID          pgtype.UUID
+	OrganizationID      pgtype.UUID
+	UserID              pgtype.UUID
+	PrincipalInstanceID pgtype.UUID
+	LlmCallID           pgtype.UUID
+	ProductID           pgtype.UUID
+	FeatureID           pgtype.UUID
+	EpicID              pgtype.UUID
+	StoryID             pgtype.UUID
+	ToolName            string
+	Arguments           []byte
+	ExecutionID         pgtype.UUID
+	Family              *string
+	RequestDigest       *string
+	ArgumentsDigest     *string
+	CallerRef           *string
+	TargetKey           *string
+	MutationKey         *string
+	ClaimedBy           pgtype.UUID
+}
+
+// ===========================================================================
+// The mediated attempt (Phase 3 item 5 design, D4-D12). Every statement below
+// is a NAMED transition bound to one state it moves from, enforced by the
+// structure test beside these files: there is no generic update on an
+// attempt, for the same reason there is none on an artifact's status.
+// ===========================================================================
+// Registration (D5, D9): the row is inserted OPEN with its claim, family,
+// digests and keys, inside a transaction that holds the execution row FOR
+// SHARE and has checked admission is open -- the seam does both around this
+// statement. ON CONFLICT DO NOTHING followed by a read is what makes a
+// transport retry with the same id a classification rather than a second
+// attempt; a zero row count says the id was taken. The lineage and the
+// accountable user are the execution's, copied by the seam from the row it
+// locked, never supplied.
+func (q *Queries) RegisterToolCall(ctx context.Context, arg RegisterToolCallParams) (int64, error) {
+	result, err := q.db.Exec(ctx, registerToolCall,
+		arg.ToolCallID,
+		arg.OrganizationID,
+		arg.UserID,
+		arg.PrincipalInstanceID,
+		arg.LlmCallID,
+		arg.ProductID,
+		arg.FeatureID,
+		arg.EpicID,
+		arg.StoryID,
+		arg.ToolName,
+		arg.Arguments,
+		arg.ExecutionID,
+		arg.Family,
+		arg.RequestDigest,
+		arg.ArgumentsDigest,
+		arg.CallerRef,
+		arg.TargetKey,
+		arg.MutationKey,
+		arg.ClaimedBy,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const resolveDrainDisposition = `-- name: ResolveDrainDisposition :execrows
+UPDATE tool_calls
+SET drain_disposition = $1
+WHERE tool_call_id      = $2
+  AND organization_id   = $3
+  AND state             = 'settled'
+  AND drain_disposition = 'unresolved'
+`
+
+type ResolveDrainDispositionParams struct {
+	DrainDisposition *string
+	ToolCallID       pgtype.UUID
+	OrganizationID   pgtype.UUID
+}
+
+// Drainage moves once, from unresolved (D11); the trigger refuses anything
+// else, and this statement asks for nothing else.
+func (q *Queries) ResolveDrainDisposition(ctx context.Context, arg ResolveDrainDispositionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveDrainDisposition, arg.DrainDisposition, arg.ToolCallID, arg.OrganizationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const settleToolCall = `-- name: SettleToolCall :execrows
+UPDATE tool_calls
+SET finished_at            = COALESCE($1::timestamptz, now()),
+    state                  = 'settled',
+    outcome                = $2,
+    result                 = $3,
+    error_message          = $4,
+    reason_code            = $5,
+    drain_disposition      = $6,
+    requirement_set        = COALESCE($7::jsonb, requirement_set),
+    requirement_set_digest = COALESCE($8::text, requirement_set_digest),
+    claimed_by             = NULL
+WHERE tool_call_id    = $9
+  AND organization_id = $10
+  AND finished_at IS NULL
+`
+
+type SettleToolCallParams struct {
+	FinishedAt           pgtype.Timestamptz
+	Outcome              *string
+	Result               []byte
+	ErrorMessage         *string
+	ReasonCode           *string
+	DrainDisposition     *string
+	RequirementSet       []byte
+	RequirementSetDigest *string
+	ToolCallID           pgtype.UUID
+	OrganizationID       pgtype.UUID
+}
+
+// Settling moves the state, the outcome and the disposition together (D11),
+// releases the claim, and -- for a headless block -- writes the requirement
+// set the block preserves in the same statement (D7). The requirement
+// columns are COALESCEd so an ordinary settlement leaves a recorded wait's
+// requirement in place. Once-only on finished_at, as every completion is.
+func (q *Queries) SettleToolCall(ctx context.Context, arg SettleToolCallParams) (int64, error) {
+	result, err := q.db.Exec(ctx, settleToolCall,
+		arg.FinishedAt,
+		arg.Outcome,
+		arg.Result,
+		arg.ErrorMessage,
+		arg.ReasonCode,
+		arg.DrainDisposition,
+		arg.RequirementSet,
+		arg.RequirementSetDigest,
+		arg.ToolCallID,
+		arg.OrganizationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const staleInterruptedWait = `-- name: StaleInterruptedWait :execrows
+UPDATE tool_calls
+SET state             = 'settled',
+    outcome           = 'stale',
+    finished_at       = now(),
+    reason_code       = 'stale/interrupted_wait',
+    drain_disposition = 'stopped_before_commit',
+    claimed_by        = NULL
+WHERE tool_call_id    = $1
+  AND organization_id = $2
+  AND state           IN ('operator_waiting', 'resource_waiting')
+  AND claimed_by      = $3
+  AND finished_at IS NULL
+`
+
+type StaleInterruptedWaitParams struct {
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+	ClaimedBy      pgtype.UUID
+}
+
+// A wait interrupted by a restart goes stale, decision and requirement
+// preserved (D5; ADR 0032 section 6). Conditional on the FOREIGN claim: a
+// wait this instance holds is not interrupted.
+func (q *Queries) StaleInterruptedWait(ctx context.Context, arg StaleInterruptedWaitParams) (int64, error) {
+	result, err := q.db.Exec(ctx, staleInterruptedWait, arg.ToolCallID, arg.OrganizationID, arg.ClaimedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const staleSupersededWaits = `-- name: StaleSupersededWaits :many
+UPDATE tool_calls
+SET state             = 'settled',
+    outcome           = 'stale',
+    finished_at       = now(),
+    reason_code       = 'stale/authority_superseded',
+    drain_disposition = 'stopped_before_commit',
+    claimed_by        = NULL
+WHERE execution_id    = $1
+  AND organization_id = $2
+  AND state           IN ('operator_waiting', 'resource_waiting')
+  AND finished_at IS NULL
+RETURNING tool_call_id, organization_id, user_id, principal_instance_id, llm_call_id, product_id, feature_id, epic_id, story_id, lineage_key, tool_name, arguments, result, error_message, started_at, finished_at, state, outcome, execution_id, requirement_set, requirement_set_digest, family, request_digest, arguments_digest, caller_ref, target_key, mutation_key, claimed_by, revalidated_at, reason_code, operator_decision, operator_decided_by, operator_decided_at, operator_decision_consumed_at, operator_decision_consumed_by, drain_disposition
+`
+
+type StaleSupersededWaitsParams struct {
+	ExecutionID    pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+// Supersession settles every waiting attempt of the execution stale (D10),
+// decision intact, and returns them; the OPEN attempts are the drain list and
+// are read separately, because they are not settled here.
+func (q *Queries) StaleSupersededWaits(ctx context.Context, arg StaleSupersededWaitsParams) ([]ToolCall, error) {
+	rows, err := q.db.Query(ctx, staleSupersededWaits, arg.ExecutionID, arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ToolCall{}
+	for rows.Next() {
+		var i ToolCall
+		if err := rows.Scan(
+			&i.ToolCallID,
+			&i.OrganizationID,
+			&i.UserID,
+			&i.PrincipalInstanceID,
+			&i.LlmCallID,
+			&i.ProductID,
+			&i.FeatureID,
+			&i.EpicID,
+			&i.StoryID,
+			&i.LineageKey,
+			&i.ToolName,
+			&i.Arguments,
+			&i.Result,
+			&i.ErrorMessage,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.State,
+			&i.Outcome,
+			&i.ExecutionID,
+			&i.RequirementSet,
+			&i.RequirementSetDigest,
+			&i.Family,
+			&i.RequestDigest,
+			&i.ArgumentsDigest,
+			&i.CallerRef,
+			&i.TargetKey,
+			&i.MutationKey,
+			&i.ClaimedBy,
+			&i.RevalidatedAt,
+			&i.ReasonCode,
+			&i.OperatorDecision,
+			&i.OperatorDecidedBy,
+			&i.OperatorDecidedAt,
+			&i.OperatorDecisionConsumedAt,
+			&i.OperatorDecisionConsumedBy,
+			&i.DrainDisposition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const takeClaim = `-- name: TakeClaim :execrows
+UPDATE tool_calls
+SET claimed_by = $1
+WHERE tool_call_id    = $2
+  AND organization_id = $3
+  AND state           = 'open'
+  AND claimed_by      = $4
+  AND finished_at IS NULL
+`
+
+type TakeClaimParams struct {
+	ClaimedBy      pgtype.UUID
+	ToolCallID     pgtype.UUID
+	OrganizationID pgtype.UUID
+	PreviousClaim  pgtype.UUID
+}
+
+// Exactly one reconciler proceeds on a foreign-claimed open row (D5): the
+// claim is taken conditionally on who holds it.
+func (q *Queries) TakeClaim(ctx context.Context, arg TakeClaimParams) (int64, error) {
+	result, err := q.db.Exec(ctx, takeClaim,
+		arg.ClaimedBy,
+		arg.ToolCallID,
+		arg.OrganizationID,
+		arg.PreviousClaim,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

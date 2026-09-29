@@ -115,7 +115,8 @@ func principalFromRow(row *gen.PrincipalInstance) (*store.PrincipalInstance, err
 		StopTime:          fromNullTimestamptz(row.StopTime),
 		StopReason:        fromNullString(row.StopReason),
 
-		PromptPack: pack,
+		PromptPack:  pack,
+		ExecutionID: fromNullUUID(row.ExecutionID),
 
 		Kind:  store.PrincipalKind(row.Kind),
 		Model: row.Model,
@@ -515,4 +516,18 @@ func axisCount(query store.MPHQuery) int {
 		}
 	}
 	return count
+}
+
+// GetPrincipalForExecution is admission check 1's read (item 5 design, D4):
+// the principal by id, IF bound to the execution. A principal of another
+// execution -- of the same Story or any other -- is ErrNotFound, exactly as
+// one that does not exist, so nothing about the refusal says which.
+func (t *tx) GetPrincipalForExecution(ctx context.Context, organizationID, executionID, instanceID uuid.UUID) (*store.PrincipalInstance, error) {
+	row, err := t.queries.GetPrincipalForExecution(ctx, gen.GetPrincipalForExecutionParams{
+		PrincipalInstanceID: toUUID(instanceID), OrganizationID: toUUID(organizationID), ExecutionID: toNullUUID(&executionID),
+	})
+	if err != nil {
+		return nil, notFound(err, "principal instance of execution", instanceID)
+	}
+	return principalFromRow(&row)
 }

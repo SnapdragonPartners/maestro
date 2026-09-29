@@ -47,3 +47,21 @@ ORDER BY product_id;
 SELECT repository_id, organization_id, primary_product_id, user_id, slug, display_name, created_at
 FROM repositories
 WHERE organization_id = $1 AND repository_id = $2;
+
+-- The forge-binding child family (item 5 design, D12, D13). Idempotent by
+-- (repository, provider) on ProvisionRepository's pattern: a zero row count
+-- means a binding for that provider exists, and the seam reads it back to
+-- tell a matching re-bind from a conflict.
+-- name: InsertRepositoryForgeBindingIfAbsent :execrows
+INSERT INTO repository_forge_bindings (repository_id, organization_id, provider, base_url, owner, repo)
+VALUES (@repository_id, @organization_id, @provider, @base_url, @owner, @repo)
+ON CONFLICT (repository_id, provider) DO NOTHING;
+
+-- name: GetRepositoryForgeBinding :one
+SELECT * FROM repository_forge_bindings
+WHERE repository_id = @repository_id AND organization_id = @organization_id AND provider = @provider;
+
+-- name: ListRepositoryForgeBindings :many
+SELECT * FROM repository_forge_bindings
+WHERE repository_id = @repository_id AND organization_id = @organization_id
+ORDER BY provider;

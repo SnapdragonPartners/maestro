@@ -258,6 +258,24 @@ WHERE s.organization_id = @organization_id
   )
 ;
 
+-- The version-atomic read (item 5 design, D6). One read conditioned on the
+-- version the reference named, so the row it decrypts is the row it checked;
+-- a separate metadata check would race ReplaceSecret, which the execution
+-- lock does not serialize. Zero rows is "moved, or not yours", deliberately
+-- one answer -- the same concealment ReplaceSecret's refusal keeps.
+-- name: GetSecretAtVersion :one
+SELECT s.* FROM secrets s
+WHERE s.organization_id = @organization_id
+  AND s.secret_id       = @secret_id
+  AND s.version         = @expected_version
+  AND (s.owner_user_id = @acting_user_id OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = @acting_user_id
+        AND u.organization_id = @organization_id
+  )
+;
+
 -- ReplaceSecret rewrites the envelope, conditional on version AND ownership.
 --
 -- It bumps the version, which is part of the key derivation context — so the
