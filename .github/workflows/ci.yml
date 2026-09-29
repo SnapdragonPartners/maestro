@@ -34,9 +34,18 @@ jobs:
           restore-keys: |
             golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yaml') }}-
 
-      - name: Install dependencies
-        run: |
-          go mod download
+      # Fill the module cache COMPLETELY before anything compiles (issue #377).
+      # setup-go saves its cache from whichever job finishes first after a
+      # go.sum change and never re-saves on a hit. Measured 2026-09-29: every
+      # saved entry was 166MB -- the 21-second sqlc-check's subset -- and every
+      # other job downloaded 64-193 modules from proxy.golang.org on every run
+      # despite reporting a cache hit, which is where run 36600017151 failed
+      # (a transient stream error mid-download). With every job downloading
+      # the whole set first, any saver saves a complete one, and on a complete
+      # cache this step is seconds. Retried because the proxy's failures are
+      # transient; a third failure fails the job here, before anything runs.
+      - name: Download modules (complete, retried)
+        run: go mod download || { sleep 10; go mod download; } || { sleep 30; go mod download; }
 
       # make build runs lint as a prerequisite, so no separate lint step.
       - name: Build (includes lint)
@@ -97,6 +106,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: go mod download || { sleep 10; go mod download; } || { sleep 30; go mod download; }
+
       - name: Generated code matches the schema
         run: make sqlc-check
 
@@ -125,6 +138,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: go mod download || { sleep 10; go mod download; } || { sleep 30; go mod download; }
 
       # An isolated root, so the job never depends on runner home layout
       # and the assertions below know exactly where to look.
@@ -321,6 +338,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: go mod download || { sleep 10; go mod download; } || { sleep 30; go mod download; }
+
       # MAESTRO_HOME is set PER STEP, on the two steps that need it, and must
       # stay that way. `runner.temp` is a `runner` context value, and that
       # context does not exist at job level -- no runner has been assigned when
@@ -474,6 +495,10 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # Complete module cache first; see the same step in build-lint-test (#377).
+      - name: Download modules (complete, retried)
+        run: go mod download || { sleep 10; go mod download; } || { sleep 30; go mod download; }
 
       - name: Bring up the shared data plane the tests reach through the storage roots
         env:
