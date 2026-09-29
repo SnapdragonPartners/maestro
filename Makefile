@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-integration-v2 check-integration-build v2-integration-packages v2-integration-packages-unsharded test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-integration-v2 check-integration-build deps-download v2-integration-packages v2-integration-packages-unsharded test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -51,6 +51,18 @@ maestro: build-mcp-proxy lint
 # Build the benchmark runner
 benchmark: lint
 	go build -o bin/benchmark ./cmd/benchmark
+
+# Every module this repository builds from, fetched in one place: the root
+# module and the standalone benchmark module (ADR 0025), which has its own
+# go.sum and its own versions. CI's jobs run this before anything compiles so
+# the Go module cache they save is the whole union, not the slice the first
+# job to finish happened to need (issue #377). The pinned tools that `lint`
+# and `sqlc-check` install with `go install` have graphs of their own that
+# nothing can fetch without building them; the jobs that install them keep
+# caches of their own instead (ci.yml, cache-dependency-path).
+deps-download:
+	go mod download
+	cd benchmark && go mod download
 
 # Run all tests with coverage
 test: benchmark-test
