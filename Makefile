@@ -1,4 +1,4 @@
-.PHONY: build test test-integration test-integration-v2 v2-integration-packages v2-integration-packages-unsharded test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
+.PHONY: build test test-integration test-integration-v2 check-integration-build v2-integration-packages v2-integration-packages-unsharded test-gcs test-cloud test-e2e test-all test-coverage check-coverage lint lint-state run clean maestro benchmark ui-dev build-css fix fix-imports fix-godot install-lint install-goimports build-mcp-proxy install-hooks benchmark-build benchmark-test benchmark-lint
 
 # Directory for embedded proxy binaries (must be in package dir for go:embed)
 EMBEDDED_DIR := pkg/coder/claude/embedded
@@ -105,11 +105,13 @@ test-integration:
 
 # Run the v2 data-plane integration tests ONLY: the packages that need Docker
 # and no API key (issue #356). This is the set GitHub CI's
-# `dataplane-integration` job runs, and what the pre-push hook falls back to
-# for a contributor with no model API keys set, instead of skipping everything.
-# Requires a running plane (`make dataplane-up`): without one, planetest-based
-# tests SKIP rather than fail, and a package can report ok having run a
-# quarter of itself.
+# `dataplane-integration` and `dataplane-stack` jobs run between them, and
+# the author's evidence for review rounds whose changes need it (CLAUDE.md,
+# Submitting For Review). No hook runs it: the pre-push hook only compiles
+# the tagged test binaries (`check-integration-build` below), and CI is the
+# gate. Requires a running plane (`make dataplane-up`): without one,
+# planetest-based tests SKIP rather than fail, and a package can report ok
+# having run a quarter of itself.
 V2_INTEGRATION_PACKAGES = ./internal/dataplane/... ./internal/orchestrator/...
 # Prints the package list, so CI reads the SAME list this file defines rather
 # than carrying a second copy that drifts.
@@ -142,11 +144,22 @@ test-integration-v2:
 	@echo "🧪 Running v2 data-plane integration tests (no API keys needed)..."
 	go test -tags=integration -cover -count=1 -timeout=40m $(V2_INTEGRATION_PACKAGES)
 
+# Compile every integration-tagged test binary and run none of it. This is
+# what the pre-push hook runs in place of the suites: `make test` never sees
+# a `//go:build integration` file, so without this a test that does not
+# compile would surface only in CI. `-run '^$$'` selects no test but still
+# builds and vets the binary; `go build` would skip `_test.go` entirely.
+# About twenty seconds with a warm build cache. Runs on `./...` so the
+# frozen v1 suites stay compilable too.
+check-integration-build:
+	@echo "🔧 Compiling integration-tagged test binaries (running none)..."
+	go test -tags=integration -run '^$$' ./...
+
 # Run the GCS adapter tests against a REAL Google Cloud Storage bucket.
 #
-# Deliberately NOT under the `integration` tag: pre-push runs test-integration,
-# and requiring cloud credentials to push would either block anyone without
-# them or skip silently and look green. The bucket must be versioned and have
+# Deliberately NOT under the `integration` tag: CI's required checks run that
+# tag, and requiring cloud credentials there would either block every push
+# or skip silently and look green. The bucket must be versioned and have
 # soft delete DISABLED — with soft delete on, these pass while reclaiming
 # nothing, which is the failure recorded on #286.
 test-gcs:
@@ -160,7 +173,7 @@ test-gcs:
 #
 # Its own tag, separate from both `integration` (local Docker stack) and `gcs`
 # (object adapter alone): this needs credentials AND a running Cloud SQL Auth
-# Proxy, and the pre-push gate must never require either.
+# Proxy, and neither CI's required checks nor any hook may require either.
 test-cloud:
 	@echo "☁️  Running cloud data-plane tests against Cloud SQL + GCS..."
 	@echo "   Requires: cloud-sql-proxy running, plus MAESTRO_CLOUD_DSN,"
