@@ -128,10 +128,15 @@ v2-integration-packages:
 # every file is integration-tagged: without `-tags=integration` such a package
 # is not "a package" to the wildcard, and a list that leaves it out cannot be
 # put back by the tagged `go test` that consumes the list.
+#
+# Both lists are captured before anything filters them: on the left of a
+# pipe, a `go list` that printed some packages and then failed would hand
+# its partial output to grep and its exit status to nobody.
 V2_SHARDED_PACKAGE = ./internal/dataplane/stack
 v2-integration-packages-unsharded:
 	@sharded=$$(go list -tags=integration $(V2_SHARDED_PACKAGE)) && test -n "$$sharded" && \
-		go list -tags=integration $(V2_INTEGRATION_PACKAGES) | grep -v -x "$$sharded"
+		all=$$(go list -tags=integration $(V2_INTEGRATION_PACKAGES)) && test -n "$$all" && \
+		printf '%s\n' "$$all" | grep -v -x "$$sharded"
 
 test-integration-v2:
 	@echo "🧪 Running v2 data-plane integration tests (no API keys needed)..."

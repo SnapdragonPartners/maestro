@@ -360,9 +360,10 @@ jobs:
           echo "go test exited $status"
           echo "GO_TEST_STATUS=$status" >> "$GITHUB_ENV"
 
-      # The floor was 1200 against ~1590 passes when this job ran every
-      # package; `stack` took ~205 of those (subtests included) with it to
-      # `dataplane-stack`, and the floor keeps the same three-quarters margin.
+      # The floor was 1200 when this job ran every package (1707 passes on
+      # run 36486432552); `stack` took 205 of those (subtests included) with
+      # it to `dataplane-stack`, and the first sharded run (36502695130)
+      # passed 1502 here. 1050 keeps a ~70% margin.
       - name: Verdict -- no failures, no skips, and not suspiciously few passes
         run: |
           set -euo pipefail
@@ -457,9 +458,12 @@ jobs:
         # Balance baseline (macOS M3, 2026-09-28, the whole package uncached
         # at 1611s over 121 tests, 3.4s of it in the 78 unit tests):
         # LPT over the measured per-test costs gave shards of 404 / 404 /
-        # 408 / 407s for 9 / 14 / 10 / 10 tests. The "Slowest tests" step
-        # below prints each shard's total and top ten on every run; move
-        # directives between shards when those drift apart.
+        # 408 / 407s for 9 / 14 / 10 / 10 tests. First run on ubuntu-latest
+        # (36502695130, 2026-09-29): test time 350.6 / 337.8 / 342.8 /
+        # 340.5s, job wall time 434 / 429 / 432 / 423s, against 1688s for
+        # the unsharded job. The "Slowest tests" step below prints each
+        # shard's total and top ten on every run; move directives between
+        # shards when those drift apart.
         shard: [0, 1, 2, 3]
     steps:
       - name: Checkout repository
