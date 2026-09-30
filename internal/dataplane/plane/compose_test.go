@@ -353,6 +353,7 @@ func TestValidateRefusesAnIncompleteComposition(t *testing.T) {
 	var typedNilObjects *objects.GCS
 	var typedNilKey *stubRootKeyPtr
 	var typedNilPrompts *stubPromptsPtr
+	var typedNilActions *stubActionsPtr
 
 	for name, breakIt := range map[string]func(*Composition){
 		"no DSN":              func(c *Composition) { c.DSN = "" },
@@ -364,6 +365,8 @@ func TestValidateRefusesAnIncompleteComposition(t *testing.T) {
 		"no key registry":     func(c *Composition) { c.Keys = nil },
 		"no prompt contract":  func(c *Composition) { c.Prompts = nil },
 		"typed-nil prompts":   func(c *Composition) { c.Prompts = typedNilPrompts },
+		"no action contract":  func(c *Composition) { c.Actions = nil },
+		"typed-nil actions":   func(c *Composition) { c.Actions = typedNilActions },
 		"no harness version":  func(c *Composition) { c.Harness = harness.Version{} },
 		"owned without close": func(c *Composition) { c.Owned = []Owned{{What: "lock"}} },
 		"owned without name": func(c *Composition) {
@@ -396,7 +399,7 @@ func TestValidateAcceptsACompleteComposition(t *testing.T) {
 }
 
 // completeCaller is a Caller with nothing missing: the two empty
-// vocabularies, a stub gate, and a real version.
+// vocabularies, two stub contracts, and a real version.
 func completeCaller(t *testing.T) Caller {
 	t.Helper()
 	running, err := harness.Parse("v2.0.0-phase.3.0.0")
@@ -408,8 +411,21 @@ func completeCaller(t *testing.T) Caller {
 		Keys:    configkeys.MustNew(nil),
 		Prompts: stubPrompts{},
 		Harness: running,
+		Actions: stubActions{},
 	}
 }
+
+// stubActions satisfies the action contract without a family set; this
+// package must not import the one real implementation.
+type stubActions struct{}
+
+func (stubActions) ValidateCapabilities([]string) error { return nil }
+
+// stubActionsPtr exists so a typed-nil POINTER can be stored in the
+// interface, which is the shape internal/boundary.Registry has.
+type stubActionsPtr struct{}
+
+func (*stubActionsPtr) ValidateCapabilities([]string) error { return nil }
 
 // stubPrompts satisfies the prompt contract without a slot vocabulary; this
 // package must not import the one real implementation.

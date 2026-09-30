@@ -1,0 +1,151 @@
+package boundary_test
+
+import (
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"orchestrator/internal/boundary"
+	"orchestrator/internal/boundary/family"
+)
+
+// TestRegistryAcceptsTheTestFamilies is the positive control: the three
+// test families load, look up by identity and list sorted. Without it the
+// refusal table below would pass against a constructor that refused
+// everything.
+func TestRegistryAcceptsTheTestFamilies(t *testing.T) {
+	r, err := boundary.NewRegistry(testFamilies()...)
+	if err != nil {
+		t.Fatalf("the test families were refused: %v", err)
+	}
+	want := []string{"test/fail_after_commit", "test/never_returns", "test/noop"}
+	if got := r.Identities(); !slices.Equal(got, want) {
+		t.Fatalf("Identities() = %v, want %v", got, want)
+	}
+	f, ok := r.Lookup("test/noop")
+	if !ok || f.Verb != "noop" {
+		t.Fatalf("Lookup(test/noop) = %+v, %v", f, ok)
+	}
+	if _, ok := r.Lookup("test/other"); ok {
+		t.Fatal("an unregistered identity was found")
+	}
+	// The identities slice is a copy: mutating it changes nothing.
+	r.Identities()[0] = "mutated"
+	if got := r.Identities(); got[0] != want[0] {
+		t.Fatalf("Identities() returned its backing array: %v", got)
+	}
+}
+
+// TestRegistryRefusesEveryMalformedFamily is design D3's construction
+// validation, one refusal per rule. Each case takes a valid family and
+// breaks ONE thing, so a refusal is attributable to that thing and not to a
+// fixture that was never valid.
+//
+// THE MUTANT: remove any one check from validateFamily or validateSchema
+// and its row here loads a family the design says cannot be loaded.
+func TestRegistryRefusesEveryMalformedFamily(t *testing.T) {
+	for name, tc := range map[string]struct {
+		breakIt func(*family.Family)
+		wantIn  string
+	}{
+		"blank kind":      {func(f *family.Family) { f.Kind = "" }, "kind"},
+		"upper-case verb": {func(f *family.Family) { f.Verb = "Noop" }, "verb"},
+		"slash in verb":   {func(f *family.Family) { f.Verb = "no/op" }, "verb"},
+		"no description":  {func(f *family.Family) { f.Description = " " }, "no description"},
+		"unknown effect site": {func(f *family.Family) { f.EffectSite = "somewhere" },
+			"effect site"},
+		"no checkability": {func(f *family.Family) { f.Checkability = "" }, "checkability"},
+		"no commit point": {func(f *family.Family) { f.CommitPoint = "" }, "commit point"},
+		"no resolver":     {func(f *family.Family) { f.Resolve = nil }, "resolver"},
+		"no effect":       {func(f *family.Family) { f.Effect = nil }, "no effect"},
+		"no reconcile":    {func(f *family.Family) { f.Reconcile = nil }, "reconciliation probe"},
+		"field name not a key": {func(f *family.Family) { f.Schema.Fields[0].Name = "Note-1" },
+			"not a lower-case"},
+		"field declared twice": {func(f *family.Family) { f.Schema.Fields[1].Name = f.Schema.Fields[0].Name },
+			"declared twice"},
+		"unknown field type": {func(f *family.Family) { f.Schema.Fields[0].Type = "object" }, "type"},
+		"unclassified field": {func(f *family.Family) { f.Schema.Fields[0].Classification = "" },
+			"classification"},
+		"keyed commitment declared": {
+			func(f *family.Family) { f.Schema.Fields[0].Classification = family.KeyedCommitment },
+			"not implemented"},
+		"secret slot without a slot": {func(f *family.Family) { f.Schema.Fields[4].Secret = nil },
+			"go together"},
+		"slot without the classification": {
+			func(f *family.Family) { f.Schema.Fields[4].Classification = family.Persist }, "go together"},
+		"required secret slot": {func(f *family.Family) { f.Schema.Fields[4].Required = true },
+			"never required"},
+		"slot naming no secret": {func(f *family.Family) { f.Schema.Fields[4].Secret.Name = "" },
+			"names no secret"},
+		"slot at an unknown scope": {func(f *family.Family) { f.Schema.Fields[4].Secret.Scope = "planet" },
+			"secret scope"},
+		"secret slot in the result": {func(f *family.Family) {
+			f.ResultSchema.Fields = append(f.ResultSchema.Fields, family.Field{
+				Name: "leak", Type: family.String, Classification: family.SecretSlot,
+				Secret: &family.Slot{Name: "x", Scope: family.ScopeRepository},
+			})
+		}, "result schema"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := noopFamily()
+			tc.breakIt(&f)
+			_, err := boundary.NewRegistry(f)
+			if !errors.Is(err, boundary.ErrInvalidFamily) {
+				t.Fatalf("err = %v, want ErrInvalidFamily", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Fatalf("the refusal does not name the rule: %v (want %q in it)", err, tc.wantIn)
+			}
+		})
+	}
+
+	t.Run("an identity declared twice", func(t *testing.T) {
+		_, err := boundary.NewRegistry(noopFamily(), noopFamily())
+		if !errors.Is(err, boundary.ErrInvalidFamily) || !strings.Contains(err.Error(), "twice") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+// TestValidateCapabilitiesNamesEveryUnknownIdentity is the seam's
+// dispatch-time check (D12) at the unit: known identities pass, every
+// unknown one is named, and the empty set passes against the empty
+// registry -- which is what a root that dispatches nothing declares.
+func TestValidateCapabilitiesNamesEveryUnknownIdentity(t *testing.T) {
+	r := boundary.MustNewRegistry(testFamilies()...)
+	if err := r.ValidateCapabilities([]string{"test/noop", "test/never_returns"}); err != nil {
+		t.Fatalf("registered identities were refused: %v", err)
+	}
+	if err := r.ValidateCapabilities(nil); err != nil {
+		t.Fatalf("the empty set was refused: %v", err)
+	}
+	err := r.ValidateCapabilities([]string{"test/noop", "forge/story_pull_request", "test/nope", "test/nope"})
+	if !errors.Is(err, boundary.ErrUnknownFamily) {
+		t.Fatalf("err = %v, want ErrUnknownFamily", err)
+	}
+	for _, want := range []string{"forge/story_pull_request, test/nope", "registered: test/fail_after_commit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not contain %q", err, want)
+		}
+	}
+	if strings.Count(err.Error(), "test/nope") != 1 {
+		t.Fatalf("a repeated unknown identity is named once: %v", err)
+	}
+
+	empty := boundary.MustNewRegistry()
+	if err := empty.ValidateCapabilities([]string{}); err != nil {
+		t.Fatalf("the empty registry refused the empty set: %v", err)
+	}
+	if err := empty.ValidateCapabilities([]string{"test/noop"}); !errors.Is(err, boundary.ErrUnknownFamily) {
+		t.Fatalf("the empty registry admitted an identity: %v", err)
+	}
+}
+
+// TestFamiliesIsEmptyInCommitTwo pins what the production set holds today,
+// so the commit that adds the first family changes this test deliberately.
+func TestFamiliesIsEmptyInCommitTwo(t *testing.T) {
+	if got := boundary.Families().Identities(); len(got) != 0 {
+		t.Fatalf("the production set holds %v; the sequence adds the first family in commit 4", got)
+	}
+}

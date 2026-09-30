@@ -212,10 +212,11 @@ type Execution struct {
 }
 
 // ExecutionConfiguration is what AcceptDispatch resolves into the execution
-// row (D12). The capability set is canonicalised by the seam -- sorted and
-// de-duplicated -- before it is written; validation against the closed
-// family set is the composition's (sequence commit 2), and an identity that
-// is blank is refused here because no registry could name it.
+// row (D12). The capability set is validated against the closed family set
+// through the composition's ActionContract and canonicalised by the seam --
+// sorted and de-duplicated -- before it is written; an identity that is
+// blank is refused before the contract sees it, because no registry could
+// name it.
 type ExecutionConfiguration struct {
 	CapabilitySet []string
 	ActingUserID  uuid.UUID
@@ -246,6 +247,9 @@ const (
 	ReasonBlockedAttemptInvalid ExecutionReason = "blocked_tool_call_id is not a settled blocked attempt of this execution"
 	// ReasonCapabilityBlank: a capability identity is blank.
 	ReasonCapabilityBlank ExecutionReason = "a capability identity is blank"
+	// ReasonCapabilityUnknown: a capability identity names no family the
+	// composition's ActionContract knows (D12).
+	ReasonCapabilityUnknown ExecutionReason = "a capability identity names no registered action family"
 )
 
 // ExecutionRejected is a refused execution transition.
@@ -363,4 +367,25 @@ type ExecutionTxReader interface {
 	// until the enclosing transaction ends. ErrNotFound when it is not in
 	// the organization.
 	LockExecution(ctx context.Context, organizationID, executionID uuid.UUID) (*Execution, error)
+}
+
+// ActionContract is the closed action-family set as the seam sees it
+// (Phase 3 item 5 design, D3 and D12).
+//
+// CONSUMER-OWNED, on PromptContract's pattern and for the same reason. Which
+// families exist is decided by the execution boundary's registry, which
+// lives above the seam; the seam must consult it at dispatch or the
+// capability set is advisory -- an identity no registry knows could be
+// stored now and become live under a later registry. But the seam must not
+// import the boundary, which imports the seam. So the seam declares what it
+// needs, internal/boundary.Registry implements it, and the composition root
+// supplies it beside Types, Keys and Prompts as plane.Caller.Actions.
+//
+// Implementations must be safe for concurrent use and must not retain or
+// modify what they are given.
+type ActionContract interface {
+	// ValidateCapabilities reports whether every identity names a family
+	// the boundary knows. Order and repetition are the seam's to
+	// canonicalise; a nil error means every identity is registered.
+	ValidateCapabilities(identities []string) error
 }

@@ -3,6 +3,7 @@ package stack
 import (
 	"testing"
 
+	"orchestrator/internal/boundary"
 	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/plane"
@@ -24,7 +25,8 @@ func testHarness(t *testing.T) harness.Version {
 }
 
 // testCaller is a complete Caller around the registry under test: no
-// configuration keys and no prompt slots, each said explicitly.
+// configuration keys, no prompt slots and no action families, each said
+// explicitly.
 func testCaller(t *testing.T, types *registry.Registry) plane.Caller {
 	t.Helper()
 	return plane.Caller{
@@ -32,5 +34,6 @@ func testCaller(t *testing.T, types *registry.Registry) plane.Caller {
 		Keys:    configkeys.MustNew(nil),
 		Prompts: prompt.MustNew(nil),
 		Harness: testHarness(t),
+		Actions: boundary.MustNewRegistry(),
 	}
 }

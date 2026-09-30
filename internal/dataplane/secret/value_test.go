@@ -123,3 +123,39 @@ func TestRevealCopiesOnTheWayOut(t *testing.T) {
 		t.Fatalf("the copy's own secret was destroyed by clearing what it revealed: %q", got)
 	}
 }
+
+// TestRedactReplacesEveryOccurrenceAndNothingElse is the boundary's
+// redaction pass (item 5 design, D8) at the unit: every occurrence goes,
+// text without the secret is untouched, and an empty secret is a no-op
+// rather than a text-destroying insertion between every character.
+//
+// THE MUTANT: replace only the first occurrence (strings.Replace with n=1)
+// and the "twice" case reads the token back; drop the empty guard and the
+// empty case comes back mangled.
+func TestRedactReplacesEveryOccurrenceAndNothingElse(t *testing.T) {
+	const token = "ghp_secret_token_value"
+	const reference = "secret:0193b4f0-0000-7000-8000-000000000000@3"
+	value := NewValue([]byte(token))
+
+	for name, tc := range map[string]struct{ in, want string }{
+		"once":       {"Authorization: token " + token, "Authorization: token " + reference},
+		"twice":      {token + " and again " + token, reference + " and again " + reference},
+		"absent":     {"nothing to see", "nothing to see"},
+		"substring":  {"prefix" + token + "suffix", "prefix" + reference + "suffix"},
+		"empty text": {"", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := value.Redact(tc.in, reference); got != tc.want {
+				t.Fatalf("Redact(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if strings.Contains(value.Redact(tc.in, reference), token) {
+				t.Fatal("the token survived redaction")
+			}
+		})
+	}
+
+	empty := NewValue(nil)
+	if got := empty.Redact("untouched text", reference); got != "untouched text" {
+		t.Fatalf("an empty secret changed the text to %q", got)
+	}
+}

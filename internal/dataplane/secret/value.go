@@ -3,6 +3,7 @@ package secret
 import (
 	"bytes"
 	"fmt"
+	"strings"
 )
 
 // redacted is what a secret renders as everywhere except Reveal.
@@ -57,6 +58,35 @@ func (v Value) Reveal() []byte { return bytes.Clone(v.plaintext) }
 // Len reports the plaintext's length without exposing it, so a caller can
 // check for emptiness without reaching for Reveal.
 func (v Value) Len() int { return len(v.plaintext) }
+
+// Redact returns text with every occurrence of this secret's plaintext
+// replaced by replacement, without exposing the plaintext to the caller
+// (Phase 3 item 5 design, D6 and D8).
+//
+// This is the execution boundary's mandatory redaction pass: a family that
+// echoes a token in its result, or a client error that quotes the request
+// it sent, would otherwise put a revealed credential in the record. The
+// boundary holds the Value through settlement and runs this over the
+// projected result and the error text with the secret's substituted
+// reference as the replacement, so the record names the revision that was
+// used and never the bytes.
+//
+// An EMPTY secret redacts nothing: strings.ReplaceAll with an empty pattern
+// inserts the replacement between every character, which would turn the
+// text into noise while redacting no secret. The vault refuses to store an
+// empty plaintext, so the case is defensive, and it is stated because the
+// silent alternative is worse than the loud one.
+//
+// The match is on the exact bytes. A token that appears transformed --
+// base64-encoded, URL-escaped, split across lines -- is not found, and a
+// caller that formats a secret into any encoding is making the decision
+// Reveal's name exists to make visible.
+func (v Value) Redact(text, replacement string) string {
+	if len(v.plaintext) == 0 {
+		return text
+	}
+	return strings.ReplaceAll(text, string(v.plaintext), replacement)
+}
 
 // String and GoString cover fmt's two interface-driven paths. Format below
 // covers the rest; all three are present because a reader checking whether

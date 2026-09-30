@@ -6,15 +6,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"orchestrator/internal/boundary"
+	"orchestrator/internal/boundary/family"
 	"orchestrator/internal/dataplane/configkeys"
+	"orchestrator/internal/dataplane/planetest"
 	"orchestrator/internal/dataplane/secret"
 	"orchestrator/internal/dataplane/store"
+	"orchestrator/internal/dataplane/store/postgres"
 )
 
 // The attempt and execution verbs on a real ephemeral plane (Phase 3 item
@@ -168,9 +173,25 @@ func assertExecutionRejected(t *testing.T, err error, want store.ExecutionReason
 
 // --- AcceptDispatch: the configuration ---------------------------------------
 
+// TestAcceptDispatchStoresTheConfigurationCanonically: the capability set is
+// validated against the composition's ActionContract -- here the REAL
+// boundary registry, holding two test families -- and stored sorted and
+// de-duplicated (D12).
+//
+// THE MUTANTS: skip the contract call in AcceptDispatch and the unknown
+// identity is stored, which "an unknown identity" reads back; validate
+// before canonicalising and nothing observable changes, which is why the
+// order is not asserted; drop the default contract (knowNoFamily) and "no
+// contract supplied" admits an identity no registry knows.
 func TestAcceptDispatchStoresTheConfigurationCanonically(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
+	knowing, err := postgres.New(f.pool, testRegistry(t), f.blob, f.rootKey, planetest.Harness(t),
+		postgres.WithActionContract(boundary.MustNewRegistry(stubFamily("test", "alpha"), stubFamily("test", "beta"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(knowing.Close)
 	dispatchOf := func(t *testing.T, g governed) *store.StoryDispatch {
 		t.Helper()
 		d, err := f.store.CreateDispatch(ctx, f.organizationID, g.story.StoryID, nil)
@@ -179,24 +200,31 @@ func TestAcceptDispatchStoresTheConfigurationCanonically(t *testing.T) {
 		}
 		return d
 	}
+	stillPending := func(t *testing.T, d *store.StoryDispatch) {
+		t.Helper()
+		after, err := f.store.GetDispatch(ctx, f.organizationID, d.StoryDispatchID)
+		if err != nil || after.Disposition != store.DispositionPending {
+			t.Fatalf("after a refused configuration the dispatch is %v (%v); it must still be pending", after.Disposition, err)
+		}
+	}
 
 	t.Run("sorted and de-duplicated, with the acting user and headless", func(t *testing.T) {
 		g := provisionGoverned(t, f)
 		d := dispatchOf(t, g)
-		execution, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, store.ExecutionConfiguration{
-			CapabilitySet: []string{"b", "a", "a"}, Headless: true, ActingUserID: f.userID,
+		execution, err := knowing.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, store.ExecutionConfiguration{
+			CapabilitySet: []string{"test/beta", "test/alpha", "test/alpha"}, Headless: true, ActingUserID: f.userID,
 		})
 		if err != nil {
 			t.Fatalf("accept: %v", err)
 		}
-		if got := execution.CapabilitySet; len(got) != 2 || got[0] != "a" || got[1] != "b" {
-			t.Fatalf("stored capability set %v, want [a b]", got)
+		if got := execution.CapabilitySet; len(got) != 2 || got[0] != "test/alpha" || got[1] != "test/beta" {
+			t.Fatalf("stored capability set %v, want [test/alpha test/beta]", got)
 		}
 		if !execution.Headless || execution.ActingUserID != f.userID || execution.Terminal != nil {
 			t.Fatalf("execution %+v", execution)
 		}
 		read, err := f.store.GetExecution(ctx, f.organizationID, execution.ExecutionID)
-		if err != nil || read.CapabilitySet[1] != "b" || !read.Headless {
+		if err != nil || read.CapabilitySet[1] != "test/beta" || !read.Headless {
 			t.Fatalf("GetExecution: %+v %v", read, err)
 		}
 		if _, err := f.store.GetExecution(ctx, f.otherOrgID, execution.ExecutionID); !errors.Is(err, store.ErrNotFound) {
@@ -204,17 +232,45 @@ func TestAcceptDispatchStoresTheConfigurationCanonically(t *testing.T) {
 		}
 	})
 
-	t.Run("a blank identity is refused and the dispatch stays pending", func(t *testing.T) {
+	t.Run("an unknown identity is refused by name and the dispatch stays pending", func(t *testing.T) {
+		g := provisionGoverned(t, f)
+		d := dispatchOf(t, g)
+		_, err := knowing.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, store.ExecutionConfiguration{
+			CapabilitySet: []string{"test/alpha", "test/gamma"}, ActingUserID: f.userID,
+		})
+		assertExecutionRejected(t, err, store.ReasonCapabilityUnknown)
+		if !strings.Contains(err.Error(), "test/gamma") || strings.Contains(err.Error(), "unknown action family: test/alpha") {
+			t.Fatalf("the refusal must name the unknown identity and not the known one: %v", err)
+		}
+		stillPending(t, d)
+	})
+
+	t.Run("no contract supplied: the empty set is admitted and any identity is refused", func(t *testing.T) {
 		g := provisionGoverned(t, f)
 		d := dispatchOf(t, g)
 		_, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, store.ExecutionConfiguration{
-			CapabilitySet: []string{"a", " "}, ActingUserID: f.userID,
+			CapabilitySet: []string{"test/alpha"}, ActingUserID: f.userID,
+		})
+		assertExecutionRejected(t, err, store.ReasonCapabilityUnknown)
+		// The contract's error is the rejection's detail text, not its
+		// chain: the seam wraps a reason, and the operator reads the cause.
+		if !strings.Contains(err.Error(), postgres.ErrNoActionContract.Error()) {
+			t.Fatalf("the default contract must say no contract was supplied: %v", err)
+		}
+		stillPending(t, d)
+		if _, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, f.configured()); err != nil {
+			t.Fatalf("the empty set was refused by the default contract: %v", err)
+		}
+	})
+
+	t.Run("a blank identity is refused and the dispatch stays pending", func(t *testing.T) {
+		g := provisionGoverned(t, f)
+		d := dispatchOf(t, g)
+		_, err := knowing.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, store.ExecutionConfiguration{
+			CapabilitySet: []string{"test/alpha", " "}, ActingUserID: f.userID,
 		})
 		assertExecutionRejected(t, err, store.ReasonCapabilityBlank)
-		after, err := f.store.GetDispatch(ctx, f.organizationID, d.StoryDispatchID)
-		if err != nil || after.Disposition != store.DispositionPending {
-			t.Fatalf("after a refused configuration the dispatch is %v (%v); it must still be pending", after.Disposition, err)
-		}
+		stillPending(t, d)
 	})
 
 	t.Run("no acting user is refused; another organization's user is refused by the key", func(t *testing.T) {
@@ -229,11 +285,25 @@ func TestAcceptDispatchStoresTheConfigurationCanonically(t *testing.T) {
 		}); err == nil {
 			t.Fatal("an execution bound another organization's member as its acting user")
 		}
-		after, err := f.store.GetDispatch(ctx, f.organizationID, d.StoryDispatchID)
-		if err != nil || after.Disposition != store.DispositionPending {
-			t.Fatalf("the dispatch is %v (%v), want pending after both refusals", after.Disposition, err)
-		}
+		stillPending(t, d)
 	})
+}
+
+// stubFamily is the smallest family the registry admits: every declaration
+// present, none of them exercised here. The seam validates identities; what
+// a family does is the boundary's business.
+func stubFamily(kind, verb string) family.Family {
+	return family.Family{
+		Kind: kind, Verb: verb, Description: "a stub", EffectSite: family.OrchestratorSide,
+		Checkability: "the resource holds nothing", CommitPoint: "never",
+		Resolve: func(family.Execution) (family.Target, error) { return family.Target{Key: "t"}, nil },
+		Effect: func(context.Context, family.Attempt, family.Secrets) (family.Result, error) {
+			return family.Result{}, nil
+		},
+		Reconcile: func(context.Context, family.Attempt, family.Secrets) (family.Evidence, error) {
+			return family.Evidence{}, nil
+		},
+	}
 }
 
 // otherUser is a member of the OTHER organization.
