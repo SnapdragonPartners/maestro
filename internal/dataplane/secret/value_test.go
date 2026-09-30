@@ -193,13 +193,13 @@ func TestRedactNeverReintroducesTheSecret(t *testing.T) {
 	if got := NewValue([]byte("ab")).Redact("abb", "xa"); got != "xxa" {
 		t.Fatalf("Redact(abb, xa) = %q, want the repeated substitution xxa", got)
 	}
-	if got := NewValue([]byte("ab")).Redact("ab"+strings.Repeat("b", 3*redactPasses), "xa"); got != redacted {
-		t.Fatalf("a run past the pass bound = %q, want the fixed marker alone", got)
+	if got := NewValue([]byte("ab")).Redact("ab"+strings.Repeat("b", 3*redactPasses), "xa"); got != "" {
+		t.Fatalf("a run past the pass bound = %q, want the empty string", got)
 	}
-	// And the marker chosen for a plaintext inside both the replacement and
-	// "[redacted]" is the last resort, applied to every occurrence.
-	if got := NewValue([]byte("e")).Redact("eve", reference); got != "~v~" {
-		t.Fatalf("Redact(eve) = %q, want ~v~", got)
+	// And the replacement for a plaintext inside both the reference and
+	// "[redacted]" is the empty string, applied to every occurrence.
+	if got := NewValue([]byte("e")).Redact("eve", reference); got != "v" {
+		t.Fatalf("Redact(eve) = %q, want v", got)
 	}
 	// The ordinary case still uses the caller's replacement, once.
 	if got := NewValue([]byte("ghp_x")).Redact("ghp_x", reference); got != reference {
@@ -257,5 +257,36 @@ func TestRedactAllComposesAcrossSecrets(t *testing.T) {
 	// An empty secret in the batch is skipped, not a between-every-byte insertion.
 	if withEmpty := RedactAll(text, []Redaction{{Value: NewValue(nil), Replacement: "x"}, {Value: b, Replacement: refB}}); withEmpty != "auth secret: "+refB+" sent" {
 		t.Fatalf("RedactAll with an empty secret = %q", withEmpty)
+	}
+}
+
+// TestRedactAllFallbackIsSafeAcrossABatch (PR #384 review): a batch holding
+// "e" and "~" excludes both "[redacted]" and the earlier "~" fallback, and a
+// third secret reaching the pass limit was then returned as "~" -- the
+// second secret's plaintext, verbatim. The empty string is the only
+// candidate no non-empty plaintext can be inside.
+//
+// THE MUTANT: restore "~" as the last fallback -- the result IS the "~"
+// secret.
+func TestRedactAllFallbackIsSafeAcrossABatch(t *testing.T) {
+	batch := []Redaction{
+		{Value: NewValue([]byte("ab")), Replacement: "xa"},
+		{Value: NewValue([]byte("e")), Replacement: "secret:e"},
+		{Value: NewValue([]byte("~")), Replacement: "~"},
+	}
+	text := "ab" + strings.Repeat("b", 3*redactPasses) + " e ~"
+	got := RedactAll(text, batch)
+	for _, plaintext := range []string{"ab", "e", "~"} {
+		if strings.Contains(got, plaintext) {
+			t.Fatalf("plaintext %q survived RedactAll past the pass limit: %q", plaintext, got)
+		}
+	}
+	if got != "" {
+		t.Fatalf("RedactAll past the pass limit = %q, want the empty string", got)
+	}
+	// Short of the limit, the same batch redacts each occurrence with the
+	// empty string where no marker is safe.
+	if short := RedactAll("x ab e ~ y", batch); short != "x xa   y" {
+		t.Fatalf("RedactAll = %q", short)
 	}
 }

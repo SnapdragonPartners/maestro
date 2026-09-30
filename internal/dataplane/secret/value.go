@@ -91,14 +91,16 @@ type Redaction struct {
 //     substring of "secret:<id>@<version>", or of "[redacted]", or of
 //     ANOTHER secret's reference, which is why the pass is over all of them
 //     at once and not one Redact after another -- is swapped for a marker
-//     that contains none of the plaintexts ("[redacted]", then "~", which
-//     shares no byte with it, so no plaintext is inside both);
+//     that contains none of the plaintexts: "[redacted]", or failing that
+//     the EMPTY string, the one replacement no non-empty plaintext can be
+//     inside (a batch holding "e" and "~" excludes every fixed marker, PR
+//     #384 review);
 //   - a replacement's boundary with the surrounding text can recreate a
 //     multi-byte plaintext ("xa" for "ab" in "abb" leaves "xab"), so the
 //     substitution repeats while any plaintext survives, converging by one
 //     occurrence per boundary per pass;
-//   - past a bounded number of passes the WHOLE text becomes the marker:
-//     less information, no credential.
+//   - past a bounded number of passes the WHOLE text becomes the empty
+//     string: less information, no credential.
 //
 // An EMPTY secret is skipped: strings.ReplaceAll with an empty pattern
 // inserts the replacement between every character, which would turn the
@@ -136,7 +138,7 @@ func RedactAll(text string, redactions []Redaction) string {
 		}
 	}
 	if containsAny(out, plaintexts) {
-		return safeReplacement(plaintexts, redacted)
+		return ""
 	}
 	return out
 }
@@ -158,17 +160,17 @@ func containsAny(text string, plaintexts []string) bool {
 }
 
 // safeReplacement returns replacement if it contains no plaintext, else
-// "[redacted]" if that contains none, else "~". The last is reached by a
-// plaintext inside both -- "e" is one -- and cannot itself contain a
-// plaintext that "[redacted]" contains, since the two share no byte; and
-// a plaintext of more than one byte cannot be inside "~" at all.
+// "[redacted]" if that contains none, else the empty string -- the one
+// candidate that is safe by construction against every non-empty
+// plaintext, and the only one that is: any fixed non-empty marker is
+// excluded by a batch that holds each of its bytes as a secret.
 func safeReplacement(plaintexts []string, replacement string) string {
 	for _, candidate := range []string{replacement, redacted} {
 		if !containsAny(candidate, plaintexts) {
 			return candidate
 		}
 	}
-	return "~"
+	return ""
 }
 
 // String and GoString cover fmt's two interface-driven paths. Format below
