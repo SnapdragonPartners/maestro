@@ -230,8 +230,12 @@ func isInsert(sql string) bool {
 var callTables = []string{"llm_calls", "tool_calls"}
 
 // completion is one permitted UPDATE on a call table: the ONE table it may
-// touch, and the exact columns it may assign there.
+// touch, the exact columns it may assign there, and -- for an attempt
+// settlement -- the state it settles FROM. A wait leaves through its own
+// transitions and never through a bare settlement (item 5 design, D7; PR
+// #383 review), and that is a guard the once-only predicate cannot carry.
 type completion struct {
+	guard   *regexp.Regexp
 	table   string
 	columns map[string]bool
 }
@@ -265,6 +269,7 @@ var namedCompletions = map[string]completion{
 	// state, outcome and the drain disposition together, releases the claim,
 	// and may write the requirement set a headless block preserves.
 	"SettleToolCall": {
+		guard: regexp.MustCompile(`(?i)state\s*=\s*'open'`),
 		table: "tool_calls",
 		columns: map[string]bool{
 			// `succeeded` is absent since migration 000022: settling a tool
@@ -282,6 +287,7 @@ var namedCompletions = map[string]completion{
 	// each is bound to the literal outcome it may write, which
 	// TestAttemptTransitionsAreNamed holds.
 	"RecordOperatorDenial": {
+		guard: regexp.MustCompile(`(?i)state\s*=\s*'operator_waiting'`),
 		table: "tool_calls",
 		columns: map[string]bool{
 			"operator_decision": true, "operator_decided_by": true, "operator_decided_at": true,
@@ -290,6 +296,7 @@ var namedCompletions = map[string]completion{
 		},
 	},
 	"StaleInterruptedWait": {
+		guard: regexp.MustCompile(`(?i)state\s+IN\s*\('operator_waiting',\s*'resource_waiting'\)`),
 		table: "tool_calls",
 		columns: map[string]bool{
 			"state": true, "outcome": true, "finished_at": true,
@@ -297,6 +304,7 @@ var namedCompletions = map[string]completion{
 		},
 	},
 	"StaleSupersededWaits": {
+		guard: regexp.MustCompile(`(?i)state\s+IN\s*\('operator_waiting',\s*'resource_waiting'\)`),
 		table: "tool_calls",
 		columns: map[string]bool{
 			"state": true, "outcome": true, "finished_at": true,
@@ -780,6 +788,11 @@ func TestCallsAreCreatedOpenAndCompletedOnce(t *testing.T) {
 				t.Errorf("%s: %q updates %s without `finished_at IS NULL` in its WHERE clause. That guard "+
 					"is what makes completion once-only, so the first outcome wins when two paths observe "+
 					"one call ending.", stmt.file, stmt.name, table)
+			}
+			if allowed.guard != nil && !allowed.guard.MatchString(where) {
+				t.Errorf("%s: %q lacks its state guard `%s` in the WHERE clause. finished_at IS NULL "+
+					"also matches a WAITING row; a settlement from any unsettled state could settle an "+
+					"unapproved wait past the decision it is waiting for.", stmt.file, stmt.name, allowed.guard)
 			}
 			// And it may only assign outcome columns.
 			setClause := between(stmt.sql, strings.ToUpper(stmt.sql), "SET", "WHERE")
