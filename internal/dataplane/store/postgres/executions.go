@@ -196,8 +196,11 @@ func (t *tx) RecordTerminalResult(ctx context.Context, organizationID, execution
 			return blockedErr
 		}
 	}
+	// The same presence rule Validate applied: a blank diagnostic is absent,
+	// and is stored as NULL rather than as the blank the validator excused
+	// (PR #383 review).
 	var errorMessage *string
-	if result.ErrorMessage != "" {
+	if strings.TrimSpace(result.ErrorMessage) != "" {
 		errorMessage = &result.ErrorMessage
 	}
 	status := string(result.Status)

@@ -1006,8 +1006,19 @@ func TestRecordTerminalResultRequiresClosureAndADrainedReceipt(t *testing.T) {
 	if err := record2(store.TerminalResult{Status: store.ExecutionCompleted}, receipt); !errors.Is(err, store.ErrTerminalResultInvalid) {
 		t.Fatalf("an invalid shape = %v, want ErrTerminalResultInvalid", err)
 	}
-	if err := record2(completed, receipt); err != nil {
+	// A blank diagnostic on a non-failed result is absent to Validate and
+	// stored as NULL, not as the blank (PR #383 review).
+	blank := completed
+	blank.ErrorMessage = " \t"
+	if err := record2(blank, receipt); err != nil {
 		t.Fatalf("record after drainage: %v", err)
+	}
+	var stored *string
+	if err := b2.pool.QueryRow(ctx, `SELECT error_message FROM executions WHERE execution_id = $1`, b2.execution.ExecutionID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != nil {
+		t.Fatalf("a blank diagnostic was stored as %q on a completed result; want NULL", *stored)
 	}
 	assertExecutionRejected(t, record2(completed, receipt), store.ReasonAlreadyTerminal)
 	execution, err := b2.store.GetExecution(ctx, b2.organizationID, b2.execution.ExecutionID)
