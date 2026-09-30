@@ -358,6 +358,7 @@ func TestRegisterAttemptIsIdempotentByIdAndBoundToItsExecution(t *testing.T) {
 func TestClosureRefusesRegistrationAndStillRecordsADenial(t *testing.T) {
 	ctx := context.Background()
 	b := newBoundaryFixture(t)
+	before := b.register(t, nil)
 	if err := b.store.CloseAdmission(ctx, b.organizationID, b.execution.ExecutionID); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -366,6 +367,17 @@ func TestClosureRefusesRegistrationAndStillRecordsADenial(t *testing.T) {
 	}
 	if _, err := b.store.RegisterAttempt(ctx, b.registration(v7(t), nil)); !errors.Is(err, store.ErrAdmissionClosed) {
 		t.Fatalf("registration after closure = %v, want ErrAdmissionClosed", err)
+	}
+	// An id registered BEFORE closure is classified after it, not refused:
+	// a transport retry receives its row (D5; PR #383 review). A mismatch
+	// on that id is still a mismatch, not a closure refusal.
+	if retry, err := b.store.RegisterAttempt(ctx, b.registration(before.ToolCallID, nil)); err != nil || retry.Registered || retry.Call.ToolCallID != before.ToolCallID {
+		t.Fatalf("re-presenting a registered id after closure: %+v %v; want the existing row with Registered=false", retry, err)
+	}
+	mismatch := b.registration(before.ToolCallID, nil)
+	mismatch.Family, mismatch.ToolName = "other/family", "other/family"
+	if _, err := b.store.RegisterAttempt(ctx, mismatch); !errors.Is(err, store.ErrCorrelationMismatch) {
+		t.Fatalf("a mismatched id after closure = %v, want ErrCorrelationMismatch", err)
 	}
 
 	id := v7(t)
@@ -1127,6 +1139,17 @@ func TestGetPrincipalForExecutionIsBoundToTheExecution(t *testing.T) {
 	}
 	if _, err := f.store.GetPrincipalForExecution(ctx, f.organizationID, first.execution.ExecutionID, f.author); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a human principal under an execution = %v, want ErrNotFound", err)
+	}
+	// Liveness is the stop_time, not the binding: a stopped principal keeps
+	// its execution and is still refused (D4 check 1; PR #383 review).
+	if _, err := f.store.StopPrincipalInstance(ctx, f.organizationID, first.principal.PrincipalInstanceID, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.GetPrincipalForExecution(ctx, f.organizationID, first.execution.ExecutionID, first.principal.PrincipalInstanceID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("a stopped principal under its execution = %v, want ErrNotFound", err)
+	}
+	if stopped, err := f.store.GetPrincipalInstance(ctx, f.organizationID, first.principal.PrincipalInstanceID); err != nil || stopped.ExecutionID == nil {
+		t.Fatalf("the stopped principal lost its binding: %+v %v", stopped, err)
 	}
 }
 

@@ -109,6 +109,18 @@ func (t *tx) RegisterAttempt(ctx context.Context, input store.RegisterAttemptInp
 	if err != nil {
 		return none, notFound(err, "execution", input.ExecutionID)
 	}
+	// An id already registered is classified, not re-admitted (D5): a
+	// transport retry after closure receives its row, and only a genuinely
+	// new attempt meets the closure refusal below (PR #383 review). Read
+	// under the share lock, so the row seen is the row the insert would
+	// conflict with.
+	existing, found, readErr := t.existingRegistration(ctx, &identity, input.OrganizationID, input.ExecutionID)
+	if readErr != nil {
+		return none, readErr
+	}
+	if found {
+		return store.Registration{Call: existing, Registered: false}, nil
+	}
 	if execution.AdmissionClosedAt.Valid {
 		return none, fmt.Errorf("%w: execution %s closed admission at %s",
 			store.ErrAdmissionClosed, input.ExecutionID, fromTimestamptz(execution.AdmissionClosedAt))
@@ -146,6 +158,26 @@ func (t *tx) RegisterAttempt(ctx context.Context, input store.RegisterAttemptInp
 		return none, err
 	}
 	return store.Registration{Call: row, Registered: inserted == 1}, nil
+}
+
+// existingRegistration reports whether the id already holds a row, checked
+// as a conflict would be: the row this organization can see, bound to this
+// logical action. Found=false with no error means the id is free here; an id
+// taken elsewhere is still a mismatch, reported when the insert conflicts.
+func (t *tx) existingRegistration(ctx context.Context, identity *attemptIdentity, organizationID, executionID uuid.UUID) (store.ToolCall, bool, error) {
+	if _, err := t.queries.GetToolCall(ctx, gen.GetToolCallParams{
+		ToolCallID: toUUID(identity.toolCallID), OrganizationID: toUUID(organizationID),
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ToolCall{}, false, nil
+		}
+		return store.ToolCall{}, false, fmt.Errorf("read attempt %s: %w", identity.toolCallID, err)
+	}
+	call, err := t.readRegistered(ctx, identity, organizationID, executionID, false)
+	if err != nil {
+		return store.ToolCall{}, false, err
+	}
+	return call, true, nil
 }
 
 // readRegistered reads the row an insert-or-conflict left, and on a conflict

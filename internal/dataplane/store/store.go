@@ -586,9 +586,10 @@ type Reader interface {
 
 	GetPrincipalInstance(ctx context.Context, organizationID, instanceID uuid.UUID) (*PrincipalInstance, error)
 	// GetPrincipalForExecution is the tenant-scoped read admission check 1
-	// performs (item 5 design, D4): the principal by id, IF it belongs to the
-	// execution. ErrNotFound otherwise -- a principal of another execution of
-	// the same Story is indistinguishable from one that does not exist.
+	// performs (item 5 design, D4): the principal by id, IF it is live and
+	// belongs to the execution. ErrNotFound otherwise -- a principal of
+	// another execution of the same Story, or a stopped one, is
+	// indistinguishable from one that does not exist.
 	GetPrincipalForExecution(ctx context.Context, organizationID, executionID, instanceID uuid.UUID) (*PrincipalInstance, error)
 	ListSeededInputs(ctx context.Context, organizationID, instanceID uuid.UUID) ([]SeededInput, error)
 	FindPrincipalInstances(ctx context.Context, query MPHQuery) ([]PrincipalInstance, error)

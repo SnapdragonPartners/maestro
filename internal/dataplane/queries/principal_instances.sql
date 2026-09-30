@@ -99,15 +99,18 @@ SELECT * FROM principal_instances
 WHERE principal_instance_id = @principal_instance_id
   AND organization_id       = @organization_id;
 
--- Admission check 1 (item 5 design, D4): the principal is live AND belongs
+-- Admission check 1 (item 5 design, D4): the principal is LIVE and belongs
 -- to THIS execution, by the binding 000024 added -- a principal of a prior
 -- execution of the same Story carries the same lineage and a different
--- execution_id, which is what this read distinguishes.
+-- execution_id, which is what this read distinguishes; and a stopped
+-- principal keeps its binding, so liveness is the stop_time predicate, not
+-- the binding (PR #383 review).
 -- name: GetPrincipalForExecution :one
 SELECT * FROM principal_instances
 WHERE principal_instance_id = @principal_instance_id
   AND organization_id       = @organization_id
-  AND execution_id          = @execution_id;
+  AND execution_id          = @execution_id
+  AND stop_time IS NULL;
 
 -- Lock before stopping. Stopping is once-only (design D7) and a rowcount
 -- carries no reason, so the seam locks, classifies in Go, then writes

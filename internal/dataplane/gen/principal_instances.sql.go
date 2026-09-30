@@ -241,6 +241,7 @@ SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_h
 WHERE principal_instance_id = $1
   AND organization_id       = $2
   AND execution_id          = $3
+  AND stop_time IS NULL
 `
 
 type GetPrincipalForExecutionParams struct {
@@ -249,10 +250,12 @@ type GetPrincipalForExecutionParams struct {
 	ExecutionID         pgtype.UUID
 }
 
-// Admission check 1 (item 5 design, D4): the principal is live AND belongs
+// Admission check 1 (item 5 design, D4): the principal is LIVE and belongs
 // to THIS execution, by the binding 000024 added -- a principal of a prior
 // execution of the same Story carries the same lineage and a different
-// execution_id, which is what this read distinguishes.
+// execution_id, which is what this read distinguishes; and a stopped
+// principal keeps its binding, so liveness is the stop_time predicate, not
+// the binding (PR #383 review).
 func (q *Queries) GetPrincipalForExecution(ctx context.Context, arg GetPrincipalForExecutionParams) (PrincipalInstance, error) {
 	row := q.db.QueryRow(ctx, getPrincipalForExecution, arg.PrincipalInstanceID, arg.OrganizationID, arg.ExecutionID)
 	var i PrincipalInstance
