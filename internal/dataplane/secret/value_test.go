@@ -193,8 +193,8 @@ func TestRedactNeverReintroducesTheSecret(t *testing.T) {
 	if got := NewValue([]byte("ab")).Redact("abb", "xa"); got != "xxa" {
 		t.Fatalf("Redact(abb, xa) = %q, want the repeated substitution xxa", got)
 	}
-	if got := NewValue([]byte("ab")).Redact("ab"+strings.Repeat("b", 3*redactPasses), "xa"); got != "xa" {
-		t.Fatalf("a run past the pass bound = %q, want the marker alone", got)
+	if got := NewValue([]byte("ab")).Redact("ab"+strings.Repeat("b", 3*redactPasses), "xa"); got != redacted {
+		t.Fatalf("a run past the pass bound = %q, want the fixed marker alone", got)
 	}
 	// And the marker chosen for a plaintext inside both the replacement and
 	// "[redacted]" is the last resort, applied to every occurrence.
@@ -204,5 +204,58 @@ func TestRedactNeverReintroducesTheSecret(t *testing.T) {
 	// The ordinary case still uses the caller's replacement, once.
 	if got := NewValue([]byte("ghp_x")).Redact("ghp_x", reference); got != reference {
 		t.Fatalf("Redact = %q, want %q", got, reference)
+	}
+}
+
+// TestRedactAllComposesAcrossSecrets (PR #384 review): redacting one secret
+// after another is not safe when a later replacement contains an earlier
+// plaintext -- secret A "secret:" and secret B "TOKEN" with B's reference
+// as its replacement puts A back. RedactAll chooses every replacement
+// against every plaintext and verifies none remains after all of them.
+//
+// THE MUTANT: choose each replacement against its own plaintext only --
+// A's bytes come back through B's reference.
+func TestRedactAllComposesAcrossSecrets(t *testing.T) {
+	const refA = "secret:0193b4f0-0000-7000-8000-00000000000a@1"
+	const refB = "secret:0193b4f0-0000-7000-8000-00000000000b@2"
+	a := NewValue([]byte("secret:"))
+	b := NewValue([]byte("TOKEN"))
+	text := "auth secret: TOKEN sent"
+
+	// The sequential composition the finding describes is unsafe, which is
+	// the reason RedactAll exists: shown, not assumed.
+	sequential := b.Redact(a.Redact(text, refA), refB)
+	if !strings.Contains(sequential, "secret:") {
+		t.Fatalf("sequential Redact happened to be safe here: %q; the premise of RedactAll changed", sequential)
+	}
+
+	got := RedactAll(text, []Redaction{{Value: a, Replacement: refA}, {Value: b, Replacement: refB}})
+	for _, plaintext := range []string{"secret:", "TOKEN"} {
+		if strings.Contains(got, plaintext) {
+			t.Fatalf("plaintext %q survived RedactAll: %q", plaintext, got)
+		}
+	}
+	// NEITHER reference is safe: both contain A's plaintext "secret:", B's
+	// included -- which is exactly why choosing B's replacement against B
+	// alone is wrong. The marker stands in for both.
+	if got != "auth [redacted] [redacted] sent" {
+		t.Fatalf("RedactAll = %q", got)
+	}
+	// With a plaintext no reference contains, the reference is used.
+	c := NewValue([]byte("ghp_c"))
+	if mixed := RedactAll("secret: ghp_c", []Redaction{{Value: a, Replacement: refA}, {Value: c, Replacement: refB}}); mixed != "[redacted] [redacted]" {
+		// refB contains "secret:" too, so c's replacement is also unsafe here.
+		t.Fatalf("RedactAll = %q", mixed)
+	}
+	if alone := RedactAll("x ghp_c y", []Redaction{{Value: c, Replacement: refB}}); alone != "x "+refB+" y" {
+		t.Fatalf("a safe reference was not used: %q", alone)
+	}
+	// Order of the redactions does not matter.
+	if reversed := RedactAll(text, []Redaction{{Value: b, Replacement: refB}, {Value: a, Replacement: refA}}); reversed != got {
+		t.Fatalf("RedactAll is order-dependent: %q vs %q", reversed, got)
+	}
+	// An empty secret in the batch is skipped, not a between-every-byte insertion.
+	if withEmpty := RedactAll(text, []Redaction{{Value: NewValue(nil), Replacement: "x"}, {Value: b, Replacement: refB}}); withEmpty != "auth secret: "+refB+" sent" {
+		t.Fatalf("RedactAll with an empty secret = %q", withEmpty)
 	}
 }
