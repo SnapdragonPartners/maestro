@@ -208,7 +208,10 @@ WHERE tool_call_id                  = @tool_call_id
 -- execution, family, substituted digest and target -- and the requirement
 -- set recomputed for it must equal the one that was approved; both are
 -- predicates of this one statement, so an approval cannot be consumed for
--- an unrelated attempt, nor under a changed question (PR #383 review).
+-- an unrelated attempt, nor under a changed question -- and the consumer
+-- must still be an OPEN, unfinished attempt, the one D5 hands to gate 3; a
+-- settled or waiting consumer would spend the approval on nothing (PR
+-- #383 review).
 -- name: InheritOperatorDecision :execrows
 UPDATE tool_calls AS stale
 SET operator_decision_consumed_at = now(),
@@ -227,7 +230,9 @@ WHERE stale.tool_call_id                  = @tool_call_id
         AND consumer.execution_id     = stale.execution_id
         AND consumer.family           = stale.family
         AND consumer.arguments_digest = stale.arguments_digest
-        AND consumer.target_key       = stale.target_key);
+        AND consumer.target_key       = stale.target_key
+        AND consumer.state            = 'open'
+        AND consumer.finished_at IS NULL);
 
 -- The row a re-request may inherit from: same execution, family, substituted
 -- digest and target, stale, approved, unconsumed. The most recent, if several.

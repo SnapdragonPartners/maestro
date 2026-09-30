@@ -369,7 +369,9 @@ WHERE stale.tool_call_id                  = $2
         AND consumer.execution_id     = stale.execution_id
         AND consumer.family           = stale.family
         AND consumer.arguments_digest = stale.arguments_digest
-        AND consumer.target_key       = stale.target_key)
+        AND consumer.target_key       = stale.target_key
+        AND consumer.state            = 'open'
+        AND consumer.finished_at IS NULL)
 `
 
 type InheritOperatorDecisionParams struct {
@@ -386,7 +388,10 @@ type InheritOperatorDecisionParams struct {
 // execution, family, substituted digest and target -- and the requirement
 // set recomputed for it must equal the one that was approved; both are
 // predicates of this one statement, so an approval cannot be consumed for
-// an unrelated attempt, nor under a changed question (PR #383 review).
+// an unrelated attempt, nor under a changed question -- and the consumer
+// must still be an OPEN, unfinished attempt, the one D5 hands to gate 3; a
+// settled or waiting consumer would spend the approval on nothing (PR
+// #383 review).
 func (q *Queries) InheritOperatorDecision(ctx context.Context, arg InheritOperatorDecisionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, inheritOperatorDecision,
 		arg.ConsumedBy,

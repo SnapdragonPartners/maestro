@@ -780,6 +780,12 @@ func TestInheritOperatorDecisionOnce(t *testing.T) {
 	}
 	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, elsewhere.ToolCallID, requirementHash)
 	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
+	// A matching attempt that is no longer open cannot inherit either: the
+	// approval would be spent on an attempt that never reaches gate 3.
+	spent := b.register(t, nil)
+	b.settle(t, spent.ToolCallID, store.ToolOutcomeSucceeded, store.DrainCommitted, nil)
+	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, spent.ToolCallID, requirementHash)
+	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
 	successor := b.register(t, nil)
 	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, successor.ToolCallID, requestDigest)
 	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
