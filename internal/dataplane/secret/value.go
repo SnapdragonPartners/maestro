@@ -82,20 +82,55 @@ func (v Value) Len() int { return len(v.plaintext) }
 // caller that formats a secret into any encoding is making the decision
 // Reveal's name exists to make visible.
 //
-// A replacement that itself contains the plaintext -- a credential that
-// happens to be a substring of "secret:<id>@<version>" -- would put the
-// secret back into the redacted output (PR #384 review), so it is replaced
-// by the fixed "[redacted]" instead, which by construction contains no
-// caller-chosen bytes.
+// The GUARANTEE is that the result does not contain the plaintext, and it
+// is delivered rather than approximated (PR #384 review, two rounds): a
+// replacement that itself contains the plaintext -- a credential that is a
+// substring of "secret:<id>@<version>", or of "[redacted]" -- would put the
+// secret back, and a replacement's boundary with the surrounding text can
+// recreate a multi-byte plaintext ("xa" replacing "ab" in "abb" leaves
+// "xab"). So the replacement is first swapped for a marker that does not
+// contain the plaintext; the substitution is then repeated while the
+// plaintext survives (each pass can recreate at most one occurrence per
+// boundary, so "xa" for "ab" in "abbbb" converges in four), and if it still
+// survives after a bounded number of passes the WHOLE text is replaced by
+// the marker: less information, no credential. The vault stores no empty secret, and a one-byte one is
+// degenerate, but the guarantee does not depend on either.
 func (v Value) Redact(text, replacement string) string {
 	if len(v.plaintext) == 0 {
 		return text
 	}
 	plaintext := string(v.plaintext)
-	if strings.Contains(replacement, plaintext) {
-		replacement = redacted
+	replacement = safeReplacement(plaintext, replacement)
+	out := text
+	for pass := 0; pass < redactPasses; pass++ {
+		if !strings.Contains(out, plaintext) {
+			return out
+		}
+		out = strings.ReplaceAll(out, plaintext, replacement)
 	}
-	return strings.ReplaceAll(text, plaintext, replacement)
+	if strings.Contains(out, plaintext) {
+		return replacement
+	}
+	return out
+}
+
+// redactPasses bounds the repeated substitution. Each pass removes every
+// current occurrence and can only recreate one across a boundary, so the
+// count falls quickly; the bound exists so the guarantee never depends on
+// that argument being right.
+const redactPasses = 8
+
+// safeReplacement returns replacement if it does not contain plaintext,
+// else "[redacted]" if that does not, else "~". The last is reached by a
+// plaintext inside both -- "e" is one -- and cannot itself contain a
+// plaintext that "[redacted]" contains, since the two share no byte.
+func safeReplacement(plaintext, replacement string) string {
+	for _, candidate := range []string{replacement, redacted} {
+		if !strings.Contains(candidate, plaintext) {
+			return candidate
+		}
+	}
+	return "~"
 }
 
 // String and GoString cover fmt's two interface-driven paths. Format below

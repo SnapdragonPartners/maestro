@@ -160,24 +160,48 @@ func TestRedactReplacesEveryOccurrenceAndNothingElse(t *testing.T) {
 	}
 }
 
-// TestRedactNeverReintroducesTheSecretThroughTheReplacement (PR #384
-// review): a plaintext that is a substring of the replacement would be put
-// straight back by ReplaceAll. The fallback is the fixed marker.
+// TestRedactNeverReintroducesTheSecret (PR #384 review, two rounds): the
+// result never contains the plaintext -- not through a replacement that
+// contains it, not through the fallback marker containing it, and not
+// through a replacement boundary recreating it.
 //
-// THE MUTANT: drop the Contains guard -- "secret:" is then in the output.
-func TestRedactNeverReintroducesTheSecretThroughTheReplacement(t *testing.T) {
+// THE MUTANTS: drop the fallback and "secret:" is back in the output; drop
+// the repeat and "xa"-for-"ab" leaves "xab"; drop the whole-text fallback
+// and a crafted oscillation survives the passes.
+func TestRedactNeverReintroducesTheSecret(t *testing.T) {
 	const reference = "secret:0193b4f0-0000-7000-8000-000000000000@3"
-	for _, plaintext := range []string{"secret:", "@3", reference} {
-		value := NewValue([]byte(plaintext))
-		got := value.Redact("token="+plaintext+" sent", reference)
-		if strings.Contains(got, plaintext) {
-			t.Fatalf("plaintext %q survived redaction with a replacement containing it: %q", plaintext, got)
-		}
-		if got != "token="+redacted+" sent" {
-			t.Fatalf("Redact = %q, want the fixed marker", got)
-		}
+	cases := map[string]struct{ plaintext, text, replacement string }{
+		"plaintext inside the reference":            {"secret:", "token=secret: sent", reference},
+		"plaintext is the reference":                {reference, "x" + reference + "y", reference},
+		"plaintext inside [redacted] too":           {"e", "token=e", reference},
+		"single-byte # plaintext":                   {"#", "a#b", "#"},
+		"boundary recreates the plaintext":          {"ab", "abb", "xa"},
+		"boundary recreates it past the pass bound": {"ab", "ab" + strings.Repeat("b", 3*redactPasses), "xa"},
 	}
-	// And the ordinary case still uses the caller's replacement.
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := NewValue([]byte(tc.plaintext)).Redact(tc.text, tc.replacement)
+			if strings.Contains(got, tc.plaintext) {
+				t.Fatalf("plaintext %q survived redaction: %q", tc.plaintext, got)
+			}
+		})
+	}
+	// The repeat and the whole-text fallback are each asserted by their
+	// RESULT, because absence alone cannot tell them apart: one pass plus
+	// the fallback is also plaintext-free. Two passes on "abb" give "xxa";
+	// a run the bound cannot converge gives the marker alone.
+	if got := NewValue([]byte("ab")).Redact("abb", "xa"); got != "xxa" {
+		t.Fatalf("Redact(abb, xa) = %q, want the repeated substitution xxa", got)
+	}
+	if got := NewValue([]byte("ab")).Redact("ab"+strings.Repeat("b", 3*redactPasses), "xa"); got != "xa" {
+		t.Fatalf("a run past the pass bound = %q, want the marker alone", got)
+	}
+	// And the marker chosen for a plaintext inside both the replacement and
+	// "[redacted]" is the last resort, applied to every occurrence.
+	if got := NewValue([]byte("e")).Redact("eve", reference); got != "~v~" {
+		t.Fatalf("Redact(eve) = %q, want ~v~", got)
+	}
+	// The ordinary case still uses the caller's replacement, once.
 	if got := NewValue([]byte("ghp_x")).Redact("ghp_x", reference); got != reference {
 		t.Fatalf("Redact = %q, want %q", got, reference)
 	}
