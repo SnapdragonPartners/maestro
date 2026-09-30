@@ -368,6 +368,59 @@ func (q *Queries) GetSecret(ctx context.Context, arg GetSecretParams) (Secret, e
 	return i, err
 }
 
+const getSecretAtVersion = `-- name: GetSecretAtVersion :one
+SELECT s.secret_id, s.organization_id, s.name, s.owner_user_id, s.scope_type, s.scope_organization_id, s.scope_product_id, s.scope_repository_id, s.scope_id, s.scheme, s.nonce, s.ciphertext, s.version, s.created_at, s.updated_at FROM secrets s
+WHERE s.organization_id = $1
+  AND s.secret_id       = $2
+  AND s.version         = $3
+  AND (s.owner_user_id = $4 OR s.owner_user_id IS NULL)
+  AND EXISTS (
+      SELECT 1 FROM users u
+      WHERE u.user_id = $4
+        AND u.organization_id = $1
+  )
+`
+
+type GetSecretAtVersionParams struct {
+	OrganizationID  pgtype.UUID
+	SecretID        pgtype.UUID
+	ExpectedVersion int32
+	ActingUserID    pgtype.UUID
+}
+
+// The version-atomic read (item 5 design, D6). One read conditioned on the
+// version the reference named, so the row it decrypts is the row it checked;
+// a separate metadata check would race ReplaceSecret, which the execution
+// lock does not serialize. Zero rows is "moved, or not yours", deliberately
+// one answer -- the same concealment ReplaceSecret's refusal keeps.
+func (q *Queries) GetSecretAtVersion(ctx context.Context, arg GetSecretAtVersionParams) (Secret, error) {
+	row := q.db.QueryRow(ctx, getSecretAtVersion,
+		arg.OrganizationID,
+		arg.SecretID,
+		arg.ExpectedVersion,
+		arg.ActingUserID,
+	)
+	var i Secret
+	err := row.Scan(
+		&i.SecretID,
+		&i.OrganizationID,
+		&i.Name,
+		&i.OwnerUserID,
+		&i.ScopeType,
+		&i.ScopeOrganizationID,
+		&i.ScopeProductID,
+		&i.ScopeRepositoryID,
+		&i.ScopeID,
+		&i.Scheme,
+		&i.Nonce,
+		&i.Ciphertext,
+		&i.Version,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const lockConfigurationRecord = `-- name: LockConfigurationRecord :one
 SELECT configuration_record_id, organization_id, key, scope_type, scope_organization_id, scope_product_id, scope_repository_id, scope_id, value, version, created_at, updated_at FROM configuration_records
 WHERE organization_id         = $1

@@ -27,18 +27,23 @@ type CurrentBasis struct {
 }
 
 // OpenDispatch is one open dispatch with everything the projection compares:
-// the snapshot it was issued under, its execution if accepted, and the
-// current side.
+// the snapshot it was issued under, its execution if accepted, the current
+// side, and -- item 5 design, D11 -- the attempt its execution is waiting on.
 type OpenDispatch struct {
 	Execution *Execution
-	Current   CurrentBasis
-	Dispatch  StoryDispatch
+	// Wait is the execution's attempt in operator_waiting or
+	// resource_waiting, if any; the row says which. Nil for a pending
+	// dispatch and for an execution with no waiting attempt.
+	Wait     *ToolCall
+	Current  CurrentBasis
+	Dispatch StoryDispatch
 }
 
 // OpenWork is every open dispatch of one organization, read under ONE
 // REPEATABLE READ snapshot with no locks: pending dispatches, and accepted
 // dispatches joined to their execution regardless of authority state.
-// Terminal dispatches are not open work and are not read.
+// Terminal dispatches are not open work and are not read; neither is an
+// accepted dispatch whose execution has a terminal result (item 5, D11).
 type OpenWork struct {
 	Pending  []OpenDispatch
 	Accepted []OpenDispatch

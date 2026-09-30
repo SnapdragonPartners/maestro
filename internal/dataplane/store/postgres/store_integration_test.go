@@ -278,6 +278,13 @@ func (f *fixture) foreignInput() store.RecordForeignAgentPrincipalInput {
 	}
 }
 
+// configured is the execution configuration every test acceptance uses
+// unless it is about the configuration: an empty capability set, not
+// headless, the fixture's user as the acting operator (item 5 design, D12).
+func (f *fixture) configured() store.ExecutionConfiguration {
+	return store.ExecutionConfiguration{CapabilitySet: []string{}, ActingUserID: f.userID}
+}
+
 // dispatchedInput provisions a governed hierarchy, dispatches and accepts
 // its Story, and returns an input for a live agent under that execution.
 // This is the ONLY way a live agent principal comes to exist (item 4
@@ -290,7 +297,7 @@ func (f *fixture) dispatchedInput(t *testing.T) store.CreateDispatchedPrincipalI
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
-	execution, err := f.store.AcceptDispatch(ctx, f.organizationID, dispatch.StoryDispatchID)
+	execution, err := f.store.AcceptDispatch(ctx, f.organizationID, dispatch.StoryDispatchID, f.configured())
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}

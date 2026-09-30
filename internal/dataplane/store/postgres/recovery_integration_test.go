@@ -180,7 +180,7 @@ func TestOpenWorkMapsEveryFieldOfBothSides(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		execution, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID)
+		execution, err := f.store.AcceptDispatch(ctx, f.organizationID, d.StoryDispatchID, f.configured())
 		if err != nil {
 			t.Fatal(err)
 		}

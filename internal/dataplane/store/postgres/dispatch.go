@@ -320,16 +320,6 @@ func dispatchFromRow(row *gen.StoryDispatch, basis []store.BasisDependency, reso
 	}
 }
 
-func executionFromRow(row *gen.Execution) store.Execution {
-	return store.Execution{
-		AdmissionClosedAt: fromNullTimestamptz(row.AdmissionClosedAt), CreatedAt: fromTimestamptz(row.CreatedAt),
-		AuthorityState: store.AuthorityState(row.AuthorityState),
-		ExecutionID:    fromUUID(row.ExecutionID), OrganizationID: fromUUID(row.OrganizationID),
-		ProductID: fromUUID(row.ProductID), FeatureID: fromUUID(row.FeatureID), EpicID: fromUUID(row.EpicID),
-		StoryID: fromUUID(row.StoryID), StoryDispatchID: fromUUID(row.StoryDispatchID),
-	}
-}
-
 func (t *tx) GetDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.StoryDispatch, error) {
 	row, err := t.queries.GetStoryDispatch(ctx, gen.GetStoryDispatchParams{OrganizationID: toUUID(organizationID), StoryDispatchID: toUUID(dispatchID)})
 	if err != nil {
@@ -361,8 +351,7 @@ func (t *tx) GetExecutionByDispatch(ctx context.Context, organizationID, dispatc
 	if err != nil {
 		return nil, notFound(err, "execution of dispatch", dispatchID)
 	}
-	execution := executionFromRow(&row)
-	return &execution, nil
+	return executionFromRow(&row)
 }
 
 // transition runs one named conditional update and classifies a zero row
@@ -382,12 +371,25 @@ func (t *tx) transition(ctx context.Context, operation string, organizationID, d
 	return rejectDispatch(operation, dispatchID, store.ReasonNotPending, "disposition is "+string(current.Disposition))
 }
 
-// AcceptDispatch flips pending → accepted and creates the execution.
-func (t *tx) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
+// AcceptDispatch flips pending → accepted and creates the execution with
+// its resolved configuration in the INSERT (item 5 design, D12). The
+// configuration is validated BEFORE the disposition flips, so a refused
+// configuration leaves the dispatch pending rather than accepted with no
+// execution -- the invariant the two statements share.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (t *tx) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, configuration store.ExecutionConfiguration) (*store.Execution, error) {
 	const operation = "AcceptDispatch"
-	rows, execErr := t.queries.AcceptStoryDispatch(ctx, gen.AcceptStoryDispatchParams{OrganizationID: toUUID(organizationID), StoryDispatchID: toUUID(dispatchID)})
-	if err := t.transition(ctx, operation, organizationID, dispatchID, rows, execErr); err != nil {
+	capabilities, _, err := canonicalCapabilitySet(operation, dispatchID, configuration.CapabilitySet)
+	if err != nil {
 		return nil, err
+	}
+	if configuration.ActingUserID == uuid.Nil {
+		return nil, fmt.Errorf("%s %s: an acting user is required; the execution acts for the operator who accepted it (design D6)", operation, dispatchID)
+	}
+	rows, execErr := t.queries.AcceptStoryDispatch(ctx, gen.AcceptStoryDispatchParams{OrganizationID: toUUID(organizationID), StoryDispatchID: toUUID(dispatchID)})
+	if transitionErr := t.transition(ctx, operation, organizationID, dispatchID, rows, execErr); transitionErr != nil {
+		return nil, transitionErr
 	}
 	dispatch, err := t.GetDispatch(ctx, organizationID, dispatchID)
 	if err != nil {
@@ -401,12 +403,12 @@ func (t *tx) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid
 		ExecutionID: toUUID(identifier), OrganizationID: toUUID(organizationID),
 		ProductID: toUUID(dispatch.ProductID), FeatureID: toUUID(dispatch.FeatureID), EpicID: toUUID(dispatch.EpicID),
 		StoryID: toUUID(dispatch.StoryID), StoryDispatchID: toUUID(dispatchID),
+		CapabilitySet: capabilities, Headless: configuration.Headless, ActingUserID: toUUID(configuration.ActingUserID),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create execution for dispatch %s: %w", dispatchID, err)
 	}
-	execution := executionFromRow(&row)
-	return &execution, nil
+	return executionFromRow(&row)
 }
 
 // FailDispatch flips pending → failed with a stable code.

@@ -31,6 +31,29 @@ func (q *Queries) AcceptStoryDispatch(ctx context.Context, arg AcceptStoryDispat
 	return result.RowsAffected(), nil
 }
 
+const closeExecutionAdmission = `-- name: CloseExecutionAdmission :execrows
+UPDATE executions
+SET admission_closed_at = now()
+WHERE organization_id = $1
+  AND execution_id    = $2
+  AND admission_closed_at IS NULL
+`
+
+type CloseExecutionAdmissionParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+// Idempotent: closing twice is the headless path followed by Terminate's
+// own closure (D7, D11), and zero rows is "already closed", not a refusal.
+func (q *Queries) CloseExecutionAdmission(ctx context.Context, arg CloseExecutionAdmissionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeExecutionAdmission, arg.OrganizationID, arg.ExecutionID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failStoryDispatch = `-- name: FailStoryDispatch :execrows
 UPDATE story_dispatches
 SET disposition = 'failed', settled_at = now(), failure_code = $1, failure_detail = $2
@@ -95,7 +118,7 @@ func (q *Queries) GetDispatchPromptResolution(ctx context.Context, arg GetDispat
 }
 
 const getExecution = `-- name: GetExecution :one
-SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at FROM executions WHERE organization_id = $1 AND execution_id = $2
+SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at, capability_set, headless, acting_user_id, status, completion_disposition, cancellation_reason, failure_class, blocked_tool_call_id, error_message, terminated_at FROM executions WHERE organization_id = $1 AND execution_id = $2
 `
 
 type GetExecutionParams struct {
@@ -118,12 +141,22 @@ func (q *Queries) GetExecution(ctx context.Context, arg GetExecutionParams) (Exe
 		&i.AuthorityState,
 		&i.AdmissionClosedAt,
 		&i.CreatedAt,
+		&i.CapabilitySet,
+		&i.Headless,
+		&i.ActingUserID,
+		&i.Status,
+		&i.CompletionDisposition,
+		&i.CancellationReason,
+		&i.FailureClass,
+		&i.BlockedToolCallID,
+		&i.ErrorMessage,
+		&i.TerminatedAt,
 	)
 	return i, err
 }
 
 const getExecutionByDispatch = `-- name: GetExecutionByDispatch :one
-SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at FROM executions WHERE organization_id = $1 AND story_dispatch_id = $2
+SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at, capability_set, headless, acting_user_id, status, completion_disposition, cancellation_reason, failure_class, blocked_tool_call_id, error_message, terminated_at FROM executions WHERE organization_id = $1 AND story_dispatch_id = $2
 `
 
 type GetExecutionByDispatchParams struct {
@@ -146,6 +179,16 @@ func (q *Queries) GetExecutionByDispatch(ctx context.Context, arg GetExecutionBy
 		&i.AuthorityState,
 		&i.AdmissionClosedAt,
 		&i.CreatedAt,
+		&i.CapabilitySet,
+		&i.Headless,
+		&i.ActingUserID,
+		&i.Status,
+		&i.CompletionDisposition,
+		&i.CancellationReason,
+		&i.FailureClass,
+		&i.BlockedToolCallID,
+		&i.ErrorMessage,
+		&i.TerminatedAt,
 	)
 	return i, err
 }
@@ -306,11 +349,13 @@ func (q *Queries) InsertDispatchPromptResolution(ctx context.Context, arg Insert
 
 const insertExecution = `-- name: InsertExecution :one
 INSERT INTO executions (
-    execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id
+    execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id,
+    capability_set, headless, acting_user_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10
 )
-RETURNING execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at
+RETURNING execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at, capability_set, headless, acting_user_id, status, completion_disposition, cancellation_reason, failure_class, blocked_tool_call_id, error_message, terminated_at
 `
 
 type InsertExecutionParams struct {
@@ -321,8 +366,14 @@ type InsertExecutionParams struct {
 	EpicID          pgtype.UUID
 	StoryID         pgtype.UUID
 	StoryDispatchID pgtype.UUID
+	CapabilitySet   []byte
+	Headless        bool
+	ActingUserID    pgtype.UUID
 }
 
+// The resolved configuration -- capability set, headless, acting user -- is
+// part of the INSERT (item 5 design, D12): migration 000024's anti-update
+// trigger leaves no other initialization path, which is the point.
 func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams) (Execution, error) {
 	row := q.db.QueryRow(ctx, insertExecution,
 		arg.ExecutionID,
@@ -332,6 +383,9 @@ func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams
 		arg.EpicID,
 		arg.StoryID,
 		arg.StoryDispatchID,
+		arg.CapabilitySet,
+		arg.Headless,
+		arg.ActingUserID,
 	)
 	var i Execution
 	err := row.Scan(
@@ -346,6 +400,16 @@ func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams
 		&i.AuthorityState,
 		&i.AdmissionClosedAt,
 		&i.CreatedAt,
+		&i.CapabilitySet,
+		&i.Headless,
+		&i.ActingUserID,
+		&i.Status,
+		&i.CompletionDisposition,
+		&i.CancellationReason,
+		&i.FailureClass,
+		&i.BlockedToolCallID,
+		&i.ErrorMessage,
+		&i.TerminatedAt,
 	)
 	return i, err
 }
@@ -547,6 +611,139 @@ func (q *Queries) ListStoryDispatchesByDisposition(ctx context.Context, arg List
 	return items, nil
 }
 
+const lockExecution = `-- name: LockExecution :one
+SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at, capability_set, headless, acting_user_id, status, completion_disposition, cancellation_reason, failure_class, blocked_tool_call_id, error_message, terminated_at FROM executions
+WHERE organization_id = $1 AND execution_id = $2
+FOR UPDATE
+`
+
+type LockExecutionParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+func (q *Queries) LockExecution(ctx context.Context, arg LockExecutionParams) (Execution, error) {
+	row := q.db.QueryRow(ctx, lockExecution, arg.OrganizationID, arg.ExecutionID)
+	var i Execution
+	err := row.Scan(
+		&i.ExecutionID,
+		&i.OrganizationID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.StoryDispatchID,
+		&i.DispatchIsAccepted,
+		&i.AuthorityState,
+		&i.AdmissionClosedAt,
+		&i.CreatedAt,
+		&i.CapabilitySet,
+		&i.Headless,
+		&i.ActingUserID,
+		&i.Status,
+		&i.CompletionDisposition,
+		&i.CancellationReason,
+		&i.FailureClass,
+		&i.BlockedToolCallID,
+		&i.ErrorMessage,
+		&i.TerminatedAt,
+	)
+	return i, err
+}
+
+const lockExecutionShared = `-- name: LockExecutionShared :one
+
+SELECT execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id, dispatch_is_accepted, authority_state, admission_closed_at, created_at, capability_set, headless, acting_user_id, status, completion_disposition, cancellation_reason, failure_class, blocked_tool_call_id, error_message, terminated_at FROM executions
+WHERE organization_id = $1 AND execution_id = $2
+FOR SHARE
+`
+
+type LockExecutionSharedParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+// ---------------------------------------------------------------------------
+// The execution's boundary verbs (item 5 design, D9-D11). Each is a named
+// conditional transition on the row, taken under its lock.
+// ---------------------------------------------------------------------------
+// Registration holds the row FOR SHARE (D9): many attempts may register at
+// once, and closure -- FOR UPDATE -- waits for every one of them.
+func (q *Queries) LockExecutionShared(ctx context.Context, arg LockExecutionSharedParams) (Execution, error) {
+	row := q.db.QueryRow(ctx, lockExecutionShared, arg.OrganizationID, arg.ExecutionID)
+	var i Execution
+	err := row.Scan(
+		&i.ExecutionID,
+		&i.OrganizationID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.StoryDispatchID,
+		&i.DispatchIsAccepted,
+		&i.AuthorityState,
+		&i.AdmissionClosedAt,
+		&i.CreatedAt,
+		&i.CapabilitySet,
+		&i.Headless,
+		&i.ActingUserID,
+		&i.Status,
+		&i.CompletionDisposition,
+		&i.CancellationReason,
+		&i.FailureClass,
+		&i.BlockedToolCallID,
+		&i.ErrorMessage,
+		&i.TerminatedAt,
+	)
+	return i, err
+}
+
+const recordExecutionTerminalResult = `-- name: RecordExecutionTerminalResult :execrows
+UPDATE executions
+SET status                 = $1,
+    completion_disposition = $2,
+    cancellation_reason    = $3,
+    failure_class          = $4,
+    blocked_tool_call_id   = $5,
+    error_message          = $6,
+    terminated_at          = now()
+WHERE organization_id = $7
+  AND execution_id    = $8
+  AND status IS NULL
+  AND admission_closed_at IS NOT NULL
+`
+
+type RecordExecutionTerminalResultParams struct {
+	Status                *string
+	CompletionDisposition *string
+	CancellationReason    *string
+	FailureClass          *string
+	BlockedToolCallID     pgtype.UUID
+	ErrorMessage          *string
+	OrganizationID        pgtype.UUID
+	ExecutionID           pgtype.UUID
+}
+
+// The terminal result, at most once and only after closure (D11). The
+// schema refuses both as well; the predicates make the refusal a zero row
+// count the seam classifies rather than a constraint error it decodes.
+func (q *Queries) RecordExecutionTerminalResult(ctx context.Context, arg RecordExecutionTerminalResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordExecutionTerminalResult,
+		arg.Status,
+		arg.CompletionDisposition,
+		arg.CancellationReason,
+		arg.FailureClass,
+		arg.BlockedToolCallID,
+		arg.ErrorMessage,
+		arg.OrganizationID,
+		arg.ExecutionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setEpicGoverningArtifact = `-- name: SetEpicGoverningArtifact :execrows
 UPDATE epics
 SET governing_artifact_id = $1, governing_is_amendment = false
@@ -591,6 +788,30 @@ type SetStoryGoverningArtifactParams struct {
 // unenforceable.
 func (q *Queries) SetStoryGoverningArtifact(ctx context.Context, arg SetStoryGoverningArtifactParams) (int64, error) {
 	result, err := q.db.Exec(ctx, setStoryGoverningArtifact, arg.ArtifactID, arg.OrganizationID, arg.StoryID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersedeExecution = `-- name: SupersedeExecution :execrows
+UPDATE executions
+SET authority_state     = 'superseded',
+    admission_closed_at = COALESCE(admission_closed_at, now())
+WHERE organization_id = $1
+  AND execution_id    = $2
+  AND authority_state = 'current'
+`
+
+type SupersedeExecutionParams struct {
+	OrganizationID pgtype.UUID
+	ExecutionID    pgtype.UUID
+}
+
+// Supersession marks authority AND closes admission in one statement, which
+// is what executions_superseded_closes_admission_check requires (D10).
+func (q *Queries) SupersedeExecution(ctx context.Context, arg SupersedeExecutionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeExecution, arg.OrganizationID, arg.ExecutionID)
 	if err != nil {
 		return 0, err
 	}

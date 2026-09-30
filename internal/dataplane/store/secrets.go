@@ -160,7 +160,26 @@ type SecretReader interface {
 	// through every formatting verb; reaching the bytes takes a further
 	// deliberate Reveal.
 	RevealSecret(ctx context.Context, organizationID, secretID, actingUserID uuid.UUID) (secret.Value, error)
+
+	// RevealSecretAtVersion decrypts one secret IF it is still at the
+	// version the caller's reference named (item 5 design, D6). One read
+	// conditioned on the version, so the row it decrypts is the row it
+	// checked; RevealSecret takes no version and a separate check would race
+	// ReplaceSecret. ErrSecretVersionMoved otherwise -- deliberately
+	// ambiguous between moved and not yours, as ErrSecretConflict is.
+	RevealSecretAtVersion(ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, version int) (secret.Value, error)
 }
+
+// ErrSecretVersionMoved reports a versioned reveal that found no row at the
+// named version.
+//
+// Ambiguous between "the secret was replaced since the reference was taken"
+// and "that secret is not yours", for ErrSecretConflict's reason: both are
+// true statements about the read -- it did not apply -- and separating them
+// would let a caller probe for credentials it may not read. The boundary
+// settles the attempt stale either way; the reference named a revision, and
+// that revision is what was approved.
+var ErrSecretVersionMoved = errors.New("secret is not at that version, or is not yours")
 
 // SecretWriter is the vault's write surface.
 //

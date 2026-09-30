@@ -32,6 +32,14 @@ INSERT INTO stories (story_id, organization_id, user_id, product_id, feature_id,
 VALUES (@story_id, @organization_id, @user_id, @product_id, @feature_id, @epic_id, @title)
 RETURNING *;
 
+-- The Story-scoped guard's lock (item 5 design, D4): FOR UPDATE, never FOR
+-- SHARE -- two admissions upgrading share to exclusive is a deadlock, not a
+-- race one of them wins.
+-- name: LockStory :one
+SELECT * FROM stories
+WHERE organization_id = @organization_id AND story_id = @story_id
+FOR UPDATE;
+
 -- name: GetStory :one
 SELECT * FROM stories WHERE organization_id = $1 AND story_id = $2;
 

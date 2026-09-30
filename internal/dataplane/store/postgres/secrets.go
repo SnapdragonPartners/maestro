@@ -254,6 +254,42 @@ func (t *tx) RevealSecret(
 	return value, nil
 }
 
+// RevealSecretAtVersion decrypts one secret if it is still at the named
+// version (item 5 design, D6). The version predicate is IN the read: the
+// row this decrypts is the row it checked, and there is no window for
+// ReplaceSecret to move it in between.
+func (t *tx) RevealSecretAtVersion(
+	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, version int,
+) (secret.Value, error) {
+	expected, err := toInt32(version, "expected secret version")
+	if err != nil {
+		return secret.Value{}, err
+	}
+	row, err := t.queries.GetSecretAtVersion(ctx, gen.GetSecretAtVersionParams{
+		OrganizationID:  toUUID(organizationID),
+		SecretID:        toUUID(secretID),
+		ExpectedVersion: expected,
+		ActingUserID:    toUUID(actingUserID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return secret.Value{}, fmt.Errorf("%w: secret %s at version %d", store.ErrSecretVersionMoved, secretID, version)
+		}
+		return secret.Value{}, fmt.Errorf("read secret %s at version %d: %w", secretID, version, err)
+	}
+	rootKey, err := t.rootKey.RootKey()
+	if err != nil {
+		return secret.Value{}, fmt.Errorf("read the root key to open secret %s: %w", secretID, err)
+	}
+	value, err := secret.Open(rootKey, bindingFor(&row), secret.Envelope{
+		Scheme: row.Scheme, Nonce: row.Nonce, Ciphertext: row.Ciphertext,
+	})
+	if err != nil {
+		return secret.Value{}, fmt.Errorf("open secret %s: %w", secretID, err)
+	}
+	return value, nil
+}
+
 // ReplaceSecret rotates a credential in place.
 func (t *tx) ReplaceSecret(
 	ctx context.Context, organizationID, secretID, actingUserID uuid.UUID,

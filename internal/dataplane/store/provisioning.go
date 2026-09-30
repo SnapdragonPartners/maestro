@@ -77,17 +77,49 @@ type Product struct {
 	UserID         uuid.UUID
 }
 
+// ForgeProvider names a forge implementation a repository may be bound to.
+type ForgeProvider string
+
+// ForgeProviderGitea is the one provider with a consumer (item 5 design,
+// D13). The schema's enumeration is the same closed set of one.
+const ForgeProviderGitea ForgeProvider = "gitea"
+
+// ForgeBinding is one of a repository's forge bindings: where, on which
+// provider, this logical repository lives (item 5 design, D12, D13). A
+// child family keyed (repository, provider), so a second provider is a
+// second row.
+type ForgeBinding struct {
+	CreatedAt      time.Time
+	BaseURL        string
+	Owner          string
+	Repo           string
+	Provider       ForgeProvider
+	RepositoryID   uuid.UUID
+	OrganizationID uuid.UUID
+}
+
+// BindRepositoryForgeInput binds a repository to a forge.
+type BindRepositoryForgeInput struct {
+	BaseURL        string
+	Owner          string
+	Repo           string
+	Provider       ForgeProvider
+	RepositoryID   uuid.UUID
+	OrganizationID uuid.UUID
+}
+
 // Repository is a logical, forge-independent repository (ADR 0022). It
 // designates exactly one primary Product and may be a member of others.
-// Forge bindings are attributes that arrive with the forge rework; the
-// record is the identity.
 type Repository struct {
 	CreatedAt   time.Time
 	Slug        string
 	DisplayName string
 	// ProductIDs is every Product this repository is a member of, primary
 	// included, in id order.
-	ProductIDs       []uuid.UUID
+	ProductIDs []uuid.UUID
+	// ForgeBindings is every forge this repository is bound to, in provider
+	// order; empty until BindRepositoryForge writes one.
+	ForgeBindings    []ForgeBinding
 	RepositoryID     uuid.UUID
 	OrganizationID   uuid.UUID
 	PrimaryProductID uuid.UUID
@@ -166,6 +198,13 @@ type ProvisioningWriter interface {
 	// AddRepositoryToProduct records a secondary membership, idempotently.
 	// Adding the primary again is a no-op with Created=false.
 	AddRepositoryToProduct(ctx context.Context, organizationID, productID, repositoryID uuid.UUID) (Bootstrapped[Repository], error)
+
+	// BindRepositoryForge records where a repository lives on a forge,
+	// idempotently per (repository, provider): a matching re-bind returns
+	// the existing binding with Created=false, and a DIFFERING binding for
+	// the same provider is ErrBootstrapConflict, on ProvisionRepository's
+	// pattern -- moving a repository is a decision, not a retried command.
+	BindRepositoryForge(ctx context.Context, input BindRepositoryForgeInput) (Bootstrapped[ForgeBinding], error)
 
 	// ProvisionOrganizationPromptPack gives an organization a resolvable
 	// prompt-pack selector (ADR 0031 section 6; item 4 design, D9): it

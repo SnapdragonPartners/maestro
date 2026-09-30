@@ -142,6 +142,28 @@ func promptResolutionColumn(t *testing.T, db execer, dispatch string) (column, v
 	return ", prompt_resolution_id", ", '" + fixtureResolutionID(dispatch) + "'"
 }
 
+// executionInsert is the INSERT INTO executions a fixture runs at whatever
+// version its test stands at (000024's shape of promptResolutionColumn).
+// From 000024 an execution carries its resolved configuration NOT NULL, and
+// the seven-column form below it is refused; a fixture that wrote one shape
+// would fail on the other side of the migration it exists to exercise. The
+// configuration a fixture declares is the least one: an empty set, not
+// headless, the given user as the acting operator.
+//
+// The user is inlined as a literal so the seven positional arguments every
+// caller passes stay exactly seven.
+func executionInsert(t *testing.T, db execer, actingUser string) string {
+	t.Helper()
+	const base = `INSERT INTO executions
+	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id`
+	if !hasColumn(t, db, "executions", "capability_set") {
+		return base + `)
+	        VALUES ($1,$2,$3,$4,$5,$6,$7)`
+	}
+	return base + `, capability_set, headless, acting_user_id)
+	        VALUES ($1,$2,$3,$4,$5,$6,$7, '[]'::jsonb, false, '` + actingUser + `')`
+}
+
 func firstLine(sql string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(sql), "\n")
 	return line

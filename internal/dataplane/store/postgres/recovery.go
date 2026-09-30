@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"orchestrator/internal/dataplane/gen"
 	"orchestrator/internal/dataplane/store"
 )
 
@@ -61,6 +62,12 @@ func (t *tx) openWork(ctx context.Context, organizationID uuid.UUID) (store.Open
 		if rowErr != nil {
 			return out, rowErr
 		}
+		// An execution with a terminal result is not open work (item 5
+		// design, D11): it leaves the projection here, where the row is
+		// first whole, rather than in a consumer that might forget.
+		if row.Execution.Terminal != nil {
+			continue
+		}
 		out.Accepted = append(out.Accepted, row)
 	}
 	return out, nil
@@ -80,6 +87,11 @@ func (t *tx) openDispatch(ctx context.Context, dispatch *store.StoryDispatch, wi
 			return row, err
 		}
 		row.Execution = execution
+		wait, waitErr := t.executionWait(ctx, execution)
+		if waitErr != nil {
+			return row, waitErr
+		}
+		row.Wait = wait
 	}
 	current, err := t.currentBasis(ctx, dispatch)
 	if err != nil {
@@ -135,4 +147,28 @@ func (t *tx) currentRef(ctx context.Context, organizationID uuid.UUID, artifactI
 		return nil, err
 	}
 	return &store.VersionRef{ArtifactID: *artifactID, Digest: base.Digest, Sequence: base.Sequence}, nil
+}
+
+// executionWait reads the attempt an execution is waiting on, if any (item
+// 5 design, D11). At most one exists: D4's Story-scoped guard admits no
+// second attempt while one is operator_waiting, and the resource wait has no
+// producer before item 7 -- so the first row is the answer, and a second is
+// an invariant failure rather than a choice.
+func (t *tx) executionWait(ctx context.Context, execution *store.Execution) (*store.ToolCall, error) {
+	rows, err := t.queries.ListExecutionWaits(ctx, gen.ListExecutionWaitsParams{
+		OrganizationID: toUUID(execution.OrganizationID), ExecutionID: toNullUUID(&execution.ExecutionID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list waits of execution %s: %w", execution.ExecutionID, err)
+	}
+	switch len(rows) {
+	case 0:
+		return nil, nil //nolint:nilnil // nil IS the answer: nothing is waiting
+	case 1:
+		wait := toolCallFromRow(&rows[0])
+		return &wait, nil
+	default:
+		return nil, fmt.Errorf("%w: execution %s has %d waiting attempts; the Story-scoped guard admits one",
+			store.ErrInvariant, execution.ExecutionID, len(rows))
+	}
 }

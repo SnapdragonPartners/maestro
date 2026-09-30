@@ -26,6 +26,16 @@ func toolCallFromRow(row *gen.ToolCall) store.ToolCall {
 		converted := store.ToolOutcome(*row.Outcome)
 		outcome = &converted
 	}
+	var decision *store.OperatorDecisionRecord
+	if row.OperatorDecision != nil {
+		decision = &store.OperatorDecisionRecord{
+			Decision:   store.OperatorDecision(*row.OperatorDecision),
+			DecidedBy:  fromUUID(row.OperatorDecidedBy),
+			DecidedAt:  fromTimestamptz(row.OperatorDecidedAt),
+			ConsumedAt: fromNullTimestamptz(row.OperatorDecisionConsumedAt),
+			ConsumedBy: fromNullUUID(row.OperatorDecisionConsumedBy),
+		}
+	}
 	return store.ToolCall{
 		FinishedAt:   fromNullTimestamptz(row.FinishedAt),
 		Outcome:      outcome,
@@ -33,6 +43,21 @@ func toolCallFromRow(row *gen.ToolCall) store.ToolCall {
 		Result:       row.Result,
 		UserID:       fromNullUUID(row.UserID),
 		LLMCallID:    fromNullUUID(row.LlmCallID),
+
+		ExecutionID:          fromNullUUID(row.ExecutionID),
+		RequirementSet:       row.RequirementSet,
+		RequirementSetDigest: fromNullString(row.RequirementSetDigest),
+		Family:               fromNullString(row.Family),
+		RequestDigest:        fromNullString(row.RequestDigest),
+		ArgumentsDigest:      fromNullString(row.ArgumentsDigest),
+		CallerRef:            fromNullString(row.CallerRef),
+		TargetKey:            fromNullString(row.TargetKey),
+		MutationKey:          fromNullString(row.MutationKey),
+		ClaimedBy:            fromNullUUID(row.ClaimedBy),
+		RevalidatedAt:        fromNullTimestamptz(row.RevalidatedAt),
+		ReasonCode:           (*store.ReasonCode)(fromNullString(row.ReasonCode)),
+		OperatorDecision:     decision,
+		DrainDisposition:     (*store.DrainDisposition)(fromNullString(row.DrainDisposition)),
 
 		Lineage: store.Lineage{
 			ProductID: fromNullUUID(row.ProductID),
@@ -42,7 +67,7 @@ func toolCallFromRow(row *gen.ToolCall) store.ToolCall {
 		},
 		StartedAt: fromTimestamptz(row.StartedAt),
 
-		State:     row.State,
+		State:     store.AttemptState(row.State),
 		ToolName:  row.ToolName,
 		Arguments: row.Arguments,
 
@@ -100,78 +125,21 @@ func (t *tx) CreateToolCall(ctx context.Context, input store.CreateToolCallInput
 	return &created, nil
 }
 
-// CompleteToolCall records the outcome, once only.
-//
-// Lock and classify before validating, for the reason CompleteLLMCall
-// documents: a repeat is a repeat whatever it proposes.
+// CompleteToolCall records the outcome of a call OUTSIDE any execution,
+// once only: the importer's verb, and the one every row without an
+// execution settles through. It is SettleAttempt with no reason code and no
+// disposition, which is exactly what such a row may carry -- so a caller
+// asking for a boundary outcome here is refused by the reason-code rule,
+// not by "no producer". Item 5 lifted that refusal (design D12) and this is
+// what replaced it.
 //
 //nolint:gocritic // hugeParam: by value, matching the seam interface
 func (t *tx) CompleteToolCall(ctx context.Context, input store.CompleteToolCallInput) (store.ToolCompletion, error) {
-	locked, err := t.queries.LockToolCall(ctx, gen.LockToolCallParams{
-		ToolCallID:     toUUID(input.ToolCallID),
-		OrganizationID: toUUID(input.OrganizationID),
+	return t.SettleAttempt(ctx, store.SettleAttemptInput{
+		ErrorMessage: input.ErrorMessage, FinishedAt: input.FinishedAt,
+		Outcome: input.Outcome, Result: input.Result,
+		OrganizationID: input.OrganizationID, ToolCallID: input.ToolCallID,
 	})
-	if err != nil {
-		return store.ToolCompletion{}, notFound(err, "tool call", input.ToolCallID)
-	}
-	if locked.ToolCall.FinishedAt.Valid {
-		return store.ToolCompletion{Call: toolCallFromRow(&locked.ToolCall), Recorded: false}, nil
-	}
-
-	// Only the two completion outcomes are producible today. The other four
-	// belong to the execution boundary (Phase 3 item 5), and accepting one
-	// here would store a state with no producer and no validation behind it
-	// -- the schema's vocabulary check would pass it, which is exactly why
-	// the refusal has to be here rather than left to the column.
-	switch input.Outcome {
-	case store.ToolOutcomeSucceeded, store.ToolOutcomeFailed:
-	case store.ToolOutcomeDenied, store.ToolOutcomeBlocked,
-		store.ToolOutcomeStale, store.ToolOutcomeUnknown:
-		return store.ToolCompletion{}, fmt.Errorf(
-			"outcome %q is produced by the execution boundary, which has no caller yet", input.Outcome)
-	default:
-		return store.ToolCompletion{}, fmt.Errorf("%q is not a tool-call outcome", input.Outcome)
-	}
-	if outcomeErr := checkOutcomeCoherence(
-		input.Outcome == store.ToolOutcomeSucceeded, input.ErrorMessage); outcomeErr != nil {
-		return store.ToolCompletion{}, outcomeErr
-	}
-	finishedAt := completionInstant(input.FinishedAt, locked.LockedAt)
-	started := fromTimestamptz(locked.ToolCall.StartedAt)
-	if intervalErr := checkCompletionInterval(finishedAt, started, input.ToolCallID); intervalErr != nil {
-		return store.ToolCompletion{}, intervalErr
-	}
-	result, err := optionalJSON(input.Result, "result")
-	if err != nil {
-		return store.ToolCompletion{}, err
-	}
-
-	outcome := string(input.Outcome)
-	affected, err := t.queries.CompleteToolCall(ctx, gen.CompleteToolCallParams{
-		FinishedAt:     toTimestamptz(finishedAt),
-		Outcome:        &outcome,
-		Result:         result,
-		ErrorMessage:   input.ErrorMessage,
-		ToolCallID:     toUUID(input.ToolCallID),
-		OrganizationID: toUUID(input.OrganizationID),
-	})
-	if err != nil {
-		return store.ToolCompletion{}, fmt.Errorf("complete tool call %s: %w", input.ToolCallID, err)
-	}
-	if affected != 1 {
-		return store.ToolCompletion{}, fmt.Errorf(
-			"%w: completing tool call %s affected no rows while holding its lock with a null finished_at",
-			store.ErrInvariant, input.ToolCallID)
-	}
-
-	completed, err := t.queries.GetToolCall(ctx, gen.GetToolCallParams{
-		ToolCallID:     toUUID(input.ToolCallID),
-		OrganizationID: toUUID(input.OrganizationID),
-	})
-	if err != nil {
-		return store.ToolCompletion{}, notFound(err, "tool call", input.ToolCallID)
-	}
-	return store.ToolCompletion{Call: toolCallFromRow(&completed), Recorded: true}, nil
 }
 
 func (t *tx) GetToolCall(ctx context.Context, organizationID, callID uuid.UUID) (*store.ToolCall, error) {

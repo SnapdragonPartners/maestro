@@ -385,3 +385,35 @@ func (q *Queries) LockEpic(ctx context.Context, arg LockEpicParams) (Epic, error
 	)
 	return i, err
 }
+
+const lockStory = `-- name: LockStory :one
+SELECT story_id, organization_id, user_id, product_id, feature_id, epic_id, title, created_at, governing_artifact_id, governing_is_amendment FROM stories
+WHERE organization_id = $1 AND story_id = $2
+FOR UPDATE
+`
+
+type LockStoryParams struct {
+	OrganizationID pgtype.UUID
+	StoryID        pgtype.UUID
+}
+
+// The Story-scoped guard's lock (item 5 design, D4): FOR UPDATE, never FOR
+// SHARE -- two admissions upgrading share to exclusive is a deadlock, not a
+// race one of them wins.
+func (q *Queries) LockStory(ctx context.Context, arg LockStoryParams) (Story, error) {
+	row := q.db.QueryRow(ctx, lockStory, arg.OrganizationID, arg.StoryID)
+	var i Story
+	err := row.Scan(
+		&i.StoryID,
+		&i.OrganizationID,
+		&i.UserID,
+		&i.ProductID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.Title,
+		&i.CreatedAt,
+		&i.GoverningArtifactID,
+		&i.GoverningIsAmendment,
+	)
+	return i, err
+}

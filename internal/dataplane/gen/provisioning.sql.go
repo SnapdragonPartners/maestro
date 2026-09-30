@@ -97,6 +97,32 @@ func (q *Queries) GetRepositoryBySlug(ctx context.Context, arg GetRepositoryBySl
 	return i, err
 }
 
+const getRepositoryForgeBinding = `-- name: GetRepositoryForgeBinding :one
+SELECT repository_id, organization_id, provider, base_url, owner, repo, created_at FROM repository_forge_bindings
+WHERE repository_id = $1 AND organization_id = $2 AND provider = $3
+`
+
+type GetRepositoryForgeBindingParams struct {
+	RepositoryID   pgtype.UUID
+	OrganizationID pgtype.UUID
+	Provider       string
+}
+
+func (q *Queries) GetRepositoryForgeBinding(ctx context.Context, arg GetRepositoryForgeBindingParams) (RepositoryForgeBinding, error) {
+	row := q.db.QueryRow(ctx, getRepositoryForgeBinding, arg.RepositoryID, arg.OrganizationID, arg.Provider)
+	var i RepositoryForgeBinding
+	err := row.Scan(
+		&i.RepositoryID,
+		&i.OrganizationID,
+		&i.Provider,
+		&i.BaseUrl,
+		&i.Owner,
+		&i.Repo,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertProductIfAbsent = `-- name: InsertProductIfAbsent :execrows
 INSERT INTO products (product_id, organization_id, user_id, slug, display_name)
 VALUES ($1, $2, $3, $4, $5)
@@ -145,6 +171,40 @@ func (q *Queries) InsertProductRepositoryIfAbsent(ctx context.Context, arg Inser
 	return result.RowsAffected(), nil
 }
 
+const insertRepositoryForgeBindingIfAbsent = `-- name: InsertRepositoryForgeBindingIfAbsent :execrows
+INSERT INTO repository_forge_bindings (repository_id, organization_id, provider, base_url, owner, repo)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (repository_id, provider) DO NOTHING
+`
+
+type InsertRepositoryForgeBindingIfAbsentParams struct {
+	RepositoryID   pgtype.UUID
+	OrganizationID pgtype.UUID
+	Provider       string
+	BaseUrl        string
+	Owner          string
+	Repo           string
+}
+
+// The forge-binding child family (item 5 design, D12, D13). Idempotent by
+// (repository, provider) on ProvisionRepository's pattern: a zero row count
+// means a binding for that provider exists, and the seam reads it back to
+// tell a matching re-bind from a conflict.
+func (q *Queries) InsertRepositoryForgeBindingIfAbsent(ctx context.Context, arg InsertRepositoryForgeBindingIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertRepositoryForgeBindingIfAbsent,
+		arg.RepositoryID,
+		arg.OrganizationID,
+		arg.Provider,
+		arg.BaseUrl,
+		arg.Owner,
+		arg.Repo,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertRepositoryIfAbsent = `-- name: InsertRepositoryIfAbsent :execrows
 
 INSERT INTO repositories (repository_id, organization_id, primary_product_id, user_id, slug, display_name)
@@ -178,6 +238,45 @@ func (q *Queries) InsertRepositoryIfAbsent(ctx context.Context, arg InsertReposi
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listRepositoryForgeBindings = `-- name: ListRepositoryForgeBindings :many
+SELECT repository_id, organization_id, provider, base_url, owner, repo, created_at FROM repository_forge_bindings
+WHERE repository_id = $1 AND organization_id = $2
+ORDER BY provider
+`
+
+type ListRepositoryForgeBindingsParams struct {
+	RepositoryID   pgtype.UUID
+	OrganizationID pgtype.UUID
+}
+
+func (q *Queries) ListRepositoryForgeBindings(ctx context.Context, arg ListRepositoryForgeBindingsParams) ([]RepositoryForgeBinding, error) {
+	rows, err := q.db.Query(ctx, listRepositoryForgeBindings, arg.RepositoryID, arg.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RepositoryForgeBinding{}
+	for rows.Next() {
+		var i RepositoryForgeBinding
+		if err := rows.Scan(
+			&i.RepositoryID,
+			&i.OrganizationID,
+			&i.Provider,
+			&i.BaseUrl,
+			&i.Owner,
+			&i.Repo,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRepositoryProducts = `-- name: ListRepositoryProducts :many

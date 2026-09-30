@@ -52,21 +52,23 @@ INSERT INTO principal_instances (
     prompt_pack_content_id, prompt_pack_installation_id,
     prompt_pack_installation_revision, prompt_pack_metadata_snapshot,
     harness_config_hash, maestro_version,
-    product_id, feature_id, epic_id, story_id
+    product_id, feature_id, epic_id, story_id,
+    execution_id
 )
 SELECT $1, e.organization_id, 'agent', $2, $3,
        'resolved', r.resolved_name, r.scheme, r.digest,
        r.content_id, r.installation_id,
        r.installation_revision, r.metadata_snapshot,
        $4, $5,
-       e.product_id, e.feature_id, e.epic_id, e.story_id
+       e.product_id, e.feature_id, e.epic_id, e.story_id,
+       e.execution_id
   FROM executions e
   JOIN dispatch_prompt_resolutions r
     ON r.story_dispatch_id = e.story_dispatch_id
    AND r.organization_id   = e.organization_id
  WHERE e.execution_id    = $6
    AND e.organization_id = $7
-RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
+RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id
 `
 
 type CreateDispatchedPrincipalInstanceParams struct {
@@ -125,6 +127,7 @@ func (q *Queries) CreateDispatchedPrincipalInstance(ctx context.Context, arg Cre
 		&i.PromptPackInstallationID,
 		&i.PromptPackInstallationRevision,
 		&i.PromptPackMetadataSnapshot,
+		&i.ExecutionID,
 	)
 	return i, err
 }
@@ -145,7 +148,7 @@ INSERT INTO principal_instances (
     $13::timestamptz,
     $14
 )
-RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
+RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id
 `
 
 type CreatePrincipalInstanceParams struct {
@@ -228,12 +231,65 @@ func (q *Queries) CreatePrincipalInstance(ctx context.Context, arg CreatePrincip
 		&i.PromptPackInstallationID,
 		&i.PromptPackInstallationRevision,
 		&i.PromptPackMetadataSnapshot,
+		&i.ExecutionID,
+	)
+	return i, err
+}
+
+const getPrincipalForExecution = `-- name: GetPrincipalForExecution :one
+SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id FROM principal_instances
+WHERE principal_instance_id = $1
+  AND organization_id       = $2
+  AND execution_id          = $3
+  AND stop_time IS NULL
+`
+
+type GetPrincipalForExecutionParams struct {
+	PrincipalInstanceID pgtype.UUID
+	OrganizationID      pgtype.UUID
+	ExecutionID         pgtype.UUID
+}
+
+// Admission check 1 (item 5 design, D4): the principal is LIVE and belongs
+// to THIS execution, by the binding 000024 added -- a principal of a prior
+// execution of the same Story carries the same lineage and a different
+// execution_id, which is what this read distinguishes; and a stopped
+// principal keeps its binding, so liveness is the stop_time predicate, not
+// the binding (PR #383 review).
+func (q *Queries) GetPrincipalForExecution(ctx context.Context, arg GetPrincipalForExecutionParams) (PrincipalInstance, error) {
+	row := q.db.QueryRow(ctx, getPrincipalForExecution, arg.PrincipalInstanceID, arg.OrganizationID, arg.ExecutionID)
+	var i PrincipalInstance
+	err := row.Scan(
+		&i.PrincipalInstanceID,
+		&i.OrganizationID,
+		&i.Kind,
+		&i.Model,
+		&i.AgentType,
+		&i.PromptHash,
+		&i.HarnessConfigHash,
+		&i.MaestroVersion,
+		&i.UserID,
+		&i.FeatureID,
+		&i.EpicID,
+		&i.StoryID,
+		&i.ProductID,
+		&i.StartTime,
+		&i.StopTime,
+		&i.StopReason,
+		&i.PromptPackOrigin,
+		&i.PromptPackName,
+		&i.PromptPackScheme,
+		&i.PromptPackContentID,
+		&i.PromptPackInstallationID,
+		&i.PromptPackInstallationRevision,
+		&i.PromptPackMetadataSnapshot,
+		&i.ExecutionID,
 	)
 	return i, err
 }
 
 const getPrincipalInstance = `-- name: GetPrincipalInstance :one
-SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot FROM principal_instances
+SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id FROM principal_instances
 WHERE principal_instance_id = $1
   AND organization_id       = $2
 `
@@ -270,6 +326,7 @@ func (q *Queries) GetPrincipalInstance(ctx context.Context, arg GetPrincipalInst
 		&i.PromptPackInstallationID,
 		&i.PromptPackInstallationRevision,
 		&i.PromptPackMetadataSnapshot,
+		&i.ExecutionID,
 	)
 	return i, err
 }
@@ -313,7 +370,7 @@ func (q *Queries) ListPrincipalInstanceInputs(ctx context.Context, arg ListPrinc
 }
 
 const listPrincipalInstancesByHarnessConfigHash = `-- name: ListPrincipalInstancesByHarnessConfigHash :many
-SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot FROM principal_instances
+SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id FROM principal_instances
 WHERE organization_id = $1
   AND harness_config_hash = $2
 ORDER BY start_time DESC, principal_instance_id
@@ -357,6 +414,7 @@ func (q *Queries) ListPrincipalInstancesByHarnessConfigHash(ctx context.Context,
 			&i.PromptPackInstallationID,
 			&i.PromptPackInstallationRevision,
 			&i.PromptPackMetadataSnapshot,
+			&i.ExecutionID,
 		); err != nil {
 			return nil, err
 		}
@@ -370,7 +428,7 @@ func (q *Queries) ListPrincipalInstancesByHarnessConfigHash(ctx context.Context,
 
 const listPrincipalInstancesByModel = `-- name: ListPrincipalInstancesByModel :many
 
-SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot FROM principal_instances
+SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id FROM principal_instances
 WHERE organization_id = $1
   AND model = $2
 ORDER BY start_time DESC, principal_instance_id
@@ -417,6 +475,7 @@ func (q *Queries) ListPrincipalInstancesByModel(ctx context.Context, arg ListPri
 			&i.PromptPackInstallationID,
 			&i.PromptPackInstallationRevision,
 			&i.PromptPackMetadataSnapshot,
+			&i.ExecutionID,
 		); err != nil {
 			return nil, err
 		}
@@ -429,7 +488,7 @@ func (q *Queries) ListPrincipalInstancesByModel(ctx context.Context, arg ListPri
 }
 
 const listPrincipalInstancesByPromptIdentity = `-- name: ListPrincipalInstancesByPromptIdentity :many
-SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot FROM principal_instances
+SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id FROM principal_instances
 WHERE organization_id    = $1
   AND prompt_pack_scheme = $2
   AND prompt_hash        = $3
@@ -479,6 +538,7 @@ func (q *Queries) ListPrincipalInstancesByPromptIdentity(ctx context.Context, ar
 			&i.PromptPackInstallationID,
 			&i.PromptPackInstallationRevision,
 			&i.PromptPackMetadataSnapshot,
+			&i.ExecutionID,
 		); err != nil {
 			return nil, err
 		}
@@ -491,7 +551,7 @@ func (q *Queries) ListPrincipalInstancesByPromptIdentity(ctx context.Context, ar
 }
 
 const lockPrincipalInstance = `-- name: LockPrincipalInstance :one
-SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot FROM principal_instances
+SELECT principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id FROM principal_instances
 WHERE principal_instance_id = $1
   AND organization_id       = $2
 FOR UPDATE
@@ -538,6 +598,7 @@ func (q *Queries) LockPrincipalInstance(ctx context.Context, arg LockPrincipalIn
 		&i.PromptPackInstallationID,
 		&i.PromptPackInstallationRevision,
 		&i.PromptPackMetadataSnapshot,
+		&i.ExecutionID,
 	)
 	return i, err
 }
@@ -556,7 +617,7 @@ INSERT INTO principal_instances (
     $9, $10, $11, $12,
     $13, $14, $15
 )
-RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot
+RETURNING principal_instance_id, organization_id, kind, model, agent_type, prompt_hash, harness_config_hash, maestro_version, user_id, feature_id, epic_id, story_id, product_id, start_time, stop_time, stop_reason, prompt_pack_origin, prompt_pack_name, prompt_pack_scheme, prompt_pack_content_id, prompt_pack_installation_id, prompt_pack_installation_revision, prompt_pack_metadata_snapshot, execution_id
 `
 
 type RecordForeignAgentPrincipalParams struct {
@@ -625,6 +686,7 @@ func (q *Queries) RecordForeignAgentPrincipal(ctx context.Context, arg RecordFor
 		&i.PromptPackInstallationID,
 		&i.PromptPackInstallationRevision,
 		&i.PromptPackMetadataSnapshot,
+		&i.ExecutionID,
 	)
 	return i, err
 }

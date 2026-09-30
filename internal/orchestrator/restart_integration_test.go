@@ -291,7 +291,9 @@ func commitWork(ctx context.Context, seam store.Store, accept bool) (committed, 
 	ids.Dispatch = dispatch.StoryDispatchID
 	ids.Resolution = resolutionOf(&dispatch.PromptResolution)
 	if accept {
-		if _, err := seam.AcceptDispatch(ctx, ids.Organization, ids.Dispatch); err != nil {
+		if _, err := seam.AcceptDispatch(ctx, ids.Organization, ids.Dispatch, store.ExecutionConfiguration{
+			CapabilitySet: []string{}, ActingUserID: ids.User,
+		}); err != nil {
 			return ids, err
 		}
 	}

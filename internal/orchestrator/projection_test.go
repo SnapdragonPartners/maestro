@@ -169,6 +169,14 @@ func TestClassifyIsDisjointAndTotal(t *testing.T) {
 		"pending with execution":     {Dispatch: snapshot, Current: current, Execution: execution(store.AuthorityCurrent)},
 		"unknown authority":          {Dispatch: accepted, Current: current, Execution: execution("limbo")},
 		"terminal disposition":       {Dispatch: func() store.StoryDispatch { d := snapshot; d.Disposition = store.DispositionFailed; return d }(), Current: current},
+		// A terminal execution is not open work (item 5 design, D11): the
+		// seam leaves it out, and one arriving here is refused rather than
+		// counted as awaiting a boundary it has left.
+		"terminal execution": {Dispatch: accepted, Current: current, Execution: func() *store.Execution {
+			e := execution(store.AuthorityCurrent)
+			e.Terminal = &store.TerminalResult{Status: store.ExecutionTimedOut}
+			return e
+		}()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := row
@@ -176,6 +184,21 @@ func TestClassifyIsDisjointAndTotal(t *testing.T) {
 				t.Fatal("an unclassifiable row was given a class instead of an error")
 			}
 		})
+	}
+
+	// The wait travels onto the row, and only when the seam reports one.
+	wait := &store.ToolCall{State: store.AttemptOperatorWaiting, ToolCallID: uuid.New()}
+	waiting := store.OpenDispatch{Dispatch: accepted, Current: current, Execution: execution(store.AuthorityCurrent), Wait: wait}
+	got, err := Classify(&waiting)
+	if err != nil || got.Class != ExecutionAwaitingBoundary {
+		t.Fatalf("a waiting execution: %+v %v", got, err)
+	}
+	if got.Wait == nil || got.Wait.ToolCallID != wait.ToolCallID || got.Wait.State != store.AttemptOperatorWaiting {
+		t.Fatalf("the row does not name its wait: %+v", got.Wait)
+	}
+	plain := store.OpenDispatch{Dispatch: accepted, Current: current, Execution: execution(store.AuthorityCurrent)}
+	if got, err := Classify(&plain); err != nil || got.Wait != nil {
+		t.Fatalf("an execution with no wait reports one: %+v %v", got, err)
 	}
 }
 

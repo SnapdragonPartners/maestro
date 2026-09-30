@@ -121,9 +121,7 @@ func seedExecutionForPlane(t *testing.T, db *sql.DB, f planeFixture) (execution,
 	// before the execution, which needs an ACCEPTED dispatch either way.
 	seedPromptResolution(t, tx, dispatchLineage{dispatch: dispatch, org: f.org, product: product,
 		feature: feature, epic: epic, story: story})
-	if _, err := tx.Exec(`INSERT INTO executions
-	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-	      VALUES ($1,$2,$3,$4,$5,$6,$7)`, execution, f.org, product, feature, epic, story, dispatch); err != nil {
+	if _, err := tx.Exec(executionInsert(t, tx, f.user), execution, f.org, product, feature, epic, story, dispatch); err != nil {
 		t.Fatalf("seed execution: %v", err)
 	}
 	// One committed transaction, because repositories_primary_is_member_fkey
@@ -139,20 +137,24 @@ func seedExecutionForPlane(t *testing.T, db *sql.DB, f planeFixture) (execution,
 
 const toolCallInsert = `INSERT INTO tool_calls
     (tool_call_id, organization_id, principal_instance_id, tool_name, arguments,
-     state, outcome, finished_at, requirement_set, requirement_set_digest, error_message)
-  VALUES ($1,$2,$3,'t','{}'::jsonb,$4,$5,$6,$7,$8,$9)`
+     state, outcome, finished_at, requirement_set, requirement_set_digest, error_message, reason_code)
+  VALUES ($1,$2,$3,'t','{}'::jsonb,$4,$5,$6,$7,$8,$9,$10)`
 
 // toolCallArgs is a well-formed OPEN row; each case overrides one thing.
 // A `failed` outcome carries a diagnostic, because migration 000022 restored
 // tool_calls_outcome_coherence_check over the new vocabulary and a failure
 // with no diagnostic is refused. Supplied here rather than per case, so a
-// case about the state vocabulary is not also a coherence case.
+// case about the state vocabulary is not also a coherence case. Likewise a
+// denied, stale or unknown outcome carries a reason code since 000024.
 func (w *wh) toolCallArgs(id, state string, outcome, finishedAt, reqSet, reqDigest any) []any {
-	var errorMessage any
-	if outcome == "failed" {
+	var errorMessage, reasonCode any
+	switch outcome {
+	case "failed":
 		errorMessage = "boom"
+	case "denied", "stale", "unknown":
+		reasonCode = "test/vocabulary"
 	}
-	return []any{id, w.org, w.principal, state, outcome, finishedAt, reqSet, reqDigest, errorMessage}
+	return []any{id, w.org, w.principal, state, outcome, finishedAt, reqSet, reqDigest, errorMessage, reasonCode}
 }
 
 func TestToolCallStateAndOutcomeMoveTogether(t *testing.T) {
@@ -258,17 +260,20 @@ func TestToolCallExecutionCorrelation(t *testing.T) {
 	w := seedWorkHierarchy(t)
 	w.insertDispatch(t)
 	w.acceptDispatch(t)
-	if _, err := w.tx.Exec(`INSERT INTO executions
-	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-	        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+	if _, err := w.tx.Exec(executionInsert(t, w.tx, w.user),
 		whExecution, w.org, w.product, w.feature, w.epic, w.story, w.dispatch); err != nil {
 		t.Fatalf("seed execution: %v", err)
 	}
 
+	// Since 000024 an execution-bound row also carries its family, digests,
+	// target and claim; every case below is about the lineage key and
+	// supplies them so the identity check is not what refuses it.
 	withExecution := `INSERT INTO tool_calls
 	    (tool_call_id, organization_id, principal_instance_id, tool_name, arguments,
-	     execution_id, product_id, feature_id, epic_id, story_id)
-	  VALUES ($1,$2,$3,'t','{}'::jsonb,$4,$5,$6,$7,$8)`
+	     execution_id, product_id, feature_id, epic_id, story_id,
+	     family, request_digest, arguments_digest, target_key, claimed_by)
+	  VALUES ($1,$2,$3,'t','{}'::jsonb,$4,$5,$6,$7,$8,
+	          'test/noop','` + digestA + `','` + digestA + `','t','` + whExecution + `')`
 
 	w.rejectsWith(t, "tool_calls_execution_lineage_check",
 		"a tool call named an execution while its lineage was only partly filled, which would "+
@@ -386,9 +391,7 @@ func (w *wh) seedForeignOrgExecution(t *testing.T, org string) string {
 	}
 	seedPromptResolution(t, w.tx, dispatchLineage{dispatch: dispatch, org: org, product: product,
 		feature: feature, epic: epic, story: story})
-	if _, err := w.tx.Exec(`INSERT INTO executions
-	        (execution_id, organization_id, product_id, feature_id, epic_id, story_id, story_dispatch_id)
-	      VALUES ($1,$2,$3,$4,$5,$6,$7)`, execution, org, product, feature, epic, story, dispatch); err != nil {
+	if _, err := w.tx.Exec(executionInsert(t, w.tx, user), execution, org, product, feature, epic, story, dispatch); err != nil {
 		t.Fatalf("seed foreign-org execution: %v", err)
 	}
 	return execution

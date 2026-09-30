@@ -179,19 +179,100 @@ type StoryDispatch struct {
 	WorkGroupID      uuid.UUID
 }
 
-// Execution is one logical Story-scoped execution, carrying identity and
-// authority only (item 2, D4). Configuration and bindings are items 5/6's.
+// Execution is one logical Story-scoped execution: identity and authority
+// (item 2, D4), the resolved configuration (item 5, D12) and, once recorded,
+// the four-axis terminal result (item 5, D11).
 type Execution struct {
-	AdmissionClosedAt *time.Time
 	CreatedAt         time.Time
-	AuthorityState    AuthorityState
-	ExecutionID       uuid.UUID
-	OrganizationID    uuid.UUID
-	ProductID         uuid.UUID
-	FeatureID         uuid.UUID
-	EpicID            uuid.UUID
-	StoryID           uuid.UUID
-	StoryDispatchID   uuid.UUID
+	AdmissionClosedAt *time.Time
+	// Terminal and TerminatedAt are present together once a terminal result
+	// is recorded, and never change afterwards.
+	Terminal     *TerminalResult
+	TerminatedAt *time.Time
+
+	AuthorityState AuthorityState
+	// CapabilitySet is the canonical (sorted, de-duplicated) set of family
+	// identities this execution may request, immutable from insert.
+	CapabilitySet []string
+
+	ExecutionID     uuid.UUID
+	OrganizationID  uuid.UUID
+	ProductID       uuid.UUID
+	FeatureID       uuid.UUID
+	EpicID          uuid.UUID
+	StoryID         uuid.UUID
+	StoryDispatchID uuid.UUID
+	// ActingUserID is the operator who accepted the dispatch: the member the
+	// vault resolves secrets for, immutable, never read from a request (D6).
+	ActingUserID uuid.UUID
+
+	// Headless declares that no responder exists for an operator
+	// requirement, known at dispatch (ADR 0030 section 4; D7).
+	Headless bool
+}
+
+// ExecutionConfiguration is what AcceptDispatch resolves into the execution
+// row (D12). The capability set is canonicalised by the seam -- sorted and
+// de-duplicated -- before it is written; validation against the closed
+// family set is the composition's (sequence commit 2), and an identity that
+// is blank is refused here because no registry could name it.
+type ExecutionConfiguration struct {
+	CapabilitySet []string
+	ActingUserID  uuid.UUID
+	Headless      bool
+}
+
+// ErrExecutionRejected is the sentinel every refused execution transition
+// wraps.
+var ErrExecutionRejected = errors.New("execution transition rejected")
+
+// ExecutionReason names why an execution transition was refused.
+type ExecutionReason string
+
+// The reasons, one per rule.
+const (
+	// ReasonAlreadySuperseded: authority is not current.
+	ReasonAlreadySuperseded ExecutionReason = "authority is already superseded"
+	// ReasonAdmissionOpen: a terminal result needs admission closed first
+	// (D7's forced-stop order; D11).
+	ReasonAdmissionOpen ExecutionReason = "admission is still open; close it before recording a terminal result"
+	// ReasonAlreadyTerminal: a terminal result is recorded at most once.
+	ReasonAlreadyTerminal ExecutionReason = "a terminal result is already recorded"
+	// ReasonActionsNotDrained: an attempt is unsettled or has unresolved
+	// drainage, so no fence receipt exists (D11).
+	ReasonActionsNotDrained ExecutionReason = "an admitted action is not drained"
+	// ReasonBlockedAttemptInvalid: the blocked reference is not a settled,
+	// blocked attempt of this execution.
+	ReasonBlockedAttemptInvalid ExecutionReason = "blocked_tool_call_id is not a settled blocked attempt of this execution"
+	// ReasonCapabilityBlank: a capability identity is blank.
+	ReasonCapabilityBlank ExecutionReason = "a capability identity is blank"
+)
+
+// ExecutionRejected is a refused execution transition.
+type ExecutionRejected struct {
+	Operation   string
+	Reason      ExecutionReason
+	Detail      string
+	ExecutionID uuid.UUID
+}
+
+func (e *ExecutionRejected) Error() string {
+	message := fmt.Sprintf("%s refused for execution %s: %s", e.Operation, e.ExecutionID, e.Reason)
+	if e.Detail != "" {
+		message += " (" + e.Detail + ")"
+	}
+	return message
+}
+
+// Is lets callers match the sentinel without unwrapping the detail.
+func (e *ExecutionRejected) Is(target error) bool { return target == ErrExecutionRejected }
+
+// Supersession is what superseding reports: the attempts registered and
+// unsettled at that moment -- the caller's DRAIN LIST (D8) -- and the waits
+// the verb itself settled stale (D10).
+type Supersession struct {
+	Drain  []ToolCall
+	Staled []ToolCall
 }
 
 // DispatchReader is the dispatch family's read surface.
@@ -199,6 +280,7 @@ type DispatchReader interface {
 	GetDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*StoryDispatch, error)
 	ListDispatchesByDisposition(ctx context.Context, organizationID uuid.UUID, disposition Disposition) ([]StoryDispatch, error)
 	GetExecutionByDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*Execution, error)
+	GetExecution(ctx context.Context, organizationID, executionID uuid.UUID) (*Execution, error)
 }
 
 // DispatchWriter is the dispatch family's write surface.
@@ -235,10 +317,50 @@ type DispatchWriter interface {
 
 	// AcceptDispatch flips pending → accepted and creates the execution in
 	// the same transaction: an accepted dispatch has at least one execution,
-	// which is the seam's half of item 2's invariant.
-	AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*Execution, error)
+	// which is the seam's half of item 2's invariant. The configuration is
+	// written in the execution's INSERT (item 5, D12): the anti-update
+	// trigger leaves no other initialization path.
+	AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, configuration ExecutionConfiguration) (*Execution, error)
 	// FailDispatch flips pending → failed with a stable code.
 	FailDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, failureCode, failureDetail string) error
 	// InvalidateDispatch flips pending → invalidated.
 	InvalidateDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) error
+}
+
+// ExecutionWriter is the execution's boundary surface (item 5 design, D9,
+// D10, D11): closure, supersession and the terminal result, each a named
+// conditional transition under the row's exclusive lock.
+type ExecutionWriter interface {
+	// CloseAdmission takes the execution row FOR UPDATE and closes admission
+	// (D9). Idempotent: a second closure is the headless path followed by
+	// Terminate's own, and changes nothing.
+	CloseAdmission(ctx context.Context, organizationID, executionID uuid.UUID) error
+
+	// SupersedeExecution marks authority superseded and closes admission in
+	// one statement (D10), settles every waiting attempt stale with its
+	// decision preserved, and returns the open attempts as the drain list
+	// (D8). Refused when authority is already superseded.
+	SupersedeExecution(ctx context.Context, organizationID, executionID uuid.UUID) (Supersession, error)
+
+	// RecordTerminalResult records the four-axis result, once (D11). It
+	// requires admission already closed -- the verb refuses rather than
+	// closing it as a side effect -- validates the result, and accepts the
+	// receipt only when every attempt of the execution has a resolved drain
+	// disposition. A blocked result must name a settled blocked attempt of
+	// this execution.
+	RecordTerminalResult(ctx context.Context, organizationID, executionID uuid.UUID, result TerminalResult, receipt FenceReceipt) error
+}
+
+// ExecutionTxReader is the locking read the boundary's gate 3 needs and
+// nothing outside a transaction can use (item 5 design, D8, T2): the
+// execution row taken FOR UPDATE, so the authority and admission it reports
+// hold for the rest of the caller's transaction and a supersession waits
+// behind it. Present on Tx only; a Store delegate would take and release
+// the lock in a transaction of its own, which is a read that promises
+// nothing (PR #383 review).
+type ExecutionTxReader interface {
+	// LockExecution reads the execution under its exclusive row lock, held
+	// until the enclosing transaction ends. ErrNotFound when it is not in
+	// the organization.
+	LockExecution(ctx context.Context, organizationID, executionID uuid.UUID) (*Execution, error)
 }

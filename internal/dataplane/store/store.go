@@ -254,6 +254,10 @@ type PrincipalInstance struct {
 	// PromptPack is the P of the MPH signature: present on every agent
 	// principal and on nothing else (ADR 0031 section 2; item 4 design, D5).
 	PromptPack *PrincipalPromptPack
+	// ExecutionID is the execution a LIVE agent principal runs under:
+	// present exactly for resolved-origin agents, and what admission check 1
+	// reads (item 5 design, D4, D12).
+	ExecutionID *uuid.UUID
 
 	Lineage   Lineage
 	StartTime time.Time
@@ -553,6 +557,7 @@ type Reader interface {
 	WorkReader
 	DispatchReader
 	PromptPackReader
+	AttemptReader
 
 	GetManagementArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*ManagementArtifact, error)
 	GetAuditArtifact(ctx context.Context, organizationID, artifactID uuid.UUID) (*AuditArtifact, error)
@@ -580,6 +585,12 @@ type Reader interface {
 	ListReviews(ctx context.Context, organizationID, artifactID uuid.UUID) ([]Review, error)
 
 	GetPrincipalInstance(ctx context.Context, organizationID, instanceID uuid.UUID) (*PrincipalInstance, error)
+	// GetPrincipalForExecution is the tenant-scoped read admission check 1
+	// performs (item 5 design, D4): the principal by id, IF it is live and
+	// belongs to the execution. ErrNotFound otherwise -- a principal of
+	// another execution of the same Story, or a stopped one, is
+	// indistinguishable from one that does not exist.
+	GetPrincipalForExecution(ctx context.Context, organizationID, executionID, instanceID uuid.UUID) (*PrincipalInstance, error)
 	ListSeededInputs(ctx context.Context, organizationID, instanceID uuid.UUID) ([]SeededInput, error)
 	FindPrincipalInstances(ctx context.Context, query MPHQuery) ([]PrincipalInstance, error)
 }
@@ -593,7 +604,9 @@ type Writer interface {
 	ProvisioningWriter
 	WorkWriter
 	DispatchWriter
+	ExecutionWriter
 	PromptPackWriter
+	AttemptWriter
 
 	CreateManagementArtifact(ctx context.Context, input CreateManagementArtifactInput) (*ManagementArtifact, error)
 	CreateAuditArtifact(ctx context.Context, input CreateAuditArtifactInput) (*AuditArtifact, error)
@@ -652,6 +665,7 @@ type Tx interface {
 	Reader
 	Writer
 	BenchmarkTxWriter
+	ExecutionTxReader
 }
 
 // Store is the persistence seam.

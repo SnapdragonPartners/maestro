@@ -75,9 +75,21 @@ func (d Divergence) String() string {
 	return fmt.Sprintf("%s: %s", d.Component, d.Detail)
 }
 
+// Wait is the attempt an execution is waiting on (item 5 design, D11): the
+// row says WHICH wait, and the attempt that holds it.
+type Wait struct {
+	State      store.AttemptState
+	ToolCallID uuid.UUID
+}
+
 // ProjectedRow is one classified row.
 type ProjectedRow struct {
 	Divergence *Divergence
+	// Wait is present for an execution with an attempt in operator_waiting
+	// or resource_waiting; nil otherwise. A wait is an attribute of the row
+	// and not a class: the execution is still awaiting the boundary, and
+	// what it awaits is the attempt.
+	Wait       *Wait
 	Class      Class
 	DispatchID uuid.UUID
 	StoryID    uuid.UUID
@@ -139,6 +151,16 @@ func Classify(row *store.OpenDispatch) (ProjectedRow, error) {
 	case store.DispositionAccepted:
 		if row.Execution == nil {
 			return out, fmt.Errorf("dispatch %s is accepted and carries no execution", row.Dispatch.StoryDispatchID)
+		}
+		// OpenWork leaves terminal executions out (item 5 design, D11); one
+		// arriving here is a seam that stopped doing so, and it is refused
+		// rather than counted as awaiting a boundary it has already left.
+		if row.Execution.Terminal != nil {
+			return out, fmt.Errorf("execution %s has terminal status %s, which is not open work",
+				row.Execution.ExecutionID, row.Execution.Terminal.Status)
+		}
+		if row.Wait != nil {
+			out.Wait = &Wait{State: row.Wait.State, ToolCallID: row.Wait.ToolCallID}
 		}
 		switch row.Execution.AuthorityState {
 		case store.AuthoritySuperseded:

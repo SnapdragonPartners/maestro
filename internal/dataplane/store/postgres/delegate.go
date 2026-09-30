@@ -707,9 +707,14 @@ func (s *Store) CreateDispatch(ctx context.Context, organizationID, storyID uuid
 	})
 }
 
-// AcceptDispatch flips pending to accepted and creates the execution.
-func (s *Store) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID) (*store.Execution, error) {
-	return inTx(ctx, s, func(t *tx) (*store.Execution, error) { return t.AcceptDispatch(ctx, organizationID, dispatchID) })
+// AcceptDispatch flips pending to accepted and creates the execution with
+// its resolved configuration.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, configuration store.ExecutionConfiguration) (*store.Execution, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Execution, error) {
+		return t.AcceptDispatch(ctx, organizationID, dispatchID, configuration)
+	})
 }
 
 // FailDispatch flips pending to failed.
@@ -828,5 +833,165 @@ func (s *Store) ProvisionOrganizationPromptPack(ctx context.Context, organizatio
 func (s *Store) SelectBuiltinPromptPack(ctx context.Context, organizationID uuid.UUID, builtin store.BuiltinPromptPack, expected store.PromptSelectorToken) (*store.PromptPackSelected, error) {
 	return inTx(ctx, s, func(t *tx) (*store.PromptPackSelected, error) {
 		return t.SelectBuiltinPromptPack(ctx, organizationID, builtin, expected)
+	})
+}
+
+// --- The execution boundary's verbs (Phase 3 item 5, checkpoint 1) -------
+//
+// Each delegates into one transaction of its own, as every Store method
+// does. The boundary composes them inside WithTx where D8's protocol needs
+// several in one; reached here, each is one transaction and nothing weaker.
+
+// GetExecution reads one execution by id.
+func (s *Store) GetExecution(ctx context.Context, organizationID, executionID uuid.UUID) (*store.Execution, error) {
+	return inTx(ctx, s, func(t *tx) (*store.Execution, error) { return t.GetExecution(ctx, organizationID, executionID) })
+}
+
+// CloseAdmission closes an execution's admission under its lock.
+func (s *Store) CloseAdmission(ctx context.Context, organizationID, executionID uuid.UUID) error {
+	return s.WithTx(ctx, func(t store.Tx) error { return t.CloseAdmission(ctx, organizationID, executionID) })
+}
+
+// SupersedeExecution supersedes authority and returns the drain list.
+func (s *Store) SupersedeExecution(ctx context.Context, organizationID, executionID uuid.UUID) (store.Supersession, error) {
+	return inTx(ctx, s, func(t *tx) (store.Supersession, error) { return t.SupersedeExecution(ctx, organizationID, executionID) })
+}
+
+// RecordTerminalResult records the four-axis result, once.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) RecordTerminalResult(ctx context.Context, organizationID, executionID uuid.UUID, result store.TerminalResult, receipt store.FenceReceipt) error {
+	return s.WithTx(ctx, func(t store.Tx) error {
+		return t.RecordTerminalResult(ctx, organizationID, executionID, result, receipt)
+	})
+}
+
+// GetPrincipalForExecution is admission check 1's read.
+func (s *Store) GetPrincipalForExecution(ctx context.Context, organizationID, executionID, instanceID uuid.UUID) (*store.PrincipalInstance, error) {
+	return inTx(ctx, s, func(t *tx) (*store.PrincipalInstance, error) {
+		return t.GetPrincipalForExecution(ctx, organizationID, executionID, instanceID)
+	})
+}
+
+// RevealSecretAtVersion decrypts a secret if it is still at the named version.
+func (s *Store) RevealSecretAtVersion(ctx context.Context, organizationID, secretID, actingUserID uuid.UUID, version int) (secret.Value, error) {
+	return inTx(ctx, s, func(t *tx) (secret.Value, error) {
+		return t.RevealSecretAtVersion(ctx, organizationID, secretID, actingUserID, version)
+	})
+}
+
+// BindRepositoryForge records a forge binding, idempotently.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) BindRepositoryForge(ctx context.Context, input store.BindRepositoryForgeInput) (store.Bootstrapped[store.ForgeBinding], error) {
+	return inTx(ctx, s, func(t *tx) (store.Bootstrapped[store.ForgeBinding], error) { return t.BindRepositoryForge(ctx, input) })
+}
+
+// RegisterAttempt registers an attempt against its execution.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) RegisterAttempt(ctx context.Context, input store.RegisterAttemptInput) (store.Registration, error) {
+	return inTx(ctx, s, func(t *tx) (store.Registration, error) { return t.RegisterAttempt(ctx, input) })
+}
+
+// RecordDeniedAttempt opens and completes a denial in one insert.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) RecordDeniedAttempt(ctx context.Context, input store.RecordDeniedAttemptInput) (store.Registration, error) {
+	return inTx(ctx, s, func(t *tx) (store.Registration, error) { return t.RecordDeniedAttempt(ctx, input) })
+}
+
+// StoryWaitingAttempts reads a Story's waiting attempts under its lock. The
+// lock lasts for this one transaction; a caller that needs it held through
+// a wait entry composes both inside WithTx.
+func (s *Store) StoryWaitingAttempts(ctx context.Context, organizationID, storyID uuid.UUID) ([]store.ToolCall, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.ToolCall, error) { return t.StoryWaitingAttempts(ctx, organizationID, storyID) })
+}
+
+// EnterOperatorWait moves open to operator_waiting.
+func (s *Store) EnterOperatorWait(ctx context.Context, organizationID, toolCallID uuid.UUID, requirementSet json.RawMessage, requirementSetDigest string) error {
+	return s.WithTx(ctx, func(t store.Tx) error {
+		return t.EnterOperatorWait(ctx, organizationID, toolCallID, requirementSet, requirementSetDigest)
+	})
+}
+
+// EnterResourceWait moves open to resource_waiting.
+func (s *Store) EnterResourceWait(ctx context.Context, organizationID, toolCallID uuid.UUID) error {
+	return s.WithTx(ctx, func(t store.Tx) error { return t.EnterResourceWait(ctx, organizationID, toolCallID) })
+}
+
+// LeaveResourceWait moves resource_waiting to open.
+func (s *Store) LeaveResourceWait(ctx context.Context, organizationID, toolCallID uuid.UUID) error {
+	return s.WithTx(ctx, func(t store.Tx) error { return t.LeaveResourceWait(ctx, organizationID, toolCallID) })
+}
+
+// RecordOperatorDecision records the operator's answer.
+func (s *Store) RecordOperatorDecision(ctx context.Context, organizationID, toolCallID uuid.UUID, decision store.OperatorDecision, decidedBy uuid.UUID) (store.ToolCall, error) {
+	return inTx(ctx, s, func(t *tx) (store.ToolCall, error) {
+		return t.RecordOperatorDecision(ctx, organizationID, toolCallID, decision, decidedBy)
+	})
+}
+
+// ConsumeOperatorDecision consumes an approval, once.
+func (s *Store) ConsumeOperatorDecision(ctx context.Context, organizationID, toolCallID, claimedBy uuid.UUID) (store.Consumption, error) {
+	return inTx(ctx, s, func(t *tx) (store.Consumption, error) {
+		return t.ConsumeOperatorDecision(ctx, organizationID, toolCallID, claimedBy)
+	})
+}
+
+// InheritOperatorDecision marks a stale approval consumed by a new attempt.
+func (s *Store) InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID, requirementSetDigest string) error {
+	return s.WithTx(ctx, func(t store.Tx) error {
+		return t.InheritOperatorDecision(ctx, organizationID, staleToolCallID, consumedBy, requirementSetDigest)
+	})
+}
+
+// MarkRevalidated records D8's T2 for the allow path.
+func (s *Store) MarkRevalidated(ctx context.Context, organizationID, toolCallID uuid.UUID) error {
+	return s.WithTx(ctx, func(t store.Tx) error { return t.MarkRevalidated(ctx, organizationID, toolCallID) })
+}
+
+// SettleAttempt records an attempt's outcome, once.
+//
+//nolint:gocritic // hugeParam: by value, matching the seam interface
+func (s *Store) SettleAttempt(ctx context.Context, input store.SettleAttemptInput) (store.ToolCompletion, error) {
+	return inTx(ctx, s, func(t *tx) (store.ToolCompletion, error) { return t.SettleAttempt(ctx, input) })
+}
+
+// ResolveDrainDisposition moves an unresolved disposition to its evidence.
+func (s *Store) ResolveDrainDisposition(ctx context.Context, organizationID, toolCallID uuid.UUID, disposition store.DrainDisposition) error {
+	return s.WithTx(ctx, func(t store.Tx) error {
+		return t.ResolveDrainDisposition(ctx, organizationID, toolCallID, disposition)
+	})
+}
+
+// StaleInterruptedWait settles a foreign-claimed wait stale.
+func (s *Store) StaleInterruptedWait(ctx context.Context, organizationID, toolCallID, foreignClaim uuid.UUID) error {
+	return s.WithTx(ctx, func(t store.Tx) error {
+		return t.StaleInterruptedWait(ctx, organizationID, toolCallID, foreignClaim)
+	})
+}
+
+// TakeClaim transfers an open attempt's claim, conditionally.
+func (s *Store) TakeClaim(ctx context.Context, organizationID, toolCallID, from, to uuid.UUID) error {
+	return s.WithTx(ctx, func(t store.Tx) error { return t.TakeClaim(ctx, organizationID, toolCallID, from, to) })
+}
+
+// ListAttemptsForRecovery is D5's two enumerations.
+func (s *Store) ListAttemptsForRecovery(ctx context.Context, organizationID uuid.UUID) ([]store.ToolCall, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.ToolCall, error) { return t.ListAttemptsForRecovery(ctx, organizationID) })
+}
+
+// ListExecutionAttempts returns every attempt of one execution.
+func (s *Store) ListExecutionAttempts(ctx context.Context, organizationID, executionID uuid.UUID) ([]store.ToolCall, error) {
+	return inTx(ctx, s, func(t *tx) ([]store.ToolCall, error) {
+		return t.ListExecutionAttempts(ctx, organizationID, executionID)
+	})
+}
+
+// FindInheritableDecision returns the stale attempt a re-request may inherit from.
+func (s *Store) FindInheritableDecision(ctx context.Context, organizationID, executionID uuid.UUID, family, argumentsDigest, targetKey string) (*store.ToolCall, error) {
+	return inTx(ctx, s, func(t *tx) (*store.ToolCall, error) {
+		return t.FindInheritableDecision(ctx, organizationID, executionID, family, argumentsDigest, targetKey)
 	})
 }
