@@ -67,6 +67,8 @@ func TestRegistryRefusesEveryMalformedFamily(t *testing.T) {
 		"unknown field type": {func(f *family.Family) { f.Schema.Fields[0].Type = "object" }, "type"},
 		"unclassified field": {func(f *family.Family) { f.Schema.Fields[0].Classification = "" },
 			"classification"},
+		"unknown classification": {func(f *family.Family) { f.Schema.Fields[0].Classification = "bogus" },
+			"classification"},
 		"keyed commitment declared": {
 			func(f *family.Family) { f.Schema.Fields[0].Classification = family.KeyedCommitment },
 			"not implemented"},

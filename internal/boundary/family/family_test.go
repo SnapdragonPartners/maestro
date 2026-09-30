@@ -54,3 +54,23 @@ func TestFailureCarriesItsCommitState(t *testing.T) {
 		t.Fatalf("SecretSlots() = %v", slots)
 	}
 }
+
+// TestClosedSetsAreReadOnly (PR #384 review): the classification and
+// effect-site sets are reachable only through Valid and a cloned view, so a
+// package cannot widen the policy set before the registry validates
+// against it.
+func TestClosedSetsAreReadOnly(t *testing.T) {
+	all := family.AllClassifications()
+	all[0] = "widened"
+	if family.Classification("widened").Valid() || !family.Persist.Valid() || family.Classification("").Valid() {
+		t.Fatal("mutating the returned view changed the closed set, or a member is not valid")
+	}
+	sites := family.AllEffectSites()
+	sites[0] = "elsewhere"
+	if family.EffectSite("elsewhere").Valid() || !family.OrchestratorSide.Valid() || family.EffectSite("").Valid() {
+		t.Fatal("mutating the returned view changed the closed set, or a member is not valid")
+	}
+	if len(all) != 5 || len(sites) != 3 {
+		t.Fatalf("%d classifications, %d effect sites", len(all), len(sites))
+	}
+}

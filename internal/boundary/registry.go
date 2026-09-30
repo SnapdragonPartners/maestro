@@ -179,8 +179,8 @@ func validateFamily(f *family.Family) error {
 	switch {
 	case strings.TrimSpace(f.Description) == "":
 		return refuse("no description; the model reads one in the definition")
-	case !slices.Contains(family.EffectSites, f.EffectSite):
-		return refuse("effect site %q is not one of %v", f.EffectSite, family.EffectSites)
+	case !f.EffectSite.Valid():
+		return refuse("effect site %q is not one of %v", f.EffectSite, family.AllEffectSites())
 	case strings.TrimSpace(f.Checkability) == "":
 		return refuse("no checkability answer; a family that cannot say what prevents the resource " +
 			"from performing this directly is mediated in documentation only (ADR 0030 section 7)")
@@ -239,8 +239,8 @@ func validateField(f *family.Field, isResult bool) error {
 		return fmt.Errorf("field %q is not a lower-case [a-z][a-z0-9_]* key", f.Name)
 	case !slices.Contains(fieldTypes, f.Type):
 		return fmt.Errorf("field %q: type %q is not one of %v", f.Name, f.Type, fieldTypes)
-	case !slices.Contains(family.Classifications, f.Classification):
-		return fmt.Errorf("field %q: classification %q is not one of %v", f.Name, f.Classification, family.Classifications)
+	case !f.Classification.Valid():
+		return fmt.Errorf("field %q: classification %q is not one of %v", f.Name, f.Classification, family.AllClassifications())
 	case f.Classification == family.KeyedCommitment:
 		return fmt.Errorf("field %q: keyed commitments are declared and not implemented in item 5 "+
 			"(design D6); the classification exists so a family that needs one cannot omit it silently, "+

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -50,10 +51,19 @@ const (
 	KeyedCommitment Classification = "keyed_commitment"
 )
 
-// Classifications is the closed set, in declaration order.
+// classifications is the closed set, in declaration order. Unexported: an
+// exported slice is a policy set any package can overwrite before the
+// registry validates against it (PR #384 review). Valid and
+// AllClassifications are the read-only surface.
 //
 //nolint:gochecknoglobals // Immutable enumeration.
-var Classifications = []Classification{Persist, DigestOnly, SecretSlot, Large, KeyedCommitment}
+var classifications = []Classification{Persist, DigestOnly, SecretSlot, Large, KeyedCommitment}
+
+// Valid reports whether c is one of the five.
+func (c Classification) Valid() bool { return slices.Contains(classifications, c) }
+
+// AllClassifications returns the closed set, as a copy.
+func AllClassifications() []Classification { return slices.Clone(classifications) }
 
 // EffectSite is where the effect happens (ADR 0030 section 6; D3), which
 // decides what "policed per action" means for the family and, at gate 3,
@@ -72,10 +82,16 @@ const (
 	External EffectSite = "external"
 )
 
-// EffectSites is the closed set.
+// effectSites is the closed set; unexported for classifications' reason.
 //
 //nolint:gochecknoglobals // Immutable enumeration.
-var EffectSites = []EffectSite{OrchestratorSide, InResource, External}
+var effectSites = []EffectSite{OrchestratorSide, InResource, External}
+
+// Valid reports whether e is one of the three.
+func (e EffectSite) Valid() bool { return slices.Contains(effectSites, e) }
+
+// AllEffectSites returns the closed set, as a copy.
+func AllEffectSites() []EffectSite { return slices.Clone(effectSites) }
 
 // FieldType is the JSON type a schema field accepts.
 type FieldType string
