@@ -76,6 +76,8 @@ func TestRegistryRefusesEveryMalformedFamily(t *testing.T) {
 			func(f *family.Family) { f.Schema.Fields[5].Classification = family.Persist }, "go together"},
 		"required secret slot": {func(f *family.Family) { f.Schema.Fields[5].Required = true },
 			"never required"},
+		"secret slot not a string": {func(f *family.Family) { f.Schema.Fields[5].Type = family.Integer },
+			"a secret slot is a string field"},
 		"slot naming no secret": {func(f *family.Family) { f.Schema.Fields[5].Secret.Name = "" },
 			"names no secret"},
 		"slot at an unknown scope": {func(f *family.Family) { f.Schema.Fields[5].Secret.Scope = "planet" },
@@ -172,6 +174,9 @@ func TestRegistryHoldsAnIndependentCopy(t *testing.T) {
 	if !ok {
 		t.Fatal("the family is not registered")
 	}
+	if _, found := r.Lookup("test/absent"); found {
+		t.Fatal("an unregistered identity was found")
+	}
 	hint, _ := registered.Schema.Field("hint")
 	if hint.Classification != family.DigestOnly {
 		t.Fatalf("hint is %q on the registered schema after the caller changed its own declaration", hint.Classification)
@@ -183,6 +188,25 @@ func TestRegistryHoldsAnIndependentCopy(t *testing.T) {
 	if registered.ResultSchema.Fields[0].Classification != family.Persist || registered.Description == declared.Description {
 		t.Fatal("the result schema or description followed the caller's later change")
 	}
+	// Through Lookup too (PR #384 review): the result is a copy, so mutating
+	// it -- its field slices and slot pointers included -- changes nothing a
+	// later lookup sees.
+	leaked, _ := r.Lookup("test/noop")
+	leaked.Schema.Fields[1].Classification = family.Persist
+	leaked.Schema.Fields[5].Secret.Name = "forge.leaked"
+	leaked.ResultSchema.Fields[0].Name = "leaked"
+	again, _ := r.Lookup("test/noop")
+	if hint, _ := again.Schema.Field("hint"); hint.Classification != family.DigestOnly {
+		t.Fatalf("hint is %q after a Lookup result was mutated", hint.Classification)
+	}
+	if token, _ := again.Schema.Field("token"); token.Secret.Name != "forge.token" {
+		t.Fatalf("the slot names %q after a Lookup result's slot was mutated", token.Secret.Name)
+	}
+	if again.ResultSchema.Fields[0].Name != "echo" {
+		t.Fatal("the result schema followed a Lookup result's mutation")
+	}
+	registered = again
+
 	// And the consequence the finding named: substitution still treats the
 	// field as digest-only.
 	got, err := boundary.Substitute(registered.Schema, map[string]any{"note": "x", "hint": "unrecorded"},

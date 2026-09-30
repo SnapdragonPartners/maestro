@@ -121,11 +121,18 @@ func Families() *Registry {
 	return MustNewRegistry()
 }
 
-// Lookup returns the family with this identity, if registered. The pointer
-// is to the registry's own copy, which callers must not modify.
-func (r *Registry) Lookup(identity string) (*family.Family, bool) {
+// Lookup returns the family with this identity, if registered -- as a deep
+// copy, so what the registry validated is what every gate reads. Returning
+// the registry's own pointer left "callers must not modify" as a convention
+// (PR #384 review): a caller could change a validated declaration after
+// construction, or race a gate reading it. A copy per lookup is one
+// allocation per request against a struct of a few fields.
+func (r *Registry) Lookup(identity string) (family.Family, bool) {
 	f, ok := r.byIdentity[identity]
-	return f, ok
+	if !ok {
+		return family.Family{}, false
+	}
+	return cloneFamily(f), true
 }
 
 // Identities returns every registered identity, sorted, as a copy.
@@ -242,6 +249,10 @@ func validateField(f *family.Field, isResult bool) error {
 		return fmt.Errorf("field %q: a secret slot declaration and a %q classification go together", f.Name, family.SecretSlot)
 	case f.Secret == nil:
 		return nil
+	case f.Type != family.String:
+		return fmt.Errorf("field %q: a secret slot is a %s field; substitution puts the reference text "+
+			"\"secret:<id>@<version>\" in it, so any other type would be a schema claiming what the "+
+			"record never holds", f.Name, family.String)
 	case isResult:
 		return fmt.Errorf("field %q: a result schema admits no secret slot", f.Name)
 	case f.Required:
