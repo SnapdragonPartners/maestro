@@ -940,9 +940,9 @@ func (s *Store) ConsumeOperatorDecision(ctx context.Context, organizationID, too
 }
 
 // InheritOperatorDecision marks a stale approval consumed by a new attempt.
-func (s *Store) InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID) error {
+func (s *Store) InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID, requirementSetDigest string) error {
 	return s.WithTx(ctx, func(t store.Tx) error {
-		return t.InheritOperatorDecision(ctx, organizationID, staleToolCallID, consumedBy)
+		return t.InheritOperatorDecision(ctx, organizationID, staleToolCallID, consumedBy, requirementSetDigest)
 	})
 }
 

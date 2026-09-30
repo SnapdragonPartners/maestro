@@ -394,13 +394,17 @@ func (t *tx) ConsumeOperatorDecision(ctx context.Context, organizationID, toolCa
 
 // InheritOperatorDecision marks a stale attempt's approval consumed by a
 // new attempt (D5), once.
-func (t *tx) InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID) error {
+func (t *tx) InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID, requirementSetDigest string) error {
 	const transition = "InheritOperatorDecision"
 	if consumedBy == uuid.Nil || consumedBy == staleToolCallID {
 		return errors.New("consumed_by must name the inheriting attempt, which is not the stale one")
 	}
+	if !digestPattern.MatchString(requirementSetDigest) {
+		return fmt.Errorf("requirement set digest %q is not 64 lower-case hex characters", requirementSetDigest)
+	}
 	rows, err := t.queries.InheritOperatorDecision(ctx, gen.InheritOperatorDecisionParams{
 		ToolCallID: toUUID(staleToolCallID), OrganizationID: toUUID(organizationID), ConsumedBy: toNullUUID(&consumedBy),
+		RequirementSetDigest: &requirementSetDigest,
 	})
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", transition, staleToolCallID, err)

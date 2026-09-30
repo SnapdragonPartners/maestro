@@ -319,8 +319,12 @@ type AttemptWriter interface {
 	// records revalidation and transfers the claim to claimedBy.
 	ConsumeOperatorDecision(ctx context.Context, organizationID, toolCallID, claimedBy uuid.UUID) (Consumption, error)
 	// InheritOperatorDecision marks a stale attempt's unconsumed approval
-	// consumed by a new attempt (D5), once.
-	InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID) error
+	// consumed by a new attempt (D5), once -- and only by an attempt of the
+	// same execution, family, substituted digest and target, whose
+	// recomputed requirement-set digest equals the one approved. All of it
+	// is one conditional update; a mismatch on any is
+	// ReasonDecisionNotInheritable.
+	InheritOperatorDecision(ctx context.Context, organizationID, staleToolCallID, consumedBy uuid.UUID, requirementSetDigest string) error
 
 	// MarkRevalidated is D8's T2 record for the allow path.
 	MarkRevalidated(ctx context.Context, organizationID, toolCallID uuid.UUID) error

@@ -766,8 +766,27 @@ func TestInheritOperatorDecisionOnce(t *testing.T) {
 	if _, err := b.store.FindInheritableDecision(ctx, b.organizationID, b.execution.ExecutionID, testFamily, argumentsDigest, "other-target"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a different target found an inheritable decision: %v", err)
 	}
+	// Only THE logical action inherits (PR #383 review): an attempt of
+	// another execution, another target, or presented under a changed
+	// requirement set is refused, and the approval stays unconsumed.
+	other := b.boundaryFor(t, provisionGoverned(t, b.fixture), b.configured())
+	foreign := other.register(t, nil)
+	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, foreign.ToolCallID, requirementHash)
+	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
+	elsewhere := b.registration(v7(t), nil)
+	elsewhere.TargetKey = "other-target"
+	if _, err := b.store.RegisterAttempt(ctx, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, elsewhere.ToolCallID, requirementHash)
+	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
 	successor := b.register(t, nil)
-	if err := b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, successor.ToolCallID); err != nil {
+	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, successor.ToolCallID, requestDigest)
+	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
+	if row := b.get(t, waiting.ToolCallID); row.OperatorDecision.ConsumedAt != nil {
+		t.Fatal("a refused inheritance consumed the approval")
+	}
+	if err := b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, successor.ToolCallID, requirementHash); err != nil {
 		t.Fatalf("inherit: %v", err)
 	}
 	inherited := b.get(t, waiting.ToolCallID)
@@ -778,7 +797,7 @@ func TestInheritOperatorDecisionOnce(t *testing.T) {
 		t.Fatalf("a consumed decision is still inheritable: %v", err)
 	}
 	third := b.register(t, nil)
-	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, third.ToolCallID)
+	err = b.store.InheritOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, third.ToolCallID, requirementHash)
 	assertAttemptRejected(t, err, store.ReasonDecisionNotInheritable)
 }
 
@@ -1279,7 +1298,7 @@ func TestTruncationRetainsUndrainedAndReferencedAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	successor := b.register(t, nil)
-	if err := b.store.InheritOperatorDecision(ctx, b.organizationID, stale.ToolCallID, successor.ToolCallID); err != nil {
+	if err := b.store.InheritOperatorDecision(ctx, b.organizationID, stale.ToolCallID, successor.ToolCallID, requirementHash); err != nil {
 		t.Fatal(err)
 	}
 	b.settle(t, successor.ToolCallID, store.ToolOutcomeSucceeded, store.DrainCommitted, nil)

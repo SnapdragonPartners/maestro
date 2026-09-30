@@ -352,28 +352,48 @@ func (q *Queries) GetToolCall(ctx context.Context, arg GetToolCallParams) (ToolC
 }
 
 const inheritOperatorDecision = `-- name: InheritOperatorDecision :execrows
-UPDATE tool_calls
+UPDATE tool_calls AS stale
 SET operator_decision_consumed_at = now(),
     operator_decision_consumed_by = $1
-WHERE tool_call_id                  = $2
-  AND organization_id               = $3
-  AND state                         = 'settled'
-  AND outcome                       = 'stale'
-  AND operator_decision             = 'approve_once'
-  AND operator_decision_consumed_at IS NULL
+WHERE stale.tool_call_id                  = $2
+  AND stale.organization_id               = $3
+  AND stale.state                         = 'settled'
+  AND stale.outcome                       = 'stale'
+  AND stale.operator_decision             = 'approve_once'
+  AND stale.operator_decision_consumed_at IS NULL
+  AND stale.requirement_set_digest        = $4
+  AND EXISTS (
+      SELECT 1 FROM tool_calls AS consumer
+      WHERE consumer.tool_call_id     = $1
+        AND consumer.organization_id  = stale.organization_id
+        AND consumer.execution_id     = stale.execution_id
+        AND consumer.family           = stale.family
+        AND consumer.arguments_digest = stale.arguments_digest
+        AND consumer.target_key       = stale.target_key)
 `
 
 type InheritOperatorDecisionParams struct {
-	ConsumedBy     pgtype.UUID
-	ToolCallID     pgtype.UUID
-	OrganizationID pgtype.UUID
+	ConsumedBy           pgtype.UUID
+	ToolCallID           pgtype.UUID
+	OrganizationID       pgtype.UUID
+	RequirementSetDigest *string
 }
 
 // A re-request inheriting a stale attempt's unconsumed approval (D5): the
 // decision is marked consumed on the STALE row with the new attempt's id,
 // once. The stale row is settled, so the guard is its state, not finished_at.
+// The consumer must be THE logical action the approval binds to -- same
+// execution, family, substituted digest and target -- and the requirement
+// set recomputed for it must equal the one that was approved; both are
+// predicates of this one statement, so an approval cannot be consumed for
+// an unrelated attempt, nor under a changed question (PR #383 review).
 func (q *Queries) InheritOperatorDecision(ctx context.Context, arg InheritOperatorDecisionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, inheritOperatorDecision, arg.ConsumedBy, arg.ToolCallID, arg.OrganizationID)
+	result, err := q.db.Exec(ctx, inheritOperatorDecision,
+		arg.ConsumedBy,
+		arg.ToolCallID,
+		arg.OrganizationID,
+		arg.RequirementSetDigest,
+	)
 	if err != nil {
 		return 0, err
 	}
