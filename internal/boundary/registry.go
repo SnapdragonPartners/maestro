@@ -54,9 +54,13 @@ var ErrUnknownFamily = errors.New("unknown action family")
 func NewRegistry(families ...family.Family) (*Registry, error) {
 	r := &Registry{byIdentity: make(map[string]*family.Family, len(families))}
 	for i := range families {
-		// The registry holds its own copy: a caller that later mutates the
-		// value it passed changes nothing the gates see.
-		f := families[i]
+		// The registry holds its own copy, DEEP: a caller that later mutates
+		// the value it passed -- or the field slices and slot pointers it
+		// still holds -- changes nothing the gates see. A shallow copy kept
+		// the slices shared, and a caller flipping a field from digest_only
+		// to persist after registration would have changed what the
+		// substitution persisted, unvalidated (PR review round 1).
+		f := cloneFamily(&families[i])
 		if err := validateFamily(&f); err != nil {
 			return nil, err
 		}
@@ -69,6 +73,29 @@ func NewRegistry(families ...family.Family) (*Registry, error) {
 	}
 	slices.Sort(r.identities)
 	return r, nil
+}
+
+// cloneFamily copies a declaration and everything it points to.
+func cloneFamily(f *family.Family) family.Family {
+	c := *f
+	c.Schema = cloneSchema(f.Schema)
+	c.ResultSchema = cloneSchema(f.ResultSchema)
+	return c
+}
+
+func cloneSchema(s family.Schema) family.Schema {
+	if s.Fields == nil {
+		return family.Schema{}
+	}
+	fields := make([]family.Field, len(s.Fields))
+	for i := range s.Fields {
+		fields[i] = s.Fields[i]
+		if s.Fields[i].Secret != nil {
+			slot := *s.Fields[i].Secret
+			fields[i].Secret = &slot
+		}
+	}
+	return family.Schema{Fields: fields}
 }
 
 // MustNewRegistry is NewRegistry for a set fixed at compile time, where a

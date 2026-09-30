@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -264,32 +265,58 @@ func coerce(field *family.Field, value any) (any, error) {
 		}
 		return b, nil
 	case family.Integer, family.Number:
-		f, ok := asFloat(value)
-		if !ok {
-			return nil, wrong()
-		}
-		if field.Type == family.Integer && f != math.Trunc(f) {
-			return nil, wrong()
-		}
-		return f, nil
+		return coerceNumber(field, value)
 	}
 	return nil, fmt.Errorf("field %q: type %q reached substitution unvalidated", field.Name, field.Type)
 }
 
-// asFloat accepts the shapes a decoded JSON number takes.
-func asFloat(value any) (float64, bool) {
-	switch n := value.(type) {
-	case float64:
-		return n, true
-	case json.Number:
-		f, err := n.Float64()
-		return f, err == nil
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
+// coerceNumber validates a number ON ITS ORIGINAL REPRESENTATION before
+// anything converts it (PR review round 1). A json.Number is checked as the
+// literal the caller wrote: ADR 0028's safe range through canonical's own
+// checker, and integrality through an exact rational -- because converting
+// first would let 9007199254740991.1 round to an integer and 1e-400 to 0,
+// and the recorded request would be a value the caller did not send. Once
+// the literal is known safe, float64 is exact for it in the sense that
+// matters: JCS serializes the literal and the float identically.
+//
+// A float64 has already been decoded by whoever produced the arguments and
+// carries no literal to check; what remains checkable is the magnitude and,
+// for an integer field, integrality.
+func coerceNumber(field *family.Field, value any) (any, error) {
+	refuse := func(why string) error {
+		return fmt.Errorf("%w: %q is not a %s: %s", ErrWrongType, field.Name, field.Type, why)
 	}
-	return 0, false
+	switch n := value.(type) {
+	case json.Number:
+		if err := canonical.CheckSafeNumbers([]byte(n.String())); err != nil {
+			return nil, refuse(err.Error())
+		}
+		exact, ok := new(big.Rat).SetString(n.String())
+		if !ok {
+			return nil, refuse("not a JSON number")
+		}
+		if field.Type == family.Integer && !exact.IsInt() {
+			return nil, refuse("not integral")
+		}
+		f, err := n.Float64()
+		if err != nil {
+			return nil, refuse(err.Error())
+		}
+		return f, nil
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) || math.Abs(n) > canonical.SafeIntegerMax {
+			return nil, refuse("outside the JCS-safe range")
+		}
+		if field.Type == family.Integer && n != math.Trunc(n) {
+			return nil, refuse("not integral")
+		}
+		return n, nil
+	case int:
+		return coerceNumber(field, float64(n))
+	case int64:
+		return coerceNumber(field, float64(n))
+	}
+	return nil, refuse("not a number")
 }
 
 // largeReference is what the projection holds for a Large field over the

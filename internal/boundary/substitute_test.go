@@ -3,6 +3,7 @@ package boundary_test
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -189,5 +190,54 @@ func TestSecretReferenceRoundTrips(t *testing.T) {
 				t.Fatalf("%q was accepted: %v", bad, err)
 			}
 		})
+	}
+}
+
+// TestSubstituteValidatesANumberOnItsLiteral is PR review round 1's first
+// P1: a json.Number is checked as the caller wrote it, before conversion.
+// Converting first let 9007199254740991.1 round to an integer that passed
+// the integer check, and 1e-400 collapse to 0 that passed the safe-range
+// check, so the recorded request was a value the caller never sent (ADR
+// 0028's encoding constraint, canonical.CheckSafeNumbers).
+//
+// THE MUTANT: convert with n.Float64() before checking -- both literals are
+// then accepted, which the first two cases read.
+func TestSubstituteValidatesANumberOnItsLiteral(t *testing.T) {
+	schema := noopFamily().Schema
+	refs := map[string]boundary.SecretReference{"token": reference(t)}
+	for name, tc := range map[string]struct {
+		field string
+		value any
+	}{
+		"integer literal with a fraction that rounds away": {"count", json.Number("9007199254740991.1")},
+		"number literal that underflows to zero":           {"ratio", json.Number("1e-400")},
+		"number literal past the safe range":               {"ratio", json.Number("9007199254740992")},
+		"integer literal with a fraction":                  {"count", json.Number("1.5")},
+		"float past the safe range":                        {"ratio", 1e30},
+		"float NaN":                                        {"ratio", math.NaN()},
+		"not a number at all":                              {"ratio", "0.5"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := boundary.Substitute(schema, map[string]any{"note": "x", tc.field: tc.value}, refs)
+			if !errors.Is(err, boundary.ErrWrongType) {
+				t.Fatalf("%v was accepted for %s: %v", tc.value, tc.field, err)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("the refusal does not name the field: %v", err)
+			}
+		})
+	}
+	// Positive controls, and the equivalence the conversion relies on: a
+	// safe literal and the float it decodes to digest identically.
+	fromLiteral, err := boundary.Substitute(schema, map[string]any{"note": "x", "count": json.Number("2"), "ratio": json.Number("0.25")}, refs)
+	if err != nil {
+		t.Fatalf("safe literals were refused: %v", err)
+	}
+	fromFloat, err := boundary.Substitute(schema, map[string]any{"note": "x", "count": float64(2), "ratio": 0.25}, refs)
+	if err != nil {
+		t.Fatalf("safe floats were refused: %v", err)
+	}
+	if fromLiteral.ArgumentsDigest != fromFloat.ArgumentsDigest {
+		t.Fatal("a literal and its decoded float digested differently")
 	}
 }

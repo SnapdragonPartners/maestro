@@ -36,6 +36,7 @@ func noopFamily() family.Family {
 			{Name: "note", Type: family.String, Required: true, Classification: family.Persist},
 			{Name: "hint", Type: family.String, Classification: family.DigestOnly},
 			{Name: "count", Type: family.Integer, Classification: family.Persist},
+			{Name: "ratio", Type: family.Number, Classification: family.Persist},
 			{Name: "body", Type: family.String, Classification: family.Large},
 			{Name: "token", Type: family.String, Classification: family.SecretSlot,
 				Secret: &family.Slot{Name: "forge.token", Scope: family.ScopeRepository}},

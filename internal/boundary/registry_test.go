@@ -70,15 +70,15 @@ func TestRegistryRefusesEveryMalformedFamily(t *testing.T) {
 		"keyed commitment declared": {
 			func(f *family.Family) { f.Schema.Fields[0].Classification = family.KeyedCommitment },
 			"not implemented"},
-		"secret slot without a slot": {func(f *family.Family) { f.Schema.Fields[4].Secret = nil },
+		"secret slot without a slot": {func(f *family.Family) { f.Schema.Fields[5].Secret = nil },
 			"go together"},
 		"slot without the classification": {
-			func(f *family.Family) { f.Schema.Fields[4].Classification = family.Persist }, "go together"},
-		"required secret slot": {func(f *family.Family) { f.Schema.Fields[4].Required = true },
+			func(f *family.Family) { f.Schema.Fields[5].Classification = family.Persist }, "go together"},
+		"required secret slot": {func(f *family.Family) { f.Schema.Fields[5].Required = true },
 			"never required"},
-		"slot naming no secret": {func(f *family.Family) { f.Schema.Fields[4].Secret.Name = "" },
+		"slot naming no secret": {func(f *family.Family) { f.Schema.Fields[5].Secret.Name = "" },
 			"names no secret"},
-		"slot at an unknown scope": {func(f *family.Family) { f.Schema.Fields[4].Secret.Scope = "planet" },
+		"slot at an unknown scope": {func(f *family.Family) { f.Schema.Fields[5].Secret.Scope = "planet" },
 			"secret scope"},
 		"secret slot in the result": {func(f *family.Family) {
 			f.ResultSchema.Fields = append(f.ResultSchema.Fields, family.Field{
@@ -147,5 +147,50 @@ func TestValidateCapabilitiesNamesEveryUnknownIdentity(t *testing.T) {
 func TestFamiliesIsEmptyInCommitTwo(t *testing.T) {
 	if got := boundary.Families().Identities(); len(got) != 0 {
 		t.Fatalf("the production set holds %v; the sequence adds the first family in commit 4", got)
+	}
+}
+
+// TestRegistryHoldsAnIndependentCopy is PR review round 1's second P1: the
+// copy taken at construction must be deep. A shallow copy left the field
+// slices and slot pointers shared, so a caller flipping its own declaration
+// from digest_only to persist after registration changed what the
+// registered schema persisted -- without revalidation, and without any
+// Lookup result being touched.
+//
+// THE MUTANT: `f := families[i]` in place of cloneFamily -- the registered
+// field reads persist, and the slot reads the changed name.
+func TestRegistryHoldsAnIndependentCopy(t *testing.T) {
+	declared := noopFamily()
+	r := boundary.MustNewRegistry(declared)
+
+	declared.Schema.Fields[1].Classification = family.Persist // hint: digest_only → persist
+	declared.Schema.Fields[5].Secret.Name = "forge.other"     // token's slot
+	declared.ResultSchema.Fields[0].Classification = family.DigestOnly
+	declared.Description = "changed after registration"
+
+	registered, ok := r.Lookup("test/noop")
+	if !ok {
+		t.Fatal("the family is not registered")
+	}
+	hint, _ := registered.Schema.Field("hint")
+	if hint.Classification != family.DigestOnly {
+		t.Fatalf("hint is %q on the registered schema after the caller changed its own declaration", hint.Classification)
+	}
+	token, _ := registered.Schema.Field("token")
+	if token.Secret.Name != "forge.token" {
+		t.Fatalf("the registered slot names %q after the caller changed its own", token.Secret.Name)
+	}
+	if registered.ResultSchema.Fields[0].Classification != family.Persist || registered.Description == declared.Description {
+		t.Fatal("the result schema or description followed the caller's later change")
+	}
+	// And the consequence the finding named: substitution still treats the
+	// field as digest-only.
+	got, err := boundary.Substitute(registered.Schema, map[string]any{"note": "x", "hint": "unrecorded"},
+		map[string]boundary.SecretReference{"token": reference(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got.Projection), "unrecorded") {
+		t.Fatalf("a digest-only value was persisted after the caller's post-registration change: %s", got.Projection)
 	}
 }
