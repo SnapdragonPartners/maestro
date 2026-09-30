@@ -81,11 +81,21 @@ func (v Value) Len() int { return len(v.plaintext) }
 // base64-encoded, URL-escaped, split across lines -- is not found, and a
 // caller that formats a secret into any encoding is making the decision
 // Reveal's name exists to make visible.
+//
+// A replacement that itself contains the plaintext -- a credential that
+// happens to be a substring of "secret:<id>@<version>" -- would put the
+// secret back into the redacted output (PR #384 review), so it is replaced
+// by the fixed "[redacted]" instead, which by construction contains no
+// caller-chosen bytes.
 func (v Value) Redact(text, replacement string) string {
 	if len(v.plaintext) == 0 {
 		return text
 	}
-	return strings.ReplaceAll(text, string(v.plaintext), replacement)
+	plaintext := string(v.plaintext)
+	if strings.Contains(replacement, plaintext) {
+		replacement = redacted
+	}
+	return strings.ReplaceAll(text, plaintext, replacement)
 }
 
 // String and GoString cover fmt's two interface-driven paths. Format below

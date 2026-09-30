@@ -159,3 +159,26 @@ func TestRedactReplacesEveryOccurrenceAndNothingElse(t *testing.T) {
 		t.Fatalf("an empty secret changed the text to %q", got)
 	}
 }
+
+// TestRedactNeverReintroducesTheSecretThroughTheReplacement (PR #384
+// review): a plaintext that is a substring of the replacement would be put
+// straight back by ReplaceAll. The fallback is the fixed marker.
+//
+// THE MUTANT: drop the Contains guard -- "secret:" is then in the output.
+func TestRedactNeverReintroducesTheSecretThroughTheReplacement(t *testing.T) {
+	const reference = "secret:0193b4f0-0000-7000-8000-000000000000@3"
+	for _, plaintext := range []string{"secret:", "@3", reference} {
+		value := NewValue([]byte(plaintext))
+		got := value.Redact("token="+plaintext+" sent", reference)
+		if strings.Contains(got, plaintext) {
+			t.Fatalf("plaintext %q survived redaction with a replacement containing it: %q", plaintext, got)
+		}
+		if got != "token="+redacted+" sent" {
+			t.Fatalf("Redact = %q, want the fixed marker", got)
+		}
+	}
+	// And the ordinary case still uses the caller's replacement.
+	if got := NewValue([]byte("ghp_x")).Redact("ghp_x", reference); got != reference {
+		t.Fatalf("Redact = %q, want %q", got, reference)
+	}
+}
