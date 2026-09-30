@@ -782,6 +782,7 @@ func TestSettleAttemptEnforcesTheReasonCodeAndDispositionRules(t *testing.T) {
 		return err
 	}
 	stopped, committed, unresolved := store.DrainStoppedBeforeCommit, store.DrainCommitted, store.DrainUnresolved
+	digest := requirementHash
 
 	assertAttemptRejected(t, settle(fresh(), store.SettleAttemptInput{Outcome: store.ToolOutcomeDenied, Disposition: &stopped}), store.ReasonReasonCodeRequired)
 	assertAttemptRejected(t, settle(fresh(), store.SettleAttemptInput{Outcome: store.ToolOutcomeSucceeded, Disposition: &committed, ReasonCode: reason("x/y")}), store.ReasonReasonCodeForbidden)
@@ -800,9 +801,44 @@ func TestSettleAttemptEnforcesTheReasonCodeAndDispositionRules(t *testing.T) {
 		t.Fatal("a success carrying an error message was accepted")
 	}
 
+	// A wait is never settled directly: it leaves through its own
+	// transitions (PR #383 review).
+	waiting := b.wait(t)
+	assertAttemptRejected(t, settle(waiting.ToolCallID, store.SettleAttemptInput{Outcome: store.ToolOutcomeSucceeded, Disposition: &committed}), store.ReasonAttemptWrongState)
+	assertAttemptRejected(t, settle(waiting.ToolCallID, store.SettleAttemptInput{Outcome: store.ToolOutcomeStale, Disposition: &stopped, ReasonCode: reason("x/y")}), store.ReasonAttemptWrongState)
+	if row := b.get(t, waiting.ToolCallID); row.State != store.AttemptOperatorWaiting {
+		t.Fatalf("a refused settlement moved the wait: %s", row.State)
+	}
+
+	// The recorded requirement set is never rewritten at settlement (PR #383
+	// review): after approval and consumption the row is open again and
+	// carries the question that was approved; a settlement offering another
+	// is refused, and a plain settlement leaves the recorded digest in place.
+	if _, err := b.store.RecordOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, store.DecisionApproveOnce, b.userID); err != nil {
+		t.Fatal(err)
+	}
+	if consumed, err := b.store.ConsumeOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, b.instance); err != nil || !consumed.Consumed {
+		t.Fatalf("consume: %+v %v", consumed, err)
+	}
+	other := "4444444444444444444444444444444444444444444444444444444444444444"
+	assertAttemptRejected(t, settle(waiting.ToolCallID, store.SettleAttemptInput{
+		Outcome: store.ToolOutcomeBlocked, Disposition: &stopped,
+		RequirementSet: json.RawMessage(`{"policy/operator_approval":{"question":"rewritten"}}`), RequirementSetDigest: &other,
+	}), store.ReasonRequirementSetRecorded)
+	if err := settle(waiting.ToolCallID, store.SettleAttemptInput{Outcome: store.ToolOutcomeSucceeded, Disposition: &committed}); err != nil {
+		t.Fatalf("settling the consumed attempt: %v", err)
+	}
+	if row := b.get(t, waiting.ToolCallID); row.RequirementSetDigest == nil || *row.RequirementSetDigest != requirementHash {
+		t.Fatalf("the recorded requirement digest moved at settlement: %v", row.RequirementSetDigest)
+	}
+	// And a requirement set belongs to a blocked settlement only.
+	assertAttemptRejected(t, settle(fresh(), store.SettleAttemptInput{
+		Outcome: store.ToolOutcomeSucceeded, Disposition: &committed,
+		RequirementSet: json.RawMessage(requirements), RequirementSetDigest: &digest,
+	}), store.ReasonRequirementSetForbidden)
+
 	// The headless block: the requirement set written at settlement.
 	blocked := fresh()
-	digest := requirementHash
 	if err := settle(blocked, store.SettleAttemptInput{
 		Outcome: store.ToolOutcomeBlocked, Disposition: &stopped,
 		RequirementSet: json.RawMessage(requirements), RequirementSetDigest: &digest,

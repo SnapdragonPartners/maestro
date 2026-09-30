@@ -1338,11 +1338,12 @@ SET finished_at            = COALESCE($1::timestamptz, now()),
     error_message          = $4,
     reason_code            = $5,
     drain_disposition      = $6,
-    requirement_set        = COALESCE($7::jsonb, requirement_set),
-    requirement_set_digest = COALESCE($8::text, requirement_set_digest),
+    requirement_set        = COALESCE(requirement_set, $7::jsonb),
+    requirement_set_digest = COALESCE(requirement_set_digest, $8::text),
     claimed_by             = NULL
 WHERE tool_call_id    = $9
   AND organization_id = $10
+  AND state           = 'open'
   AND finished_at IS NULL
 `
 
@@ -1361,9 +1362,14 @@ type SettleToolCallParams struct {
 
 // Settling moves the state, the outcome and the disposition together (D11),
 // releases the claim, and -- for a headless block -- writes the requirement
-// set the block preserves in the same statement (D7). The requirement
-// columns are COALESCEd so an ordinary settlement leaves a recorded wait's
-// requirement in place. Once-only on finished_at, as every completion is.
+// set the block preserves in the same statement (D7). From OPEN only: a
+// wait leaves through its own transitions (decision, supersession,
+// interruption, the resource wait's exit) and never through a bare
+// settlement, or an unapproved wait could be settled succeeded (PR #383
+// review). The requirement columns prefer the RECORDED value, so a
+// settlement after consumption cannot rewrite the question that was
+// approved; the seam refuses requirement input on a row that has one.
+// Once-only on finished_at, as every completion is.
 func (q *Queries) SettleToolCall(ctx context.Context, arg SettleToolCallParams) (int64, error) {
 	result, err := q.db.Exec(ctx, settleToolCall,
 		arg.FinishedAt,

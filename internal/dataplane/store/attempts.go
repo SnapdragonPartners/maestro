@@ -129,6 +129,14 @@ const (
 	// ReasonDispositionMismatch: the disposition contradicts the outcome --
 	// a denial that committed, a success that stopped before commit.
 	ReasonDispositionMismatch AttemptReason = "drain disposition contradicts the outcome"
+	// ReasonRequirementSetRecorded: a settlement offered a requirement set
+	// for a row that already carries one. The recorded set is the question
+	// that was (or would have been) answered and is never rewritten; only a
+	// headless block, which never entered a wait, writes one at settlement.
+	ReasonRequirementSetRecorded AttemptReason = "a recorded requirement set is not rewritten at settlement"
+	// ReasonRequirementSetForbidden: a requirement set at settlement belongs
+	// to a blocked outcome only.
+	ReasonRequirementSetForbidden AttemptReason = "only a blocked settlement writes a requirement set"
 )
 
 // AttemptRejected is a refused attempt transition.
@@ -241,7 +249,8 @@ type SettleAttemptInput struct {
 	// for a row outside any execution (the importer's).
 	Disposition *DrainDisposition
 	// RequirementSet and its digest, for a blocked settlement that never
-	// entered a wait (the headless path). Nil leaves the row's own.
+	// entered a wait (the headless path). Refused on a row that already
+	// carries one, and for any outcome but blocked.
 	RequirementSet       json.RawMessage
 	RequirementSetDigest *string
 
@@ -316,8 +325,9 @@ type AttemptWriter interface {
 	// MarkRevalidated is D8's T2 record for the allow path.
 	MarkRevalidated(ctx context.Context, organizationID, toolCallID uuid.UUID) error
 
-	// SettleAttempt records the outcome, once only (D11). A repeat returns
-	// the recorded row with Recorded=false.
+	// SettleAttempt records the outcome, once only (D11), from open only: a
+	// wait leaves through its own transitions, never through a bare
+	// settlement. A repeat returns the recorded row with Recorded=false.
 	SettleAttempt(ctx context.Context, input SettleAttemptInput) (ToolCompletion, error)
 	// ResolveDrainDisposition moves an unresolved disposition to the
 	// evidence a later reconciliation obtained (D11).

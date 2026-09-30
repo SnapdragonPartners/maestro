@@ -242,9 +242,14 @@ WHERE tool_call_id    = @tool_call_id
 
 -- Settling moves the state, the outcome and the disposition together (D11),
 -- releases the claim, and -- for a headless block -- writes the requirement
--- set the block preserves in the same statement (D7). The requirement
--- columns are COALESCEd so an ordinary settlement leaves a recorded wait's
--- requirement in place. Once-only on finished_at, as every completion is.
+-- set the block preserves in the same statement (D7). From OPEN only: a
+-- wait leaves through its own transitions (decision, supersession,
+-- interruption, the resource wait's exit) and never through a bare
+-- settlement, or an unapproved wait could be settled succeeded (PR #383
+-- review). The requirement columns prefer the RECORDED value, so a
+-- settlement after consumption cannot rewrite the question that was
+-- approved; the seam refuses requirement input on a row that has one.
+-- Once-only on finished_at, as every completion is.
 -- name: SettleToolCall :execrows
 UPDATE tool_calls
 SET finished_at            = COALESCE(sqlc.narg('finished_at')::timestamptz, now()),
@@ -254,11 +259,12 @@ SET finished_at            = COALESCE(sqlc.narg('finished_at')::timestamptz, now
     error_message          = @error_message,
     reason_code            = @reason_code,
     drain_disposition      = @drain_disposition,
-    requirement_set        = COALESCE(sqlc.narg('requirement_set')::jsonb, requirement_set),
-    requirement_set_digest = COALESCE(sqlc.narg('requirement_set_digest')::text, requirement_set_digest),
+    requirement_set        = COALESCE(requirement_set, sqlc.narg('requirement_set')::jsonb),
+    requirement_set_digest = COALESCE(requirement_set_digest, sqlc.narg('requirement_set_digest')::text),
     claimed_by             = NULL
 WHERE tool_call_id    = @tool_call_id
   AND organization_id = @organization_id
+  AND state           = 'open'
   AND finished_at IS NULL;
 
 -- Drainage moves once, from unresolved (D11); the trigger refuses anything

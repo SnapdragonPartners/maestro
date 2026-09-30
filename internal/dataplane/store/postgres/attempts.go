@@ -409,6 +409,12 @@ func (t *tx) SettleAttempt(ctx context.Context, input store.SettleAttemptInput) 
 	if locked.ToolCall.FinishedAt.Valid {
 		return store.ToolCompletion{Call: toolCallFromRow(&locked.ToolCall), Recorded: false}, nil
 	}
+	if store.AttemptState(locked.ToolCall.State) != store.AttemptOpen {
+		// A wait leaves through its own transitions; settling it directly
+		// would bypass the decision it is waiting for (PR #383 review).
+		return store.ToolCompletion{}, rejectAttempt(transition, input.ToolCallID, store.ReasonAttemptWrongState,
+			fmt.Sprintf("state is %s, want %s", locked.ToolCall.State, store.AttemptOpen))
+	}
 	if settleErr := checkSettlement(&input, &locked.ToolCall); settleErr != nil {
 		return store.ToolCompletion{}, settleErr
 	}
@@ -479,11 +485,8 @@ func checkSettlement(input *store.SettleAttemptInput, row *gen.ToolCall) error {
 	if err := checkOutcomeAndReason(input); err != nil {
 		return err
 	}
-	if input.Outcome == store.ToolOutcomeBlocked && len(row.RequirementSet) == 0 && len(input.RequirementSet) == 0 {
-		return rejectAttempt(transition, input.ToolCallID, store.ReasonRequirementSetRequired, "")
-	}
-	if len(input.RequirementSet) != 0 && input.RequirementSetDigest == nil {
-		return errors.New("a requirement set written at settlement needs its digest")
+	if err := checkSettlementRequirement(input, row); err != nil {
+		return err
 	}
 	bound := row.ExecutionID.Valid
 	switch {
@@ -493,6 +496,31 @@ func checkSettlement(input *store.SettleAttemptInput, row *gen.ToolCall) error {
 		return rejectAttempt(transition, input.ToolCallID, store.ReasonDispositionForbidden, "")
 	case bound:
 		return checkDispositionAgainstOutcome(input.ToolCallID, input.Outcome, *input.Disposition)
+	}
+	return nil
+}
+
+// checkSettlementRequirement is the requirement-set rule at settlement (D7,
+// D12): a blocked outcome preserves one; only the headless block -- which
+// never entered a wait -- writes one here, and only onto a row that never
+// recorded one, so the question that was approved is never rewritten (PR
+// #383 review).
+func checkSettlementRequirement(input *store.SettleAttemptInput, row *gen.ToolCall) error {
+	const transition = "SettleAttempt"
+	offered := len(input.RequirementSet) != 0 || input.RequirementSetDigest != nil
+	if input.Outcome == store.ToolOutcomeBlocked && len(row.RequirementSet) == 0 && !offered {
+		return rejectAttempt(transition, input.ToolCallID, store.ReasonRequirementSetRequired, "")
+	}
+	if !offered {
+		return nil
+	}
+	switch {
+	case len(row.RequirementSet) != 0:
+		return rejectAttempt(transition, input.ToolCallID, store.ReasonRequirementSetRecorded, "")
+	case input.Outcome != store.ToolOutcomeBlocked:
+		return rejectAttempt(transition, input.ToolCallID, store.ReasonRequirementSetForbidden, string(input.Outcome))
+	case len(input.RequirementSet) == 0 || input.RequirementSetDigest == nil:
+		return errors.New("a requirement set written at settlement needs both the set and its digest")
 	}
 	return nil
 }
