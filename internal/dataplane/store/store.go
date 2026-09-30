@@ -665,6 +665,7 @@ type Tx interface {
 	Reader
 	Writer
 	BenchmarkTxWriter
+	ExecutionTxReader
 }
 
 // Store is the persistence seam.

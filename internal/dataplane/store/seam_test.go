@@ -114,3 +114,27 @@ func TestTxDoesNotAdvertiseRecovery(t *testing.T) {
 		t.Errorf("Store no longer offers %s, so recovery is unreachable through the seam", method)
 	}
 }
+
+// TestStoreDoesNotAdvertiseTheExecutionLock guards the fourth split. A row
+// lock lives for its transaction; reached through a Store delegate it would
+// be taken and released inside one of the delegate's own, and the read it
+// returned would promise nothing about the rest of the caller's work. So
+// the locking read is on Tx alone (item 5 design, D8).
+func TestStoreDoesNotAdvertiseTheExecutionLock(t *testing.T) {
+	const method = "LockExecution"
+	var seam Tx
+	var _ ExecutionTxReader = seam
+	for _, surface := range []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{"Store", reflect.TypeOf((*Store)(nil)).Elem()},
+		{"Reader", reflect.TypeOf((*Reader)(nil)).Elem()},
+		{"Writer", reflect.TypeOf((*Writer)(nil)).Elem()},
+	} {
+		if _, found := surface.typ.MethodByName(method); found {
+			t.Errorf("%s advertises %s; a row lock outside the caller's transaction holds nothing, so the "+
+				"locking read belongs on Tx alone", surface.name, method)
+		}
+	}
+}

@@ -350,3 +350,17 @@ type ExecutionWriter interface {
 	// this execution.
 	RecordTerminalResult(ctx context.Context, organizationID, executionID uuid.UUID, result TerminalResult, receipt FenceReceipt) error
 }
+
+// ExecutionTxReader is the locking read the boundary's gate 3 needs and
+// nothing outside a transaction can use (item 5 design, D8, T2): the
+// execution row taken FOR UPDATE, so the authority and admission it reports
+// hold for the rest of the caller's transaction and a supersession waits
+// behind it. Present on Tx only; a Store delegate would take and release
+// the lock in a transaction of its own, which is a read that promises
+// nothing (PR #383 review).
+type ExecutionTxReader interface {
+	// LockExecution reads the execution under its exclusive row lock, held
+	// until the enclosing transaction ends. ErrNotFound when it is not in
+	// the organization.
+	LockExecution(ctx context.Context, organizationID, executionID uuid.UUID) (*Execution, error)
+}

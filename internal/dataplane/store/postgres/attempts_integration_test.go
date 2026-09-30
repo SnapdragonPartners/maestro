@@ -1398,3 +1398,75 @@ func TestTruncationRetainsUndrainedAndReferencedAttempts(t *testing.T) {
 		t.Fatalf("blocked attempt named by a terminal result: %+v", calls)
 	}
 }
+
+// D8's T2 through the seam (PR #383 review): a revalidator that takes the
+// execution FOR UPDATE, reads current authority and consumes the approval
+// in that transaction cannot race a supersession -- the supersession waits
+// for the lock, and its drain list then holds the attempt the revalidator
+// consumed. Without the lock the supersession lands between the authority
+// read and the consumption, and the approval is consumed under superseded
+// authority.
+func TestLockExecutionSerializesRevalidationAgainstSupersession(t *testing.T) {
+	ctx := context.Background()
+	b := newBoundaryFixture(t)
+	waiting := b.wait(t)
+	if _, err := b.store.RecordOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, store.DecisionApproveOnce, b.userID); err != nil {
+		t.Fatal(err)
+	}
+
+	locked := make(chan store.AuthorityState)
+	proceed := make(chan struct{})
+	var proceedOnce sync.Once
+	t.Cleanup(func() { proceedOnce.Do(func() { close(proceed) }) })
+	revalidated := make(chan error, 1)
+	go func() {
+		revalidated <- b.store.WithTx(ctx, func(tx store.Tx) error {
+			execution, err := tx.LockExecution(ctx, b.organizationID, b.execution.ExecutionID)
+			if err != nil {
+				return err
+			}
+			locked <- execution.AuthorityState
+			<-proceed
+			// The authority read above holds: consume under it.
+			consumed, err := tx.ConsumeOperatorDecision(ctx, b.organizationID, waiting.ToolCallID, b.instance)
+			if err != nil {
+				return err
+			}
+			if !consumed.Consumed {
+				return errors.New("the approval was not consumed")
+			}
+			return nil
+		})
+	}()
+	if authority := <-locked; authority != store.AuthorityCurrent {
+		t.Fatalf("authority under the lock is %s, want current", authority)
+	}
+
+	superseded := make(chan error, 1)
+	var supersession store.Supersession
+	go func() {
+		result, err := b.store.SupersedeExecution(ctx, b.organizationID, b.execution.ExecutionID)
+		supersession = result
+		superseded <- err
+	}()
+	select {
+	case err := <-superseded:
+		t.Fatalf("supersession completed (%v) while the revalidator held the execution lock; T2 is not serialized", err)
+	case <-time.After(750 * time.Millisecond):
+	}
+	proceedOnce.Do(func() { close(proceed) })
+	if err := <-revalidated; err != nil {
+		t.Fatalf("revalidation under the lock: %v", err)
+	}
+	if err := <-superseded; err != nil {
+		t.Fatalf("supersession after the revalidator committed: %v", err)
+	}
+	// The consumed attempt is open, so it is the drain list's, not staled.
+	if len(supersession.Drain) != 1 || supersession.Drain[0].ToolCallID != waiting.ToolCallID || len(supersession.Staled) != 0 {
+		t.Fatalf("supersession after consumption: drain %d staled %d; want the consumed attempt in the drain list", len(supersession.Drain), len(supersession.Staled))
+	}
+	row := b.get(t, waiting.ToolCallID)
+	if row.State != store.AttemptOpen || row.OperatorDecision.ConsumedAt == nil {
+		t.Fatalf("consumed attempt %+v", row)
+	}
+}

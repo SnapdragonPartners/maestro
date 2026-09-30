@@ -96,6 +96,18 @@ func (t *tx) GetExecution(ctx context.Context, organizationID, executionID uuid.
 	return executionFromRow(&row)
 }
 
+// LockExecution reads the execution FOR UPDATE, for the caller's
+// transaction (D8's T2). The same statement every transition in this file
+// begins with, exposed so gate 3's revalidation and the attempt updates
+// that follow it share one lock.
+func (t *tx) LockExecution(ctx context.Context, organizationID, executionID uuid.UUID) (*store.Execution, error) {
+	row, err := t.queries.LockExecution(ctx, gen.LockExecutionParams{OrganizationID: toUUID(organizationID), ExecutionID: toUUID(executionID)})
+	if err != nil {
+		return nil, notFound(err, "execution", executionID)
+	}
+	return executionFromRow(&row)
+}
+
 // CloseAdmission closes admission under the row's exclusive lock (D9).
 // Idempotent, and the lock is not optional: a closure that did not wait for
 // in-flight registrations (FOR SHARE) would close admission with attempts
