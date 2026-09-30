@@ -43,10 +43,11 @@ func rejectAttempt(transition string, toolCallID uuid.UUID, reason store.Attempt
 }
 
 // attemptIdentity is what registration and denial share: the identity
-// fields both inserts carry, validated once.
+// fields both inserts carry, validated once. The family is the record's
+// tool_name (D3); there is no separate name to disagree with it.
 type attemptIdentity struct {
-	family, toolName, requestDigest, argumentsDigest, targetKey string
-	toolCallID                                                  uuid.UUID
+	family, requestDigest, argumentsDigest, targetKey string
+	toolCallID                                        uuid.UUID
 }
 
 func (a *attemptIdentity) validate() error {
@@ -58,9 +59,6 @@ func (a *attemptIdentity) validate() error {
 	}
 	if !familyPattern.MatchString(a.family) {
 		return fmt.Errorf("family %q is not <kind>/<verb>", a.family)
-	}
-	if err := requireName(a.toolName, "tool_name"); err != nil {
-		return err
 	}
 	if !digestPattern.MatchString(a.requestDigest) {
 		return fmt.Errorf("request digest %q is not 64 lower-case hex characters", a.requestDigest)
@@ -86,7 +84,7 @@ func (a *attemptIdentity) validate() error {
 func (t *tx) RegisterAttempt(ctx context.Context, input store.RegisterAttemptInput) (store.Registration, error) {
 	var none store.Registration
 	identity := attemptIdentity{
-		family: input.Family, toolName: input.ToolName, requestDigest: input.RequestDigest,
+		family: input.Family, requestDigest: input.RequestDigest,
 		argumentsDigest: input.ArgumentsDigest, targetKey: input.TargetKey, toolCallID: input.ToolCallID,
 	}
 	if err := identity.validate(); err != nil {
@@ -136,7 +134,7 @@ func (t *tx) RegisterAttempt(ctx context.Context, input store.RegisterAttemptInp
 		FeatureID:           execution.FeatureID,
 		EpicID:              execution.EpicID,
 		StoryID:             execution.StoryID,
-		ToolName:            input.ToolName,
+		ToolName:            input.Family,
 		Arguments:           arguments,
 		ExecutionID:         execution.ExecutionID,
 		Family:              &input.Family,
@@ -230,7 +228,7 @@ func describeString(value *string) string {
 func (t *tx) RecordDeniedAttempt(ctx context.Context, input store.RecordDeniedAttemptInput) (store.Registration, error) {
 	var none store.Registration
 	identity := attemptIdentity{
-		family: input.Family, toolName: input.ToolName, requestDigest: input.RequestDigest,
+		family: input.Family, requestDigest: input.RequestDigest,
 		argumentsDigest: input.ArgumentsDigest, targetKey: input.TargetKey, toolCallID: input.ToolCallID,
 	}
 	if err := identity.validate(); err != nil {
@@ -260,7 +258,7 @@ func (t *tx) RecordDeniedAttempt(ctx context.Context, input store.RecordDeniedAt
 		FeatureID:           execution.FeatureID,
 		EpicID:              execution.EpicID,
 		StoryID:             execution.StoryID,
-		ToolName:            input.ToolName,
+		ToolName:            input.Family,
 		Arguments:           arguments,
 		ExecutionID:         execution.ExecutionID,
 		Family:              &input.Family,

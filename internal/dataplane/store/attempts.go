@@ -182,11 +182,11 @@ type RegisterAttemptInput struct {
 	// independently; nil for a family that mutates nothing shared.
 	MutationKey *string
 
-	// Family is the Orchestrator-owned identity, <kind>/<verb>; ToolName is
-	// what the record's tool_name carries, which the boundary sets to the
-	// same string.
-	Family   string
-	ToolName string
+	// Family is the Orchestrator-owned identity, <kind>/<verb>. It IS the
+	// record's tool_name (D3): the seam writes the one string to both, so
+	// the policy identity and the recorded action cannot diverge (PR #383
+	// review).
+	Family string
 	// RequestDigest is over the caller-supplied fields (the correlation key);
 	// ArgumentsDigest over the substituted input (what the hook decided on).
 	RequestDigest   string
@@ -223,7 +223,6 @@ type RecordDeniedAttemptInput struct {
 	CallerRef *string
 
 	Family          string
-	ToolName        string
 	RequestDigest   string
 	ArgumentsDigest string
 	TargetKey       string

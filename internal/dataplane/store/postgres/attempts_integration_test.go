@@ -84,7 +84,7 @@ func v7(t *testing.T) uuid.UUID {
 
 func (b *boundaryFixture) registration(id uuid.UUID, mutationKey *string) store.RegisterAttemptInput {
 	return store.RegisterAttemptInput{
-		Family: testFamily, ToolName: testFamily, RequestDigest: requestDigest, ArgumentsDigest: argumentsDigest,
+		Family: testFamily, RequestDigest: requestDigest, ArgumentsDigest: argumentsDigest,
 		TargetKey: testTarget, MutationKey: mutationKey, Arguments: json.RawMessage(`{"title":"x"}`),
 		ToolCallID: id, OrganizationID: b.organizationID, ExecutionID: b.execution.ExecutionID,
 		PrincipalInstanceID: b.principal.PrincipalInstanceID, ClaimedBy: b.instance,
@@ -267,6 +267,8 @@ func TestRegisterAttemptIsIdempotentByIdAndBoundToItsExecution(t *testing.T) {
 		t.Fatalf("claim %v, want %s", call.ClaimedBy, b.instance)
 	case call.Family == nil || *call.Family != testFamily || call.RequestDigest == nil || *call.RequestDigest != requestDigest:
 		t.Fatalf("identity %+v", call)
+	case call.ToolName != testFamily:
+		t.Fatalf("tool_name %q is not the family %q; the record's identity is the family (D3)", call.ToolName, testFamily)
 	case call.UserID == nil || *call.UserID != b.execution.ActingUserID:
 		t.Fatalf("accountable user %v, want the execution's acting user %s", call.UserID, b.execution.ActingUserID)
 	case call.Lineage.StoryID == nil || *call.Lineage.StoryID != b.execution.StoryID:
@@ -291,7 +293,7 @@ func TestRegisterAttemptIsIdempotentByIdAndBoundToItsExecution(t *testing.T) {
 		{"another execution", func(in *store.RegisterAttemptInput) {
 			in.ExecutionID, in.PrincipalInstanceID = other.execution.ExecutionID, other.principal.PrincipalInstanceID
 		}},
-		{"another family", func(in *store.RegisterAttemptInput) { in.Family, in.ToolName = "other/family", "other/family" }},
+		{"another family", func(in *store.RegisterAttemptInput) { in.Family = "other/family" }},
 		{"another request digest", func(in *store.RegisterAttemptInput) { in.RequestDigest = requirementHash }},
 	} {
 		input := b.registration(id, nil)
@@ -300,7 +302,7 @@ func TestRegisterAttemptIsIdempotentByIdAndBoundToItsExecution(t *testing.T) {
 			t.Errorf("re-presenting %s under %s = %v, want ErrCorrelationMismatch", id, tc.because, err)
 		}
 		denial := store.RecordDeniedAttemptInput{
-			Family: input.Family, ToolName: input.ToolName, RequestDigest: input.RequestDigest, ArgumentsDigest: input.ArgumentsDigest,
+			Family: input.Family, RequestDigest: input.RequestDigest, ArgumentsDigest: input.ArgumentsDigest,
 			TargetKey: input.TargetKey, ReasonCode: "authority/superseded", ToolCallID: id,
 			OrganizationID: input.OrganizationID, ExecutionID: input.ExecutionID, PrincipalInstanceID: input.PrincipalInstanceID,
 		}
@@ -375,14 +377,14 @@ func TestClosureRefusesRegistrationAndStillRecordsADenial(t *testing.T) {
 		t.Fatalf("re-presenting a registered id after closure: %+v %v; want the existing row with Registered=false", retry, err)
 	}
 	mismatch := b.registration(before.ToolCallID, nil)
-	mismatch.Family, mismatch.ToolName = "other/family", "other/family"
+	mismatch.Family = "other/family"
 	if _, err := b.store.RegisterAttempt(ctx, mismatch); !errors.Is(err, store.ErrCorrelationMismatch) {
 		t.Fatalf("a mismatched id after closure = %v, want ErrCorrelationMismatch", err)
 	}
 
 	id := v7(t)
 	denied, err := b.store.RecordDeniedAttempt(ctx, store.RecordDeniedAttemptInput{
-		Family: testFamily, ToolName: testFamily, RequestDigest: requestDigest, ArgumentsDigest: argumentsDigest,
+		Family: testFamily, RequestDigest: requestDigest, ArgumentsDigest: argumentsDigest,
 		TargetKey: testTarget, ReasonCode: "authority/admission_closed", Arguments: json.RawMessage(`{}`),
 		ToolCallID: id, OrganizationID: b.organizationID, ExecutionID: b.execution.ExecutionID,
 		PrincipalInstanceID: b.principal.PrincipalInstanceID,
@@ -403,7 +405,7 @@ func TestClosureRefusesRegistrationAndStillRecordsADenial(t *testing.T) {
 	}
 	// Idempotent by id, like registration.
 	again, err := b.store.RecordDeniedAttempt(ctx, store.RecordDeniedAttemptInput{
-		Family: testFamily, ToolName: testFamily, RequestDigest: requestDigest, ArgumentsDigest: argumentsDigest,
+		Family: testFamily, RequestDigest: requestDigest, ArgumentsDigest: argumentsDigest,
 		TargetKey: testTarget, ReasonCode: "authority/admission_closed", ToolCallID: id,
 		OrganizationID: b.organizationID, ExecutionID: b.execution.ExecutionID, PrincipalInstanceID: b.principal.PrincipalInstanceID,
 	})
@@ -526,7 +528,7 @@ func TestOneLiveAttemptPerMutatedResourceAtTheSeam(t *testing.T) {
 		t.Fatalf("second attempt on a busy resource = %v, want ErrTargetBusy", err)
 	}
 	other := b.registration(v7(t), &key)
-	other.Family, other.ToolName = "other/family", "other/family"
+	other.Family = "other/family"
 	if _, err := b.store.RegisterAttempt(ctx, other); !errors.Is(err, store.ErrTargetBusy) {
 		t.Fatalf("a second family on a busy resource = %v, want ErrTargetBusy", err)
 	}
