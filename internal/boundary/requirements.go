@@ -187,6 +187,16 @@ func (s RequirementSet) Canonical() (CanonicalRequirements, error) {
 	if err := s.Validate(); err != nil {
 		return CanonicalRequirements{}, err
 	}
+	// The empty set is a valid VALUE -- it is what an evaluation that raised
+	// nothing returns, and the identity when hook results are composed --
+	// but it has no recorded form: the seam refuses an empty requirement set
+	// at every wait entry ("a wait with nothing to wait on is not a wait",
+	// store/postgres/attempts.go), and a boundary that built one would
+	// discover that a transaction later. Refused here, by the same rule
+	// (PR #384 review).
+	if len(s) == 0 {
+		return CanonicalRequirements{}, fmt.Errorf("%w: the empty set has no recorded form; a wait with nothing to wait on is not a wait", ErrInvalidRequirement)
+	}
 	// Scopes sorted per requirement, into a copy: the caller's set is not
 	// modified, and the stored form is the set's, not the collection's.
 	ordered := make(map[RequirementIdentity]Requirement, len(s))

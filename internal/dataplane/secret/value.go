@@ -73,9 +73,9 @@ func (v Value) Len() int { return len(v.plaintext) }
 //
 // An EMPTY secret redacts nothing: strings.ReplaceAll with an empty pattern
 // inserts the replacement between every character, which would turn the
-// text into noise while redacting no secret. The vault refuses to store an
-// empty plaintext, so the case is defensive, and it is stated because the
-// silent alternative is worse than the loud one.
+// text into noise while redacting no secret. The vault does not refuse an
+// empty plaintext (CreateSecret and ReplaceSecret take a Value and check
+// nothing of its length), so this is a real input, not a defensive one.
 //
 // The match is on the exact bytes. A token that appears transformed --
 // base64-encoded, URL-escaped, split across lines -- is not found, and a

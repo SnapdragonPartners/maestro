@@ -142,8 +142,15 @@ func TestRequirementSetValidateRefusesWhatCannotBeAnswered(t *testing.T) {
 			}
 		})
 	}
-	// The empty set is valid: an evaluation that raised nothing.
+	// The empty set is a valid VALUE -- an evaluation that raised nothing --
+	// and has no recorded form: Canonical refuses it by the seam's rule, so
+	// the refusal happens at the boundary rather than a transaction later
+	// (PR #384 review). THE MUTANT: drop the length check and Canonical
+	// returns the digest of "{}" the seam will refuse.
 	if err := (boundary.RequirementSet{}).Validate(); err != nil {
-		t.Fatalf("the empty set was refused: %v", err)
+		t.Fatalf("the empty set was refused as a value: %v", err)
+	}
+	if _, err := (boundary.RequirementSet{}).Canonical(); !errors.Is(err, boundary.ErrInvalidRequirement) {
+		t.Fatalf("the empty set was given a recorded form: %v", err)
 	}
 }
