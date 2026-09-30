@@ -280,6 +280,56 @@ func TestRegisterAttemptIsIdempotentByIdAndBoundToItsExecution(t *testing.T) {
 	if err != nil || second.Registered || second.Call.ToolCallID != id {
 		t.Fatalf("re-presentation: %+v %v; want the existing row with Registered=false", second, err)
 	}
+	// The same id under a different logical action is a CORRELATION
+	// MISMATCH (D5), refused and not replayed -- for the execution, the
+	// family and the request digest, through both verbs (PR #383 review).
+	other := b.boundaryFor(t, provisionGoverned(t, b.fixture), b.configured())
+	for _, tc := range []struct {
+		because string
+		mutate  func(in *store.RegisterAttemptInput)
+	}{
+		{"another execution", func(in *store.RegisterAttemptInput) {
+			in.ExecutionID, in.PrincipalInstanceID = other.execution.ExecutionID, other.principal.PrincipalInstanceID
+		}},
+		{"another family", func(in *store.RegisterAttemptInput) { in.Family, in.ToolName = "other/family", "other/family" }},
+		{"another request digest", func(in *store.RegisterAttemptInput) { in.RequestDigest = requirementHash }},
+	} {
+		input := b.registration(id, nil)
+		tc.mutate(&input)
+		if _, err := b.store.RegisterAttempt(ctx, input); !errors.Is(err, store.ErrCorrelationMismatch) {
+			t.Errorf("re-presenting %s under %s = %v, want ErrCorrelationMismatch", id, tc.because, err)
+		}
+		denial := store.RecordDeniedAttemptInput{
+			Family: input.Family, ToolName: input.ToolName, RequestDigest: input.RequestDigest, ArgumentsDigest: input.ArgumentsDigest,
+			TargetKey: input.TargetKey, ReasonCode: "authority/superseded", ToolCallID: id,
+			OrganizationID: input.OrganizationID, ExecutionID: input.ExecutionID, PrincipalInstanceID: input.PrincipalInstanceID,
+		}
+		if _, err := b.store.RecordDeniedAttempt(ctx, denial); !errors.Is(err, store.ErrCorrelationMismatch) {
+			t.Errorf("recording a denial for %s under %s = %v, want ErrCorrelationMismatch", id, tc.because, err)
+		}
+	}
+	// A different arguments digest alone is NOT a mismatch: the correlation
+	// key is the request digest, so a secret rotation between two
+	// presentations stays a replay (D5).
+	rotated := b.registration(id, nil)
+	rotated.ArgumentsDigest = requirementHash
+	if replay, err := b.store.RegisterAttempt(ctx, rotated); err != nil || replay.Registered {
+		t.Fatalf("re-presentation with a rotated arguments digest: %+v %v; want the existing row", replay, err)
+	}
+	// An id taken by another organization (same database, other tenant): a
+	// mismatch that says only that the id is taken. Planted directly, since
+	// no seam verb of this fixture writes under the other organization.
+	taken := v7(t)
+	if _, err := b.pool.Exec(ctx, `INSERT INTO tool_calls (tool_call_id, organization_id, principal_instance_id, tool_name, arguments)
+	    VALUES ($1, $2, $3, 't', '{}'::jsonb)`, taken, b.otherOrgID, b.otherAuthor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.store.RegisterAttempt(ctx, b.registration(taken, nil)); !errors.Is(err, store.ErrCorrelationMismatch) {
+		t.Fatalf("an id taken by another organization = %v, want ErrCorrelationMismatch", err)
+	}
+	if _, err := b.store.GetToolCall(ctx, b.organizationID, taken); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the taken id became readable in this organization: %v", err)
+	}
 
 	// Identity rules the seam refuses before the row does.
 	for _, bad := range []struct {

@@ -89,6 +89,14 @@ var (
 	// rule on the mutation key (D12): another attempt on that resource is
 	// unsettled or settled with unresolved drainage.
 	ErrTargetBusy = errors.New("another attempt on this resource is live")
+	// ErrCorrelationMismatch reports an attempt id presented with a different
+	// execution, family or request digest from the row that holds it (D5).
+	// The id is taken: the presentation is refused, not recorded as a new
+	// attempt and not replayed -- returning the row's result for a request
+	// that is not the row's logical action would be a replay of an action
+	// nobody asked for. A caller defect, logged as an invariant violation by
+	// the boundary.
+	ErrCorrelationMismatch = errors.New("attempt id is bound to a different logical action")
 )
 
 // AttemptReason names why an attempt transition was refused.
@@ -190,7 +198,10 @@ type RegisterAttemptInput struct {
 
 // Registration is what registering reports: the row as it stands, and
 // whether THIS call wrote it. Registered=false is a transport retry -- the id
-// was taken -- and the row is what the boundary classifies (D5's table).
+// was taken by THE SAME logical action, which the seam has checked -- and the
+// row is what the boundary classifies (D5's table). An id taken by another
+// execution, family or request digest is ErrCorrelationMismatch, never a
+// Registration.
 type Registration struct {
 	Call       ToolCall
 	Registered bool

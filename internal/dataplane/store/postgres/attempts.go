@@ -141,16 +141,53 @@ func (t *tx) RegisterAttempt(ctx context.Context, input store.RegisterAttemptInp
 		}
 		return none, fmt.Errorf("register attempt %s: %w", input.ToolCallID, err)
 	}
+	row, err := t.readRegistered(ctx, &identity, input.OrganizationID, input.ExecutionID, inserted == 1)
+	if err != nil {
+		return none, err
+	}
+	return store.Registration{Call: row, Registered: inserted == 1}, nil
+}
+
+// readRegistered reads the row an insert-or-conflict left, and on a conflict
+// checks it is THIS logical action's (D5): same execution, family and
+// request digest. A mismatch is refused, never returned as a row to classify
+// -- the boundary would read a foreign row's settlement as a replay (PR #383
+// review). A conflict with a row this organization cannot see is a
+// mismatch too: the id is taken, and nothing more can be said about it.
+func (t *tx) readRegistered(ctx context.Context, identity *attemptIdentity, organizationID, executionID uuid.UUID, inserted bool) (store.ToolCall, error) {
 	row, err := t.queries.GetToolCall(ctx, gen.GetToolCallParams{
-		ToolCallID: toUUID(input.ToolCallID), OrganizationID: toUUID(input.OrganizationID),
+		ToolCallID: toUUID(identity.toolCallID), OrganizationID: toUUID(organizationID),
 	})
 	if err != nil {
-		// The id exists -- the insert conflicted -- but not in this
-		// organization: a caller-minted id colliding across tenants. Refused
-		// as not found, which is what it is from here.
-		return none, notFound(err, "attempt", input.ToolCallID)
+		if !inserted && errors.Is(err, pgx.ErrNoRows) {
+			return store.ToolCall{}, fmt.Errorf("%w: attempt %s is taken outside this organization",
+				store.ErrCorrelationMismatch, identity.toolCallID)
+		}
+		return store.ToolCall{}, notFound(err, "attempt", identity.toolCallID)
 	}
-	return store.Registration{Call: toolCallFromRow(&row), Registered: inserted == 1}, nil
+	call := toolCallFromRow(&row)
+	if inserted {
+		return call, nil
+	}
+	switch {
+	case call.ExecutionID == nil || *call.ExecutionID != executionID:
+		return store.ToolCall{}, fmt.Errorf("%w: attempt %s belongs to execution %s, not %s",
+			store.ErrCorrelationMismatch, identity.toolCallID, describeUUID(call.ExecutionID), executionID)
+	case call.Family == nil || *call.Family != identity.family:
+		return store.ToolCall{}, fmt.Errorf("%w: attempt %s is family %s, not %s",
+			store.ErrCorrelationMismatch, identity.toolCallID, describeString(call.Family), identity.family)
+	case call.RequestDigest == nil || *call.RequestDigest != identity.requestDigest:
+		return store.ToolCall{}, fmt.Errorf("%w: attempt %s was presented with a different request digest",
+			store.ErrCorrelationMismatch, identity.toolCallID)
+	}
+	return call, nil
+}
+
+func describeString(value *string) string {
+	if value == nil {
+		return describeAbsent
+	}
+	return *value
 }
 
 // RecordDeniedAttempt inserts a row already settled/denied (D4). The
@@ -204,13 +241,11 @@ func (t *tx) RecordDeniedAttempt(ctx context.Context, input store.RecordDeniedAt
 	if err != nil {
 		return none, fmt.Errorf("record denied attempt %s: %w", input.ToolCallID, err)
 	}
-	row, err := t.queries.GetToolCall(ctx, gen.GetToolCallParams{
-		ToolCallID: toUUID(input.ToolCallID), OrganizationID: toUUID(input.OrganizationID),
-	})
+	row, err := t.readRegistered(ctx, &identity, input.OrganizationID, input.ExecutionID, inserted == 1)
 	if err != nil {
-		return none, notFound(err, "attempt", input.ToolCallID)
+		return none, err
 	}
-	return store.Registration{Call: toolCallFromRow(&row), Registered: inserted == 1}, nil
+	return store.Registration{Call: row, Registered: inserted == 1}, nil
 }
 
 // StoryWaitingAttempts takes the Story row FOR UPDATE and reads its waiting
