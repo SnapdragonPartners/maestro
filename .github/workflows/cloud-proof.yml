@@ -100,7 +100,7 @@ jobs:
           service_account: maestro-cloud-proof@gen-lang-client-0110204648.iam.gserviceaccount.com
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
 
       - name: Start the Cloud SQL instance
         run: |
