@@ -3,6 +3,7 @@ package secret
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -125,6 +126,11 @@ func RedactAll(text string, redactions []Redaction) string {
 	if len(plaintexts) == 0 {
 		return text
 	}
+	// Longest plaintext first, ties by bytes: with overlapping secrets ("ab"
+	// and "abc") the order decides whether "abc" meets its own replacement
+	// or is cut by "ab"'s, and the caller's order is a map's (PR #384
+	// review). The result is a function of the batch, not of its order.
+	sort.Sort(byLengthThenBytes{plaintexts, replacements})
 	for i := range replacements {
 		replacements[i] = safeReplacement(plaintexts, replacements[i])
 	}
@@ -148,6 +154,24 @@ func RedactAll(text string, redactions []Redaction) string {
 // count falls quickly; the bound exists so the guarantee never depends on
 // that argument being right.
 const redactPasses = 8
+
+// byLengthThenBytes sorts plaintexts longest first, ties by bytes, carrying
+// their replacements along.
+type byLengthThenBytes struct {
+	plaintexts, replacements []string
+}
+
+func (b byLengthThenBytes) Len() int { return len(b.plaintexts) }
+func (b byLengthThenBytes) Less(i, j int) bool {
+	if len(b.plaintexts[i]) != len(b.plaintexts[j]) {
+		return len(b.plaintexts[i]) > len(b.plaintexts[j])
+	}
+	return b.plaintexts[i] < b.plaintexts[j]
+}
+func (b byLengthThenBytes) Swap(i, j int) {
+	b.plaintexts[i], b.plaintexts[j] = b.plaintexts[j], b.plaintexts[i]
+	b.replacements[i], b.replacements[j] = b.replacements[j], b.replacements[i]
+}
 
 // containsAny reports whether any plaintext is in text.
 func containsAny(text string, plaintexts []string) bool {

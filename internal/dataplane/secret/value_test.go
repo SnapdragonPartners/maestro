@@ -290,3 +290,23 @@ func TestRedactAllFallbackIsSafeAcrossABatch(t *testing.T) {
 		t.Fatalf("RedactAll = %q", short)
 	}
 }
+
+// TestRedactAllIsOrderIndependentForOverlappingSecrets (PR #384 review):
+// with "ab" and "abc" in one batch, the substitution order decided whether
+// "abc" met its own replacement or was cut by "ab"'s, and the batch comes
+// from a map. Longest first, ties by bytes.
+//
+// THE MUTANT: drop the sort -- the two orders below differ.
+func TestRedactAllIsOrderIndependentForOverlappingSecrets(t *testing.T) {
+	short := Redaction{Value: NewValue([]byte("ab")), Replacement: "[S]"}
+	long := Redaction{Value: NewValue([]byte("abc")), Replacement: "[L]"}
+	text := "x abc y ab z"
+	forward := RedactAll(text, []Redaction{short, long})
+	reverse := RedactAll(text, []Redaction{long, short})
+	if forward != reverse {
+		t.Fatalf("order-dependent: %q vs %q", forward, reverse)
+	}
+	if forward != "x [L] y [S] z" {
+		t.Fatalf("RedactAll = %q; the longer secret must meet its own replacement", forward)
+	}
+}
