@@ -114,17 +114,35 @@ type Redaction struct {
 // caller that formats a secret into any encoding is making the decision
 // Reveal's name exists to make visible.
 func RedactAll(text string, redactions []Redaction) string {
-	plaintexts := make([]string, 0, len(redactions))
-	replacements := make([]string, 0, len(redactions))
+	// Equal plaintexts are coalesced first: two secrets with the same bytes
+	// and different references would otherwise be substituted by whichever
+	// came first, and the record could name the wrong revision depending on
+	// map order (PR #384 review). Agreeing replacements keep theirs; a
+	// disagreement takes the marker, deterministically.
+	byPlaintext := make(map[string]string, len(redactions))
 	for i := range redactions {
 		if redactions[i].Value.Len() == 0 {
 			continue
 		}
-		plaintexts = append(plaintexts, string(redactions[i].Value.plaintext))
-		replacements = append(replacements, redactions[i].Replacement)
+		plaintext := string(redactions[i].Value.plaintext)
+		if previous, seen := byPlaintext[plaintext]; seen && previous != redactions[i].Replacement {
+			byPlaintext[plaintext] = redacted
+			continue
+		}
+		if _, seen := byPlaintext[plaintext]; !seen {
+			byPlaintext[plaintext] = redactions[i].Replacement
+		}
 	}
-	if len(plaintexts) == 0 {
+	if len(byPlaintext) == 0 {
 		return text
+	}
+	plaintexts := make([]string, 0, len(byPlaintext))
+	for plaintext := range byPlaintext {
+		plaintexts = append(plaintexts, plaintext)
+	}
+	replacements := make([]string, len(plaintexts))
+	for i, plaintext := range plaintexts {
+		replacements[i] = byPlaintext[plaintext]
 	}
 	// Longest plaintext first, ties by bytes: with overlapping secrets ("ab"
 	// and "abc") the order decides whether "abc" meets its own replacement

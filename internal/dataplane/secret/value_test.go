@@ -310,3 +310,31 @@ func TestRedactAllIsOrderIndependentForOverlappingSecrets(t *testing.T) {
 		t.Fatalf("RedactAll = %q; the longer secret must meet its own replacement", forward)
 	}
 }
+
+// TestRedactAllCoalescesEqualPlaintexts (PR #384 review): two secrets with
+// the same bytes and different references were substituted by whichever
+// came first, so the record could name the wrong revision depending on map
+// order. Equal plaintexts coalesce; disagreeing replacements take the
+// marker, agreeing ones keep theirs.
+//
+// THE MUTANT: keep the first replacement on a collision -- the two orders
+// below name different references.
+func TestRedactAllCoalescesEqualPlaintexts(t *testing.T) {
+	const refA = "secret:0193b4f0-0000-7000-8000-00000000000a@1"
+	const refB = "secret:0193b4f0-0000-7000-8000-00000000000b@2"
+	same := []byte("ghp_shared")
+	a := Redaction{Value: NewValue(same), Replacement: refA}
+	b := Redaction{Value: NewValue(same), Replacement: refB}
+	forward := RedactAll("t=ghp_shared", []Redaction{a, b})
+	reverse := RedactAll("t=ghp_shared", []Redaction{b, a})
+	if forward != reverse {
+		t.Fatalf("order-dependent: %q vs %q", forward, reverse)
+	}
+	if forward != "t="+redacted {
+		t.Fatalf("RedactAll = %q; disagreeing references for one plaintext must take the marker, not one of them", forward)
+	}
+	// The same secret resolved into two slots agrees on its reference and keeps it.
+	if agreed := RedactAll("t=ghp_shared", []Redaction{a, a}); agreed != "t="+refA {
+		t.Fatalf("RedactAll with agreeing replacements = %q", agreed)
+	}
+}
