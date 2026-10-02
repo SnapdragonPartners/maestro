@@ -216,6 +216,13 @@ func TestSubstituteValidatesANumberOnItsLiteral(t *testing.T) {
 		"float past the safe range":                        {"ratio", 1e30},
 		"float NaN":                                        {"ratio", math.NaN()},
 		"not a number at all":                              {"ratio", "0.5"},
+		"malformed literal with a leading zero":            {"count", json.Number("01")},
+		"malformed literal with a trailing point":          {"count", json.Number("1.")},
+		"malformed literal with a plus sign":               {"count", json.Number("+1")},
+		"malformed literal, hex":                           {"count", json.Number("0x10")},
+		"literal with surrounding whitespace":              {"count", json.Number(" 1 ")},
+		"literal that is a quoted string":                  {"count", json.Number(`"1"`)},
+		"empty literal":                                    {"count", json.Number("")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := boundary.Substitute(schema, map[string]any{"note": "x", tc.field: tc.value}, refs)

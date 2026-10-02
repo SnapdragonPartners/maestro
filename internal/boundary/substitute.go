@@ -288,19 +288,9 @@ func coerceNumber(field *family.Field, value any) (any, error) {
 	}
 	switch n := value.(type) {
 	case json.Number:
-		if err := canonical.CheckSafeNumbers([]byte(n.String())); err != nil {
-			return nil, refuse(err.Error())
-		}
-		exact, ok := new(big.Rat).SetString(n.String())
-		if !ok {
-			return nil, refuse("not a JSON number")
-		}
-		if field.Type == family.Integer && !exact.IsInt() {
-			return nil, refuse("not integral")
-		}
-		f, err := n.Float64()
-		if err != nil {
-			return nil, refuse(err.Error())
+		f, why := coerceLiteral(field.Type, n.String())
+		if why != "" {
+			return nil, refuse(why)
 		}
 		return f, nil
 	case float64:
@@ -317,6 +307,46 @@ func coerceNumber(field *family.Field, value any) (any, error) {
 		return coerceNumber(field, float64(n))
 	}
 	return nil, refuse("not a number")
+}
+
+// coerceLiteral validates a json.Number's literal and converts it, returning
+// the reason it was refused if it was. json.Number is a string alias, so
+// the literal may be malformed: "01" and "1." are not JSON numbers, yet
+// big.Rat and Float64 normalise both to 1, and CheckSafeNumbers decodes
+// only the first value (PR #384 review). The whole literal must be one
+// well-formed JSON number before anything reads it.
+func coerceLiteral(fieldType family.FieldType, literal string) (float64, string) {
+	if !isJSONNumberLiteral(literal) {
+		return 0, "not a well-formed JSON number literal"
+	}
+	if err := canonical.CheckSafeNumbers([]byte(literal)); err != nil {
+		return 0, err.Error()
+	}
+	exact, ok := new(big.Rat).SetString(literal)
+	if !ok {
+		return 0, "not a JSON number"
+	}
+	if fieldType == family.Integer && !exact.IsInt() {
+		return 0, "not integral"
+	}
+	f, err := json.Number(literal).Float64()
+	if err != nil {
+		return 0, err.Error()
+	}
+	return f, ""
+}
+
+// isJSONNumberLiteral reports whether text is exactly one JSON number: valid
+// JSON, and a number rather than any other value (json.Valid alone admits
+// a quoted string). No surrounding whitespace, which json.Valid admits and
+// strconv does not.
+func isJSONNumberLiteral(text string) bool {
+	if text == "" || !json.Valid([]byte(text)) {
+		return false
+	}
+	first := text[0]
+	last := text[len(text)-1]
+	return (first == '-' || (first >= '0' && first <= '9')) && last >= '0' && last <= '9'
 }
 
 // largeReference is what the projection holds for a Large field over the
