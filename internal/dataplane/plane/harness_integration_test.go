@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"orchestrator/internal/boundary"
 	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/harness"
 	"orchestrator/internal/dataplane/plane"
@@ -68,7 +69,7 @@ func composeWith(t *testing.T, dsn, label string, running harness.Version) plane
 	blob, _ := planetest.Blob(t, label)
 	return plane.Composition{
 		DSN: dsn, Objects: blob, RootKey: planetest.RootKey(t),
-		Caller: plane.Caller{Types: types, Keys: configkeys.MustNew(nil), Prompts: prompt.MustNew(nil), Harness: running},
+		Caller: plane.Caller{Types: types, Keys: configkeys.MustNew(nil), Prompts: prompt.MustNew(nil), Actions: boundary.MustNewRegistry(), Harness: running},
 	}
 }
 

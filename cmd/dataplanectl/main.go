@@ -136,7 +136,8 @@ func usage() {
            create and accept a dispatch for one Story with a DECLARED
            capability set, and print the execution. Requires -org, -user
            and -story; -capabilities is a comma-separated list of family
-           identities, empty for an execution that may request nothing;
+           identities the registry knows (an unknown one is refused by
+           name), empty for an execution that may request nothing;
            -headless declares that no operator will answer a requirement.
            The execution acts for -user. Until an agent core exists this is
            how an operator exercises the execution boundary.

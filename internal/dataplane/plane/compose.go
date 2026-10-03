@@ -84,12 +84,14 @@ type Composition struct {
 //
 // It is one struct rather than a growing parameter list because each field
 // was added by a different item -- Types in Phase 2, Keys by Phase 3 item 3,
-// Prompts and Harness by item 4 -- and each addition otherwise re-cuts every
-// composer's signature and every one of its call sites.
+// Prompts and Harness by item 4, Actions by item 5 -- and each addition
+// otherwise re-cuts every composer's signature and every one of its call
+// sites.
 //
-// ALL FOUR ARE REQUIRED. A caller with nothing to say says so explicitly --
-// an empty key registry, a slot registry with no slots -- and is then
-// refused, with a typed error, only if it tries the thing it disclaimed.
+// ALL FIVE ARE REQUIRED. A caller with nothing to say says so explicitly --
+// an empty key registry, a slot registry with no slots, a family registry
+// with no families -- and is then refused, with a typed error, only if it
+// tries the thing it disclaimed.
 //
 //nolint:govet // fieldalignment: ordered by the item that added each
 type Caller struct {
@@ -128,6 +130,19 @@ type Caller struct {
 	// left to refuse, and Open refuses it: no root opens a seam without
 	// saying what it is running.
 	Harness harness.Version
+
+	// Actions is the caller's closed action-family set (Phase 3 item 5
+	// design, D3 and D12), with Prompts's semantics: which families exist is
+	// a property of the caller's job, the seam validates every capability
+	// set at dispatch against it and never names the implementation, which
+	// is internal/boundary.Registry.
+	//
+	// Required rather than defaulted, as the others are: a caller that
+	// dispatches nothing says so with a registry holding no families, which
+	// admits the empty capability set and refuses every identity. Without
+	// it an unknown family could be stored at dispatch and become live under
+	// a later registry.
+	Actions store.ActionContract
 }
 
 // Owned is a resource the composition takes responsibility for closing.
@@ -208,7 +223,7 @@ func Open(ctx context.Context, c Composition) (_ store.Store, err error) {
 		return nil, err
 	}
 	seam, err := postgres.New(pool, c.Types, c.Objects, c.RootKey, c.Harness,
-		postgres.WithConfigKeys(c.Keys), postgres.WithPromptContract(c.Prompts))
+		postgres.WithConfigKeys(c.Keys), postgres.WithPromptContract(c.Prompts), postgres.WithActionContract(c.Actions))
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("open the persistence seam: %w", err)
@@ -365,6 +380,10 @@ func (c Caller) Validate() error {
 	case c.Harness.IsZero():
 		return errors.New("no harness version was supplied; construct one with harness.Parse " +
 			"from the running binary's version")
+	// nilcheck, as for Prompts: the implementation is *boundary.Registry.
+	case nilcheck.IsNil(c.Actions):
+		return errors.New("no action contract was supplied; a caller that dispatches no execution " +
+			"declares that with a family registry holding no families")
 	}
 	return nil
 }

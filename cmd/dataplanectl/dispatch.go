@@ -27,8 +27,10 @@ import (
 //
 // -capabilities may be empty, which is a declared EMPTY set -- an execution
 // that may request nothing -- and is what an operator exercising admission
-// refusal wants. Validation against the closed family set is sequence commit
-// 2's; here the seam refuses only a blank identity.
+// refusal wants. Every identity is validated by the seam against the
+// Orchestrator's family registry (orchestrator.Actions, handed to the seam
+// as plane.Caller.Actions): an identity no family declares is refused by
+// name and the dispatch stays pending.
 func runDispatch(ctx context.Context, cfg *stack.Config, opts *runOptions) error {
 	switch {
 	case opts.org == "":

@@ -64,6 +64,14 @@ type Store struct {
 	// than to nil. A store nobody gave a slot vocabulary cannot judge a
 	// pack usable, and says so with a typed error on the write.
 	prompts store.PromptContract
+	// actions is the closed action-family set, reached through the contract
+	// the seam declares (Phase 3 item 5 design, D12), consulted at dispatch.
+	//
+	// It follows keys' rule: no families is a real state -- a caller that
+	// dispatches nothing says so with an empty registry -- so it defaults to
+	// a contract that knows no family and refuses every identity, which
+	// admits the empty capability set and nothing else.
+	actions store.ActionContract
 	// blob is the object module's Layer 1 adapter. It is required, not
 	// optional: ADR 0022 makes object storage part of the data plane, and a
 	// store that satisfied the seam while answering every object operation
@@ -146,6 +154,39 @@ var ErrNoPromptContract = errors.New("no prompt contract was supplied to this st
 type refuseEveryPack struct{}
 
 func (refuseEveryPack) ValidatePack(map[string]string, []string) error { return ErrNoPromptContract }
+
+// WithActionContract replaces the action-family set dispatch validates
+// capability sets against.
+//
+// Absent it, every non-empty capability set is refused: this package cannot
+// reach the boundary's registry (the contract is consumer-owned for that
+// reason), so the only set it can supply itself is the empty one.
+func WithActionContract(actions store.ActionContract) Option {
+	return func(s *Store) {
+		// nilcheck: the argument is an interface, and a typed-nil registry
+		// pointer would otherwise replace a contract that refuses with one
+		// that panics on the first dispatch.
+		if !nilcheck.IsNil(actions) {
+			s.actions = actions
+		}
+	}
+}
+
+// ErrNoActionContract is what the default contract refuses every identity
+// with.
+var ErrNoActionContract = errors.New("no action contract was supplied to this store, so no capability can be judged known")
+
+// knowNoFamily is the contract a store has when nobody supplied one: the
+// empty set. An empty capability set validates against it, as it would
+// against any registry; anything else is refused by name.
+type knowNoFamily struct{}
+
+func (knowNoFamily) ValidateCapabilities(identities []string) error {
+	if len(identities) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", ErrNoActionContract, identities)
+}
 
 // ApplicationName labels every connection the seam opens, so the runbook's
 // migration-cutover check can name Maestro's sessions in pg_stat_activity
@@ -236,6 +277,7 @@ func build(
 		keys:     configkeys.MustNew(nil),
 		rootKey:  rootKey,
 		prompts:  refuseEveryPack{},
+		actions:  knowNoFamily{},
 		harness:  running,
 		blob:     blob,
 		now:      time.Now,
@@ -327,6 +369,9 @@ type tx struct {
 	// family's install and update reach the gate and record the version
 	// they validated against (item 4 design, D3, D6).
 	prompts store.PromptContract
+	// actions is the composition's family set, carried so dispatch validates
+	// a capability set inside the caller's transaction (item 5 design, D12).
+	actions store.ActionContract
 	harness harness.Version
 }
 
@@ -356,7 +401,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(store.Tx) error) error {
 // this, so a field added to Store cannot be forgotten by one of them.
 func (s *Store) txOn(pgxTx pgx.Tx) *tx {
 	return &tx{queries: s.queries.WithTx(pgxTx), registry: s.registry, keys: s.keys, rootKey: s.rootKey,
-		blob: s.blob, prompts: s.prompts, harness: s.harness}
+		blob: s.blob, prompts: s.prompts, harness: s.harness, actions: s.actions}
 }
 
 // inTx runs one seam operation in its own transaction and returns its

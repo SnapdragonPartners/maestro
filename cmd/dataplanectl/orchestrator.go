@@ -18,8 +18,9 @@ import (
 // place that names the LOCAL composer on the Orchestrator's behalf. The
 // Orchestrator receives an Opener and never sees stack.Config.
 //
-// The registries are the Orchestrator's own -- the work types and its
-// (empty) key vocabulary -- not the benchmark verbs', and not a union.
+// The registries are the Orchestrator's own -- the work types, its key
+// vocabulary, its prompt slots and its action families -- not the benchmark
+// verbs', and not a union.
 func orchestratorOpener(cfg *stack.Config) (orchestrator.Opener, error) {
 	types, err := orchestrator.Registry()
 	if err != nil {
@@ -34,6 +35,7 @@ func orchestratorOpener(cfg *stack.Config) (orchestrator.Opener, error) {
 		Keys:    orchestrator.Keys(),
 		Prompts: orchestrator.Prompts(),
 		Harness: running,
+		Actions: orchestrator.Actions(),
 	}
 	return func(ctx context.Context) (store.Store, error) {
 		return stack.OpenSeam(ctx, cfg, caller)

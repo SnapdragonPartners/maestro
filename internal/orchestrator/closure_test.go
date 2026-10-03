@@ -24,15 +24,23 @@ const seamPackage = "orchestrator/internal/orchestrator"
 // itself -- and, since item 4 (design D3), the harness-version vocabulary the
 // seam exposes and `internal/prompt`, whose slot registry the Orchestrator
 // declares. `internal/prompt` reaches only `canonical`, which was already
-// here. Nothing local, nothing v1.
+// here. Since item 5 (design D1, D12), the execution boundary and its family
+// leaf, whose registry the Orchestrator declares as the seam's action
+// contract; the boundary reaches only the seam, `canonical` and `secret`,
+// all already here. Nothing local, nothing v1.
 //
 // An exact set, not a deny-list: a package added to the data plane later is
 // forbidden until somebody adds it here deliberately. `stack`, `paths`,
 // `plane`, `cloud`, `migrations`, `objects` and `store/postgres` are the
 // ones this rule exists to keep out, and `pkg/config` -- v1's file-based
 // configuration -- is forbidden by name, since an Orchestrator that can reach
-// it has a second source to drift toward.
+// it has a second source to drift toward. The boundary's own rule (design
+// D1) is that it reaches nothing under `pkg/` but `pkg/logx`, which is not
+// yet on this list because commit 2 of item 5's sequence does not reach it;
+// the commit that does adds it here deliberately.
 var allowedClosure = []string{
+	"orchestrator/internal/boundary",
+	"orchestrator/internal/boundary/family",
 	"orchestrator/internal/dataplane/canonical",
 	"orchestrator/internal/dataplane/configkeys",
 	"orchestrator/internal/dataplane/harness",

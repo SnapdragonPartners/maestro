@@ -33,7 +33,7 @@ func opener(t *testing.T, dsn string) orchestrator.Opener {
 	return func(ctx context.Context) (store.Store, error) {
 		return plane.Open(ctx, plane.Composition{
 			DSN: dsn, Objects: blob, RootKey: planetest.RootKey(t),
-			Caller: plane.Caller{Types: types, Keys: orchestrator.Keys(), Prompts: orchestrator.Prompts(), Harness: planetest.Harness(t)},
+			Caller: plane.Caller{Types: types, Keys: orchestrator.Keys(), Prompts: orchestrator.Prompts(), Actions: orchestrator.Actions(), Harness: planetest.Harness(t)},
 		})
 	}
 }

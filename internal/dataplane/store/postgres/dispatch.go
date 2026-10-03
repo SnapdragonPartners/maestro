@@ -377,12 +377,21 @@ func (t *tx) transition(ctx context.Context, operation string, organizationID, d
 // configuration leaves the dispatch pending rather than accepted with no
 // execution -- the invariant the two statements share.
 //
+// The capability set is validated against the composition's ActionContract
+// AFTER canonicalisation and before anything is written: an identity the
+// registry does not know is refused here, so it cannot be stored now to
+// become live under a later registry. The immutability trigger then keeps
+// the stored set what this check admitted.
+//
 //nolint:gocritic // hugeParam: by value, matching the seam interface
 func (t *tx) AcceptDispatch(ctx context.Context, organizationID, dispatchID uuid.UUID, configuration store.ExecutionConfiguration) (*store.Execution, error) {
 	const operation = "AcceptDispatch"
-	capabilities, _, err := canonicalCapabilitySet(operation, dispatchID, configuration.CapabilitySet)
+	capabilities, identities, err := canonicalCapabilitySet(operation, dispatchID, configuration.CapabilitySet)
 	if err != nil {
 		return nil, err
+	}
+	if unknownErr := t.actions.ValidateCapabilities(identities); unknownErr != nil {
+		return nil, rejectExecution(operation, dispatchID, store.ReasonCapabilityUnknown, unknownErr.Error())
 	}
 	if configuration.ActingUserID == uuid.Nil {
 		return nil, fmt.Errorf("%s %s: an acting user is required; the execution acts for the operator who accepted it (design D6)", operation, dispatchID)

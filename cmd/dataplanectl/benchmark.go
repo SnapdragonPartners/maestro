@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"orchestrator/internal/boundary"
 	"orchestrator/internal/dataplane/benchmarkimport"
 	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/plane"
@@ -54,7 +55,9 @@ func openSeam(ctx context.Context, cfg *stack.Config) (store.Store, error) {
 	// quietly becomes the other's.
 	//
 	// The same goes for prompt packs: no slots, so the importer can install
-	// none. It records FOREIGN pack identities, which no gate judges.
+	// none. It records FOREIGN pack identities, which no gate judges. And
+	// for action families: the importer dispatches nothing, and an empty
+	// registry says so.
 	running, err := runningHarness()
 	if err != nil {
 		return nil, err
@@ -64,6 +67,7 @@ func openSeam(ctx context.Context, cfg *stack.Config) (store.Store, error) {
 		Keys:    configkeys.MustNew(nil),
 		Prompts: prompt.MustNew(nil),
 		Harness: running,
+		Actions: boundary.MustNewRegistry(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open the data plane: %w", err)

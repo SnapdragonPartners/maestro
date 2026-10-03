@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"orchestrator/internal/boundary"
 	"orchestrator/internal/dataplane/configkeys"
 	"orchestrator/internal/dataplane/readiness"
 	"orchestrator/internal/dataplane/registry"
@@ -81,6 +82,16 @@ func Keys() *configkeys.Registry {
 // and refuses every other.
 func Prompts() *prompt.Registry {
 	return prompt.MustNew(nil)
+}
+
+// Actions is the action-family set the Orchestrator declares, and the
+// contract the seam validates every capability set through at dispatch
+// (item 5 design, D3, D12). It is the boundary's production set: every
+// family under internal/boundary/families, assembled in the one package
+// that imports them. Empty in sequence commit 2; the Story pull request
+// arrives with the forge seam in commit 4, and the set grows only there.
+func Actions() *boundary.Registry {
+	return boundary.Families()
 }
 
 // StartupRefused is a start that could not proceed because the plane is

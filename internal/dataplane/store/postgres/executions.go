@@ -25,9 +25,9 @@ func rejectExecution(operation string, executionID uuid.UUID, reason store.Execu
 }
 
 // canonicalCapabilitySet is the stored form (D12): sorted, de-duplicated,
-// no blank identity. Validation against the closed family set is the
-// composition's (sequence commit 2); the seam refuses only what no registry
-// could name.
+// no blank identity. A blank is refused here because no registry could name
+// it; every other identity is judged by the composition's ActionContract,
+// which the caller consults with the canonical slice this returns.
 func canonicalCapabilitySet(operation string, subject uuid.UUID, capabilities []string) ([]byte, []string, error) {
 	canonical := make([]string, 0, len(capabilities))
 	for _, capability := range capabilities {
