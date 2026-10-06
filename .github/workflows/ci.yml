@@ -38,7 +38,7 @@ jobs:
       # the golangci-lint version) and lint config are hashed into the key so
       # a version bump or config change starts from a fresh cache.
       - name: Cache golangci-lint analysis
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/golangci-lint
           key: golangci-lint-${{ runner.os }}-${{ hashFiles('Makefile', '.golangci.yaml') }}-${{ github.sha }}
